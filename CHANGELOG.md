@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Epic progress in the epic PR's title, status line and progress comment**:
+  an open epic pull request now shows how many of its issues are merged into
+  the epic branch. Its status line reads, for example, `🔨 3 of 5 issues
+  merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10)`,
+  and with `prTitleStatus` on its title slot is followed by the count
+  (`◑ 3/5 [Epic] Scheduler primitives`). While the epic is working, a pie
+  circle chosen from the count replaces 🔨 so it is told apart from an
+  ordinary working pull request: `○` none merged, `◔` under half, `◑` half
+  to under three quarters, `◕` three quarters or more but not all; `⚠️` and
+  `✅` (`✅ 5/5` once all are merged) are unchanged, and an older `🔨 N/M`
+  epic title is rewritten to its circle on its next update. New epic PRs are
+  created with `○ 0/N` and the line in their body. The epic is `working` while a sub-PR
+  or issue is being worked on or the next issue is about to start,
+  `needs_attention` when nothing runs and a sub-PR needs you or is ready and
+  waits to be merged into the epic branch, the queue is paused or the epic
+  conflicts with its base, and `ready` once every issue is merged and its
+  own checks pass; an epic shows no review score. The title is renamed only
+  when a sub-PR merges or the state changes. Independently of the setting,
+  the epic progress comment now lists what is **In progress** (open sub-PRs
+  with their state, issues started without a PR) and what is **Up next**,
+  and it is updated when a sub-PR opens, changes status or merges and when
+  an issue starts, without a GitHub write when nothing changed. The counts
+  come from the existing epic merge progress computation.
+- **PR state in the pull request title**: with the repository setting
+  `prTitleStatus` on (the default), each open pull request ProPR created
+  starts its title with one status slot: `🔨` while it is being worked on,
+  `⚠️` when it needs you and `✅` when it is ready, the last two followed by
+  the latest review score as a circled digit (`✅⑧`). New pull requests are
+  created with `🔨`, so creation costs no rename; after that the title changes
+  only when the state or the shown score changes, ⚠️ and ✅ wait about 30
+  seconds so a run that is about to start causes no extra rename, and no
+  update is sent when the title is already right. Only the slot is ever
+  replaced, a slot you remove stays off until the state changes, and the slot
+  is removed when the pull request is merged or closed. ProPR's merges (MCP
+  `merge_pull_request`, its own merge after checks, and native auto-merge)
+  pass a commit title without the slot, task titles and notifications use the
+  title without it, and `[Epic]` detection and the web UI accept titles with
+  or without it. Turning the setting off removes the slot on the next change.
+- **Pull request status**: ProPR now computes one status for each pull
+  request it created: `working`, `needs_attention`, `ready` or `none`, with a
+  detail of what is happening (activity, Ultrafix cycle, latest review score,
+  passed/failed/pending checks, the reason it needs you, and epic issue
+  progress). A review score alone never makes a pull request `ready`: its
+  checks on the current head must have completed and passed, and GitHub
+  must have confirmed that the PR does not conflict with its base. If the
+  review score, Ultrafix state or queued work can't be read, no status is
+  reported. ProPR keeps
+  that status as one live line at the top of the body of every open pull
+  request it created, in every repository; there is no setting for it. Only
+  the text between its markers is ever rewritten, other ProPR body writers
+  keep it, and it is removed when the pull request is merged or closed. A
+  push to the base branch refreshes the open ProPR pull requests into it, so
+  one that starts to conflict doesn't keep reading ready, and the worker
+  brings every open ProPR pull request up to date when it starts, including
+  ones opened before this release. The
+  line is at most 512 characters, and new descriptions keep that much room
+  free for it.
+  `get_pull_request`, `list_pull_requests` and `get_work_overview` return the
+  same status as `proprStatus`. The new repository setting `prTitleStatus`
+  (on by default; Repositories → Automation,
+  `update_repository_configuration`, `propr repo toggle owner/repo
+  --pr-title-status <on|off>`) controls only whether the pull request title
+  shows the state as a leading emoji. Nothing uses it yet: the title emoji
+  arrives in a later release. See [PR Status](docs/docs/features/pr-status.md).
 - **Automations: run on a blocked epic issue**: an automation can subscribe to
   the new `plan.issue_blocked` event (`eventTriggers` on the definition, the
   **Event trigger** setting in the editor) and is then run once per blocked

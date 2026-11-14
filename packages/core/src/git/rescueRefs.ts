@@ -6,9 +6,9 @@ import { createHooklessGit } from './hooklessGit.js';
 import { configureGitAuthentication } from './repoBranching.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
 
-/** Namespace for commits salvaged from a rejected push. Never under refs/heads, so
- * GitHub does not list them as branches and no branch-driven automation sees them. */
-export const RESCUE_REF_PREFIX = 'refs/propr/rescue/';
+import { RESCUE_REF_PREFIX, isRescueRef } from './rescueRefPrefix.js';
+
+export { RESCUE_REF_PREFIX, isRescueRef };
 
 const DEFAULT_RESCUE_RETENTION_DAYS = 14;
 
@@ -47,13 +47,6 @@ export function rescueRefCreatedAt(ref: string): Date | undefined {
     const date = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6]));
     // Reject out-of-range fields (month 13, hour 25) that Date.UTC would silently roll over.
     return formatRescueTimestamp(date) === stamp ? date : undefined;
-}
-
-/** True for a rescue ref in any spelling a webhook or branch listing can produce. */
-export function isRescueRef(ref: string | null | undefined): boolean {
-    if (!ref) return false;
-    const normalized = ref.trim().replace(/^refs\/heads\//, '');
-    return normalized.startsWith(RESCUE_REF_PREFIX) || normalized.startsWith('propr/rescue/');
 }
 
 export function getRescueRetentionDays(): number {

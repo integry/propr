@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { splitWorkTitle } from './workTitle';
 
 describe('splitWorkTitle', () => {
+  it('parses titles with and without the PR status slot', () => {
+    for (const slot of ['', '🔨 ', '⚠️⑥ ', '\u26A0⑥ ', '✅⑧ ', '✅ ']) {
+      expect(splitWorkTitle(`${slot}[3475 by Claude Opus 5.5] Let an automation run`, 'issue'))
+        .toEqual({ type: 'Implement', title: 'Let an automation run' });
+      expect(splitWorkTitle(`Fix PR #3510: ${slot}[3510 by Claude Opus 5.5] Apply library extensions`, 'pr-comment'))
+        .toEqual({ type: 'Fix', title: 'Apply library extensions' });
+      expect(splitWorkTitle(`Fix PR #2494: ${slot}[Epic] MCP Operator Surface`, 'pr-comment'))
+        .toEqual({ type: 'Fix', title: '[Epic] MCP Operator Surface' });
+    }
+    expect(splitWorkTitle('🔨Not a slot', null)).toEqual({ type: null, title: '🔨Not a slot' });
+  });
+
   it('moves a PR workflow verb into the type and drops the PR number', () => {
     expect(splitWorkTitle('Fix PR #2494: [Epic] MCP Operator Surface', 'pr-comment'))
       .toEqual({ type: 'Fix', title: '[Epic] MCP Operator Surface' });

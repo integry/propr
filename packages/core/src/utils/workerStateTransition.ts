@@ -8,6 +8,7 @@ import type {
     UpdateMetadata,
 } from './workerStateManager.types.js';
 import { db } from '../db/connection.js';
+import { pullRequestNumberOfTask, requestPullRequestStatusSync } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
 import { redactSecrets } from './secretRedaction.js';
@@ -246,6 +247,10 @@ export async function publishTaskStateTransition(
     }
 
     await settlePlanRefinementAfterTask(taskId, transition);
+    // Follow-up, review, conflict resolution and implementation start/end all
+    // change the pull request status; the update runs outside this transition.
+    requestPullRequestStatusSync(`${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+        pullRequestNumberOfTask(state.issueRef, metadata.prResult ?? state.prResult));
 
     if (!publication.historyPersisted || !publication.eventPublished) {
         correlatedLogger.error({

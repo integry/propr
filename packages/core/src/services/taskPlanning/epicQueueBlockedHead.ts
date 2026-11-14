@@ -19,6 +19,12 @@ export function isAgentBlockedReason(reason: string | null | undefined): boolean
   return Boolean(reason && BLOCKED_HEAD_PATTERN.test(reason));
 }
 
+/** The issue an agent-blocked reason (agentBlockedHeadReason) names; null for any other reason. */
+export function agentBlockedIssueNumber(reason: string | null | undefined): number | null {
+  if (!isAgentBlockedReason(reason)) return null;
+  return Number(reason!.match(/^Issue #(\d+) /)![1]);
+}
+
 type Deps = { database?: Knex; now?: () => number };
 
 /**

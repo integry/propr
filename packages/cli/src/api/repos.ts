@@ -197,6 +197,12 @@ export interface MonitoredRepo {
   autoAssignPullRequests?: boolean;
 
   /**
+   * Whether the pull request title shows the PR state as a leading emoji.
+   * Controls the title only. Omitted by older servers; treat omission as enabled.
+   */
+  prTitleStatus?: boolean;
+
+  /**
    * GitHub login assigned instead of the issue author; null or omitted means
    * the issue author is assigned.
    */
@@ -280,6 +286,9 @@ export interface AddRepoOptions {
   /** Automatic pull request assignment. Omitted keeps the stored repository-wide value (off by default). */
   autoAssignPullRequests?: boolean;
 
+  /** The PR state emoji in the title. Omitted keeps the stored repository-wide value (on by default). */
+  prTitleStatus?: boolean;
+
   /** Login assigned instead of the issue author. Omitted keeps the stored value; null assigns the issue author. */
   autoAssignDefaultAssignee?: string | null;
 
@@ -325,6 +334,9 @@ export interface UpdateRepoOptions {
 
   /** Automatic pull request assignment. Omitted keeps the stored repository-wide value (off by default). */
   autoAssignPullRequests?: boolean;
+
+  /** The PR state emoji in the title. Omitted keeps the stored repository-wide value (on by default). */
+  prTitleStatus?: boolean;
 
   /** Login assigned instead of the issue author. Omitted keeps the stored value; null assigns the issue author. */
   autoAssignDefaultAssignee?: string | null;
@@ -426,6 +438,7 @@ export async function addRepo(
     ...(options.autoAssignPullRequests !== undefined && { autoAssignPullRequests: options.autoAssignPullRequests }),
     ...(options.autoAssignDefaultAssignee !== undefined && { autoAssignDefaultAssignee: options.autoAssignDefaultAssignee }),
     ...(options.autoAssignRequestReview !== undefined && { autoAssignRequestReview: options.autoAssignRequestReview }),
+    ...(options.prTitleStatus !== undefined && { prTitleStatus: options.prTitleStatus }),
     visualPreview: options.visualPreview ?? { enabled: false, types: ['image'] },
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,
@@ -496,6 +509,7 @@ export async function updateRepo(
     ...(updates.autoAssignPullRequests !== undefined && { autoAssignPullRequests: updates.autoAssignPullRequests }),
     ...(updates.autoAssignDefaultAssignee !== undefined && { autoAssignDefaultAssignee: updates.autoAssignDefaultAssignee }),
     ...(updates.autoAssignRequestReview !== undefined && { autoAssignRequestReview: updates.autoAssignRequestReview }),
+    ...(updates.prTitleStatus !== undefined && { prTitleStatus: updates.prTitleStatus }),
     ...(updates.visualPreview !== undefined && {
       visualPreview: {
         ...((updates.visualPreview.githubAttachmentPlan ?? existingRepo.visualPreview?.githubAttachmentPlan) !== undefined

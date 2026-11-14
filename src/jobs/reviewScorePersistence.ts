@@ -1,3 +1,4 @@
+import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
 import type { Logger } from 'pino';
 import type { Knex } from 'knex';
 import { db, recordReviewScores, type ReviewScoreInput } from '@propr/core';
@@ -103,7 +104,10 @@ export async function persistReviewScores(
     const inputs = buildReviewScoreInputs(results, context);
     if (inputs.length === 0) return 0;
     try {
-        return await recordReviewScores(database, inputs);
+        const recorded = await recordReviewScores(database, inputs);
+        // A new review score can move the pull request status (below or at the goal).
+        signalPullRequestStatus(inputs[0].repository, inputs[0].prNumber);
+        return recorded;
     } catch (error) {
         logger.warn({ error: (error as Error).message, taskId: context.taskId, pullRequestNumber: context.pullRequestNumber },
             'Failed to persist review scores');

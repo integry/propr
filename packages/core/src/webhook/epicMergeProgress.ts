@@ -3,10 +3,13 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { PlanIssueStatus, type PlanIssue } from '../config/planIssueManager.js';
 import logger from '../utils/logger.js';
 import { epicHeadSha, isMergeContained, isRecord, type EpicProgressOctokit } from './epicMergeEvidence.js';
+import { extractEpicProgressActivityLines, insertEpicProgressActivityLines, replaceEpicProgressActivityLines } from './epicProgressActivity.js';
 
 export const EPIC_PROGRESS_MARKER = '<!-- propr:epic-merge-progress -->';
 export const EPIC_FINAL_MERGE_MARKER = '<!-- propr:epic-final-merge -->';
 export const EPIC_COMPLETE_MARKER = '<!-- propr:epic-merge-complete -->';
+/** Starts the line a progress comment carries once its epic PR merged (buildEpicProgressComment). */
+const EPIC_MERGED_LINE_PREFIX = '✅ This epic PR has been merged into';
 
 export interface EpicChildPullRequest {
     number: number;
@@ -16,6 +19,13 @@ export interface EpicChildPullRequest {
     mergeCommitSha?: string | null;
     /** Closed without being merged; such PRs are not counted towards the epic. */
     abandoned: boolean;
+    /** Still open: in progress towards the epic. */
+    open?: boolean;
+    title?: string;
+    /** The branch the child PR comes from. */
+    headRef?: string;
+    /** Open child PRs: the head commit and GitHub's last update, which any status write to the child changes. */
+    headSha?: string; updatedAt?: string;
 }
 
 export interface EpicMergeProgress {
@@ -104,8 +114,25 @@ function renderProgressBar(merged: number, total: number, width = 10): string {
     return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
 }
 
-/** `mergedInto` names the branch the epic PR has merged into, once it has. */
-export function buildEpicProgressComment(progress: EpicMergeProgress, planName?: string, mergedInto?: string): string {
+export {
+    extractEpicProgressActivityLines, renderEpicProgressActivity, replaceEpicProgressActivityLines, type EpicProgressActivity,
+} from './epicProgressActivity.js';
+
+/** The count an epic reaches when `mergedChildPrNumber` merges, from its plan alone: for the title it is created with. */
+export function epicProgressAfterMerge(mergedChildPrNumber: number | null, planIssues: PlanIssue[]): { merged: number; total: number } | null {
+    const children = mergedChildPrNumber !== null ? [{ number: mergedChildPrNumber, merged: true, abandoned: false }] : [];
+    const { merged, total } = computeEpicMergeProgress(children, mergedChildPrNumber, planIssues);
+    return total > 0 ? { merged, total } : null;
+}
+
+/**
+ * `mergedInto` names the branch the epic PR has merged into, once it has; a
+ * merged epic shows no activity. `activity` is the open epic's "In progress"
+ * and "Up next" lines (renderEpicProgressActivity), fitted to the space the
+ * rest of the comment leaves within GitHub's limit (fitEpicProgressActivityLines),
+ * so the counts, the merged child PRs and the marker are always written.
+ */
+export function buildEpicProgressComment(progress: EpicMergeProgress, planName?: string, mergedInto?: string, activity: string[] = []): string {
     const complete = isEpicMergeComplete(progress);
     const percent = progress.total > 0 ? Math.round((progress.merged / progress.total) * 100) : 0;
     const lines = [
@@ -121,8 +148,10 @@ export function buildEpicProgressComment(progress: EpicMergeProgress, planName?:
     if (progress.excluded > 0) {
         lines.push('', `_${progress.excluded} planned issue${progress.excluded === 1 ? ' was' : 's were'} closed without a merge and ${progress.excluded === 1 ? 'is' : 'are'} not counted._`);
     }
-    if (mergedInto) lines.push('', `✅ This epic PR has been merged into ${mergedInto}.`);
-    lines.push('', '---', '*This comment is updated automatically by ProPR as child PRs merge.*', EPIC_PROGRESS_MARKER);
+    if (mergedInto) lines.push('', `${EPIC_MERGED_LINE_PREFIX} ${mergedInto}.`);
+    lines.push('', '---', '*This comment is updated automatically by ProPR as child PRs open, change and merge.*', EPIC_PROGRESS_MARKER);
+    // Below "Merged child PRs", each its own paragraph so Markdown keeps them on separate lines, within what the rest leaves.
+    if (!mergedInto) insertEpicProgressActivityLines(lines, activity);
     return lines.join('\n');
 }
 
@@ -173,7 +202,8 @@ async function listBotComments(octokit: EpicProgressOctokit, owner: string, repo
     });
 }
 
-async function listChildPullRequests(octokit: EpicProgressOctokit, owner: string, repo: string, epicBranch: string): Promise<EpicChildPullRequest[]> {
+/** Every pull request into the epic branch, open, merged or closed. */
+export async function listChildPullRequests(octokit: EpicProgressOctokit, owner: string, repo: string, epicBranch: string): Promise<EpicChildPullRequest[]> {
     const parameters = { owner, repo, base: epicBranch, state: 'all', per_page: 100 };
     const data = octokit.paginate
         ? await octokit.paginate('GET /repos/{owner}/{repo}/pulls', parameters)
@@ -181,10 +211,16 @@ async function listChildPullRequests(octokit: EpicProgressOctokit, owner: string
     return (Array.isArray(data) ? data : []).flatMap(pr => {
         if (!isRecord(pr) || typeof pr.number !== 'number') return [];
         const merged = typeof pr.merged_at === 'string' && pr.merged_at.length > 0;
+        const open = pr.state === 'open';
         return [{
             number: pr.number, merged, mergedAt: merged ? pr.merged_at as string : undefined,
             mergeCommitSha: typeof pr.merge_commit_sha === 'string' ? pr.merge_commit_sha : null,
             abandoned: pr.state === 'closed' && !merged,
+            ...(open ? { open } : {}),
+            ...(open && typeof pr.title === 'string' ? { title: pr.title } : {}),
+            ...(open && isRecord(pr.head) && typeof pr.head.ref === 'string' ? { headRef: pr.head.ref } : {}),
+            ...(open && isRecord(pr.head) && typeof pr.head.sha === 'string' ? { headSha: pr.head.sha } : {}),
+            ...(open && typeof pr.updated_at === 'string' ? { updatedAt: pr.updated_at } : {}),
         }];
     });
 }
@@ -239,6 +275,19 @@ async function listShippedChildren(
         cutoff = { mergedAt: time, headSha: epicHeadSha(pr) };
     }
     return await childrenWithin(octokit, request, children, cutoff);
+}
+
+/**
+ * Children of an open epic PR that already shipped through an earlier epic PR
+ * of the same branch (listShippedChildren); they do not count towards it.
+ */
+export async function listChildrenShippedBeforeOpenEpic(
+    octokit: EpicProgressOctokit,
+    request: { owner: string; repo: string; epicBranch: string; epicPrNumber: number; baseBranch?: string },
+    children: EpicChildPullRequest[],
+): Promise<Set<number>> {
+    const { baseBranch, ...target } = request;
+    return await listShippedChildren(octokit, { ...target, mergedChildPrNumber: null }, children, { baseBranch, mergedAt: NaN, epicMerged: false });
 }
 
 async function readEpicMergeState(octokit: EpicProgressOctokit, request: EpicMergeProgressRequest) {
@@ -409,8 +458,11 @@ export async function updateEpicMergeProgress(
             'Merged plan issues not carried by this epic PR remain outstanding in its final report');
     }
 
+    // The activity lines come from the status sync (syncOpenEpicProgressComment), which reads each
+    // child PR's status; this update keeps them, and the status sync it signals brings them up to date.
+    const existingActivity = extractEpicProgressActivityLines(comments.find(comment => comment.body.includes(EPIC_PROGRESS_MARKER))?.body);
     const trackingComment = await syncTrackingComment(octokit, request, comments, {
-        body: buildEpicProgressComment(progress, request.planName, epicMerged ? displayBase : undefined),
+        body: buildEpicProgressComment(progress, request.planName, epicMerged ? displayBase : undefined, existingActivity),
         empty: progress.total === 0 && progress.excluded === 0,
         assertOwned,
     });
@@ -442,4 +494,36 @@ export async function updateEpicMergeProgress(
         trackingComment, completionPosted,
     }, 'Updated epic merge progress');
     return { progress, trackingComment, completionPosted };
+}
+
+/**
+ * Replaces the "In progress" and "Up next" lines of an open epic's existing
+ * progress comment with `activity` (from the status sync), without a GitHub
+ * write when they are unchanged. The caller holds the epic's progress lease
+ * (withEpicProgressLeaseIfFree), so this runs between merge progress updates:
+ * the epic is read again here, and an epic that merged, or whose comment
+ * updateEpicMergeProgress finalized, is left alone. The counts and merged
+ * child PRs stay as the merge progress update wrote them; it alone owns them,
+ * with the merge evidence (a triggering child GitHub's list has not caught up
+ * with) a status read lacks. The comment is created by updateEpicMergeProgress
+ * when the first child merges; this never creates one, so the two writers
+ * cannot post it twice.
+ */
+export async function syncOpenEpicProgressComment(
+    octokit: EpicProgressOctokit,
+    { owner, repo, epicPrNumber }: { owner: string; repo: string; epicPrNumber: number },
+    { activity, assertOwned }: { activity: string[]; assertOwned: () => Promise<void> },
+): Promise<'updated' | 'unchanged' | 'skipped'> {
+    const epic = (await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: epicPrNumber })).data;
+    if (!isRecord(epic) || epic.state !== 'open' || epic.merged === true) return 'skipped';
+    const comments = await listBotComments(octokit, owner, repo, epicPrNumber);
+    if (comments.some(comment => comment.body.includes(EPIC_FINAL_MERGE_MARKER))) return 'skipped';
+    const existing = comments.find(comment => comment.body.includes(EPIC_PROGRESS_MARKER));
+    if (!existing || existing.body.includes(EPIC_MERGED_LINE_PREFIX)) return 'skipped';
+    const body = replaceEpicProgressActivityLines(existing.body, activity);
+    if (body === null) return 'skipped';
+    if (body === existing.body) return 'unchanged';
+    await assertOwned();
+    await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner, repo, comment_id: existing.id, body });
+    return 'updated';
 }

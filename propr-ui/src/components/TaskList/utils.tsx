@@ -1,3 +1,4 @@
+import { stripStatusSlot } from '@propr/shared';
 import type { Task } from './types';
 
 /**
@@ -18,8 +19,19 @@ export const shouldDimTask = (task: Task): boolean => {
  * @param issueNumber - Optional issue number to use if extraction fails
  * @returns Clean title in format "issueId: title" or the original title if no pattern matches
  */
+/**
+ * The title without a PR status slot (`🔨 `, `✅⑧ `), at its start or right
+ * after a `Followup:` / `New Issue:` prefix.
+ */
+const withoutStatusSlot = (title: string): string => {
+  const unslotted = stripStatusSlot(title);
+  const prefix = /^(?:Followup:|New Issue:)\s*/i.exec(unslotted);
+  return prefix ? prefix[0] + stripStatusSlot(unslotted.slice(prefix[0].length)) : unslotted;
+};
+
 export const getCleanDocumentTitle = (title: string | undefined, issueNumber?: number): string => {
   if (!title) return issueNumber ? `Task #${issueNumber}` : 'Task';
+  title = withoutStatusSlot(title);
 
   // Pattern: "Followup: [870 by Claude Opus] Title here" or "New Issue: [870 by Claude Opus] Title here"
   // Extract issue number and clean title

@@ -1,3 +1,4 @@
+import { stripStatusSlot } from '@propr/shared';
 import { diffBlockPaths, diffPatchPath } from './prTaskTitleDiffHelpers.js';
 
 export { filterDiffToFiles, getConflictDiffForTitle } from './prTaskTitleDiffHelpers.js';
@@ -141,7 +142,8 @@ export function buildPrTaskTitle(options: {
     pullRequestNumber: number;
     prTitle: string | null | undefined;
 }): string {
-    const rawTitle = compactWhitespace(options.prTitle || '');
+    // The title's status slot (prTitleStatus) is the PR's state, never part of a task title.
+    const rawTitle = compactWhitespace(stripStatusSlot(options.prTitle || ''));
     const title = truncate(rawTitle && !isGenericPrTitleText(rawTitle) ? rawTitle : 'Untitled pull request', MAX_PR_TITLE_IN_TASK_TITLE);
     return `${WORKFLOW_LABELS[options.workflow]} PR #${options.pullRequestNumber}: ${title}`;
 }

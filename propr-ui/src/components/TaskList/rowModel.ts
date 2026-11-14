@@ -17,6 +17,7 @@
  */
 
 import { trustedPreviewMedia } from '@propr/shared';
+import { PR_TITLE_STATUS_SLOT_PATTERN } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
 import { ellipsizeHardCutTitle } from './displayTitle';
 import { getDisplayStatus } from './utils.tsx';
@@ -140,6 +141,7 @@ export function sanitizeTaskTitle(raw: string | null | undefined): SanitizedTitl
   const title = (work.title ?? '')
     .replace(MODEL_TAG, ' ')
     .replace(LEADING_REFERENCE, '')
+    .replace(PR_TITLE_STATUS_SLOT_PATTERN, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!title) return { type: work.type, title: null, fullTitle: null };

@@ -3010,15 +3010,15 @@ describe('auto_merge.require_up_to_date sweep retries', () => {
     const MERGE_OWNERSHIP_KEY = 'auto-merge:up-to-date:merging:test-owner/test-repo';
     const mergeCalls = () => mockOctokit.request.mock.calls.filter((call: { arguments: unknown[] }) => call.arguments[0] === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge');
     /** An auto-merge PR (not a plan PR) whose head is current with `main`. */
-    function mockCurrentPR(options: { ciUnavailable?: boolean; mergeable?: boolean | null; mergeableState?: string } = {}) {
+    function mockCurrentPR(options: { ciUnavailable?: boolean; mergeable?: boolean | null; mergeableState?: string; title?: string } = {}) {
         mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
             if (endpoint === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge') return { data: { merged: true, sha: 'merge123' } };
             if (endpoint === 'GET /repos/{owner}/{repo}/compare/{basehead}') return { data: { behind_by: 0, base_commit: { sha: 'base-tip' } } };
             if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
                 return { data: {
-                    state: 'open', labels: [{ name: 'auto-merge' }], draft: false, body: '',
+                    state: 'open', labels: [{ name: 'auto-merge' }], draft: false, body: '', ...(options.title ? { title: options.title } : {}),
                     mergeable: options.mergeable === undefined ? true : options.mergeable, mergeable_state: options.mergeableState ?? 'clean',
-                    base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                    base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', label: 'test-owner:feature', repo: { owner: { login: 'test-owner' } } },
                 } };
             }
             // Both CI endpoints failing makes CI readiness `unavailable`.
@@ -3087,6 +3087,16 @@ describe('auto_merge.require_up_to_date sweep retries', () => {
             assert.equal(deferred(), false, 'the merged PR leaves the retry set');
         });
     }
+
+    test('ProPR\'s own merge passes a commit title without the title status slot', async () => {
+        resetMocks();
+        useUpToDatePolicy();
+        mockCurrentPR({ title: '✅⑧ [12 by Claude Opus 5.5] Add retries' });
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 1);
+        const params = mergeCalls()[0].arguments[1] as Record<string, unknown>;
+        assert.equal(params.commit_title, '[12 by Claude Opus 5.5] Add retries (#42)');
+    });
 
     test('a closed PR resolves the evaluation; a failed check and an unreadable PR do not', async () => {
         resetMocks();

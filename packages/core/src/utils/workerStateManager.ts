@@ -1,6 +1,7 @@
 import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
 import { db } from '../db/connection.js';
+import { pullRequestNumberOfTask, requestPullRequestStatusSync } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, isBookkeepingCancellation, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
@@ -121,9 +122,7 @@ export class WorkerStateManager {
 
         try {
             // Validate repository name components before storing
-            const repoOwner = issueRef.repoOwner ?? 'unknown';
-            const repoName = issueRef.repoName ?? 'unknown';
-            const repository = `${repoOwner}/${repoName}`;
+            const repository = `${issueRef.repoOwner ?? 'unknown'}/${issueRef.repoName ?? 'unknown'}`;
             const taskData = {
                 task_id: taskId, job_id: jobId, correlation_id: state.correlationId,
                 repository,
@@ -146,6 +145,7 @@ export class WorkerStateManager {
             };
             await db('task_history').insert(historyData);
             correlatedLogger.debug({ taskId }, 'Task state persisted to database');
+            requestPullRequestStatusSync(repository, pullRequestNumberOfTask(issueRef));
 
             // Publish real-time event for task creation
             const eventPublisher = getEventPublisher();

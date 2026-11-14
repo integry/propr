@@ -1,3 +1,5 @@
+import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
+import { initialPullRequestTitle } from '../github/pullRequestBodyWriter.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
     AI_COMMIT_AUTHOR,
@@ -137,7 +139,7 @@ async function createDraftPr(
         return existing;
     }
     const [owner, repo] = goal.repository.split('/');
-    const title = buildGoalPullRequestTitle(goal);
+    const title = await initialPullRequestTitle(goal.repository, buildGoalPullRequestTitle(goal));
     const body = buildGoalPullRequestBody(goal);
     let lastError: unknown;
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -299,6 +301,7 @@ async function publishLocked(
             updated_at: db.fn.now(),
         });
         if (updated !== 1) throw new Error('Goal checkpoint result was fenced');
+        signalPullRequestStatus(goal.repository, pull.number);
         await db('goal_checkpoints').where({ checkpoint_id: recordId }).update({
             state: commit ? 'completed' : 'skipped',
             commit_sha: commit?.commitHash ?? null,
