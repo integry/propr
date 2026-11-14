@@ -345,7 +345,7 @@ async function loadEpicFacts(
     const match = epic.epicRef?.match(EPIC_BRANCH_PATTERN);
     if (!epic.epicRef || !match) return null;
     return await loadEpicStatusFacts({
-        github: sources.github, db: sources.db,
+        github: sources.github, db: sources.db, redis: sources.redis,
         // A sub-PR comes from an issue branch, never an epic branch, so this reads no further epic.
         loadChildStatus: async (child, pull) => await loadPullRequestStatus(repository, child, sources, pull),
     }, { repository, prNumber, epicBranch: epic.epicRef, firstIssue: Number(match[1]), pull: epic.pull });

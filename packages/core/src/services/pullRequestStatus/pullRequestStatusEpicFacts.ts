@@ -8,7 +8,8 @@ import {
 } from '../../webhook/epicMergeProgress.js';
 import type { EpicProgressOctokit } from '../../webhook/epicMergeEvidence.js';
 import { pullRequestBodyKey } from './pullRequestBodyLock.js';
-import { noteEpicChildReadPass, planEpicChildReads, retainEpicChildStatus } from './pullRequestStatusEpicChildReads.js';
+import { MAX_EPIC_CHILD_STATUSES, noteEpicChildReadPass, planEpicChildReads, retainEpicChildStatus } from './pullRequestStatusEpicChildReads.js';
+import { readEpicChildStatusRecords, type EpicChildStatusRecordReader } from './pullRequestStatusEpicChildRecord.js';
 import type { EpicChildStatus, EpicIssueRef, EpicStatusFacts, PullRequestStatus } from './pullRequestStatus.js';
 import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullRequestStatusFacts.js';
 
@@ -33,6 +34,8 @@ export interface EpicStatusSources {
     db: Knex;
     /** The status of one sub-PR, by the shared status computation. */
     loadChildStatus: (prNumber: number, pull: PullRequestStatusPull) => Promise<PullRequestStatus>;
+    /** Where the sub-PRs' own syncs record their statuses (pullRequestStatusEpicChildRecord); none: this process's records. */
+    redis?: EpicChildStatusRecordReader | null;
 }
 
 /**
@@ -151,7 +154,7 @@ function upNextIssues(plan: EpicPlan, excluded: Set<number>, titles: Map<number,
 }
 
 async function childStatuses(
-    sources: EpicStatusSources, target: { owner: string; repo: string; epicKey: string }, open: EpicChildPullRequest[],
+    sources: EpicStatusSources, target: { repository: string; owner: string; repo: string; epicKey: string }, open: EpicChildPullRequest[],
     context: { plan: EpicPlan; titles: Map<number, string> },
 ): Promise<{ children: EpicChildStatus[]; continueChildReads: boolean }> {
     const planIssueNumbers = new Set(context.plan.issues.map(issue => issue.issue_number));
@@ -163,8 +166,12 @@ async function childStatuses(
     };
     // A pull request from another epic branch into this one is not a sub-PR whose status is read (no epic reads another).
     const readable = open.filter(child => !EPIC_BRANCH_PATTERN.test(child.headRef ?? ''));
+    // Within the read budget every sub-PR is read and none is kept, so the records are only needed beyond it.
+    const records = readable.length > MAX_EPIC_CHILD_STATUSES
+        ? await readEpicChildStatusRecords(sources.redis, target.repository, readable.map(child => child.number))
+        : undefined;
     const readAt = Date.now();
-    const plan = planEpicChildReads(target.epicKey, readable, readAt);
+    const plan = planEpicChildReads(target.epicKey, readable, readAt, records);
     const children = await Promise.all(open.map(async (child): Promise<EpicChildStatus> => {
         const issueNumber = issueOf(child);
         const title = (issueNumber !== null ? context.titles.get(issueNumber) : undefined) ?? childTitle(child.title);
@@ -225,7 +232,7 @@ export async function loadEpicStatusFacts(
     const excluded = new Set(plan.issues.filter(issue => !issues.includes(issue) || isBlocked(issue)).map(issue => issue.issue_number));
     const pending = new Set(issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number));
     const { children: childStatusList, continueChildReads } = await childStatuses(
-        sources, { owner, repo, epicKey: pullRequestBodyKey(repository, prNumber) }, open, { plan, titles });
+        sources, { repository, owner, repo, epicKey: pullRequestBodyKey(repository, prNumber) }, open, { plan, titles });
     return {
         merged: progress.merged,
         total: progress.total,

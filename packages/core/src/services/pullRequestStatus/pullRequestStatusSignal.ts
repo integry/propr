@@ -96,6 +96,11 @@ export function setPullRequestStatusEpicSyncRunner(next: PullRequestStatusEpicSy
     epicRunner = next;
 }
 
+/** A branch named like an epic branch: the only bases whose pull requests signal an epic. */
+export function isEpicBranchName(branch: string | null | undefined): branch is string {
+    return typeof branch === 'string' && /^\d+-epic-\S+$/.test(branch);
+}
+
 /**
  * Called when something an epic's status depends on changes without an event
  * on the epic pull request itself: a pull request into the epic branch opened,
@@ -104,7 +109,7 @@ export function setPullRequestStatusEpicSyncRunner(next: PullRequestStatusEpicSy
  */
 export function requestEpicPullRequestStatusSync(repository: string | null | undefined, epicBranch: string | null | undefined): void {
     if (!epicRunner || typeof repository !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(repository)) return;
-    if (typeof epicBranch !== 'string' || !/^\d+-epic-\S+$/.test(epicBranch)) return;
+    if (!isEpicBranchName(epicBranch)) return;
     try {
         epicRunner.forBranch(repository, epicBranch);
     } catch {

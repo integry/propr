@@ -8,11 +8,12 @@ import { withEpicProgressLeaseIfFree } from '../../webhook/epicMergeProgressRetr
 import { PR_BODY_MAX_LENGTH, readStatusSlot } from '@propr/shared';
 import type { EpicStatusFacts, PullRequestStatus } from './pullRequestStatus.js';
 import { applyPullRequestStatusBlock, describeChildStatus, extractPullRequestStatusBlock } from './pullRequestStatusBlock.js';
+import { recordEpicChildStatus } from './pullRequestStatusEpicChildRecord.js';
 import { paginatingGitHub } from './pullRequestStatusEpicFacts.js';
 import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullRequestStatusFacts.js';
 import type { PullRequestTitleDecision } from './pullRequestStatusTitle.js';
 import {
-    requestEpicPullRequestStatusSync, setPullRequestStatusEpicSyncRunner, type PullRequestStatusEpicSyncRunner,
+    isEpicBranchName, requestEpicPullRequestStatusSync, setPullRequestStatusEpicSyncRunner, type PullRequestStatusEpicSyncRunner,
 } from './pullRequestStatusSignal.js';
 
 /**
@@ -149,6 +150,8 @@ export interface EpicSyncNotes {
     baseRef: string | null;
     /** The rendered status (block or title slot) changed. */
     statusChanged: boolean;
+    /** The status the update computed, whether or not the block or title could show it; null once the pull request is closed or merged. */
+    status: PullRequestStatus | null;
 }
 
 /** How long after an update that left sub-PRs unread the next one reads them (pullRequestStatusEpicChildReads). */
@@ -218,14 +221,20 @@ export function withEpicChildReadContinuation(
 
 /**
  * After the block: an open epic's progress comment is updated from the same
- * facts, and a sub-PR whose rendered status changed (or that closed) has its
- * epic PR updated, since the epic's state depends on it.
+ * facts, and a sub-PR whose status changed (or that closed) has its epic PR
+ * updated, since the epic's state depends on it. A change the sub-PR's block
+ * and title cannot show (prTitleStatus off, no room for the block in its body)
+ * is written nowhere on GitHub, so the status computed is compared with the
+ * one recorded at the sub-PR's last sync (pullRequestStatusEpicChildRecord),
+ * not only with what was rendered.
  */
 export async function syncEpicSideOfStatus(
     github: PullRequestStatusGitHub, redis: EpicProgressLeaseRedis | null, target: { repository: string; prNumber: number }, notes: EpicSyncNotes,
 ): Promise<void> {
     if (notes.epic) await syncEpicProgressCommentForStatus(github, redis, target, notes.epic);
-    if (notes.statusChanged && notes.baseRef) requestEpicPullRequestStatusSync(target.repository, notes.baseRef);
+    if (!isEpicBranchName(notes.baseRef)) return;
+    const recordChanged = await recordEpicChildStatus(redis, target.repository, target.prNumber, notes.status);
+    if (notes.statusChanged || recordChanged) requestEpicPullRequestStatusSync(target.repository, notes.baseRef);
 }
 
 let activeRunner: ReturnType<typeof createEpicSyncRunner> | null = null;

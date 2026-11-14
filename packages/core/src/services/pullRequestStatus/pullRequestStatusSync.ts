@@ -272,7 +272,7 @@ async function statusForLatestPull(
 
 
 function epicSyncNotes(desired: DesiredStatus & { pull: PullRequestStatusPull }, statusChanged: boolean): EpicSyncNotes {
-    return { epic: desired.status ? desired.epic : null, baseRef: desired.pull.base?.ref ?? null, statusChanged };
+    return { epic: desired.status ? desired.epic : null, baseRef: desired.pull.base?.ref ?? null, statusChanged, status: desired.status };
 }
 
 async function syncPullRequestStatusOnce(

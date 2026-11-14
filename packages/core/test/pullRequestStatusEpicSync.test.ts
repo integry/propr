@@ -20,6 +20,7 @@ const { syncEpicProgressCommentForStatus } = await import('../src/services/pullR
 const { EPIC_PROGRESS_SCRIPTS, runEpicProgressUpdate, withEpicProgressLeaseIfFree } = await import('../src/webhook/epicMergeProgressRetry.js');
 const { agentBlockedHeadReason } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 const { EPIC_FINAL_MERGE_MARKER } = await import('../src/webhook/epicMergeProgress.js');
+const { PR_BODY_MAX_LENGTH } = await import('@propr/shared');
 
 const REPOSITORY = 'integry/propr';
 const EPIC_BRANCH = '800-epic-short-name-x7y';
@@ -249,6 +250,63 @@ test('a sub-PR whose status changed signals its epic; an unchanged one does not'
     await syncPullRequestStatus(REPOSITORY, 911, deps());
     assert.deepEqual(signalled, [EPIC_BRANCH], 'nothing changed on the sub-PR');
     setPullRequestStatusEpicSyncRunner(null);
+});
+
+/** A description a person filled so close to GitHub's limit that not even the compact status block fits. */
+const FULL_BODY = 'x'.repeat(PR_BODY_MAX_LENGTH - 20);
+
+function subPrPatches(number: number): number {
+    return github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}' && write.params.pull_number === number).length;
+}
+
+test('a sub-PR whose status changes without anything to write (title setting off, body full) still updates its epic', async () => {
+    titleSetting = false;
+    Object.assign(github.pulls.get(911)!, { title: '[801 by Claude Opus 5.5] Second issue', body: FULL_BODY });
+    // #911's Ultrafix loop runs: the sub-PR is working, and the epic shows it in progress.
+    const ultrafix = new Map<string, string>([['ultrafix:state:integry:propr:911', JSON.stringify({ active: true, cycleCount: 3, maxCycles: 10, goal: 8 })]]);
+    const withLoop = (): Partial<PullRequestStatusSyncDeps> => {
+        const base = deps();
+        return { ...base, sources: { ...base.sources!, redis: { get: async (key: string) => ultrafix.get(key) ?? null } } };
+    };
+    await syncPullRequestStatus(REPOSITORY, 911, withLoop());
+    await syncPullRequestStatus(REPOSITORY, EPIC, withLoop());
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #801 in progress \(Ultrafix cycle 4 of 10\)/);
+    assert.equal(github.pulls.get(911)!.body, FULL_BODY, 'no room for the block');
+
+    // The loop finishes with its checks passing: #911 is ready, its plan issue stays under_review.
+    ultrafix.set('ultrafix:state:integry:propr:911', JSON.stringify({
+        active: false, cycleCount: 4, maxCycles: 10, goal: 8, completionStatus: 'succeeded', finalScore: 9, completedAt: '2026-11-13T09:40:00Z',
+    }));
+    enablePullRequestStatusSync(withLoop());
+    try {
+        // The sub-PR's own transition only: the epic is updated through the signal its sync sends.
+        requestPullRequestStatusSync(REPOSITORY, 911);
+        const deadline = Date.now() + 8_000;
+        while (!/⚠️ 1 of 3 issues merged/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged into the epic branch/);
+    } finally {
+        disablePullRequestStatusSync();
+    }
+    assert.equal(subPrPatches(911), 0, 'nothing was written on the sub-PR');
+});
+
+test('a sub-PR whose status is unchanged and unwritable sends no further signal', async () => {
+    titleSetting = false;
+    Object.assign(github.pulls.get(911)!, { title: '[801 by Claude Opus 5.5] Second issue', body: FULL_BODY });
+    const signalled: string[] = [];
+    setPullRequestStatusEpicSyncRunner({ forBranch: (_repository, branch) => signalled.push(branch), forPlan: () => {} });
+    try {
+        await syncPullRequestStatus(REPOSITORY, 911, deps());
+        assert.deepEqual(signalled, [EPIC_BRANCH], 'the status computed first is new to the epic');
+        await syncPullRequestStatus(REPOSITORY, 911, deps());
+        assert.deepEqual(signalled, [EPIC_BRANCH], 'the same status again: no signal');
+        await database('task_history').insert({ task_id: 't-911', state: 'processing' });
+        await syncPullRequestStatus(REPOSITORY, 911, deps());
+        assert.deepEqual(signalled, [EPIC_BRANCH, EPIC_BRANCH], 'a new status signals, with nothing written');
+        assert.equal(subPrPatches(911), 0);
+    } finally {
+        setPullRequestStatusEpicSyncRunner(null);
+    }
 });
 
 test('a pull request opened into an epic branch signals the epic', () => {
@@ -541,6 +599,28 @@ test('a kept sub-PR status is read again once the sub-PR changes', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.ok(github.reads.includes(930), 'the changed sub-PR is read, not taken from the kept status');
     assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #930/);
+});
+
+test('a kept sub-PR status is read again once the sub-PR\'s sync records a change it could not write', async () => {
+    titleSetting = false;
+    addListedSubPrs(11);
+    // #930 is ProPR's and working; its body leaves no room for the block, so its status changes write nothing.
+    await database('tasks').insert({ task_id: 't-930', repository: REPOSITORY, issue_number: 4930, task_type: 'issue', created_at: '2026-11-13T09:40:00Z', initial_job_data: '{}', pr_number: 930 });
+    await database('task_history').insert({ task_id: 't-930', state: 'processing' });
+    github.pulls.get(930)!.body = FULL_BODY;
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #930 in progress/);
+    await syncPullRequestStatus(REPOSITORY, 930, deps());
+
+    // #930's run completes: ready. Its sync writes nothing, so GitHub's update time of #930 stays as the epic kept it.
+    await database('task_history').insert({ task_id: 't-930', state: 'completed' });
+    await syncPullRequestStatus(REPOSITORY, 930, deps());
+    assert.equal(subPrPatches(930), 0);
+    github.reads = [];
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.ok(github.reads.includes(930), 'the changed sub-PR is read, not taken from the kept status');
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
 });
 
 test('an update leaving sub-PRs unread schedules the update that reads them', async () => {

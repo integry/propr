@@ -6,6 +6,9 @@ import {
     MAX_EPIC_CHILD_STATUSES, MAX_STALLED_EPIC_CHILD_READ_PASSES, noteEpicChildReadPass, planEpicChildReads, resetEpicChildReadsForTests,
     retainEpicChildStatus,
 } from '../src/services/pullRequestStatus/pullRequestStatusEpicChildReads.js';
+import {
+    EPIC_CHILD_STATUS_SWAP_SCRIPT, epicChildStatusFingerprint, readEpicChildStatusRecords, recordEpicChildStatus,
+} from '../src/services/pullRequestStatus/pullRequestStatusEpicChildRecord.js';
 
 const EPIC_KEY = 'integry/propr#900';
 const STATUS = { state: 'ready', detail: {} } as unknown as PullRequestStatus;
@@ -95,4 +98,55 @@ test('a sub-PR not read before resets the stall count; an update leaving none un
     const fresh = openSubPrs(MAX_EPIC_CHILD_STATUSES + 1, 6000);
     children = [...children, ...fresh];
     assert.equal(pass(children, now).continueReads, true, 'a new streak reads sub-PRs not read since it began');
+});
+
+function childStatus(state: PullRequestStatus['state'], detail: Partial<PullRequestStatus['detail']> = {}): PullRequestStatus {
+    return {
+        state, detail: {
+            activity: null, ultrafix: null, ultrafixStopped: null, reviewScore: null, ratingGoal: 7, checks: null, reason: null, failedChecks: [], epic: null,
+            ...detail,
+        },
+    };
+}
+
+test('the recorded status follows what the epic reads of a sub-PR, not its check counts', () => {
+    const loop = childStatus('working', { activity: 'ultrafix', ultrafix: { cycle: 4, maxCycles: 10 }, checks: { passed: 3, failed: 0, pending: 0 } });
+    assert.equal(epicChildStatusFingerprint(loop), epicChildStatusFingerprint({ ...loop, detail: { ...loop.detail, checks: { passed: 5, failed: 0, pending: 0 } } }));
+    assert.notEqual(epicChildStatusFingerprint(loop), epicChildStatusFingerprint({ ...loop, detail: { ...loop.detail, ultrafix: { cycle: 5, maxCycles: 10 } } }));
+    assert.notEqual(epicChildStatusFingerprint(loop), epicChildStatusFingerprint(childStatus('ready')));
+    assert.notEqual(epicChildStatusFingerprint(childStatus('none')), epicChildStatusFingerprint(null), 'closed is not the same as no ProPR status');
+});
+
+test('recording a sub-PR status reports a change only when it differs from the recorded one', async () => {
+    assert.equal(await recordEpicChildStatus(null, 'integry/propr', 911, childStatus('working', { activity: 'ultrafix' })), true, 'nothing recorded yet');
+    assert.equal(await recordEpicChildStatus(null, 'Integry/Propr', 911, childStatus('working', { activity: 'ultrafix' })), false);
+    assert.equal(await recordEpicChildStatus(null, 'integry/propr', 911, childStatus('ready')), true);
+    // Through Redis the swap is one script; a record that cannot be written signals the epic rather than leave it behind.
+    const calls: unknown[][] = [];
+    const redis = { eval: async (...args: unknown[]) => { calls.push(args); return 0; } };
+    assert.equal(await recordEpicChildStatus(redis as never, 'integry/propr', 911, childStatus('ready')), false);
+    assert.equal(calls[0][0], EPIC_CHILD_STATUS_SWAP_SCRIPT);
+    assert.equal(calls[0][2], 'propr:pr-status:epic-child:integry/propr#911');
+    const failing = { eval: async () => { throw new Error('redis unavailable'); } };
+    assert.equal(await recordEpicChildStatus(failing as never, 'integry/propr', 911, childStatus('ready')), true);
+    assert.equal(await readEpicChildStatusRecords({ get: async () => { throw new Error('redis unavailable'); } } as never, 'integry/propr', [911]), null);
+});
+
+test('a kept status holds only while it agrees with the sub-PR\'s recorded status', () => {
+    const children = openSubPrs(MAX_EPIC_CHILD_STATUSES + 1);
+    const now = Date.parse('2026-11-14T09:00:00Z');
+    const working = childStatus('working', { activity: 'implementing' });
+    const keepAll = () => {
+        const plan = planEpicChildReads(EPIC_KEY, children, now);
+        for (const child of children) if (plan.read.has(child.number)) retainEpicChildStatus(EPIC_KEY, child, working, now);
+    };
+    keepAll();
+    keepAll();
+    const last = children.at(-1)!.number;
+    const kept = (records?: Map<number, string | null> | null) => planEpicChildReads(EPIC_KEY, children, now + 1, records).kept;
+    assert.ok(kept().has(last), 'without records, the update time decides as before');
+    assert.ok(kept(new Map([[last, null]])).has(last), 'no record: no change was observed');
+    assert.ok(kept(new Map([[last, epicChildStatusFingerprint(working)]])).has(last), 'the record agrees');
+    assert.ok(!kept(new Map([[last, epicChildStatusFingerprint(childStatus('ready'))]])).has(last), 'the sub-PR\'s sync recorded another status');
+    assert.equal(kept(null).size, 0, 'unreadable records keep nothing');
 });
