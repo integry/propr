@@ -47,6 +47,13 @@ function pull(number: number, overrides: Partial<FakePull>): FakePull {
     };
 }
 
+/** The page GitHub returns of a list (per_page at most 100). */
+function onePage<T>(items: T[], params: Record<string, unknown>): T[] {
+    const perPage = Math.min(Number(params.per_page ?? 30), 100);
+    const page = Number(params.page ?? 1);
+    return items.slice((page - 1) * perPage, page * perPage);
+}
+
 class FakeGitHub {
     pulls = new Map<number, FakePull>();
     comments: Array<{ id: number; body: string; user: { login: string } }> = [];
@@ -70,7 +77,7 @@ class FakeGitHub {
                 (!params.base || candidate.base.ref === params.base)
                 && (!params.head || `integry:${candidate.head.ref}` === params.head)
                 && (params.state === 'all' || (params.state ?? 'open') === candidate.state));
-            return { data: Number(params.page ?? 1) > 1 ? [] : structuredClone(listed) };
+            return { data: structuredClone(onePage(listed, params)) };
         }
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') {
             this.writes.push({ route, params });
@@ -84,7 +91,7 @@ class FakeGitHub {
         }
         if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: { state: 'success', total_count: 0, statuses: [] } };
         if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') {
-            return { data: Number(params.page ?? 1) > 1 ? [] : structuredClone(this.comments) };
+            return { data: structuredClone(onePage(this.comments, params)) };
         }
         if (route === 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}') {
             this.writes.push({ route, params });
@@ -372,6 +379,56 @@ test('a queue head stopped on a reported blocker shows ⚠️, not in progress',
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · #802 stopped on a blocker · /);
     assert.match(github.progressComment(), /\nIn progress: #802 \(Third issue\) - stopped on a blocker\n/);
+});
+
+test('a pending queue head stopped on a reported blocker is named in the status, not listed up next', async () => {
+    // #802's processing webhook was lost: it is the active head, still pending, when its run reports a blocker.
+    await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
+    Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
+    await database('epic_execution_queues').update({ cursor: 2, blocked_reason: agentBlockedHeadReason(802) });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · #802 stopped on a blocker · /);
+    assert.match(github.progressComment(), /\nIn progress: #802 \(Third issue\) - stopped on a blocker\n/);
+    assert.doesNotMatch(github.progressComment(), /Up next: [^\n]*#802/, 'the blocked issue has started; it is not up next');
+});
+
+// --- lists longer than the pages read ---
+
+/** Pull requests closed without merging into the epic branch, from #2000 on: they count for nothing but are listed. */
+function addAbandonedSubPrs(count: number): void {
+    for (let number = 2000; number < 2000 + count; number++) {
+        github.pulls.set(number, pull(number, { state: 'closed', head: { sha: `h${number}`, ref: `x-${number}`, repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    }
+}
+
+test('an epic with more pull requests into its branch than the pages read keeps its published status', async () => {
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    const published = { line: statusLine(), title: github.epic().title, comment: github.progressComment() };
+    assert.match(published.line, /⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
+    // 1,001 pull requests into the epic branch; the open #911 is listed last, where the ten pages read would miss it.
+    const writes = github.writes.length;
+    addAbandonedSubPrs(999);
+    const open911 = github.pulls.get(911)!;
+    github.pulls.delete(911);
+    github.pulls.set(911, open911);
+    await assert.rejects(syncPullRequestStatus(REPOSITORY, EPIC, deps()), /lists more than 1000 items/);
+    assert.equal(github.writes.length, writes, 'nothing is written from a part of the list');
+    assert.deepEqual({ line: statusLine(), title: github.epic().title, comment: github.progressComment() }, published);
+    // Exactly ten full pages is the whole list: the epic's status is read.
+    github.pulls.delete(2998);
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
+});
+
+test('the status pass leaves the progress comment alone when the comments run past the pages read', async () => {
+    const before = github.progressComment();
+    for (let id = 100; id < 1099; id++) github.comments.push({ id, body: `note ${id}`, user: { login: 'propr-dev[bot]' } });
+    // The epic's final-merge confirmation is on the eleventh page.
+    github.comments.push({ id: 5000, body: `### ✅ Epic merged\n${EPIC_FINAL_MERGE_MARKER}`, user: { login: 'propr-dev[bot]' } });
+    const facts = { merged: 1, total: 3, progress: PROGRESS_AFTER_910, planName: 'Scheduler primitives', epicBranch: EPIC_BRANCH, upNext: [{ issueNumber: 802, title: 'Third issue' }] };
+    await syncEpicProgressCommentForStatus(github, null, { repository: REPOSITORY, prNumber: EPIC }, facts as never);
+    assert.equal(github.progressComment(), before, 'a confirmation the ten pages did not reach still keeps the comment');
+    assert.equal(github.writes.filter(write => write.route.includes('/issues/comments/')).length, 0);
 });
 
 // --- sub-PRs beyond the status read budget ---

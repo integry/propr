@@ -35,16 +35,28 @@ export interface EpicStatusSources {
     loadChildStatus: (prNumber: number, pull: PullRequestStatusPull) => Promise<PullRequestStatus>;
 }
 
-/** Lists every page of a GitHub list through `request` alone, as the status reads take the caller's credential. */
+/**
+ * Lists every page of a GitHub list through `request` alone, as the status
+ * reads take the caller's credential. A list longer than MAX_LIST_PAGES pages
+ * rejects rather than returning a part of it: the epic's counts and readiness
+ * (and its progress comment) are never established from an incomplete list,
+ * so the published status is kept.
+ */
 export function paginatingGitHub(github: PullRequestStatusGitHub): EpicProgressOctokit {
     return {
         request: async (route, parameters) => await github.request(route, parameters),
         paginate: async (route, parameters) => {
             const items: unknown[] = [];
-            const perPage = Number(parameters.per_page ?? PAGE_SIZE);
-            for (let page = 1; page <= MAX_LIST_PAGES; page++) {
+            // GitHub returns at most PAGE_SIZE items per page, whatever per_page asks for.
+            const perPage = Math.min(Number(parameters.per_page ?? PAGE_SIZE), PAGE_SIZE);
+            for (let page = 1; ; page++) {
                 const { data } = await github.request(route, { ...parameters, page });
                 const list: unknown[] = Array.isArray(data) ? data : [];
+                // One page past the limit tells a list of exactly MAX_LIST_PAGES full pages from a longer one.
+                if (page > MAX_LIST_PAGES) {
+                    if (list.length > 0) throw new Error(`${route} lists more than ${MAX_LIST_PAGES * perPage} items; not reading a part of it`);
+                    break;
+                }
                 items.push(...list);
                 if (list.length < perPage) break;
             }
@@ -126,7 +138,7 @@ function nextIssueQueued(plan: EpicPlan, pending: Set<number>): boolean {
     return headStatus === 'merged' && queue.issues.slice(queue.cursor + 1).some(issue => pending.has(issue));
 }
 
-/** Plan issues not started, in queue order, then in plan order. */
+/** Plan issues not started, in queue order, then in plan order; `excluded` are listed elsewhere or not counted. */
 function upNextIssues(plan: EpicPlan, excluded: Set<number>, titles: Map<number, string>): EpicIssueRef[] {
     const pending = plan.issues.filter(issue => issue.status === 'pending' && !excluded.has(issue.issue_number));
     const order = new Map((plan.queue?.issues ?? []).map((issue, index) => [issue, index]));
@@ -194,17 +206,21 @@ export async function loadEpicStatusFacts(
     const openNumbers = new Set(open.map(child => child.number));
     const mergedNumbers = new Set(children.filter(child => child.merged).map(child => child.number));
     // An issue whose run stopped on a reported blocker stays in progress (epicQueueBlockedHead), but nothing runs for it.
+    // It is named whatever its persisted status: a head whose processing webhook was lost is blocked while still pending.
     const blockedIssue = plan.queue?.status === 'active' ? agentBlockedIssueNumber(plan.queue.blockedReason) : null;
+    const isBlocked = (issue: PlanIssue): boolean => issue.issue_number === blockedIssue && (issue.status === 'pending' || STARTED.has(issue.status));
     const startedIssues: EpicIssueRef[] = issues
-        .filter(issue => STARTED.has(issue.status) && !(issue.pr_number != null && (openNumbers.has(issue.pr_number) || mergedNumbers.has(issue.pr_number))))
+        .filter(issue => (STARTED.has(issue.status) || isBlocked(issue))
+            && !(issue.pr_number != null && (openNumbers.has(issue.pr_number) || mergedNumbers.has(issue.pr_number))))
         .map(issue => {
-            const blocked = issue.issue_number === blockedIssue;
+            const blocked = isBlocked(issue);
             return {
                 issueNumber: issue.issue_number, title: titles.get(issue.issue_number) ?? null,
                 working: RUNNING.has(issue.status) && !blocked, ...(blocked ? { blocked } : {}),
             };
         });
-    const excluded = new Set(plan.issues.filter(issue => !issues.includes(issue)).map(issue => issue.issue_number));
+    // A blocked issue has started (it is listed as stopped on its blocker), so it is not up next.
+    const excluded = new Set(plan.issues.filter(issue => !issues.includes(issue) || isBlocked(issue)).map(issue => issue.issue_number));
     const pending = new Set(issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number));
     const { children: childStatusList, continueChildReads } = await childStatuses(
         sources, { owner, repo, epicKey: pullRequestBodyKey(repository, prNumber) }, open, { plan, titles });
