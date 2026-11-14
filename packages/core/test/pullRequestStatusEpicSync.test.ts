@@ -532,3 +532,27 @@ test('an update leaving sub-PRs unread schedules the update that reads them', as
         setEpicChildReadContinueMsForTests(null);
     }
 });
+
+test('a working epic that left sub-PRs unread schedules the update that reads them into the progress comment', async () => {
+    addListedSubPrs(11);
+    // #911, read first, is working: the epic is 🔨 without the two sub-PRs beyond the read budget.
+    await database('task_history').insert({ task_id: 't-911', state: 'processing' });
+    // #930, listed last and left unread by the first update, is ProPR's and ready to merge.
+    await database('tasks').insert({ task_id: 't-930', repository: REPOSITORY, issue_number: 4930, task_type: 'issue', created_at: '2026-11-13T09:40:00Z', initial_job_data: '{}', pr_number: 930 });
+    await database('task_history').insert({ task_id: 't-930', state: 'completed' });
+    setEpicChildReadContinueMsForTests(20);
+    enablePullRequestStatusSync(deps());
+    try {
+        requestPullRequestStatusSync(REPOSITORY, EPIC);
+        const readyLine = /^In progress: [^\n]*#930 \(PR 930\) - ready to merge/m;
+        const deadline = Date.now() + 8_000;
+        // No further signal: the scheduled continuation alone reads #929 and #930.
+        while (!readyLine.test(github.progressComment()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.ok(github.reads.includes(930), 'the sub-PR left unread is read by the continuation');
+        assert.match(github.progressComment(), readyLine);
+        assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #801 in progress/, 'the epic stays working');
+    } finally {
+        disablePullRequestStatusSync();
+        setEpicChildReadContinueMsForTests(null);
+    }
+});

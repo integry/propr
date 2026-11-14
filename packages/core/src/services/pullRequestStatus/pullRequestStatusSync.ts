@@ -10,7 +10,7 @@ import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus, isUndeterminedPullRequestStatus, type EpicStatusFacts, type PullRequestStatus } from './pullRequestStatus.js';
-import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
+import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, withEpicChildReadContinuation, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
@@ -210,7 +210,7 @@ interface SyncOutcome {
     checksReadFailed: boolean;
     /**
      * Update again after this many milliseconds: the title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle),
-     * or an epic has sub-PRs still to read (epicChildReadContinuation).
+     * or an epic has sub-PRs still to read (withEpicChildReadContinuation).
      */
     titleSettleInMs: number | null;
 }
@@ -294,14 +294,15 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
             repository, prNumber, pull, status: titleStatus, isProprPullRequest: desired.isProprPullRequest, loadSetting: deps.loadTitleStatusSetting, redis: deps.redis,
         });
         // Sub-PRs left unread may be working: the published state stays, with its merged count updated (undeterminedEpicUpdate).
+        // Whatever the state, they are read soon: a working epic has no settle that would read them.
         const { body: next, title } = isUndeterminedPullRequestStatus(status)
-            ? await undeterminedEpicUpdate({ pull, status: status!, epic: desired.epic }, deps.now(), decideTitle)
+            ? await undeterminedEpicUpdate({ pull, status: status! }, deps.now(), decideTitle)
             : { body: bodyWithStatus(current, status, deps.now(), { repository, prNumber }), title: await decideTitle(status) };
         const written = extractPullRequestStatusBlock(next) !== null;
         const bodyChanged = !(next === current || sameRenderedStatus(next, current));
         const read = {
             awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
-            titleSettleInMs: title.settleInMs,
+            titleSettleInMs: withEpicChildReadContinuation(title.settleInMs, desired),
             notes: epicSyncNotes(desired, bodyChanged || title.title !== null),
         };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };

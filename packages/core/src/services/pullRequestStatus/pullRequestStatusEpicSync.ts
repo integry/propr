@@ -174,11 +174,11 @@ function utcTime(now: Date): string {
  * stays, but the merged count, known without them, is brought up to date: in
  * the published block's headline, and in the title slot with the state it
  * already shows (left alone when the title has no slot). The sub-PRs left
- * unread are read by an update scheduled soon (the title decision's
- * settleInMs), not left to the next transition.
+ * unread are read by the continuation the sync adds to every epic update
+ * (withEpicChildReadContinuation).
  */
 export async function undeterminedEpicUpdate(
-    target: { pull: PullRequestStatusPull; status: PullRequestStatus; epic: EpicStatusFacts | null }, now: Date,
+    target: { pull: PullRequestStatusPull; status: PullRequestStatus }, now: Date,
     decideTitle: (status: PullRequestStatus) => Promise<PullRequestTitleDecision>,
 ): Promise<{ body: string; title: PullRequestTitleDecision }> {
     const { pull, status } = target;
@@ -198,9 +198,22 @@ export async function undeterminedEpicUpdate(
     const title = epic && state
         ? await decideTitle({ state, detail: { ...status.detail, reason: null, epic: { merged: epic.merged, total: epic.total, focus: null } } })
         : { title: null, settleInMs: null };
-    const continueInMs = target.epic?.continueChildReads ? epicChildReadContinueMs : null;
-    const settleInMs = title.settleInMs === null ? continueInMs : continueInMs === null ? title.settleInMs : Math.min(title.settleInMs, continueInMs);
-    return { body, title: { title: title.title, settleInMs } };
+    return { body, title };
+}
+
+/**
+ * When an epic update runs again (the title decision's settleInMs): soon,
+ * when it left sub-PRs unread (pullRequestStatusEpicChildReads), whatever
+ * state it computed. A working sub-PR among those read establishes 🔨 without
+ * the rest, and a working title has no settle of its own to bring the rest's
+ * statuses to the progress comment. The earlier of the continuation and the
+ * title's own settle runs first.
+ */
+export function withEpicChildReadContinuation(
+    settleInMs: number | null, desired: { status: PullRequestStatus | null; epic: EpicStatusFacts | null },
+): number | null {
+    if (!desired.status || !desired.epic?.continueChildReads) return settleInMs;
+    return settleInMs === null ? epicChildReadContinueMs : Math.min(settleInMs, epicChildReadContinueMs);
 }
 
 /**
