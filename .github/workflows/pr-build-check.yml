@@ -1053,6 +1053,23 @@ jobs:
 
           fi
 
+          # --- PLUGINS ---
+          # Official plugin manifests (packages/plugins) are validated against
+          # the @propr/shared schema on every pull request, like the automation
+          # template catalog: the check reads TypeScript sources through tsx
+          # and needs no build. `--online` is for local use only.
+          echo -e "\n--- Plugins: Manifest Check ---" >> build_log.txt
+          PLUGINS_FAILED=0
+          PLUGINS_OUTPUT=$(npm run plugins:check 2>&1) || {
+            echo "❌ Plugin manifest check FAILED (run npm run plugins:check)" >> build_log.txt
+            echo "$PLUGINS_OUTPUT" >> build_log.txt
+            PLUGINS_FAILED=1
+            EXIT_CODE=1
+          }
+          if [ $PLUGINS_FAILED -eq 0 ]; then
+            echo "✅ Plugin manifests are valid" >> build_log.txt
+          fi
+
           # --- API REFERENCE ---
           # The OpenAPI spec is generated from the API route registry, published
           # by the docs site and consumed by @propr/client, so a change to any

@@ -1,0 +1,68 @@
+{
+  "manifestVersion": 1,
+  "id": "example-pack",
+  "name": "Example pack",
+  "description": "A small development plugin that exercises every manifest section: one remote MCP server, one pinned package server, one skill and one automation template. Hidden from the catalog unless the development flag is set.",
+  "version": "0.1.0",
+  "category": "other",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/example-pack",
+  "icon": "icon.svg",
+  "permissions": ["events.read", "tasks.read"],
+  "connections": [
+    {
+      "type": "oauth",
+      "name": "example-account",
+      "label": "Example account",
+      "help": "Sign in with the example service account that the remote MCP server should act as.",
+      "helpUrl": "https://example.com/docs/oauth"
+    },
+    {
+      "type": "token",
+      "name": "example-token",
+      "label": "Example API token",
+      "help": "Create a read-only API token in the example service settings and paste it here.",
+      "helpUrl": "https://example.com/docs/tokens"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "greeting": { "type": "string", "label": "Greeting", "help": "Text the local example server prefixes to every echo.", "default": "hello" },
+      "verbosity": { "type": "string", "label": "Verbosity", "enum": ["quiet", "normal", "detailed"], "default": "normal" },
+      "maxItems": { "type": "number", "label": "Maximum items", "minimum": 1, "maximum": 50, "integer": true, "default": 10 },
+      "includeDrafts": { "type": "boolean", "label": "Include draft pull requests", "default": false },
+      "labels": { "type": "array", "items": { "type": "string" }, "label": "Labels to watch", "default": [] },
+      "channels": { "type": "object", "format": "repository-map", "additionalProperties": { "type": "string" }, "label": "Channel per repository", "help": "Maps owner/repo to a channel name." }
+    },
+    "required": ["verbosity"]
+  },
+  "outboundHosts": ["api.example.com"],
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "example-remote",
+        "url": "https://mcp.example.com/mcp",
+        "tools": ["search", "fetch"],
+        "capability": "read",
+        "authentication": "oauth",
+        "connection": "example-account"
+      },
+      {
+        "kind": "package",
+        "name": "example-local",
+        "ecosystem": "npm",
+        "package": "propr-fixture-mcp",
+        "version": "1.0.0",
+        "integrity": "sha512-Y5GxTexuXT5IDhwgPcZokvnPvvRorDMdNHS83U59b5wquM5QTMmIhfeQ1y7AEbvbSmiJgjcJrok2q2mbzPRTvw==",
+        "bin": "propr-fixture-mcp",
+        "env": [{ "name": "FIXTURE_GREETING", "value": "hello" }],
+        "secretEnv": [{ "name": "FIXTURE_TOKEN", "connection": "example-token" }],
+        "tools": ["echo", "secret_length"],
+        "capability": "read"
+      }
+    ],
+    "skills": [{ "name": "example-notes", "path": "skills/example-notes" }],
+    "automationTemplates": [{ "id": "example-weekly-digest", "path": "automation-templates/example-weekly-digest" }]
+  }
+}
