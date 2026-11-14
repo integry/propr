@@ -270,7 +270,9 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
     if (facts.pullRequest.state !== 'open' || facts.pullRequest.merged || !facts.isProprPullRequest) {
         return { state: 'none', detail: base };
     }
-    if (facts.epic && facts.epic.total > 0) return computeEpicStatus(facts, facts.epic);
+    // Every recorded epic, including one whose remaining issues were all closed
+    // without a merge (total 0): its review score is never shown or held against it.
+    if (facts.epic) return computeEpicStatus(facts, facts.epic);
     return computeSinglePullRequestStatus(facts, base);
 }
 
@@ -311,7 +313,9 @@ function issueFocus(issue: EpicIssueRef | undefined): EpicStatusFocus | null {
  * The status of an epic pull request, whose own branch only receives merges:
  * until every issue is merged it follows its sub-PRs and the plan's queue;
  * once they are, it is ready like any pull request, from its own checks and
- * mergeability. An epic shows no review score.
+ * mergeability. An epic shows no review score. An epic with no issue left to
+ * count (every remaining issue closed without a merge) is ready the same way,
+ * and shows no progress count.
  */
 function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts): PullRequestStatus {
     const own: PullRequestStatusFacts = { ...facts, latestReviewScore: null };

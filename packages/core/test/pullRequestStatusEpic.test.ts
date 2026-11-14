@@ -137,6 +137,19 @@ test('a review score below the goal never holds an epic back', () => {
     assert.equal(computePullRequestStatus(facts({ ...epic({ merged: 5, total: 5 }), latestReviewScore: 3 })).state, 'ready');
 });
 
+test('an epic whose remaining issues were all closed without a merge shows no review score and is not held back by it', () => {
+    // Closed issues are excluded from the progress, so the epic has no issue left to count.
+    const status = computePullRequestStatus(facts({ ...epic({ merged: 0, total: 0 }), latestReviewScore: 3 }));
+    assert.equal(status.state, 'ready');
+    assert.equal(status.detail.reason, null);
+    assert.equal(status.detail.reviewScore, null);
+    assert.equal(line(status), '**ProPR** ✅ Ready · checks: 12 passed · updated 09:41 UTC', 'no empty progress count, no score');
+    assert.equal(renderStatusSlot(titleStatusOf(status)), '✅', 'the title slot shows neither a count nor a score');
+    const conflict = computePullRequestStatus(facts({ ...epic({ merged: 0, total: 0 }), latestReviewScore: 3, pullRequest: { state: 'open', merged: false, headSha: 'a', mergeable: false } }));
+    assert.equal(conflict.detail.reason, 'merge_conflict', 'its own facts still decide');
+    assert.equal(line(conflict), '**ProPR** ⚠️ Needs you · conflicts with base · checks: 12 passed · updated 09:41 UTC');
+});
+
 test('the compact block keeps the progress', () => {
     assert.match(renderCompactPullRequestStatusBlock(computePullRequestStatus(epic({ nextIssueQueued: true })), NOW)!, /\*\*ProPR\*\* 🔨 3 of 5 issues merged · updated 09:41 UTC/);
 });
