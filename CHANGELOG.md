@@ -116,6 +116,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Faster pull request checks**: `Validate Changes` runs its lint, typecheck
+  and build gate before the browser smoke test and skips the browser run when
+  the gate fails, so a lint error is reported in minutes instead of after an
+  hour. The browser specs run on four workers on hosted runners (two on
+  rootless workers) instead of one.
 - **Bundled Claude Code 2.1.323, Codex 0.168.0 and Antigravity CLI 1.5.8**:
   the `propr/agent` image moves from Claude Code 2.1.322, Codex 0.167.2 and
   Antigravity CLI 1.5.6.

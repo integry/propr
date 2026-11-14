@@ -125,7 +125,18 @@ describe('assertions the build check must keep', () => {
             'exactly one Chromium install remains, for the browser smoke test');
         // The shared classifier decides this now, and a decision is only ever
         // read as "skip" when it is an explicit false.
-        assert.match(buildCheck, /- name: Install Chromium for PWA Smoke Test\n(\s+#[^\n]*\n)*\s+if: steps\.filter\.outputs\.ui != 'false'\n/);
+        assert.match(buildCheck, /- name: Install Chromium for PWA Smoke Test\n(\s+#[^\n]*\n)*\s+if: steps\.filter\.outputs\.ui != 'false' && steps\.build\.outcome != 'failure'\n/);
+        assert.match(buildCheck, /- name: Run PWA and Mobile Browser Smoke Test\n\s+if: steps\.filter\.outputs\.ui != 'false' && steps\.build\.outcome != 'failure'\n/);
+        // Lint and type errors are reported before the browser run, which is
+        // by far the longest stage of this job.
+        assert.ok(buildCheck.indexOf('- name: Run Checks\n') < buildCheck.indexOf('- name: Install Chromium for PWA Smoke Test\n'),
+            'Run Checks comes before the browser smoke test');
+        // Spec files run one per worker; the count follows the runner's CPUs
+        // and the Playwright config reads it, defaulting to one worker.
+        assert.match(buildCheck, /PROPR_BROWSER_TEST_WORKERS: \$\{\{ runner\.environment == 'github-hosted' && '4' \|\| '2' \}\}\n/);
+        const playwrightConfig = readFileSync(join(REPOSITORY, 'propr-ui', 'playwright.config.ts'), 'utf8');
+        assert.match(playwrightConfig, /fullyParallel: false,\n/);
+        assert.match(playwrightConfig, /workers: Math\.max\(1, Number\.parseInt\(process\.env\.PROPR_BROWSER_TEST_WORKERS \?\? '', 10\) \|\| 1\),\n/);
     });
 
     test('packaging, release metadata and workflow linting still run in the build check', () => {
