@@ -393,3 +393,19 @@ test('an edited event that only changed the status block (text, insertion or rem
     assert.equal(isStatusBlockOnlyEdit({ action: 'edited', changes: { title: { from: 'x' }, body: { from: before } }, pull_request: { body: after } } as never), false);
     assert.equal(isStatusBlockOnlyEdit({ action: 'opened', pull_request: { body: after } }), false);
 });
+
+test('a body repeating the start marker without an end is read in linear time and left as is', () => {
+    const body = `${PR_STATUS_BLOCK_START}\n`.repeat(50_000);
+    const started = performance.now();
+    assert.equal(extractPullRequestStatusBlock(body), null);
+    assert.equal(stripPullRequestStatusBlock(body), body);
+    assert.equal(applyPullRequestStatusBlock(body, null), body);
+    assert.ok(performance.now() - started < 1000, 'no quadratic scan');
+
+    // Only the first start marker opens the block; the first end marker after it closes it.
+    const block = blockFor({});
+    const nested = `${PR_STATUS_BLOCK_START}\nstale\n${block}\r\n\r\nRest`;
+    assert.equal(extractPullRequestStatusBlock(nested), `${PR_STATUS_BLOCK_START}\nstale\n${block}`);
+    assert.equal(stripPullRequestStatusBlock(nested), 'Rest');
+    assert.equal(applyPullRequestStatusBlock(nested, block), `${block}\r\n\r\nRest`);
+});

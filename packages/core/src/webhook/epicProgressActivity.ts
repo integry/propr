@@ -25,7 +25,7 @@ const PARAGRAPH_BREAK_LENGTH = 2;
 
 /** Titles come from people; keep them on one line, from closing the comment's markup, and from splitting an entry. */
 function inlineTitle(title: string | null | undefined): string {
-    const text = (title ?? '').replace(/<!--|-->/g, ' ').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').replace(/;/g, ',').trim();
+    const text = (title ?? '').replace(/<!--|--!?>/g, ' ').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').replace(/;/g, ',').trim();
     return text.length > MAX_ACTIVITY_TITLE_LENGTH ? `${text.slice(0, MAX_ACTIVITY_TITLE_LENGTH - 1).trimEnd()}…` : text;
 }
 

@@ -11,7 +11,7 @@ export const PR_STATUS_BLOCK_END = '<!-- /propr:pr-status -->';
 
 /** Separator between the block and the rest of the body. */
 const SEPARATOR = '\n\n';
-const BLOCK_PATTERN = /<!-- propr:pr-status -->[\s\S]*?<!-- \/propr:pr-status -->(?:\r?\n\r?\n)?/;
+const TRAILING_SEPARATOR_PATTERN = /^\r?\n\r?\n/;
 const TIMESTAMP_PATTERN = / · updated \d{2}:\d{2} UTC/g;
 
 const ACTIVITY_TEXT: Record<PullRequestActivity, string> = {
@@ -202,15 +202,41 @@ export function renderCompactPullRequestStatusBlock(status: PullRequestStatus, n
     return wrapBlock(`**ProPR** ${headline(status)} · updated ${utcTime(now)}`);
 }
 
+interface BlockMatch {
+    index: number;
+    /** The block, markers included. */
+    block: string;
+    /** The separator right after the block, when there is one ("" otherwise). */
+    separator: string;
+}
+
+/**
+ * The first block in a body: its start marker and the first end marker after
+ * it. Found with indexOf rather than a lazy regular expression, which scans
+ * to the end of the body once per start marker when a body (which people can
+ * edit) repeats the start marker without an end.
+ */
+function findBlock(body: string): BlockMatch | null {
+    const index = body.indexOf(PR_STATUS_BLOCK_START);
+    if (index === -1) return null;
+    const end = body.indexOf(PR_STATUS_BLOCK_END, index + PR_STATUS_BLOCK_START.length);
+    if (end === -1) return null;
+    const blockEnd = end + PR_STATUS_BLOCK_END.length;
+    const separator = body.slice(blockEnd, blockEnd + 4).match(TRAILING_SEPARATOR_PATTERN)?.[0] ?? '';
+    return { index, block: body.slice(index, blockEnd), separator };
+}
+
 /** The current block, markers included, without its trailing separator. */
 export function extractPullRequestStatusBlock(body: string | null | undefined): string | null {
-    const match = (body ?? '').match(BLOCK_PATTERN);
-    return match ? match[0].replace(/(?:\r?\n\r?\n)$/, '') : null;
+    return findBlock(body ?? '')?.block ?? null;
 }
 
 /** The body without the status block (and the separator ProPR wrote after it). */
 export function stripPullRequestStatusBlock(body: string | null | undefined): string {
-    return (body ?? '').replace(BLOCK_PATTERN, '');
+    const current = body ?? '';
+    const match = findBlock(current);
+    if (!match) return current;
+    return current.slice(0, match.index) + current.slice(match.index + match.block.length + match.separator.length);
 }
 
 /**
@@ -220,12 +246,12 @@ export function stripPullRequestStatusBlock(body: string | null | undefined): st
  */
 export function applyPullRequestStatusBlock(body: string | null | undefined, block: string | null): string {
     const current = body ?? '';
-    const match = current.match(BLOCK_PATTERN);
-    if (match && match.index !== undefined) {
+    const match = findBlock(current);
+    if (match) {
         const before = current.slice(0, match.index);
-        const after = current.slice(match.index + match[0].length);
+        const after = current.slice(match.index + match.block.length + match.separator.length);
         if (block === null) return before + after;
-        const separator = match[0].match(/(?:\r?\n\r?\n)$/)?.[0] ?? (after ? SEPARATOR : '');
+        const separator = match.separator || (after ? SEPARATOR : '');
         return `${before}${block}${separator}${after}`;
     }
     if (block === null) return current;

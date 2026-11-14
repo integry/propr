@@ -196,6 +196,16 @@ test('the progress comment lists what is in progress and what is next', () => {
     assert.doesNotMatch(idle, /In progress|Up next/, 'empty lines are left out');
 });
 
+test('a title cannot close the progress comment\'s markup, with either comment end', () => {
+    const comment = renderOpenEpicProgressComment({
+        merged: 1, total: 3, children: [],
+        startedIssues: [{ issueNumber: 3480, title: 'a --> b --!> c <!-- d', working: true }],
+        progress: { merged: 1, total: 3, excluded: 0, mergedPullRequests: [3490] },
+        planName: 'Scheduler primitives',
+    })!;
+    assert.match(comment, /In progress: #3480 \(a b c d\)/);
+});
+
 // --- an issue stopped on a reported blocker ---
 
 test('an issue stopped on a reported blocker needs a person, not a hammer', () => {
