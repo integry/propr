@@ -25,11 +25,16 @@ export const MAX_EPIC_CHILD_STATUSES = 10;
 const RETAINED_STATUS_TTL_MS = 10 * 60_000;
 const MAX_RETAINED_EPICS = 500;
 /**
- * Updates scheduled in a row to read the sub-PRs an epic still has unread.
- * Each reads sub-PRs the last left unread, so only sub-PRs changing faster
- * than they are read reach it; their changes signal the epic again anyway.
+ * Updates in a row, each leaving sub-PRs unread, that read no sub-PR not
+ * already read since the last update that left none unread, after which no
+ * further update is scheduled to read them. An update that reads a sub-PR not
+ * read since then makes progress, however many updates came before it: those
+ * are read before the sub-PRs read since (planEpicChildReads, longest unread
+ * first), so a stable epic of any size is read to the end. Only sub-PRs whose
+ * statuses stop holding again (changed, or expired) faster than they are read
+ * stall it; a change signals the epic again anyway.
  */
-export const MAX_EPIC_CHILD_READ_CONTINUATIONS = 20;
+export const MAX_STALLED_EPIC_CHILD_READ_PASSES = 20;
 
 interface RetainedChildStatus {
     status: PullRequestStatus;
@@ -40,14 +45,16 @@ interface RetainedChildStatus {
 
 interface RetainedEpic {
     children: Map<number, RetainedChildStatus>;
-    /** Updates in a row that left a sub-PR unread. */
-    unreadPasses: number;
+    /** Open sub-PRs read since the last update that left none unread. */
+    readSinceComplete: Set<number>;
+    /** Updates in a row that left a sub-PR unread and read only sub-PRs in readSinceComplete. */
+    stalledPasses: number;
 }
 
 const retainedEpics = new Map<string, RetainedEpic>();
 
 function epicOf(epicKey: string): RetainedEpic {
-    const epic = retainedEpics.get(epicKey) ?? { children: new Map(), unreadPasses: 0 };
+    const epic = retainedEpics.get(epicKey) ?? { children: new Map(), readSinceComplete: new Set(), stalledPasses: 0 };
     // Most recently used last, so the oldest epic is the one forgotten.
     retainedEpics.delete(epicKey);
     retainedEpics.set(epicKey, epic);
@@ -77,6 +84,7 @@ export function planEpicChildReads(epicKey: string, children: EpicChildPullReque
     const epic = epicOf(epicKey);
     const open = new Set(children.map(child => child.number));
     for (const number of [...epic.children.keys()]) if (!open.has(number)) epic.children.delete(number);
+    for (const number of [...epic.readSinceComplete]) if (!open.has(number)) epic.readSinceComplete.delete(number);
     const readAt = (child: EpicChildPullRequest) => epic.children.get(child.number)?.readAt ?? -Infinity;
     const stale = children.filter(child => !holds(epic.children.get(child.number), child, now)).sort((a, b) => readAt(a) - readAt(b));
     const held = children.filter(child => holds(epic.children.get(child.number), child, now)).sort((a, b) => readAt(a) - readAt(b));
@@ -93,18 +101,23 @@ export function retainEpicChildStatus(epicKey: string, child: EpicChildPullReque
 }
 
 /**
- * Records how many sub-PRs this update left unread; true when another update
- * should be scheduled to read them (at most MAX_EPIC_CHILD_READ_CONTINUATIONS in a row).
+ * Records the sub-PRs this update read and how many it left unread; true when
+ * another update should be scheduled to read them: while updates read sub-PRs
+ * not read since the last one that left none unread, and then for at most
+ * MAX_STALLED_EPIC_CHILD_READ_PASSES updates in a row that read none.
  */
-export function noteEpicChildReadPass(epicKey: string, unread: number): boolean {
+export function noteEpicChildReadPass(epicKey: string, pass: { read: ReadonlySet<number>; unread: number }): boolean {
     const epic = retainedEpics.get(epicKey);
     if (!epic) return false;
-    if (unread === 0) {
-        epic.unreadPasses = 0;
+    if (pass.unread === 0) {
+        epic.readSinceComplete.clear();
+        epic.stalledPasses = 0;
         return false;
     }
-    epic.unreadPasses++;
-    return epic.unreadPasses <= MAX_EPIC_CHILD_READ_CONTINUATIONS;
+    const before = epic.readSinceComplete.size;
+    for (const number of pass.read) epic.readSinceComplete.add(number);
+    epic.stalledPasses = epic.readSinceComplete.size > before ? 0 : epic.stalledPasses + 1;
+    return epic.stalledPasses <= MAX_STALLED_EPIC_CHILD_READ_PASSES;
 }
 
 /** Test hook: forgets every kept sub-PR status. */

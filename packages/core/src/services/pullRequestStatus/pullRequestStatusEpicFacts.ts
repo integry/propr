@@ -123,13 +123,15 @@ function childTitle(title: string | undefined): string | null {
 }
 
 /**
- * The queue is about to start its next issue: it is active and not paused or
- * held on a blocker, and its head has not started (or has merged and the queue
- * is about to advance to an issue still to start).
+ * The queue is about to start its next issue: it is active, ready (the
+ * dispatcher starts and advances nothing else: startEpicQueueHead,
+ * advanceEpicQueue), and not paused or held on a blocker, and its head has not
+ * started (or has merged and the queue is about to advance to an issue still
+ * to start).
  */
 function nextIssueQueued(plan: EpicPlan, pending: Set<number>): boolean {
     const queue = plan.queue;
-    if (!queue || queue.status !== 'active' || plan.paused || isAgentBlockedReason(queue.blockedReason)) return false;
+    if (!queue || queue.status !== 'active' || !queue.ready || plan.paused || isAgentBlockedReason(queue.blockedReason)) return false;
     if (queue.parallel) return queue.issues.some(issue => pending.has(issue));
     const head = queue.issues[queue.cursor];
     if (head === undefined) return false;
@@ -178,7 +180,7 @@ async function childStatuses(
         retainEpicChildStatus(target.epicKey, child, status, readAt);
         return { prNumber: child.number, issueNumber, title, status };
     }));
-    const continueChildReads = noteEpicChildReadPass(target.epicKey, children.filter(child => child.statusUnread).length);
+    const continueChildReads = noteEpicChildReadPass(target.epicKey, { read: plan.read, unread: children.filter(child => child.statusUnread).length });
     return { children, continueChildReads };
 }
 

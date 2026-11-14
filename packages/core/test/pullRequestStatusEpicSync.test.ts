@@ -392,6 +392,32 @@ test('a pending queue head stopped on a reported blocker is named in the status,
     assert.doesNotMatch(github.progressComment(), /Up next: [^\n]*#802/, 'the blocked issue has started; it is not up next');
 });
 
+test('an active queue that is not ready starts nothing, so the epic is not shown working on its next issue', async () => {
+    await mergeSubPr911();
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /, 'a ready queue is about to start its pending head');
+    // startEpicQueueHead dispatches nothing from an unready queue, and advanceEpicQueue does not advance one.
+    await database('epic_execution_queues').update({ ready: false });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /, 'a pending head');
+    await database('epic_execution_queues').update({ cursor: 1 });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /, 'a merged head with an issue still to start');
+    await database('epic_execution_queues').update({ ready: true });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /, 'once ready, the merged head advances to the pending issue');
+});
+
+test('an active parallel execution that is not ready is not shown working on its pending issues', async () => {
+    await mergeSubPr911();
+    await database('epic_execution_queues').update({ parallel: true, cursor: 0 });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /, 'a ready parallel execution has a pending issue to start');
+    await database('epic_execution_queues').update({ ready: false });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /);
+});
+
 // --- lists longer than the pages read ---
 
 /** Pull requests closed without merging into the epic branch, from #2000 on: they count for nothing but are listed. */
@@ -551,6 +577,30 @@ test('a working epic that left sub-PRs unread schedules the update that reads th
         assert.ok(github.reads.includes(930), 'the sub-PR left unread is read by the continuation');
         assert.match(github.progressComment(), readyLine);
         assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #801 in progress/, 'the epic stays working');
+    } finally {
+        disablePullRequestStatusSync();
+        setEpicChildReadContinueMsForTests(null);
+    }
+});
+
+test('an epic with more stable sub-PRs than twenty-one updates read is read to the end by the scheduled updates', async () => {
+    await database('task_history').insert({ task_id: 't-911', state: 'processing' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 1 of 3 issues merged · #801 in progress/, 'the published state is working');
+    // 211 open sub-PRs, none changing and none working: the first update and twenty continuations read 210 of them.
+    addListedSubPrs(210);
+    await database('task_history').insert({ task_id: 't-911', state: 'completed' });
+    github.reads = [];
+    setEpicChildReadContinueMsForTests(5);
+    enablePullRequestStatusSync(deps());
+    try {
+        requestPullRequestStatusSync(REPOSITORY, EPIC);
+        const established = /⚠️ 1 of 213 issues merged/;
+        const deadline = Date.now() + 30_000;
+        // No further signal: only the scheduled continuations read the sub-PRs.
+        while (!established.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.ok(github.reads.includes(1129), 'the sub-PR listed last is read');
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 213 issues merged · #911 \(issue #801\) waits to be merged/);
     } finally {
         disablePullRequestStatusSync();
         setEpicChildReadContinueMsForTests(null);
