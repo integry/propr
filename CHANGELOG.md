@@ -186,6 +186,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CI runs on Ubuntu 24.04 again**: hosted Linux jobs name `ubuntu-24.04`
+  instead of `ubuntu-latest`, which GitHub moved to Ubuntu 26.04. The desktop
+  RPM build fails under that image's `rpmbuild`, so two desktop tests failed
+  in every full test suite run.
 - **MCP-created plans open in Studio at Review**: `create_plan` called with
   plan items stored the draft as `draft`, so Studio opened it at Define and
   showed no issues until it was published. A draft created or updated with
