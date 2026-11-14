@@ -99,10 +99,18 @@ Every call is checked before it reaches the backend:
   `commentOnIssue` read the number first and refuse a pull request;
   `commentOnPullRequest` refuses an issue (`not_found`, nothing is posted). An
   `issues.comment` grant cannot comment on a pull request, nor the reverse.
+- **Installation.** The permissions and the repository limit are those of the
+  installation the run started with. Every call requires that installation
+  to still be installed, and the default backend checks again right before it
+  sends each GitHub request or adds a task job, after the App client or the
+  queue is ready. A handler that resumes after its plugin was uninstalled, or
+  uninstalled and reinstalled, gets `unavailable`: it creates no issue,
+  comment, label or task. Uninstall does not wait for a GitHub request that
+  passed this check and is already being sent.
 
 A refused call throws `PluginSdkError` with code `permission_denied`,
-`repository_not_allowed`, `invalid_input` or `not_found`. It is logged as a
-`warn` line in the run's log and in the server log. A backend failure reaches
+`repository_not_allowed`, `invalid_input`, `not_found` or `unavailable`. It is
+logged as a `warn` line in the run's log and in the server log. A backend failure reaches
 the handler as `unavailable` without the backend's details, which could name
 other repositories or carry tokens.
 
@@ -151,9 +159,14 @@ URL-encoded and as the full header value) is replaced with `[REDACTED]` in the
 response headers and body before the handler sees them. A JSON body is also
 checked after decoding, so an escape such as `\u0041` or `\"` cannot spell the
 secret back; when a decoded string held it, `text()` and `json()` return the
-body re-serialized with the secret replaced. A response header whose value
-still holds the secret once its JSON escapes are decoded (a JSON-valued header,
-also inside a longer or joined value) is replaced with `[REDACTED]` entirely. A
+body re-serialized with the secret replaced. A string that holds the secret
+only after it is parsed again, such as a JSON document serialized inside a JSON
+string, is replaced with `[REDACTED]` whole. A response header or body whose
+text still holds the secret once its JSON escapes are decoded, once or
+repeatedly, is replaced with `[REDACTED]` entirely. This covers a JSON-valued
+header (also inside a longer or joined value), `\uXXXX` escapes in an HTML
+script, and nested serialized JSON. Text still decoding after 32 rounds counts
+as holding it. A
 careless upstream that echoes the `Authorization` header cannot hand the secret
 back.
 

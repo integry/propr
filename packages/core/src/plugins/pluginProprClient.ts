@@ -44,6 +44,12 @@ export interface ScopedProprOptions {
   backend: PluginProprBackend;
   /** Records the call with the plugin as the actor. A failure to record fails the call. */
   record: (call: PluginProprCallRecord) => Promise<void>;
+  /**
+   * Called before every call reaches the backend, after its own checks:
+   * throws to refuse it (the installation the permissions and repository
+   * limit were read from was removed or replaced).
+   */
+  authorize?: () => Promise<void>;
 }
 
 /** The actor ProPR records for anything a plugin's handler does. */
@@ -101,6 +107,8 @@ export function scopedProprClient(options: ScopedProprOptions): PluginProprClien
       if (!options.grantedPermissions.includes(permission)) throw new PluginSdkError('permission_denied', `${operation} needs the ${permission} permission, which is not granted to this plugin`);
       checked = target();
       if (checked.repository && !allowedRepository(checked.repository)) throw new PluginSdkError('repository_not_allowed', `This plugin is not enabled for ${checked.repository}`);
+      // The checks above use the installation as the run started: it must still be that installation.
+      if (options.authorize) await options.authorize();
       result = await run(checked);
     } catch (error) {
       // A backend failure reaches the handler without its details (they can name other repositories or carry tokens).

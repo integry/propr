@@ -109,6 +109,8 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
 
   // The installation this run belongs to: a credential is read from it only, and a request is sent only while it is still installed.
   const installation: PluginStateWriteGuard = { installedAt: record.installedAt, signal };
+  /** Refuses once this run's installation was uninstalled (or replaced by a reinstall), or the run ended. */
+  const authorizeInstallation = () => deps.database.transaction(trx => requireInstallation(trx, pluginId, installation));
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
     if (connection !== undefined) {
@@ -124,7 +126,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     }
     return createPluginHttp({
       outboundHosts: manifest.outboundHosts, credential, lookup: deps.lookup, transport: deps.transport, signal,
-      authorize: credential ? () => deps.database.transaction(trx => requireInstallation(trx, pluginId, installation)) : undefined,
+      authorize: credential ? authorizeInstallation : undefined,
       onDecision: ({ host, allowed, reason }) => write(allowed ? 'debug' : 'warn', allowed ? `ctx.http request to ${host}` : `ctx.http request to ${host} refused: ${reason}`, { host, ...(connection ? { connection } : {}) }),
     });
   };
@@ -140,9 +142,11 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     pluginId,
     settings: Object.freeze(structuredClone(handlerSettings(manifest, record))),
     repositories: record.repositories ? [...record.repositories] : null,
+    // Its permissions and repository limit are this installation's: every call (and, by default, every GitHub request and queued task) requires it to still be installed.
     propr: liveMethods(scopedProprClient({
       pluginId, grantedPermissions: effectivePluginPermissions(manifest, record), repositories: record.repositories,
-      backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal }), record: recordCall,
+      backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal, authorize: authorizeInstallation }), record: recordCall,
+      authorize: authorizeInstallation,
     })),
     http: connection => live(http(connection)),
     // State is tied to this installation: once it is uninstalled (or replaced by a reinstall) every operation is refused.

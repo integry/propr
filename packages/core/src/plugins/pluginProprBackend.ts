@@ -27,6 +27,12 @@ export interface GitHubPluginBackendOptions {
   issueQueue?: () => Promise<PluginIssueQueue>;
   /** The handler run's signal: once aborted no further GitHub request or queued task starts, and requests in flight are cancelled. */
   signal?: AbortSignal;
+  /**
+   * Called right before every GitHub request is sent and every task job is
+   * added, after the App client or the queue is initialized: throws to refuse
+   * it (the plugin's installation was removed or replaced meanwhile).
+   */
+  authorize?: () => Promise<void>;
 }
 
 type GitHubIssue = {
@@ -53,11 +59,12 @@ async function defaultIssueQueue(): Promise<PluginIssueQueue> {
   const { getIssueQueue } = await import('../queue/taskQueue.js');
   return await getIssueQueue() as unknown as PluginIssueQueue;
 }
-function queueEnqueue(issueQueue: () => Promise<PluginIssueQueue>) {
+function queueEnqueue(issueQueue: () => Promise<PluginIssueQueue>, authorize: () => Promise<void>) {
   return async (data: IssueJobData, jobId: string, signal?: AbortSignal): Promise<void> => {
     const queue = await issueQueue();
-    // The run may have ended while the queue was initialized: no job is added for an ended handler.
+    // The run may have ended, or the plugin been uninstalled, while the queue was initialized: no job is added then.
     if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
+    await authorize();
     await queue.add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
   };
 }
@@ -76,14 +83,23 @@ async function taskState(database: Knex, taskId: string): Promise<string | null>
 export function githubPluginProprBackend(options: GitHubPluginBackendOptions): PluginProprBackend {
   const { database } = options;
   const github = options.github ?? defaultGitHub;
-  const enqueue = options.enqueueIssueTask ?? queueEnqueue(options.issueQueue ?? defaultIssueQueue);
   const { signal } = options;
   const live = () => { if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended'); };
+  /** The run is live and its installation still installed: checked last before anything is dispatched. */
+  const authorized = async () => {
+    live();
+    if (options.authorize) await options.authorize();
+    live();
+  };
+  const custom = options.enqueueIssueTask;
+  const enqueue = custom
+    ? async (data: IssueJobData, jobId: string, runSignal?: AbortSignal) => { await authorized(); await custom(data, jobId, runSignal); }
+    : queueEnqueue(options.issueQueue ?? defaultIssueQueue, authorized);
   const request = async <T>(route: string, parameters: Record<string, unknown>) => {
     live();
     const client = await github();
-    // The run may have ended while the App token was fetched: nothing is sent for an ended handler.
-    live();
+    // The run may have ended, or the plugin been uninstalled, while the App token was fetched: nothing is sent then.
+    await authorized();
     return (await client.request(route, { ...parameters, ...(signal ? { request: { signal } } : {}) })).data as T;
   };
   /**

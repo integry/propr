@@ -4,7 +4,8 @@ import type { PluginHandlerInput, PluginJsonValue } from '@propr/shared';
 import { runPluginHandler } from '../src/plugins/pluginHandlerRunner.js';
 import { createPluginHttp, type PluginHttpTransport, type PluginHttpTransportRequest } from '../src/plugins/pluginHttp.js';
 import { PluginStore } from '../src/plugins/pluginStore.js';
-import { pluginStateStore } from '../src/plugins/pluginStateStore.js';
+import { githubPluginProprBackend } from '../src/plugins/pluginProprBackend.js';
+import { pluginStateStore, requireInstallation } from '../src/plugins/pluginStateStore.js';
 import { ENVIRONMENT, FIXTURE_ID, lookup, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
 
 const invoke = (payload: PluginJsonValue = {}): PluginHandlerInput => ({ kind: 'invoke', payload });
@@ -214,4 +215,128 @@ test('a request resuming after an uninstall never acquires or sends a reinstall\
     assert.equal(f.http.requests.length, 0, `${variant}: nothing reached the transport`);
     assert.equal(JSON.stringify(run).includes(REPLACEMENT), false, variant);
   }
+});
+
+const unicodeEscaped = (value: string) => [...value].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+/** Each round of JSON decoding turns `\u005c` into the backslash of the next escape: `rounds` decodes before the text appears. */
+const deeplyEscaped = (value: string, rounds: number) => [...value].map(c => `\\${'u005c'.repeat(rounds - 1)}u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+/** What a handler can recover from text: every JSON string literal in it, parsed again and again. */
+function recoverable(text: string): string[] {
+  const found: string[] = [];
+  const visit = (value: string, depth: number) => {
+    found.push(value);
+    if (depth > 64) return;
+    for (const literal of value.match(/"(?:[^"\\]|\\.)*"/g) ?? []) {
+      try { visit(JSON.parse(literal) as string, depth + 1); } catch { /* not a JSON string */ }
+    }
+    // A bare escaped run (no quotes left after decoding) parsed as a string of its own.
+    if (value.includes('\\')) { try { const next = JSON.parse(`"${value}"`) as string; if (next !== value) visit(next, depth + 1); } catch { /* not decodable */ } }
+  };
+  visit(text, 0);
+  return found;
+}
+
+test('a response body that spells the credential only after decoding its JSON escapes is withheld', async () => {
+  const fetchWith = (body: (secret: string) => string, headers: (secret: string) => Record<string, string> = () => ({})) => createPluginHttp({
+    outboundHosts: ['api.fixture.example'], credential: async () => ESCAPED_SECRET, lookup,
+    transport: async request => { const secret = (request.headers.authorization ?? '').slice(7); return { status: 200, headers: headers(secret), body: Buffer.from(body(secret)) }; },
+  })('https://api.fixture.example/v1');
+  const leaks = (text: string) => recoverable(text).some(value => value.includes(ESCAPED_SECRET));
+
+  // HTML: the credential \u-escaped inside a script, which the handler extracts and parses.
+  const html = await fetchWith(secret => `<html><script>var auth = "${unicodeEscaped(secret)}";</script></html>`);
+  const htmlText = await html.text();
+  const script = htmlText.match(/var auth = ("(?:[^"\\]|\\.)*");/);
+  assert.equal(script ? (JSON.parse(script[1]) as string).includes(ESCAPED_SECRET) : false, false, htmlText);
+  assert.equal(leaks(htmlText), false, htmlText);
+
+  // JSON holding another JSON document as a string, the credential \u-escaped inside it: that string is withheld, the rest kept.
+  const nested = await fetchWith(secret => JSON.stringify({ keep: 'visible', doc: unicodeEscapedJson({ token: secret }) }));
+  const nestedJson = await nested.json<{ keep: string; doc: string }>();
+  assert.equal(nestedJson.keep, 'visible');
+  assert.equal((() => { try { return JSON.stringify(JSON.parse(nestedJson.doc)).includes(ESCAPED_SECRET); } catch { return false; } })(), false, nestedJson.doc);
+  assert.equal(leaks(await nested.text()), false, await nested.text());
+
+  // Deeper than any fixed round count: in an HTML body and in a header, ten decodes deep, and beyond what is checked.
+  for (const rounds of [10, 40]) {
+    const deep = await fetchWith(secret => `<p>${deeplyEscaped(secret, rounds)}</p>`, secret => ({ 'x-echo': `"${deeplyEscaped(secret, rounds)}"` }));
+    assert.equal(leaks(await deep.text()), false, `body, ${rounds} rounds`);
+    assert.equal(leaks(deep.headers['x-echo']), false, `header, ${rounds} rounds`);
+  }
+  assert.ok(recoverable(`<p>${deeplyEscaped(ESCAPED_SECRET, 10)}</p>`).some(value => value.includes(ESCAPED_SECRET)), 'the probe does recover an unscrubbed deep escape');
+
+  // Escapes that spell nothing secret reach the handler unchanged.
+  const clean = '<script>var note = "\\u0041\\u0042 \\"quoted\\"";</script>';
+  assert.equal(await (await fetchWith(() => clean)).text(), clean);
+  const cleanNested = JSON.stringify({ doc: unicodeEscapedJson({ token: 'not the credential' }) });
+  assert.equal(await (await fetchWith(() => cleanNested)).text(), cleanNested);
+});
+
+test('a handler resuming after its plugin was uninstalled cannot create an issue or a task, nor act for a reinstall', async t => {
+  for (const [operation, args] of [['createIssue', ['owner/allowed', { title: 'late', body: 'after uninstall' }]], ['createTask', ['owner/allowed', 3]], ['commentOnIssue', ['owner/allowed', 3, 'late']]] as const) {
+    for (const reinstall of [false, true]) {
+      const f = await pluginHandlerFixture(t);
+      const held = deferred();
+      const reached = deferred();
+      const backend = { ...f.backend, getIssue: async () => { reached.resolve(); await held.promise; throw new Error('released'); } };
+      const running = runPluginHandler(FIXTURE_ID, 'suspendThenPropr', invoke({ operation, args: args as unknown as PluginJsonValue[] }), { ...f.options, backend });
+      await reached.promise;
+
+      await f.store.setEnabled('1', FIXTURE_ID, false);
+      await f.store.uninstall('1', FIXTURE_ID, FIXTURE_ID);
+      if (reinstall) {
+        const later = new PluginStore(f.database, ENVIRONMENT, async () => [f.manifest], () => Date.now() + 60_000);
+        await later.install('1', FIXTURE_ID);
+        await later.setRepositories('1', FIXTURE_ID, ['owner/allowed']);
+        await later.setEnabled('1', FIXTURE_ID, true);
+      }
+      held.resolve();
+      const run = await running;
+      const label = `${operation}, reinstall: ${reinstall}`;
+      assert.equal(run.outcome, 'succeeded', run.error ?? '');
+      assert.deepEqual(run.result, { ok: false, code: 'unavailable', message: 'The plugin is no longer installed' }, label);
+      assert.deepEqual(f.calls, [], `${label}: nothing reached the backend`);
+      // The held read is recorded too (it failed); the mutation after the uninstall is recorded as refused.
+      const refused = (await f.database('plugin_audit').where({ plugin_id: FIXTURE_ID, action: 'handler_refused' }).orderBy('id').select('detail')).map(row => JSON.parse(row.detail) as { operation: string; reason: string });
+      assert.deepEqual(refused.map(r => [r.operation, r.reason]), [['getIssue', 'unavailable'], [operation, 'unavailable']], label);
+    }
+  }
+});
+
+test('the GitHub backend rechecks the installation after the App client or the queue is ready, before dispatching', async t => {
+  const f = await pluginHandlerFixture(t);
+  const installedAt = Number((await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).first('installed_at')).installed_at);
+  const signal = new AbortController().signal;
+  const authorize = () => f.database.transaction(trx => requireInstallation(trx, FIXTURE_ID, { installedAt, signal }));
+  const sent: string[] = [];
+  const backend = githubPluginProprBackend({
+    database: f.database, signal, authorize,
+    github: async () => ({ request: async (route: string) => { sent.push(route); return { data: { number: 1, html_url: 'u' } }; } }),
+    issueQueue: async () => ({ add: async (_name: string, _data: unknown, options: Record<string, unknown>) => { sent.push(String(options.jobId)); } }),
+  });
+  // A live installation is served.
+  assert.equal((await backend.createIssue('owner/allowed', { title: 't', body: 'b', labels: [] })).number, 1);
+  assert.equal((await backend.createTask('owner/allowed', 3, { requestedBy: 'plugin:x' })).jobId, 'issue-owner-allowed-3');
+  assert.deepEqual(sent, ['POST /repos/{owner}/{repo}/issues', 'issue-owner-allowed-3']);
+  sent.length = 0;
+
+  // Uninstalled while the App token is fetched and while the queue is initialized.
+  const held = { token: deferred(), queue: deferred() };
+  const heldBackend = githubPluginProprBackend({
+    database: f.database, signal, authorize,
+    github: async () => { await held.token.promise; return { request: async (route: string) => { sent.push(route); return { data: {} }; } }; },
+    issueQueue: async () => { await held.queue.promise; return { add: async (_n: string, _d: unknown, options: Record<string, unknown>) => { sent.push(String(options.jobId)); } }; },
+  });
+  const issue = heldBackend.createIssue('owner/allowed', { title: 't', body: 'b', labels: [] });
+  const task = heldBackend.createTask('owner/allowed', 3, { requestedBy: 'plugin:x' });
+  await tick();
+  await f.store.setEnabled('1', FIXTURE_ID, false);
+  await f.store.uninstall('1', FIXTURE_ID, FIXTURE_ID);
+  held.token.resolve(); held.queue.resolve();
+  await assert.rejects(issue, { code: 'unavailable', message: 'The plugin is no longer installed' });
+  await assert.rejects(task, { code: 'unavailable', message: 'The plugin is no longer installed' });
+  // A custom enqueue is refused the same way.
+  const custom = githubPluginProprBackend({ database: f.database, signal, authorize, enqueueIssueTask: async (_data, jobId) => { sent.push(jobId); } });
+  await assert.rejects(custom.createTask('owner/allowed', 3, { requestedBy: 'plugin:x' }), { code: 'unavailable' });
+  assert.deepEqual(sent, [], 'nothing was sent or queued');
 });

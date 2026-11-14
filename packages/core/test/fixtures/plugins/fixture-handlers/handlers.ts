@@ -89,6 +89,12 @@ export async function suspendThenSet(input: PluginHandlerInput, ctx: PluginConte
   }
 }
 
+/** Wait on a ctx.propr read (the test holds it), then make one ctx.propr call: a mutation resuming across an uninstall. */
+export async function suspendThenPropr(input: PluginHandlerInput, ctx: PluginContext) {
+  await ctx.propr.getIssue('owner/allowed', 3).catch(() => undefined);
+  return callPropr(input, ctx);
+}
+
 export async function useState(input: PluginHandlerInput, ctx: PluginContext) {
   const { op, key, value, prefix } = payload(input) as { op: 'get' | 'set' | 'delete' | 'keys'; key: string; value?: PluginJsonValue; prefix?: string };
   try {

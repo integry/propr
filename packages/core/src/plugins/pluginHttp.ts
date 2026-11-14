@@ -57,10 +57,42 @@ function credentialSpellings(secret: string): string[] {
 }
 const scrub = (text: string, spellings: readonly string[]) => spellings.reduce((value, spelling) => value.split(spelling).join('[REDACTED]'), text);
 
-/** Scrub every decoded string (keys included) of a parsed JSON value; `changed` when one held a credential. */
+const JSON_ESCAPE = /\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g;
+const SHORT_ESCAPES: Record<string, string> = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+const jsonUnescapeOnce = (value: string) => value.replace(JSON_ESCAPE, (_, escape: string) => escape.length === 5 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : SHORT_ESCAPES[escape] ?? escape);
+/** Rounds of JSON unescaping checked; each nesting level (a JSON document inside a JSON string) takes one. */
+const UNESCAPE_ROUNDS = 32;
+
+/**
+ * Whether `text` (already scrubbed of literal spellings) holds a credential
+ * once its JSON escapes are decoded, once or repeatedly: `\uXXXX` escapes in
+ * HTML or a header, or a serialized JSON document inside a JSON string. Text
+ * still decoding after the last round could hide one deeper, so counts too.
+ */
+function revealsCredential(text: string, spellings: readonly string[]): boolean {
+  let decoded = text;
+  for (let round = 0; round < UNESCAPE_ROUNDS; round++) {
+    const next = jsonUnescapeOnce(decoded);
+    if (next === decoded) return false;
+    if (spellings.some(spelling => next.includes(spelling))) return true;
+    decoded = next;
+  }
+  return true;
+}
+
+/**
+ * Scrub every decoded string (keys included) of a parsed JSON value; `changed`
+ * when one held a credential. A string that holds one only once decoded again
+ * (serialized JSON inside the string) is withheld whole.
+ */
 function scrubJson(value: unknown, spellings: readonly string[]): { value: unknown; changed: boolean } {
   let changed = false;
-  const clean = (text: string) => { const scrubbed = scrub(text, spellings); if (scrubbed !== text) changed = true; return scrubbed; };
+  const clean = (text: string) => {
+    const literal = scrub(text, spellings);
+    const scrubbed = revealsCredential(literal, spellings) ? '[REDACTED]' : literal;
+    if (scrubbed !== text) changed = true;
+    return scrubbed;
+  };
   const walk = (item: unknown): unknown => {
     if (typeof item === 'string') return clean(item);
     if (Array.isArray(item)) return item.map(walk);
@@ -75,24 +107,28 @@ function scrubJson(value: unknown, spellings: readonly string[]): { value: unkno
  * The response text with every credential spelling replaced. A JSON body is
  * also checked after decoding (an escaped credential such as `a\"b` decodes
  * to the credential) and re-serialized scrubbed when a decoded string held one.
+ * Any body (HTML, text or JSON) that still holds the credential once its JSON
+ * escapes are decoded is withheld entirely: a handler could recover it by
+ * parsing the escaped part itself.
  */
 function scrubbedBody(raw: string, spellings: readonly string[]): string {
   const text = scrub(raw, spellings);
   if (!spellings.length) return text;
+  let body = text;
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { return text; }
-  try {
-    const result = scrubJson(parsed, spellings);
-    return result.changed ? JSON.stringify(result.value) : text;
-  } catch {
-    // Too deeply nested to check: refuse rather than return what could decode to the credential.
-    throw new PluginSdkError('http_failed', 'The response could not be checked for credentials');
+  let json = true;
+  try { parsed = JSON.parse(text); } catch { json = false; }
+  if (json) {
+    try {
+      const result = scrubJson(parsed, spellings);
+      if (result.changed) body = JSON.stringify(result.value);
+    } catch {
+      // Too deeply nested to check: refuse rather than return what could decode to the credential.
+      throw new PluginSdkError('http_failed', 'The response could not be checked for credentials');
+    }
   }
+  return revealsCredential(body, spellings) ? '[REDACTED]' : body;
 }
-
-const JSON_ESCAPE = /\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g;
-const SHORT_ESCAPES: Record<string, string> = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
-const jsonUnescapeOnce = (value: string) => value.replace(JSON_ESCAPE, (_, escape: string) => escape.length === 5 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : SHORT_ESCAPES[escape] ?? escape);
 
 /**
  * A response header with every credential spelling replaced. A value that
@@ -103,14 +139,7 @@ const jsonUnescapeOnce = (value: string) => value.replace(JSON_ESCAPE, (_, escap
 function scrubbedHeader(raw: string, spellings: readonly string[]): string {
   const text = scrub(raw, spellings);
   if (!spellings.length) return text;
-  let decoded = text;
-  for (let round = 0; round < 8; round++) {
-    const next = jsonUnescapeOnce(decoded);
-    if (next === decoded) break;
-    if (scrub(next, spellings) !== next) return '[REDACTED]';
-    decoded = next;
-  }
-  return text;
+  return revealsCredential(text, spellings) ? '[REDACTED]' : text;
 }
 
 /** The error a request gets once the handler run has ended. */
