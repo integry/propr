@@ -1,3 +1,4 @@
+import * as admissionNesting from '../packages/core/src/agents/agentRunNesting.js';
 import assert from 'node:assert/strict';
 import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { after, beforeEach, mock, test } from 'node:test';
@@ -94,6 +95,7 @@ await mock.module('../src/jobs/runCostCap.js', { namedExports: {
     pullRequestRunCostCapTarget: () => ({}),
 } });
 await mock.module('@propr/core', { namedExports: {
+    ...admissionNesting,
     ...pushSalvageExports,
     preventWithdrawnJob: async () => null,
     inspectTaskContainerLivenessForTask: async () => ({ liveness: 'not_found', container: null }),

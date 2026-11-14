@@ -75,3 +75,37 @@ test('task history explains a repository capacity wait with its count and next r
   }
 });
 
+
+test('task history explains an agent capacity wait with the alias, its count and next retry', async ({ page }) => {
+  await fixture(page, { width: 1440, height: 1000 });
+  await page.routeWebSocket('**/socket.io/**', socket => socket.close());
+  await page.route('**/api/task/agent-waiting/**', route => {
+    const endpoint = new URL(route.request().url()).pathname.split('/').at(-1);
+    const responses: Record<string, unknown> = {
+      history: {
+        history: [
+          { state: 'pending', timestamp: '2026-09-30T12:00:00Z' },
+          // One row per wait, updated in place on every later deferral.
+          { state: 'pending', timestamp: '2026-09-30T12:00:02Z', reason: 'Waiting for agent capacity: local-llama (limit 1)',
+            metadata: { agentCapacityDeferrals: 4, agentCapacityRetryAt: '2026-09-30T12:01:20Z', agentCapacityAliases: ['local-llama'] } },
+        ],
+        taskInfo: { title: 'Summarise the nightly test failures', type: 'issue', number: 44, issueNumber: 44, repoOwner: 'example', repoName: 'workspace', modelName: 'llama-3.3-70b' },
+        usageMetricRecords: [],
+      },
+      'live-details': { events: [], todos: [], currentTask: null },
+      'file-changes': { taskId: 'agent-waiting', lastUpdated: '2026-09-30T12:00:02Z', files: [] },
+      analysis: { analysis: null },
+    };
+    return route.fulfill({ json: responses[endpoint!] ?? {} });
+  });
+  await page.goto('/tasks/agent-waiting');
+  await expect(page.getByText('Waiting for Agent Capacity')).toBeVisible();
+  const deferral = page.getByTestId('agent-capacity-deferral');
+  await expect(deferral).toContainText('Start deferred 4 times for local-llama');
+  await expect(deferral).toContainText('next retry');
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    const bounds = await page.getByTestId('task-details').boundingBox();
+    await page.screenshot({ path: '../.propr/previews/agent-capacity-wait.png', animations: 'disabled', clip: { ...bounds!, height: Math.min(bounds!.height, 430) } });
+  }
+});

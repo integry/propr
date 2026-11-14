@@ -58,6 +58,8 @@ await mock.module('../packages/core/src/claude/docker/dockerNetworkPolicy.js', {
 } });
 await mock.module('../packages/core/src/agents/agentRunAdmission.js', { namedExports: {
     prepareAdmittedAgent: async () => { dockerAdmissions++; throw new Error('Unexpected Docker admission'); },
+    agentAdmissionKeys: (instance: string) => [`${instance}:holders`, `${instance}:config`, `${instance}:waiting`],
+    resolveAgentRunAdmission: () => null,
 } });
 
 const claudeNative = await import('../packages/core/src/agents/impl/claudeNativeGoal.js');

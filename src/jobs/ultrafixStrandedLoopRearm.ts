@@ -224,6 +224,8 @@ function buildRearmParams({ prId, ctx, snapshot }: RearmAttempt, workEpoch: numb
             reviewModel: state.reviewModel || undefined,
             // The deferred record that carried them is gone; the loop state keeps them.
             instructions: state.instructions ?? '',
+            sourceCommentId: state.sourceCommentId,
+            sourceCommentType: state.sourceCommentType,
             workEpoch,
         },
         redisClient: ctx.redisClient,

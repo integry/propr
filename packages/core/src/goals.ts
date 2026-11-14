@@ -1,5 +1,7 @@
 import type { VisualPreviewSettings } from './config/configManager.js';
 import { buildVisualPreviewPrompt } from './services/visualPreviewService.js';
+import { resolveAgentRunAdmission } from './agents/agentRunAdmission.js';
+import { AGENT_ADMISSION_PARENT_ENV, AGENT_ADMISSION_PARENT_KEY_ENV, goalParentSigningKey } from './agents/agentRunNesting.js';
 import {
     DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES,
     GOAL_LAUNCH_STRATEGIES,
@@ -106,6 +108,9 @@ const launchInstructions: Record<GoalLaunchStrategy, string> = {
         'Launch strategy — Agent orchestrates through ProPR:',
         'Drive delivery by deciding the decomposition and hierarchy yourself, creating GitHub issues, and starting and monitoring their implementation through ProPR.',
         'For a large delivery, organize the work into an epic PR and, when useful, sub-epic and issue PRs. You—not a ProPR planner—own every planning and hierarchy decision.',
+        `Before triggering a child, bind it to this goal using ${AGENT_ADMISSION_PARENT_ENV} and the private ${AGENT_ADMISSION_PARENT_KEY_ENV} environment variable. Never publish the key. If the key is absent, admission is disabled and no marker is needed. Otherwise first create an issue without ProPR trigger labels, or a PR comment containing only <!-- propr-parent-execution-pending --> (no command). Get its issue number or comment ID, then edit its body to add the signed marker below before applying trigger labels or replacing the placeholder with /review, /fix or /ultrafix.`,
+        'Sign the lowercase identity owner/repo/issues/NUMBER for an issue, or owner/repo/pull/NUMBER/comments/COMMENT_ID for a PR command. For a review-thread comment use review-comments instead of comments. Each new comment needs its own signature. Use this command with the identity as its argument:',
+        `node -e 'const c=require("node:crypto"); const s=c.createHmac("sha256",process.env.${AGENT_ADMISSION_PARENT_KEY_ENV}).update(process.argv[1]).digest("hex"); console.log("<!-- propr-parent-execution: "+process.env.${AGENT_ADMISSION_PARENT_ENV}+":"+s+" -->")' owner/repo/issues/NUMBER`,
     ].join('\n'),
 };
 
@@ -178,9 +183,22 @@ export function goalAttemptLabel(generation: number, claimId: string): string {
     return `${generation}:${claimId}`;
 }
 
-export function buildGoalPolicyEnvironment(launchStrategy?: GoalLaunchStrategy): Record<string, string> {
+/**
+ * `parentNonce` is set for an orchestrating goal: the tasks it starts name it
+ * in their issue body, so admission charges them under the goal session.
+ */
+export function buildGoalPolicyEnvironment(launchStrategy?: GoalLaunchStrategy, parentNonce?: string): Record<string, string> {
+    let signingKey: string | undefined;
+    if (parentNonce) {
+        try { signingKey = goalParentSigningKey(parentNonce); }
+        catch (error) {
+            // An installation without admission has no capacity obligation to share.
+            if (resolveAgentRunAdmission()) throw error;
+        }
+    }
     return {
         PROPR_EXECUTION_MODE: 'goal',
         ...(launchStrategy ? { PROPR_GOAL_LAUNCH_STRATEGY: launchStrategy } : {}),
+        ...(parentNonce ? { [AGENT_ADMISSION_PARENT_ENV]: parentNonce, ...(signingKey ? { [AGENT_ADMISSION_PARENT_KEY_ENV]: signingKey } : {}) } : {}),
     };
 }

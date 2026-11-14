@@ -102,6 +102,27 @@ describe('repository workflow capacity waits', () => {
   });
 });
 
+describe('agent capacity waits', () => {
+  const retryAt = '2026-10-01T00:52:30.000Z';
+  const waiting = [
+    { state: 'pending', timestamp: at(1) },
+    { state: 'pending', timestamp: at(5), reason: "Waiting for agent capacity: 'local-llama' (limit 1)", metadata: { agentCapacityDeferrals: 3, agentCapacityRetryAt: retryAt, agentCapacityAliases: ['local-llama'] } },
+  ];
+
+  it('shows one waiting row with the alias, the count and the next retry', () => {
+    render(<TaskStatusTable history={waiting} />);
+    expect(screen.getByText('Waiting for Agent Capacity')).toBeInTheDocument();
+    const time = new Date(retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    expect(screen.getByTestId('agent-capacity-deferral')).toHaveTextContent(`Start deferred 3 times for local-llama · next retry ${time}`);
+    expect(screen.queryByTestId('repository-workflow-deferral')).not.toBeInTheDocument();
+  });
+
+  it('drops the stale retry time once the task starts', () => {
+    render(<TaskStatusTable history={[...waiting, { state: 'processing', timestamp: at(40) }]} />);
+    expect(screen.getByTestId('agent-capacity-deferral')).toHaveTextContent(/^Start deferred 3 times for local-llama$/);
+  });
+});
+
 describe('task terminal reasons', () => {
   it.each([
     ['cancelled_issue_closed', 'Cancelled because the issue was closed.'],

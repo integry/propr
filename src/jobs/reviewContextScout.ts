@@ -130,6 +130,10 @@ async function routeScoutCandidate(options: PrepareRelatedReviewContextOptions, 
         requestedAgentAlias: candidate.assignment.agentAlias,
         requestedModel: candidate.assignment.model,
         physicalAgentEligibility: supportsRuntimeEnforcedRepositoryInspection,
+        // The scout is optional context: a candidate whose direct agent is at its
+        // per-agent ceiling is skipped (next candidate, then deterministic context)
+        // instead of holding the review job while it waits.
+        deferOnCapacity: true,
     });
     try {
         const selection = await routingSession.select();

@@ -43,7 +43,7 @@ import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
 import { recoverFollowupHandoffsAndClosedHolds } from './jobs/closedPullRequestHandoffs.js';
 import { cancelClosedPullRequestValidation } from './jobs/closedPullRequestCiCancellation.js';
-import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob, startAgentImageWatchdog } from './workerAgentPreparation.js';
+import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob, refreshAgentRegistryForConfigUpdate, startAgentImageWatchdog } from './workerAgentPreparation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -159,33 +159,6 @@ Examples:
 `);
 }
 
-async function refreshAgentRegistryForConfigUpdate(subtype: string): Promise<void> {
-    logger.info({ subtype }, 'Refreshing AgentRegistry due to agent configuration update...');
-    try {
-        const registry = AgentRegistry.getInstance();
-        if (subtype === 'agents_update') {
-            await registry.prepareImagesAndRefresh();
-        } else {
-            await registry.refresh();
-        }
-        const imageStatus = registry.getOperationalStatus().unifiedAgentImage;
-        if (imageStatus.status !== 'ready') {
-            throw new Error(imageStatus.error || `Agent image ${imageStatus.imageTag || 'unknown'} is unavailable`);
-        }
-        const agents = registry.getAllAgents();
-        logger.info({
-            agentCount: agents.length,
-            agents: agents.map(agent => ({
-                alias: agent.config.alias,
-                type: agent.config.type,
-                enabled: agent.config.enabled,
-            })),
-        }, 'AgentRegistry refreshed successfully');
-    } catch (error) {
-        logger.error({ error: (error as Error).message }, 'Failed to refresh AgentRegistry');
-    }
-}
-
 export interface StartedWorker {
     worker: MainWorker;
     runtimeBuildWorker: Worker<AgentRuntimeBuildJobData>;
@@ -204,6 +177,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     // No jobs may be claimed against a partially migrated schema.
     // Then copy extension profiles into the extension library once (never blocks startup).
     await runMigrations().then(async () => (await import('./extensionLibraryStartup.js')).migrateExtensionLibrary());
+    // A malformed or mismatched per-agent admission policy must not leave an agent uncapped.
+    await (await import('@propr/core')).validateAgentRunAdmissionPolicy();
 
     try {
         if (process.env.CONFIG_REPO) {

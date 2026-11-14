@@ -70,7 +70,8 @@ await mock.module('bullmq', {
         Worker: function Worker() {
             return { on: mock.fn(), close: mock.fn() };
         },
-        Job: class {}
+        Job: class {},
+        DelayedError: class DelayedError extends Error {},
     }
 });
 
@@ -426,6 +427,22 @@ await mock.module('../src/jobs/networkEgress.js', {
     },
 });
 
+// The real capacity check is covered by agentCapacityDeferral.test.ts; here only the job's path.
+let mockCapacityRefusal: Error | null = null;
+const mockCapacityChecks: unknown[] = [];
+await mock.module('../src/jobs/mergeConflictCapacity.js', {
+    namedExports: {
+        checkMergeConflictAgentCapacity: async (job: { data: Record<string, unknown> }, options: unknown) => {
+            mockCapacityChecks.push(options);
+            if (mockCapacityRefusal) {
+                job.data = { ...job.data, agentCapacityDeferrals: 1, agentCapacityRetryAt: Date.now() + 10_000 };
+                throw mockCapacityRefusal;
+            }
+            return undefined;
+        },
+    },
+});
+
 // Import the module under test
 const { processMergeConflictJob } = await import('../src/jobs/processMergeConflictJob.js');
 
@@ -492,6 +509,23 @@ describe('processMergeConflictJob', () => {
         mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
         mockStateManager.getTaskState.mock.mockImplementation(async () => null);
         mockOctokit.request.mock.mockImplementation(async (route: string) => defaultOctokitRequest(route));
+    });
+
+    test('a saturated default agent defers before the starting comment and releases the PR lock', async () => {
+        const { DelayedError } = await import('bullmq');
+        const job = createMockJob() as unknown as { data: Record<string, unknown>; token?: string; moveToDelayed: (until: number) => Promise<void> };
+        let delayedUntil = 0;
+        job.token = 'lock-token';
+        job.moveToDelayed = async (until: number) => { delayedUntil = until; };
+        mockCapacityRefusal = Object.assign(new Error('Waiting for agent capacity'), { name: 'AgentCapacityError', aliases: ['claude'] });
+        try {
+            await assert.rejects(processMergeConflictJob(job as never), DelayedError);
+        } finally { mockCapacityRefusal = null; }
+        assert.equal(delayedUntil, job.data.agentCapacityRetryAt, 'delayed until the persisted retry time');
+        assert.equal(mockAgent.executeTask.mock.callCount(), 0);
+        assert.ok(!mockOctokit.request.mock.calls.some((c: { arguments: [string] }) => c.arguments[0] === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments'), 'no starting comment');
+        assert.equal(mockRedisStore.get('lock:pr:test-owner:test-repo:42'), undefined, 'the PR lock is not held while waiting');
+        assert.equal(mockCapacityChecks.length > 0, true);
     });
 
     for (const state of ['completed', 'failed', 'cancelled']) {

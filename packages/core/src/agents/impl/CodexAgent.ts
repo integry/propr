@@ -7,6 +7,7 @@ import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisRes
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
 import { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from '../../codex/codexHelpers.js';
 import {
     assertReasoningLevelCliVersionSupported,
@@ -92,7 +93,7 @@ export class CodexAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
-                async () => executeDockerCommand('docker', dockerArgs, { extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
@@ -124,6 +125,8 @@ export class CodexAgent implements Agent {
 
             return response;
         } catch (error) {
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (isAgentCapacityError(error)) throw error;
             const executionTime = Date.now() - startTime;
             if (error instanceof UsageLimitError) {
                 // No caller receives a result for a thrown usage limit: record its one row here.
@@ -273,7 +276,7 @@ export class CodexAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
-                async () => executeDockerCommand('docker', dockerArgs, { diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId,
                     model: effectiveModel === 'unknown' ? undefined : effectiveModel
                 }),

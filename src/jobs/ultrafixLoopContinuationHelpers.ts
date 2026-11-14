@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { UltrafixOutcome } from '@propr/shared';
 import {
     generateCorrelationId,
+    parentScopeFromIssueBody,
     getIssueQueue,
     getPendingPrCommentsKey,
     withUltrafixLabelTransition,
@@ -154,6 +155,16 @@ function isDuplicateJobError(err: unknown): boolean {
     return error?.name === 'JobAlreadyExistsError' || /already exists/i.test(error?.message ?? '');
 }
 
+/** Validate the durable original command, including for recovered synthetic steps. */
+function ultrafixAdmissionParent(params: UltrafixContinuationParams): string | undefined {
+    const { owner, repo, pullRequestNumber, ultrafixMeta } = params;
+    if (!ultrafixMeta?.sourceCommentId) return undefined;
+    return parentScopeFromIssueBody(ultrafixMeta.instructions, {
+        repoOwner: owner, repoName: repo, number: pullRequestNumber,
+        commentId: ultrafixMeta.sourceCommentId, commentType: ultrafixMeta.sourceCommentType,
+    });
+}
+
 /**
  * Enqueue the next Ultrafix step. `stepNumber` is the ordinal of the step
  * being enqueued for its action (completed count + 1).
@@ -201,6 +212,7 @@ export async function enqueueNextStep(
         await issueQueue.add('processPullRequestComment', {
             ...(params.userId ? { userId: params.userId } : {}),
             pullRequestNumber,
+            agentAdmissionParent: ultrafixAdmissionParent(params),
             repoOwner: owner,
             repoName: repo,
             correlationId: nextCorrelationId,

@@ -330,6 +330,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
+    // Stored-configuration check fields and states returned by get_agent_run_admission.
+    'admitting', 'mismatch', 'missing',
     // Verdicts, gates, statuses and reason codes returned by get_pull_request_readiness.
     'verdict', 'ready', 'waiting', 'blocked', 'closed', 'gate', 'gates', 'detail', 'pass', 'fail', 'not_applicable', 'checks', 'score',
     'open', 'not_draft', 'mergeable', 'human_review', 'ai_review', 'active_work', 'policy',

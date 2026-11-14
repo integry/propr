@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PyPI packages are not supported yet. New route
   `POST /api/instance/extensions/v1/packages/resolve`.
 
+- **Per-agent ceilings: jobs wait off the worker**: with
+  `PROPR_AGENT_RUN_ALIAS_LIMITS` set, issue runs, PR follow-ups and reviews,
+  goal attempts, automation report and action runs, merge-conflict resolution
+  and task import check their direct agent's ceiling as soon as the agent is
+  known. A job on a saturated agent is delayed in the queue (no retry
+  consumed, no provider failure, no replacement or fallback), keeps one
+  **Waiting for Agent Capacity** row on its timeline, and is woken oldest
+  first when that agent frees up, including when the capacity was held by the
+  API process. Synthetic agents skip a saturated member for another member of
+  the same priority tier and remember the chosen member across the wait.
+  Without a per-agent policy nothing changes.
 - **Gemini 4 Hydrogen (Antigravity)**: Google's fast Gemini 4 model, released
   2026-11-12, is in the Antigravity catalog as `antigravity-gemini-4-hydrogen`
   (label `llm-antigravity-hydrogen`, alias `hydrogen`, 1M context). It is the
