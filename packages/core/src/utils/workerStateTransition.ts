@@ -12,6 +12,8 @@ import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
 import { redactSecrets } from './secretRedaction.js';
 import { runCostCapTerminalReason } from '../budget/runCostGuardContext.js';
+import { isBookkeepingCancellation } from './workerStateManager.types.js';
+import { appendTaskJournalEvent } from '../services/taskJournalEvents.js';
 
 const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
@@ -25,6 +27,8 @@ export interface TaskStateTransition {
     state: TaskStateData;
     previousState: TaskState;
     reason: string;
+    /** The previous state was a queue handoff, not a real cancellation. */
+    previousWasBookkeeping?: boolean;
 }
 
 export function taskStateExpectation(task: TaskStateData): TaskStateExpectation {
@@ -103,7 +107,7 @@ export function buildTaskStateTransition(
             metadata: { ...metadata.historyMetadata, ...(next.terminalReason ? { terminalReason: next.terminalReason } : {}) },
         });
     });
-    return { state, previousState, reason };
+    return { state, previousState, reason, previousWasBookkeeping: isBookkeepingCancellation(current) };
 }
 
 export async function compareAndSetTaskStateData(
@@ -149,6 +153,11 @@ export async function compareAndSetTaskState(
         state: transition.state,
     });
     return updated ? transition : null;
+}
+
+/** Journal a newly created task state as `queued`. Never throws: a failed append leaves the task untouched. */
+export async function journalTaskStateCreation(state: TaskStateData): Promise<void> {
+    await appendTaskJournalEvent({ state, previousState: null });
 }
 
 const TERMINAL_STATES = new Set<string>(['completed', 'failed', 'cancelled']);
@@ -223,6 +232,9 @@ export async function publishTaskStateTransition(
             version: state.version,
         }, 'Failed to persist task state update to database');
     }
+
+    // Never throws; a failed append leaves the task's own outcome unchanged.
+    await appendTaskJournalEvent(transition, metadata);
 
     try {
         publication.eventPublished = await getEventPublisher().publishTaskUpdate({

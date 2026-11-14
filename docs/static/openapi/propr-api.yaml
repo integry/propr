@@ -7846,7 +7846,7 @@ paths:
     get:
       operationId: listRepositoryEvents
       summary: List repository change events after a cursor
-      description: "Reads the durable change-event journal of one repository (pull request, epic queue and plan issue changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned."
+      description: "Reads the durable change-event journal of one repository (pull request, epic queue, plan issue and task changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned."
       tags:
         - Repositories
       security:
@@ -7878,13 +7878,13 @@ paths:
         - name: domains
           in: query
           required: false
-          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`."
           schema:
             type: string
         - name: types
           in: query
           required: false
-          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`."
           schema:
             type: string
         - name: pullRequest
@@ -7976,13 +7976,13 @@ paths:
         - name: domains
           in: query
           required: false
-          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`."
           schema:
             type: string
         - name: types
           in: query
           required: false
-          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`."
           schema:
             type: string
         - name: pullRequest
@@ -13968,9 +13968,10 @@ components:
             - pull_request
             - epic_queue
             - plan_issue
+            - task
         type:
           type: string
-          description: Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`.
+          description: Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced`, `status_changed` or `queued`.
         repository:
           type: string
         pullRequest:
@@ -13981,7 +13982,7 @@ components:
           type: string
         entityId:
           type: string
-          description: PR number, epic execution id or plan issue id, as text.
+          description: PR number, epic execution id, plan issue id or task id, as text.
         head:
           description: Head SHA the event was recorded for, when it concerns one.
           type: string
@@ -13990,7 +13991,7 @@ components:
           propertyNames:
             type: string
           additionalProperties: {}
-          description: Identifiers and small scalars only; never PR bodies, comments, diffs or logs.
+          description: Identifiers and small scalars only; never PR bodies, comments, diffs, prompts, tool output or logs.
         occurredAt:
           type: string
           format: date-time

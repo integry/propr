@@ -200,6 +200,21 @@ test('list_repository_events, wait_repository_events and the REST routes share o
     assert.equal((await rest('waitEvents', { repository, timeoutSeconds: '0' })).body!.code, 'REPOSITORY_NOT_ACCESSIBLE');
     denied = false;
 
+    assert.match(tool('list_repository_events').description, /task \(queued, started, completed, failed, cancelled/);
+
+    // Task events read through the same tool and REST route, filtered by the task domain.
+    const beforeTasks = (await call('list_repository_events', { repository })).data.cursor;
+    await append({ domain: 'task', type: 'queued', entityId: 'pr-comments-7-1', prNumber: 7, payload: { taskId: 'pr-comments-7-1', kind: 'follow-up' } });
+    await append({ domain: 'task', type: 'cancelled', entityId: 'pr-comments-7-1', prNumber: 7, payload: { taskId: 'pr-comments-7-1', kind: 'follow-up', status: 'cancelled' } });
+    const tasks = await call('list_repository_events', { repository, afterCursor: beforeTasks, domains: ['task'] });
+    assert.deepEqual(tasks.data.events.map((event: Json) => [event.domain, event.type, event.entityId, event.pullRequest]),
+      [['task', 'queued', 'pr-comments-7-1', 7], ['task', 'cancelled', 'pr-comments-7-1', 7]]);
+    assert.equal(tasks.data.events[1].payload.status, 'cancelled');
+    const restTasks = await rest('listEvents', { repository, afterCursor: beforeTasks, domains: 'task' });
+    assert.equal(restTasks.status, 200);
+    RepositoryEventList.parse(restTasks.body);
+    assert.deepEqual(restTasks.body!.events.map((event: Json) => event.type), ['queued', 'cancelled']);
+
     // Expired cursors answer 410, distinct from an empty result.
     await db('repository_event_floors').insert({ repository, floor_seq: 3, pruned_at: new Date().toISOString() });
     const expired = await rest('listEvents', { repository, afterCursor: cursorFor(repository, 0) });

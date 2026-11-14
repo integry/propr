@@ -1278,18 +1278,18 @@ export interface PullRequestReadiness {
 export interface RepositoryEvent {
   /** Resumes immediately after this event. */
   cursor: string;
-  domain: "pull_request" | "epic_queue" | "plan_issue";
-  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`. */
+  domain: "pull_request" | "epic_queue" | "plan_issue" | "task";
+  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced`, `status_changed` or `queued`. */
   type: string;
   repository: string;
   pullRequest?: number;
   issueNumber?: number;
   planId?: string;
-  /** PR number, epic execution id or plan issue id, as text. */
+  /** PR number, epic execution id, plan issue id or task id, as text. */
   entityId: string;
   /** Head SHA the event was recorded for, when it concerns one. */
   head?: string;
-  /** Identifiers and small scalars only; never PR bodies, comments, diffs or logs. */
+  /** Identifiers and small scalars only; never PR bodies, comments, diffs, prompts, tool output or logs. */
   payload: {
     [key: string]: unknown;
   };
@@ -1666,9 +1666,9 @@ export interface RepositoryEventsQuery {
   afterCursor?: string;
   /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
   fromStart?: "true" | "false";
-  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`. */
   domains?: string;
-  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`. */
   types?: string;
   /** Only events of this pull request number. */
   pullRequest?: number;
@@ -1709,9 +1709,9 @@ export interface RepositoryEventsWaitQuery {
   afterCursor?: string;
   /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
   fromStart?: "true" | "false";
-  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`. */
   domains?: string;
-  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`. */
   types?: string;
   /** Only events of this pull request number. */
   pullRequest?: number;

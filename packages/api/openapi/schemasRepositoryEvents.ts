@@ -33,14 +33,14 @@ export const RepositoryEventsWaitQuery = querySet('RepositoryEventsWaitQuery', z
 export const RepositoryEvent = component('RepositoryEvent', z.object({
   cursor: z.string().describe('Resumes immediately after this event.'),
   domain: z.enum(REPOSITORY_EVENT_DOMAINS),
-  type: z.string().describe('Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`.'),
+  type: z.string().describe('Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced`, `status_changed` or `queued`.'),
   repository: z.string(),
   pullRequest: z.number().int().optional(),
   issueNumber: z.number().int().optional(),
   planId: z.string().optional(),
-  entityId: z.string().describe('PR number, epic execution id or plan issue id, as text.'),
+  entityId: z.string().describe('PR number, epic execution id, plan issue id or task id, as text.'),
   head: z.string().optional().describe('Head SHA the event was recorded for, when it concerns one.'),
-  payload: z.record(z.string(), z.unknown()).describe('Identifiers and small scalars only; never PR bodies, comments, diffs or logs.'),
+  payload: z.record(z.string(), z.unknown()).describe('Identifiers and small scalars only; never PR bodies, comments, diffs, prompts, tool output or logs.'),
   occurredAt: z.string().meta({ format: 'date-time' }),
 }), 'One durable repository change event.');
 
