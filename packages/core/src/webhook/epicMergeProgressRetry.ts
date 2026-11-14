@@ -128,10 +128,11 @@ const STATUS_LEASE_POLL_MS = 150;
 /**
  * Runs `work` under the same per-epic lease as {@link runEpicProgressUpdate},
  * for a writer that keeps no retry obligation (the status sync): it waits
- * briefly for the lease and gives up when the merge progress update keeps
- * it, since that update signals a status sync once it is done. `work` must
- * call `lease.assertOwned()` before its write. A merge progress update that
- * finds the lease held meanwhile defers to its retry sweep, as for any busy lease.
+ * briefly for the lease and gives up when another writer keeps it, returning
+ * `{ acquired: false }` so the caller can schedule its work afresh (the
+ * holder may be another status pass, which signals nothing once done). `work`
+ * must call `lease.assertOwned()` before its write. A merge progress update
+ * that finds the lease held meanwhile defers to its retry sweep, as for any busy lease.
  */
 export async function withEpicProgressLeaseIfFree<T>(
     target: { owner: string; repo: string; epicBranch: string },

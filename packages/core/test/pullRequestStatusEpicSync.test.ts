@@ -12,15 +12,15 @@ const { requestPullRequestStatusSync } = await import('../src/services/pullReque
 const { resetEpicChildReadsForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicChildReads.js');
 const { resetPullRequestTitleStateForTests, setPullRequestTitleSettleMsForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusTitle.js');
 const { setPullRequestStatusEpicSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
-const { createEpicSyncRunner, setEpicChildReadContinueMsForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicSync.js');
+const { createEpicSyncRunner, setEpicChildReadContinueMsForTests, setEpicProgressLeaseWaitMsForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicSync.js');
 const { signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { EPIC_PROGRESS_MARKER, buildEpicProgressComment, extractEpicProgressActivityLines } = await import('../src/webhook/epicMergeProgress.js');
 const { isEpicPullRequestTitle } = await import('../src/webhook/planIssueTracking.js');
 const { syncEpicProgressCommentForStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicSync.js');
 const { EPIC_PROGRESS_SCRIPTS, runEpicProgressUpdate, withEpicProgressLeaseIfFree } = await import('../src/webhook/epicMergeProgressRetry.js');
 const {
-    EPIC_ACTIVITY_ADVANCE_SCRIPT, EPIC_ACTIVITY_CLAIM_SCRIPT, EPIC_ACTIVITY_SUPERSEDED_SCRIPT, claimEpicActivitySnapshot, orderEpicActivityRead,
-    UNORDERED_EPIC_ACTIVITY_SNAPSHOT,
+    EPIC_ACTIVITY_ADVANCE_SCRIPT, EPIC_ACTIVITY_CLAIM_SCRIPT, EPIC_ACTIVITY_SUPERSEDED_SCRIPT, advanceEpicActivityFence, claimEpicActivitySnapshot,
+    orderEpicActivityRead, UNORDERED_EPIC_ACTIVITY_SNAPSHOT,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicActivityFence.js');
 const { syncEpicSideOfStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusEpicSync.js');
 const { PullRequestBodyLockLostError } = await import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
@@ -499,6 +499,73 @@ test('a status pass whose read is the newest writes its activity after an older 
     redis.keys.delete(`propr:pr-status:epic-activity-seq:${REPOSITORY}#${EPIC}`);
     assert.deepEqual(await claimEpicActivitySnapshot(redis, REPOSITORY, EPIC), { sequence: 1 });
     assert.equal(redis.keys.has(`propr:pr-status:epic-activity-fence:${REPOSITORY}#${EPIC}`), false, 'an expired sequence takes the fence with it');
+});
+
+/** Runs `run` with the epic signal runner recording the branches it is asked to refresh. */
+async function recordingEpicSignals(run: () => Promise<void>): Promise<string[]> {
+    const signalled: string[] = [];
+    setPullRequestStatusEpicSyncRunner({ forBranch: (_repository, branch) => { signalled.push(branch); }, forPlan: () => undefined });
+    try {
+        await run();
+    } finally {
+        setPullRequestStatusEpicSyncRunner(null);
+    }
+    return signalled;
+}
+
+test('a newer status pass that gives up on a lease an older status pass holds asks for a fresh epic update, which publishes its activity', async () => {
+    const redis = new FakeLeaseRedis();
+    const target = { repository: REPOSITORY, prNumber: EPIC };
+    // Pass A read the child working, pass B read it ready afterwards; A took the lease first and is still on its GitHub reads.
+    const olderRead = await claimEpicActivitySnapshot(redis, REPOSITORY, EPIC);
+    const newerRead = await claimEpicActivitySnapshot(redis, REPOSITORY, EPIC);
+    redis.keys.set(LOCK_KEY, 'status-writer-A');
+    const before = github.progressComment();
+    setEpicProgressLeaseWaitMsForTests(400);
+    let signalled: string[];
+    try {
+        signalled = await recordingEpicSignals(async () =>
+            await syncEpicProgressCommentForStatus(github as never, redis, { ...target, snapshot: newerRead }, READY_EPIC_FACTS as never));
+    } finally {
+        setEpicProgressLeaseWaitMsForTests(null);
+    }
+    assert.ok(redis.locked.length > 1 && redis.locked.every(key => key === LOCK_KEY), 'B polled the lease until its wait ran out');
+    assert.equal(redis.keys.get(LOCK_KEY), 'status-writer-A', 'A still holds the lease');
+    assert.equal(github.progressComment(), before, 'B wrote nothing without the lease');
+    assert.deepEqual(signalled, [EPIC_BRANCH], 'B asked for a fresh epic update instead of leaving its activity to A');
+    // A finishes: it writes the older activity it read, fences its own sequence, and releases the lease; it signals nothing.
+    github.comments[0].body = buildEpicProgressComment(PROGRESS_AFTER_910, 'Scheduler primitives', undefined, ['In progress: #801 (Second issue)', 'Up next: #802 (Third issue)']);
+    await advanceEpicActivityFence(redis, REPOSITORY, EPIC, olderRead);
+    redis.keys.delete(LOCK_KEY);
+    assert.match(github.progressComment(), WORKING_LINES, 'the comment is stale: it shows A\'s older activity');
+    // The fresh update B asked for reads the epic again (the child is ready) and publishes the latest activity.
+    const refreshRead = await claimEpicActivitySnapshot(redis, REPOSITORY, EPIC);
+    assert.deepEqual(refreshRead, { sequence: 3 });
+    await syncEpicProgressCommentForStatus(github as never, redis, { ...target, snapshot: refreshRead }, READY_EPIC_FACTS as never);
+    assert.match(github.progressComment(), READY_LINES, 'the scheduled refresh converged the comment to the latest activity');
+    assert.equal(redis.leaseKeys().length, 0);
+});
+
+test('a status pass that gives up on a held lease asks for nothing when a later pass already wrote newer activity', async () => {
+    const redis = new FakeLeaseRedis();
+    const target = { repository: REPOSITORY, prNumber: EPIC };
+    const olderRead = await claimEpicActivitySnapshot(redis, REPOSITORY, EPIC);
+    const newerRead = await claimEpicActivitySnapshot(redis, REPOSITORY, EPIC);
+    // The newer pass published already and fenced its sequence; the older pass finds the lease held by yet another writer.
+    await advanceEpicActivityFence(redis, REPOSITORY, EPIC, newerRead);
+    redis.keys.set(LOCK_KEY, 'merge-writer');
+    const before = github.progressComment();
+    setEpicProgressLeaseWaitMsForTests(200);
+    let signalled: string[];
+    try {
+        signalled = await recordingEpicSignals(async () =>
+            await syncEpicProgressCommentForStatus(github as never, redis, { ...target, snapshot: olderRead }, OPEN_EPIC_FACTS));
+    } finally {
+        setEpicProgressLeaseWaitMsForTests(null);
+    }
+    assert.equal(github.progressComment(), before);
+    assert.deepEqual(signalled, [], 'its activity is superseded: the comment is already current, so no update is scheduled');
+    redis.keys.delete(LOCK_KEY);
 });
 
 test('a facts read whose body lock lapsed before it was ordered writes nothing and asks for a fresh epic update', async () => {

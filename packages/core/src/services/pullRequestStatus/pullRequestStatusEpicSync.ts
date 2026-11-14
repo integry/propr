@@ -57,8 +57,10 @@ export type EpicProgressLeaseRedis = Pick<Redis, 'set' | 'eval'>;
  * serialized with the merge progress update on the epic's progress lease, and
  * the epic and its comment are read again under it (syncOpenEpicProgressComment),
  * so a merge, or a finalized comment, written while this pass read its facts
- * is never overwritten. A lease the merge progress update keeps is left to it:
- * it signals a status sync once it is done.
+ * is never overwritten. A lease another writer keeps past the wait is left to
+ * it, and a fresh epic update is asked for instead: the holder may be an
+ * older status pass, which writes the activity it read and signals nothing,
+ * so this pass's newer activity would otherwise be lost until the next event.
  *
  * The lease orders the writes, not the facts they came from: a pass that
  * waited for it may hold facts older than those a later pass already wrote.
@@ -74,10 +76,11 @@ export async function syncEpicProgressCommentForStatus(
     target: { repository: string; prNumber: number; snapshot?: EpicActivitySnapshot }, epic: EpicStatusFacts,
 ): Promise<void> {
     if (!epic.progress || !epic.epicBranch) return;
+    const epicBranch = epic.epicBranch;
     const snapshot = target.snapshot ?? UNFENCED_EPIC_ACTIVITY_SNAPSHOT;
     if (snapshot.sequence === null && snapshot.reason === 'unordered') {
         logger.debug(target, 'The epic activity read lost the body lock before it was ordered; a fresh epic update refreshes the comment');
-        requestEpicPullRequestStatusSync(target.repository, epic.epicBranch);
+        requestEpicPullRequestStatusSync(target.repository, epicBranch);
         return;
     }
     const activity = renderEpicProgressActivity(epicProgressActivity(epic));
@@ -90,14 +93,41 @@ export async function syncEpicProgressCommentForStatus(
     };
     try {
         const outcome = redis
-            ? await withEpicProgressLeaseIfFree({ owner, repo, epicBranch: epic.epicBranch }, redis, async lease => await write(lease.assertOwned))
+            ? await withEpicProgressLeaseIfFree({ owner, repo, epicBranch }, redis, async lease => await write(lease.assertOwned), { waitMs: epicProgressLeaseWaitMs })
             : { acquired: true as const, value: await write(async () => undefined) };
-        if (!outcome.acquired) logger.debug(target, 'The epic progress update holds the epic; it signals the status sync that refreshes the comment');
+        if (!outcome.acquired) await refreshAfterLeaseContention(redis, target, snapshot, epicBranch);
         else if (outcome.value === 'superseded') logger.debug(target, 'A later epic update already wrote newer activity to the progress comment; this read is dropped');
         else if (outcome.value === 'updated') logger.debug(target, 'Updated the epic progress comment');
     } catch (error) {
         logger.warn({ ...target, error: (error as Error).message }, 'Failed to update the epic progress comment; the next epic update writes it');
     }
+}
+
+/**
+ * The holder of the lease this pass gave up on may be a merge progress update,
+ * which signals a status sync once done, or another status pass, which does
+ * not: a status pass writes the activity it read and ends. The activity of
+ * this pass is therefore not left to the holder; a fresh epic update reads
+ * and writes it, unless a later pass already wrote newer activity (the fence
+ * is past this pass's sequence), in which case the comment is current.
+ */
+async function refreshAfterLeaseContention(
+    redis: EpicProgressLeaseRedis | null, target: { repository: string; prNumber: number }, snapshot: EpicActivitySnapshot, epicBranch: string,
+): Promise<void> {
+    if (await isEpicActivitySnapshotSuperseded(redis, target.repository, target.prNumber, snapshot)) {
+        logger.debug(target, 'Another writer holds the epic progress lease and a later epic update already wrote newer activity; this read is dropped');
+        return;
+    }
+    logger.debug(target, 'Another writer holds the epic progress lease; a fresh epic update refreshes the comment');
+    requestEpicPullRequestStatusSync(target.repository, epicBranch);
+}
+
+/** How long the status pass waits for the epic progress lease (withEpicProgressLeaseIfFree's default). */
+let epicProgressLeaseWaitMs: number | undefined;
+
+/** Test hook: shortens the wait for the epic progress lease; null restores the default. */
+export function setEpicProgressLeaseWaitMsForTests(ms: number | null): void {
+    epicProgressLeaseWaitMs = ms ?? undefined;
 }
 
 const LOOKUP_DEBOUNCE_MS = 1_000;
