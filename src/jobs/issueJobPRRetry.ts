@@ -1,7 +1,7 @@
 import type { Logger } from 'pino';
 import type { IssueJobData, RepoValidationResult, WorktreeInfo } from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
-import { initialPullRequestTitle } from '../github/pullRequestBodyWriter.js';
+import { initialPullRequestStatusBlock, initialPullRequestTitle, withPullRequestStatusBlock } from '../github/pullRequestBodyWriter.js';
 
 export interface RetryPRCreationOptions {
     worktreeInfo: WorktreeInfo;
@@ -30,14 +30,17 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
     let createdPrNumber: number | null = null;
     try {
         const octokit = await getAuthenticatedOctokit();
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+        // Same as normal issue creation: the PR opens with its status block already first.
+        const statusBlock = await initialPullRequestStatusBlock(repository);
 
         const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
-            title: await initialPullRequestTitle(`${issueRef.repoOwner}/${issueRef.repoName}`, `Fix issue #${issueRef.number}`),
+            title: await initialPullRequestTitle(repository, `Fix issue #${issueRef.number}`),
             head: worktreeInfo.branchName,
             base: targetBaseBranch,
-            body: `Resolves #${issueRef.number}\n\n_PR created via retry mechanism_`
+            body: withPullRequestStatusBlock(`Resolves #${issueRef.number}\n\n_PR created via retry mechanism_`, statusBlock)
         });
 
         const prNumber = prResponse.data.number;
@@ -45,7 +48,6 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
         correlatedLogger.info({ issueNumber: issueRef.number, prNumber }, 'PR creation retry successful');
 
         // Link PR to plan issue
-        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
         await linkPRToPlanIssue(repository, issueRef.number, prNumber);
         correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber }, 'Linked PR to plan issue (retry creation)');
         return { number: prNumber };
