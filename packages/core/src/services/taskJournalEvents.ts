@@ -27,7 +27,7 @@ import {
 import logger from '../utils/logger.js';
 import { db as defaultDb } from '../db/connection.js';
 import { appendRepositoryEvent, type RepositoryEventInput } from './repositoryEventJournal.js';
-import { isBookkeepingCancellation, type TaskState, type TaskStateData, type UpdateMetadata } from '../utils/workerStateManager.types.js';
+import { isBookkeepingCancellation, type HistoryEntry, type TaskState, type TaskStateData, type UpdateMetadata } from '../utils/workerStateManager.types.js';
 
 const RUNNING_STATES = new Set<TaskState>(['processing', 'claude_execution', 'post_processing']);
 const TERMINAL_STATES = new Set<TaskState>(['completed', 'failed', 'cancelled']);
@@ -94,14 +94,29 @@ export function taskEventType(transition: TaskJournalTransition): TaskEventType 
     return startsRun ? 'started' : null;
 }
 
-/** Milliseconds from the latest start of a run to the state's last update. */
+/** A history entry recording a queue handoff (`requeued` / `rescheduled`), judged like the live state is. */
+function isBookkeepingEntry(entry: HistoryEntry): boolean {
+    const terminalReason = entry.metadata?.terminalReason;
+    return isBookkeepingCancellation({
+        state: entry.state,
+        terminalReason: typeof terminalReason === 'string' ? terminalReason as TaskStateData['terminalReason'] : undefined,
+        history: [entry],
+    });
+}
+
+/**
+ * Milliseconds from the latest start of a run to the state's last update. A
+ * run continues through running states and through queue handoffs, matching
+ * `taskEventType`, which appends no `started` when a handoff resumes; a
+ * resumption after a real terminal state (a retry) starts a new run.
+ */
 function runDurationMs(state: TaskStateData): number | null {
     const history = state.history ?? [];
     for (let index = history.length - 1; index >= 0; index--) {
         const entry = history[index];
         if (!RUNNING_STATES.has(entry.state)) continue;
         const before = history[index - 1];
-        if (before && RUNNING_STATES.has(before.state)) continue;
+        if (before && (RUNNING_STATES.has(before.state) || isBookkeepingEntry(before))) continue;
         const elapsed = Date.parse(state.updatedAt) - Date.parse(entry.timestamp);
         return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null;
     }

@@ -144,14 +144,47 @@ test('a free-text error category is not journaled as a failure category', async 
   assert.equal((await taskEvents())[2].payload.failureCategory, 'unknown');
 });
 
-test('a queue handoff is not journaled as a cancellation, and resuming it is not a new start', async () => {
-  await runToProcessing('pr-comment-3-1', issueRef({ number: 3, type: 'pr-comment' }));
-  await manager.updateTaskState('pr-comment-3-1', TaskStates.CANCELLED, {
-    reason: 'PR comment job requeued', historyMetadata: { jobResultStatus: 'requeued' },
-  });
-  await manager.updateTaskState('pr-comment-3-1', TaskStates.PROCESSING, { reason: 'Resumed' });
-  await manager.updateTaskState('pr-comment-3-1', TaskStates.COMPLETED, { reason: 'done' });
+/** Run `steps` with `Date` frozen at each given minute past midnight in turn. */
+async function atMinutes(steps: Array<[number, () => Promise<unknown>]>): Promise<void> {
+  const midnight = Date.parse('2026-11-14T00:00:00.000Z');
+  mock.timers.enable({ apis: ['Date'], now: midnight });
+  try {
+    for (const [minute, step] of steps) { mock.timers.setTime(midnight + minute * 60_000); await step(); }
+  } finally { mock.timers.reset(); }
+}
+
+test('a queue handoff is not journaled as a cancellation, resuming it is not a new start, and its duration spans the handoff', async () => {
+  const taskId = 'pr-comment-3-1';
+  await atMinutes([
+    [0, () => runToProcessing(taskId, issueRef({ number: 3, type: 'pr-comment' }))],
+    [5, () => manager.updateTaskState(taskId, TaskStates.CANCELLED, {
+      reason: 'PR comment job requeued', historyMetadata: { jobResultStatus: 'requeued' },
+    })],
+    [10, () => manager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Resumed' })],
+    [11, () => manager.updateTaskState(taskId, TaskStates.COMPLETED, { reason: 'done' })],
+  ]);
   assert.deepEqual(await types(), ['queued', 'started', 'completed']);
+  assert.equal((await taskEvents())[2].payload.durationMs, 11 * 60_000, 'the run is measured from its journaled start');
+});
+
+test('repeated queue handoffs keep the original start; a retry after a real failure measures the new run', async () => {
+  const taskId = 'pr-comment-4-1';
+  await atMinutes([
+    [0, () => runToProcessing(taskId, issueRef({ number: 4, type: 'pr-comment' }))],
+    [2, () => manager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task job rescheduled: rate limit' })],
+    [3, () => manager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Resumed' })],
+    [4, () => manager.updateTaskState(taskId, TaskStates.CANCELLED, {
+      reason: 'PR comment job requeued', historyMetadata: { jobResultStatus: 'requeued' },
+    })],
+    [6, () => manager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, { reason: 'Resumed' })],
+    [7, () => manager.markTaskFailed(taskId, new Error('boom'), { errorCategory: 'worker' })],
+    [20, () => manager.updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true, reason: 'Retrying' })],
+    [23, () => manager.updateTaskState(taskId, TaskStates.COMPLETED, { reason: 'done' })],
+  ]);
+  const events = await taskEvents();
+  assert.deepEqual(events.map(event => event.type), ['queued', 'started', 'failed', 'started', 'completed']);
+  assert.equal(events[2].payload.durationMs, 7 * 60_000, 'both handoffs belong to the first run');
+  assert.equal(events[4].payload.durationMs, 3 * 60_000, 'the retry is a new run');
 });
 
 test('task types outside the documented kinds, and tasks without a repository, append nothing', async () => {

@@ -116,7 +116,7 @@ Terminal events (`completed`, `failed`, `cancelled`) add:
 | --- | --- |
 | `status` | The terminal state, the same as the event type. |
 | `terminalReason` | The coded terminal reason, for example `timed_out`, `stalled`, `blocked`, `cancelled_by_user`, `cancelled_pr_closed`; `null` when none was recorded. |
-| `durationMs` | Milliseconds from the latest start to the terminal state; `null` when the task never started. |
+| `durationMs` | Milliseconds from the run's `started` event to the terminal state, across any queue handoffs in between; `null` when the task never started. |
 | `pullRequest` | `opened` (the task opened a pull request, including a continuation pull request), `updated` (it pushed a commit to an existing one) or `null`. |
 | `failureCategory` | On `failed` only: the coded terminal reason, else the recorded error category (for example `claude_execution`, `git_operation`, `worker`), else `unknown`. Free-text categories are reported as `unknown`. `null` on other events. |
 
