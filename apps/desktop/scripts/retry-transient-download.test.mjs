@@ -163,6 +163,7 @@ describe('transient download retries', () => {
       `HTTPError: Response code 500 (Internal Server Error) for ${shasumsUrl}`,
       `✖ Packaging for x64 on linux [FAILED: Response code 500 (Internal Server Error) for ${shasumsUrl}]`,
       'npm error code ETIMEDOUT\nnpm error syscall read\nnpm error errno -60\nnpm error network read ETIMEDOUT',
+      'npm error gyp ERR! stack ConnectTimeoutError: Connect Timeout Error (attempted address: nodejs.org:443, timeout: 10000ms)',
     ]) assert.ok(isTransientDownloadFailure(output), `expected transient: ${output}`);
 
     for (const output of [
@@ -177,6 +178,29 @@ describe('transient download retries', () => {
       'npm error `npm ci` can only install packages when your package.json and package-lock.json are in sync.',
       'Packaged darwin desktop icon failed native metadata verification',
     ]) assert.ok(!isTransientDownloadFailure(output), `expected permanent: ${output}`);
+  });
+
+  test('retries a locked install whose native rebuild timed out connecting for Node headers', async () => {
+    const headersTimeout = [
+      'npm error code 1',
+      'npm error path /Users/runner/work/propr/propr/node_modules/better-sqlite3',
+      'npm error command failed',
+      'npm error command sh -c node-gyp rebuild',
+      'npm error gyp http GET https://nodejs.org/download/release/v22.23.2/node-v22.23.2-headers.tar.gz',
+      'npm error gyp WARN install got an error, rolling back install',
+      'npm error gyp ERR! configure error ',
+      'npm error gyp ERR! stack ConnectTimeoutError: Connect Timeout Error (attempted address: nodejs.org:443, timeout: 10000ms)',
+      'npm error gyp ERR! not ok',
+      '',
+    ].join('\n');
+    const install = { command: 'npm', arguments: ['ci'] };
+    const result = await run([
+      { exitCode: 1, stderr: headersTimeout },
+      { exitCode: 0, stdout: 'added 1841 packages' },
+    ], install);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.invocations.length, 2);
+    assert.deepEqual(result.delays, [DEFAULT_BACKOFF_MS]);
   });
 
   test('retries a locked install interrupted by a registry read timeout, but not a lockfile defect', async () => {

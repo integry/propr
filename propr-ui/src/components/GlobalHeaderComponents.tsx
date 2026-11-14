@@ -4,7 +4,7 @@ import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, Check
 import { HeaderStats } from '../hooks/useHeaderStats';
 import type { HeaderStatsResourceStatus } from '../hooks/useHeaderStats';
 import { DraftListItem } from '../api/plannerApi';
-import { getStatusBadgeStyle } from './headerUtils';
+import { cleanHeaderTaskTitle, getStatusBadgeStyle } from './headerUtils';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { ProviderLogo } from './ui/ProviderLogo';
 import HeaderResourceStatus from './HeaderResourceStatus';
@@ -154,7 +154,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
   if (!isOpen) return null;
   const getIssueId = (group: TaskGroup): string => { if (group.prNumber) return `#${group.prNumber}`; if (group.issueNumber) return `#${group.issueNumber}`; return ''; };
   const isFollowUp = (group: TaskGroup): boolean => !!group.prNumber;
-  const cleanTaskTitle = (title?: string): string => { if (!title) return ''; return title.replace(/^Followup:\s*/i, '').replace(/^\[.*?\]\s*/g, '').trim(); };
+  const cleanTaskTitle = cleanHeaderTaskTitle;
 
   return (
     <div className="desktop-toolbar-popover absolute left-0 top-full z-50 w-[600px] overflow-hidden border border-t-0 border-slate-200 bg-white shadow-xl ring-1 ring-black/5">

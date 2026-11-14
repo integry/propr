@@ -195,6 +195,22 @@ export function toggleRepositoryAutoAssignReview(repos: ManagedRepo[], repoId: s
     : repo);
 }
 
+/** The PR title status is repository-wide and on by default: off when any branch entry turns it off, as the server resolves it. */
+export function resolveRepositoryPrTitleStatus(repos: readonly ManagedRepo[], repositoryKey: string): boolean {
+  return !repos.some(repo => getRepositoryConfigKey(repo.name) === repositoryKey && repo.prTitleStatus === false);
+}
+
+/** Flip the resolved repository-wide value so every branch entry converges on one state. */
+export function toggleRepositoryPrTitleStatus(repos: ManagedRepo[], repoId: string): ManagedRepo[] {
+  const targetRepo = repos.find(repo => repo.id === repoId);
+  if (!targetRepo) return repos;
+  const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+  const prTitleStatus = !resolveRepositoryPrTitleStatus(repos, repositoryKey);
+  return repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+    ? { ...repo, prTitleStatus }
+    : repo);
+}
+
 /** Flip the resolved repository-wide value so every branch entry converges on one state. */
 export function toggleRepositoryCancelCiDuringFollowup(repos: ManagedRepo[], repoId: string): ManagedRepo[] {
   const targetRepo = repos.find(repo => repo.id === repoId);
@@ -243,6 +259,7 @@ export function buildRepositoriesForDisplay(repos: ManagedRepo[]): ManagedRepo[]
       autoAssignPullRequests: autoAssign.enabled,
       autoAssignDefaultAssignee: autoAssign.defaultAssignee,
       autoAssignRequestReview: autoAssign.requestReview,
+      prTitleStatus: resolveRepositoryPrTitleStatus(repos, getRepositoryConfigKey(repo.name)),
       autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true,
       cancelCiDuringFollowup: cancelCiByRepository.get(getRepositoryConfigKey(repo.name)) === true,
       cancelCiDuringFollowupWorkflows: cancelCiWorkflowsByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],

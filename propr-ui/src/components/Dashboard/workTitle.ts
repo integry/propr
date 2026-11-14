@@ -9,6 +9,8 @@
  * and the number and the model tag are dropped from it.
  */
 
+import { stripStatusSlot } from '@propr/shared';
+
 export interface WorkTitle {
   /** Short task-type label for the badge, or null when nothing is known. */
   type: string | null;
@@ -61,7 +63,8 @@ function taskTypeLabel(taskType: string | null | undefined): string | null {
 }
 
 export function splitWorkTitle(title: string | null | undefined, taskType?: string | null): WorkTitle {
-  let rest = (title ?? '').trim();
+  // A PR title may lead with its status slot (`✅⑧ `); older task titles copied it after the prefix.
+  let rest = stripStatusSlot((title ?? '').trim());
   let type: string | null = null;
 
   const workflow = PR_WORKFLOW_PREFIX.exec(rest);
@@ -78,6 +81,6 @@ export function splitWorkTitle(title: string | null | undefined, taskType?: stri
     }
   }
 
-  rest = rest.replace(MODEL_TAGS, '').trim();
+  rest = stripStatusSlot(rest.trimStart()).replace(MODEL_TAGS, '').trim();
   return { type: type ?? taskTypeLabel(taskType), title: rest || null };
 }

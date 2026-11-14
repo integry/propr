@@ -438,7 +438,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                 logger.info('Worker reset completed successfully');
             }
 
-            await startWorker(options);
+            await startWorker(options).then(() => import('./jobs/pullRequestStatusSignal.js')).then(signal => signal.enablePullRequestStatusMaintenance({ backfill: true }));
         } catch (error) {
             const err = error as Error;
             logger.error({ error: err.message }, 'Failed to start worker');

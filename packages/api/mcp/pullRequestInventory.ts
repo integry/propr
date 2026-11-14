@@ -3,7 +3,8 @@ import type { Knex } from 'knex';
 import { McpError } from './config.js';
 import type { McpPolicy, McpPrincipal } from './policy.js';
 import { readNewestComments } from './reviewDiscussion.js';
-import { markMergedPullRequests } from './tools.js';
+import { markMergedPullRequests, type ToolDeps } from './tools.js';
+import { attachPullRequestStatuses } from './pullRequestStatusRead.js';
 
 /** The live ultrafix circuit breaker; the loop re-reads it before every continuation. */
 export const ULTRAFIX_LABEL = 'ultrafix';
@@ -300,7 +301,7 @@ export async function attachLatestComments(principal: McpPrincipal, items: Inven
 }
 
 export async function listPullRequestInventory(
-  deps: { db: Knex; policy: McpPolicy }, principal: McpPrincipal, options: InventoryOptions,
+  deps: { db: Knex; policy: McpPolicy } & Partial<Pick<ToolDeps, 'redisClient' | 'taskQueue'>>, principal: McpPrincipal, options: InventoryOptions,
 ): Promise<Record<string, unknown>> {
   const { repositories, truncated } = await inventoryRepositories(principal, deps.policy, options.repository);
   const field = options.updatedWithinMinutes && !options.openedWithinMinutes ? 'UPDATED_AT' : 'CREATED_AT';
@@ -314,11 +315,13 @@ export async function listPullRequestInventory(
   for (const item of page) byRepository.set(item.repository, [...byRepository.get(item.repository) ?? [], item]);
   for (const [repository, items] of byRepository) await correlateProprRecords(deps.db, principal.user.id, repository, items);
   const latestCommentTruncated = options.includeLatestComment ? await attachLatestComments(principal, page) : false;
+  const statusTruncated = await attachPullRequestStatuses(deps as Parameters<typeof attachPullRequestStatuses>[0], principal,
+    page.map(item => ({ item, repository: item.repository, number: item.number, open: item.state === 'open' })));
   const nextOffset = options.offset + options.limit;
   const hasMore = all.length > nextOffset;
   return {
     repositories, repositoriesTruncated: truncated, order: field === 'UPDATED_AT' ? 'updated' : 'created',
-    pullRequests: page, latestCommentTruncated,
+    pullRequests: page, latestCommentTruncated, statusTruncated,
     // A scan that ran out of page budget has not proven exhaustion; report that
     // instead of letting a null continuation imply there is nothing left.
     scanTruncated: scans.some(scan => scan.scanTruncated),

@@ -175,6 +175,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
   let requestedPull = 42;
   let mergeQuery = '';
   const mergeAttempts: number[] = [];
+  const mergeTitles: unknown[] = [];
   const paginationCalls: Args[] = [];
   const successfulChecks = Array.from({ length: 50 }, (_, index) => ({
     name: `successful-${index + 1}`, status: 'COMPLETED', conclusion: 'SUCCESS',
@@ -184,7 +185,8 @@ test('executeTool persists specific PR state failures and get_operation returns 
       if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
         requestedPull = Number(args.pull_number);
         if (requestedPull === 43) return { data: rest({ number: 43, state: 'closed', closed_at: '2026-09-27T12:00:00Z' }) };
-        if ([44, 45, 46, 47, 48, 49].includes(requestedPull)) return { data: rest({ number: requestedPull }) };
+        if (requestedPull === 45) return { data: rest({ number: 45, title: '✅⑧ [12 by Claude Opus 5.5] Add retries' } as PullRequestStateSource) };
+        if ([44, 46, 47, 48, 49].includes(requestedPull)) return { data: rest({ number: requestedPull }) };
         if (requestedPull === 50) throw Object.assign(new Error('Server Error'), {
           name: 'HttpError', status: 502, response: { status: 502, headers: {}, data: { message: 'Server Error' } },
         });
@@ -196,6 +198,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
         });
       }
       if (route === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge' && Number(args.pull_number) === 45) {
+        mergeTitles.push(args.commit_title);
         return { data: { merged: false, message: 'Base branch policy rejected this merge.' } };
       }
       if (route === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge') mergeAttempts.push(Number(args.pull_number));
@@ -343,4 +346,5 @@ test('executeTool persists specific PR state failures and get_operation returns 
   assert.equal(rejectedFalse.result.error.code, 'MERGE_REJECTED');
   assert.match(rejectedFalse.result.error.message, /Base branch policy rejected this merge/);
   assert.ok(rejectedFalse.result.error.details.currentState);
+  assert.deepEqual(mergeTitles, ['[12 by Claude Opus 5.5] Add retries (#45)'], 'the squash commit title carries no title status slot');
 });

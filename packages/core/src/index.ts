@@ -673,6 +673,8 @@ export * from './services/taskPlanning/epicQueueBlockedHead.js';
 export * from './services/taskPlanning/epicQueueActions.js';
 export { deliverEpicQueueBlockedEvents, blockedNotificationKey } from './services/taskPlanning/epicQueueBlockedNotify.js';
 export * from './services/reviewScoreStore.js';
+// The one pull request status computation, its PR body block and its sync.
+export * from './services/pullRequestStatus/index.js';
 // Durable repository change-event journal (pull requests, epic queues, plan issues).
 export * from './services/repositoryEventJournal.js';
 

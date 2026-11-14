@@ -380,11 +380,7 @@ export async function updatePlanIssueStatus(
  * Updates the task_id for a plan issue by repository and issue number.
  * Used when a task execution starts for a plan issue.
  */
-export async function updatePlanIssueTaskId(
-    repository: string,
-    issueNumber: number,
-    taskId: string
-): Promise<void> {
+export async function updatePlanIssueTaskId(repository: string, issueNumber: number, taskId: string): Promise<void> {
     try {
         await db('plan_issues')
             .where({ repository, issue_number: issueNumber })

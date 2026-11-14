@@ -2,6 +2,7 @@ import { githubInlineEligibility, VISUAL_PREVIEW_CONTENT_TYPES, type GitHubAttac
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { publicPreviewText, originalUnavailableText } from './visualPreviewPublication.js';
+import { writePullRequestBody } from './pullRequestBodyWriter.js';
 import { storeManagedVisualPreviewOriginals, type ManagedVisualPreviewAssetResult } from './managedVisualPreviewStorage.js';
 import {
   appendVisualPreviewSection,
@@ -368,10 +369,11 @@ export async function publishPullRequestVisualPreviews(options: PublishPullReque
   const inlineCandidates = await resolveInlineCandidates(options.evidence);
   const uploads = await uploadInlineCandidates(options, inlineCandidates);
   const body = publishedBody(options, originals, inlineCandidates, uploads);
-  const response = await options.octokit.request<{ data: { body?: string } }>('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+  // The status block, when the repository shows one, is carried over unchanged.
+  const response = await writePullRequestBody<{ data: { body?: string } }>(options.octokit, {
     owner: options.owner,
     repo: options.repo,
-    pull_number: options.pullRequestNumber,
+    pullNumber: options.pullRequestNumber,
     body,
   });
   assertUploadedBodyHasNoLocalPaths(response.data.body, options.evidence);

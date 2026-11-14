@@ -77,6 +77,7 @@ const sidebars: SidebarsConfig = {
       label: 'PR Control',
       items: [
         'features/pr-followup',
+        'features/pr-status',
         'features/assignment',
         'features/pr-commands',
         'features/mcp-chat',

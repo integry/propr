@@ -1,8 +1,8 @@
+import { stripStatusSlot } from '@propr/shared';
 import { startPRProcessingLockHeartbeat, releasePRProcessingLock } from './prProcessingLock.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { logger } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
+import { logger, getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
@@ -206,7 +206,7 @@ async function fetchMergeTitleContextInfo(options: {
     } catch (prError) {
         correlatedLogger.warn({ taskId, error: (prError as Error).message }, 'Failed to fetch PR info for merge task');
     }
-    prInfo ??= { prTitle: prData.title || 'Untitled pull request', linkedIssueNumber: null };
+    prInfo ??= { prTitle: stripStatusSlot(prData.title) || 'Untitled pull request', linkedIssueNumber: null };
     try {
         recentComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
     } catch (commentsError) {

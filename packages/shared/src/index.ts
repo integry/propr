@@ -608,6 +608,7 @@ export {
   type TokenOutlierSettings,
 } from './tokenOutlierSettings.js';
 export * from './acceptanceCriteria.js';
+export * from './prTitleStatusSlot.js';
 
 // The durable repository change-event journal: domains, event types and payloads.
 export * from './repositoryEvents.js';

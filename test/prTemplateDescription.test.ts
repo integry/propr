@@ -237,3 +237,81 @@ test('createPullRequest never publishes a secret from a title placeholder', asyn
     assert.equal(published.length, 1);
     assert.equal(published[0].title, 'fix/[REDACTED_GITHUB_TOKEN]: Fix login');
 });
+
+test('a new issue pull request opens with the status block first, with no setting involved', async () => {
+    const { disablePullRequestStatusSync, enablePullRequestStatusSync } = await import('@propr/core');
+    const octokit = contentsOctokit({}, {});
+    const published: Array<Record<string, unknown>> = [];
+    const mockOctokit = {
+        async request<T>(endpoint: string, options: Record<string, unknown>): Promise<T> {
+            if (endpoint === 'POST /repos/{owner}/{repo}/pulls') {
+                published.push(options);
+                return { data: { number: 9, html_url: 'https://github.com/acme/app/pull/9', title: options.title } } as T;
+            }
+            if (endpoint.startsWith('POST /repos/{owner}/{repo}/issues/')) return { data: [] } as T;
+            return octokit.request<T>(endpoint, options);
+        },
+    };
+    const logger = { info() {}, warn() {}, error() {}, debug() {} };
+    const create = () => createPullRequest(mockOctokit as never, { repoOwner: 'acme', repoName: 'app', number: 7, baseBranch: 'main' } as never, { branchName: '7-fix-login' } as never, {
+        commitResult: null, claudeResult: null, modelName: 'claude-opus-4-5-20251101', repoValidation: {} as never, PR_LABEL: 'propr',
+        correlatedLogger: logger as never, issueTitle: 'Fix login',
+    });
+    const redis = { async set() { return 'OK'; }, async eval() { return 0; } };
+    enablePullRequestStatusSync({ redis: redis as never });
+    try {
+        await create();
+    } finally {
+        disablePullRequestStatusSync();
+    }
+    const body = String(published[0].body);
+    assert.match(body, /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 Implementing · updated \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n/);
+
+    // A process that does not maintain the status (library use) writes the body as before.
+    await create();
+    assert.equal(String(published[1].body), body.replace(/^<!-- propr:pr-status -->[\s\S]*?<!-- \/propr:pr-status -->\n\n/, ''));
+    assert.doesNotMatch(String(published[1].body), /propr:pr-status/);
+});
+
+test('a new pull request reserves the largest status block, not the initial one, in its body budget', async () => {
+    const { disablePullRequestStatusSync, enablePullRequestStatusSync } = await import('@propr/core');
+    const { PR_BODY_MAX_LENGTH, PR_STATUS_BLOCK_MAX_LENGTH } = await import('@propr/shared');
+    const octokit = contentsOctokit({ '.propr/pr-template.md': '## summary\nTEMPLATED {{summary}}\n' }, {});
+    const published: Array<Record<string, unknown>> = [];
+    const mockOctokit = {
+        async request<T>(endpoint: string, options: Record<string, unknown>): Promise<T> {
+            if (endpoint === 'POST /repos/{owner}/{repo}/pulls') {
+                published.push(options);
+                return { data: { number: 9, html_url: 'https://github.com/acme/app/pull/9', title: options.title } } as T;
+            }
+            if (endpoint.startsWith('POST /repos/{owner}/{repo}/issues/')) return { data: [] } as T;
+            return octokit.request<T>(endpoint, options);
+        },
+    };
+    const logger = { info() {}, warn() {}, error() {}, debug() {} };
+    const redis = { async set() { return 'OK'; }, async eval() { return 0; } };
+    const create = async (descriptionLength: number) => {
+        const summary = 'x'.repeat(descriptionLength - 'TEMPLATED '.length);
+        await createPullRequest(mockOctokit as never, { repoOwner: 'acme', repoName: 'app', number: 7, baseBranch: 'main' } as never, { branchName: '7-fix-login' } as never, {
+            commitResult: null, claudeResult: { success: true, summary }, modelName: 'claude-opus-4-5-20251101',
+            repoValidation: {} as never, PR_LABEL: 'propr', correlatedLogger: logger as never, issueTitle: 'Fix login',
+        });
+        const body = String(published.at(-1)?.body);
+        const description = body.replace(/^<!-- propr:pr-status -->[\s\S]*?<!-- \/propr:pr-status -->\n\n/, '');
+        assert.notEqual(description, body, 'the body starts with the status block');
+        return description;
+    };
+    const budget = PR_BODY_MAX_LENGTH - PR_STATUS_BLOCK_MAX_LENGTH - 2;
+    enablePullRequestStatusSync({ redis: redis as never });
+    try {
+        const overhead = (await create(200)).length - 200;
+        const fits = await create(budget - overhead);
+        assert.match(fits, /^TEMPLATED x/, 'a description exactly at the reserved budget uses the template');
+        assert.equal(fits.length + PR_STATUS_BLOCK_MAX_LENGTH + 2, PR_BODY_MAX_LENGTH, 'a block of the largest size still fits');
+        // The room the short initial block leaves free stays reserved for the block's later growth.
+        const over = await create(budget - overhead + 100);
+        assert.doesNotMatch(over, /^TEMPLATED x/, 'a description past the reserved budget falls back to the default');
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});

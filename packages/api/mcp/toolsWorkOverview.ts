@@ -5,6 +5,7 @@ import { ok, repositorySchema } from './tools.js';
 import { labelNames, ultrafixState } from './pullRequestInventory.js';
 import { summarizeReviewComment, type ReviewSummary } from './reviewDiscussion.js';
 import { queryTaskSummaries } from './taskListing.js';
+import { attachPullRequestStatuses } from './pullRequestStatusRead.js';
 
 const MAX_REPOSITORIES = 5;
 const MAX_PULL_REQUESTS_PER_REPOSITORY = 25;
@@ -153,6 +154,22 @@ function unavailableRepositoryError(error: unknown): boolean {
   return status === 403 || status === 404 || unavailableGraphqlError(error);
 }
 
+/** One computed ProPR status per pull request, shared by every task row that points at it. */
+async function attachOverviewStatuses(
+  deps: ToolDeps, principal: McpPrincipal, items: Array<{ task: Record<string, unknown>; pullRequest: Record<string, unknown> | PullRequestOverview | null }>,
+): Promise<boolean> {
+  const enrichedPulls = items.flatMap(({ task, pullRequest }) => pullRequest && 'head' in pullRequest
+    ? [{ key: `${String(task.repository)}#${String(pullRequest.number)}`, repository: String(task.repository), pull: pullRequest as unknown as PullRequestOverview & Record<string, unknown> }]
+    : []);
+  const targets = new Map<string, { item: Record<string, unknown>; repository: string; number: number; open: boolean }>();
+  for (const { key, repository, pull } of enrichedPulls) {
+    if (!targets.has(key)) targets.set(key, { item: {}, repository, number: pull.number, open: pull.state === 'open' });
+  }
+  const truncated = await attachPullRequestStatuses(deps, principal, [...targets.values()]);
+  for (const { key, pull } of enrichedPulls) pull.proprStatus = targets.get(key)?.item.proprStatus ?? null;
+  return truncated;
+}
+
 export function addWorkOverviewTools(tools: McpTool[], deps: ToolDeps, listScope: ListScope): void {
   const schema = z.object({
     repository: repositorySchema.optional().describe('Exact repository handle. Omit to list across every repository in this grant.'),
@@ -164,7 +181,7 @@ export function addWorkOverviewTools(tools: McpTool[], deps: ToolDeps, listScope
   }).strict();
   tools.push({
     name: 'get_work_overview',
-    description: 'List running or recently finished task summaries joined to pull request review, check, merge and latest ProPR AI review state. latestReviewSearchTruncated indicates that a null latestReview may exist outside the bounded comment lookup; ultrafixActive is null when the bounded label lookup cannot establish absence. Omit repository to cover every repository in this grant.',
+    description: 'List running or recently finished task summaries joined to pull request review, check, merge and latest ProPR AI review state. latestReviewSearchTruncated indicates that a null latestReview may exist outside the bounded comment lookup; ultrafixActive is null when the bounded label lookup cannot establish absence. pullRequest.proprStatus is the computed ProPR status (working, needs_attention, ready, none); null past the first 20 open pull requests or when unavailable. Omit repository to cover every repository in this grant.',
     scope: 'read',
     readOnly: true,
     schema,
@@ -214,10 +231,12 @@ export function addWorkOverviewTools(tools: McpTool[], deps: ToolDeps, listScope
         const pull = enriched.get(repository)?.get(number);
         if (!pull) return { task, pullRequest: unavailablePullRequest(task) };
         // ProPR's own merge observation is authoritative over GitHub's stale CLOSED state.
-        return { task, pullRequest: task.pr_state === 'merged' ? { ...pull, state: 'merged' } : pull };
+        return { task, pullRequest: task.pr_state === 'merged' ? { ...pull, state: 'merged' } : { ...pull } };
       });
+      const statusTruncated = await attachOverviewStatuses(deps, principal, items);
       return ok({
         items,
+        statusTruncated,
         nextOffset: tasks.length === args.limit ? args.offset + args.limit : null,
         githubLookups: { requested, completed, truncated },
       });

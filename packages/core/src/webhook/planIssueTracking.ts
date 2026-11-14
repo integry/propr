@@ -1,4 +1,5 @@
 import logger from '../utils/logger.js';
+import { stripStatusSlot } from '@propr/shared';
 import {
     findPlanIssueByRepoAndNumber,
     findPlanIssueByRepoAndPR,
@@ -21,6 +22,12 @@ import type {
     PullRequestReviewCommentEvent,
     PullRequestEvent
 } from '@octokit/webhooks-types';
+
+
+/** Epic PR titles start with `[Epic]`, after the status slot when the title has one (prTitleStatus). */
+export function isEpicPullRequestTitle(title: string | null | undefined): boolean {
+    return stripStatusSlot(title ?? '').startsWith('[Epic]');
+}
 
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
@@ -291,8 +298,7 @@ export async function handlePlanPRUpdate(
 
         await checkRenamesFromPRBody(payload, repository, prNumber, log);
 
-        const prTitle = payload.pull_request.title || '';
-        if (prTitle.startsWith('[Epic]')) {
+        if (isEpicPullRequestTitle(payload.pull_request.title)) {
             if (action === 'opened') {
                 await handleEpicPROpened(payload, repository, prNumber, log);
             }

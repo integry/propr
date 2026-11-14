@@ -78,6 +78,7 @@ import {
   generateCorrelationId,
   processWebhookEvent,
   initializeWebhookHandler,
+  enablePullRequestStatusSync,
   buildRedisRuntimeConfig,
   db,
   reloadConfigs,
@@ -780,6 +781,8 @@ async function start(): Promise<void> {
       if (apiIntakeMode === 'direct_webhook') {
         await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, redisClient: getIoRedisClient(), repositoryFilter: isMonitoredRepository });
         console.log('[webhook] Webhook handler initialized');
+        // Webhook transitions (PR state, check runs) keep PR status blocks current.
+        enablePullRequestStatusSync();
       }
       setInterval(async () => {
         try {
