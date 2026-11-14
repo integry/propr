@@ -10,7 +10,7 @@ import {
 import { getEventPublisher } from './eventPublisher.js';
 import {
     buildTaskStateTransition, buildTaskStateMutation, compareAndSetTaskStateData,
-    compareAndSetTaskState, publishTaskStateTransition,
+    compareAndSetTaskState, publishTaskStateTransition, journalTaskStateCreation,
 } from './workerStateTransition.js';
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
 
@@ -146,10 +146,10 @@ export class WorkerStateManager {
             };
             await db('task_history').insert(historyData);
             correlatedLogger.debug({ taskId }, 'Task state persisted to database');
+            await journalTaskStateCreation(state);
 
             // Publish real-time event for task creation
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
+            await getEventPublisher().publishTaskUpdate({
                 taskId,
                 state: TaskStates.PENDING,
                 repository,

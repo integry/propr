@@ -276,7 +276,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
   'GET /api/repository-events': {
     operationId: 'listRepositoryEvents',
     summary: 'List repository change events after a cursor',
-    description: 'Reads the durable change-event journal of one repository (pull request, epic queue and plan issue changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned.',
+    description: 'Reads the durable change-event journal of one repository (pull request, epic queue, plan issue and task changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned.',
     tags: ['Repositories'],
     query: RepositoryEventsQuery,
     errors: 'envelope',
