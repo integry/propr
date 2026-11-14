@@ -357,6 +357,19 @@ branch is freed, files and commits are never deleted; a worktree that still
 holds unpublished work is released only with force set to true). The same
 decisions are in Settings → Maintenance → Held follow-ups.
 
+Instance administrators with `instance.manage_settings` can read plugin state
+with `list_plugins` and `get_plugin`. `list_plugins` returns one compact row
+per plugin of this ProPR's registry (and per installed plugin an upgrade
+removed from it): its state (available, installed or enabled), available and
+installed manifest versions, whether it needs approval, the permissions waiting
+for approval, why enabling is refused right now, and each connection's state.
+`get_plugin` adds the public manifest, settings, repository limit, granted
+permissions, package-server secret acknowledgements and the newest management
+events of the plugin audit trail. Both are read-only: installing, configuring,
+connecting, enabling, approving and uninstalling go through the
+[plugin REST API](docs/features/plugins.md#installing-a-plugin). Connection
+secrets are write-only and never appear in either result.
+
 Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates
 a draft (with plan items it opens in Studio at Review, so its issues can be

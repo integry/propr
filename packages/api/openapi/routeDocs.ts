@@ -3,6 +3,7 @@ import { GOAL_ROUTE_DOCS } from './routeDocsGoals.js';
 import { STATS_ROUTE_DOCS } from './routeDocsStats.js';
 import { SYSTEM_ROUTE_DOCS } from './routeDocsSystem.js';
 import { EXTENSION_OAUTH_ROUTE_DOCS } from './routeDocsExtensionOAuth.js';
+import { PLUGIN_ROUTE_DOCS } from './routeDocsPlugins.js';
 import { TASK_ROUTE_DOCS } from './routeDocsTasks.js';
 import type { RouteDoc } from './types.js';
 
@@ -17,5 +18,6 @@ export const ROUTE_DOCS: Readonly<Record<string, RouteDoc>> = {
   ...STATS_ROUTE_DOCS,
   ...SYSTEM_ROUTE_DOCS,
   ...EXTENSION_OAUTH_ROUTE_DOCS,
+  ...PLUGIN_ROUTE_DOCS,
   ...TASK_ROUTE_DOCS,
 };

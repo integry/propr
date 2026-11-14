@@ -1,4 +1,5 @@
 import { createStorageRouteEntries } from '../instanceStorageRouteRegistry.js';
+import { createPluginRouteEntries } from '../pluginRouteRegistry.js';
 import type { RequestHandler } from 'express';
 import type { InstancePermission } from '@propr/shared';
 import {
@@ -42,6 +43,7 @@ export function listRegistryRouteEntries(): RouteEntry[] {
   return [
     ...createOperationalRouteEntries(placeholderDeps()),
     ...createStorageRouteEntries(placeholderDeps()),
+    ...createPluginRouteEntries(placeholderDeps()),
     ...createMemberCatalogRouteEntries(placeholderDeps()),
     ...createManagementRouteEntries(placeholderDeps()),
   ];

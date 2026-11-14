@@ -35,6 +35,7 @@ import { addPlanningTools, planEpicDispatch } from './toolsPlanning.js';
 import { addPullRequestTools } from './toolsPullRequests.js';
 import { addContextTools } from './toolsContext.js';
 import { addAdministrationTools } from './toolsAdministration.js';
+import { addPluginTools } from './toolsPlugins.js';
 import { addMaintenanceTools } from './toolsMaintenance.js';
 import { addArtifactTools } from './toolsArtifacts.js';
 import { addManagementTools } from './toolsManagement.js';
@@ -193,6 +194,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addRepositoryEventTools(tools, deps);
   addContextTools(tools, deps);
   addManagementTools(tools, deps, { todos, config, runtime });
+  addPluginTools(tools, deps);
   addNotificationTools(tools, deps, notifications);
   addActivityTools(tools, deps);
   addAdmissionTools(tools, deps);

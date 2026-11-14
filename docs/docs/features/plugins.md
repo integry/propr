@@ -13,10 +13,11 @@ npm package of a local MCP server, which goes through the same package cache and
 integrity check as the [extension library's local package servers](./agent-extensions.md#local-package-servers).
 
 :::note Work in progress
-This page describes the plugin **manifest** and the official plugin registry.
-Installation, the Plugins page, applying contributions to runs, handlers,
-webhooks and commands are added by later releases; until then a manifest is
-validated but has no effect on ProPR.
+This page describes the plugin **manifest**, the official plugin registry and
+how an administrator **installs** a plugin through the API. The Plugins page,
+applying contributions to runs, OAuth connections, handlers, webhooks and
+commands are added by later releases; until then an installed plugin's state
+is stored and served but has no effect on runs.
 :::
 
 ## Where plugins live
@@ -166,3 +167,91 @@ npm run plugins:check -- --online [--registry https://registry.npmjs.org]
 
 also asks the npm registry for each package server's version and compares the
 recorded `integrity` value. It needs network access and is not run in CI.
+
+## Installing a plugin
+
+A plugin is **available** when it is in this ProPR's registry, **installed**
+once an administrator installed it on the instance, and then **enabled** or
+disabled. Disabling keeps its settings and connections; uninstalling deletes
+them.
+
+Only durable instance administrators with `instance.manage_settings` can read
+or change plugin state, and every change (install, settings, repository limit,
+connection set or cleared, enable, disable, approve, uninstall) is recorded in
+the plugin audit trail with who and when. The audit trail stays after an
+uninstall. Changes need `Content-Type: application/json` and the header
+`X-ProPR-Plugins: 1`.
+
+| Step | Request |
+| --- | --- |
+| List plugins and their state | `GET /api/instance/plugins/v1` |
+| Read one plugin | `GET /api/instance/plugins/v1/<id>`: the manifest, settings, repository limit, connection states, permissions and acknowledgements awaiting approval, why enabling is refused, and the newest 50 audit events. |
+| Install | `POST /api/instance/plugins/v1/<id>/install` with `{ "acknowledgements": ["<package server>", …] }` |
+| Change settings | `PUT /api/instance/plugins/v1/<id>/settings` with `{ "settings": { … } }`, the complete settings object |
+| Limit to repositories | `PUT /api/instance/plugins/v1/<id>/repositories` with `{ "repositories": ["owner/repo"] }`; `null` or `[]` for all repositories |
+| Set or clear a connection | `PUT /api/instance/plugins/v1/<id>/connections/<name>` with `{ "value": "…" }` or `{ "value": null }` |
+| Enable or disable | `PUT /api/instance/plugins/v1/<id>/enabled` with `{ "enabled": true }` |
+| Approve after an upgrade | `POST /api/instance/plugins/v1/<id>/approve` with `{ "acknowledgements": [ … ] }` when needed |
+| Uninstall | `POST /api/instance/plugins/v1/<id>/uninstall` with `{ "confirm": "<id>" }` |
+
+The [API reference](../operations/api-reference.md) has the request and response schemas. MCP
+clients can read the same state with the read-only `list_plugins` and
+`get_plugin` tools.
+
+### Install flow
+
+1. Installing records the manifest version, the manifest's permissions as the
+   granted set, the settings defaults, who installed it and when. The plugin
+   starts disabled and applies to all repositories.
+2. If the plugin contributes a [local package server](#local-package-servers)
+   with `secretEnv`, installing needs the same acknowledgement the extension
+   library asks for: the secret is readable by the agent CLI, its shell tools
+   and repository setup scripts inside the task container. Name each such
+   server in `acknowledgements`; the acknowledgement is recorded on the
+   installation with who and when.
+3. Settings are validated against the manifest's settings schema on save:
+   unknown keys, wrong types, values outside `enum`, `minimum`/`maximum`,
+   `maxLength` or `maxItems`, and malformed repository maps are refused.
+4. Set the connections the plugin needs, then enable it.
+
+Enabling is refused with HTTP 409 and the reasons (also listed as
+`enableBlockers` when the plugin is read) while:
+
+- a `required` setting has no value,
+- a required `token` connection is not set (a `token` connection is required
+  when a contributed MCP server uses it, as a `bearer` server's connection or a
+  package server's secret variable), or
+- a package server's secret acknowledgement is missing.
+
+While a plugin is enabled, its required settings and required connections
+cannot be removed; disable it first.
+
+### Connections
+
+`token` and `signing_secret` connections are write-only secrets. They are
+sealed with the same private-secret mechanism as the extension library's
+credentials, bound to the instance, plugin and connection, and never returned
+by the API, MCP tools or logs; a read reports only `connected` or
+`not_connected`, who set it and when. Native database exports erase them, so a
+restored instance has its plugins installed with the same settings but every
+connection not connected. `oauth` connections report `not_connected` until
+OAuth sign-in for plugins is available.
+
+### Permissions and upgrades
+
+The granted permissions are a set recorded at install. When a ProPR upgrade
+ships a newer manifest that asks for a permission that was not granted, the
+plugin keeps running with its old grant and is flagged **Needs approval**
+(`needsApproval`, with the new permissions in `pendingPermissions`) until an
+administrator approves the new set. Approving grants the current manifest's
+permissions and records its version as the installed version.
+
+A package server's acknowledgement is tied to its package, version and secret
+variable names. When an upgrade changes any of them, the plugin also needs
+approval (`pendingAcknowledgements`): it cannot be enabled until the approval
+names that server in `acknowledgements` again.
+
+An upgrade that changes neither permissions nor acknowledged packages needs no
+approval; the installed version follows the new manifest on the next change.
+A plugin that an upgrade removed from the registry stays listed as installed
+but unavailable; it can only be disabled or uninstalled.

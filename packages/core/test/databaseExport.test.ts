@@ -26,6 +26,9 @@ async function fixture(t: test.TestContext) {
     CREATE TABLE extension_oauth_connections(instance_id TEXT, server_name TEXT, sealed TEXT);
     CREATE TABLE extension_oauth_pending(state_hash TEXT, sealed TEXT);
     CREATE TABLE extension_oauth_audit(id INTEGER PRIMARY KEY, server_name TEXT, action TEXT, actor TEXT);
+    CREATE TABLE plugin_installations(plugin_id TEXT PRIMARY KEY, settings TEXT);
+    CREATE TABLE plugin_secrets(plugin_id TEXT, connection_name TEXT, sealed TEXT);
+    CREATE TABLE plugin_audit(id INTEGER PRIMARY KEY, plugin_id TEXT, action TEXT, actor TEXT);
     CREATE TABLE task_submissions(id TEXT, payload TEXT, extension_authorization TEXT);
     CREATE TABLE system_configs(key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE knex_migrations(id INTEGER PRIMARY KEY, name TEXT);
@@ -42,6 +45,9 @@ async function fixture(t: test.TestContext) {
   db.prepare('INSERT INTO extension_oauth_connections VALUES(?,?,?)').run('extension-instance', 'documentation', 'oauth-access-refresh-token-canary');
   db.prepare('INSERT INTO extension_oauth_pending VALUES(?,?)').run('pending-state-hash', 'oauth-pkce-verifier-canary');
   db.prepare('INSERT INTO extension_oauth_audit(server_name, action, actor) VALUES(?,?,?)').run('documentation', 'connect', '1');
+  db.prepare('INSERT INTO plugin_installations VALUES(?,?)').run('example-pack', JSON.stringify({ verbosity: 'quiet' }));
+  db.prepare('INSERT INTO plugin_secrets VALUES(?,?,?)').run('example-pack', 'example-token', 'plugin-connection-secret-canary');
+  db.prepare('INSERT INTO plugin_audit(plugin_id, action, actor) VALUES(?,?,?)').run('example-pack', 'install', '1');
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('agents', JSON.stringify([{ id: 'agent', alias: 'My agent', configPath: '/provider-home-canary', envVars: { API_KEY: 'operator-env-canary' } }]));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('operator_extension_catalog', JSON.stringify({ executable: '/usr/bin/env', args: ['CATALOG_ARGUMENT_SENTINEL', '/opt/propr/CATALOG_PATH_SENTINEL'], secretEnv: { API_KEY: 'OPERATOR_DOCS_KEY' } }));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('fleet_control_secret', JSON.stringify('fleet-secret-canary'));
@@ -119,6 +125,11 @@ test('real WAL writer: coherent restorable customer database, integrity, metadat
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_oauth_pending').get().n, 0);
       assert.equal(db.prepare('SELECT action FROM extension_oauth_audit').get().action, 'connect');
       for (const canary of ['oauth-access-refresh-token-canary', 'oauth-pkce-verifier-canary']) assert.equal(data.includes(Buffer.from(canary)), false, canary);
+      // Plugin connection secrets are erased; the installation (settings) and its audit trail are kept.
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM plugin_secrets').get().n, 0);
+      assert.equal(JSON.parse(db.prepare('SELECT settings FROM plugin_installations').get().settings).verbosity, 'quiet');
+      assert.equal(db.prepare('SELECT action FROM plugin_audit').get().action, 'install');
+      assert.equal(data.includes(Buffer.from('plugin-connection-secret-canary')), false);
       assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM system_configs WHERE key='agents'").get().value), [{ id: 'agent', alias: 'My agent' }]);
       db.prepare('INSERT INTO customer(body) VALUES(?)').run('restored write');
     } finally { db.close(); }
