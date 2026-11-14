@@ -232,6 +232,12 @@ test('RPM public-key tool files are LF-terminated without rewriting key material
   assert.equal(existsSync(join(root, 'rejected.asc')), false);
 });
 
+// RPM 4.x names imported keys gpg-pubkey-<8-digit key ID>; RPM 6 uses the full fingerprint.
+function assertSingleRpmKey(keys, fingerprint) {
+  assert.equal(keys.length, 1, keys.join('\n'));
+  assert.ok([fingerprint.slice(-8).toLowerCase(), fingerprint.toLowerCase()].includes(keys[0].split('-')[2]), keys[0]);
+}
+
 test('unterminated disposable public armor imports into a fresh RPM database through withKey', {
   skip: missing.length ? `Missing tools: ${missing}` : false,
 }, async t => {
@@ -252,7 +258,7 @@ test('unterminated disposable public armor imports into a fresh RPM database thr
       run('rpmdb', ['--dbpath', database, '--initdb']);
       run('rpmkeys', ['--dbpath', database, '--import', publicPath]);
       const keys = run('rpm', ['--dbpath', database, '-qa', 'gpg-pubkey*']).trim().split('\n');
-      assert.deepEqual(keys.map(name => name.split('-')[2]), [identity.fingerprint.slice(-8).toLowerCase()]);
+      assertSingleRpmKey(keys, identity.fingerprint);
       return keyHome;
     });
     assert.equal(existsSync(home), false, 'temporary key home is removed');
@@ -293,7 +299,7 @@ test('generated install-note key extraction yields RPM-importable disposable arm
     run('rpmdb', ['--dbpath', database, '--initdb']);
     run('rpmkeys', ['--dbpath', database, '--import', asc]);
     const keys = run('rpm', ['--dbpath', database, '-qa', 'gpg-pubkey*']).trim().split('\n');
-    assert.deepEqual(keys.map(name => name.split('-')[2]), [rpmIdentity.fingerprint.slice(-8).toLowerCase()]);
+    assertSingleRpmKey(keys, rpmIdentity.fingerprint);
     assert.equal(rpmIdentity.publicKey, publicKey);
   }
 });
@@ -331,6 +337,28 @@ test('signature status parsing accepts BAD within a verified hexadecimal key ID'
       assert.throws(() => assertRpmSignatures(output.replace(line, line.replace(': OK', ': BAD')), fingerprint), /signatures/);
     }
     assert.throws(() => assertRpmSignatures(`${output}    Payload SHA256 digest: BAD\n`, fingerprint), /signatures/);
+  }
+});
+
+test('signature status parsing accepts an RPM 6 header signature from the full pinned fingerprint', () => {
+  const fingerprint = 'A'.repeat(32) + '1234ABCD';
+  const header = `    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: ${fingerprint.toLowerCase()}: OK`;
+  const digest = '    Payload SHA256 digest: OK';
+  const output = `/tmp/NOT OK-NOKEY.rpm:\n${header}\n    Header SHA256 digest: OK\n${digest}\n`;
+  assert.doesNotThrow(() => assertRpmSignatures(output, fingerprint));
+  // A Legacy header+payload signature may appear and must also verify.
+  const legacy = header.replace('Header', 'Legacy');
+  assert.doesNotThrow(() => assertRpmSignatures(`${output}${legacy}\n`, fingerprint));
+  assert.throws(() => assertRpmSignatures(`${output}${legacy.replace(': OK', ': BAD')}\n`, fingerprint), /signatures/);
+  assert.throws(() => assertRpmSignatures(output.replace(header, ''), fingerprint), /signatures/);
+  assert.throws(() => assertRpmSignatures(output.replace(header, legacy), fingerprint), /signatures/);
+  assert.throws(() => assertRpmSignatures(output.replace(digest, ''), fingerprint), /signatures/);
+  // The full fingerprint must match, not just its key ID suffix.
+  const suffixOnly = header.replace(fingerprint.toLowerCase(), 'b'.repeat(32) + '1234abcd');
+  assert.throws(() => assertRpmSignatures(output.replace(header, suffixOnly), fingerprint), /signatures/);
+  for (const status of ['NOT OK', 'NOKEY', 'NOTTRUSTED', 'BAD', 'UNKNOWN']) {
+    assert.throws(() => assertRpmSignatures(output.replace(header, header.replace(': OK', `: ${status}`)), fingerprint), /signatures/);
+    assert.throws(() => assertRpmSignatures(output.replace(digest, digest.replace(': OK', `: ${status}`)), fingerprint), /signatures/);
   }
 });
 
