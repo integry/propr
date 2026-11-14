@@ -3,7 +3,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { PlanIssueStatus, type PlanIssue } from '../config/planIssueManager.js';
 import logger from '../utils/logger.js';
 import { epicHeadSha, isMergeContained, isRecord, type EpicProgressOctokit } from './epicMergeEvidence.js';
-import { extractEpicProgressActivityLines, replaceEpicProgressActivityLines } from './epicProgressActivity.js';
+import { extractEpicProgressActivityLines, insertEpicProgressActivityLines, replaceEpicProgressActivityLines } from './epicProgressActivity.js';
 
 export const EPIC_PROGRESS_MARKER = '<!-- propr:epic-merge-progress -->';
 export const EPIC_FINAL_MERGE_MARKER = '<!-- propr:epic-final-merge -->';
@@ -128,7 +128,9 @@ export function epicProgressAfterMerge(mergedChildPrNumber: number | null, planI
 /**
  * `mergedInto` names the branch the epic PR has merged into, once it has; a
  * merged epic shows no activity. `activity` is the open epic's "In progress"
- * and "Up next" lines (renderEpicProgressActivity).
+ * and "Up next" lines (renderEpicProgressActivity), fitted to the space the
+ * rest of the comment leaves within GitHub's limit (fitEpicProgressActivityLines),
+ * so the counts, the merged child PRs and the marker are always written.
  */
 export function buildEpicProgressComment(progress: EpicMergeProgress, planName?: string, mergedInto?: string, activity: string[] = []): string {
     const complete = isEpicMergeComplete(progress);
@@ -143,13 +145,13 @@ export function buildEpicProgressComment(progress: EpicMergeProgress, planName?:
     if (progress.mergedPullRequests.length > 0) {
         lines.push('', `Merged child PRs: ${progress.mergedPullRequests.map(n => `#${n}`).join(', ')}`);
     }
-    // Below "Merged child PRs", each its own paragraph so Markdown keeps them on separate lines.
-    if (!mergedInto) for (const line of activity) lines.push('', line);
     if (progress.excluded > 0) {
         lines.push('', `_${progress.excluded} planned issue${progress.excluded === 1 ? ' was' : 's were'} closed without a merge and ${progress.excluded === 1 ? 'is' : 'are'} not counted._`);
     }
     if (mergedInto) lines.push('', `${EPIC_MERGED_LINE_PREFIX} ${mergedInto}.`);
     lines.push('', '---', '*This comment is updated automatically by ProPR as child PRs open, change and merge.*', EPIC_PROGRESS_MARKER);
+    // Below "Merged child PRs", each its own paragraph so Markdown keeps them on separate lines, within what the rest leaves.
+    if (!mergedInto) insertEpicProgressActivityLines(lines, activity);
     return lines.join('\n');
 }
 

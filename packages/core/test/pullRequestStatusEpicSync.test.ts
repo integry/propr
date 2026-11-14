@@ -27,6 +27,7 @@ const { PullRequestBodyLockLostError } = await import('../src/services/pullReque
 const { agentBlockedHeadReason } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 const { EPIC_FINAL_MERGE_MARKER } = await import('../src/webhook/epicMergeProgress.js');
 const { PR_BODY_MAX_LENGTH } = await import('@propr/shared');
+const { EPIC_PROGRESS_COMMENT_MAX_LENGTH } = await import('../src/webhook/epicProgressActivity.js');
 
 const REPOSITORY = 'integry/propr';
 const EPIC_BRANCH = '800-epic-short-name-x7y';
@@ -750,6 +751,27 @@ test('more open sub-PRs than the read budget: later updates read the rest, keep 
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
     assert.equal(github.epic().title, '⚠️ 2/14 [Epic] Scheduler primitives');
+});
+
+test('an epic with more open sub-PRs than its progress comment holds lists what fits and counts the rest', async () => {
+    // 700 open sub-PRs with the longest titles the comment keeps: listed in full, the activity is half again GitHub's comment limit.
+    addListedSubPrs(700);
+    for (let number = 920; number < 1620; number++) github.pulls.get(number)!.title = `[${number} by Claude Opus 5.5] ${'T'.repeat(120)}`;
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    const comment = github.progressComment();
+    assert.ok(comment.length <= EPIC_PROGRESS_COMMENT_MAX_LENGTH, `${comment.length} characters is more than GitHub accepts`);
+    assert.match(comment, /\*\*1 out of 3 PRs merged\*\* ⏳/, 'the counts stay as the merge progress update wrote them');
+    assert.match(comment, /Merged child PRs: #910\n\nIn progress: #911 \(issue #801, Second issue\) - ready to merge; #920 \(T+\); .*; and \d+ more\n\nUp next: #802 \(Third issue\)\n/,
+        'the sub-PRs read come first, the listing stops where the comment is full, and the rest are counted');
+    const inProgress = /^In progress: .*$/m.exec(comment)![0];
+    const listed = inProgress.slice('In progress: '.length).split('; ').filter(entry => entry.startsWith('#')).length;
+    const omitted = Number(/; and (\d+) more$/.exec(inProgress)?.[1]);
+    assert.equal(listed + omitted, 701, 'every open sub-PR is either listed or counted');
+    const writes = github.writes.length;
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(github.progressComment(), comment, 'the next update fits the same activity the same way');
+    assert.equal(github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}').length,
+        github.writes.slice(0, writes).filter(write => write.route === 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}').length, 'no comment write');
 });
 
 test('a kept sub-PR status is read again once the sub-PR changes', async () => {

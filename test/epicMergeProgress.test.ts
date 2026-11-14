@@ -10,12 +10,14 @@ import {
     buildEpicCompleteComment,
     extractEpicProgressActivityLines,
     renderEpicProgressActivity,
+    replaceEpicProgressActivityLines,
     buildEpicFinalMergeComment,
     computeEpicMergeProgress,
     isEpicMergeComplete,
     updateEpicMergeProgress,
     type EpicMergeProgressRequest,
 } from '../packages/core/src/webhook/epicMergeProgress.js';
+import { EPIC_PROGRESS_COMMENT_MAX_LENGTH, fitEpicProgressActivityLines } from '../packages/core/src/webhook/epicProgressActivity.js';
 
 after(async () => {
     await closeConnection();
@@ -213,7 +215,53 @@ describe('buildEpicProgressComment', () => {
             'nothing in progress: no In progress line; titles stay on one line');
         assert.doesNotMatch(buildEpicProgressComment(progress, 'Big Plan', 'main', activity), /In progress|Up next/, 'a merged epic lists no activity');
     });
+
+    test('an epic with more activity than a GitHub comment holds lists what fits and counts the rest', () => {
+        // 900 open children with the longest titles the lines keep: the activity alone is twice GitHub's comment limit.
+        const progress = { merged: 5, total: 1005, excluded: 0, mergedPullRequests: [1, 2, 3, 4, 5] };
+        const activity = renderEpicProgressActivity(largeActivity(900, 100));
+        assert.ok(activity.join('\n').length > 2 * EPIC_PROGRESS_COMMENT_MAX_LENGTH, 'the unbounded activity does not fit a comment');
+        const body = buildEpicProgressComment(progress, 'Big Plan', undefined, activity);
+        assert.ok(body.length <= EPIC_PROGRESS_COMMENT_MAX_LENGTH, `${body.length} characters is more than GitHub accepts`);
+        assert.match(body, /\*\*5 out of 1005 PRs merged\*\* ⏳/);
+        assert.match(body, /Merged child PRs: #1, #2, #3, #4, #5\n\nIn progress: #10000 \(issue #5000, T+\); #10001 .*; and \d+ more\n\nUp next: #7000 \(T+\); .*#7099 \(T+\)\n/,
+            'the In progress line lists leading entries and counts the rest; the shorter Up next line is complete');
+        assert.ok(body.includes(EPIC_PROGRESS_MARKER));
+        const lines = extractEpicProgressActivityLines(body);
+        assert.equal(lines.length, 2);
+        const listed = lines[0].match(/#1\d{4} \(issue/g)?.length ?? 0;
+        const omitted = Number(/; and (\d+) more$/.exec(lines[0])?.[1]);
+        assert.equal(listed + omitted, 900, 'every child is either listed or counted');
+        assert.ok(body.length > EPIC_PROGRESS_COMMENT_MAX_LENGTH - lines[0].length / listed - 3, 'the budget is used up to the next entry');
+        // The lines written are what both writers read back: writing them again changes nothing.
+        assert.equal(buildEpicProgressComment(progress, 'Big Plan', undefined, lines), body, 'the merge progress update keeps the fitted lines as they are');
+        assert.equal(buildEpicProgressComment(progress, 'Big Plan', undefined, activity), body);
+        assert.equal(replaceEpicProgressActivityLines(body, activity), body, 'the status pass writes the same comment from the full activity');
+        assert.equal(replaceEpicProgressActivityLines(buildEpicProgressComment(progress, 'Big Plan'), activity), body, 'and inserts the same lines into a comment without any');
+    });
+
+    test('fitting activity lines gives the In progress line what the Up next line leaves, and drops a line only when not even its count fits', () => {
+        const lines = ['In progress: #1 (a); #2 (b); #3 (c)', 'Up next: #4 (d); #5 (e)'];
+        assert.deepEqual(fitEpicProgressActivityLines(lines, 100), lines, 'within the budget the lines are untouched');
+        assert.deepEqual(fitEpicProgressActivityLines(lines, 60), ['In progress: #1 (a); and 2 more', 'Up next: #4 (d); #5 (e)']);
+        assert.deepEqual(fitEpicProgressActivityLines(lines, 54), ['In progress: and 3 more', 'Up next: #4 (d); #5 (e)']);
+        assert.deepEqual(fitEpicProgressActivityLines(lines, 46), ['Up next: #4 (d); #5 (e)'], 'a line whose count does not fit its share is left out');
+        assert.deepEqual(fitEpicProgressActivityLines(['In progress: #1 (a); and 7 more', 'Up next: none'], 44), ['In progress: and 8 more', 'Up next: none'],
+            'entries already counted stay counted');
+        assert.deepEqual(fitEpicProgressActivityLines([], 0), []);
+        assert.deepEqual(renderEpicProgressActivity({ inProgress: [{ prNumber: 1, issueNumber: null, title: 'a; b', state: 'x; y' }], upNext: [] }),
+            ['In progress: #1 (a, b) - x, y', 'Up next: none'], 'titles keep no entry separator, so a line splits into its entries again');
+    });
 });
+
+/** `children` open children and `upNext` planned issues, each with the longest title the activity lines keep. */
+function largeActivity(children: number, upNext: number) {
+    const title = 'T'.repeat(120);
+    return {
+        inProgress: Array.from({ length: children }, (_, i) => ({ prNumber: 10000 + i, issueNumber: 5000 + i, title, state: null })),
+        upNext: Array.from({ length: upNext }, (_, i) => ({ issueNumber: 7000 + i, title })),
+    };
+}
 
 describe('updateEpicMergeProgress', () => {
     test('creates the tracking comment on the first child merge', async () => {
@@ -268,6 +316,30 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(result.trackingComment, 'updated');
         const tracking = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
         assert.equal(tracking.body, buildEpicProgressComment({ merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] }, 'Big Plan', undefined, activity));
+    });
+
+    test('a child merge that grows a full progress comment past the limit counts one more entry instead of failing', async () => {
+        // The comment the status pass filled to the limit, with a plan name chosen so that only a few characters remain.
+        const activity = renderEpicProgressActivity(largeActivity(900, 100));
+        const before = { merged: 0, total: 902, excluded: 0, mergedPullRequests: [] };
+        const slack = EPIC_PROGRESS_COMMENT_MAX_LENGTH - buildEpicProgressComment(before, 'Big Plan', undefined, activity).length;
+        const planName = `Big Plan${'x'.repeat(Math.max(0, slack - 5))}`;
+        const existing = buildEpicProgressComment(before, planName, undefined, activity);
+        assert.ok(EPIC_PROGRESS_COMMENT_MAX_LENGTH - existing.length < 'Merged child PRs: #201'.length, 'the merged list to come does not fit as is');
+        const omittedOf = (body: string) => Number(/; and (\d+) more$/m.exec(body)?.[1]);
+        const pulls = [
+            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' },
+            { number: 202, state: 'open', merged_at: null },
+        ];
+        const octokit = createOctokit(pulls, [{ id: 7, body: existing, user: { login: 'propr-dev[bot]' } }]);
+        const result = await updateEpicMergeProgress({ ...baseRequest, planName }, 'test', { getOctokit: async () => octokit });
+        assert.strictEqual(result.trackingComment, 'updated');
+        const tracking = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
+        assert.ok(tracking.body.length <= EPIC_PROGRESS_COMMENT_MAX_LENGTH, `${tracking.body.length} characters is more than GitHub accepts`);
+        assert.match(tracking.body, /\*\*1 out of 2 PRs merged\*\*/);
+        assert.match(tracking.body, /Merged child PRs: #201\n\nIn progress: #10000 /);
+        assert.equal(omittedOf(tracking.body), omittedOf(existing) + 1, 'one entry gave way to the merged child PR');
+        assert.deepEqual(extractEpicProgressActivityLines(tracking.body)[1], extractEpicProgressActivityLines(existing)[1], 'the Up next line is kept whole');
     });
 
     test('does not repost the confirmation or edit an unchanged tracking comment on redelivery', async () => {
