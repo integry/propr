@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  disconnectPluginOAuth, getPlugin, installPlugin, PluginApiError, setPluginConnection, setPluginEnabled, setPluginRepositories, startPluginOAuth, uninstallPlugin,
+  approvePlugin, disconnectPluginOAuth, getPlugin, installPlugin, PluginApiError, setPluginConnection, setPluginEnabled, setPluginRepositories, startPluginOAuth, uninstallPlugin,
   type PluginView,
 } from '../../api/pluginsApi';
 import { exampleAt, examplePlugin, renderPluginsPage } from './pluginFixtures.testUtils';
@@ -218,5 +218,52 @@ describe('Plugin detail', () => {
     expect(within(approval).getByRole('button', { name: 'Approve' })).toBeDisabled();
     fireEvent.click(within(approval).getByRole('checkbox', { name: /propr-fixture-mcp@1\.1\.0/ }));
     expect(within(approval).getByRole('button', { name: 'Approve' })).toBeEnabled();
+  });
+
+  it('clears a ticked approval when a refresh after sign-in changes the package version or variables of that server', async () => {
+    vi.spyOn(window, 'open').mockReturnValue({ opener: {}, location: { href: '' }, close: vi.fn() } as unknown as Window);
+    const pending = (version: string, secretEnv: string[]): PluginView => ({
+      ...exampleAt('connected'), needsApproval: true, pendingAcknowledgements: [{ server: 'example-local', package: 'propr-fixture-mcp', version, secretEnv }],
+    });
+    await open(pending('1.1.0', ['FIXTURE_TOKEN']));
+    const approval = () => screen.getByTestId('plugin-approval');
+    fireEvent.click(within(approval()).getByRole('checkbox', { name: /propr-fixture-mcp@1\.1\.0/ }));
+    expect(within(approval()).getByRole('button', { name: 'Approve' })).toBeEnabled();
+
+    vi.mocked(startPluginOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize', server: 'example-remote' });
+    const oauth = within(step('Connect')).getAllByTestId('plugin-connection')[0];
+    await act(async () => { fireEvent.click(await within(oauth).findByRole('button', { name: 'Reconnect' })); });
+    vi.mocked(getPlugin).mockResolvedValueOnce(detail(pending('1.2.0', ['FIXTURE_TOKEN'])));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    const upgraded = within(approval()).getByRole('checkbox', { name: /propr-fixture-mcp@1\.2\.0/ });
+    expect(upgraded).not.toBeChecked();
+    expect(within(approval()).getByRole('button', { name: 'Approve' })).toBeDisabled();
+
+    fireEvent.click(upgraded);
+    vi.mocked(getPlugin).mockResolvedValueOnce(detail(pending('1.2.0', ['FIXTURE_TOKEN', 'FIXTURE_SECRET'])));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(within(approval()).getByRole('checkbox', { name: /FIXTURE_SECRET/ })).not.toBeChecked();
+    expect(within(approval()).getByRole('button', { name: 'Approve' })).toBeDisabled();
+
+    fireEvent.click(within(approval()).getByRole('checkbox', { name: /FIXTURE_SECRET/ }));
+    vi.mocked(approvePlugin).mockResolvedValueOnce({ plugin: exampleAt('connected') });
+    await act(async () => { fireEvent.click(within(approval()).getByRole('button', { name: 'Approve' })); });
+    expect(approvePlugin).toHaveBeenCalledTimes(1);
+    expect(approvePlugin).toHaveBeenCalledWith('example-pack', ['example-local']);
+  });
+
+  it('clears a ticked install acknowledgement when the plugin read after a refusal changes that server', async () => {
+    await open(examplePlugin());
+    const install = () => step('Install');
+    fireEvent.click(within(install()).getByRole('checkbox', { name: /propr-fixture-mcp@1\.0\.0/ }));
+    const changed = examplePlugin();
+    const servers = changed.manifest!.contributes.mcpServers.map(server => (server.kind === 'package' ? { ...server, version: '1.0.1' } : server));
+    changed.manifest = { ...changed.manifest!, contributes: { ...changed.manifest!.contributes, mcpServers: servers } };
+    vi.mocked(getPlugin).mockResolvedValueOnce(detail(changed));
+    vi.mocked(installPlugin).mockRejectedValueOnce(new PluginApiError(409, 'The plugin manifest changed'));
+    await act(async () => { fireEvent.click(within(install()).getByRole('button', { name: 'Install' })); });
+    expect(installPlugin).toHaveBeenCalledWith('example-pack', ['example-local']);
+    expect(within(install()).getByRole('checkbox', { name: /propr-fixture-mcp@1\.0\.1/ })).not.toBeChecked();
+    expect(within(install()).getByRole('button', { name: 'Install' })).toBeDisabled();
   });
 });
