@@ -25,7 +25,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy ${{ inputs.release_tag }} to app.propr.dev
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # The Cloudflare token lives only in this protected environment, so no
     # build, PR or other release job can read it. Its deployment policy allows

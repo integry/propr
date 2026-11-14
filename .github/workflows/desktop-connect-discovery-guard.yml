@@ -27,7 +27,7 @@ concurrency:
 jobs:
   classify:
     name: Classify changed surfaces
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -191,7 +191,7 @@ jobs:
     name: Packaged Connect Discovery Guard
     needs: [classify, packaged-connect-discovery]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
