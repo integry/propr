@@ -38,7 +38,9 @@ export interface ExtensionCatalogEntry {
 }
 export interface ExtensionSkillBundle {
   id: string; instanceId: string; digest: string; name: string; files: number; bytes: number;
-  source: { kind: 'archive'; filename: string } | { kind: 'github'; repository: string; commit: string; directory: string };
+  source: { kind: 'archive'; filename: string } | { kind: 'github'; repository: string; commit: string; directory: string }
+    /** A skill folder shipped inside an official plugin, at that plugin version. */
+    | { kind: 'plugin'; plugin: string; version: string; path: string };
   requirements: string[]; createdAt: number; auditActor: string;
 }
 /**

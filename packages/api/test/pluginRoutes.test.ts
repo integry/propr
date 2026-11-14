@@ -13,6 +13,11 @@ import { getOfficialPlugin } from '../../plugins/src/index.js';
 import { PluginStore } from '../../core/src/plugins/pluginStore.js';
 import { up as identityMigration } from '../../core/src/db/migrations/20261013210000_extension_profiles.js';
 import { up as pluginMigration } from '../../core/src/db/migrations/20261114000000_plugin_installations.js';
+import { up as grantMigration } from '../../core/src/db/migrations/20261013220000_extension_grant_network.js';
+import { up as libraryMigration } from '../../core/src/db/migrations/20261113000000_extension_library.js';
+import { up as oauthMigration } from '../../core/src/db/migrations/20261113120000_extension_oauth.js';
+import { ExtensionOAuthStore, setExtensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
+import { OAUTH_MCP_URL, syntheticOAuthProvider } from '../../../test/fixtures/extensionOAuthFixture.js';
 
 const SENTINEL = 'plugin-api-token-sentinel-41c7';
 const ID = 'example-pack';
@@ -37,12 +42,17 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  await identityMigration(database); await pluginMigration(database);
+  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database);
   // 3 holds the admin role in the session but is no longer a durable administrator.
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }, { github_user_id: '3', role: 'member' }]);
-  const example = getOfficialPlugin(ID, { includeDevelopment: true })!.manifest;
+  // The remote server at the synthetic OAuth provider's address literal: no DNS in tests.
+  const official = structuredClone(getOfficialPlugin(ID, { includeDevelopment: true })!.manifest);
+  official.contributes.mcpServers[0] = { ...official.contributes.mcpServers[0], url: OAUTH_MCP_URL } as typeof official.contributes.mcpServers[0];
+  const example = pluginManifestSchema.parse(official);
   let catalog: PluginManifest[] = [example];
   const store = new PluginStore(database, { SYSTEM_TASK_SECRET: 'plugin-api-custody' }, async () => catalog);
+  const synthetic = syntheticOAuthProvider({ advertise: { dynamic: true } });
+  setExtensionOAuth(store.library, new ExtensionOAuthStore(store.library, { transport: synthetic.transport, retryDelayMs: 1 }));
 
   const app = express();
   app.use(rateLimit({ windowMs: 60_000, limit: 1000 }));
@@ -50,9 +60,10 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   app.use((req, _res, next) => {
     const actor = req.get('x-test-actor'); if (actor) req.user = { id: actor, username: 'fixture' } as typeof req.user;
     const member = req.get('x-test-role') === 'member';
-    req.authorization = { role: member ? 'member' : 'admin', permissions: member ? [] : ['instance.manage_settings'], source: 'local' }; next();
+    req.authorization = { role: member ? 'member' : 'admin', permissions: member ? [] : ['instance.manage_settings'], source: 'local' };
+    (req as { sessionID?: string }).sessionID = req.get('x-test-session') ?? 'session-a'; next();
   });
-  const entries = createPluginRouteEntries(createPluginRoutes(store));
+  const entries = createPluginRouteEntries(createPluginRoutes(store, { API_PUBLIC_URL: 'https://propr.example.com' }));
   registerRouteEntries(app, entries);
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   t.after(async () => { await new Promise<void>(r => server.close(() => r())); await database.destroy(); await (await import('@propr/core')).closeConnection(); await fs.rm(root, { recursive: true, force: true }); });
@@ -94,8 +105,43 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   assert.equal(connected.body.plugin.connections.find((c: { name: string }) => c.name === 'example-token').state, 'connected');
   assert.equal((await call('PUT', `/${ID}/connections/example-account`, { value: SENTINEL })).status, 400);
   assert.equal((await call('PUT', `/${ID}/connections/missing`, { value: SENTINEL })).status, 404);
-  assert.equal((await call('PUT', `/${ID}/enabled`, { enabled: true })).body.plugin.state, 'enabled');
-  assert.equal((await call('PUT', `/${ID}/enabled`, { enabled: false })).body.plugin.state, 'installed');
+  const enabled = await call('PUT', `/${ID}/enabled`, { enabled: true });
+  assert.equal(enabled.body.plugin.state, 'enabled');
+  assertConforms(schemas.PluginResponse, enabled.body, 'enable');
+  // The read model lists the contributions with their managed library items; the plugin's repository limit applies to them.
+  const contributions = enabled.body.plugin.contributions;
+  assert.deepEqual(contributions.mcpServers.map((s: { name: string; managed: unknown }) => [s.name, s.managed]), [
+    ['example-remote', { kind: 'server', name: 'example-remote', enabled: true, active: true }],
+    ['example-local', { kind: 'server', name: 'example-local', enabled: true, active: true }],
+  ]);
+  assert.equal(contributions.skills[0].managed.kind, 'skill');
+  assert.equal(contributions.mcpServers[0].href, '/api/instance/extensions/v1');
+  assert.deepEqual(contributions.automationTemplates.map((t: { catalogId: string; available: boolean }) => [t.catalogId, t.available]), [['example-weekly-digest', true]]);
+  const libraryItems = (await store.library.readLibrary('1'));
+  assert.deepEqual([...libraryItems.servers, ...libraryItems.skills].map(item => item.repositories), [['acme/app'], ['acme/app'], ['acme/app']]);
+
+  // OAuth connections: start, complete (as the provider's redirect would) and disconnect.
+  assert.equal(enabled.body.plugin.connections.find((c: { name: string }) => c.name === 'example-account').state, 'not_connected');
+  assert.equal((await call('POST', `/${ID}/connections/example-token/oauth/start`, {})).status, 404);
+  assert.equal((await call('POST', `/${ID}/connections/example-account/oauth/start`, { extra: 1 })).status, 400);
+  const started = await call('POST', `/${ID}/connections/example-account/oauth/start`, {});
+  assert.equal(started.status, 200);
+  assertConforms(schemas.PluginOAuthStartResponse, started.body, 'start OAuth');
+  assert.equal(started.body.server, 'example-remote');
+  const params = synthetic.authorize(started.body.authorizationUrl);
+  assert.equal((await call('POST', `/${ID}/connections/example-account/oauth/complete`, params, { ...admin, 'x-test-session': 'session-b' })).status, 403, 'only the session that started it completes it');
+  const second = await call('POST', `/${ID}/connections/example-account/oauth/start`, {});
+  const oauthDone = await call('POST', `/${ID}/connections/example-account/oauth/complete`, synthetic.authorize(second.body.authorizationUrl));
+  assert.equal(oauthDone.status, 200, JSON.stringify(oauthDone.body));
+  assertConforms(schemas.PluginResponse, oauthDone.body, 'complete OAuth');
+  assert.equal(oauthDone.body.plugin.connections.find((c: { name: string }) => c.name === 'example-account').state, 'connected');
+  const oauthOff = await call('POST', `/${ID}/connections/example-account/oauth/disconnect`, {});
+  assert.equal(oauthOff.body.plugin.connections.find((c: { name: string }) => c.name === 'example-account').state, 'not_connected');
+
+  const disabled = await call('PUT', `/${ID}/enabled`, { enabled: false });
+  assert.equal(disabled.body.plugin.state, 'installed');
+  assert.deepEqual(disabled.body.plugin.contributions.mcpServers.map((s: { managed: { active: boolean } }) => s.managed.active), [false, false]);
+  assert.equal(disabled.body.plugin.contributions.automationTemplates[0].available, false);
   const reenabled = await call('PUT', `/${ID}/enabled`, { enabled: true });
   assert.equal(reenabled.body.plugin.state, 'enabled');
   assert.equal(reenabled.body.plugin.installation.settings.verbosity, 'quiet', 'settings survive disable');
@@ -150,9 +196,12 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   const disabledBeforeUninstall = await call('POST', `/${ID}/uninstall`, { confirm: ID });
   assert.equal(disabledBeforeUninstall.body.plugin.state, 'available');
   assert.equal((await database('plugin_secrets').count({ n: '*' }))[0].n, 0);
+  const emptied = await store.library.readLibrary('1');
+  assert.deepEqual([emptied.servers, emptied.skills], [[], []], 'uninstall removes the managed items');
+  bodies.push(JSON.stringify(await store.library.history('1')));
   const audit = await call('GET', `/${ID}`);
   assert.deepEqual(audit.body.plugin.audit.map((e: { action: string }) => e.action).reverse(), [
-    'install', 'update_settings', 'set_repositories', 'set_connection', 'enable', 'disable', 'enable', 'approve', 'uninstall',
+    'install', 'update_settings', 'set_repositories', 'set_connection', 'enable', 'start_oauth', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'disable', 'enable', 'approve', 'uninstall',
   ]);
 
   for (const text of bodies) assert.ok(!text.includes(SENTINEL), 'no response carries a connection secret');

@@ -80,6 +80,23 @@ revision. Enabling or disabling an item carries the sealed credentials into the 
 revision unchanged, without decrypting them. Removing or renaming an item that an automation adds explicitly is
 refused with a message naming those automations; remove it from them first.
 
+### Managed items
+
+An installed [plugin](./plugins.md#what-an-enabled-plugin-adds) adds its MCP
+servers and skills to the library as **managed items**, tagged with the plugin
+id (`managedBy: { plugin, item, active }`, shown as a Plugin badge in the
+settings screen). Their definition comes from the plugin manifest and is
+read-only: a save may change only `enabled`, `repositories`, `agents` and
+`autoApply`. Saves that change anything else on a managed item (for a package
+server, also its package, version, integrity value, arguments and variables),
+remove it or add an item with `managedBy` are refused, and so is replacing its
+credential: a managed item's credential or secret variables come from the
+plugin's connections. The plugin's own state wins over the item's: while the
+plugin is disabled, or a package server waits for a new acknowledgement after
+an upgrade, the item is inactive (`active: false`) and applies to no run
+whatever its enabled switch says. Uninstalling the plugin removes its managed
+items.
+
 ## Which runs use extensions
 
 At launch, Core resolves the run's extension set against the **current** library

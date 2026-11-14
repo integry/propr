@@ -5,6 +5,9 @@ import { getOfficialPlugin } from '../../plugins/src/index.js';
 import { extensionTestResources } from './helpers/extensionTestResources.js';
 import { up as identityMigration } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as pluginMigration } from '../src/db/migrations/20261114000000_plugin_installations.js';
+import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
+import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
+import { up as oauthMigration } from '../src/db/migrations/20261113120000_extension_oauth.js';
 import { PluginError, PluginStore } from '../src/plugins/pluginStore.js';
 import { officialPluginCatalog } from '../src/plugins/pluginCatalog.js';
 import logger from '../src/utils/logger.js';
@@ -33,7 +36,7 @@ async function fixture(t: TestContext, initial: PluginManifest = example) {
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  await identityMigration(database); await pluginMigration(database);
+  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database);
   let manifests: PluginManifest[] = [initial];
   let clock = 1_700_000_000_000;
   const store = new PluginStore(database, { SYSTEM_TASK_SECRET: 'plugin-store-test-root' }, async () => manifests, () => clock);

@@ -46,8 +46,8 @@ export function ExtensionSkillsList({ state }: { state: ExtensionLibraryState })
       {skills.length === 0 && !editing && <p className="text-sm text-slate-500">No skills yet.</p>}
       <ul className="space-y-2">
         {skills.map(skill => (editing?.opened?.bundleId === skill.bundleId ? <li key={skill.bundleId}>{form(editing.opened)}</li> : (
-          <ExtensionItemRow key={skill.bundleId} testId="extension-skill" name={nameOf(skill.bundleId)}
-            kind={bundleOf(skill.bundleId)?.source.kind === 'github' ? 'Skill from GitHub' : 'Skill archive'}
+          <ExtensionItemRow key={skill.bundleId} testId="extension-skill" managedBy={skill.managedBy} name={nameOf(skill.bundleId)}
+            kind={({ github: 'Skill from GitHub', plugin: 'Skill from a plugin', archive: 'Skill archive' } as const)[bundleOf(skill.bundleId)?.source.kind ?? 'archive']}
             item={skill} enabled={state.shownEnabled(skillRef(skill), skill.enabled)} pending={state.isPending(skillRef(skill))}
             busy={editing !== null} notes={itemNotes(skill, { usage: state.usage, choices: state.choices })}
             onToggle={enabled => void state.toggle(skillRef(skill), nameOf(skill.bundleId), enabled)}

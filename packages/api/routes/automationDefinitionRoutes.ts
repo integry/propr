@@ -1,3 +1,4 @@
+import { automationTemplateCatalog } from '../../core/src/plugins/pluginTemplates.js';
 import { ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
 /* eslint-disable max-lines -- automation definitions, their input files and their runs share one owner-scoped HTTP boundary */
 import path from 'node:path';
@@ -40,7 +41,6 @@ import {
 import {
   AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AUTOMATION_DEFINITION_CONTRACT,
-  AUTOMATION_TEMPLATE_CATALOG,
   automationRunNoChangeReason,
   hasAutomationExtensions,
   type AutomationExtensions,
@@ -420,10 +420,10 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     res.json(AUTOMATION_DEFINITION_CONTRACT);
   });
 
-  /** The shipped template catalog; a template only prefills the new-automation form and creates nothing. */
+  /** The template catalog: shipped templates and those of enabled plugins (marked with `plugin`). A template only prefills the new-automation form and creates nothing. */
   const templates = handler('Failed to load the automation template catalog', async (req, res) => {
     requireOwner(req);
-    res.json(AUTOMATION_TEMPLATE_CATALOG);
+    res.json(await automationTemplateCatalog(database));
   });
 
   const create = handler('Failed to create automation definition', async (req, res) => {

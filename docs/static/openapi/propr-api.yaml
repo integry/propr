@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 332
-    documented: 94
+    total: 335
+    documented: 97
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4999,10 +4999,172 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/complete:
+    post:
+      operationId: completePluginOAuth
+      summary: Complete a sign-in of this connection with the state and code the provider returned, in the session that started it. The extension OAuth callback completes it too.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginOAuthCompleteRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/disconnect:
+    post:
+      operationId: disconnectPluginOAuth
+      summary: "Disconnect an `oauth` connection: its managed servers' tokens are revoked where possible and deleted, and later runs leave the servers out."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/start:
+    post:
+      operationId: startPluginOAuth
+      summary: Start the extension OAuth sign-in of an `oauth` connection for its managed MCP server, bound to this browser session. ProPR identifies itself as it does for library servers.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The authorization URL to open.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginOAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
   /api/instance/plugins/v1/{pluginId}/enabled:
     put:
       operationId: setPluginEnabled
-      summary: Enable or disable. Enabling is refused (409, with the reasons) while a required setting, a required token connection or a secret acknowledgement is missing. Disabling keeps settings and connections.
+      summary: Enable or disable. Enabling is refused (409, with the reasons) while a required setting, a required token connection or a secret acknowledgement is missing. Enabling activates the plugin's managed extension library items and lists its automation templates; disabling deactivates and hides them and keeps settings and connections.
       description: |-
         Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
 
@@ -5194,7 +5356,7 @@ paths:
   /api/instance/plugins/v1/{pluginId}/uninstall:
     post:
       operationId: uninstallPlugin
-      summary: "Uninstall: deletes the installation, its settings and its connections. The audit trail stays."
+      summary: "Uninstall: deletes the installation, its settings, its connections and its managed extension library items. Refused (409, naming them) while an automation adds a managed item explicitly. The audit trail stays."
       description: |-
         Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
 
@@ -10836,6 +10998,23 @@ components:
                   autoApply:
                     default: true
                     type: boolean
+                  managedBy:
+                    type: object
+                    properties:
+                      plugin:
+                        type: string
+                        maxLength: 48
+                        pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                      item:
+                        type: string
+                        pattern: ^[a-z][a-z0-9_-]{0,47}$
+                      active:
+                        type: boolean
+                    required:
+                      - plugin
+                      - item
+                      - active
+                    additionalProperties: false
                 required:
                   - kind
                   - name
@@ -10892,6 +11071,23 @@ components:
                   autoApply:
                     default: true
                     type: boolean
+                  managedBy:
+                    type: object
+                    properties:
+                      plugin:
+                        type: string
+                        maxLength: 48
+                        pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                      item:
+                        type: string
+                        pattern: ^[a-z][a-z0-9_-]{0,47}$
+                      active:
+                        type: boolean
+                    required:
+                      - plugin
+                      - item
+                      - active
+                    additionalProperties: false
                 required:
                   - kind
                   - name
@@ -10993,6 +11189,23 @@ components:
                   autoApply:
                     default: true
                     type: boolean
+                  managedBy:
+                    type: object
+                    properties:
+                      plugin:
+                        type: string
+                        maxLength: 48
+                        pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                      item:
+                        type: string
+                        pattern: ^[a-z][a-z0-9_-]{0,47}$
+                      active:
+                        type: boolean
+                    required:
+                      - plugin
+                      - item
+                      - active
+                    additionalProperties: false
                 required:
                   - name
                   - enabled
@@ -11038,6 +11251,23 @@ components:
               autoApply:
                 default: true
                 type: boolean
+              managedBy:
+                type: object
+                properties:
+                  plugin:
+                    type: string
+                    maxLength: 48
+                    pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                  item:
+                    type: string
+                    pattern: ^[a-z][a-z0-9_-]{0,47}$
+                  active:
+                    type: boolean
+                required:
+                  - plugin
+                  - item
+                  - active
+                additionalProperties: false
             required:
               - bundleId
               - enabled
@@ -11050,7 +11280,7 @@ components:
         - servers
         - skills
       additionalProperties: false
-      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
+      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
     ExtensionLibraryRead:
       type: object
       properties:
@@ -12592,7 +12822,8 @@ components:
                     enum:
                       - connected
                       - not_connected
-                    description: "`oauth` connections report not_connected until OAuth sign-in for plugins is available."
+                      - needs_sign_in
+                    description: An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh.
                   required:
                     type: boolean
                     description: A `token` connection a contributed MCP server uses; enabling waits for it.
@@ -12651,6 +12882,117 @@ components:
               items:
                 type: string
               description: Why enabling is refused right now; empty when it can be enabled.
+            contributions:
+              type: object
+              properties:
+                mcpServers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        description: The server name in the manifest.
+                      kind:
+                        type: string
+                        enum:
+                          - https
+                          - package
+                      managed:
+                        anyOf:
+                          - type: object
+                            properties:
+                              kind:
+                                type: string
+                                const: server
+                              name:
+                                type: string
+                                description: The library item name; prefixed with the plugin id after a name collision.
+                              enabled:
+                                type: boolean
+                                description: The library item's own enabled switch.
+                              active:
+                                type: boolean
+                                description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                            required:
+                              - kind
+                              - name
+                              - enabled
+                              - active
+                            additionalProperties: false
+                          - type: "null"
+                      href:
+                        type: string
+                        description: The extension library route that lists and edits the item.
+                    required:
+                      - name
+                      - kind
+                      - managed
+                      - href
+                    additionalProperties: false
+                skills:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      managed:
+                        anyOf:
+                          - type: object
+                            properties:
+                              kind:
+                                type: string
+                                const: skill
+                              bundleId:
+                                type: string
+                              enabled:
+                                type: boolean
+                                description: The library item's own enabled switch.
+                              active:
+                                type: boolean
+                                description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                            required:
+                              - kind
+                              - bundleId
+                              - enabled
+                              - active
+                            additionalProperties: false
+                          - type: "null"
+                      href:
+                        type: string
+                    required:
+                      - name
+                      - managed
+                      - href
+                    additionalProperties: false
+                automationTemplates:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      catalogId:
+                        type: string
+                        description: The template id in the automation template catalog.
+                      available:
+                        type: boolean
+                        description: "Listed in the catalog: the plugin is enabled."
+                      href:
+                        type: string
+                    required:
+                      - id
+                      - catalogId
+                      - available
+                      - href
+                    additionalProperties: false
+              required:
+                - mcpServers
+                - skills
+                - automationTemplates
+              additionalProperties: false
+              description: The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed.
             audit:
               type: array
               items:
@@ -12668,6 +13010,9 @@ components:
                       - disable
                       - approve
                       - uninstall
+                      - start_oauth
+                      - complete_oauth
+                      - disconnect_oauth
                   actor:
                     type: string
                   at:
@@ -12699,6 +13044,10 @@ components:
       required:
         - plugin
       additionalProperties: false
+    PluginEmptyRequest:
+      type: object
+      properties: {}
+      additionalProperties: false
     PluginEnabledRequest:
       type: object
       properties:
@@ -12716,6 +13065,34 @@ components:
             $ref: "#/components/schemas/PluginView"
       required:
         - plugins
+      additionalProperties: false
+    PluginOAuthCompleteRequest:
+      type: object
+      properties:
+        state:
+          type: string
+          description: The `state` the provider returned to the redirect URI.
+        code:
+          type: string
+        error:
+          type: string
+        iss:
+          type: string
+      required:
+        - state
+      additionalProperties: false
+    PluginOAuthStartResponse:
+      type: object
+      properties:
+        authorizationUrl:
+          type: string
+          description: Open this URL to sign in; the provider redirects to the extension OAuth callback.
+        server:
+          type: string
+          description: The managed library server being signed in.
+      required:
+        - authorizationUrl
+        - server
       additionalProperties: false
     PluginRepositoriesRequest:
       type: object
@@ -13077,7 +13454,8 @@ components:
                 enum:
                   - connected
                   - not_connected
-                description: "`oauth` connections report not_connected until OAuth sign-in for plugins is available."
+                  - needs_sign_in
+                description: An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh.
               required:
                 type: boolean
                 description: A `token` connection a contributed MCP server uses; enabling waits for it.
@@ -13136,6 +13514,117 @@ components:
           items:
             type: string
           description: Why enabling is refused right now; empty when it can be enabled.
+        contributions:
+          type: object
+          properties:
+            mcpServers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: The server name in the manifest.
+                  kind:
+                    type: string
+                    enum:
+                      - https
+                      - package
+                  managed:
+                    anyOf:
+                      - type: object
+                        properties:
+                          kind:
+                            type: string
+                            const: server
+                          name:
+                            type: string
+                            description: The library item name; prefixed with the plugin id after a name collision.
+                          enabled:
+                            type: boolean
+                            description: The library item's own enabled switch.
+                          active:
+                            type: boolean
+                            description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                        required:
+                          - kind
+                          - name
+                          - enabled
+                          - active
+                        additionalProperties: false
+                      - type: "null"
+                  href:
+                    type: string
+                    description: The extension library route that lists and edits the item.
+                required:
+                  - name
+                  - kind
+                  - managed
+                  - href
+                additionalProperties: false
+            skills:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  managed:
+                    anyOf:
+                      - type: object
+                        properties:
+                          kind:
+                            type: string
+                            const: skill
+                          bundleId:
+                            type: string
+                          enabled:
+                            type: boolean
+                            description: The library item's own enabled switch.
+                          active:
+                            type: boolean
+                            description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                        required:
+                          - kind
+                          - bundleId
+                          - enabled
+                          - active
+                        additionalProperties: false
+                      - type: "null"
+                  href:
+                    type: string
+                required:
+                  - name
+                  - managed
+                  - href
+                additionalProperties: false
+            automationTemplates:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  catalogId:
+                    type: string
+                    description: The template id in the automation template catalog.
+                  available:
+                    type: boolean
+                    description: "Listed in the catalog: the plugin is enabled."
+                  href:
+                    type: string
+                required:
+                  - id
+                  - catalogId
+                  - available
+                  - href
+                additionalProperties: false
+          required:
+            - mcpServers
+            - skills
+            - automationTemplates
+          additionalProperties: false
+          description: The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed.
       required:
         - id
         - available
