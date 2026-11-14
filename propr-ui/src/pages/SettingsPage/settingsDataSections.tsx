@@ -11,7 +11,7 @@ import { canManageHeldFollowups, canManageInstanceStorage } from './settingsPerm
 /** MCP tools, skills and system packages that agents can use inside their containers. */
 export function agentExtensionSections(): SettingsNavigationSection[] {
   return [
-    { id: 'agent-extensions', category: 'agent-extensions', searchText: 'agent extensions profiles MCP skills instance admin security bundles', content: <AgentExtensionsSection /> },
+    { id: 'agent-extensions', category: 'agent-extensions', searchText: 'agent extensions library MCP skills instance admin security bundles', content: <AgentExtensionsSection /> },
     {
       id: 'agent-runtime-packages',
       category: 'agent-extensions',

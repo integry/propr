@@ -19,7 +19,7 @@ import {
     type StoredAgentRun,
 } from '@propr/core';
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
-import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
+import { agentRunExecutionUpdate, agentTaskOptions, launchCarriesExtensions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
 import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant, type RevokedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import {
@@ -54,7 +54,7 @@ import {
 export const AGENT_ACTION_ABANDONED_REASON = 'The worker running the acting step stopped before it finished; trigger the agent again';
 
 export interface AgentActionProcessorDeps extends Pick<AgentRunProcessorDeps,
-    'getRun' | 'transitionRun' | 'validateDefinition' | 'stateManager' | 'getGitHubAccess' | 'resolveAgent' | 'withCostCap' | 'mcpGrants' | 'checkAgentCapacity' | 'evaluateStreak'> {
+    'getRun' | 'transitionRun' | 'validateDefinition' | 'stateManager' | 'getGitHubAccess' | 'resolveAgent' | 'withCostCap' | 'mcpGrants' | 'checkAgentCapacity' | 'evaluateStreak'>, Partial<Pick<AgentRunProcessorDeps, 'extensionsApply'>> {
     /** Records the action task on an `acting` run; null when another delivery claimed it first. */
     claimAction: (runId: string, actionTaskId: string) => Promise<StoredAgentRun | null>;
     prepareWorkspace: PrepareAgentRunWorkspace;
@@ -477,7 +477,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, () => options.extensionProfile
+                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent }, options)
                     ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
                     : agent.executeTask(options))),
             );

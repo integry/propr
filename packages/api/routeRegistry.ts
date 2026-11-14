@@ -214,12 +214,12 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     voiceRoutes,
     taskSubmissionUpload,
     goalAttachmentUpload,
-    attachmentUpload,
-    automationDefinitionAttachmentUpload,
+    attachmentUpload, automationDefinitionAttachmentUpload,
   } = deps;
   return [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
     ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit],
+    ['get', '/api/task-submission-extensions', taskSubmissionRoutes.extensions],
     ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get],
     ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
     ['get', '/api/goals/capabilities', goalRoutes.capabilities],

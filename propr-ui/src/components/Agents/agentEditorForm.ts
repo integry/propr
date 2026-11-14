@@ -6,13 +6,19 @@ import {
   type AutomationTemplate,
   type AutomationCapability,
   type AutomationDefinitionInput,
+  type AutomationExtensions,
   type PlanIssueBlockedReasonKind,
 } from '@propr/shared';
 import type { AutomationDefinitionRecord } from '../../api/automationDefinitionsApi';
 
 /** The editor's working copy of a definition, shaped for its inputs. */
 export interface AgentEditorForm {
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+  /**
+   * Library items the automation adds, set only once the user changes them so
+   * an edit by someone who cannot manage extensions never sends the field.
+   * Undefined keeps the definition's saved items.
+   */
+  extensions?: AutomationExtensions;
   name: string;
   description: string;
   repositories: string[];
@@ -77,7 +83,6 @@ export const formFromTemplate = (template: AutomationTemplate, current: AgentEdi
 };
 
 export const formFromDefinition = (definition: AutomationDefinitionRecord): AgentEditorForm => ({
-  extensionProfile: definition.extensionProfile,
   name: definition.name,
   description: definition.description ?? '',
   repositories: [...definition.repositories],
@@ -111,7 +116,7 @@ export const EVENT_TRIGGER_FILTER_LOST_MESSAGE =
 
 /** The request body for a create or a full-form update, in the shared input contract. */
 export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput => ({
-  ...(form.extensionProfile !== undefined ? { extensionProfile: form.extensionProfile } : {}),
+  ...(form.extensions !== undefined ? { extensions: form.extensions } : {}),
   name: form.name.trim(),
   description: form.description.trim() || null,
   prompt: form.prompt,

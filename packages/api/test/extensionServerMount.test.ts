@@ -59,11 +59,13 @@ test('server mounts extension gateway before auth, management after auth, and ar
   const gateway = await fetch(base + '/api/extensions/mcp/docs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(gateway.status, 401);
   assert.equal((await gateway.json()).error, 'Extension MCP unavailable'); // Handler, rather than member guard, refused it.
-  const { ExtensionProfileStore } = await import('../../core/src/extensions/extensionProfileStore.js');
-  const store = new ExtensionProfileStore(core.db);
-  const profile = await store.save('1', { version: 1, name: 'Fixture', enabled: true, agentScope: [], repositoryScope: [], mcpServers: [{ kind: 'https', name: 'docs', url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read', authentication: 'none' }], skillBundleIds: [] }, {});
-  const token = await store.createGrant('1', profile, 'fixture-task');
-  await store.activateGrant(token, '1', { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision });
+  const { ExtensionLibraryStore } = await import('../../core/src/extensions/extensionProfileStore.js');
+  const store = new ExtensionLibraryStore(core.db);
+  await store.saveLibrary('1', { version: 1, skills: [], servers: [{ kind: 'https', name: 'docs', url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read', authentication: 'none' }] }, {}, (await store.readLibrary('1')).revision);
+  const context = { agentAlias: 'claude', runtime: 'claude', repositories: ['team/repo'], allowWrite: false };
+  const prepared = await store.resolveLaunch(context, false);
+  const token = await store.createGrant(prepared, 'fixture-task');
+  await store.activateGrant(token, prepared, context);
   const authorizedGateway = await fetch(base + '/api/extensions/mcp/docs', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
   assert.equal(authorizedGateway.status, 200); // No member session is supplied.
   assert.equal((await authorizedGateway.json()).result.tools[0].name, 'lookup');
@@ -77,7 +79,7 @@ test('server mounts extension gateway before auth, management after auth, and ar
   const payload = JSON.stringify({ padding: 'x'.repeat(2 * 1024 * 1024) });
   const archive = await fetch(base + '/api/instance/extensions/v1/skills/archive', { method: 'POST', headers, body: payload });
   assert.equal(archive.status, 400); // Parsed successfully, then invalid archive input.
-  const normal = await fetch(base + '/api/instance/extensions/v1/profiles', { method: 'POST', headers, body: payload });
+  const normal = await fetch(base + '/api/instance/extensions/v1/library', { method: 'POST', headers, body: payload });
   assert.equal(normal.status, 413);
   const oversized = await fetch(base + '/api/instance/extensions/v1/skills/archive', { method: 'POST', headers, body: JSON.stringify({ padding: 'x'.repeat(7 * 1024 * 1024) }) });
   assert.equal(oversized.status, 413);

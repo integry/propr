@@ -65,6 +65,21 @@ The acting step of `preview` and `auto` automations always uses ProPR's MCP serv
 
 If web access must be blocked, choose Claude Code or Codex. For the other runtimes, have an administrator enforce [restricted network mode](./execution-safety.md#restricted-network-mode): agent runs then reach only the allowlisted hosts (Antigravity runs are refused). Agent runs follow restricted mode only when the instance enforces it.
 
+### Extensions
+
+Runs of Claude Code and Codex automations receive the [instance extension library](./agent-extensions.md) items that apply to them: every enabled item with **Apply automatically** whose repository and agent limits match the automation's repositories and agent. An automation can also add library items explicitly with `extensions: { "servers": [...], "skills": [...] }` (library server names and skill bundle ids). Added items are used even when they do not apply automatically, as long as they are enabled and their limits match.
+
+In the automation editor, **Additional extensions** shows two lists, MCP servers and skills, of the library items whose limits allow the automation's repositories and agent. Nothing is selected by default. Items marked *already applies automatically* reach the automation's runs without being added. A selected item that no longer exists, is switched off or no longer matches is still listed, marked *skipped* with the reason, and can be removed. Members see the added items read-only.
+
+- Adding items requires an instance administrator with `instance.manage_settings` and a request with the `X-ProPR-Extensions: 1` header. Every named item must exist in the library when you save. Removing items needs no extra permission.
+- An added item that was disabled, or whose limits no longer match the run, is skipped: the run starts without it and its task timeline records an `extensions.resolved` event listing the items used and the skipped ones with a reason. Skipping is never an error.
+- A library item that an automation adds cannot be removed or renamed from the library until it is removed from the automation; disabling it is always allowed.
+- Report runs and other runs without write authorization leave out write-capability MCP servers. The acting step of `preview` and `auto` automations includes them.
+- Added extensions require a Claude Code or Codex agent (or a default agent of those types); saving otherwise is refused. Items that apply automatically never block other runtimes; those runs start without extensions.
+- A run carries at most 8 MCP servers (including ProPR's own) and 8 skill bundles. When more apply, added items are kept first, then automatic ones by name; the rest are listed as omitted in the `extensions.resolved` event.
+
+`extensions` is returned by the REST API, `get_automation_definition` and `list_automation_definitions` over MCP, and `propr automation show` (also in `--json`).
+
 ### Schedule
 
 **Schedule** is off by default: the automation then runs only when triggered. To run it automatically, enter a standard 5-field cron expression (`minute hour day-of-month month day-of-week`) or pick a preset:
@@ -438,7 +453,7 @@ No retirement version is assigned yet, and this rename does not hide aliases.
 Legacy stored operation receipts keep their original field names throughout
 this migration.
 
-Instance administrators can also manage reusable [agent extension profiles](./agent-extensions.md) for selected Claude and Codex task runs, with explicitly authorized MCP tools and immutable skill bundles.
+Instance administrators manage the [instance extension library](./agent-extensions.md) of MCP servers and skill bundles; automations receive the items that apply automatically plus the ones they add (see [Extensions](#extensions)).
 
 ## Next steps
 

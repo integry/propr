@@ -128,6 +128,11 @@ async function ownedRun(deps: ToolDeps, principal: McpPrincipal, runId: string, 
   return run;
 }
 
+/** Library items the automation adds explicitly; snapshots recorded before the field read as none. */
+function definitionExtensions(definition: Pick<StoredAgentDefinition, 'extensions'>) {
+  return { servers: [...(definition.extensions?.servers ?? [])], skills: [...(definition.extensions?.skills ?? [])] };
+}
+
 function definitionSummary(definition: StoredAgentDefinition) {
   return {
     id: definition.id, name: definition.name, description: definition.description,
@@ -136,6 +141,7 @@ function definitionSummary(definition: StoredAgentDefinition) {
     pauseWhenUnproductive: definition.pauseWhenUnproductive, scheduleCron: definition.scheduleCron, scheduleTimezone: definition.scheduleTimezone,
     scheduleEnabled: definition.scheduleEnabled, nextRunAt: definition.nextRunAt, eventTriggers: definition.eventTriggers,
     updatedAt: definition.updatedAt,
+    extensions: definitionExtensions(definition),
   };
 }
 
@@ -163,6 +169,7 @@ function runDetail(deps: ToolDeps, run: StoredAgentRun) {
   detail.definitionSnapshot = snapshot ? {
     name: snapshot.name, repositories: snapshot.repositories, agentAlias: snapshot.agentAlias, modelName: snapshot.modelName,
     capabilities: snapshot.capabilities, autonomyMode: snapshot.autonomyMode, revision: snapshot.revision,
+    extensions: definitionExtensions(snapshot),
   } : null;
   // Budget the whole tool result, not just the report: every free-text field
   // shares what the rest of the run leaves under the bound, in field order.
@@ -238,7 +245,7 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
         nextOffset: matching.length > args.offset + args.limit ? args.offset + args.limit : null });
     } });
 
-  tools.push({ name: 'get_automation_definition', description: `Read one of your automations in full: prompt, repositories, agent and model, capabilities, autonomy mode, schedule and next scheduled run, event triggers, and input file metadata. ${DEFINITION_NOTE}`, scope: 'read', readOnly: true,
+  tools.push({ name: 'get_automation_definition', description: `Read one of your automations in full: prompt, repositories, agent and model, capabilities, autonomy mode, schedule and next scheduled run, event triggers, input file metadata, and extensions (extension library server names and skill bundle ids the automation adds on top of the library items that apply automatically). ${DEFINITION_NOTE}`, scope: 'read', readOnly: true,
     schema: z.object(definitionShape).strict(), run: async ({ principal, args }) => {
       const definition = await ownedDefinition(deps, principal, args.definitionId, false);
       return ok({ definition: publicAutomationDefinition(definition), url: `${frontendUrl(deps)}/automations/${encodeURIComponent(definition.id)}` });
