@@ -656,34 +656,9 @@ jobs:
         with:
           require-resolution: 'true'
 
-      # The PWA and mobile browser smoke test below runs Playwright `*.pw.ts`
-      # specs. Full-suite discovery matches only `*.test.*`/`*.spec.*`, and the
-      # propr-ui vitest config excludes the Playwright directory, so these
-      # assertions exist nowhere else and stay here.
-      - name: Install Chromium for PWA Smoke Test
-        # `!= 'false'` and not `== 'true'`: an empty decision is never read as
-        # permission to skip.
-        if: steps.filter.outputs.ui != 'false'
-        # A stalled apt mirror otherwise holds the check for an hour.
-        timeout-minutes: 10
-        run: ./scripts/ci-install-chromium.sh
-
-      - name: Run PWA and Mobile Browser Smoke Test
-        if: steps.filter.outputs.ui != 'false'
-        run: |
-          set -euo pipefail
-          # The Playwright web server builds propr-ui, which imports
-          # @propr/shared through its package main. CLI packaging above already
-          # built it from this same checkout and toolchain; build it here only
-          # if that output is not present. @propr/client needs no build: the UI
-          # vite config aliases it to the workspace source.
-          test -f packages/shared/dist/index.js || npm run build -w @propr/shared
-          # Goal lifecycle regressions import the real API socket service,
-          # which requires @propr/core's compiled package entry point. CLI
-          # packaging does not build core, and Run Checks happens later.
-          npm run build -w @propr/core
-          npm run test:browser --workspace=propr-ui
-
+      # Run Checks (build, lint, typecheck of the changed areas) comes before
+      # the browser specs so that a lint or type error is reported in minutes
+      # rather than after the browser run.
       - name: Run Checks
         id: build
         continue-on-error: true
@@ -1095,6 +1070,42 @@ jobs:
           fi
 
           exit $EXIT_CODE
+
+      # The PWA and mobile browser smoke test below runs Playwright `*.pw.ts`
+      # specs. Full-suite discovery matches only `*.test.*`/`*.spec.*`, and the
+      # propr-ui vitest config excludes the Playwright directory, so these
+      # assertions exist nowhere else and stay here.
+      - name: Install Chromium for PWA Smoke Test
+        # `!= 'false'` and not `== 'true'`: an empty decision is never read as
+        # permission to skip. A failed Run Checks skips the browser run: its
+        # result is already a failed job, and the browser specs take far
+        # longer than every other stage here.
+        if: steps.filter.outputs.ui != 'false' && steps.build.outcome != 'failure'
+        # A stalled apt mirror otherwise holds the check for an hour.
+        timeout-minutes: 10
+        run: ./scripts/ci-install-chromium.sh
+
+      - name: Run PWA and Mobile Browser Smoke Test
+        if: steps.filter.outputs.ui != 'false' && steps.build.outcome != 'failure'
+        env:
+          # Spec files run one per worker (propr-ui/playwright.config.ts). A
+          # hosted runner has four CPUs; a rootless worker is expected to be
+          # held to two (docs/ci-runners.md), so it gets two workers.
+          PROPR_BROWSER_TEST_WORKERS: ${{ runner.environment == 'github-hosted' && '4' || '2' }}
+        run: |
+          set -euo pipefail
+          # The Playwright web server builds propr-ui, which imports
+          # @propr/shared through its package main. CLI packaging above already
+          # built it from this same checkout and toolchain; build it here only
+          # if that output is not present. @propr/client needs no build: the UI
+          # vite config aliases it to the workspace source.
+          test -f packages/shared/dist/index.js || npm run build -w @propr/shared
+          # Goal lifecycle regressions import the real API socket service,
+          # which requires @propr/core's compiled package entry point. CLI
+          # packaging does not build core, and Run Checks builds it only when
+          # the core surface changed.
+          npm run build -w @propr/core
+          npm run test:browser --workspace=propr-ui
 
       - name: Finalize failure diagnostics
         if: always() && (failure() || steps.build.outcome == 'failure')

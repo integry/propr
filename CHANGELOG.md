@@ -145,6 +145,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Faster pull request checks**: `Validate Changes` runs its lint, typecheck
+  and build gate before the browser smoke test and skips the browser run when
+  the gate fails, so a lint error is reported in minutes instead of after an
+  hour. The browser specs run on four workers on hosted runners (two on
+  rootless workers) instead of one.
 - **MCP plans can hold 50 issues**: `create_plan`, `update_plan` and
   `publish_plan` accept up to 50 plan issues (previously 20), and
   `implement_plan` starts up to 50 issues per call. Plans made in Studio were
