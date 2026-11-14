@@ -120,6 +120,60 @@ describe('Plugin detail', () => {
     expect(disconnectPluginOAuth).toHaveBeenCalledWith('example-pack', 'example-account');
   });
 
+  it('keeps a confirmed disable when an older background read of the enabled plugin answers later', async () => {
+    vi.spyOn(window, 'open').mockReturnValue({ opener: {}, location: { href: '' }, close: vi.fn() } as unknown as Window);
+    await open(exampleAt('enabled'));
+    vi.mocked(startPluginOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize', server: 'example-remote' });
+    const oauth = within(step('Connect')).getAllByTestId('plugin-connection')[0];
+    await act(async () => { fireEvent.click(await within(oauth).findByRole('button', { name: 'Reconnect' })); });
+
+    let answerRead: (value: ReturnType<typeof detail>) => void = () => {};
+    vi.mocked(getPlugin).mockImplementationOnce(() => new Promise(resolve => { answerRead = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(getPlugin).toHaveBeenCalledTimes(2);
+
+    vi.mocked(setPluginEnabled).mockResolvedValueOnce({ plugin: exampleAt('connected') });
+    await act(async () => { fireEvent.click(within(step('Enable')).getByRole('checkbox', { name: /Enabled/ })); });
+    expect(setPluginEnabled).toHaveBeenLastCalledWith('example-pack', false);
+    expect(badge()).toHaveTextContent('Off');
+
+    await act(async () => { answerRead(detail(exampleAt('enabled'))); });
+    expect(badge()).toHaveTextContent('Off');
+    expect(within(step('Enable')).getByRole('checkbox', { name: /Enabled/ })).not.toBeChecked();
+    expect(screen.getByText('Disabled. Its settings and connections are kept.')).toHaveAttribute('role', 'status');
+  });
+
+  it('drops a read that answers during a mutation and holds the OAuth controls until the mutation returns', async () => {
+    vi.spyOn(window, 'open').mockReturnValue({ opener: {}, location: { href: '' }, close: vi.fn() } as unknown as Window);
+    await open(exampleAt('enabled'));
+    vi.mocked(startPluginOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize', server: 'example-remote' });
+    const oauth = () => within(step('Connect')).getAllByTestId('plugin-connection')[0];
+    await act(async () => { fireEvent.click(await within(oauth()).findByRole('button', { name: 'Reconnect' })); });
+
+    let answerDisable: (value: { plugin: PluginView }) => void = () => {};
+    vi.mocked(setPluginEnabled).mockImplementationOnce(() => new Promise(resolve => { answerDisable = resolve; }));
+    await act(async () => { fireEvent.click(within(step('Enable')).getByRole('checkbox', { name: /Enabled/ })); });
+    expect(within(oauth()).getByRole('button', { name: 'Disconnect' })).toBeDisabled();
+    expect(within(oauth()).getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+
+    vi.mocked(getPlugin).mockResolvedValueOnce(detail(exampleAt('enabled')));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await act(async () => { answerDisable({ plugin: exampleAt('connected') }); });
+    expect(badge()).toHaveTextContent('Off');
+    expect(within(oauth()).getByRole('button', { name: 'Disconnect' })).toBeEnabled();
+    expect(disconnectPluginOAuth).not.toHaveBeenCalled();
+  });
+
+  it('reads the plugin again after a refused action', async () => {
+    await open(exampleAt('connected'));
+    vi.mocked(getPlugin).mockResolvedValueOnce(detail(exampleAt('enabled')));
+    vi.mocked(setPluginEnabled).mockRejectedValueOnce(new PluginApiError(409, 'Already enabled elsewhere'));
+    await act(async () => { fireEvent.click(within(step('Enable')).getByRole('checkbox', { name: /Enabled/ })); });
+    expect(screen.getByRole('alert')).toHaveTextContent('Already enabled elsewhere');
+    expect(getPlugin).toHaveBeenCalledTimes(2);
+    expect(badge()).toHaveTextContent('Enabled');
+  });
+
   it('lists what uninstall removes and shows the API refusal text', async () => {
     await open(exampleAt('connected'));
     fireEvent.click(screen.getByRole('button', { name: 'Uninstall…' }));

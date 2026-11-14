@@ -38,11 +38,19 @@ export function usePluginDetail(id: string) {
   const current = useRef(id);
   current.current = id;
 
+  // Every read and every mutation boundary takes the next number; a read applies only while it is still the latest,
+  // so a read started before (or during) a mutation never replaces the state that mutation returned.
+  const sequence = useRef(0);
+  // One plugin mutation at a time, claimed synchronously so a second click cannot start before the re-render.
+  const mutating = useRef(false);
+
   const reload = useCallback(async () => {
+    const at = ++sequence.current;
+    const latest = () => current.current === id && sequence.current === at && !mutating.current;
     try {
       const { plugin } = await getPlugin(id);
-      if (current.current === id) { setView(plugin); setLoadError(''); }
-    } catch (error) { if (current.current === id) setLoadError(message(error)); }
+      if (latest()) { setView(plugin); setLoadError(''); }
+    } catch (error) { if (latest()) setLoadError(message(error)); }
   }, [id]);
   useEffect(() => { setView(null); setLoadError(''); void reload(); }, [reload]);
 
@@ -58,16 +66,26 @@ export function usePluginDetail(id: string) {
   }, [signingIn, reload]);
 
   const run = useCallback(async (work: () => Promise<{ plugin: PluginView }>, done: string, area: Area = 'general') => {
+    if (mutating.current) return false;
+    mutating.current = true; sequence.current += 1;
     setBusy(true); setErrors({ general: '', uninstall: '' }); setNotice('');
+    let failed = false;
     try {
       const { plugin } = await work();
       setView(plugin); setNotice(done);
       return true;
     } catch (error) {
+      failed = true;
       setErrors(values => ({ ...values, [area]: message(error) }));
       return false;
-    } finally { setBusy(false); }
-  }, []);
+    } finally {
+      // Reads that started before or during the mutation are now stale.
+      sequence.current += 1; mutating.current = false;
+      setBusy(false);
+      // A refused mutation returns no plugin: read the current state again instead of keeping a dropped read's gap.
+      if (failed) void reload();
+    }
+  }, [reload]);
 
   /** Open the provider's sign-in page in a new tab, inside the click so it is not blocked, detached from this page. */
   const connectOAuth = useCallback(async (name: string) => {
@@ -85,6 +103,7 @@ export function usePluginDetail(id: string) {
     } finally { setOAuthBusy(null); }
   }, [id]);
   const disconnectOAuth = useCallback(async (name: string) => {
+    if (mutating.current) return;
     setOAuthBusy(name);
     try { await run(() => disconnectPluginOAuth(id, name), 'Disconnected. Its stored tokens were deleted.'); } finally { setOAuthBusy(null); }
   }, [id, run]);
@@ -92,7 +111,8 @@ export function usePluginDetail(id: string) {
   return {
     view, loadError, errors, notice, busy, reload,
     redirectUri: useRedirectUri(view),
-    oauthBusy: (name: string) => oauthBusy === name,
+    // Another plugin mutation also holds the OAuth controls, so a disconnect cannot race it.
+    oauthBusy: (name: string) => busy || oauthBusy === name,
     connectOAuth, disconnectOAuth,
     install: (acknowledged: string[]) => run(() => installPlugin(id, acknowledged), 'Installed. Connect it, then enable it.'),
     approve: (acknowledged: string[]) => run(() => approvePlugin(id, acknowledged), 'Approved.'),
