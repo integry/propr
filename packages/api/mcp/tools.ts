@@ -10,7 +10,7 @@ import {
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
 } from '@propr/shared';
-import type { FileChangesData } from '@propr/core';
+import type { AgentRunAdmissionSnapshot, FileChangesData } from '@propr/core';
 import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue, cancelUnstartedEpicExecutionQueue, UNSTARTED_EPIC_REASON } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
@@ -40,6 +40,7 @@ import { addArtifactTools } from './toolsArtifacts.js';
 import { addManagementTools } from './toolsManagement.js';
 import { addNotificationTools } from './toolsNotifications.js';
 import { addActivityTools } from './toolsActivity.js';
+import { addAdmissionTools } from './toolsAdmission.js';
 import { addWorkOverviewTools } from './toolsWorkOverview.js';
 import { addStatsTools } from './toolsStats.js';
 import { addDocsTools } from './toolsDocs.js';
@@ -105,7 +106,7 @@ export interface McpTool {
   authorize?: (context: Pick<ToolContext, 'principal' | 'args'>) => Promise<void>;
   run:  (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Readiness evaluator; core's evaluatePullRequestReadiness unless a test injects one. */ pullRequestReadiness?: ReadinessEvaluator }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Readiness evaluator; core's evaluatePullRequestReadiness unless a test injects one. */ pullRequestReadiness?: ReadinessEvaluator ; /** Test hook for get_agent_run_admission; the core snapshot otherwise. */ agentRunAdmissionSnapshot?: () => Promise<AgentRunAdmissionSnapshot> }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };
@@ -194,6 +195,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addManagementTools(tools, deps, { todos, config, runtime });
   addNotificationTools(tools, deps, notifications);
   addActivityTools(tools, deps);
+  addAdmissionTools(tools, deps);
   addWorkOverviewTools(tools, deps, listScope);
   addStatsTools(tools, deps, listScope);
   addDocsTools(tools, deps);

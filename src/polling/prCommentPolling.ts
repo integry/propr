@@ -1,4 +1,4 @@
-import { logger } from '@propr/core';
+import { parentScopeFromCommentJob, parentScopeFromIssueBody, logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { handleError } from '@propr/core';
 import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
@@ -252,6 +252,17 @@ async function prHasProcessingLabel(pr: PullRequest): Promise<boolean> {
     return hasValidTriggerLabel(pr.labels || []);
 }
 
+/** Retain the original resource proof before follow-up keywords are stripped. */
+function commentAdmissionProof(comment: PRComment, context: CommentContext, number: number): Pick<UnprocessedComment, 'agentAdmissionParentProof' | 'agentAdmissionParent'> {
+    return {
+        agentAdmissionParentProof: comment.body ?? undefined,
+        agentAdmissionParent: parentScopeFromIssueBody(comment.body, {
+            repoOwner: context.owner, repoName: context.repo, number, commentId: comment.id,
+            commentType: comment.pull_request_review_id ? 'review' : 'issue',
+        }),
+    };
+}
+
 async function collectUnprocessedComments(
     commentsByTime: PRComment[],
     pr: PullRequest,
@@ -270,7 +281,8 @@ async function collectUnprocessedComments(
     let selectedLlm: string | null = extractModelFromPRLabels(pr, MODEL_LABEL_PATTERN, correlationId);
     const mayFollowUp = createPollingGate(pr.number, commentContext, redisClient);
 
-    for (const comment of commentsByTime) {
+    const readyComments = commentsByTime.filter(comment => comment.body?.trim() !== '<!-- propr-parent-execution-pending -->');
+    for (const comment of readyComments) {
         const commentAuthor = comment.user.login;
         const filterResult = filterCommentByAuthor(commentAuthor, correlationId);
         if (filterResult.shouldFilter) continue;
@@ -328,6 +340,7 @@ async function collectUnprocessedComments(
         unprocessedComments.push({
             id: comment.id,
             body: enhancedCommentBody,
+            ...commentAdmissionProof(comment, commentContext, pr.number),
             author: commentAuthor,
             type: comment.pull_request_review_id ? 'review' : 'issue',
             hasCodeContext: !!(comment.pull_request_review_id && comment.diff_hunk)
@@ -419,6 +432,7 @@ async function enqueuePRCommentJob(
         correlationId: generateCorrelationId(),
     };
 
+    jobData.agentAdmissionParent = parentScopeFromCommentJob(jobData, jobData.comments);
     const timestamp = Date.now();
     const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
 

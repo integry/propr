@@ -217,6 +217,12 @@ describe('hosted fleet health status', () => {
         await routes().getQueueStatus(fleetRequest(fleetSecret), queue.response);
         assert.deepEqual(queue.record.body, { waiting: 2, active: 1 });
         assert.equal(queue.record.headers['cache-control'], 'no-store');
+
+        // Jobs deferred for capacity are pending work Fleet must see, reported beside waiting and active.
+        const deferred = recorder();
+        await routes({ queueStatus: () => ({ waiting: 0, active: 0, deferred: 3, delayed: 9 }) })
+            .getQueueStatus(fleetRequest(fleetSecret), deferred.response);
+        assert.deepEqual(deferred.record.body, { waiting: 0, active: 0, deferred: 3 });
     });
 
     test('returns 503 when status collectors are unavailable', async () => {
@@ -266,6 +272,8 @@ describe('hosted fleet health status', () => {
             { waiting: 0.5, active: 0 },
             { waiting: 0, active: -1 },
             { waiting: 0, active: 1.5 },
+            { waiting: 0, active: 0, deferred: -1 },
+            { waiting: 0, active: 0, deferred: '2' },
         ]) {
             const result = recorder();
             await routes({ queueStatus: () => value }).getQueueStatus(fleetRequest(fleetSecret), result.response);

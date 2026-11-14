@@ -36,7 +36,7 @@ import {
   createTaskHistoryRoutes, createLiveDetailsRoutes,
   createFileChangesRoutes, createConfigRoutes,
   createTaskAssignmentRoutes,
-  createQueueRoutes, createExecutionRoutes,
+  createQueueRoutes, createAgentRunAdmissionRoutes, createExecutionRoutes,
   createDockerRoutes, createGitHubRoutes,
   createLLMMetricsRoutes, createLlmLogsRoutes,
   createPlannerRoutes, createRelevanceRoutes,
@@ -466,6 +466,7 @@ export function setupRoutes(): void {
 
   const operationalRoutes = createOperationalRouteEntries({
     activeWorkRoutes,
+    agentRunAdmissionRoutes: createAgentRunAdmissionRoutes({ db, taskQueue, redisClient }),
     automationDefinitionRoutes,
     dashboardRoutes,
     dockerRoutes,
@@ -651,6 +652,8 @@ async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
     await runMigrations();
+    // API chat and health checks launch agents: refuse a policy that would leave one uncapped.
+    await (await import('@propr/core')).validateAgentRunAdmissionPolicy();
     dashboardReads = await startDashboardReadService(db);
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
@@ -671,6 +674,7 @@ async function start(): Promise<void> {
       }, console, subtype => {
         if (subtype === 'agents_update' || subtype === 'synthetic_agents_update') {
           invalidateStatusAgentCache?.();
+          void import('@propr/core').then(core => core.revalidateAgentRunAdmissionPolicy());
         }
       });
       // Subscribe first, then enqueue the initial load through the same serial

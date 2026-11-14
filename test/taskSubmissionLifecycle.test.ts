@@ -156,6 +156,23 @@ await mock.module('../src/jobs/issueJob/config.js', { namedExports: {
   }, get: async () => null, set: async () => 'OK', hgetall: async () => ({}) },
   DEFAULT_MODEL_NAME: 'model', getPrimaryProcessingLabels: async () => ['AI'], getPrLabel: async () => 'PR',
 } });
+// The real agent-capacity helpers are covered by agentCapacityDeferral.test.ts; here only the issue job's path.
+let agentCapacityFull = false;
+const agentCapacityChecks: string[] = [];
+await mock.module('../src/jobs/agentCapacityDeferral.js', { namedExports: {
+  checkJobAgentCapacity: async (_job: unknown, requests: Array<{ agentAlias: string; model?: string }>) => {
+    agentCapacityChecks.push(`${requests[0].agentAlias}:${requests[0].model}`);
+    if (agentCapacityFull) throw Object.assign(new Error('Waiting for agent capacity'), { name: 'AgentCapacityError', aliases: ['issue-agent'] });
+    return undefined;
+  },
+  admitAgentCapacity: async () => undefined,
+  isAgentCapacityRefusal: (error: unknown) => (error as Error | null)?.name === 'AgentCapacityError',
+  persistAgentCapacityDeferral: async ({ job }: { job: { data: IssueJobData; updateData(data: IssueJobData): Promise<unknown> } }) => {
+    await job.updateData({ ...job.data, agentCapacityDeferrals: (job.data.agentCapacityDeferrals ?? 0) + 1, agentCapacityRetryAt: Date.now() + 10_000 });
+    events.push('persist-agent-deferral');
+  },
+  runWithJobAgentCapacity: (_context: unknown, operation: () => Promise<unknown>) => operation(),
+} });
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
 after(core.closeConnection);
 
@@ -203,6 +220,31 @@ test('issue capacity refusal delays before cloning, preserves task identity, and
     assert.deepEqual(events, ['create-if-absent']);
     assert.equal(terminal.length, 0, 're-entry does not overwrite cancellation');
   } finally { capacityFull = false; taskState = 'pending'; }
+});
+
+test('an issue whose agent is at its ceiling defers before repository admission and any user-visible work', async () => {
+  agentCapacityFull = true; events.length = 0; terminal.length = 0; admissionAttempts = 0; agentCapacityChecks.length = 0;
+  let delayedUntil = 0;
+  const job = {
+    id: 'agent-capacity-job', name: 'processGitHubIssue', token: 'lock-token',
+    data: { repoOwner: 'owner', repoName: 'repo', number: 42, isChildJob: true, correlationId: 'c', agentAlias: 'a', modelName: 'm' } as IssueJobData,
+    updateData: async (data: IssueJobData) => { job.data = data; },
+    moveToDelayed: async (deadline: number) => { delayedUntil = deadline; events.push('delay'); },
+  };
+  try {
+    await assert.rejects(processGitHubIssueJob(job as never), DelayedError);
+    assert.deepEqual(agentCapacityChecks, ['issue-agent:model'], 'the resolved agent is checked');
+    assert.equal(admissionAttempts, 0, 'no repository slot is taken while waiting');
+    assert.ok(!events.includes('clone'), 'nothing is cloned, commented or pushed');
+    assert.deepEqual(events.filter(event => event !== 'create-if-absent'), ['persist-agent-deferral', 'delay']);
+    assert.equal(delayedUntil, job.data.agentCapacityRetryAt, 'delayed until the persisted retry time');
+    assert.equal(terminal.length, 0, 'a capacity wait is not a task failure');
+    // A task cancelled during the deferral is not re-entered.
+    taskState = 'cancelled'; agentCapacityChecks.length = 0;
+    assert.equal((await processGitHubIssueJob(job as never)).status, 'cancelled');
+    assert.deepEqual(agentCapacityChecks, []);
+    assert.equal(admissionAttempts, 0);
+  } finally { agentCapacityFull = false; taskState = 'pending'; }
 });
 
 test('an issue that no longer qualifies is skipped before admission even while capacity is full', async () => {

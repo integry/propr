@@ -1,3 +1,4 @@
+import { parentExecutionMarker, parentScopeFromCommentJob, runWithAgentAdmissionParent, currentAgentAdmissionNesting } from '../packages/core/src/agents/agentRunNesting.js';
 import assert from 'node:assert/strict';
 import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
@@ -10,6 +11,10 @@ import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js
 
 let events: string[] = [];
 let refuseCapacity = false;
+let observedParents: Array<string | undefined> = [];
+let onPredecessorGate: ((params: { commentsToProcess: Array<{ id: number }> }) => Promise<void>) | undefined;
+const admissionTarget = { repoOwner: 'upstream', repoName: 'project', number: 42, commentId: 5 };
+let refuseAgentCapacity = false;
 // Other runs holding repository slots; admission and reconciliation compare caps against them.
 let otherRuns = 0;
 const reconciledLimits: Array<number | undefined> = [];
@@ -96,6 +101,7 @@ await mock.module('../src/jobs/runCostCap.js', { namedExports: {
     pullRequestRunCostCapTarget: () => ({}),
 } });
 await mock.module('@propr/core', { namedExports: {
+    parentScopeFromCommentJob, runWithAgentAdmissionParent,
     preventWithdrawnJob: async () => null,
     getAuthenticatedOctokit: async () => octokit,
     hashTaskAttemptToken: () => 'hash', logger: { ...log, withCorrelation: () => log },
@@ -129,6 +135,22 @@ const combinedComments: unknown[][] = [];
 // Deferral and timeline helpers are real; GitHub policy loading and admission are faked.
 const workflowJobs = await import('../src/jobs/repositoryWorkflow.js');
 const modules: Record<string, Record<string, unknown>> = {
+    // The real agent-capacity helpers are covered by agentCapacityDeferral.test.ts; here only the follow-up's path.
+    agentCapacityDeferral: {
+        checkJobAgentCapacity: async (_job: unknown, requests: () => Promise<unknown>) => {
+            observedParents.push(currentAgentAdmissionNesting()?.parent);
+            assert.equal(typeof requests, 'function', 'the agent is resolved only when a policy needs it');
+            if (refuseAgentCapacity) throw Object.assign(new Error('Waiting for agent capacity'), { name: 'AgentCapacityError', aliases: ['claude'] });
+            return undefined;
+        },
+        admitAgentCapacity: async () => undefined,
+        isAgentCapacityRefusal: (error: unknown) => (error as Error | null)?.name === 'AgentCapacityError',
+        persistAgentCapacityDeferral: async (options: { job: { data: object; updateData(data: object): Promise<unknown> }; extraData?: object }) => {
+            await options.job.updateData({ ...options.job.data, ...options.extraData, agentCapacityDeferrals: 1 });
+            events.push('persist-agent-deferral');
+        },
+        runWithJobAgentCapacity: (_context: unknown, operation: () => Promise<unknown>) => operation(),
+    },
     // Publication fixtures have no repository workflow policy unless a test resolves one.
     repositoryWorkflow: {
         ...workflowJobs,
@@ -173,8 +195,8 @@ const modules: Record<string, Record<string, unknown>> = {
             ? realPending.pickUpPendingCommentsWithClaim(...args) : { commentsToProcess: args[0], pickedUpComments: [] },
         applyPendingCommentCommandContext: (...args: Parameters<typeof realPending.applyPendingCommentCommandContext>) => { if (realReentryHelpers) realPending.applyPendingCommentCommandContext(...args); },
     },
-    prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
-    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
+    prCommentReviewJob: { executeReviewProcessing: async (params: { context: { pullRequestNumber: number } }) => { observedParents.push(currentAgentAdmissionNesting()?.parent); events.push(`review:${params.context.pullRequestNumber}`); return { status: 'complete' }; } },
+    prCommentAgentUtils: { generateSummaryTitle: noOp, resolveAndExecuteAgent: async () => { observedParents.push(currentAgentAdmissionNesting()?.parent); events.push('agent'); if (agentError) throw agentError; return agentResult; }, resolvePRCommentModelName: async () => 'model' },
     reviewCommentFormatter: { isReviewComment: () => false },
     reviewFindingSelector: {
         hasAuthorizedFixFeedback: () => !nothingSelected, selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }),
@@ -223,7 +245,7 @@ const modules: Record<string, Record<string, unknown>> = {
         markExecutionHandoffAgentExited: async (state: { followupHandoffOwnershipLost?: boolean }) => { await onAgentExitedCheckpoint?.(state); },
         markExecutionHandoffCommitted: noOp, markExecutionHandoffPushed: noOp, markExecutionHandoffCommentPublished: noOp,
         markExecutionHandoffCleanupPending: noOp, retireExecutionHandoffAfterCleanup: noOp,
-        gatePredecessorHandoff: async () => undefined,
+        gatePredecessorHandoff: async (params: { commentsToProcess: Array<{ id: number }> }) => { await onPredecessorGate?.(params); return undefined; },
         checkpointExecutionHandoffUsageLimitRetry: async (state: { followupHandoffOwnershipLost?: boolean }, stage: string) => { await onUsageLimitCheckpoint?.(state, stage); },
         FollowupHandoffOwnershipLostError: OwnershipLostError,
         settleExecutionHandoffAfterError: async () => { events.push('settle-handoff'); },
@@ -278,7 +300,10 @@ const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     data: { repoOwner: 'upstream', repoName: 'project', pullRequestNumber, commandMode, correlationId: 'correlation', commentId: 5, commentBody: 'Implement', commentAuthor: 'contributor' },
 });
 beforeEach(() => {
-    refuseCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined; onAgentExitedCheckpoint = undefined; onUsageLimitCheckpoint = undefined; onHandleJobError = undefined;
+    observedParents = [];
+    onPredecessorGate = undefined;
+    process.env.SYSTEM_TASK_SECRET = 'pr-publication-parent-regression-root';
+    refuseCapacity = false; refuseAgentCapacity = false; otherRuns = 0; reconciledLimits.length = 0; nothingSelected = false; persistError = undefined; resolvedWorkflow = undefined; policyLoads = 0; processingMetadata.length = 0; agentError = undefined; agentResult = undefined; postExecutionParams = undefined; onAgentExitedCheckpoint = undefined; onUsageLimitCheckpoint = undefined; onHandleJobError = undefined;
     onLockAcquired = undefined; blockedLock = undefined; resolutionError = undefined; taskStates.clear();
     cancellations.length = 0; deferralHistory.length = 0;
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
@@ -443,6 +468,17 @@ for (const persistenceFails of [false, true]) {
     });
 }
 
+
+test('a follow-up whose agent is at its ceiling defers before the starting comment and worktree, keeping its comments and releasing the lock', async () => {
+    refuseAgentCapacity = true;
+    await assert.rejects(processPullRequestCommentJob(job() as never), (error: unknown) => (error as Error).name === 'AgentCapacityError');
+    for (const work of ['comment:42', 'prepare', 'agent']) assert.ok(!events.includes(work), `no ${work}`);
+    assert.ok(events.includes('cleanup-capacity'), 'cleanup must not enqueue duplicate pending-comment jobs');
+    assert.deepEqual(handledTaskIds, [], 'a capacity wait is not a failure');
+    assert.ok(events.indexOf('persist-comments') < events.indexOf('stop-heartbeat'), 'the claimed comments stay with the delayed job');
+    assert.ok(events.indexOf('persist-agent-deferral') < events.indexOf('stop-heartbeat'));
+    assert.ok(events.indexOf('stop-heartbeat') < events.indexOf('release:lock:pr:upstream:project:42'), 'no PR lock is held while it waits');
+});
 
 test('a persisted PR capacity refusal explains the wait on the task timeline without changing state', async () => {
     refuseCapacity = true;
@@ -655,3 +691,54 @@ test('ownership loss observed while confirming the usage-limit retry stops publi
     assert.ok(events.includes('cleanup'), 'the lease is still released');
     assert.ok(!events.includes('cleanup-worktree'), "the successor's retained worktree is not detached");
 });
+
+for (const mode of ['review', 'fix']) {
+    test(`goal ${mode} executes and checks capacity under its explicit parent`, async () => {
+        const request = job(mode);
+        request.data.commentBody = `/${mode}\n${parentExecutionMarker('a'.repeat(40), admissionTarget)}`;
+        if (mode === 'fix') {
+            agentResult = { claudeResult: { success: true }, agentType: 'agent' };
+            await assert.rejects(processPullRequestCommentJob(request as never), /post-execution stopped by test/);
+        } else await processPullRequestCommentJob(request as never);
+        assert.ok(observedParents.length > 0);
+        assert.ok(observedParents.every(parent => parent === `goal:${'a'.repeat(40)}`));
+        assert.equal(currentAgentAdmissionNesting(), undefined, 'context does not leak to unrelated jobs');
+    });
+}
+
+for (const marked of [true, false]) {
+    test(`pending review command resolves its own parent after pickup (marked: ${marked})`, async () => {
+        realReentryHelpers = true;
+        const request = job('review');
+        request.data.commentBody = `/review\n${parentExecutionMarker('a'.repeat(40), admissionTarget)}`;
+        const pendingKey = getPendingPrCommentsKey('upstream', 'project', 42);
+        pendingCommentLists.set(pendingKey, [JSON.stringify({
+            id: 7, body: marked ? `/review\n${parentExecutionMarker('b'.repeat(40), { ...admissionTarget, commentId: 7 })}` : '/review',
+            author: 'reviewer', type: 'issue', commandMode: 'review',
+        })]);
+        await processPullRequestCommentJob(request as never);
+        assert.deepEqual(observedParents, [marked ? `goal:${'b'.repeat(40)}` : undefined]);
+    });
+}
+
+for (const mode of ['review', 'fix']) {
+    test(`a removed parent command cannot exempt surviving ${mode} work after the awaited predecessor gate`, async () => {
+        realReentryHelpers = true;
+        const request = job(mode);
+        request.data.commentBody = `/${mode}\n${parentExecutionMarker('a'.repeat(40), admissionTarget)}`;
+        const pendingKey = getPendingPrCommentsKey('upstream', 'project', 42);
+        pendingCommentLists.set(pendingKey, [JSON.stringify({ id: 7, body: 'Unrelated work', author: 'reviewer', type: 'issue' })]);
+        onPredecessorGate = async ({ commentsToProcess }) => {
+            await Promise.resolve();
+            const removed = commentsToProcess.findIndex(comment => comment.id === 5);
+            assert.notEqual(removed, -1);
+            commentsToProcess.splice(removed, 1);
+        };
+        if (mode === 'fix') {
+            agentResult = { claudeResult: { success: true }, agentType: 'agent' };
+            await assert.rejects(processPullRequestCommentJob(request as never), /post-execution stopped by test/);
+        } else await processPullRequestCommentJob(request as never);
+        assert.ok(observedParents.length > 0);
+        assert.ok(observedParents.every(parent => parent === undefined));
+    });
+}

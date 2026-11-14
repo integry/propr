@@ -1,3 +1,4 @@
+import * as admissionNesting from '../packages/core/src/agents/agentRunNesting.js';
 /**
  * Ultrafix recovery against a real Redis server and a real BullMQ queue.
  *
@@ -58,6 +59,7 @@ let prHead = 'red-head';
 
 await mock.module('@propr/core', {
     namedExports: {
+        ...admissionNesting,
         reevaluatePRAutoMerge: async () => undefined,
         AgentRegistry: {},
         logger: { info: () => {} },

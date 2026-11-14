@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { ADMISSION_DAEMON_PREFIX } from '../packages/core/src/agents/agentRunAdmissionConfigState.js';
 import { after, before, test, mock } from 'node:test';
 import childProcess from 'node:child_process';
 import { promisify } from 'node:util';
@@ -131,7 +132,7 @@ test('expired holder is removed before reuse; failed removal retains capacity; s
     const config = { instance: 'crash', limit: 1 };
     const [key] = agentAdmissionKeys(config.instance);
     alive.add('crashed');
-    await redis.set(agentAdmissionKeys(config.instance)[1], JSON.stringify({ limit: 1, daemon: 'test' }));
+    await redis.set(agentAdmissionKeys(config.instance)[1], JSON.stringify({ limit: 1, daemon: `${ADMISSION_DAEMON_PREFIX}test` }));
     await redis.hset(key, 'dead-owner', JSON.stringify({ state: 'running', deadline: 0, id: 'crashed' }));
     const failing = { ...runtime, remove: async () => { throw new Error('Docker unavailable'); } };
     await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { client: redis, docker: failing, config }), /Docker unavailable/);
@@ -283,6 +284,29 @@ test('conflicting entitlement/daemon configuration and Redis state loss fail clo
     await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { client: redis, docker: { ...runtime, assertEmpty: async () => { throw new Error('surviving Docker work'); } }, config }), /surviving Docker/);
 });
 
+test('protocol upgrade refuses legacy holders and requires a coordinated empty reset', integration, async () => {
+    const { runtime, removed } = lifecycle();
+    const config = { instance: 'protocol-upgrade', limit: 1, generation: 1 };
+    const [holders, configKey] = agentAdmissionKeys(config.instance);
+    const legacyIdentity = JSON.stringify({ limit: 1, daemon: 'test' });
+    await redis.set(configKey, legacyIdentity);
+    await redis.hset(holders, 'legacy-owner', JSON.stringify({ state: 'running', deadline: 0, id: 'legacy-container' }));
+    const options = { client: redis, docker: runtime, config };
+    await assert.rejects(prepareAdmittedAgent(['run', 'agent'], options), /mismatch/);
+    assert.deepEqual(removed, [], 'new recovery must not touch legacy holders');
+    assert.equal(await redis.hlen(holders), 1);
+    // Simulate the old fleet completing its drain before all processes stop.
+    await redis.hdel(holders, 'legacy-owner');
+    await assert.rejects(prepareAdmittedAgent(['run', 'agent'], options), /mismatch/, 'an empty hash alone does not authorize protocol switching');
+    assert.equal(await redis.get(configKey), legacyIdentity);
+    // Operator resets only after the fleet is stopped and physical emptiness
+    // is confirmed. Initialization also checks Docker before storing identity.
+    await redis.del(configKey);
+    await assert.rejects(prepareAdmittedAgent(['run', 'agent'], { ...options, docker: { ...runtime, assertEmpty: async () => { throw new Error('surviving Docker work'); } } }), /surviving Docker/);
+    assert.equal(await redis.get(configKey), null);
+    await (await prepareAdmittedAgent(['run', 'agent'], options))!.finish();
+});
+
 test('durable worker/planner cancellation is checked while waiting, without consuming its marker', integration, async () => {
     const { runWithPlannerAbortContext, buildPlannerAbortSignalKey } = await import('../packages/core/src/claude/docker/dockerAbortController.js');
     const { runtime } = lifecycle();
@@ -320,7 +344,7 @@ for (const [from, to] of [[2, 6], [6, 2]]) test(`generation transition ${from} -
     const oldConfig = { instance, limit: from };
     const nextConfig = { instance, limit: to, generation: 1 };
     const options = { client: redis, docker: runtime, leaseMs: 60_000 };
-    // Legacy generation-zero records migrate without operator Redis edits.
+    // Generation-zero records under the same protocol migrate without operator Redis edits.
     const completed = await prepareAdmittedAgent(['run', 'agent'], { ...options, config: oldConfig });
     await completed!.finish();
     const next = await prepareAdmittedAgent(['run', 'agent'], { ...options, config: nextConfig });
