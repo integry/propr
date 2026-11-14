@@ -60,7 +60,12 @@ export async function fetchProbe(input: PluginHandlerInput, ctx: PluginContext) 
     const parsed = (() => { try { return JSON.parse(text) as PluginJsonValue; } catch { return null; } })();
     const json = await response.json<PluginJsonValue>();
     const decoded = (value: unknown): boolean => typeof value === 'string' ? value.includes(probe) : value !== null && typeof value === 'object' && Object.entries(value).some(([k, v]) => k.includes(probe) || decoded(v));
-    return { ok: true, textHasProbe: text.includes(probe), parsedHasProbe: decoded(parsed), jsonHasProbe: decoded(json), headersHaveProbe: Object.values(response.headers).some(v => v.includes(probe)) };
+    // A header value (or one part of a joined value) parsed as JSON by the handler.
+    const parsedHeader = (value: string) => [value, ...value.split(', ')].some(part => { try { return decoded(JSON.parse(part)); } catch { return false; } });
+    return {
+      ok: true, textHasProbe: text.includes(probe), parsedHasProbe: decoded(parsed), jsonHasProbe: decoded(json),
+      headersHaveProbe: Object.values(response.headers).some(v => v.includes(probe)), parsedHeadersHaveProbe: Object.values(response.headers).some(parsedHeader),
+    };
   } catch (error) {
     return { ok: false, code: (error as { code?: string }).code ?? null, message: (error as Error).message };
   }

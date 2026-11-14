@@ -10,7 +10,7 @@ import { redactExtensionOutput } from '../extensions/extensionOutput.js';
 import { createPluginHttp, type PluginHttpTransport } from './pluginHttp.js';
 import { githubPluginProprBackend } from './pluginProprBackend.js';
 import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallRecord } from './pluginProprClient.js';
-import { pluginStateStore } from './pluginStateStore.js';
+import { pluginStateStore, requireInstallation, type PluginStateWriteGuard } from './pluginStateStore.js';
 
 /** An installed plugin as a handler runs it: the current manifest and the installation record. */
 export interface PluginInstallationTarget { pluginId: string; manifest: PluginManifest; record: PluginInstallationRecord }
@@ -58,9 +58,14 @@ function logFields(fields: Record<string, unknown> | undefined): Record<string, 
   } catch { return { invalidFields: true }; }
 }
 
-async function defaultConnectionSecret(database: Knex, environment: NodeJS.ProcessEnv, pluginId: string, connection: string): Promise<string | null> {
+/** The connection secret of the installation `guard` names, read in one transaction with that installation; refused once it was removed or replaced. */
+async function defaultConnectionSecret({ database, environment }: { database: Knex; environment: NodeJS.ProcessEnv }, pluginId: string, connection: string, guard: PluginStateWriteGuard): Promise<string | null> {
   const { PluginStore } = await import('./pluginStore.js');
-  return new PluginStore(database, environment).connectionSecret(pluginId, connection);
+  const store = new PluginStore(database, environment);
+  return database.transaction(async trx => {
+    await requireInstallation(trx, pluginId, guard);
+    return store.connectionSecret(pluginId, connection, trx);
+  });
 }
 
 /**
@@ -102,6 +107,8 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     }
   };
 
+  // The installation this run belongs to: a credential is read from it only, and a request is sent only while it is still installed.
+  const installation: PluginStateWriteGuard = { installedAt: record.installedAt, signal };
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
     if (connection !== undefined) {
@@ -109,7 +116,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       if (!declared) throw new PluginSdkError('connection_unavailable', `The plugin declares no connection ${String(connection).slice(0, 48)}`);
       if (declared.type !== 'token') throw new PluginSdkError('connection_unavailable', `Connection ${connection} is ${declared.type}; ctx.http injects token connections only`);
       credential = async () => {
-        const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret(deps.database, environment, id, name)))(pluginId, connection);
+        const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret({ database: deps.database, environment }, id, name, installation)))(pluginId, connection);
         if (!secret) throw new PluginSdkError('connection_unavailable', `Connection ${connection} is not set`);
         credentials.push(secret);
         return secret;
@@ -117,6 +124,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     }
     return createPluginHttp({
       outboundHosts: manifest.outboundHosts, credential, lookup: deps.lookup, transport: deps.transport, signal,
+      authorize: credential ? () => deps.database.transaction(trx => requireInstallation(trx, pluginId, installation)) : undefined,
       onDecision: ({ host, allowed, reason }) => write(allowed ? 'debug' : 'warn', allowed ? `ctx.http request to ${host}` : `ctx.http request to ${host} refused: ${reason}`, { host, ...(connection ? { connection } : {}) }),
     });
   };

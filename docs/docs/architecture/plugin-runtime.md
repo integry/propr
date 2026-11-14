@@ -151,8 +151,18 @@ URL-encoded and as the full header value) is replaced with `[REDACTED]` in the
 response headers and body before the handler sees them. A JSON body is also
 checked after decoding, so an escape such as `\u0041` or `\"` cannot spell the
 secret back; when a decoded string held it, `text()` and `json()` return the
-body re-serialized with the secret replaced. A careless upstream that echoes the
-`Authorization` header cannot hand the secret back.
+body re-serialized with the secret replaced. A response header whose value
+still holds the secret once its JSON escapes are decoded (a JSON-valued header,
+also inside a longer or joined value) is replaced with `[REDACTED]` entirely. A
+careless upstream that echoes the `Authorization` header cannot hand the secret
+back.
+
+**Installation binding.** The secret is read from the installation the run
+belongs to, in one transaction with it, and every authenticated request checks
+again before it is sent that this installation is still installed. A run that
+resumes after its plugin was uninstalled, or uninstalled and reinstalled with a
+new connection of the same name, gets `unavailable` and sends nothing; it never
+receives the replacement installation's secret.
 
 **Run lifetime.** The run's signal reaches the request: it is checked again
 after the DNS lookup and after the credential is read, and no request starts

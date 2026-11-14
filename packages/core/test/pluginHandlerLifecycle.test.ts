@@ -28,7 +28,7 @@ test('a JSON-escaped echo of the credential is scrubbed before the handler can d
     assert.equal(run.outcome, 'succeeded', run.error ?? '');
     return run.result as Record<string, unknown>;
   };
-  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false };
+  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false, parsedHeadersHaveProbe: false };
 
   // JSON.stringify escaping (the fixture echo transport): `\"` and `\\`.
   assert.deepEqual(await probe(f.http.transport), clean);
@@ -38,6 +38,25 @@ test('a JSON-escaped echo of the credential is scrubbed before the handler can d
   assert.deepEqual(await probe(echo(authorization => unicodeEscapedJson({ authorization }))), clean);
   assert.deepEqual(await probe(echo(authorization => JSON.stringify({ token: authorization.slice(7) }).split('/').join('\\/'))), clean);
   assert.deepEqual(await probe(echo(authorization => JSON.stringify({ [authorization.slice(7)]: 1 }))), clean);
+
+  // The same escapes in JSON-valued response headers: alone, an object, joined with another value, and escaped twice.
+  const unicodeEscaped = (value: string) => [...value].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const echoHeader = (header: (authorization: string) => string): PluginHttpTransport => async request => ({ status: 200, headers: { 'x-echo': header(request.headers.authorization ?? '') }, body: Buffer.from('{}') });
+  for (const header of [
+    (authorization: string) => `"${unicodeEscaped(authorization)}"`,
+    (authorization: string) => unicodeEscapedJson({ token: authorization.slice(7) }),
+    (authorization: string) => `"${unicodeEscaped(authorization.slice(7))}", other`,
+    (authorization: string) => JSON.stringify(`"${unicodeEscaped(authorization.slice(7))}"`),
+  ]) {
+    const result = await probe(echoHeader(header));
+    assert.deepEqual(result, clean, header.toString());
+  }
+});
+
+test('a JSON-valued response header without the credential reaches the handler unchanged', async () => {
+  const value = '{"note":"\\u0041 \\"quoted\\""}';
+  const response = await createPluginHttp({ outboundHosts: ['api.fixture.example'], credential: async () => ESCAPED_SECRET, lookup, transport: async () => ({ status: 200, headers: { 'x-meta': value }, body: Buffer.from('') }) })('https://api.fixture.example/v1');
+  assert.equal(response.headers['x-meta'], value);
 });
 
 test('text() of a non-JSON body holds no JSON-escaped credential, and a clean JSON body is returned unchanged', async () => {
@@ -164,4 +183,35 @@ test('a state write or delete is refused and rolled back when the run ends durin
   await live.set('kept', 'after');
   assert.equal(await live.get('kept'), 'after');
   assert.equal(await live.delete('kept'), true);
+});
+
+test('a request resuming after an uninstall never acquires or sends a reinstall\'s credential', async t => {
+  const REPLACEMENT = 'replacement-installation-token-7c41f2';
+  for (const variant of ['uninstalled', 'reinstalled', 'reinstalled with injected secret'] as const) {
+    const f = await pluginHandlerFixture(t, { secret: 'plugin-http-credential-sentinel-5d0e9a' });
+    const dns = deferred();
+    const reached = deferred();
+    const heldLookup = async (host: string) => { reached.resolve(); await dns.promise; return lookup(host); };
+    // The injected-secret variant reads only by plugin id and name, as a custom source could: dispatch authorization alone must refuse.
+    const connectionSecret = variant === 'reinstalled with injected secret'
+      ? (id: string, name: string) => new PluginStore(f.database, ENVIRONMENT, async () => [f.manifest]).connectionSecret(id, name)
+      : undefined;
+    const running = runPluginHandler(FIXTURE_ID, 'fetchUrl', invoke({ url: 'https://api.fixture.example/v1/mutate', connection: 'api-token', init: { method: 'POST', json: { change: true } } }), { ...f.options, lookup: heldLookup, ...(connectionSecret ? { connectionSecret } : {}) });
+    await reached.promise;
+
+    await f.store.setEnabled('1', FIXTURE_ID, false);
+    await f.store.uninstall('1', FIXTURE_ID, FIXTURE_ID);
+    if (variant !== 'uninstalled') {
+      const later = new PluginStore(f.database, ENVIRONMENT, async () => [f.manifest], () => Date.now() + 60_000);
+      await later.install('1', FIXTURE_ID);
+      await later.setConnection('1', FIXTURE_ID, 'api-token', REPLACEMENT);
+      await later.setEnabled('1', FIXTURE_ID, true);
+    }
+    dns.resolve();
+    const run = await running;
+    assert.equal(run.outcome, 'succeeded', run.error ?? '');
+    assert.deepEqual(run.result, { ok: false, code: 'unavailable', message: 'The plugin is no longer installed' }, variant);
+    assert.equal(f.http.requests.length, 0, `${variant}: nothing reached the transport`);
+    assert.equal(JSON.stringify(run).includes(REPLACEMENT), false, variant);
+  }
 });

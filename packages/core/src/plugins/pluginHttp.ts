@@ -24,6 +24,11 @@ export interface PluginHttpOptions {
   outboundHosts: readonly string[];
   /** The credential to inject as `Authorization: Bearer`, resolved on the first request; null for none. */
   credential?: () => Promise<string | null>;
+  /**
+   * Called before every request is sent, after its lookups: throws to refuse
+   * it (the installation the credential belongs to was removed or replaced).
+   */
+  authorize?: () => Promise<void>;
   lookup?: ExtensionLookup;
   transport?: PluginHttpTransport;
   /** Every request decision (`allowed` false when refused), for the handler log. */
@@ -83,6 +88,29 @@ function scrubbedBody(raw: string, spellings: readonly string[]): string {
     // Too deeply nested to check: refuse rather than return what could decode to the credential.
     throw new PluginSdkError('http_failed', 'The response could not be checked for credentials');
   }
+}
+
+const JSON_ESCAPE = /\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g;
+const SHORT_ESCAPES: Record<string, string> = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+const jsonUnescapeOnce = (value: string) => value.replace(JSON_ESCAPE, (_, escape: string) => escape.length === 5 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : SHORT_ESCAPES[escape] ?? escape);
+
+/**
+ * A response header with every credential spelling replaced. A value that
+ * still holds one once its JSON escapes are decoded (a JSON-valued header
+ * escaping it as `\uXXXX`, also inside a longer, joined or re-encoded value)
+ * is withheld entirely: a handler could recover it with `JSON.parse`.
+ */
+function scrubbedHeader(raw: string, spellings: readonly string[]): string {
+  const text = scrub(raw, spellings);
+  if (!spellings.length) return text;
+  let decoded = text;
+  for (let round = 0; round < 8; round++) {
+    const next = jsonUnescapeOnce(decoded);
+    if (next === decoded) break;
+    if (scrub(next, spellings) !== next) return '[REDACTED]';
+    decoded = next;
+  }
+  return text;
 }
 
 /** The error a request gets once the handler run has ended. */
@@ -191,7 +219,7 @@ export const httpsPluginTransport: PluginHttpTransport = request => new Promise(
 
 function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spellings: readonly string[]): PluginHttpResponse {
   const text = scrubbedBody(response.body.toString('utf8'), spellings);
-  const headers = Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name.toLowerCase(), scrub(value, spellings)]));
+  const headers = Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name.toLowerCase(), scrubbedHeader(value, spellings)]));
   return {
     status: response.status, ok: response.status >= 200 && response.status < 300, url: url.toString(), headers,
     text: async () => text,
@@ -228,6 +256,7 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       credential ??= options.credential ? options.credential() : Promise.resolve(null);
       const secret = await untilEnded(credential, signal);
       if (secret) headers.authorization = `Bearer ${secret}`;
+      if (options.authorize) await untilEnded(options.authorize(), signal);
       // The run may have ended during the lookups: nothing is sent for an ended handler.
       checkLive(signal);
       options.onDecision?.({ host, allowed: true });

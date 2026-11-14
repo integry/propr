@@ -45,7 +45,7 @@ function requireLive(guard: PluginStateWriteGuard): void {
  * commits first (a write is then deleted with the rest), or finds the
  * installation gone. SQLite runs write transactions one at a time.
  */
-async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<void> {
+export async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<void> {
   const query = trx('plugin_installations').where({ plugin_id: pluginId });
   const row = await (isSqlite(trx) ? query : query.forShare()).first('installed_at') as { installed_at: number | string } | undefined;
   if (!row || Number(row.installed_at) !== guard.installedAt) throw new PluginSdkError('unavailable', 'The plugin is no longer installed');
