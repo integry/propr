@@ -213,6 +213,12 @@ export class ExtensionOAuthStore {
     try { return await this.completeClaimed(actor, sessionId, query, { state_hash: stateHash, claim }); }
     finally { await this.database(OAUTH_PENDING).where({ state_hash: stateHash, claim }).delete(); }
   }
+  /** The item a sign-in is pending for, by the callback's `state`, without claiming it; `null` when no such sign-in is pending. */
+  async pendingSignInServer(state: unknown): Promise<string | null> {
+    if (typeof state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(state) || !await hasOAuthTables(this.database)) return null;
+    const row = await this.database(OAUTH_PENDING).where({ state_hash: sha256(state) }).first('server_name');
+    return row ? row.server_name as string : null;
+  }
   // eslint-disable-next-line complexity -- every callback check refuses before the exchange
   private async completeClaimed(actor: string, sessionId: string, query: { code?: unknown; error?: unknown; iss?: unknown }, attempt: { state_hash: string; claim: string }): Promise<{ name: string }> {
     const stateHash = attempt.state_hash;

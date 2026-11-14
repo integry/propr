@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
   PLUGIN_REPOSITORY_LIMIT, PLUGIN_REPOSITORY_PATTERN, PLUGIN_SECRET_PATTERN, defaultPluginSettings, missingRequiredPluginSettings, pluginIdSchema,
@@ -10,7 +9,7 @@ import { sealExtensionSecrets, unsealExtensionSecrets } from '../extensions/priv
 import { officialPluginCatalog, type PluginCatalogSource } from './pluginCatalog.js';
 import { ExtensionError, ExtensionLibraryStore } from '../extensions/extensionProfileStore.js';
 import { extensionOAuth, type ExtensionOAuthUrls } from '../extensions/extensionOAuthStore.js';
-import { OAUTH_PENDING, discardOAuthConnectionsOf, hasOAuthTables, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
+import { discardOAuthConnectionsOf, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
 import { PluginContributions, oauthServersOf, pluginContributionViews, type PluginOAuthClient } from './pluginContributions.js';
 import { pluginTemplateIds } from './pluginTemplates.js';
 import {
@@ -368,8 +367,8 @@ export class PluginStore {
     await this.authorize(actor);
     const target = await this.oauthTarget(id, name);
     // Only a sign-in pending for one of this connection's servers; checked before the single-use state is consumed.
-    const pending = typeof query.state === 'string' && await hasOAuthTables(this.database) ? await this.database(OAUTH_PENDING).where({ state_hash: createHash('sha256').update(query.state).digest('hex') }).first('server_name') : undefined;
-    if (!pending || !target.servers.some(s => s.name === pending.server_name)) throw new PluginError(400, 'Unknown, used or expired sign-in request');
+    const pending = await extensionOAuth(this.library).pendingSignInServer(query.state);
+    if (!pending || !target.servers.some(s => s.name === pending)) throw new PluginError(400, 'Unknown, used or expired sign-in request');
     const { name: server } = await viaLibrary(() => extensionOAuth(this.library).completeSignIn(actor, sessionId, query));
     await this.auditOnly(target.pluginId, 'complete_oauth', actor, { connection: target.connection, server });
     return this.view(target.pluginId, await this.load(target.pluginId, this.database, true));
