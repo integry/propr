@@ -13113,6 +13113,7 @@ components:
                       - disconnect_oauth
                       - set_oauth_client
                       - clear_oauth_client
+                      - handler_attempt
                       - handler_call
                       - handler_refused
                   actor:

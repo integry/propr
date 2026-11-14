@@ -116,11 +116,18 @@ other repositories or carry tokens.
 
 ### Attribution
 
-Every call, allowed or refused, is appended to `plugin_audit`: action
-`handler_call` or `handler_refused`, actor `plugin:<id>`, and detail
-`{ handler, operation, permission, repository?, number?, taskId?, reason? }`. The
-calls appear in the plugin's audit trail (`GET /api/instance/plugins/v1/{id}`)
-with the management actions.
+Every call, allowed or refused, is appended to `plugin_audit` with actor
+`plugin:<id>` and detail
+`{ handler, operation, permission, callId, repository?, number?, taskId?, reason? }`.
+The action is `handler_call` for a completed call and `handler_refused` for a
+refused or failed one. A mutation (`createIssue`, `createTask`, the comment and
+label operations) is first recorded as `handler_attempt`, after its checks and
+before it is dispatched. If that record cannot be written, the call is refused
+as `unavailable` and nothing reaches GitHub or the task queue. Once the attempt
+is recorded, a failure to record the outcome is logged on the server and does
+not fail the call, because the mutation may already have happened. The attempt
+and its outcome share a `callId`. The calls appear in the plugin's audit trail
+(`GET /api/instance/plugins/v1/{id}`) with the management actions.
 
 Text a plugin writes to GitHub (issue bodies and comments) ends with an
 HTML comment, `<!-- propr-plugin:<id> -->`, so the writer is visible on the

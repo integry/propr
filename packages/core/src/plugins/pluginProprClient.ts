@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   PLUGIN_PROPR_LIMITS, PLUGIN_PROPR_OPERATIONS, PLUGIN_REPOSITORY_PATTERN, PluginSdkError, REPOSITORY_EVENT_DOMAINS,
   type PluginCreatedComment, type PluginCreatedIssue, type PluginCreatedTask, type PluginIssueSummary, type PluginListEventsInput,
@@ -28,13 +29,25 @@ export interface PluginProprBackend {
 /** What a comment operation's permission covers: issues (`issues.comment`) or pull requests (`pull_requests.comment`). */
 export type PluginCommentTarget = 'issue' | 'pull_request';
 
+/**
+ * How far a recorded call got. `attempted`: a mutation passed every check and
+ * is about to be dispatched; it is recorded before the backend is called.
+ * `completed`: the backend returned. `refused`: refused, or the backend failed.
+ */
+export type PluginProprCallOutcome = 'attempted' | 'completed' | 'refused';
+
 /** One `ctx.propr` call as recorded in the plugin audit trail. */
 export interface PluginProprCallRecord {
-  operation: PluginProprOperation; permission: PluginPermission; allowed: boolean;
+  operation: PluginProprOperation; permission: PluginPermission; outcome: PluginProprCallOutcome;
+  /** Shared by the records of one call: a mutation's attempt and its completion or refusal. */
+  callId: string;
   repository?: string; number?: number; taskId?: string;
   /** Why the call was refused or failed: a `PluginSdkError` code. */
   reason?: string;
 }
+
+/** Operations that change something outside ProPR's audit trail (GitHub, the task queue): recorded as attempted before they are dispatched. */
+export const PLUGIN_PROPR_MUTATIONS: ReadonlySet<PluginProprOperation> = new Set(['createIssue', 'createTask', 'commentOnPullRequest', 'commentOnIssue', 'addLabel', 'removeLabel']);
 
 export interface ScopedProprOptions {
   pluginId: string;
@@ -42,8 +55,17 @@ export interface ScopedProprOptions {
   /** The installation's repository limit; null for all repositories. */
   repositories: readonly string[] | null;
   backend: PluginProprBackend;
-  /** Records the call with the plugin as the actor. A failure to record fails the call. */
+  /**
+   * Records the call with the plugin as the actor. A mutation is dispatched
+   * only once its `attempted` record is written: a failure to write it
+   * refuses the call. After that, a failure to record the mutation's outcome
+   * is reported through `onRecordFailure` and does not change the call's
+   * result (the mutation may have happened; the attempt attributes it). For a
+   * read, a failure to record fails the call.
+   */
   record: (call: PluginProprCallRecord) => Promise<void>;
+  /** Told when the outcome of an already attempted mutation could not be recorded. */
+  onRecordFailure?: (call: PluginProprCallRecord, error: unknown) => void;
   /**
    * Called before every call reaches the backend, after its own checks:
    * throws to refuse it (the installation the permissions and repository
@@ -101,22 +123,35 @@ export function scopedProprClient(options: ScopedProprOptions): PluginProprClien
 
   async function call<T>(operation: PluginProprOperation, target: () => Target, run: (checked: Target) => Promise<T>): Promise<T> {
     const permission = PLUGIN_PROPR_OPERATIONS[operation];
+    const callId = randomUUID();
     let checked: Target = {};
+    let attempted = false;
     let result: T;
+    const entry = (outcome: PluginProprCallOutcome, reason?: string): PluginProprCallRecord => ({ operation, permission, outcome, callId, ...checked, ...(reason ? { reason } : {}) });
+    /** Once a mutation's attempt is recorded, its outcome record is best effort: the attempt already attributes it. */
+    const recordOutcome = async (call: PluginProprCallRecord) => {
+      if (!attempted) return options.record(call);
+      try { await options.record(call); } catch (error) { options.onRecordFailure?.(call, error); }
+    };
     try {
       if (!options.grantedPermissions.includes(permission)) throw new PluginSdkError('permission_denied', `${operation} needs the ${permission} permission, which is not granted to this plugin`);
       checked = target();
       if (checked.repository && !allowedRepository(checked.repository)) throw new PluginSdkError('repository_not_allowed', `This plugin is not enabled for ${checked.repository}`);
       // The checks above use the installation as the run started: it must still be that installation.
       if (options.authorize) await options.authorize();
+      if (PLUGIN_PROPR_MUTATIONS.has(operation)) {
+        // Attributed before it is dispatched: a mutation the audit trail cannot name is never sent.
+        try { await options.record(entry('attempted')); } catch { throw new PluginSdkError('unavailable', `ProPR could not record ${operation}, so it was not sent`); }
+        attempted = true;
+      }
       result = await run(checked);
     } catch (error) {
       // A backend failure reaches the handler without its details (they can name other repositories or carry tokens).
       const refused = error instanceof PluginSdkError ? error : new PluginSdkError('unavailable', `ProPR could not complete ${operation}`);
-      await options.record({ operation, permission, allowed: false, ...checked, reason: refused.code });
+      await recordOutcome(entry('refused', refused.code));
       throw refused;
     }
-    await options.record({ operation, permission, allowed: true, ...checked });
+    await recordOutcome(entry('completed'));
     return result;
   }
 

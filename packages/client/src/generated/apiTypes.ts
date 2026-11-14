@@ -1007,7 +1007,7 @@ export interface PluginDetailResponse {
     };
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_call" | "handler_refused";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused";
       actor: string;
       at: number;
       detail: {

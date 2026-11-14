@@ -568,6 +568,9 @@ repository limit.
 
 Every call, allowed or refused, is recorded in the plugin's audit trail. The
 actor is `plugin:<id>` and the action is `handler_call` or `handler_refused`.
+A call that changes something (an issue, comment, label or task) is also
+recorded as `handler_attempt` before it is sent. If that record cannot be
+written, the call is refused and nothing is sent.
 Issues and comments a plugin writes end with `<!-- propr-plugin:<id> -->`. A
 task it creates records `requestedBy: plugin:<id>` in its first task event.
 

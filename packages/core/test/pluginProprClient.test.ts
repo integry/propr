@@ -6,7 +6,7 @@ import { githubPluginProprBackend } from '../src/plugins/pluginProprBackend.js';
 import { pluginAttributionMarker, scopedProprClient, type PluginProprCallRecord } from '../src/plugins/pluginProprClient.js';
 import type { IssueJobData } from '../src/queue/taskQueue.types.js';
 import { taskIntentIssueRef } from '../src/services/taskIntentIssueRef.js';
-import { FIXTURE_ID, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
+import { FIXTURE_ID, pluginHandlerFixture, recordingBackend } from './helpers/pluginHandlerFixture.js';
 
 type CallResult = { ok: boolean; value?: PluginJsonValue; code?: string; message?: string };
 
@@ -17,7 +17,7 @@ async function proprFixture(t: Parameters<typeof pluginHandlerFixture>[0]) {
     assert.equal(run.outcome, 'succeeded', run.error ?? '');
     return { ...(run.result as CallResult), logs: run.logs };
   };
-  const audit = async () => (await f.database('plugin_audit').whereIn('action', ['handler_call', 'handler_refused']).orderBy('id').select('action', 'actor', 'detail'))
+  const audit = async () => (await f.database('plugin_audit').whereIn('action', ['handler_attempt', 'handler_call', 'handler_refused']).orderBy('id').select('action', 'actor', 'detail'))
     .map(row => ({ action: row.action as string, actor: row.actor as string, ...JSON.parse(row.detail) as Record<string, unknown> }));
   return { ...f, call, audit };
 }
@@ -100,16 +100,19 @@ test('allowed ctx.propr operations reach the backend attributed to the plugin', 
   assert.equal(f.calls[4].args[2], `Linked thread\n\n${marker}`);
 
   const audit = await f.audit();
-  assert.ok(audit.every(a => a.action === 'handler_call' && a.actor === `plugin:${FIXTURE_ID}` && a.handler === 'callPropr'));
-  assert.deepEqual(audit.map(a => [a.operation, a.permission, a.repository, a.number ?? null]), [
-    ['getIssue', 'issues.read', 'owner/allowed', 3],
-    ['listEvents', 'events.read', 'owner/allowed', null],
-    ['createIssue', 'issues.create', 'owner/allowed', null],
-    ['createTask', 'tasks.create', 'owner/allowed', 11],
-    ['commentOnIssue', 'issues.comment', 'owner/allowed', 3],
-    ['addLabel', 'labels.write', 'owner/allowed', 3],
-    ['removeLabel', 'labels.write', 'owner/allowed', 3],
+  assert.ok(audit.every(a => a.actor === `plugin:${FIXTURE_ID}` && a.handler === 'callPropr'));
+  // Reads are recorded once they complete; a mutation is recorded as attempted before it is dispatched, then as completed.
+  assert.deepEqual(audit.map(a => [a.action, a.operation, a.permission, a.repository, a.number ?? null]), [
+    ['handler_call', 'getIssue', 'issues.read', 'owner/allowed', 3],
+    ['handler_call', 'listEvents', 'events.read', 'owner/allowed', null],
+    ...([['createIssue', 'issues.create', 'owner/allowed', null], ['createTask', 'tasks.create', 'owner/allowed', 11], ['commentOnIssue', 'issues.comment', 'owner/allowed', 3], ['addLabel', 'labels.write', 'owner/allowed', 3], ['removeLabel', 'labels.write', 'owner/allowed', 3]] as const)
+      .flatMap(call => [['handler_attempt', ...call], ['handler_call', ...call]]),
   ]);
+  // A mutation's attempt and completion share one call id; each call has its own.
+  const ids = audit.map(a => a.callId as string);
+  assert.ok(ids.every(id => typeof id === 'string' && id.length > 0));
+  assert.equal(new Set(ids).size, 7);
+  for (let i = 2; i < audit.length; i += 2) assert.equal(ids[i], ids[i + 1], `${audit[i].operation}: attempt and completion`);
   // The audit trail an administrator reads shows them with the plugin as the actor.
   const detail = await f.store.get('1', FIXTURE_ID);
   assert.equal(detail.audit[0].action, 'handler_call');
@@ -179,7 +182,7 @@ test('a comment permission covers only its own target kind: issues.comment canno
   const issueOnly = client(['issues.comment', 'issues.read']);
   await assert.rejects(issueOnly.propr.commentOnIssue('owner/allowed', 7, 'sneaky'), { code: 'not_found' });
   assert.deepEqual(posts(issueOnly.requests), []);
-  assert.deepEqual(issueOnly.records.map(r => [r.operation, r.allowed, r.reason]), [['commentOnIssue', false, 'not_found']]);
+  assert.deepEqual(issueOnly.records.map(r => [r.operation, r.outcome, r.reason]), [['commentOnIssue', 'attempted', undefined], ['commentOnIssue', 'refused', 'not_found']]);
   // getIssue (issues.read) cannot read a pull request through the issue route either.
   await assert.rejects(issueOnly.propr.getIssue('owner/allowed', 7), { code: 'not_found' });
   // The issue itself is still allowed.
@@ -241,4 +244,96 @@ test('the default enqueue adds no job when the run ends while the issue queue is
   const live = githubPluginProprBackend({ database: {} as never, signal: new AbortController().signal, issueQueue: async () => ({ add: async (_n: string, _d: IssueJobData, options: Record<string, unknown>) => { added.push(String(options.jobId)); } }) });
   assert.equal((await live.createTask('owner/allowed', 5, { requestedBy: 'plugin:x' })).jobId, 'issue-owner-allowed-5');
   assert.deepEqual(added, ['issue-owner-allowed-5']);
+});
+
+/** Every ctx.propr mutation, with arguments inside the fixture's limit. */
+const MUTATION_CALLS = [
+  ['createIssue', ['owner/allowed', { title: 'Follow up' }]], ['createTask', ['owner/allowed', 11]], ['commentOnIssue', ['owner/allowed', 3, 'hi']],
+  ['commentOnPullRequest', ['owner/allowed', 7, 'hi']], ['addLabel', ['owner/allowed', 3, 'synced']], ['removeLabel', ['owner/allowed', 3, 'synced']],
+] as const;
+
+test('a ctx.propr mutation is attributed in the audit trail before it is dispatched', async t => {
+  const f = await proprFixture(t);
+  // What the audit trail held at the moment each mutation reached the backend.
+  const seen: { operation: string; actions: string[] }[] = [];
+  const snapshot = (operation: string) => async () => {
+    const rows = await f.database('plugin_audit').where({ plugin_id: FIXTURE_ID, actor: `plugin:${FIXTURE_ID}` }).orderBy('id').select('action', 'detail');
+    seen.push({ operation, actions: rows.filter(r => JSON.parse(r.detail).operation === operation).map(r => r.action as string) });
+  };
+  const backend = { ...f.backend };
+  for (const name of ['createIssue', 'createTask', 'comment', 'addLabel', 'removeLabel'] as const) {
+    const original = backend[name] as (...args: unknown[]) => Promise<unknown>;
+    (backend as Record<string, unknown>)[name] = async (...args: unknown[]) => {
+      await snapshot(name === 'comment' ? (args[3] === 'issue' ? 'commentOnIssue' : 'commentOnPullRequest') : name)();
+      return original(...args);
+    };
+  }
+  for (const operation of ['createIssue', 'createTask', 'commentOnIssue', 'addLabel', 'removeLabel'] as const) {
+    const [, args] = MUTATION_CALLS.find(([name]) => name === operation)!;
+    const run = await runPluginHandler(FIXTURE_ID, 'callPropr', { kind: 'invoke', payload: { operation, args: args as unknown as PluginJsonValue[] } }, { ...f.options, backend });
+    assert.equal((run.result as CallResult).ok, true, JSON.stringify(run.result));
+  }
+  assert.deepEqual(seen.map(s => [s.operation, s.actions]), ['createIssue', 'createTask', 'commentOnIssue', 'addLabel', 'removeLabel'].map(op => [op, ['handler_attempt']]));
+});
+
+test('a ctx.propr mutation whose attempt cannot be recorded is refused and never dispatched', async t => {
+  const f = await proprFixture(t);
+  // The audit trail accepts everything but attempts, as a failing insert would.
+  await f.database.raw(`CREATE TRIGGER no_attempts BEFORE INSERT ON plugin_audit WHEN NEW.action = 'handler_attempt' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`);
+  for (const operation of ['createIssue', 'createTask', 'commentOnIssue', 'addLabel', 'removeLabel'] as const) {
+    const [, args] = MUTATION_CALLS.find(([name]) => name === operation)!;
+    const result = await f.call(operation, ...(args as unknown as PluginJsonValue[]));
+    assert.deepEqual([result.ok, result.code, result.message], [false, 'unavailable', `ProPR could not record ${operation}, so it was not sent`], operation);
+  }
+  assert.deepEqual(f.calls, [], 'no mutation reached the backend');
+  assert.deepEqual((await f.audit()).map(a => [a.action, a.operation, a.reason]), ['createIssue', 'createTask', 'commentOnIssue', 'addLabel', 'removeLabel'].map(op => ['handler_refused', op, 'unavailable']));
+  // Reads are not mutations: they need no attempt record.
+  assert.equal((await f.call('getIssue', 'owner/allowed', 3)).ok, true);
+
+  // Directly: a failing attempt write stops every mutation, before the backend.
+  const { backend, calls } = recordingBackend();
+  const records: PluginProprCallRecord[] = [];
+  const propr = scopedProprClient({
+    pluginId: FIXTURE_ID, grantedPermissions: Object.values(PLUGIN_PROPR_OPERATIONS), repositories: null, backend,
+    record: async call => { if (call.outcome === 'attempted') throw new Error('insert failed'); records.push(call); },
+  });
+  for (const [operation, args] of MUTATION_CALLS) {
+    await assert.rejects((propr[operation] as (...values: unknown[]) => Promise<unknown>)(...args), { code: 'unavailable' }, operation);
+  }
+  assert.deepEqual(calls, []);
+  assert.deepEqual(records.map(r => [r.operation, r.outcome, r.reason]), MUTATION_CALLS.map(([op]) => [op, 'refused', 'unavailable']));
+});
+
+test('once a ctx.propr mutation is attempted, its outcome record cannot fail the call or erase the attempt', async t => {
+  const f = await proprFixture(t);
+  // Completions cannot be written: the mutation still returns its result, and the attempt attributes it.
+  await f.database.raw(`CREATE TRIGGER no_completions BEFORE INSERT ON plugin_audit WHEN NEW.action = 'handler_call' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`);
+  const created = await f.call('createIssue', 'owner/allowed', { title: 'Follow up' });
+  assert.deepEqual(created.value, { repository: 'owner/allowed', number: 11, url: 'https://github.com/owner/allowed/issues/11' }, 'a retry would create a second issue');
+  assert.deepEqual(f.calls.map(c => c.operation), ['createIssue']);
+  assert.deepEqual((await f.audit()).map(a => [a.action, a.operation]), [['handler_attempt', 'createIssue']]);
+  // A read has no attempt to fall back on: failing to record it still fails it.
+  assert.equal((await f.call('getIssue', 'owner/allowed', 3)).ok, false);
+
+  // Directly: the outcome failure is reported, the attempt and the backend failure share a call id.
+  const { backend, calls } = recordingBackend();
+  const records: PluginProprCallRecord[] = [];
+  const failures: [string, string][] = [];
+  const failing = { ...backend, comment: async () => { calls.push({ operation: 'comment', args: [] }); throw new Error('HttpError: timeout after the comment was posted'); } };
+  const propr = scopedProprClient({
+    pluginId: FIXTURE_ID, grantedPermissions: Object.values(PLUGIN_PROPR_OPERATIONS), repositories: null, backend: failing,
+    record: async call => { records.push(call); if (call.outcome !== 'attempted') throw new Error('insert failed'); },
+    onRecordFailure: (call, error) => { failures.push([call.outcome, (error as Error).message]); },
+  });
+  assert.equal((await propr.addLabel('owner/allowed', 3, 'synced')), undefined);
+  await assert.rejects(propr.commentOnIssue('owner/allowed', 3, 'hi'), { code: 'unavailable', message: 'ProPR could not complete commentOnIssue' });
+  assert.deepEqual(calls.map(c => c.operation), ['addLabel', 'comment']);
+  assert.deepEqual(records.map(r => [r.operation, r.outcome, r.reason]), [
+    ['addLabel', 'attempted', undefined], ['addLabel', 'completed', undefined],
+    ['commentOnIssue', 'attempted', undefined], ['commentOnIssue', 'refused', 'unavailable'],
+  ]);
+  assert.equal(records[0].callId, records[1].callId);
+  assert.equal(records[2].callId, records[3].callId);
+  assert.notEqual(records[0].callId, records[2].callId);
+  assert.deepEqual(failures, [['completed', 'insert failed'], ['refused', 'insert failed']]);
 });

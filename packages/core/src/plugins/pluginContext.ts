@@ -2,14 +2,14 @@ import type { Knex } from 'knex';
 import {
   PLUGIN_LOG_LIMITS, PluginSdkError, defaultPluginSettings, validatePluginSettings,
   type PluginContext, type PluginHttpFetch, type PluginInstallationRecord, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
-  type PluginLogger, type PluginManifest, type PluginPermission,
+  type PluginAuditAction, type PluginLogger, type PluginManifest, type PluginPermission,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import type { ExtensionLookup } from '../extensions/endpointPolicy.js';
 import { redactExtensionOutput } from '../extensions/extensionOutput.js';
 import { createPluginHttp, type PluginHttpTransport } from './pluginHttp.js';
 import { githubPluginProprBackend } from './pluginProprBackend.js';
-import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallRecord } from './pluginProprClient.js';
+import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallOutcome, type PluginProprCallRecord } from './pluginProprClient.js';
 import { pluginStateStore, requireInstallation, type PluginStateWriteGuard } from './pluginStateStore.js';
 
 /** An installed plugin as a handler runs it: the current manifest and the installation record. */
@@ -34,6 +34,9 @@ export interface BuiltPluginContext {
   /** Redact a value for the caller: connection credentials used in this run and the general secret patterns. */
   redact<T>(value: T): T;
 }
+
+/** The audit action of each recorded `ctx.propr` call outcome. */
+const CALL_AUDIT_ACTIONS = { attempted: 'handler_attempt', completed: 'handler_call', refused: 'handler_refused' } as const satisfies Record<PluginProprCallOutcome, PluginAuditAction>;
 
 /** Permissions the handler has: granted by the administrator and still asked for by the current manifest. */
 export function effectivePluginPermissions(manifest: PluginManifest, record: PluginInstallationRecord): PluginPermission[] {
@@ -96,12 +99,12 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   const log: PluginLogger = { debug: (m, f) => write('debug', m, f), info: (m, f) => write('info', m, f), warn: (m, f) => write('warn', m, f), error: (m, f) => write('error', m, f) };
 
   const recordCall = async (call: PluginProprCallRecord) => {
-    const { allowed, ...detail } = call;
+    const { outcome, ...detail } = call;
     await deps.database('plugin_audit').insert({
-      plugin_id: pluginId, action: allowed ? 'handler_call' : 'handler_refused', actor: pluginActor(pluginId), at: now(),
+      plugin_id: pluginId, action: CALL_AUDIT_ACTIONS[outcome], actor: pluginActor(pluginId), at: now(),
       detail: JSON.stringify({ handler, ...detail }),
     });
-    if (!allowed) {
+    if (outcome === 'refused') {
       write('warn', `ctx.propr.${call.operation} refused: ${call.reason}`, { operation: call.operation, permission: call.permission, reason: call.reason ?? null, ...(call.repository ? { repository: call.repository } : {}) });
       logger.warn({ pluginId, handler, operation: call.operation, reason: call.reason }, '[plugins] Handler call refused');
     }
@@ -146,6 +149,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     propr: liveMethods(scopedProprClient({
       pluginId, grantedPermissions: effectivePluginPermissions(manifest, record), repositories: record.repositories,
       backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal, authorize: authorizeInstallation }), record: recordCall,
+      onRecordFailure: (call, error) => logger.error({ pluginId, handler, operation: call.operation, callId: call.callId, outcome: call.outcome, error: error instanceof Error ? error.message : String(error) }, '[plugins] Could not record the outcome of an attempted handler call'),
       authorize: authorizeInstallation,
     })),
     http: connection => live(http(connection)),
