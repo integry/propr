@@ -1,0 +1,88 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture-pack",
+  "name": "Fixture pack",
+  "description": "A valid plugin the plugins:check tests break one way at a time.",
+  "version": "1.0.0",
+  "category": "other",
+  "homepage": "https://example.com/fixture-pack",
+  "icon": "icon.svg",
+  "permissions": [
+    "events.read"
+  ],
+  "connections": [
+    {
+      "type": "oauth",
+      "name": "account",
+      "label": "Account",
+      "help": "Sign in.",
+      "helpUrl": "https://example.com/oauth"
+    },
+    {
+      "type": "token",
+      "name": "api-token",
+      "label": "API token",
+      "help": "Paste a token.",
+      "helpUrl": "https://example.com/tokens"
+    }
+  ],
+  "outboundHosts": [
+    "api.example.com"
+  ],
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "remote",
+        "url": "https://mcp.example.com/mcp",
+        "tools": [
+          "search"
+        ],
+        "capability": "read",
+        "authentication": "oauth",
+        "connection": "account"
+      },
+      {
+        "kind": "package",
+        "name": "local",
+        "ecosystem": "npm",
+        "package": "propr-fixture-mcp",
+        "version": "latest",
+        "integrity": "sha512-Y5GxTexuXT5IDhwgPcZokvnPvvRorDMdNHS83U59b5wquM5QTMmIhfeQ1y7AEbvbSmiJgjcJrok2q2mbzPRTvw==",
+        "secretEnv": [
+          {
+            "name": "FIXTURE_TOKEN",
+            "connection": "api-token"
+          }
+        ],
+        "tools": [
+          "echo"
+        ],
+        "capability": "read"
+      }
+    ],
+    "skills": [
+      {
+        "name": "fixture-skill",
+        "path": "skills/fixture-skill"
+      }
+    ],
+    "automationTemplates": [
+      {
+        "id": "fixture-report",
+        "path": "templates/fixture-report"
+      }
+    ],
+    "commands": [
+      {
+        "name": "status",
+        "description": "Show the status"
+      }
+    ],
+    "subscriptions": [
+      {
+        "event": "task.completed"
+      }
+    ]
+  }
+}

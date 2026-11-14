@@ -633,3 +633,4 @@ Skill-bearing runs require a Linux worker with `/proc/self/fd` available for sec
 
 - [MCP Connections and Operator Tools](/docs/features/mcp)
 - [Agents and Models](/docs/features/agents-and-models)
+- [Plugins](/docs/features/plugins): official integrations that bundle MCP servers, skills and automation templates
