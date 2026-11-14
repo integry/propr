@@ -31,7 +31,7 @@ permissions:
 jobs:
   validate-release:
     name: Validate Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The unsharded full server and UI suites alone exceed an hour on a hosted
     # runner (945 units); 60 minutes cancelled the v0.9.0 release mid-suite.
     timeout-minutes: 150
@@ -118,7 +118,7 @@ jobs:
   prepare-cli:
     name: Build and Smoke Test CLI
     needs: validate-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -165,7 +165,7 @@ jobs:
   preflight-cli:
     name: Preflight npm Release Artifact
     needs: [validate-release, prepare-cli]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -340,7 +340,7 @@ jobs:
     name: Publish CLI with provenance
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: [validate-release, prepare-cli, build-smoke-and-push]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -395,7 +395,7 @@ jobs:
     name: Publish GitHub release
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: [validate-release, build-smoke-and-push, publish-cli]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write

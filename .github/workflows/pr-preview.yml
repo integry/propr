@@ -25,7 +25,7 @@ jobs:
   # repo before running PR code on the self-hosted runner. Fail-closed.
   authorize:
     name: Authorize label actor
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: >-
       github.event.action == 'labeled' &&
       github.event.label.name == 'preview-env' &&

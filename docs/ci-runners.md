@@ -494,3 +494,12 @@ ProPR admits issues only by its configured trigger labels (`AI` by default)
 and ignores comments on issues that are not pull requests. The script refuses
 to apply `AI` or `llm-*` labels, so the health issue never enters ProPR's queue.
 Adding a trigger label by hand would still start an agent task.
+
+## Hosted runner image
+
+Hosted Linux jobs name `ubuntu-24.04` and not `ubuntu-latest`. When GitHub
+moved `ubuntu-latest` to Ubuntu 26.04, `rpmbuild` there stopped building the
+desktop RPM from the `electron-installer-redhat` spec (`%install` no longer
+runs in the staged directory), so `apps/desktop/src/rpm-maker.test.ts` and
+`apps/desktop/scripts/rpm-signing.test.mjs` failed on every run. Move to a
+newer image in one change, together with the RPM packaging fix.
