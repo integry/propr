@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, ChevronDown, ChevronRight,
-  Cpu, Logs, Plug, Settings, ShieldCheck, Inbox, Target, TriangleAlert, Workflow,
+  Cpu, Logs, Plug, Puzzle, Settings, ShieldCheck, Inbox, Target, TriangleAlert, Workflow,
 } from 'lucide-react';
 import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/sidebarIconStroke';
 
@@ -59,6 +59,7 @@ function getResourceNavigation(
   canManageAgents: boolean,
   canManageMembers: boolean,
   canReadMcpLog: boolean,
+  canManagePlugins = false,
 ): NavEntry[] {
   const navigation: NavEntry[] = [{ name: 'Repositories', href: '/repositories', icon: BookMarked }];
   if (canManageAgents) navigation.push({ name: 'Coding Agents', href: '/ai-agents', icon: Bot });
@@ -71,6 +72,8 @@ function getResourceNavigation(
     { name: 'Logs', icon: Logs, items: logs },
     { name: 'Settings', href: '/settings', icon: Settings },
   );
+  // Plugins need a durable administrator who may change instance settings, as their API does.
+  if (canManagePlugins) navigation.push({ name: 'Plugins', href: '/plugins', icon: Puzzle });
   if (canManageMembers) navigation.push({ name: 'Access', href: '/admin/members', icon: ShieldCheck });
   return navigation;
 }
@@ -279,12 +282,13 @@ function NavigationEntry({ entry, state }: { entry: NavEntry; state: NavigationS
  */
 export function SidebarNavigation({ state, permissions }: {
   state: NavigationState;
-  permissions: { canManageAgents: boolean; canManageMembers: boolean; canReadMcpLog: boolean };
+  permissions: { canManageAgents: boolean; canManageMembers: boolean; canReadMcpLog: boolean; canManagePlugins?: boolean };
 }) {
   const resources = getResourceNavigation(
     permissions.canManageAgents,
     permissions.canManageMembers,
     permissions.canReadMcpLog,
+    permissions.canManagePlugins,
   );
   return (
     <nav className="flex min-h-0 flex-col overflow-y-auto pt-2 pb-1">

@@ -18,6 +18,7 @@ const loadInboxPage = preloadable(() => import('./pages/InboxPage'));
 const loadLoginPage = preloadable(() => import('./pages/LoginPage'));
 const loadDesktopPairingPage = preloadable(() => import('./pages/DesktopPairingPage'));
 const loadPlansPage = preloadable(() => import('./pages/PlansPage'));
+const loadPluginsPage = preloadable(() => import('./pages/PluginsPage'));
 const loadPlanStudioPage = preloadable(() => import('./pages/PlanStudioPage'));
 const loadRepositoriesPage = preloadable(() => import('./pages/RepositoriesPage'));
 const loadRevertPage = preloadable(() => import('./pages/RevertPage'));
@@ -37,6 +38,7 @@ export const InboxPage = lazy(loadInboxPage);
 export const LoginPage = lazy(loadLoginPage);
 export const DesktopPairingPage = lazy(loadDesktopPairingPage);
 export const PlansPage = lazy(loadPlansPage);
+export const PluginsPage = lazy(loadPluginsPage);
 export const PlanStudioPage = lazy(loadPlanStudioPage);
 export const RepositoriesPage = lazy(loadRepositoriesPage);
 export const RevertPage = lazy(loadRevertPage);
@@ -64,6 +66,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/ai-agents', load: loadAiAgentsPage },
   { matches: pathname => pathname === '/settings', load: loadSettingsPage },
   { matches: pathname => pathname === '/admin/members', load: loadAccessManagementPage },
+  { matches: pathname => pathname === '/plugins' || pathname.startsWith('/plugins/'), load: loadPluginsPage },
   { matches: pathname => pathname.startsWith('/summaries/'), load: loadSummaryBrowserPage },
   { matches: pathname => pathname === '/llm-logs', load: loadLlmLogsPage },
   { matches: pathname => pathname === '/mcp-logs', load: loadMcpLogsPage },

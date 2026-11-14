@@ -13,6 +13,7 @@ import {
   ListTodo,
   MoreHorizontal,
   Plug,
+  Puzzle,
   Plus,
   ScrollText,
   Settings,
@@ -24,6 +25,7 @@ import {
 import type { HeaderStats } from '../hooks/useHeaderStats';
 import type { CurrentUser } from '../api/proprTypes';
 import { userHasPermission } from '../contexts/AuthContext';
+import { canManagePlugins } from '../pages/SettingsPage/settingsPermissions';
 import { publicAssetUrl } from '../config/runtimeMode';
 import AgentTankSidebar from './AgentTankSidebar';
 import QuickAddTodo from './QuickAddTodo';
@@ -67,7 +69,8 @@ const getNavigationState = (pathname: string, search: string) => {
       pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries') ||
       pathMatches(pathname, '/analytics') || pathMatches(pathname, '/llm-logs') ||
       pathMatches(pathname, '/mcp-logs') || pathMatches(pathname, '/ai-agents') ||
-      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members')
+      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') ||
+      pathMatches(pathname, '/plugins')
     ),
   };
 };
@@ -99,6 +102,9 @@ const getMoreGroups = (user: CurrentUser | null) => ({
       ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
       : []),
     { label: 'Settings', to: '/settings', icon: Settings },
+    ...(canManagePlugins(user)
+      ? [{ label: 'Plugins', to: '/plugins', icon: Puzzle }]
+      : []),
     ...(userHasPermission(user, 'instance.manage_members')
       ? [{ label: 'Access', to: '/admin/members', icon: ShieldCheck }]
       : []),

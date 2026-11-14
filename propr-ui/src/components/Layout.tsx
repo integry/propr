@@ -23,6 +23,7 @@ import UserAvatar from './UserAvatar';
 import VoiceBriefingControl from './VoiceBriefingControl';
 import { HeaderScopeSlotContext } from './headerScopeSlot';
 import { SidebarNavigation, type NavigationState } from './SidebarNavigation';
+import { canManagePlugins } from '../pages/SettingsPage/settingsPermissions';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -75,6 +76,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     canManageMembers: userHasPermission(user, 'instance.manage_members'),
     // The MCP access log needs the permission its admin endpoints require.
     canReadMcpLog: userHasPermission(user, 'instance.manage_settings'),
+    canManagePlugins: canManagePlugins(user),
   };
   const navigationState: NavigationState = {
     currentPath: location.pathname,

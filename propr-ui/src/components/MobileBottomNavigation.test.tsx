@@ -301,6 +301,19 @@ describe('MobileBottomNavigation', () => {
     expect(screen.queryByRole('link', { name: 'MCP Log' })).not.toBeInTheDocument();
   });
 
+  it('offers Plugins only to administrators who may change instance settings', () => {
+    renderNavigation('/plugins/example-pack', vi.fn(), { ...user, permissions: ['instance.manage_settings'] });
+    expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('link', { name: 'Plugins' })).toHaveAttribute('href', '/plugins');
+  });
+
+  it('hides Plugins from members and from administrators without the settings permission', () => {
+    renderNavigation('/tasks', vi.fn(), { ...user, role: 'member', permissions: ['instance.manage_settings'] });
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.queryByRole('link', { name: 'Plugins' })).not.toBeInTheDocument();
+  });
+
   it('hides Access without member management permission', () => {
     renderNavigation('/tasks', vi.fn(), {
       ...user,

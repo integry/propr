@@ -13,11 +13,10 @@ npm package of a local MCP server, which goes through the same package cache and
 integrity check as the [extension library's local package servers](./agent-extensions.md#local-package-servers).
 
 :::note Work in progress
-This page describes the plugin **manifest**, the official plugin registry and
-how an administrator **installs** a plugin through the API. The Plugins page,
-applying contributions to runs, OAuth connections, handlers, webhooks and
-commands are added by later releases; until then an installed plugin's state
-is stored and served but has no effect on runs.
+This page describes the plugin **manifest**, the official plugin registry, the
+[Plugins page](#the-plugins-page) and the installation API. A plugin's
+generated settings form, handlers, webhooks and commands are added by later
+releases.
 :::
 
 ## Where plugins live
@@ -167,6 +166,74 @@ npm run plugins:check -- --online [--registry https://registry.npmjs.org]
 
 also asks the npm registry for each package server's version and compares the
 recorded `integrity` value. It needs network access and is not run in CI.
+
+## The Plugins page
+
+**Plugins** (`/plugins`) is where an administrator installs a plugin and makes
+it work without knowing what it contributes internally. It is in the sidebar
+(on mobile, under **More**) and linked from **Settings → Agent Extensions &
+Packages → Skills & MCP servers**, and only durable administrators with
+`instance.manage_settings` see it. Everything on the page is drawn by ProPR
+from the manifest: manifest text is shown as plain text, links appear only for
+`https` URLs, and no code, image or markup supplied by the plugin runs in the
+browser.
+
+### Catalog
+
+The catalog shows one card per plugin: an icon for its category, its name,
+one-line description, category and a state badge. Filter by **Category** or
+type in **Search by name**.
+
+| Badge | Meaning |
+| --- | --- |
+| Not installed | Available in this ProPR, not installed. |
+| Off | Installed, every connection set, not enabled. |
+| Needs connection | Installed and not enabled, with a connection still to set or sign in. |
+| Enabled | Enabled, every connection set. |
+| Needs approval | An upgrade asks for permissions or a secret acknowledgement not yet approved. |
+| Degraded | Enabled while a connection is missing or needs a new sign-in, or no longer in this ProPR's registry. |
+
+### Walkthrough
+
+Open a card to see the plugin's steps, always in this order, each marked
+**Done** or **To do**:
+
+1. **Install.** The step says what the plugin adds in plain words, for example
+   "Adds 1 MCP server the agent can read from", "Runs 1 local server inside
+   the task container" or "Adds the /deploy command", and lists the
+   permissions it asks for, each with a one-line explanation. When a local
+   package server receives secret variables, the step shows the package, its
+   exact version and the variable names, with a required checkbox confirming
+   that those secrets are readable inside the task container. **Install**
+   stays unavailable until it is ticked. After an upgrade that needs approval,
+   the step lists what is new and offers **Approve**.
+2. **Connect.** One row per connection with its state, the manifest's help text
+   and a **How to get it** link. An OAuth connection has **Connect**,
+   **Reconnect** and **Disconnect**, the same controls as an OAuth server in
+   Skills & MCP servers; sign-in opens in a new tab and the page refreshes when
+   you come back. A `token` or `signing_secret` connection has a write-only
+   field: once saved, the page only says who stored it and when, and offers
+   **Replace** and **Clear**. A required connection cannot be cleared while
+   the plugin is enabled.
+3. **Configure.** **Limit to repositories** picks the repositories the plugin
+   applies in; leave every box unchecked for all repositories. The form for
+   the plugin's own settings is added by a later release.
+4. **Enable.** A single **Enabled** checkbox. While a required connection,
+   required setting or secret acknowledgement is missing it cannot be ticked,
+   and the step lists what is missing, for example "Connection Example API
+   token (example-token) is not set". Untick it to disable the plugin; its
+   settings and connections are kept.
+
+Below the steps, **What it added** lists the plugin's managed MCP servers and
+skills, with a link to Skills & MCP servers where they are listed, and its
+automation templates, each with whether it applies now.
+
+**Uninstall** is a separate action. Its confirmation lists what is removed:
+the settings and repository limit, each connection and stored credential, the
+managed library items and the templates. The audit trail is kept. When an
+automation still adds one of the plugin's managed items, the API refuses the
+uninstall and the page shows its message, which names the automation; remove
+the item from that automation and try again.
 
 ## Installing a plugin
 
