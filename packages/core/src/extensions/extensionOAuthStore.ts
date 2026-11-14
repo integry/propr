@@ -201,23 +201,20 @@ export class ExtensionOAuthStore {
    * unused, unexpired and started by this administrator in this session for
    * the same item and endpoint; `iss` must name the issuer when supplied (and
    * when the server promises it). Nothing is stored unless the code exchange succeeds.
+   * With `servers`, only a sign-in pending for one of those items is claimed; any
+   * other state is refused without consuming it.
    */
-  async completeSignIn(actor: string, sessionId: string, query: { state?: unknown; code?: unknown; error?: unknown; iss?: unknown }): Promise<{ name: string }> {
+  async completeSignIn(actor: string, sessionId: string, query: { state?: unknown; code?: unknown; error?: unknown; iss?: unknown }, servers?: readonly string[]): Promise<{ name: string }> {
     await this.tables();
     if (typeof query.state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(query.state)) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
     const stateHash = sha256(query.state);
     // Single use: the first callback claims the state, and it is deleted whatever the outcome. The claimed
     // row is this attempt: Disconnect and binding changes delete it, which cancels the attempt.
     const claim = randomUUID();
-    if (await this.database(OAUTH_PENDING).where({ state_hash: stateHash }).whereNull('claim').update({ claim }) !== 1) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
+    const pending = this.database(OAUTH_PENDING).where({ state_hash: stateHash }).whereNull('claim');
+    if (await (servers ? pending.whereIn('server_name', [...servers]) : pending).update({ claim }) !== 1) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
     try { return await this.completeClaimed(actor, sessionId, query, { state_hash: stateHash, claim }); }
     finally { await this.database(OAUTH_PENDING).where({ state_hash: stateHash, claim }).delete(); }
-  }
-  /** The item a sign-in is pending for, by the callback's `state`, without claiming it; `null` when no such sign-in is pending. */
-  async pendingSignInServer(state: unknown): Promise<string | null> {
-    if (typeof state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(state) || !await hasOAuthTables(this.database)) return null;
-    const row = await this.database(OAUTH_PENDING).where({ state_hash: sha256(state) }).first('server_name');
-    return row ? row.server_name as string : null;
   }
   // eslint-disable-next-line complexity -- every callback check refuses before the exchange
   private async completeClaimed(actor: string, sessionId: string, query: { code?: unknown; error?: unknown; iss?: unknown }, attempt: { state_hash: string; claim: string }): Promise<{ name: string }> {

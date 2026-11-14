@@ -155,6 +155,12 @@ test('PKCE mismatch, unknown, reused or expired state, another session or admini
   await assert.rejects(f.oauth.startSignIn('2', 'session-a', 'docs', OAUTH_URLS), /administrator/);
   await assert.rejects(f.oauth.startSignIn('1', 'session-a', 'docs', { redirectUri: null, clientMetadataUrl: null }), /public HTTPS base URL/);
 
+  // Restricted to other items (a plugin connection's servers): refused without consuming the state.
+  const restricted = await f.consent();
+  await assert.rejects(f.oauth.completeSignIn('1', 'session-a', restricted.params, ['other']), /Unknown, used or expired/);
+  await empty();
+  assert.deepEqual(await f.oauth.completeSignIn('1', 'session-a', restricted.params, ['docs']), { name: 'docs' });
+
   const reused = await f.consent();
   await f.oauth.completeSignIn('1', 'session-a', reused.params);
   await assert.rejects(f.oauth.completeSignIn('1', 'session-a', reused.params), /Unknown, used or expired/);

@@ -366,10 +366,8 @@ export class PluginStore {
   async completeOAuth(actor: string, id: unknown, name: unknown, sessionId: string, query: { state?: unknown; code?: unknown; error?: unknown; iss?: unknown }): Promise<PluginView> {
     await this.authorize(actor);
     const target = await this.oauthTarget(id, name);
-    // Only a sign-in pending for one of this connection's servers; checked before the single-use state is consumed.
-    const pending = await extensionOAuth(this.library).pendingSignInServer(query.state);
-    if (!pending || !target.servers.some(s => s.name === pending)) throw new PluginError(400, 'Unknown, used or expired sign-in request');
-    const { name: server } = await viaLibrary(() => extensionOAuth(this.library).completeSignIn(actor, sessionId, query));
+    // Only a sign-in pending for one of this connection's servers is claimed; any other single-use state is left unconsumed.
+    const { name: server } = await viaLibrary(() => extensionOAuth(this.library).completeSignIn(actor, sessionId, query, target.servers.map(s => s.name)));
     await this.auditOnly(target.pluginId, 'complete_oauth', actor, { connection: target.connection, server });
     return this.view(target.pluginId, await this.load(target.pluginId, this.database, true));
   }
