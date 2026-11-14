@@ -99,7 +99,8 @@ export async function runPluginHandler(installation: PluginInstallationRef, hand
     const durationMs = Math.round(performance.now() - started);
     // Ends the run for anything the handler left running: ctx refuses further calls and log lines.
     if (!controller.signal.aborted) controller.abort(new Error('The handler run has ended'));
-    const result: PluginHandlerRun = { ...run, error: run.error === null ? null : redact(run.error), durationMs, logs: [...logs] };
+    // Lines logged before a credential was acquired were redacted without it: redact every line again with all the credentials of this run.
+    const result: PluginHandlerRun = { ...run, error: run.error === null ? null : redact(run.error), durationMs, logs: logs.map(line => redact(line)) };
     try { logger.info({ pluginId, handler: handlerName, outcome: result.outcome, timedOut: result.timedOut, durationMs }, '[plugins] Handler run'); } catch { /* logging never fails a run */ }
     return result;
   };

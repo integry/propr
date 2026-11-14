@@ -139,6 +139,22 @@ test('ctx.http injects the connection credential, which the handler and the logs
   assert.equal(JSON.stringify(await f.database('plugin_audit').select()).includes(SENTINEL), false);
 });
 
+test('a credential logged before the handler acquires it is redacted from the returned logs', async t => {
+  const f = await pluginHandlerFixture(t, { secret: SENTINEL });
+  // The input carries the opaque token (an upstream callback payload, say); the handler logs it before its first authenticated request.
+  const note = `callback for ${SENTINEL} with ${Buffer.from(SENTINEL).toString('base64')} and ${encodeURIComponent(`/${SENTINEL}`)}`;
+  const run = await runPluginHandler(FIXTURE_ID, 'logThenFetch', invoke({ url: 'https://api.fixture.example/v1', connection: 'api-token', note }), f.options);
+  assert.equal(run.outcome, 'succeeded', run.error ?? '');
+  assert.equal(f.http.requests[0]?.headers.authorization, `Bearer ${SENTINEL}`, 'the credential was acquired after the line was logged');
+  assert.deepEqual(run.logs.map(l => [l.level, l.message]).slice(0, 1), [['info', 'callback for [REDACTED] with [REDACTED] and %2F[REDACTED]']]);
+  assert.deepEqual(run.logs[0].fields, { note: 'callback for [REDACTED] with [REDACTED] and %2F[REDACTED]' });
+  const visible = JSON.stringify(run);
+  for (const spelling of [SENTINEL, Buffer.from(SENTINEL).toString('base64'), encodeURIComponent(SENTINEL)]) {
+    assert.equal(visible.includes(spelling), false, `${spelling} leaked`);
+  }
+  assert.equal(JSON.stringify(await f.database('plugin_audit').select()).includes(SENTINEL), false);
+});
+
 test('ctx.http refuses hosts not in outboundHosts, private addresses, plain HTTP and unusable connections', async t => {
   const f = await pluginHandlerFixture(t, { secret: SENTINEL });
   const fetch = async (payload: PluginJsonValue) => {

@@ -101,6 +101,14 @@ export async function fetchThenLog(input: PluginHandlerInput, ctx: PluginContext
   return { note };
 }
 
+/** Log `note` (a value from the input) before the run holds any credential, then make an authenticated request, and return the note. */
+export async function logThenFetch(input: PluginHandlerInput, ctx: PluginContext) {
+  const { url, connection, note } = payload(input) as { url: string; connection: string; note: string };
+  ctx.log.info(note, { note });
+  await ctx.http(connection)(url);
+  return { note };
+}
+
 /**
  * Wait on a ctx.propr read (the test holds it), then use state: a handler still
  * running across an uninstall. `op` defaults to writing `key`.
