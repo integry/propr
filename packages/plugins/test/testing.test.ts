@@ -48,6 +48,24 @@ test('the test kit refuses ungranted permissions, repositories outside the limit
   assert.throws(() => kit.ctx.http('unknown'), (error: unknown) => error instanceof PluginSdkError && error.code === 'connection_unavailable');
 });
 
+test('the test kit refuses a task from a repository outside the limit, as the real getTask does', async () => {
+  const task = (taskId: string, repository: string) => ({ taskId, repository, kind: 'implementation' as const, issueNumber: 2, prNumber: null, state: 'completed', model: null, createdAt: '' });
+  const kit = createTestPluginContext({
+    grantedPermissions: ['tasks.read'], repositories: ['owner/allowed'],
+    // Read asynchronously, as a test answering from a fake store would.
+    propr: { getTask: async taskId => task(taskId, taskId === 'elsewhere' ? 'other/repo' : 'Owner/Allowed') },
+  });
+  await assert.rejects(kit.ctx.propr.getTask('elsewhere'), (error: unknown) => error instanceof PluginSdkError && error.code === 'repository_not_allowed');
+  assert.equal((await kit.ctx.propr.getTask('mine')).repository, 'Owner/Allowed', 'compared case-insensitively');
+  assert.deepEqual(kit.calls, [{ operation: 'getTask', args: ['mine'] }], 'the refused call is not recorded');
+
+  // An unanswered getTask resolves with a placeholder task inside the limit; a missing task is not found.
+  const placeholder = createTestPluginContext({ grantedPermissions: ['tasks.read'], repositories: ['owner/allowed'] });
+  assert.equal((await placeholder.ctx.propr.getTask('t')).repository, 'owner/allowed');
+  const missing = createTestPluginContext({ grantedPermissions: ['tasks.read'], repositories: ['owner/allowed'], propr: { getTask: () => null as never } });
+  await assert.rejects(missing.ctx.propr.getTask('gone'), (error: unknown) => error instanceof PluginSdkError && error.code === 'not_found');
+});
+
 test('the test kit state applies the real limits', async () => {
   const kit = createTestPluginContext({ state: { a: 1 } });
   assert.equal(await kit.ctx.state.get('a'), 1);

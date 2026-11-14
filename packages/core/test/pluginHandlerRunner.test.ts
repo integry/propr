@@ -134,6 +134,8 @@ test('ctx.http injects the connection credential, which the handler and the logs
     assert.equal(visible.includes(spelling), false, `${spelling} leaked`);
   }
   assert.match(result.headers['x-echo-authorization'], /REDACTED/);
+  // The upstream also echoed the credential as a header name: that header is dropped, the others are kept.
+  assert.deepEqual(Object.keys(result.headers).sort(), ['content-type', 'x-echo-authorization']);
   assert.equal(JSON.stringify(await f.database('plugin_audit').select()).includes(SENTINEL), false);
 });
 

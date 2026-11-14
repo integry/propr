@@ -29,7 +29,7 @@ test('a JSON-escaped echo of the credential is scrubbed before the handler can d
     assert.equal(run.outcome, 'succeeded', run.error ?? '');
     return run.result as Record<string, unknown>;
   };
-  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false, parsedHeadersHaveProbe: false };
+  const clean = { ok: true, textHasProbe: false, parsedHasProbe: false, jsonHasProbe: false, headersHaveProbe: false, parsedHeadersHaveProbe: false, headerNamesHaveProbe: false };
 
   // JSON.stringify escaping (the fixture echo transport): `\"` and `\\`.
   assert.deepEqual(await probe(f.http.transport), clean);
@@ -58,6 +58,33 @@ test('a JSON-valued response header without the credential reaches the handler u
   const value = '{"note":"\\u0041 \\"quoted\\""}';
   const response = await createPluginHttp({ outboundHosts: ['api.fixture.example'], credential: async () => ESCAPED_SECRET, lookup, transport: async () => ({ status: 200, headers: { 'x-meta': value }, body: Buffer.from('') }) })('https://api.fixture.example/v1');
   assert.equal(response.headers['x-meta'], value);
+});
+
+test('a response header whose name echoes the credential, in any spelling or case, never reaches the handler', async t => {
+  // Mixed case and a `/`: names arrive lowercased, so the base64 and `%2F` spellings arrive folded too.
+  const secret = 'Mixed/Case-Sentinel-5d0e9a';
+  const f = await pluginHandlerFixture(t, { secret });
+  const unicodeEscaped = (value: string) => [...value].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const names = (token: string) => [
+    `X-${token}`, `x-${token.toLowerCase()}`, `x-b64-${Buffer.from(token).toString('base64url').toLowerCase()}`,
+    `x-hex-${Buffer.from(token).toString('hex')}`, `x-url-${encodeURIComponent(token).toLowerCase()}`, `x-json-${unicodeEscaped(token)}`,
+    `x-full-${encodeURIComponent(`Bearer ${token}`).toLowerCase()}`,
+  ];
+  const transport: PluginHttpTransport = async request => ({
+    status: 200, body: Buffer.from('{}'),
+    headers: { 'Content-Type': 'application/json', 'X-Request-Id': 'req-1', ...Object.fromEntries(names(request.headers.authorization!.slice(7)).map(name => [name, 'innocuous'])) },
+  });
+  const payload = { url: 'https://api.fixture.example/v1', connection: 'api-token' };
+
+  const probed = await runPluginHandler(FIXTURE_ID, 'fetchProbe', invoke({ ...payload, probe: secret }), { ...f.options, transport });
+  assert.equal(probed.outcome, 'succeeded', probed.error ?? '');
+  assert.equal((probed.result as { headerNamesHaveProbe: boolean }).headerNamesHaveProbe, false);
+
+  // The handler sees the other headers, by their lowercased names, unchanged.
+  const fetched = await runPluginHandler(FIXTURE_ID, 'fetchUrl', invoke(payload), { ...f.options, transport });
+  const { headers } = fetched.result as { headers: Record<string, string> };
+  assert.deepEqual(headers, { 'content-type': 'application/json', 'x-request-id': 'req-1' });
+  assert.equal(JSON.stringify(fetched).toLowerCase().includes(secret.toLowerCase()), false);
 });
 
 test('text() of a non-JSON body holds no JSON-escaped credential, and a clean JSON body is returned unchanged', async () => {

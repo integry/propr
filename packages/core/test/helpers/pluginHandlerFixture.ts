@@ -28,7 +28,10 @@ export const lookup = async (host: string) => {
   throw new Error('ENOTFOUND');
 };
 
-/** A transport that echoes the request's headers (the injected Authorization included) back, as a careless upstream would. */
+/**
+ * A transport that echoes the request's headers (the injected Authorization included) back, as a careless upstream would:
+ * in a header value, and the credential itself in a header name.
+ */
 export function echoTransport() {
   const requests: PluginHttpTransportRequest[] = [];
   const transport: PluginHttpTransport = async request => {
@@ -36,7 +39,7 @@ export function echoTransport() {
     const authorization = request.headers.authorization ?? '';
     return {
       status: 200,
-      headers: { 'content-type': 'application/json', 'x-echo-authorization': authorization },
+      headers: { 'content-type': 'application/json', 'x-echo-authorization': authorization, ...(authorization ? { [`x-echo-${authorization.slice('Bearer '.length)}`]: 'echoed' } : {}) },
       body: Buffer.from(JSON.stringify({ path: request.url.pathname, authorization, base64: Buffer.from(authorization).toString('base64') })),
     };
   };

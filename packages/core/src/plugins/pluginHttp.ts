@@ -68,13 +68,15 @@ const UNESCAPE_ROUNDS = 32;
  * once its JSON escapes are decoded, once or repeatedly: `\uXXXX` escapes in
  * HTML or a header, or a serialized JSON document inside a JSON string. Text
  * still decoding after the last round could hide one deeper, so counts too.
+ * `fold` is applied to each decoded round before comparing (header names
+ * compare case-insensitively).
  */
-function revealsCredential(text: string, spellings: readonly string[]): boolean {
+function revealsCredential(text: string, spellings: readonly string[], fold: (value: string) => string = value => value): boolean {
   let decoded = text;
   for (let round = 0; round < UNESCAPE_ROUNDS; round++) {
     const next = jsonUnescapeOnce(decoded);
     if (next === decoded) return false;
-    if (spellings.some(spelling => next.includes(spelling))) return true;
+    if (spellings.some(spelling => fold(next).includes(spelling))) return true;
     decoded = next;
   }
   return true;
@@ -140,6 +142,21 @@ function scrubbedHeader(raw: string, spellings: readonly string[]): string {
   const text = scrub(raw, spellings);
   if (!spellings.length) return text;
   return revealsCredential(text, spellings) ? '[REDACTED]' : text;
+}
+
+const lowerCase = (value: string) => value.toLowerCase();
+/**
+ * Whether a response header name (lowercased, as the handler sees it) holds a
+ * credential. Names are case-insensitive and arrive folded to lowercase (Node
+ * folds them), so an echoed credential, its base64 or its `%2F`-style URL
+ * encoding, is compared case-insensitively, also once JSON escapes are decoded.
+ * A name cannot be scrubbed in place without colliding with others, so a
+ * header whose name holds one is dropped.
+ */
+function nameRevealsCredential(name: string, spellings: readonly string[]): boolean {
+  if (!spellings.length) return false;
+  const folded = spellings.map(lowerCase);
+  return folded.some(spelling => name.includes(spelling)) || revealsCredential(name, folded, lowerCase);
 }
 
 /** The error a request gets once the handler run has ended. */
@@ -248,7 +265,11 @@ export const httpsPluginTransport: PluginHttpTransport = request => new Promise(
 
 function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spellings: readonly string[]): PluginHttpResponse {
   const text = scrubbedBody(response.body.toString('utf8'), spellings);
-  const headers = Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name.toLowerCase(), scrubbedHeader(value, spellings)]));
+  // A header whose name echoes the credential is dropped: the handler can read names as well as values.
+  const headers = Object.fromEntries(Object.entries(response.headers)
+    .map(([name, value]) => [name.toLowerCase(), value] as const)
+    .filter(([name]) => !nameRevealsCredential(name, spellings))
+    .map(([name, value]) => [name, scrubbedHeader(value, spellings)]));
   return {
     status: response.status, ok: response.status >= 200 && response.status < 300, url: url.toString(), headers,
     text: async () => text,

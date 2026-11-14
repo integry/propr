@@ -62,9 +62,14 @@ export async function fetchProbe(input: PluginHandlerInput, ctx: PluginContext) 
     const decoded = (value: unknown): boolean => typeof value === 'string' ? value.includes(probe) : value !== null && typeof value === 'object' && Object.entries(value).some(([k, v]) => k.includes(probe) || decoded(v));
     // A header value (or one part of a joined value) parsed as JSON by the handler.
     const parsedHeader = (value: string) => [value, ...value.split(', ')].some(part => { try { return decoded(JSON.parse(part)); } catch { return false; } });
+    // A header name (lowercased, as names arrive) as is, URL-decoded or JSON-decoded by the handler, compared case-insensitively.
+    const attempt = (decode: () => unknown) => { try { return decode(); } catch { return null; } };
+    const nameHasProbe = (name: string) => [name, attempt(() => decodeURIComponent(name)), attempt(() => JSON.parse(`"${name}"`))]
+      .some(value => typeof value === 'string' && value.toLowerCase().includes(probe.toLowerCase()));
     return {
       ok: true, textHasProbe: text.includes(probe), parsedHasProbe: decoded(parsed), jsonHasProbe: decoded(json),
       headersHaveProbe: Object.values(response.headers).some(v => v.includes(probe)), parsedHeadersHaveProbe: Object.values(response.headers).some(parsedHeader),
+      headerNamesHaveProbe: Object.keys(response.headers).some(nameHasProbe),
     };
   } catch (error) {
     return { ok: false, code: (error as { code?: string }).code ?? null, message: (error as Error).message };

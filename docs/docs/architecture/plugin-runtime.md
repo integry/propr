@@ -173,7 +173,9 @@ text still holds the secret once its JSON escapes are decoded, once or
 repeatedly, is replaced with `[REDACTED]` entirely. This covers a JSON-valued
 header (also inside a longer or joined value), `\uXXXX` escapes in an HTML
 script, and nested serialized JSON. Text still decoding after 32 rounds counts
-as holding it. A
+as holding it. A response header whose name holds the secret in any of these
+spellings is dropped. Header names arrive lowercased, so they are compared
+case-insensitively. A
 careless upstream that echoes the `Authorization` header cannot hand the secret
 back.
 
@@ -272,5 +274,7 @@ kit.logs;     // captured log lines
 
 The fake applies the same permission, repository-limit, `https`, outbound-host
 and state-limit checks as the real context, so a handler test fails the way
-production would. `ctx.propr` calls nobody answered resolve with minimal
-placeholders. An HTTP request with no scripted response throws `http_failed`.
+production would. That includes `getTask`, which refuses a task from a
+repository outside the limit once the answer is read. `ctx.propr` calls nobody
+answered resolve with minimal placeholders. A placeholder task belongs to the
+first repository in the limit. An HTTP request with no scripted response throws `http_failed`.

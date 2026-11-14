@@ -98,6 +98,12 @@ function stateStore(state: Map<string, PluginJsonValue>): PluginContext['state']
 export function createTestPluginContext(options: TestPluginContextOptions = {}): TestPluginContext {
   const granted = options.grantedPermissions ?? PLUGIN_PERMISSIONS;
   const limit = options.repositories?.map(r => r.toLowerCase()) ?? null;
+  const allowed = (repository: unknown) => !limit || (typeof repository === 'string' && limit.includes(repository.toLowerCase()));
+  /** An unanswered call's placeholder; a placeholder task belongs to a repository inside the limit. */
+  const placeholder = (operation: PluginProprOperation, args: unknown[]) => {
+    const value = (placeholders[operation] as (...a: unknown[]) => unknown)(...args);
+    return operation === 'getTask' && options.repositories?.length ? { ...(value as object), repository: options.repositories[0] } : value;
+  };
   const calls: RecordedProprCall[] = []; const requests: RecordedHttpRequest[] = []; const logs: PluginLogLine[] = [];
   const state = new Map(Object.entries(structuredClone(options.state ?? {})));
   const scripts: { matcher: Matcher; answer: ScriptedHttpResponse | ((url: string, init: PluginHttpRequestInit) => ScriptedHttpResponse) }[] = [];
@@ -106,10 +112,21 @@ export function createTestPluginContext(options: TestPluginContextOptions = {}):
     const permission = PLUGIN_PROPR_OPERATIONS[operation];
     if (!granted.includes(permission)) throw new PluginSdkError('permission_denied', `${operation} needs the ${permission} permission`);
     const repository = operation === 'getTask' ? null : operation === 'listEvents' ? (args[0] as { repository?: string })?.repository : args[0];
-    if (limit && typeof repository === 'string' && !limit.includes(repository.toLowerCase())) throw new PluginSdkError('repository_not_allowed', `This plugin is not enabled for ${repository}`);
-    calls.push({ operation, args: structuredClone(args) });
+    if (typeof repository === 'string' && !allowed(repository)) throw new PluginSdkError('repository_not_allowed', `This plugin is not enabled for ${repository}`);
+    const call: RecordedProprCall = { operation, args: structuredClone(args) };
+    calls.push(call);
     const answer = options.propr?.[operation] as ((...a: unknown[]) => unknown) | undefined;
-    return answer ? answer(...args) : (placeholders[operation] as (...a: unknown[]) => unknown)(...args);
+    const result = await (answer ? answer(...args) : placeholder(operation, args));
+    if (operation === 'getTask') {
+      // Like the real getTask: the task's repository is known only once it is read, and a task outside the limit is not returned.
+      if (!result) throw new PluginSdkError('not_found', 'Task not found');
+      if (!allowed((result as { repository?: unknown }).repository)) {
+        // Refused by the repository check, so not one of `calls`.
+        calls.splice(calls.indexOf(call), 1);
+        throw new PluginSdkError('repository_not_allowed', 'This plugin is not enabled for the task\'s repository');
+      }
+    }
+    return result;
   }])) as unknown as PluginProprClient;
 
   const http = (connection?: string) => {
