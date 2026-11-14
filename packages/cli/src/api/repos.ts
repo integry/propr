@@ -7,6 +7,7 @@ import type { GitHubAttachmentCapacity, GitHubAttachmentPlanOverride } from '@pr
  */
 
 import { ApiClient, createApiClient } from "./index.js";
+import type { RequestOptions } from "./types.js";
 
 /**
  * Progress information for repository indexing.
@@ -593,13 +594,15 @@ export async function removeRepo(
 export async function triggerIndexing(
   fullName: string,
   options: { fullReindex?: boolean; baseBranch?: string } = {},
-  client?: ApiClient
+  client?: ApiClient,
+  request: Pick<RequestOptions, "signal" | "timeout" | "retry"> = {},
 ): Promise<TriggerIndexingResponse> {
   const apiClient = client ?? (await createApiClient());
 
   const response = await apiClient.post<TriggerIndexingResponse>(
     "/api/config/repos/trigger-indexing",
     {
+      ...request,
       body: {
         repository: fullName,
         fullReindex: options.fullReindex ?? true,
@@ -636,12 +639,14 @@ export async function triggerIndexing(
  */
 export async function getIndexingStatus(
   fullName?: string,
-  client?: ApiClient
+  client?: ApiClient,
+  request: Pick<RequestOptions, "signal" | "timeout" | "retry"> = {},
 ): Promise<GetIndexingStatusResponse> {
   const apiClient = client ?? (await createApiClient());
 
   const response = await apiClient.get<GetIndexingStatusResponse>(
-    "/api/config/repos/indexing-status"
+    "/api/config/repos/indexing-status",
+    request,
   );
 
   // Filter by fullName if provided
