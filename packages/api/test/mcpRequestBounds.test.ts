@@ -64,9 +64,9 @@ test('tool arguments over the element budget are rejected before the tool runs o
   const counts = async () => Promise.all(tables.map(async table => Number((await h.db(table).count({ count: '*' }).first())?.count)));
   const initial = await counts();
 
-  // 2,600 four-key plan tasks: about 13,000 elements in a ~120 KiB body, well
+  // 4,000 four-key plan tasks: about 20,000 elements in a ~185 KiB body, well
   // under the size bound, so only the element budget can stop it here.
-  const plan = Array.from({ length: 2_600 }, (_, index) => ({ title: `t${index}`, body: 'b', implementation: 'i' }));
+  const plan = Array.from({ length: 4_000 }, (_, index) => ({ title: `t${index}`, body: 'b', implementation: 'i' }));
   const body = call(3, 'create_plan', { repository: 'acme/alpha', name: 'Oversized plan', prompt: 'Fixture prompt', plan, idempotencyKey: 'element-budget-fixture' });
   assert.ok(Buffer.byteLength(JSON.stringify(body)) < 256 * 1024);
   const response = await h.post(h.alpha.token, body);
@@ -80,5 +80,26 @@ test('tool arguments over the element budget are rejected before the tool runs o
   // rejection itself, without the arguments.
   const rows = (await accessRows()).slice(before.length);
   assert.deepEqual(rows, [{ kind: 'tool', name: 'create_plan', outcome: 'denied', error_code: 'INVALID_INPUT', status: 400 }]);
+  await assertServed();
+});
+
+test('a plan may hold 50 issues; the 51st is refused by the schema and nothing is written', async () => {
+  const tasks = (count: number) => Array.from({ length: count }, (_, index) => ({ title: `Issue ${index + 1}`, body: 'Body', implementation: 'Steps' }));
+  const drafts = async () => Number((await h.db('task_drafts').count({ count: '*' }).first())?.count);
+  const initial = await drafts();
+
+  const over = await h.post(h.alpha.token, call(4, 'create_plan', { repository: 'acme/alpha', name: 'Fifty-one issues', prompt: 'Fixture prompt', plan: tasks(51), idempotencyKey: 'plan-cap-over-fixture' }));
+  assert.equal(over.status, 200, over.text);
+  assert.equal(over.messages[0].result.isError, true);
+  assert.match(over.messages[0].result.content[0].text, /plan/);
+  assert.match(over.messages[0].result.content[0].text, /50/);
+  assert.equal(await drafts(), initial, 'no draft was written for the refused plan');
+
+  const atLimit = await h.post(h.alpha.token, call(5, 'create_plan', { repository: 'acme/alpha', name: 'Fifty issues', prompt: 'Fixture prompt', plan: tasks(50), idempotencyKey: 'plan-cap-limit-fixture' }));
+  assert.equal(atLimit.status, 200, atLimit.text);
+  assert.notEqual(atLimit.messages[0].result.isError, true, atLimit.text);
+  assert.equal(await drafts(), initial + 1);
+  const draft = await h.db('task_drafts').orderBy('created_at', 'desc').first();
+  assert.equal(JSON.parse(draft.plan_json).length, 50);
   await assertServed();
 });
