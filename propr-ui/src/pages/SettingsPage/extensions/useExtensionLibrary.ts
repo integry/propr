@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryRevision, ExtensionLibraryServer, ExtensionLibrarySkill, ExtensionLibraryUsage, ExtensionOAuthInstanceInfo, ExtensionSkillBundle, InstanceCatalogResponse } from '@propr/shared';
 import { disconnectExtensionOAuth, getExtensionLibrary, saveExtensionLibrary, setExtensionItemEnabled, startExtensionOAuth, type ExtensionItemRef } from '../../../api/extensionProfilesApi';
 import { getInstanceCatalog } from '../../../api/proprApi';
+import { usePluginNames } from './usePluginNames';
 import { EMPTY_USAGE, extensionChoices, itemRefKey, ownEntry, type ExtensionChoices } from './extensionUi';
 
 export type LibraryItems = { servers: ExtensionLibraryServer[]; skills: ExtensionLibrarySkill[] };
@@ -172,6 +173,8 @@ export function useExtensionLibrary() {
   const isPending = (ref: ExtensionItemRef) => itemRefKey(ref) in pending;
   return {
     library, loads, catalog, bundles, usage, choices, error, notice, setError, setNotice, reload, save, toggle, remove, addBundle, shownEnabled, isPending,
+    /** Display names of the plugins that manage items, by plugin id. */
+    pluginNames: usePluginNames(library),
     oauth, connectOAuth, disconnectOAuth, refreshConnections, isOAuthBusy: (name: string) => Boolean(ownEntry(oauthBusy, name)),
   };
 }

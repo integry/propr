@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getExtensionLibrary } from '../../api/extensionProfilesApi';
 import {
-  approvePlugin, disconnectPluginOAuth, getPlugin, installPlugin, setPluginConnection, setPluginEnabled, setPluginRepositories,
+  approvePlugin, disconnectPluginOAuth, getPlugin, installPlugin, setPluginConnection, setPluginEnabled, setPluginRepositories, setPluginSettings,
   startPluginOAuth, uninstallPlugin, type PluginView,
 } from '../../api/pluginsApi';
 
@@ -10,7 +10,9 @@ const OAUTH_CHANNEL = 'propr-extension-oauth';
 /** Connect stays available when the redirect URI could not be read; the API then explains a refusal. */
 const UNKNOWN_REDIRECT = 'unknown';
 
-type Area = 'general' | 'uninstall';
+/** Where a refusal is shown: settings refusals go next to their fields, uninstall refusals in its confirmation. */
+type Area = 'general' | 'settings' | 'uninstall';
+const NO_ERRORS: Record<Area, string> = { general: '', settings: '', uninstall: '' };
 const message = (error: unknown) => (error instanceof Error ? error.message : 'Plugin operation unavailable.');
 
 /** The redirect URI of the extension OAuth sign-in, read only when the plugin has an OAuth connection. */
@@ -30,7 +32,7 @@ function useRedirectUri(view: PluginView | null) {
 export function usePluginDetail(id: string) {
   const [view, setView] = useState<PluginView | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [errors, setErrors] = useState<Record<Area, string>>({ general: '', uninstall: '' });
+  const [errors, setErrors] = useState<Record<Area, string>>(NO_ERRORS);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [oauthBusy, setOAuthBusy] = useState<string | null>(null);
@@ -68,7 +70,7 @@ export function usePluginDetail(id: string) {
   const run = useCallback(async (work: () => Promise<{ plugin: PluginView }>, done: string, area: Area = 'general') => {
     if (mutating.current) return false;
     mutating.current = true; sequence.current += 1;
-    setBusy(true); setErrors({ general: '', uninstall: '' }); setNotice('');
+    setBusy(true); setErrors(NO_ERRORS); setNotice('');
     let failed = false;
     try {
       const { plugin } = await work();
@@ -91,7 +93,7 @@ export function usePluginDetail(id: string) {
   const connectOAuth = useCallback(async (name: string) => {
     const tab = window.open('', '_blank');
     if (tab) tab.opener = null;
-    setOAuthBusy(name); setErrors({ general: '', uninstall: '' }); setNotice('');
+    setOAuthBusy(name); setErrors(NO_ERRORS); setNotice('');
     try {
       const { authorizationUrl } = await startPluginOAuth(id, name);
       if (tab) tab.location.href = authorizationUrl; else window.open(authorizationUrl, '_blank', 'noopener,noreferrer');
@@ -117,6 +119,7 @@ export function usePluginDetail(id: string) {
     install: (acknowledged: string[]) => run(() => installPlugin(id, acknowledged), 'Installed. Connect it, then enable it.'),
     approve: (acknowledged: string[]) => run(() => approvePlugin(id, acknowledged), 'Approved.'),
     setSecret: (name: string, value: string | null) => run(() => setPluginConnection(id, name, value), value === null ? 'Connection cleared.' : 'Connection saved.'),
+    setSettings: (settings: Parameters<typeof setPluginSettings>[1]) => run(() => setPluginSettings(id, settings), 'Settings saved.', 'settings'),
     setRepositories: (repositories: string[]) => run(() => setPluginRepositories(id, repositories), 'Repository limit saved.'),
     setEnabled: (enabled: boolean) => run(() => setPluginEnabled(id, enabled), enabled ? 'Enabled.' : 'Disabled. Its settings and connections are kept.'),
     uninstall: () => run(() => uninstallPlugin(id), 'Uninstalled.', 'uninstall'),

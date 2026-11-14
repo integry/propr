@@ -206,7 +206,8 @@ Open a card to see the plugin's steps, always in this order, each marked
    exact version and the variable names, with a required checkbox confirming
    that those secrets are readable inside the task container. **Install**
    stays unavailable until it is ticked. After an upgrade that needs approval,
-   the step lists what is new and offers **Approve**.
+   the step shows what changed (see [Needs approval](#needs-approval)) and
+   offers **Approve**.
 2. **Connect.** One row per connection with its state, the manifest's help text
    and a **How to get it** link. An OAuth connection has **Connect**,
    **Reconnect** and **Disconnect**, the same controls as an OAuth server in
@@ -215,9 +216,11 @@ Open a card to see the plugin's steps, always in this order, each marked
    field: once saved, the page only says who stored it and when, and offers
    **Replace** and **Clear**. A required connection cannot be cleared while
    the plugin is enabled.
-3. **Configure.** **Limit to repositories** picks the repositories the plugin
-   applies in; leave every box unchecked for all repositories. The form for
-   the plugin's own settings is added by a later release.
+3. **Configure.** A settings form ProPR generates from the manifest's
+   [settings schema](#settings), then **Limit to repositories**, which picks
+   the repositories the plugin applies in (leave every box unchecked for all
+   repositories). The step is done once every required setting has a value.
+   See [Settings form](#settings-form).
 4. **Enable.** A single **Enabled** checkbox. While a required connection,
    required setting or secret acknowledgement is missing it cannot be ticked,
    and the step lists what is missing, for example "Connection Example API
@@ -226,7 +229,10 @@ Open a card to see the plugin's steps, always in this order, each marked
 
 Below the steps, **What it added** lists the plugin's managed MCP servers and
 skills, with a link to Skills & MCP servers where they are listed, and its
-automation templates, each with whether it applies now.
+automation templates, each with whether it applies now. **Activity** follows
+once the plugin is installed; it lists the events the plugin received and their
+results once plugins receive ProPR events, and until then says there is no
+activity yet.
 
 **Uninstall** is a separate action. Its confirmation lists what is removed:
 the settings and repository limit, each connection and stored credential, the
@@ -234,6 +240,59 @@ managed library items and the templates. The audit trail is kept. When an
 automation still adds one of the plugin's managed items, the API refuses the
 uninstall and the page shows its message, which names the automation; remove
 the item from that automation and try again.
+
+### Settings form
+
+Each setting becomes one field, labelled with its `label` and described by its
+`help`:
+
+| Setting | Field |
+| --- | --- |
+| `string` | A text box (limited to `maxLength`). |
+| `string` with `enum` | A list to pick one value from, or **Not set**. |
+| `number` | A number box, with the range and whether it must be a whole number shown under it. |
+| `boolean` | A checkbox. |
+| `array` of `string` | A text area, one entry per line. |
+| `object` with `format: repository-map` | One row per repository: the repository (`owner/name`, with this instance's repositories suggested) and its value, with **Add repository** and **Remove**. |
+
+The form starts from the saved settings; a fresh installation starts from the
+manifest's defaults. **Save settings** sends every setting at once
+(`PUT /api/instance/plugins/v1/<id>/settings`); an emptied field, list or map
+removes that setting. The page checks the values with the same rules as the
+API before sending them, and when the API refuses a value its message (for
+example "maxItems must be at most 50") is shown under that field. A required
+setting is marked **Required to enable**: it may stay empty while the plugin is
+disabled, but **Enable** then lists it as missing (for example "Required setting
+Verbosity (verbosity) is missing"), and while the plugin is enabled it cannot
+be emptied.
+
+### Needs approval
+
+When a newer manifest asks for more than was approved, the plugin is badged
+**Needs approval** and keeps running with what it was granted. The Install step
+then shows:
+
+- **New permissions it asks for**, each with its explanation.
+- **Changed package servers**: for each package server with secret variables
+  whose package, exact version or secret variables changed since they were
+  acknowledged, what changed, for example "Version changes from 1.0.0 to 1.1.0"
+  or "Secret variables added: FIXTURE_REGION", or that the server is new.
+- The secret-variable acknowledgement for each of those servers, naming the
+  package, exact version and variables.
+
+**Approve** stays unavailable until every acknowledgement is ticked. Approving
+records the new permissions and acknowledgements and clears the badge.
+
+### Managed items in Skills & MCP servers
+
+In **Settings → Agent Extensions & Packages → Skills & MCP servers**, each
+server or skill a plugin contributes carries a **From plugin:** *plugin name* badge
+that opens the plugin's page. It has no **Remove** (uninstall the plugin
+instead), and **Edit limits** opens a form that shows its definition read-only:
+for a remote server the endpoint, authentication and tools; for a package
+server also the registry, package, exact version, command, arguments, variables
+and secret variable names. Only the enabled checkbox, the repository and agent
+limits and **Apply automatically** can be changed.
 
 ## Installing a plugin
 

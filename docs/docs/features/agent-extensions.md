@@ -85,8 +85,8 @@ refused with a message naming those automations; remove it from them first.
 An installed [plugin](./plugins.md#what-an-enabled-plugin-adds) adds its MCP
 servers and skills to the library as **managed items**, tagged with the plugin
 id (`managedBy: { plugin, item, active }`, plus `registrations` on an OAuth
-server: the client registration methods its sign-in may use; shown as a Plugin badge in the
-settings screen). Their definition comes from the plugin manifest and is
+server: the client registration methods its sign-in may use; shown as a **From plugin:** *plugin name* badge linking to the
+plugin in the settings screen, where only those fields are editable). Their definition comes from the plugin manifest and is
 read-only: a save may change only `enabled`, `repositories`, `agents` and
 `autoApply`. Saves that change anything else on a managed item (for a package
 server, also its package, version, integrity value, arguments and variables),
