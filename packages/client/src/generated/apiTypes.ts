@@ -371,7 +371,7 @@ export interface ExtensionItemEnabledRequest {
   enabled: boolean;
 }
 
-/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
+/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active, and for OAuth servers the client registration methods the plugin permits at sign-in); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
 export interface ExtensionLibraryInput {
   version: 1;
   servers: Array<{
@@ -391,6 +391,7 @@ export interface ExtensionLibraryInput {
       plugin: string;
       item: string;
       active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
     };
   } | {
     kind: "catalog";
@@ -407,6 +408,7 @@ export interface ExtensionLibraryInput {
       plugin: string;
       item: string;
       active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
     };
   } | {
     name: string;
@@ -432,9 +434,10 @@ export interface ExtensionLibraryInput {
       plugin: string;
       item: string;
       active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
     };
   }>;
-  skills: {
+  skills: Array<{
     bundleId: string;
     enabled: boolean;
     repositories: string[];
@@ -444,8 +447,9 @@ export interface ExtensionLibraryInput {
       plugin: string;
       item: string;
       active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
     };
-  }[];
+  }>;
 }
 
 export interface ExtensionLibraryRead {

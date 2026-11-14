@@ -131,13 +131,18 @@ export async function discoverOAuth(transport: OAuthTransport, serverUrl: string
  * The registration method a sign-in uses. A client id the administrator
  * entered is explicit configuration and is used as given; otherwise a Client
  * ID Metadata Document when the server supports it and this instance has a
- * public URL, then Dynamic Client Registration. Null when none is possible.
+ * public URL, then Dynamic Client Registration. With `allowed` (a plugin
+ * connection's permitted methods) only those are considered, in that order.
+ * Null when none is possible.
  */
-export function chooseRegistration(metadata: AuthorizationServerMetadata, options: { clientId?: string; clientMetadataUrl: string | null }): ExtensionOAuthRegistration | null {
-  if (options.clientId) return 'preregistered';
-  if (metadata.client_id_metadata_document_supported && options.clientMetadataUrl) return 'metadata_document';
-  if (metadata.registration_endpoint) return 'dynamic';
-  return null;
+export function chooseRegistration(metadata: AuthorizationServerMetadata, options: { clientId?: string; clientMetadataUrl: string | null; allowed?: readonly ExtensionOAuthRegistration[] }): ExtensionOAuthRegistration | null {
+  const available: Record<ExtensionOAuthRegistration, boolean> = {
+    preregistered: Boolean(options.clientId),
+    metadata_document: Boolean(metadata.client_id_metadata_document_supported && options.clientMetadataUrl),
+    dynamic: Boolean(metadata.registration_endpoint),
+  };
+  const order: readonly ExtensionOAuthRegistration[] = options.allowed ?? ['preregistered', 'metadata_document', 'dynamic'];
+  return order.find(method => available[method]) ?? null;
 }
 
 /** ProPR's own client metadata, served at `clientMetadataUrl`, which is also the client id. */

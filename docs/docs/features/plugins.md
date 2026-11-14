@@ -244,7 +244,11 @@ An `oauth` connection is signed in through the
 [extension OAuth sign-in](./agent-extensions.md#oauth-servers): start it, open
 the returned `authorizationUrl` in the same browser session, and sign in at the
 provider. ProPR identifies itself as it does for library servers (Client ID
-Metadata Document, then dynamic registration), and the provider redirects to
+Metadata Document, then dynamic registration), but only through the methods the
+connection's `registrations` permit, in that order; when the provider supports
+none of them, the sign-in is refused with HTTP 409. The managed server carries
+the permitted methods in its `managedBy.registrations`, so a sign-in started
+from the extension library is limited the same way. The provider redirects to
 the extension OAuth callback, which completes the sign-in. The connection
 belongs to the plugin's managed server that uses it, so it needs a public HTTPS
 base URL for the instance and is available once the plugin is installed. A read
@@ -294,12 +298,16 @@ and launch checks.
 - **Names:** a managed server keeps its manifest name unless the library
   already has a server of that name; it is then named `<plugin id>-<name>`.
 - **Disabling** the plugin deactivates its managed items: they stay in the
-  library, with their settings and connections, and apply to no run.
-  Re-enabling restores them unchanged.
+  library as they are, with their settings and connections, and apply to no
+  run. A disable never applies an upgraded manifest or reads skill folders, so
+  it succeeds even when the next plugin change would be refused. Re-enabling
+  restores them, applying any upgrade.
 - **Uninstalling** removes the managed items and their OAuth connections. It is
   refused, naming the automations, while an automation adds one of them
   explicitly; remove it from those automations first. An upgrade that drops an
-  item is refused the same way when the plugin is next changed.
+  item, or changes the files of a skill an automation adds by its bundle id, is
+  refused the same way when the plugin is next changed (other than disabling
+  it).
 - The plugin read (`GET /api/instance/plugins/v1/<id>`) lists its contributions
   in `contributions`, each with the library item it became (`managed`, with its
   library name or bundle id, its own enabled switch and whether the plugin keeps
@@ -337,7 +345,10 @@ inactive and is never installed or launched.
 
 A plugin skill becomes a skill bundle whose source is the plugin, its version
 and the folder. When an upgrade changes the skill's files, the next plugin
-change stores a new bundle for it and keeps the item's settings.
+change stores a new bundle for it and keeps the item's settings. Automations
+add skills by bundle id, so that change is refused while an automation adds the
+old bundle explicitly; remove the skill from the automation, apply the change,
+then add the new bundle.
 
 An enabled plugin's automation templates appear in the template catalog
 (`GET /api/automation-definitions/templates` and the `list_automation_templates`

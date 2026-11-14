@@ -15,6 +15,10 @@ import { up as libraryMigration } from '../src/db/migrations/20261113000000_exte
 import { up as oauthMigration } from '../src/db/migrations/20261113120000_extension_oauth.js';
 import { up as pluginMigration } from '../src/db/migrations/20261114000000_plugin_installations.js';
 import { PluginError, PluginStore } from '../src/plugins/pluginStore.js';
+import { PluginContributions } from '../src/plugins/pluginContributions.js';
+import { officialPluginAssets, type PluginAssetSource } from '../src/plugins/pluginAssets.js';
+import { ExtensionLibraryStore } from '../src/extensions/extensionProfileStore.js';
+import { extensionOAuth } from '../src/extensions/extensionOAuthStore.js';
 import { automationTemplateCatalog } from '../src/plugins/pluginTemplates.js';
 import { ExtensionOAuthStore, setExtensionOAuth } from '../src/extensions/extensionOAuthStore.js';
 import { executeWithExtensions, currentExtensionLaunch } from '../src/extensions/extensionLaunch.js';
@@ -22,7 +26,7 @@ import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolutio
 import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/packageCache.js';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
 import logger from '../src/utils/logger.js';
-import { OAUTH_MCP_URL, OAUTH_URLS, syntheticOAuthProvider } from '../../../test/fixtures/extensionOAuthFixture.js';
+import { OAUTH_MCP_URL, OAUTH_URLS, syntheticOAuthProvider, type SyntheticOAuthOptions } from '../../../test/fixtures/extensionOAuthFixture.js';
 
 const ID = 'example-pack';
 const TOKEN_SENTINEL = 'PLUGIN_PACKAGE_TOKEN_SENTINEL_7c41e9_DO_NOT_DISCLOSE';
@@ -38,7 +42,7 @@ function exampleManifest(change: (input: Record<string, any>) => void = () => {}
   return pluginManifestSchema.parse(input);
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, options: { advertise?: SyntheticOAuthOptions['advertise'] } = {}) {
   const resources = extensionTestResources(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'plugin-contributions-'));
   const registry = await npmRegistryFixture();
@@ -60,9 +64,20 @@ async function fixture(t: TestContext) {
   const environment = { SYSTEM_TASK_SECRET: 'synthetic-plugin-custody', PROPR_EXTENSION_NPM_REGISTRY: registry.url, PROPR_EGRESS_SOCKET_DIR: path.join(root, 'egress'), PATH: process.env.PATH };
   let manifests = [exampleManifest()];
   const catalog = async () => manifests;
-  const plugins = new PluginStore(database, environment, catalog);
+  /** Skill assets as shipped, unless a test makes them unavailable or changes them. */
+  let skillAssets: 'shipped' | 'unavailable' | 'changed' = 'shipped';
+  const assets: PluginAssetSource = {
+    automationTemplate: (manifest, templatePath) => officialPluginAssets.automationTemplate(manifest, templatePath),
+    async skillFiles(manifest, skillPath) {
+      if (skillAssets === 'unavailable') throw new Error('asset folder missing');
+      const files = await officialPluginAssets.skillFiles(manifest, skillPath);
+      if (skillAssets === 'shipped') return files;
+      return files.map(file => (file.path === 'SKILL.md' ? { ...file, content: Buffer.from(`${Buffer.from(file.content, 'base64').toString()}\nChanged by an upgrade.\n`).toString('base64') } : file));
+    },
+  };
+  const plugins = new PluginStore(database, environment, catalog, Date.now, new PluginContributions(new ExtensionLibraryStore(database, environment), assets));
   const library = plugins.library;
-  const synthetic = syntheticOAuthProvider({ advertise: { dynamic: true } });
+  const synthetic = syntheticOAuthProvider({ advertise: options.advertise ?? { dynamic: true } });
   setExtensionOAuth(library, new ExtensionOAuthStore(library, { transport: synthetic.transport, retryDelayMs: 1 }));
   let installs = 0;
   const npm: NpmRunner = (args, options) => new Promise((resolve, reject) => {
@@ -109,7 +124,7 @@ async function fixture(t: TestContext) {
     const current = await head();
     return library.saveLibrary('1', mutate({ version: 1, servers: current.servers, skills: current.skills }), secrets, current.revision);
   };
-  return { database, plugins, library, cache, registry, run, connect, enable, head, save, catalog, installs: () => installs, setCatalog: (next: PluginManifest[]) => { manifests = next; } };
+  return { database, plugins, library, cache, registry, synthetic, run, connect, enable, head, save, catalog, installs: () => installs, setCatalog: (next: PluginManifest[]) => { manifests = next; }, setSkillAssets: (next: typeof skillAssets) => { skillAssets = next; } };
 }
 
 /** A refusal with this status: plugin refusals are PluginError, library refusals ExtensionError. */
@@ -127,7 +142,7 @@ test('enabling the example plugin adds managed library items and its template; r
   // Installed but disabled: the managed items exist, inactive, so the OAuth connection can be signed in first.
   let library = await f.head();
   assert.deepEqual(library.servers.map(s => [s.name, s.kind, s.managedBy]), [
-    ['example-remote', 'https', { plugin: ID, item: 'example-remote', active: false }],
+    ['example-remote', 'https', { plugin: ID, item: 'example-remote', active: false, registrations: ['metadata_document', 'dynamic', 'preregistered'] }],
     ['example-local', 'package', { plugin: ID, item: 'example-local', active: false }],
   ]);
   assert.equal(library.skills.length, 1);
@@ -283,4 +298,83 @@ test('plugin secrets never appear in responses, library revisions, task events o
     await automationTemplateCatalog(f.database, f.catalog), lines,
   ]);
   assert.ok(!visible.includes(TOKEN_SENTINEL));
+});
+
+test('disabling deactivates the existing managed items even when the upgraded manifest drops a referenced server and its skill assets are unavailable', async t => {
+  const f = await fixture(t);
+  await f.enable();
+  const before = await f.head();
+  await f.database('agent_definitions').insert({ id: 'a1', name: 'Nightly notes', extensions: JSON.stringify({ servers: ['example-local'], skills: [] }) });
+  // A ProPR upgrade drops the package server from the manifest, and the skill folder cannot be read.
+  f.setCatalog([exampleManifest(input => { input.version = '0.2.0'; input.contributes.mcpServers = input.contributes.mcpServers.filter((s: { name: string }) => s.name !== 'example-local'); })]);
+  f.setSkillAssets('unavailable');
+  const disabled = await f.plugins.setEnabled('1', ID, false);
+  assert.equal(disabled.state, 'installed');
+  const after = await f.head();
+  // The items stay as they were, only deactivated: the upgrade is not applied by the disable.
+  assert.deepEqual(after.servers.map(s => [s.name, s.managedBy?.active]), [['example-remote', false], ['example-local', false]]);
+  assert.deepEqual(after.skills.map(s => [s.bundleId, s.managedBy?.active]), [[before.skills[0].bundleId, false]]);
+  const off = await f.run({ ...issueTask(), servers: ['example-local'] });
+  assert.equal(off.launched.toolPolicy, undefined, 'a deactivated item never applies, even where an automation adds it');
+  assert.ok(!off.launched.prompt.includes('example-notes'));
+  // Operations that do apply the upgrade keep its validation: unavailable assets, then the referenced removal.
+  await assert.rejects(f.plugins.updateSettings('1', ID, { verbosity: 'quiet' }), refused(409, /Skill example-notes of the plugin is unavailable/));
+  f.setSkillAssets('shipped');
+  await assert.rejects(f.plugins.updateSettings('1', ID, { verbosity: 'quiet' }), refused(409, /"Nightly notes" \(example-local\).*before upgrading it/));
+  await f.database('agent_definitions').where({ id: 'a1' }).delete();
+  await f.plugins.updateSettings('1', ID, { verbosity: 'quiet' });
+  assert.deepEqual((await f.head()).servers.map(s => s.name), ['example-remote'], 'once unreferenced, the upgrade removes the dropped server');
+});
+
+test('a skill upgrade that replaces the bundle an automation adds explicitly is refused until the automation stops adding it', async t => {
+  const f = await fixture(t);
+  await f.enable();
+  // The automation adds the plugin skill explicitly; automatic apply is off, so only that reference applies it.
+  await f.save(input => ({ ...input, skills: input.skills.map(s => ({ ...s, autoApply: false })) }));
+  const original = (await f.head()).skills[0].bundleId;
+  await f.database('agent_definitions').insert({ id: 'a1', name: 'Nightly notes', extensions: JSON.stringify({ servers: [], skills: [original] }) });
+  assert.deepEqual((await f.run({ ...issueTask(), skills: [original] })).skills, ['example-notes']);
+
+  // An upgrade changes the skill's files under the same manifest name: the skill would get a new bundle id.
+  f.setSkillAssets('changed');
+  await assert.rejects(f.plugins.updateSettings('1', ID, { verbosity: 'quiet' }), refused(409, new RegExp(`"Nightly notes" \\(${original}\\).*before upgrading it`)));
+  const kept = await f.head();
+  assert.deepEqual(kept.skills.map(s => s.bundleId), [original], 'the refused change left the library reference in place');
+  assert.equal(kept.skillBundles.length, 1, 'no replacement bundle was stored');
+  assert.deepEqual((await f.run({ ...issueTask(), skills: [original] })).skills, ['example-notes'], 'the automation keeps its skill');
+  // Disabling still works without applying the upgrade.
+  await f.plugins.setEnabled('1', ID, false);
+  assert.deepEqual((await f.head()).skills.map(s => [s.bundleId, s.managedBy?.active]), [[original, false]]);
+
+  // Once the automation no longer adds it, the upgrade applies and the skill gets its new bundle.
+  await f.database('agent_definitions').where({ id: 'a1' }).delete();
+  await f.plugins.setEnabled('1', ID, true);
+  const upgraded = await f.head();
+  assert.notEqual(upgraded.skills[0].bundleId, original);
+  assert.equal(upgraded.skills[0].managedBy?.active, true);
+});
+
+test('a plugin OAuth connection signs in only through the registration methods it permits, through plugin and extension routes alike', async t => {
+  const onlyMetadataDocument = () => exampleManifest(input => { input.connections.find((c: { name: string }) => c.name === 'example-account').registrations = ['metadata_document']; });
+  // The provider offers dynamic registration but no client metadata documents.
+  const f = await fixture(t);
+  f.setCatalog([onlyMetadataDocument()]);
+  await f.enable();
+  const remote = (await f.head()).servers.find(s => s.name === 'example-remote')!;
+  assert.deepEqual(remote.managedBy?.registrations, ['metadata_document']);
+  await assert.rejects(f.plugins.startOAuth('1', ID, 'example-account', 'session-a', OAUTH_URLS), refused(409, /none of the client registration methods the plugin permits \(metadata_document\)/));
+  await assert.rejects(extensionOAuth(f.library).startSignIn('1', 'session-a', 'example-remote', OAUTH_URLS), refused(409, /registration methods the plugin permits/));
+  assert.equal(f.synthetic.state.registrations, 0, 'no client was registered dynamically');
+  assert.equal((await f.database('extension_oauth_pending').select()).length, 0, 'a refused start leaves no sign-in record');
+  // The restriction is part of the read-only definition: a library save cannot drop it.
+  await assert.rejects(f.save(input => ({ ...input, servers: input.servers.map(s => (s.name === 'example-remote' ? { ...s, managedBy: { plugin: ID, item: 'example-remote', active: true } } : s)) })), refused(409, /managed by plugin/));
+
+  // A provider that supports client metadata documents signs in with one.
+  const g = await fixture(t, { advertise: { metadataDocument: true, dynamic: true } });
+  g.setCatalog([onlyMetadataDocument()]);
+  await g.enable();
+  const connected = await g.connect();
+  assert.equal(connected.connections[0].state, 'connected');
+  assert.equal(g.synthetic.state.registrations, 0);
+  assert.equal((await g.database('extension_oauth_connections').first('registration')).registration, 'metadata_document');
 });

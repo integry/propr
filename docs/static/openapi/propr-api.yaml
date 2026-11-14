@@ -11010,6 +11010,16 @@ components:
                         pattern: ^[a-z][a-z0-9_-]{0,47}$
                       active:
                         type: boolean
+                      registrations:
+                        minItems: 1
+                        maxItems: 3
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                            - metadata_document
+                            - dynamic
+                            - preregistered
                     required:
                       - plugin
                       - item
@@ -11083,6 +11093,16 @@ components:
                         pattern: ^[a-z][a-z0-9_-]{0,47}$
                       active:
                         type: boolean
+                      registrations:
+                        minItems: 1
+                        maxItems: 3
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                            - metadata_document
+                            - dynamic
+                            - preregistered
                     required:
                       - plugin
                       - item
@@ -11201,6 +11221,16 @@ components:
                         pattern: ^[a-z][a-z0-9_-]{0,47}$
                       active:
                         type: boolean
+                      registrations:
+                        minItems: 1
+                        maxItems: 3
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                            - metadata_document
+                            - dynamic
+                            - preregistered
                     required:
                       - plugin
                       - item
@@ -11263,6 +11293,16 @@ components:
                     pattern: ^[a-z][a-z0-9_-]{0,47}$
                   active:
                     type: boolean
+                  registrations:
+                    minItems: 1
+                    maxItems: 3
+                    type: array
+                    items:
+                      type: string
+                      enum:
+                        - metadata_document
+                        - dynamic
+                        - preregistered
                 required:
                   - plugin
                   - item
@@ -11280,7 +11320,7 @@ components:
         - servers
         - skills
       additionalProperties: false
-      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
+      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active, and for OAuth servers the client registration methods the plugin permits at sign-in); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
     ExtensionLibraryRead:
       type: object
       properties:

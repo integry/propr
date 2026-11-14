@@ -148,11 +148,14 @@ export class ExtensionOAuthStore {
       try { discovery = await discoverOAuth(this.transport, server.url, server.scopes); }
       catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed'); }
       if (!discovery) throw new ExtensionError(409, 'The server answered without requiring authorization');
-      const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl });
+      // A plugin-managed server signs in only through the registration methods its plugin connection permits.
+      const allowed = server.managedBy?.registrations;
+      const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl, ...(allowed ? { allowed } : {}) });
       let client: OAuthClient;
       if (registration === 'preregistered') client = preregisteredClient(discovery.metadata, server.clientId!, secret);
       else if (registration === 'metadata_document') client = { registration, clientId: urls.clientMetadataUrl!, authMethod: 'none' };
       else if (registration === 'dynamic') client = await this.dynamicClient(instanceId, server, discovery.metadata, urls.redirectUri);
+      else if (allowed) throw new ExtensionError(409, `The authorization server supports none of the client registration methods the plugin permits (${allowed.join(', ')})`);
       else throw new ExtensionError(409, 'The authorization server supports no client registration ProPR can use. Enter a pre-registered client id, or use a Bearer token.');
       const pkce = createPkce();
       const { clientSecret, ...publicClient } = client;

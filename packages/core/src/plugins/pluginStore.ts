@@ -26,7 +26,7 @@ const AUDIT_LIMIT = 50;
 const SECRET_COLUMNS = ['plugin_id', 'connection_name', 'set_by', 'set_at'] as const;
 
 interface Loaded { manifest: PluginManifest | null; row: PluginInstallationRow | undefined; secrets: PluginSecretRow[] }
-type Change = { action: PluginAuditAction; detail?: Record<string, unknown>; resetRepositories?: boolean };
+type Change = { action: PluginAuditAction; detail?: Record<string, unknown>; resetRepositories?: boolean; deactivateOnly?: boolean };
 /** Run a library or OAuth operation; its refusals become plugin refusals with the same status and message. */
 async function viaLibrary<T>(run: () => Promise<T>): Promise<T> {
   try { return await run(); } catch (error) { throw error instanceof ExtensionError ? new PluginError(error.status, error.message) : error; }
@@ -94,14 +94,14 @@ export class PluginStore {
     const pluginId = PluginStore.pluginId(id);
     await this.database.transaction(async trx => {
       await this.authorize(actor, trx);
-      const { action, detail, resetRepositories } = await change(trx, await this.load(pluginId, trx), pluginId);
-      await this.applyContributions(trx, pluginId, actor, resetRepositories);
+      const { action, detail, resetRepositories, deactivateOnly } = await change(trx, await this.load(pluginId, trx), pluginId);
+      await this.applyContributions(trx, pluginId, actor, { resetRepositories, deactivateOnly });
       await this.audit(trx, pluginId, action, actor, detail);
     });
     return this.view(pluginId, await this.load(pluginId, this.database, true));
   }
   /** Sync the plugin's managed library items with its installation as it is now inside `trx`. */
-  private async applyContributions(trx: Knex.Transaction, pluginId: string, actor: string, resetRepositories = false): Promise<void> {
+  private async applyContributions(trx: Knex.Transaction, pluginId: string, actor: string, options: { resetRepositories?: boolean; deactivateOnly?: boolean } = {}): Promise<void> {
     const loaded = await this.load(pluginId, trx, true);
     const connections: Record<string, string> = {};
     const tokens = loaded.manifest?.connections.filter(c => c.type === 'token').map(c => c.name) ?? [];
@@ -109,7 +109,7 @@ export class PluginStore {
       const value = await this.connectionSecret(pluginId, secret.connection_name, trx);
       if (value) connections[secret.connection_name] = value;
     }
-    await viaLibrary(() => this.contributions.sync(trx, { pluginId, manifest: loaded.manifest, record: loaded.row ? installationRecord(loaded.row) : null, connections, actor, resetRepositories }));
+    await viaLibrary(() => this.contributions.sync(trx, { pluginId, manifest: loaded.manifest, record: loaded.row ? installationRecord(loaded.row) : null, connections, actor, resetRepositories: options.resetRepositories ?? false, deactivateOnly: options.deactivateOnly ?? false }));
   }
   /** The state view with OAuth connection states and the managed items and templates the plugin contributes. */
   private async view(pluginId: string, loaded: Loaded, library?: Awaited<ReturnType<ExtensionLibraryStore['head']>>['snapshot'], templateIds?: Map<string, Map<string, string>>): Promise<PluginView> {
@@ -240,7 +240,8 @@ export class PluginStore {
         if (blockers.length) throw new PluginError(409, `The plugin cannot be enabled: ${blockers.join('; ')}`);
       }
       await trx('plugin_installations').where({ plugin_id: pluginId }).update({ enabled, ...this.touched(actor, loaded) });
-      return { action: enabled ? 'enable' : 'disable' };
+      // A disable only deactivates the managed items as they are: it never depends on applying an upgraded manifest or its assets.
+      return { action: enabled ? 'enable' : 'disable', deactivateOnly: !enabled };
     });
   }
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ExtensionOAuthConnectionState } from './extensionOAuth.js';
+import { EXTENSION_OAUTH_REGISTRATIONS, type ExtensionOAuthConnectionState } from './extensionOAuth.js';
 import {
   EXTENSION_LIMITS, EXTENSION_PROFILE_VERSION, catalogMcpSchema, extensionAgentAliasSchema, extensionRepositorySchema,
   extensionServerNameSchema, remoteMcpSchema, type ExtensionSecretStatus, type ExtensionSkillBundle,
@@ -24,8 +24,14 @@ const managingPluginSchema = z.string().max(48).regex(/^[a-z][a-z0-9]*(?:-[a-z0-
  * server or skill (the library name may carry the plugin id as a prefix after
  * a name collision). `active` is false while the plugin is disabled or a
  * required acknowledgement is pending: the item then never applies.
+ * `registrations` (OAuth servers only) are the client registration methods
+ * the plugin's connection permits, in the order sign-in tries them; sign-in
+ * uses no other method.
  */
-export const extensionManagedBySchema = z.strictObject({ plugin: managingPluginSchema, item: z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/), active: z.boolean() });
+export const extensionManagedBySchema = z.strictObject({
+  plugin: managingPluginSchema, item: z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/), active: z.boolean(),
+  registrations: z.array(z.enum(EXTENSION_OAUTH_REGISTRATIONS)).min(1).max(EXTENSION_OAUTH_REGISTRATIONS.length).optional(),
+});
 export type ExtensionManagedBy = z.infer<typeof extensionManagedBySchema>;
 /** Fields of a managed item an administrator may change through the library. */
 export const EXTENSION_MANAGED_EDITABLE_FIELDS = ['enabled', 'repositories', 'agents', 'autoApply'] as const;

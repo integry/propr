@@ -23,6 +23,12 @@ export interface PluginSyncInput {
   actor: string;
   /** The plugin's repository limit changed: managed items take it as their repository limit. */
   resetRepositories?: boolean;
+  /**
+   * Only deactivate the existing managed items (a disable): the manifest is
+   * not applied, no asset is read and nothing is added or removed, so a
+   * disable never depends on an upgrade being applicable.
+   */
+  deactivateOnly?: boolean;
 }
 
 type Item = ExtensionLibraryServer | ExtensionLibrarySkill;
@@ -45,7 +51,9 @@ export class PluginContributions {
    * Bring the library in line with one plugin inside `trx`: create, update,
    * activate or deactivate its managed items, or remove them on uninstall.
    * Writes nothing when nothing changed. An uninstall or a manifest that drops
-   * an item is refused while an automation adds that item explicitly.
+   * an item (a server, or a skill whose files changed and so gets a new
+   * bundle) is refused while an automation adds that item explicitly. A
+   * disable (`deactivateOnly`) only deactivates the items as they are.
    */
   async sync(trx: Knex.Transaction, input: PluginSyncInput): Promise<void> {
     const head = await this.library.head(trx);
@@ -53,9 +61,10 @@ export class PluginContributions {
     const owned = ownedBy(input.pluginId);
     const previous = { servers: snapshot.servers.filter(owned), skills: snapshot.skills.filter(owned) };
     if (!input.record && !previous.servers.length && !previous.skills.length) return;
-    const desired = input.record && input.manifest
+    const applies = Boolean(input.record && input.manifest && !input.deactivateOnly);
+    const desired = applies
       ? await this.desired(trx, snapshot, input as PluginSyncInput & { manifest: PluginManifest; record: PluginInstallationRecord })
-      // Removed from the registry by an upgrade: keep the items, never apply them.
+      // Disabled, or removed from the registry by an upgrade: keep the items as they are, never apply them.
       : input.record ? { servers: previous.servers.map(deactivate), skills: previous.skills.map(deactivate), secrets: null, acknowledgements: {} } : { servers: [], skills: [], secrets: {}, acknowledgements: {} };
     await this.refuseReferencedRemoval(trx, input, previous, desired);
     const items = composeItems(snapshot, input.pluginId, desired);
@@ -84,7 +93,7 @@ export class PluginContributions {
       const name = existing?.name ?? names.allocate(server.name);
       const active = record.enabled && !pending.has(server.name);
       const managedBy: ExtensionManagedBy = { plugin: pluginId, item: server.name, active };
-      servers.push(libraryServer(manifest, server, name, { ...limits(existing), managedBy }));
+      servers.push(libraryServer(manifest, server, name, { ...limits(existing), managedBy: { ...managedBy, ...oauthRegistrations(manifest, server) } }));
       for (const [key, connection] of credentialConnections(server, name)) if (input.connections[connection]) secrets[key] = input.connections[connection];
       if (server.kind === 'package' && server.secretEnv.length) {
         const recorded = Object.hasOwn(record.acknowledgements, server.name) && !pending.has(server.name) ? record.acknowledgements[server.name] : undefined;
@@ -118,9 +127,9 @@ export class PluginContributions {
 
   /** Managed items the change drops while an automation still adds them explicitly refuse it, naming the automations. */
   private async refuseReferencedRemoval(trx: Knex.Transaction, input: PluginSyncInput, previous: { servers: ExtensionLibraryServer[]; skills: ExtensionLibrarySkill[] }, desired: { servers: ExtensionLibraryServer[]; skills: ExtensionLibrarySkill[] }): Promise<void> {
-    // A skill whose files changed gets a new bundle; that replacement is not a removal of the plugin's skill.
+    // Automations reference skills by bundle id: a skill whose files changed gets a new bundle, so its old bundle id is removed too.
     const servers = previous.servers.filter(s => !desired.servers.some(d => d.name === s.name)).map(s => s.name);
-    const skills = previous.skills.filter(s => !desired.skills.some(d => d.managedBy?.item === s.managedBy?.item)).map(s => s.bundleId);
+    const skills = previous.skills.filter(s => !desired.skills.some(d => d.bundleId === s.bundleId)).map(s => s.bundleId);
     const using = await this.library.automationsAdding({ servers, skills }, trx);
     if (!using.length) return;
     const what = input.record ? 'before upgrading it' : 'before uninstalling it';
@@ -160,6 +169,13 @@ function libraryServer(manifest: PluginManifest, server: PluginMcpServer, name: 
 function credentialConnections(server: PluginMcpServer, name: string): [string, string][] {
   if (server.kind === 'package') return server.secretEnv.map(secret => [extensionPackageSecretKey(name, secret.name), secret.connection]);
   return server.authentication === 'bearer' && server.connection ? [[name, server.connection]] : [];
+}
+
+/** The registration methods an `oauth` server's plugin connection permits, carried on its marker for sign-in. */
+function oauthRegistrations(manifest: PluginManifest, server: PluginMcpServer): Pick<ExtensionManagedBy, 'registrations'> {
+  if (server.kind !== 'https' || server.authentication !== 'oauth') return {};
+  const connection = manifest.connections.find(c => c.name === server.connection);
+  return connection?.type === 'oauth' ? { registrations: [...connection.registrations] } : {};
 }
 
 const deactivate = <T extends Item>(item: T): T => (item.managedBy ? { ...item, managedBy: { ...item.managedBy, active: false } } : item);
