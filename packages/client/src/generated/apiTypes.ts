@@ -827,6 +827,269 @@ export interface NotificationUnreadCount {
   unreadCount: number;
 }
 
+export interface PluginAcknowledgementRequest {
+  /** Package servers whose secret variables the administrator confirms are readable by the agent CLI, its shell tools and repository setup scripts in the task container. */
+  acknowledgements?: string[];
+}
+
+export interface PluginConnectionRequest {
+  /** The secret to store (write-only), or null to clear it. */
+  value: string | null;
+}
+
+export interface PluginDetailResponse {
+  plugin: {
+    id: string;
+    /** The plugin is in this ProPR version's registry. */
+    available: boolean;
+    manifest: {
+      id: string;
+      name: string;
+      description: string;
+      version: string;
+      category: "messaging" | "issue-tracking" | "observability" | "deployment" | "context" | "other";
+      homepage: string;
+      permissions: Array<{
+        name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send";
+        description: string;
+      }>;
+      connections: Array<{
+        type: "oauth" | "token" | "signing_secret";
+        name: string;
+        label: string;
+        help: string;
+        helpUrl: string;
+        [key: string]: unknown;
+      }>;
+      /** The settings schema: a JSON Schema subset (string, number, boolean, string list, repository map). */
+      settings: {
+        type: "object";
+        properties: {
+          [key: string]: {
+            [key: string]: unknown;
+          };
+        };
+        required: string[];
+      };
+      outboundHosts: string[];
+      contributes: {
+        /** Contributed MCP servers without launch arguments or environment values. */
+        mcpServers: {
+          [key: string]: unknown;
+        }[];
+        skills: string[];
+        automationTemplates: string[];
+        commands: {
+          name: string;
+          description: string;
+        }[];
+        subscriptions: string[];
+        webhooks: {
+          name: string;
+          description: string;
+        }[];
+      };
+    } | null;
+    state: "available" | "installed" | "enabled";
+    installation: {
+      /** The manifest version installed or last approved. */
+      installedVersion: string;
+      enabled: boolean;
+      /** Setting values; never secrets, which are connections. */
+      settings: {
+        [key: string]: string | number | boolean | string[] | {
+          [key: string]: string;
+        };
+      };
+      /** Repositories (`owner/repo`) the plugin is limited to; null for all repositories. */
+      repositories: string[] | null;
+      grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+      /** Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names. */
+      acknowledgements: {
+        [key: string]: {
+          actor: string;
+          at: number;
+          package: string;
+          version: string;
+          secretEnv: string[];
+        };
+      };
+      installedBy: string;
+      installedAt: number;
+      updatedBy: string;
+      updatedAt: number;
+    } | null;
+    connections: Array<{
+      name: string;
+      type: "oauth" | "token" | "signing_secret";
+      label: string;
+      /** `oauth` connections report not_connected until OAuth sign-in for plugins is available. */
+      state: "connected" | "not_connected";
+      /** A `token` connection a contributed MCP server uses; enabling waits for it. */
+      required: boolean;
+      setBy?: string;
+      setAt?: number;
+    }>;
+    /** The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant. */
+    needsApproval: boolean;
+    pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+    pendingAcknowledgements: {
+      server: string;
+      package: string;
+      version: string;
+      secretEnv: string[];
+    }[];
+    /** Why enabling is refused right now; empty when it can be enabled. */
+    enableBlockers: string[];
+    /** The newest 50 management actions, newest first. */
+    audit: Array<{
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall";
+      actor: string;
+      at: number;
+      detail: {
+        [key: string]: unknown;
+      };
+    }>;
+  };
+}
+
+export interface PluginEnabledRequest {
+  enabled: boolean;
+}
+
+export interface PluginList {
+  plugins: PluginView[];
+}
+
+export interface PluginRepositoriesRequest {
+  /** owner/repo names; null or an empty list for all repositories. */
+  repositories: string[] | null;
+}
+
+export interface PluginResponse {
+  plugin: PluginView;
+}
+
+export interface PluginSettingsRequest {
+  /** The complete settings; validated against the manifest's settings schema. Null values are removed. */
+  settings: {
+    [key: string]: string | number | boolean | string[] | {
+      [key: string]: string;
+    } | null;
+  };
+}
+
+export interface PluginUninstallRequest {
+  /** Must repeat the plugin id. */
+  confirm: string;
+}
+
+/** A plugin with its installation state on this instance. */
+export interface PluginView {
+  id: string;
+  /** The plugin is in this ProPR version's registry. */
+  available: boolean;
+  manifest: {
+    id: string;
+    name: string;
+    description: string;
+    version: string;
+    category: "messaging" | "issue-tracking" | "observability" | "deployment" | "context" | "other";
+    homepage: string;
+    permissions: Array<{
+      name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send";
+      description: string;
+    }>;
+    connections: Array<{
+      type: "oauth" | "token" | "signing_secret";
+      name: string;
+      label: string;
+      help: string;
+      helpUrl: string;
+      [key: string]: unknown;
+    }>;
+    /** The settings schema: a JSON Schema subset (string, number, boolean, string list, repository map). */
+    settings: {
+      type: "object";
+      properties: {
+        [key: string]: {
+          [key: string]: unknown;
+        };
+      };
+      required: string[];
+    };
+    outboundHosts: string[];
+    contributes: {
+      /** Contributed MCP servers without launch arguments or environment values. */
+      mcpServers: {
+        [key: string]: unknown;
+      }[];
+      skills: string[];
+      automationTemplates: string[];
+      commands: {
+        name: string;
+        description: string;
+      }[];
+      subscriptions: string[];
+      webhooks: {
+        name: string;
+        description: string;
+      }[];
+    };
+  } | null;
+  state: "available" | "installed" | "enabled";
+  installation: {
+    /** The manifest version installed or last approved. */
+    installedVersion: string;
+    enabled: boolean;
+    /** Setting values; never secrets, which are connections. */
+    settings: {
+      [key: string]: string | number | boolean | string[] | {
+        [key: string]: string;
+      };
+    };
+    /** Repositories (`owner/repo`) the plugin is limited to; null for all repositories. */
+    repositories: string[] | null;
+    grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+    /** Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names. */
+    acknowledgements: {
+      [key: string]: {
+        actor: string;
+        at: number;
+        package: string;
+        version: string;
+        secretEnv: string[];
+      };
+    };
+    installedBy: string;
+    installedAt: number;
+    updatedBy: string;
+    updatedAt: number;
+  } | null;
+  connections: Array<{
+    name: string;
+    type: "oauth" | "token" | "signing_secret";
+    label: string;
+    /** `oauth` connections report not_connected until OAuth sign-in for plugins is available. */
+    state: "connected" | "not_connected";
+    /** A `token` connection a contributed MCP server uses; enabling waits for it. */
+    required: boolean;
+    setBy?: string;
+    setAt?: number;
+  }>;
+  /** The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant. */
+  needsApproval: boolean;
+  pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+  pendingAcknowledgements: {
+    server: string;
+    package: string;
+    version: string;
+    secretEnv: string[];
+  }[];
+  /** Why enabling is refused right now; empty when it can be enabled. */
+  enableBlockers: string[];
+}
+
 /** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */
 export interface PullRequestReadiness {
   repository: string;
