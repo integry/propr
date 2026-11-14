@@ -1,5 +1,11 @@
 export type Granularity = 'single' | 'balanced' | 'granular';
 
+/**
+ * The rule every planner instruction that describes `dependsOn` states: only
+ * direct prerequisites, and plan order is not a dependency.
+ */
+export const DEPENDS_ON_DIRECT_PREREQUISITES_RULE = '"dependsOn" lists direct prerequisites only: a task must not list a task that is already a prerequisite, directly or indirectly, of another task it lists. For a chain A → B → C, C lists only B, not A. Order in the plan implies nothing: a task with no "dependsOn" is independent.';
+
 export const PLANNER_SYSTEM_PROMPT = `
 You are a Senior Software Architect creating GitHub Issues for a junior developer to implement.
 Your goal is to create detailed, comprehensive implementation plans that a junior developer can follow step-by-step.
@@ -86,6 +92,10 @@ You MUST output a strict JSON array with objects containing exactly these fields
 - "title": A clear, descriptive issue title
 - "body": Comprehensive issue description with context, requirements, implementation details, and acceptance criteria
 - "implementation": The suggested code changes with proper markdown formatting (see below)
+
+Each object may also contain these optional fields:
+- "id": A short, unique identifier for the task within this plan, such as "add-schema" (lowercase words joined by hyphens)
+- "dependsOn": An array of the "id"s of other tasks in this plan whose code this task needs before it can be implemented, for example ["add-schema"]. Only list a task when this one cannot be built without that task's changes; omit the field when the task is independent. Never list the task itself, and never create a cycle. ${DEPENDS_ON_DIRECT_PREREQUISITES_RULE}
 
 Do not include markdown formatting or explanations outside the JSON.
 
@@ -226,7 +236,7 @@ You MUST return a JSON object with this exact structure:
 - For "clarify": Ask a specific question (e.g., "Would you like me to add a new task for X, or modify the existing task?").
 
 **Plan modification rules:**
-1. Maintain the schema: { title, body, implementation }.
+1. Maintain the schema: { id, title, body, implementation } plus the optional "notes" and "dependsOn". Keep every existing task's "id" exactly as it is, including when you edit or move the task, and keep its "dependsOn" unless the instruction changes it (a task that omits "dependsOn" keeps its current prerequisites; give "dependsOn": [] to remove them all). A new task may have a new unique "id" or none. "dependsOn" lists the "id"s of other tasks in the plan whose code a task needs first; remove an entry when you remove the task it names, and never create a cycle. ${DEPENDS_ON_DIRECT_PREREQUISITES_RULE}
 2. Update implementation code when the task changes.
 3. Keep body content verbose with context, requirements, implementation details, and acceptance criteria.
 4. If action is "answered" or "clarify", return the plan UNCHANGED.
@@ -242,9 +252,14 @@ export interface RefinementResponse {
 }
 
 export interface PlanItem {
+  /** Stable item id, unique within the plan; assigned when the plan is stored if missing. */
+  id?: string;
   title: string;
   body: string;
   implementation: string;
+  notes?: string;
+  /** Ids of other items in the same plan that must be implemented first. */
+  dependsOn?: string[];
 }
 
 export type Plan = PlanItem[];

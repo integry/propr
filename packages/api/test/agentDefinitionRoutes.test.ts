@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /* eslint-disable max-lines -- one suite covers every automation definition and run route, including their race regressions */
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
@@ -12,7 +13,7 @@ import {
   type MulterFile,
   type StoredAgentRun,
 } from '@propr/core';
-import { AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG } from '@propr/shared';
+import { AUTOMATION_DEFINITION_CONTRACT, AUTOMATION_TEMPLATE_CATALOG, validateAutomationEventTriggerScope, type AutomationEventTrigger } from '@propr/shared';
 import {
   createAutomationDefinitionRoutes,
   type AutomationDefinitionRouteServices,
@@ -30,6 +31,7 @@ interface RequestOptions {
   headers?: Record<string, string>;
   files?: MulterFile[];
   authenticationMethod?: 'session' | 'instance_token' | 'github_bearer';
+  authorization?: { role: string; permissions: string[] };
 }
 
 function request(userId: string | null, options: RequestOptions = {}): Request {
@@ -37,6 +39,7 @@ function request(userId: string | null, options: RequestOptions = {}): Request {
   return {
     user: userId ? { id: userId, username: userId, accessToken: `token-${userId}` } : undefined,
     authenticationMethod: options.authenticationMethod ?? 'session',
+    authorization: options.authorization,
     params: options.params ?? {},
     body: options.body ?? {},
     query: options.query ?? {},
@@ -126,25 +129,124 @@ describe('automation definition routes', () => {
     return created.body.definition as { id: string; revision: number; [key: string]: unknown };
   }
 
-  test('demoted owners can edit or clear a stored profile but cannot select a new revision', async () => {
-    const { ExtensionProfileStore } = await import('../../core/src/extensions/extensionProfileStore.js');
+  test('extensions round-trip and adding items needs the extension administrator while removing them does not', async () => {
+    const { ExtensionLibraryStore } = await import('../../core/src/extensions/extensionProfileStore.js');
     await database('instance_members').insert({ github_user_id: '1', github_username: '1', role: 'admin', source: 'local', created_at: NOW, updated_at: NOW });
-    const store = new ExtensionProfileStore(database, { SYSTEM_TASK_SECRET: 'synthetic-profile-test-key' });
-    const profile = await store.save('1', { version: 1, name: 'Tools', enabled: true, agentScope: [], repositoryScope: [], mcpServers: [], skillBundleIds: [] }, {});
-    const selection = { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision };
-    const definition = await createDefinition('1');
-    await database('agent_definitions').where({ id: definition.id }).update({ extension_profile: JSON.stringify(selection) });
-    await database('instance_members').where({ github_user_id: '1' }).update({ role: 'member' });
-    for (const patch of [{ prompt: 'Updated prompt', extensionProfile: { ...selection } }, { scheduleCron: '0 9 * * *', extensionProfile: selection }]) {
-      const result = await call(routes.update, request('1', { params: { id: definition.id }, body: patch }));
-      assert.equal(result.status, 200, JSON.stringify(result.body));
-      assert.deepEqual(result.body.definition.extensionProfile, selection);
+    const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-library-test-key' });
+    await store.saveLibrary('1', { version: 1, skills: [], servers: ['docs', 'search'].map(name => ({ kind: 'https' as const, name, url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read' as const, authentication: 'none' as const, autoApply: false })) }, {}, 0);
+    const admin = { role: 'admin', permissions: ['instance.manage_settings'] };
+    const extensions = { servers: ['docs'], skills: [] };
+    // Creating with extensions needs the preflight header and the administrator permission.
+    for (const options of [{ authorization: admin }, { headers: { 'X-ProPR-Extensions': '1' } }, { headers: { 'X-ProPR-Extensions': '1' }, authorization: { role: 'member', permissions: [] } }]) {
+      const refused = await call(routes.create, request('1', { ...options, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions } }));
+      assert.equal(refused.status, 403, JSON.stringify(options));
     }
-    const changed = { ...selection, revision: 2 };
-    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, body: { extensionProfile: changed } }))).status, 403);
-    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, body: { extensionProfile: changed } }))).status, 403);
-    const cleared = await call(routes.update, request('1', { params: { id: definition.id }, body: { extensionProfile: null } }));
-    assert.equal(cleared.status, 200); assert.equal(cleared.body.definition.extensionProfile, null);
+    const missing = await call(routes.create, request('1', { headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['missing'], skills: [] } } }));
+    assert.equal(missing.status, 400); assert.match(JSON.stringify(missing.body), /missing/);
+    const legacy = await call(routes.create, request('1', { body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensionProfile: null } }));
+    assert.equal(legacy.status, 400);
+    const created = await call(routes.create, request('1', { headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions } }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const definition = (created.body as { definition: { id: string; extensions: unknown } }).definition;
+    assert.deepEqual(definition.extensions, extensions);
+    assert.deepEqual((await call(routes.get, request('1', { params: { id: definition.id } }))).body.definition.extensions, extensions);
+    // Unrelated edits and repeating the same items need no extension authority.
+    for (const patch of [{ prompt: 'Updated prompt' }, { prompt: 'Again', extensions: { servers: ['docs'], skills: [] } }]) {
+      const result = await call(routes.update, request('1', { params: { id: definition.id }, body: patch }));
+      assert.equal(result.status, 200, JSON.stringify(result.body)); assert.deepEqual(result.body.definition.extensions, extensions);
+    }
+    const added = { servers: ['docs', 'search'], skills: [] };
+    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, body: { extensions: added } }))).status, 403);
+    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, body: { extensions: added } }))).status, 403);
+    const grown = await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { extensions: added } }));
+    assert.equal(grown.status, 200, JSON.stringify(grown.body)); assert.deepEqual(grown.body.definition.extensions, added);
+    // A demoted owner can still remove items.
+    await database('instance_members').where({ github_user_id: '1' }).update({ role: 'member' });
+    assert.equal((await call(routes.update, request('1', { params: { id: definition.id }, headers: { 'X-ProPR-Extensions': '1' }, authorization: admin, body: { extensions: { servers: ['docs', 'search'], skills: [randomUUID()] } } }))).status, 403);
+    const reduced = await call(routes.update, request('1', { params: { id: definition.id }, body: { extensions: { servers: ['search'], skills: [] } } }));
+    assert.equal(reduced.status, 200); assert.deepEqual(reduced.body.definition.extensions, { servers: ['search'], skills: [] });
+    const cleared = await call(routes.update, request('1', { params: { id: definition.id }, body: { extensions: null } }));
+    assert.equal(cleared.status, 200); assert.deepEqual(cleared.body.definition.extensions, { servers: [], skills: [] });
+  });
+
+  async function extensionLibrary() {
+    const { ExtensionLibraryStore } = await import('../../core/src/extensions/extensionProfileStore.js');
+    await database('instance_members').insert({ github_user_id: '1', github_username: '1', role: 'admin', source: 'local', created_at: NOW, updated_at: NOW });
+    const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-library-test-key' });
+    const server = (name: string) => ({ kind: 'https' as const, name, url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read' as const, authentication: 'none' as const, autoApply: false });
+    await store.saveLibrary('1', { version: 1, skills: [], servers: ['docs', 'search'].map(server) }, {}, 0);
+    const saveServers = async (names: string[]) => store.saveLibrary('1', { version: 1, skills: [], servers: names.map(server) }, {}, (await store.readLibrary('1')).revision);
+    // Removes `docs` from the library, keeping `search`; restoring puts it back.
+    return { removeDocs: () => saveServers(['search']), restoreDocs: () => saveServers(['docs', 'search']) };
+  }
+  const extensionAdmin = { headers: { 'X-ProPR-Extensions': '1' }, authorization: { role: 'admin', permissions: ['instance.manage_settings'] } };
+
+  test('a library removal landing after the extension check refuses the pending automation save instead of leaving a dangling item', async () => {
+    const { removeDocs, restoreDocs } = await extensionLibrary();
+    const existing = await call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Search', prompt: 'Search', repositories: ['acme/app'], extensions: { servers: ['search'], skills: [] } } }));
+    assert.equal(existing.status, 201, JSON.stringify(existing.body));
+    // Pause each save at the awaited runtime validation that follows the extension check.
+    let paused = deferred(); let resume = deferred();
+    routes = createAutomationDefinitionRoutes({ db: database, services: { ...services(), validateRuntime: async () => { paused.release(); await resume.promise; return null; } } });
+    const saves = [
+      () => call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['docs'], skills: [] } } })),
+      () => call(routes.update, request('1', { ...extensionAdmin, params: { id: existing.body.definition.id }, body: { extensions: { servers: ['search', 'docs'], skills: [] } } })),
+    ];
+    for (const [index, save] of saves.entries()) {
+      if (index) { await restoreDocs(); paused = deferred(); resume = deferred(); }
+      const pending = save();
+      await paused.promise;
+      // Nothing references `docs` yet, so the removal itself succeeds.
+      await removeDocs();
+      resume.release();
+      const result = await pending;
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.match(JSON.stringify(result.body), /not found: docs/);
+    }
+    const rows = await database('agent_definitions').select('name', 'extensions');
+    assert.deepEqual(rows.map(row => [row.name, JSON.parse(row.extensions)]), [['Search', { servers: ['search'], skills: [] }]]);
+  });
+
+  test('a library removal arriving while an automation save holds the library lock sees the new reference and is refused', async () => {
+    const { removeDocs } = await extensionLibrary();
+    const existing = await call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Search', prompt: 'Search', repositories: ['acme/app'], extensions: { servers: ['search'], skills: [] } } }));
+    assert.equal(existing.status, 201, JSON.stringify(existing.body));
+    const saves = [
+      { save: () => call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['docs'], skills: [] } } })), status: 201 },
+      { save: () => call(routes.update, request('1', { ...extensionAdmin, params: { id: existing.body.definition.id }, body: { extensions: { servers: ['search', 'docs'], skills: [] } } })), status: 200 },
+    ];
+    for (const { save, status } of saves) {
+      // Start the removal once the save's transaction has taken the library lock.
+      let removal: Promise<unknown> | undefined;
+      void afterQuery(sql => /^update [`"]extension_library[`"] set/i.test(sql), async () => { removal = removeDocs().then(() => 'removed', error => error); });
+      const result = await save();
+      assert.equal(result.status, status, JSON.stringify(result.body));
+      assert.ok(removal, 'the save took the library lock before writing the definition');
+      const outcome = await removal;
+      assert.equal((outcome as { status?: number }).status, 409, String(outcome));
+      assert.match((outcome as Error).message, /Automations add these extensions explicitly/);
+      // Leave only the `search` automation for the update case.
+      await database('agent_definitions').where({ name: 'Docs' }).delete();
+    }
+    assert.deepEqual(JSON.parse((await database('agent_definitions').first('extensions')).extensions), { servers: ['search', 'docs'], skills: [] });
+  });
+
+  test('an addition the request was not authorized for, because the definition changed after it was read, is refused at the write', async () => {
+    await extensionLibrary();
+    const created = await call(routes.create, request('1', { ...extensionAdmin, body: { name: 'Docs', prompt: 'Check docs', repositories: ['acme/app'], extensions: { servers: ['docs'], skills: [] } } }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.body.definition.id as string;
+    // A non-administrator sends back the items they read; the extension check is skipped as nothing is added.
+    const paused = deferred(); const resume = deferred();
+    routes = createAutomationDefinitionRoutes({ db: database, services: { ...services(), validateRuntime: async () => { paused.release(); await resume.promise; return null; } } });
+    const pending = call(routes.update, request('1', { params: { id }, body: { extensions: { servers: ['docs'], skills: [] } } }));
+    await paused.promise;
+    // Meanwhile `docs` is removed from the automation, so the stale save would add it back.
+    await database('agent_definitions').where({ id }).update({ extensions: JSON.stringify({ servers: [], skills: [] }), revision: 5 });
+    resume.release();
+    const result = await pending;
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.deepEqual(JSON.parse((await database('agent_definitions').where({ id }).first('extensions')).extensions), { servers: [], skills: [] });
   });
 
   /** Run `action` as soon as a matching query has answered, before the waiting caller resumes. */
@@ -327,10 +429,112 @@ describe('automation definition routes', () => {
     const cli = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger: 'cli' } }));
     assert.equal(cli.body.run.trigger, 'cli');
 
-    for (const trigger of ['schedule', 'mcp', 'bogus']) {
+    for (const trigger of ['schedule', 'mcp', 'event', 'bogus']) {
       const refused = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger } }));
       assert.equal(refused.status, 400);
     }
+  });
+
+  test('event triggers are opt-in, validated and never reach beyond the definition repositories', async () => {
+    const plain = await createDefinition('alice');
+    assert.deepEqual(plain.eventTriggers, []);
+
+    const subscribed = await createDefinition('alice', {
+      repositories: ['acme/app', 'acme/lib'],
+      eventTriggers: [{ event: 'plan.issue_blocked', repositories: ['acme/lib'], reasonKinds: ['agent_blocked'] }],
+    });
+    assert.deepEqual(subscribed.eventTriggers, [{ event: 'plan.issue_blocked', repositories: ['acme/lib'], reasonKinds: ['agent_blocked'] }]);
+    const cursor = await database('agent_definition_event_cursors').where({ definition_id: subscribed.id }).first();
+    assert.equal(cursor?.event, 'plan.issue_blocked');
+
+    const invalid: Array<[Record<string, unknown>, RegExp]> = [
+      [{ eventTriggers: [{ event: 'plan.issue_done' }] }, /event must be one of: plan.issue_blocked/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked', reasonKinds: ['tired'] }] }, /reasonKinds must be one of/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked' }, { event: 'plan.issue_blocked' }] }, /same event twice/],
+      [{ eventTriggers: [{ event: 'plan.issue_blocked', repositories: ['acme/other'] }] }, /must be repositories of the automation: acme\/other/],
+      [{ repositories: [], eventTriggers: [{ event: 'plan.issue_blocked' }] }, /must name the repositories/],
+    ];
+    for (const [body, message] of invalid) {
+      const created = await call(routes.create, request('alice', { body: { name: 'Recover', prompt: 'Unblock', repositories: ['acme/app'], ...body } }));
+      assert.equal(created.status, 400, JSON.stringify(body));
+      assert.match(created.body.error, message);
+    }
+
+    // An update cannot drop a repository the trigger is limited to, nor subscribe without repositories.
+    const narrowed = await call(routes.update, request('alice', { params: { id: subscribed.id }, body: { repositories: ['acme/app'] } }));
+    assert.equal(narrowed.status, 400);
+    assert.match(narrowed.body.error, /acme\/lib/);
+    const cleared = await call(routes.update, request('alice', { params: { id: plain.id }, body: { repositories: [], eventTriggers: [{ event: 'plan.issue_blocked' }] } }));
+    assert.equal(cleared.status, 400);
+    const opted = await call(routes.update, request('alice', { params: { id: plain.id }, body: { eventTriggers: [{ event: 'plan.issue_blocked' }] } }));
+    assert.equal(opted.status, 200, JSON.stringify(opted.body));
+    assert.deepEqual(opted.body.definition.eventTriggers, [{ event: 'plan.issue_blocked', repositories: [], reasonKinds: [] }]);
+    assert.deepEqual(AUTOMATION_DEFINITION_CONTRACT.eventTriggers.events, ['plan.issue_blocked']);
+    assert.ok((AUTOMATION_DEFINITION_CONTRACT.runTriggers as readonly string[]).includes('event'));
+  });
+
+  describe('an update is written only onto the revision its scope checks read', () => {
+    const blocked = (repositories?: string[]) => ({ event: 'plan.issue_blocked', ...(repositories ? { repositories } : {}) });
+
+    /** Routes whose runtime check lets `edit` commit first: the await between the route's checks and its write. */
+    function racing(edit: () => Promise<{ status: number; body: unknown }>) {
+      const edits: Array<{ status: number; body: unknown }> = [];
+      const raced = createAutomationDefinitionRoutes({ db: database, services: {
+        ...services(),
+        validateRuntime: async () => { edits.push(await edit()); return null; },
+      } });
+      return { raced, edits };
+    }
+
+    async function storedScope(id: string) {
+      const read = await call(routes.get, request('alice', { params: { id } }));
+      const { repositories, eventTriggers } = read.body.definition as { repositories: string[]; eventTriggers: AutomationEventTrigger[] };
+      return { repositories, eventTriggers };
+    }
+
+    const cases: Array<{ name: string; slow: Record<string, unknown>; concurrent: Record<string, unknown>; expected: { repositories: string[]; filters: string[][] } }> = [
+      // Without a fence, the subscription to acme/app would be kept beside repositories that no longer include it.
+      { name: 'retargeting the repositories while a subscription is added', slow: { repositories: ['acme/lib'] }, concurrent: { eventTriggers: [blocked(['acme/app'])] }, expected: { repositories: ['acme/app'], filters: [['acme/app']] } },
+      { name: 'clearing the repositories while a subscription is added', slow: { repositories: [] }, concurrent: { eventTriggers: [blocked()] }, expected: { repositories: ['acme/app'], filters: [[]] } },
+      { name: 'subscribing while the repositories are retargeted', slow: { enabled: true, eventTriggers: [blocked(['acme/app'])] }, concurrent: { repositories: ['acme/lib'] }, expected: { repositories: ['acme/lib'], filters: [] } },
+    ];
+    for (const { name, slow, concurrent, expected } of cases) {
+      test(`${name}: the update that checked the older revision gets a 409`, async () => {
+        const definition = await createDefinition('alice');
+        const { raced, edits } = racing(() => call(routes.update, request('alice', { params: { id: definition.id }, body: concurrent })));
+
+        const stale = await call(raced.update, request('alice', { params: { id: definition.id }, body: slow }));
+
+        assert.deepEqual(edits.map(edit => edit.status), [200], JSON.stringify(edits));
+        assert.equal(stale.status, 409, JSON.stringify(stale.body));
+        assert.match(stale.body.error, /reload and retry/);
+        const stored = await storedScope(definition.id);
+        assert.deepEqual(stored.repositories, expected.repositories);
+        assert.deepEqual(stored.eventTriggers.map(trigger => trigger.repositories), expected.filters);
+        assert.equal(validateAutomationEventTriggerScope(stored.eventTriggers, stored.repositories), null);
+      });
+    }
+
+    test('a caller revision other than the one the route checked is refused before any check awaits', async () => {
+      const definition = await createDefinition('alice');
+      const { raced, edits } = racing(() => call(routes.update, request('alice', { params: { id: definition.id }, body: { eventTriggers: [blocked(['acme/app'])] } })));
+
+      // The concurrent edit would make the stored revision equal this one, so only the route can refuse it.
+      const ahead = await call(raced.update, request('alice', {
+        params: { id: definition.id }, body: { repositories: ['acme/lib'], expectedRevision: definition.revision + 1 },
+      }));
+
+      assert.equal(ahead.status, 409, JSON.stringify(ahead.body));
+      assert.deepEqual(edits, []);
+      assert.deepEqual(await storedScope(definition.id), { repositories: ['acme/app'], eventTriggers: [] });
+    });
+
+    test('an update without an expected revision still succeeds when nothing changed meanwhile', async () => {
+      const definition = await createDefinition('alice');
+      const updated = await call(routes.update, request('alice', { params: { id: definition.id }, body: { repositories: ['acme/lib'], eventTriggers: [blocked(['acme/lib'])] } }));
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+      assert.equal(updated.body.definition.revision, definition.revision + 1);
+    });
   });
 
   test('the trigger applies the cost gate and records a held run without enqueueing', async () => {

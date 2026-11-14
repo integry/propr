@@ -1,4 +1,3 @@
-import { ExtensionProfileSelector } from '../components/Extensions/ExtensionProfileSelector';
 import { formatModelName } from '../utils/modelDisplay';
 import { resolvePlanIssueDefaultSelection } from '../components/TaskPlanner/planIssueDefaultSelection';
 import TextareaAutosize from 'react-textarea-autosize';
@@ -19,6 +18,8 @@ import { useCurrentUser } from '../contexts/AuthContext';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
+import { TaskExtensionsOptions } from '../components/Extensions/TaskExtensionsOptions';
+import { useTaskExtensionChoices } from '../components/Extensions/useTaskExtensionsPreview';
 
 const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50';
 interface Prefill { initialRepository?: string; initialPrompt?: string; todoIds?: string[] }
@@ -29,6 +30,11 @@ function savedRouting(scope: string): { repository?: string; agentAlias?: string
 }
 function rememberRouting(scope: string, { repository, agentAlias, model }: TaskRequest) {
   try { localStorage.setItem(`task-routing:${scope}`, JSON.stringify({ repository, agentAlias: agentAlias || '', model: model || '' })); } catch { /* Routing preferences are optional. */ }
+}
+/** A restored request's extension choices; an older draft's write opt-in belonged to its dropped profile selection. */
+function restoreExtensionChoices(payload: TaskRequest, setAllowWrite: (value: boolean) => void, setDisable: (value: boolean) => void) {
+  setAllowWrite(payload.extensionAllowWrite === true && !('extensionProfile' in payload));
+  setDisable(payload.disableExtensions === true);
 }
 /** Saves the exact request before any network mutation; resolves to user-facing feedback when that is not possible. */
 async function persistForRetry(scope: string, snapshot: TaskSnapshot): Promise<string | null> {
@@ -51,8 +57,6 @@ function useNewTaskLauncher(scope: string) {
   const [saved] = useState(() => savedRouting(scope));
   const [repository, setRepository] = useState(prefill.initialRepository || saved.repository || '');
   const [instruction, setInstruction] = useState(prefill.initialPrompt || '');
-  const [extensionAllowWrite, setExtensionAllowWrite] = useState(false);
-  const [extensionProfile, setExtensionProfile] = useState<import('@propr/shared').ExtensionSelection | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [todoIds, setTodoIds] = useState(prefill.todoIds);
   const [agentAlias, setAgent] = useState(saved.agentAlias || '');
@@ -74,6 +78,8 @@ function useNewTaskLauncher(scope: string) {
   const agentModel = selection?.defaultModel ?? selection?.supportedModels[0];
   const routedModel = model || (agentAlias ? agentModel : undefined);
   const invalidRouting = Boolean(agentAlias && catalog && (!selection || (model && !selection.supportedModels.includes(model))));
+  const extensions = useTaskExtensionChoices({ repository, agentAlias, model: routedModel, ready, demo: isDemoMode, invalidRouting });
+  const { setExtensionAllowWrite, setDisableExtensions, extensionChoices } = extensions;
 
   useEffect(() => {
     let active = true;
@@ -90,13 +96,11 @@ function useNewTaskLauncher(scope: string) {
       sessionStorage.setItem(activeStorageKey, value.key);
       setTodoIds(value.payload.todoIds);
       setSnapshot(value); setRepository(value.payload.repository); setInstruction(value.payload.instruction);
-      setExtensionProfile(value.payload.extensionProfile ?? null);
-      setExtensionAllowWrite(value.payload.extensionAllowWrite === true);
-      setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || ''); setFiles(value.files);
+      setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || ''); setFiles(value.files); restoreExtensionChoices(value.payload, setExtensionAllowWrite, setDisableExtensions);
       void getTaskSubmission(value.key).then(row => { if (active && sessionStorage.getItem(activeStorageKey) === value.key) setResult(row); }).catch(() => undefined);
     }).catch(() => undefined).finally(() => { if (active) setReady(true); });
     return () => { active = false; };
-  }, [scope, activeStorageKey, saved.repository]);
+  }, [scope, activeStorageKey, saved.repository, setExtensionAllowWrite, setDisableExtensions]);
 
   useEffect(() => {
     if (!snapshot || !result) return;
@@ -118,7 +122,7 @@ function useNewTaskLauncher(scope: string) {
   const run = async () => {
     if (submitting.current || processingFiles || isDemoMode) return;
     submitting.current = true; setBusy(true); setError(null);
-    const current = snapshot || { key: crypto.randomUUID(), payload: { repository, instruction, ...(extensionProfile ? { extensionProfile, extensionAllowWrite } : {}), ...(agentAlias ? { agentAlias } : {}), ...(routedModel ? { model: routedModel } : {}), todoIds }, files };
+    const current = snapshot || { key: crypto.randomUUID(), payload: { repository, instruction, ...(agentAlias ? { agentAlias } : {}), ...(routedModel ? { model: routedModel } : {}), todoIds, ...extensionChoices }, files };
     try {
       // Persist before the network mutation. A reload can safely repeat this exact request.
       const storageError = await persistForRetry(scope, current);
@@ -169,9 +173,7 @@ function useNewTaskLauncher(scope: string) {
       setSnapshot(value); setResult(undefined);
       setRepository(value.payload.repository); setInstruction(value.payload.instruction);
       setTodoIds(value.payload.todoIds); setFiles(value.files);
-      setExtensionProfile(value.payload.extensionProfile ?? null);
-      setExtensionAllowWrite(value.payload.extensionAllowWrite === true);
-      setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || '');
+      setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || ''); restoreExtensionChoices(value.payload, setExtensionAllowWrite, setDisableExtensions);
       try { setResult(await getTaskSubmission(value.key)); } catch { /* Retry the saved request with its original key. */ }
     } catch (error) { setError(errorMessage(error)); }
     finally { submitting.current = false; setBusy(false); }
@@ -200,8 +202,9 @@ function useNewTaskLauncher(scope: string) {
   };
   const locked = busy || Boolean(snapshot) || Boolean(planDraft);
   return {
-    extensionAllowWrite, setExtensionAllowWrite, extensionProfile, setExtensionProfile, repository, setRepository, instruction, setInstruction, files, setFiles,
+    repository, setRepository, instruction, setInstruction, files, setFiles,
     agentAlias, setAgent, model, setModel, catalog, selection, agentModel, invalidRouting,
+    ...extensions,
     snapshot, result, busy, processingFiles, setProcessingFiles, planDraft,
     ready, error, setError, run, startOver, dismiss, planFirst, locked, isDemoMode, recoverable, reopen,
   };
@@ -229,6 +232,8 @@ function TaskRoutingOptions(state: LauncherState) {
     <fieldset disabled={locked || isDemoMode} className="mt-4 grid min-w-0 grid-cols-1 gap-4 disabled:opacity-60 sm:grid-cols-2">
       <label className="min-w-0 text-sm text-slate-700">Agent<select aria-label="Agent" value={shown.agent} disabled={!shown.agent} onChange={event => { setAgent(event.target.value); setModel(''); }} className="mt-1 min-h-11 w-full min-w-0 max-w-full rounded border border-slate-300 p-2">{!shown.agent && <option value="">{shown.placeholder}</option>}{invalidRouting && !selection && <option value={agentAlias}>{agentAlias} (unavailable)</option>}{catalog?.agents.map(agent => <option key={agent.alias} value={agent.alias}>{agent.alias}</option>)}</select></label>
       <label className="min-w-0 text-sm text-slate-700">Model<select aria-label="Model" value={shown.model} disabled={!shown.agentSelection} onChange={event => { if (!agentAlias) setAgent(shown.agent); setModel(event.target.value); }} className="mt-1 min-h-11 w-full min-w-0 max-w-full rounded border border-slate-300 p-2">{!shown.model && <option value="">{shown.agentSelection ? 'No models available' : shown.placeholder}</option>}{shown.modelUnavailable && <option value={shown.model}>{formatModelName(shown.model)}{model ? ' (unavailable)' : ''}</option>}{shown.agentSelection?.supportedModels.map(model => <option key={model} value={model}>{formatModelName(model)}</option>)}</select></label>
+      <TaskExtensionsOptions preview={state.extensionsPreview} allowWrite={state.extensionAllowWrite} onAllowWriteChange={state.setExtensionAllowWrite}
+        disableExtensions={state.disableExtensions} onDisableExtensionsChange={state.setDisableExtensions} />
     </fieldset>
     <p className="mt-3 text-xs text-slate-500">Base branch and automatic review settings follow the repository’s issue workflow.</p>
   </details>;
@@ -350,8 +355,6 @@ function NewTaskLauncher({ scope }: { scope: string }) {
           </div>
         </div>
       </fieldset>
-      <ExtensionProfileSelector value={launcher.extensionProfile} onChange={value => { setDirty(true); launcher.setExtensionProfile(value); launcher.setExtensionAllowWrite(false); }} disabled={locked || isDemoMode} />
-      {launcher.extensionProfile && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={launcher.extensionAllowWrite} disabled={locked || isDemoMode} onChange={e => { setDirty(true); launcher.setExtensionAllowWrite(e.target.checked); }} />Allow selected MCP write capabilities for this run</label>}
       <TaskRoutingOptions {...launcher} />
       <TaskSubmissionFeedback {...launcher} />
       </div>

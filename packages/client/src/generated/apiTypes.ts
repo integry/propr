@@ -159,6 +159,12 @@ export interface AuthenticatedUser {
   authorizationSource: "bootstrap" | "local" | "managed" | "implicit" | "demo";
 }
 
+/** Library server names and skill bundle ids added to an automation on top of what applies automatically. Setting or changing them requires instance.manage_settings. */
+export interface AutomationExtensions {
+  servers: string[];
+  skills: string[];
+}
+
 /** Version and capability metadata used for client compatibility negotiation. */
 export interface Compatibility {
   /** ProPR release version of the API server. */
@@ -344,6 +350,68 @@ export interface DesktopPairingTicket {
   credentialGeneration: string;
 }
 
+/** A refused queue action. */
+export interface EpicQueueActionError {
+  error: string;
+  code: "NOT_FOUND" | "STALE_EXECUTION" | "IN_FLIGHT" | "ALREADY_DONE" | "STATE_CHANGED" | "NOT_BLOCKED" | "NOT_RETRYABLE";
+}
+
+export interface EpicQueueActionResult {
+  outcome: "skipped" | "already_skipped" | "retried" | "already_retried";
+  executionId: string;
+  issueNumber: number;
+  /** The execution queue after the action. */
+  queue: {
+    [key: string]: unknown;
+  } | null;
+}
+
+/** One blocked transition of an issue in an epic execution, or the resolution of one. */
+export interface EpicQueueBlockedEvent {
+  /** Monotonic event id; also the list cursor. */
+  id: number;
+  /** The plan. */
+  draftId: string;
+  executionId: string;
+  issueNumber: number;
+  /** The occurrence: a requeued issue starts a new one at a new position. */
+  position: number;
+  type: "blocked" | "resolved";
+  blockedKind: "closed_unmerged" | "missing_from_plan" | "dispatch_failed" | "agent_blocked" | "awaiting_human_merge" | "label_handoff" | "setup_not_ready";
+  reason: string;
+  /** For a resolved event: the blocked event it resolves. */
+  blockedEventId: number | null;
+  /** How the blocker ended: cleared by the queue, replaced by another blocker, retried or skipped by a person, or settled with the issue. */
+  resolution: "cleared" | "replaced" | "retried" | "skipped" | "settled" | null;
+  /** Epoch milliseconds. */
+  createdAt: number;
+}
+
+export interface EpicQueueBlockedEventPage {
+  /** The listed execution; null when the plan never queued work. */
+  executionId: string | null;
+  events: EpicQueueBlockedEvent[];
+  /** Pass as `cursor` to read the events after this page; unchanged when the page is empty. */
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+export interface EpicQueueRetryRequest {
+  /** The execution read from the execution queue; a newer or finished one refuses the retry. */
+  executionId: string;
+  /** Refuse with `STATE_CHANGED` unless the issue is still in this state. */
+  expectedState?: "pending" | "dispatched" | "done" | "blocked" | "skipped";
+}
+
+export interface EpicQueueSkipRequest {
+  /** The execution read from the execution queue; a newer or finished one refuses the skip. */
+  executionId: string;
+  /** Refuse with `STATE_CHANGED` unless the issue is still in this state. */
+  expectedState?: "pending" | "dispatched" | "done" | "blocked" | "skipped";
+  /** Graph executions: treat the skipped issue as a met prerequisite, so its dependents can start. Skipping again with the other value changes only this option. */
+  satisfiesDependents?: boolean;
+}
+
 /** The common error envelope. New routes return it for every 4xx and 5xx response. */
 export interface ErrorEnvelope {
   /** Stable, machine-readable error code, for example `TASK_NOT_FOUND`. */
@@ -354,21 +422,33 @@ export interface ErrorEnvelope {
   hint?: string;
 }
 
-/** Strict shared v1 contract. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
-export interface ExtensionProfileInput {
-  version: 1;
-  name: string;
+export interface ExtensionItemEnabledRequest {
+  item: {
+    kind: "server";
+    name: string;
+  } | {
+    kind: "skill";
+    bundleId: string;
+  };
   enabled: boolean;
-  agentScope: string[];
-  repositoryScope: string[];
-  mcpServers: Array<{
+}
+
+/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
+export interface ExtensionLibraryInput {
+  version: 1;
+  servers: Array<{
     kind: "https";
     name: string;
     url: string;
     enabled: boolean;
     tools: string[];
     capability: "read" | "write";
-    authentication: "none" | "bearer";
+    authentication: "none" | "bearer" | "oauth";
+    scopes?: string[];
+    clientId?: string;
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   } | {
     kind: "catalog";
     name: string;
@@ -377,18 +457,190 @@ export interface ExtensionProfileInput {
     enabled: boolean;
     tools: string[];
     capability: "read" | "write";
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
+  } | {
+    name: string;
+    enabled: boolean;
+    tools: string[];
+    capability: "read" | "write";
+    kind: "package";
+    ecosystem: "npm";
+    package: string;
+    version: string;
+    integrity?: string;
+    bin?: string;
+    args: string[];
+    env: {
+      name: string;
+      value: string;
+    }[];
+    secretEnv: string[];
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
   }>;
-  skillBundleIds: string[];
+  skills: {
+    bundleId: string;
+    enabled: boolean;
+    repositories: string[];
+    agents: string[];
+    autoApply: boolean;
+  }[];
 }
 
-export interface ExtensionProfileSave {
-  input: ExtensionProfileInput;
-  expected?: ExtensionSelection;
-  secrets?: {
-    [key: string]: string | null;
+export interface ExtensionLibraryRead {
+  contract: {
+    [key: string]: unknown;
+  };
+  instanceId: string;
+  library: {
+    version: 1;
+    instanceId: string;
+    /** 0 before the first save. */
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+    auditActor: string;
+    servers: {
+      [key: string]: unknown;
+    }[];
+    skills: {
+      [key: string]: unknown;
+    }[];
+    /** Presence markers only; secret values are never returned. */
+    secrets: {
+      [key: string]: {
+        configured: boolean;
+        [key: string]: unknown;
+      };
+    };
+    skillBundles: {
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+  oauth: ExtensionOAuthInstanceInfo;
+  bundles: {
+    [key: string]: unknown;
+  }[];
+  catalog: {
+    [key: string]: unknown;
+  }[];
+  /** Automations that add library items explicitly (server names and skill bundle ids), and the names of the extension profiles that migrated items came from. */
+  usage: {
+    automations: {
+      id: string;
+      name: string;
+      servers: string[];
+      skills: string[];
+    }[];
+    importedFrom: {
+      servers: {
+        [key: string]: string[];
+      };
+      skills: {
+        [key: string]: string[];
+      };
+    };
   };
 }
 
+export interface ExtensionLibraryRevisionResponse {
+  library: {
+    version: 1;
+    instanceId: string;
+    /** 0 before the first save. */
+    revision: number;
+    createdAt: number;
+    updatedAt: number;
+    auditActor: string;
+    servers: {
+      [key: string]: unknown;
+    }[];
+    skills: {
+      [key: string]: unknown;
+    }[];
+    /** Presence markers only; secret values are never returned. */
+    secrets: {
+      [key: string]: {
+        configured: boolean;
+        [key: string]: unknown;
+      };
+    };
+    skillBundles: {
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+}
+
+export interface ExtensionLibrarySave {
+  input: ExtensionLibraryInput;
+  expectedRevision: number;
+  secrets?: {
+    [key: string]: string | null;
+  };
+  /** Names of local package servers whose secret variables the administrator confirms are readable inside the task container. Required for a package server with secret variables whenever its package, version or secret variable names are new or changed; an unchanged server keeps its recorded acknowledgement. Only package servers with secret variables may be listed. */
+  acknowledgements?: string[];
+}
+
+export interface ExtensionOAuthCheckRequest {
+  url: string;
+  clientId?: string;
+  scopes?: string[];
+}
+
+export interface ExtensionOAuthCheckResponse {
+  check: {
+    authorizationRequired: boolean;
+    discoveredFrom?: "challenge" | "well_known";
+    resource?: string;
+    issuer?: string;
+    scopes?: string[];
+    registration: "metadata_document" | "dynamic" | "preregistered" | null;
+    message: string;
+    redirectUri: string | null;
+  };
+}
+
+/** OAuth sign-in facts of this instance and the connection state of its OAuth library servers. */
+export interface ExtensionOAuthInstanceInfo {
+  /** Redirect URI to register with a provider; null without a public HTTPS base URL, which disables Connect. */
+  redirectUri: string | null;
+  /** ProPR's Client ID Metadata Document URL, used as the client id where supported. */
+  clientMetadataUrl: string | null;
+  /** Connection state by OAuth server name. Tokens are never returned. */
+  connections: {
+    [key: string]: {
+      state: "not_connected" | "connected" | "needs_sign_in";
+      /** Actor id of the administrator who signed in. */
+      connectedBy?: string;
+      connectedAt?: number;
+      /** Scopes the authorization server granted. */
+      scopes?: string[];
+      registration?: "metadata_document" | "dynamic" | "preregistered";
+    };
+  };
+}
+
+export interface ExtensionOAuthItemRequest {
+  name: string;
+}
+
+export interface ExtensionOAuthStartResponse {
+  /** Provider authorization page to open in a new tab; carries a single-use state bound to this session, PKCE S256 and the resource indicator. */
+  authorizationUrl: string;
+}
+
+export interface ExtensionSecretReplaceRequest {
+  name: string;
+  secret: string | null;
+  expectedRevision?: number;
+}
+
+/** Legacy profile selection; no longer accepted for new submissions. */
 export interface ExtensionSelection {
   instanceId: string;
   profileId: string;
@@ -937,11 +1189,30 @@ export interface TaskSubmission {
   error: string | null;
 }
 
+/** Library items that would apply automatically to a task for this repository and agent. */
+export interface TaskSubmissionExtensions {
+  /** False when the agent's runtime does not use extensions (only Claude and Codex do). */
+  qualified: boolean;
+  /** Current library revision; tasks resolve the library again at launch. */
+  revision: number;
+  /** MCP servers that would apply. Write servers apply only with `extensionAllowWrite`. */
+  servers: Array<{
+    name: string;
+    capability: "read" | "write";
+  }>;
+  skills: {
+    name: string;
+  }[];
+}
+
 /** A request to open a GitHub issue and start an implementation run for it. */
 export interface TaskSubmissionRequest {
+  /** Removed: extension profiles were replaced by the instance extension library. A non-null value is refused. */
   extensionProfile?: ExtensionSelection | null;
-  /** Explicit write grant for this exact authenticated coding submission and initial run; omitted is false. Requires an extension selection. Never inherited by label retries. */
+  /** Write opt-in: library MCP servers with `capability: write` that apply to the repository and agent are exposed to this submission's initial task only (never retries, replacements or follow-ups). Requires the `X-ProPR-Extensions: 1` header; cannot be combined with `disableExtensions`. */
   extensionAllowWrite?: boolean;
+  /** Run without extensions: adds the `disable-extensions` label to the created issue, so no library MCP servers or skills apply. */
+  disableExtensions?: boolean;
   /** `owner/name` of an enabled repository you can push to. */
   repository: string;
   /** What the agent should do; becomes the GitHub issue body. Must not be only whitespace. */
@@ -1044,6 +1315,25 @@ export interface TaskAssigneesQuery {
 export interface TaskFollowupRunsQuery {
   /** The `commentId` the follow-up's receipt returned. */
   commentId: string;
+}
+
+/** Query parameters of `getTaskSubmissionExtensions`. */
+export interface TaskSubmissionExtensionsQuery {
+  /** `owner/name` of an enabled repository you can push to. */
+  repository: string;
+  /** Agent the task would use. Omit for the instance default. */
+  agentAlias?: string;
+  model?: string;
+}
+
+/** Query parameters of `listPlanExecutionBlockedEvents`. */
+export interface EpicQueueBlockedEventsQuery {
+  /** Defaults to the plan's current execution. */
+  executionId?: string;
+  /** `nextCursor` of an earlier page; omit to read from the first event. */
+  cursor?: string;
+  /** Page size; defaults to 50. */
+  limit?: number;
 }
 
 /** Query parameters of `listRepositoryEvents`. */

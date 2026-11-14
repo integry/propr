@@ -19,9 +19,13 @@ async function fixture(t: test.TestContext) {
   db.exec(`CREATE TABLE customer(id INTEGER PRIMARY KEY, body TEXT NOT NULL);
     CREATE TABLE encrypted_credentials(value TEXT);
     CREATE TABLE extension_profile_revisions(profile_id TEXT, revision INTEGER, snapshot TEXT, secrets_encrypted TEXT);
+    CREATE TABLE extension_library_revisions(instance_id TEXT, revision INTEGER, snapshot TEXT, secrets_encrypted TEXT);
     CREATE TABLE extension_skill_bundles(id TEXT, descriptor TEXT, files_json TEXT);
     CREATE TABLE extension_instance_identity(id INTEGER, instance_id TEXT);
     CREATE TABLE extension_run_grants(token_hash TEXT);
+    CREATE TABLE extension_oauth_connections(instance_id TEXT, server_name TEXT, sealed TEXT);
+    CREATE TABLE extension_oauth_pending(state_hash TEXT, sealed TEXT);
+    CREATE TABLE extension_oauth_audit(id INTEGER PRIMARY KEY, server_name TEXT, action TEXT, actor TEXT);
     CREATE TABLE task_submissions(id TEXT, payload TEXT, extension_authorization TEXT);
     CREATE TABLE system_configs(key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE knex_migrations(id INTEGER PRIMARY KEY, name TEXT);
@@ -30,10 +34,14 @@ async function fixture(t: test.TestContext) {
   db.prepare('INSERT INTO customer(body) VALUES(?)').run('customer content survives');
   db.prepare('INSERT INTO encrypted_credentials VALUES(?)').run('encrypted-customer-canary');
   db.prepare('INSERT INTO extension_profile_revisions VALUES(?,?,?,?)').run('extension-profile', 1, JSON.stringify({ name: 'Documentation', mcpServers: [{ kind: 'catalog', name: 'documentation', catalogId: 'local-docs', digest: 'a'.repeat(64), tools: ['lookup'], capability: 'read' }], secrets: { documentation: { configured: true, fields: ['API_KEY'] } } }), 'encrypted-extension-custody-canary');
+  db.prepare('INSERT INTO extension_library_revisions VALUES(?,?,?,?)').run('extension-instance', 1, JSON.stringify({ revision: 1, servers: [{ kind: 'catalog', name: 'documentation', catalogId: 'local-docs', digest: 'a'.repeat(64), tools: ['lookup'], capability: 'read', repositories: [], agents: [], autoApply: true }], skills: [], secrets: { documentation: { configured: true, fields: ['API_KEY'] } } }), 'encrypted-library-custody-canary');
   db.prepare('INSERT INTO extension_skill_bundles VALUES(?,?,?)').run('skill', JSON.stringify({ digest: 'immutable-skill-digest' }), JSON.stringify([{ path: 'SKILL.md', content: 'validated-asset' }]));
   db.prepare('INSERT INTO extension_instance_identity VALUES(?,?)').run(1, 'extension-instance');
   db.prepare('INSERT INTO task_submissions VALUES(?,?,?)').run('submission', JSON.stringify({ extensionAllowWrite: true }), 'previous-extension-submission-authority-canary');
   db.prepare('INSERT INTO extension_run_grants VALUES(?)').run('previous-execution-lease-canary');
+  db.prepare('INSERT INTO extension_oauth_connections VALUES(?,?,?)').run('extension-instance', 'documentation', 'oauth-access-refresh-token-canary');
+  db.prepare('INSERT INTO extension_oauth_pending VALUES(?,?)').run('pending-state-hash', 'oauth-pkce-verifier-canary');
+  db.prepare('INSERT INTO extension_oauth_audit(server_name, action, actor) VALUES(?,?,?)').run('documentation', 'connect', '1');
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('agents', JSON.stringify([{ id: 'agent', alias: 'My agent', configPath: '/provider-home-canary', envVars: { API_KEY: 'operator-env-canary' } }]));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('operator_extension_catalog', JSON.stringify({ executable: '/usr/bin/env', args: ['CATALOG_ARGUMENT_SENTINEL', '/opt/propr/CATALOG_PATH_SENTINEL'], secretEnv: { API_KEY: 'OPERATOR_DOCS_KEY' } }));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('fleet_control_secret', JSON.stringify('fleet-secret-canary'));
@@ -96,11 +104,21 @@ test('real WAL writer: coherent restorable customer database, integrity, metadat
       assert.equal(db.prepare('SELECT value FROM encrypted_credentials').get().value, 'encrypted-customer-canary');
       assert.equal(db.prepare('SELECT secrets_encrypted FROM extension_profile_revisions').get().secrets_encrypted, '');
       assert.deepEqual(JSON.parse(db.prepare('SELECT snapshot FROM extension_profile_revisions').get().snapshot).secrets.documentation, { count: 1, configured: true });
+      assert.equal(db.prepare('SELECT secrets_encrypted FROM extension_library_revisions').get().secrets_encrypted, '');
+      const library = JSON.parse(db.prepare('SELECT snapshot FROM extension_library_revisions').get().snapshot);
+      assert.deepEqual(library.secrets.documentation, { count: 1, configured: true });
+      assert.equal(library.servers[0].name, 'documentation');
+      assert.equal(data.includes(Buffer.from('encrypted-library-custody-canary')), false);
       assert.equal(db.prepare('SELECT extension_authorization FROM task_submissions').get().extension_authorization, null);
       assert.equal(db.prepare('SELECT instance_id FROM extension_instance_identity').get().instance_id, 'extension-instance');
       assert.equal(JSON.parse(db.prepare('SELECT descriptor FROM extension_skill_bundles').get().descriptor).digest, 'immutable-skill-digest');
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_run_grants').get().n, 0);
       assert.equal(data.includes(Buffer.from('previous-execution-lease-canary')), false);
+      // OAuth token custody and pending sign-ins are erased; the audit trail is kept.
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_oauth_connections').get().n, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM extension_oauth_pending').get().n, 0);
+      assert.equal(db.prepare('SELECT action FROM extension_oauth_audit').get().action, 'connect');
+      for (const canary of ['oauth-access-refresh-token-canary', 'oauth-pkce-verifier-canary']) assert.equal(data.includes(Buffer.from(canary)), false, canary);
       assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM system_configs WHERE key='agents'").get().value), [{ id: 'agent', alias: 'My agent' }]);
       db.prepare('INSERT INTO customer(body) VALUES(?)').run('restored write');
     } finally { db.close(); }

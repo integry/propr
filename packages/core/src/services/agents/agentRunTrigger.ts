@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
-import { agentSupportsSavedModel, agentTypeSupportsProprMcp, type AutomationRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
+import { agentSupportsSavedModel, agentTypeSupportsProprMcp, hasAutomationExtensions, parseAutomationExtensions, type AutomationRunTrigger, type AutomationTriggerEvent, type SyntheticAgentConfig } from '@propr/shared';
 import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
@@ -16,6 +16,7 @@ import {
   getAgentRunById,
   getAgentRunByIdempotencyKey,
   transitionAgentRun,
+  type AgentRunAdmission,
   type StoredAgentRun,
 } from './agentRunStore.js';
 
@@ -42,7 +43,7 @@ export const AGENT_RUN_JOB_NAMES: Readonly<Record<AgentRunPhase, string>> = {
  */
 export const AGENT_RUN_JOB_OPTIONS: Readonly<JobsOptions> = { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } };
 
-export type AgentRunTriggerErrorCode = 'AGENT_DISABLED' | 'AGENT_INVALID';
+export type AgentRunTriggerErrorCode = 'AGENT_DISABLED' | 'AGENT_INVALID' | 'EXTENSIONS_MIGRATION_PENDING';
 
 export class AgentRunTriggerError extends Error {
   readonly status: number;
@@ -102,6 +103,14 @@ export interface TriggerAgentRunInput {
   triggerSource?: string | null;
   /** Replays with the same key return the existing run without enqueueing again. */
   idempotencyKey?: string | null;
+  /** For an `event` run: the event handed to the run and the subject (issue) it concerns. */
+  triggerEvent?: AutomationTriggerEvent | null;
+  triggerSubject?: string | null;
+  /**
+   * Checked in the transaction that records the receipt (see `createAgentRun`); a refusal
+   * records and enqueues nothing and throws `AgentRunAdmissionRefusedError`.
+   */
+  admit?: AgentRunAdmission | null;
   gate?: AgentRunGate;
   /**
    * Leave the receipt `queued` when its report phase cannot be enqueued, for a
@@ -256,6 +265,17 @@ export async function validateAgentDefinitionRuntime(
   definition: StoredAgentDefinition,
   deps: AgentRunTriggerDependencies = {},
 ): Promise<string | null> {
+  // A run snapshot captured before the upgrade still names its profile; launching it before the
+  // migration translated it would run without the extensions it selected. Once the migration has
+  // settled (possibly after the caller read the run), the caller's snapshot takes the translation
+  // the migration wrote into the stored one, so the launch uses it rather than an empty selection.
+  const snapshot = definition as StoredAgentDefinition & { extensionProfile?: unknown };
+  if (snapshot.extensionProfile && snapshot.extensions === undefined) {
+    const migration = await import('../../extensions/extensionLibraryMigration.js');
+    const knex = await extensionDatabase(deps.database);
+    if (await migration.legacyAutomationExtensionsPending(snapshot, knex, { snapshotOnly: true })) return EXTENSIONS_MIGRATION_PENDING_REASON;
+    snapshot.extensions = await migration.legacySnapshotExtensions(snapshot.extensionProfile, knex);
+  }
   const {
     loadRepos = loadMonitoredReposRaw,
     loadAgents: loadDirectAgents = loadAgents,
@@ -274,10 +294,11 @@ export async function validateAgentDefinitionRuntime(
   const needsProprMcp = definition.capabilities.includes('propr_mcp') || definition.autonomyMode !== 'dry_run';
   if (alias === null) {
     if (modelName !== null) return 'A model requires an agent';
-    if (!needsProprMcp && !definition.extensionProfile) return null;
+    const explicitExtensions = hasAutomationExtensions(definition.extensions);
+    if (!needsProprMcp && !explicitExtensions) return null;
     const [agents, configuredAlias] = await Promise.all([loadDirectAgents(), loadDefaultAgentAlias()]);
     const type = defaultAgentType(agents, configuredAlias);
-    if (definition.extensionProfile && (!type || !['claude', 'codex'].includes(type))) return 'Extension profiles require a Claude or Codex task runtime';
+    if (explicitExtensions && (!type || !['claude', 'codex'].includes(type))) return 'Added extensions require a Claude or Codex task runtime';
     if (!needsProprMcp) return null;
     if (type === null) return 'No default agent is configured; choose an agent that supports propr_mcp';
     if (!agentTypeSupportsProprMcp(type)) {
@@ -292,13 +313,37 @@ export async function validateAgentDefinitionRuntime(
     : synthetic.find(agent => agent.alias === alias && syntheticAgentSupportsModel(agent, modelName));
   if (!direct && !syntheticAgent) return 'Choose an enabled agent and a model it supports';
 
-  if (definition.extensionProfile && (!direct || !['claude', 'codex'].includes(direct.type))) return 'Extension profiles require a direct Claude or Codex task runtime';
+  if (hasAutomationExtensions(definition.extensions) && (!direct || !['claude', 'codex'].includes(direct.type))) return 'Added extensions require a direct Claude or Codex task runtime';
   if (needsProprMcp) {
     const supported = direct ? agentTypeSupportsProprMcp(direct.type)
       : syntheticAgentSupportsProprMcp(syntheticAgent!, modelName, agents);
     if (!supported) return `Agent ${alias} does not support propr_mcp, which the propr_mcp capability and the preview and auto acting steps require`;
   }
   return null;
+}
+
+const EXTENSIONS_MIGRATION_PENDING_REASON = 'The extension library migration has not completed, so the extensions this automation selected cannot be resolved yet; it runs once the migration succeeds';
+const extensionDatabase = async (database?: Knex): Promise<Knex> => database ?? (await import('../../db/connection.js')).db;
+/**
+ * A definition still holding an untranslated profile selection would capture
+ * empty `extensions` in its run snapshot, which a later migration cannot
+ * repair. Retry the migration now and use the translated selection; while it
+ * still fails, refuse the run with 409 (a schedule slot stays pending and retries).
+ *
+ * The caller's definition may have been read before another process committed
+ * the migration, so for any stored row with a profile selection the run takes
+ * the persisted `extensions`, never the copy the caller holds.
+ */
+async function withMigratedLegacyExtensions(definition: StoredAgentDefinition, database?: Knex): Promise<StoredAgentDefinition> {
+  const migration = await import('../../extensions/extensionLibraryMigration.js');
+  const knex = await extensionDatabase(database);
+  let stored = await migration.storedLegacyDefinitionExtensions(definition.id, knex);
+  if (!stored) return definition;
+  if (stored.extensions === null) {
+    if (!await migration.ensureExtensionLibraryMigrated(knex)) throw new AgentRunTriggerError(EXTENSIONS_MIGRATION_PENDING_REASON, 409, 'EXTENSIONS_MIGRATION_PENDING');
+    stored = await migration.storedLegacyDefinitionExtensions(definition.id, knex);
+  }
+  return { ...definition, extensions: parseAutomationExtensions(stored?.extensions) };
 }
 
 /**
@@ -314,7 +359,7 @@ export async function validateAgentDefinitionRuntime(
  * `keepQueuedOnEnqueueFailure`) and the error is rethrown.
  */
 export async function triggerAgentRun(
-  { definition, trigger, triggerSource = null, idempotencyKey = null, gate, keepQueuedOnEnqueueFailure = false }: TriggerAgentRunInput,
+  { definition, trigger, triggerSource = null, idempotencyKey = null, gate, keepQueuedOnEnqueueFailure = false, ...event }: TriggerAgentRunInput,
   deps: AgentRunTriggerDependencies = {},
 ): Promise<TriggerAgentRunResult> {
   const storeDeps = { database: deps.database, now: deps.now };
@@ -326,12 +371,14 @@ export async function triggerAgentRun(
   }
 
   if (!definition.enabled) throw new AgentRunTriggerError('Automation is disabled', 409, 'AGENT_DISABLED');
+  definition = await withMigratedLegacyExtensions(definition, deps.database);
   const invalid = await validateAgentDefinitionRuntime(definition, deps);
   if (invalid) throw new AgentRunTriggerError(invalid, 400, 'AGENT_INVALID');
 
   const admit = gate ?? defaultCostGate(deps);
   const decision = (await admit({ definition, trigger, triggerSource })) ?? { action: 'proceed' as const };
-  const base = { definition, trigger, triggerSource, idempotencyKey };
+  // `event`: the triggering event and its subject, for an `event` run, and its admission fence.
+  const base = { definition, trigger, triggerSource, idempotencyKey, ...event };
   const { run, created } = decision.action === 'skip'
     ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)
     : decision.action === 'defer'

@@ -318,13 +318,15 @@ describe('validateAgentDefinitionRuntime', () => {
     assert.equal(await withDefault([], null)({ capabilities: ['propr_mcp'] }), null);
   });
 
-  test('extension profiles require a qualified direct or default runtime even without propr_mcp', async () => {
-    const extensionProfile = { instanceId: 'a9f962bf-cf3b-44d0-8cdf-9f9e3de7ba47', profileId: '3932ee86-b724-47e6-9476-51fced668d01', revision: 1 };
-    assert.equal(await check({ extensionProfile }), null);
-    assert.match(await check({ extensionProfile, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude or Codex/);
-    assert.match(await check({ extensionProfile, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude or Codex/);
-    assert.match(await validateAgentDefinitionRuntime({ ...base, extensionProfile, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude or Codex/);
-    assert.equal(await validateAgentDefinitionRuntime({ ...base, extensionProfile, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'claude' }), null);
+  test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
+    const extensions = { servers: ['docs'], skills: [] };
+    assert.equal(await check({ extensions }), null);
+    assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude or Codex/);
+    assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude or Codex/);
+    assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude or Codex/);
+    assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'claude' }), null);
+    // Without added items, library items that apply automatically never block another runtime.
+    assert.equal(await check({ extensions: { servers: [], skills: [] }, agentAlias: 'gemini', modelName: 'pro' }), null);
   });
 
   test('ignores synthetic members whose physical agent is disabled', async () => {

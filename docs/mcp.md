@@ -112,15 +112,19 @@ currently accepts text instructions; file uploads remain available in the UI.
 
 ## Automations
 
-Automations are saved, reusable definitions that run on demand or on a schedule and
-produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
+Automations are saved, reusable definitions that run on demand, on a schedule or on a
+subscribed event and produce a free-form report (see the [Automations guide](docs/features/agents.md)). With read scope, `list_automation_definitions` (optional
 `repository` filter) and `get_automation_definition` show your automations, including the
-schedule, next run, capabilities and autonomy mode;
-`get_automation_definition_contract` returns the shared field contract, and
+schedule, next run, `eventTriggers`, capabilities and autonomy mode;
+`get_automation_definition_contract` returns the shared field contract, including
+`runTriggers` (with `event`) and `eventTriggers` (the events, here `plan.issue_blocked`,
+their reason kinds and `maxRunsPerIssue`, the loop bound of 3 runs per issue of a plan), and
 `list_automation_templates` returns the shipped template catalog (for example daily
 issue triage). A template creates nothing; it is a starting point for a new automation.
 `list_automation_runs` lists a definition's runs newest first without report bodies,
-and `get_automation_run` returns one run with its report. A report over 200 KB is
+and `get_automation_run` returns one run with its report. A run started by an event has
+`trigger: "event"` and `triggerEvent`: the repository, plan, execution, issue number,
+reason kind and text, and links to the plan and the issue. A report over 200 KB is
 truncated with `reportTruncated: true`; the full report is at the run's `url`.
 
 With execute scope, `trigger_automation_run` starts a run now:
@@ -365,6 +369,36 @@ read before publishing); `publish_plan` creates GitHub issues with the non-execu
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+Every plan item has a stable `id`, unique within the plan, and may list in
+`dependsOn` the ids of its direct prerequisites, other items in the same plan
+that must be implemented first. `create_plan` and `update_plan` (and the web UI's draft update) assign an
+id to items sent without one, never change an existing id, and reject with
+`PLAN_INVALID` a duplicate id or a `dependsOn` entry that names no item, the item
+itself, or closes a cycle; the message names the item, and `details.errors`
+lists every problem. Ids and `dependsOn` survive refinement, plan revisions and
+restore. Plans without `dependsOn` are valid and are the default. Plans sent
+through these tools are stored as written; only generated and refined plans have
+indirect prerequisites removed from `dependsOn`. On
+publication each issue in `get_plan.issues` records `plan_item_id` and
+`depends_on_issues`, its prerequisites as issue numbers; issues published
+before dependencies existed read `null` and `[]`. Scheduling does not use
+these edges yet: epic queues still follow plan order.
+
+Once every issue of the plan exists, `publish_plan` adds GitHub issue
+dependencies in a second pass: each issue is marked **blocked by** each of its
+prerequisite issues, with the caller's GitHub credential (the web UI's
+finalize uses the GitHub App installation). The links need the repository
+**Issues: write** permission. The step is best effort and idempotent: existing
+links are listed first and never duplicated, so a resumed or repeated
+publication is safe. A failed link (missing permission, GitHub API unavailable,
+issue dependencies not enabled for the repository) never fails the
+publication; the result's `dependencyLinks.links` lists each link with status
+`created`, `existing` or `failed` and its error, and `get_plan.dependencyLinks`
+shows the counts and the links that were not created. A plan without
+dependencies makes no extra GitHub calls and reports no `dependencyLinks`.
+Sub-issue links are not created, because plans have no parent tracking issue
+to attach them to.
+
 `generate_repository_improvements` answers "what should we work on next?"
 with the same generator as the web UI **Improve** tab. Pass `categories`
 (`code-quality`, `performance`, `security`, `testing`, `documentation`,
@@ -410,6 +444,37 @@ labels the epic PR for completion, like a sequential epic. A parallel epic is
 rejected while a non-epic queue runs for the plan. Non-epic calls keep fan-out and
 ignore these epic execution options.
 
+`epicExecution: "graph"` schedules the selected issues by the dependencies the
+plan recorded for them (`dependsOn`, stored on each published issue). An issue
+is ready when every prerequisite is merged into the epic branch; a prerequisite
+that is not part of the execution counts as satisfied only once it is merged.
+The first ready issue in publication order starts immediately and establishes
+the epic branch; the queue then starts every other ready issue, at most
+`maxParallel` (1–20, unbounded when omitted) in flight at once, in publication
+order, and starts more as issues merge. The limit is stored on the execution
+and enforced where the queue claims issues: each claim runs under a lock on the
+execution row and is a compare-and-set on the issue's own row, so concurrent
+advances, the reconcile sweep and a restart never exceed it or start an issue
+twice. An issue holds its slot from its claim until it merges (a blocked issue
+keeps its slot), and an issue someone started by hand also counts. Downstream
+issues branch from the epic branch, so they contain their prerequisites' merged
+work; stacked PRs are not used. A prerequisite that is blocked or closed without
+merge keeps its dependents pending, reported as waiting on it, while other
+branches keep running; reopening, fixing and merging it releases them. The
+execution completes, and finalizes the epic PR once, when every issue is done.
+Graph mode requires `useEpic: true` and one model, and advances only on merge;
+`maxParallel` is accepted only with `"graph"`. Other combinations, and a
+selection in which no issue is ready, are rejected before anything is claimed.
+So is a selection containing an issue whose prerequisite never got an issue
+because its creation failed at publication: that prerequisite can never merge,
+so leave the dependant out or run a sequential epic.
+Sequential and parallel are the two edge cases of the same scheduler: a chain
+with a limit of one, and a graph without edges and without a limit; their
+behaviour is unchanged. The repository-level `limits.max_parallel_tasks`
+admission stays an independent cap. An orchestrating goal's `maxParallelTasks`
+is not enforced through this queue yet (goals and plans are not linked); that
+is a planned follow-up.
+
 `epicAdvanceOn` defaults to `"merged"`: only a merged queue head releases its
 successor. A closed head (including a failed task reconciled to closed) leaves
 the queue active and records a human-readable `blockedReason`. If the head was
@@ -436,12 +501,59 @@ Epic** for an epic).
 The implementation result includes `executionMode`, `advanceOn`, `started`
 and `queued`. `get_plan.epicQueue` and `get_operation.targetState.epicQueue`
 expose `issues`, `cursor`, `head`, `status`, `advanceOn` and `blockedReason`
-(null when no queue exists). A parallel epic's queue also reports
-`executionMode: "parallel"` and has a null `head`. Sequential receipts remain `accepted` until the
+(null when no queue exists), plus `executionMode` (`sequential`, `parallel` or
+`graph`) and `maxParallel` (1 for sequential, null when unbounded). A parallel or
+graph queue has a null `head`. Each `issueStates` entry reports `schedule`
+(`waiting`, `ready`, `in_flight`, `done`, `skipped` or `blocked`), the issue's
+`dependsOn` (for sequential, the issue before it) and `waitingOn`, the
+prerequisites it still waits for. A graph result also reports `maxParallel`,
+and `started` lists every issue the queue started at once. Sequential receipts remain `accepted` until the
 queue is completed; dispatching the first issue or opening its PR does not
 complete the operation. Queue status is `active`, `completed` or `cancelled`.
 Both new arguments are optional, so omitting them preserves existing
 idempotency receipt hashes.
+
+**Blocked issues.** An issue of an execution that becomes blocked reports `blockedKind` and
+`blockedReason` in its `issueStates` entry. The kinds are `closed_unmerged`
+(closed without merge under the merged advance policy), `missing_from_plan`,
+`dispatch_failed`, `agent_blocked` (the run stopped on a blocker the agent
+reported), `awaiting_human_merge`, `label_handoff` (processing labels not
+released yet) and `setup_not_ready`. `epicQueue.executionId` names the
+execution; the actions below require it.
+
+Becoming blocked is recorded once as a durable event, in the same transaction
+as the state change, whichever process observed it. Repeated sweeps and
+repeated status notifications of the same blocked state (same kind and reason)
+record nothing more; a different blocker on the same issue resolves the old one
+as `replaced` and records a new event, and clearing a blocker records its
+resolution (`cleared`, `retried`, `skipped` or `settled`). `list_plan_blocked_events`
+lists an execution's events oldest first; poll it with the last `nextCursor` to
+read only new events instead of re-reading the whole plan. Each new blocker
+raises one Inbox notification of kind `plan`, linking to the plan, for the plan
+owner and the repository's recipients, deduplicated per blocked state; an
+`agent_blocked` blocker keeps only its existing task notification. Every event
+is also published as plan-domain realtime activity (`blocked`, or `progressed`
+for a resolution), so open views update without a refresh.
+
+`skip_plan_issue` marks a `pending` or `blocked` issue `skipped`, and the queue
+treats it as finished for scheduling: a sequential execution moves on to the
+next issue. In a graph execution its dependents stay `waiting` and report the
+skipped prerequisite in `waitingOnSkipped`; they start only after a skip with
+`satisfiesDependents: true` (skipping again with it releases them). Skipping
+never closes or edits the GitHub issue. `retry_plan_issue` clears a `blocked`
+issue's blocker and dispatches it again under the normal guards (a paused plan
+holds it; a graph starts it once ready within `maxParallel`): a
+`dispatch_failed` or `missing_from_plan` issue is dispatched (or re-checked)
+now, an `agent_blocked` issue goes back to pending first, a `closed_unmerged`
+issue is reopened first, and `awaiting_human_merge` and `label_handoff` keep
+their claim and are re-evaluated. `setup_not_ready` is refused with
+`NOT_RETRYABLE`. A retry works for issues started by `implement_plan`; the
+implementation receipt is not consulted. Both actions take `expectedState` to be
+refused with `STATE_CHANGED` after a change, are refused with `STALE_EXECUTION`
+for a newer or finished execution, `IN_FLIGHT` for an issue in flight and
+`ALREADY_DONE` for a done one, and are idempotent: repeating one returns
+`already_skipped` or `already_retried`. The REST API exposes the same three
+operations under `/api/planner/drafts/{id}/execution-queue`.
 
 Every mutation needs an 8–128 character `idempotencyKey`. Keep it unchanged
 across retries of the same action, and repeat the same arguments exactly.
@@ -637,7 +749,7 @@ Stable codes introduced by the observable operator surface are:
 | `GITHUB_*`: `GITHUB_AUTH_FAILED`, `GITHUB_FORBIDDEN`, `GITHUB_NOT_FOUND`, `GITHUB_RATE_LIMITED`, `GITHUB_REJECTED`, `GITHUB_UNAVAILABLE`, `GITHUB_RESPONSE_INVALID` | GitHub rejected, denied, could not find, throttled or could not serve the request, or returned a response the tool could not act on. |
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
-| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published. |
+| `PLAN_INVALID` | A plan is incomplete or malformed and cannot be published, or its item ids or `dependsOn` are invalid (duplicate id, unknown or self reference, cycle). |
 | `STALE_REVISION` | The supplied `expectedRevision` no longer matches the plan (a genuine optimistic-concurrency conflict). `details.currentRevision`, when present, is the revision a fresh read would return. |
 | `PLAN_NOT_DELETABLE` | `delete_plan` refused the plan because of its status, not its revision: it is generating, refining or executing published work. `details.status` is the blocking status. |
 | `PUBLISH_FAILED` | Publication failed before any issue was created; the plan claim was released. `details.currentRevision` is the revision to pass when retrying. |

@@ -136,6 +136,12 @@ describe('Inbox notification presentation', () => {
       .toBe('Merge completed');
   });
 
+  test('labels a blocked epic issue apart from a plan ready for review', () => {
+    const plan = { kind: 'plan', target: { type: 'plan', repository: 'i/p', draftId: 'd1' } };
+    expect(notificationKindLabel(item({ ...plan, severity: 'warning', metadata: { event: 'plan.issue_blocked' } }))).toBe('Epic issue blocked');
+    expect(notificationKindLabel(item({ ...plan, severity: 'success' }))).toBe('Plan ready');
+  });
+
   test('prefers stored entities and derives stable fallback destinations', () => {
     expect(notificationHref(item({ action: { type: 'navigate', label: 'Open', href: '/plans' } }))).toBe('/tasks/task-1');
     expect(notificationHref(item({}))).toBe('/tasks/task-1');

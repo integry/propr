@@ -7,6 +7,7 @@ import type { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summaryPathUtils.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
+import { createEpicQueueRouteEntries } from './epicQueueRouteRegistry.js';
 import {
   requireAgentTankUsageAccess, requireManageAgents, requireManageMembers,
   requireManageRuntime, requireManageSettings,
@@ -213,12 +214,12 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     voiceRoutes,
     taskSubmissionUpload,
     goalAttachmentUpload,
-    attachmentUpload,
-    automationDefinitionAttachmentUpload,
+    attachmentUpload, automationDefinitionAttachmentUpload,
   } = deps;
   return [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
     ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit],
+    ['get', '/api/task-submission-extensions', taskSubmissionRoutes.extensions],
     ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get],
     ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
     ['get', '/api/goals/capabilities', goalRoutes.capabilities],
@@ -329,8 +330,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
     ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue],
     ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue],
-    ['get', '/api/planner/drafts/:id/execution-queue', plannerRoutes.getExecutionQueue],
-    ['post', '/api/planner/drafts/:id/execution-queue', plannerRoutes.queueRemaining],
+    ...createEpicQueueRouteEntries(deps),
     ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
     ['post', '/api/planner/preview', plannerRoutes.previewContext],
     ['post', '/api/planner/preview/context', plannerRoutes.downloadContext],

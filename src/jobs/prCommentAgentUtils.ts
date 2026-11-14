@@ -5,7 +5,7 @@ import type { ResolvedRepositoryWorkflow } from '@propr/core';
 import type { Logger } from 'pino';
 import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
-import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
+import type { AgentExtensionRequest, AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { createSessionIdCallbackForPR, createContainerIdCallbackForPR } from './prCommentJobHelpers.js';
@@ -297,6 +297,8 @@ export interface AgentExecutionParams {
     applyRepositoryWorkflow?: boolean;
     /** Extra durable sink for the started container's identity, beyond task state. */
     onContainerInfo?: (containerId: string, containerName: string) => Promise<void>;
+    /** Library items for an implementation follow-up, resolved at launch. */
+    extensions?: AgentExtensionRequest;
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
@@ -341,6 +343,7 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
             taskId,
             prNumber: pullRequestNumber,
             reasoningLevel,
+            ...(params.extensions ? { extensions: params.extensions } : {}),
         });
     };
     const agentResult = await (params.applyRepositoryWorkflow ? runRepositoryWorkflow({

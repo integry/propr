@@ -326,6 +326,15 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Plan issue fields recording the plan item and its prerequisite issues.
+    'plan_item_id', 'depends_on_issues',
+    // Statuses of the blocked-by links publish_plan records in dependencyLinks.
+    'existing',
+    // Epic execution modes and the per-issue schedule states reported in epicQueue.
+    'sequential', 'parallel', 'graph', 'schedule', 'waiting', 'ready', 'in_flight', 'done', 'blocked',
+    // Blocked reason kinds, event resolutions and action outcomes of the blocked-issue tools.
+    'closed_unmerged', 'missing_from_plan', 'dispatch_failed', 'agent_blocked', 'awaiting_human_merge', 'label_handoff',
+    'setup_not_ready', 'replaced', 'cleared', 'retried', 'settled', 'progressed', 'already_skipped', 'already_retried',
     // Grouping dimensions and figures of get_cost_breakdown rows.
     'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
     // Connect registration state on health and status surfaces.

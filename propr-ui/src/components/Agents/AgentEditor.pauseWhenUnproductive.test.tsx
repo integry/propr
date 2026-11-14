@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AgentEditor } from './AgentEditor';
 import {
@@ -60,7 +60,7 @@ describe('AgentEditor pause when unproductive', () => {
     vi.mocked(getAutomationDefinition).mockResolvedValue({ ...definition, pauseWhenUnproductive: true });
     render(<AgentEditor definitionId="agent-1" onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     expect(await screen.findByTestId('agent-pause-when-unproductive')).toBeChecked();
-    fireEvent.click(screen.getByRole('radio', { name: 'Off' }));
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Schedule' })).getByRole('radio', { name: 'Off' }));
     expect(screen.queryByTestId('agent-pause-when-unproductive')).not.toBeInTheDocument();
   });
 });

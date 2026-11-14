@@ -2,9 +2,11 @@ import type {
   AutomationAutonomyMode,
   AutomationCapability,
   AutomationDefinitionInput,
+  AutomationEventTrigger,
   AutomationReportNovelty,
   AutomationRunNoChangeReason,
   AutomationRunState,
+  AutomationTriggerEvent,
   AutomationRunTrigger,
   AUTOMATION_DEFINITION_CONTRACT,
   AttributedUser,
@@ -27,7 +29,8 @@ export interface AutomationDefinitionAttachment {
 }
 
 export interface AutomationDefinitionRecord {
-  extensionProfile?: import('@propr/shared').ExtensionSelection | null;
+  /** Extension library items this automation adds on top of those that apply automatically. */
+  extensions?: import('@propr/shared').AutomationExtensions;
   id: string;
   ownerId: string;
   name: string;
@@ -45,6 +48,8 @@ export interface AutomationDefinitionRecord {
   scheduleEnabled: boolean;
   nextRunAt: number | null;
   autonomyMode: AutomationAutonomyMode;
+  /** Event subscriptions; empty means the automation reacts to no event. */
+  eventTriggers?: AutomationEventTrigger[];
   /** Turn the schedule off when the unproductive-run notification fires. */
   pauseWhenUnproductive?: boolean;
   enabled: boolean;
@@ -62,6 +67,8 @@ export interface AutomationRunRecord {
   ownerId: string;
   trigger: AutomationRunTrigger;
   triggerSource: string | null;
+  /** For an `event` run: the event that started it. */
+  triggerEvent?: AutomationTriggerEvent | null;
   idempotencyKey: string | null;
   state: AutomationRunState;
   autonomyMode: AutomationAutonomyMode;
@@ -143,9 +150,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Changing an automation's extensions is preflight-protected, so any body carrying them sends the header. */
+const changesExtensions = (body: unknown) => (body as { extensions?: unknown } | null)?.extensions !== undefined;
+
 const json = (method: string, body?: unknown): RequestInit => ({
   method,
-  ...(body === undefined ? {} : { body: JSON.stringify(body), ...((body as { extensionProfile?: unknown })?.extensionProfile ? { headers: { 'X-ProPR-Extensions': '1' } } : {}) }),
+  ...(body === undefined ? {} : { body: JSON.stringify(body), ...(changesExtensions(body) ? { headers: { 'X-ProPR-Extensions': '1' } } : {}) }),
 });
 
 const query = (page: Page = {}): string => {

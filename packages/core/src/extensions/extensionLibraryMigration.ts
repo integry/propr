@@ -1,0 +1,324 @@
+import type { Knex } from 'knex';
+import {
+  EXTENSION_LIBRARY_LIMITS, EXTENSION_LIBRARY_VERSION, extensionLibraryServerSchema, extensionLibrarySkillSchema,
+  type ExtensionLibraryRevision, type ExtensionLibraryServer, type ExtensionLibrarySkill, type ExtensionMcpDescriptor,
+  type ExtensionSecretStatus, type ExtensionSkillBundle, type LegacyExtensionProfileRevision,
+  AUTOMATION_RUN_STATES, isTerminalAutomationRunState,
+} from '@propr/shared';
+import defaultLogger from '../utils/logger.js';
+import { sealExtensionSecrets, unsealExtensionSecrets } from './privateSecrets.js';
+import { libraryIdentity, unsealLibrarySecrets } from './extensionProfileStore.js';
+
+/**
+ * Startup migration of extension profiles into the extension library.
+ * Application-level (secrets are re-sealed with the private trust root),
+ * idempotent behind a completion marker, and never aborts startup.
+ *
+ * - every server and skill of every remaining profile becomes a library item
+ *   with the profile's scopes as its limits and `autoApply: false`, so no
+ *   run's behaviour changes;
+ * - identical servers (kind, url or catalog id and digest, tools, capability,
+ *   authentication, credential and enabled state) merge, with the union of
+ *   their limits (an empty source limit keeps the merged limit empty);
+ *   different servers that share a name get a deterministic `-2`, `-3`...
+ *   suffix. A profile's identical servers under different names merge too,
+ *   and its selection names the merged item once. A server disabled in one
+ *   source and enabled in another stays two items, so a disabled selection
+ *   never maps to an enabled item;
+ * - a skill bundle (one library item per bundle) selected only through
+ *   disabled profiles stays disabled; one with an enabled source takes its
+ *   limits only from its enabled sources, and a disabled profile's selection
+ *   of it is left out of that profile's mapping;
+ * - automations that selected a profile add its (possibly renamed) items, and
+ *   so do the definition snapshots of their nonterminal runs;
+ * - each profile id maps to its item names for queued New Task submissions,
+ *   recorded with the profile revision migrated. A selection (submission,
+ *   automation or run snapshot) of a superseded revision never takes the
+ *   current revision's items: it adds none and logs a warning, or, for a
+ *   queued submission, its task is refused as it was at launch before;
+ * - Bearer tokens are re-bound to the library revision; an undecryptable
+ *   credential leaves the item without one and logs a warning.
+ * Profile tables are left untouched. A migration that would not fit the
+ * library (more items than it holds, or merged limits longer than an item
+ * holds) is never committed lossily: it stays incomplete, logs which items do
+ * not fit, and retries at the next start.
+ */
+export const EXTENSION_LIBRARY_MIGRATION_ACTOR = 'system:extension-profile-migration';
+type Log = Pick<typeof defaultLogger, 'info' | 'warn'>;
+export interface ExtensionLibraryMigrationReport {
+  migrated: boolean; profiles: number; servers: number; skills: number; automations: number;
+  renamed: { profileId: string; from: string; to: string }[]; warnings: string[];
+}
+interface Candidate { server: ExtensionMcpDescriptor; token?: string; status?: ExtensionSecretStatus; enabled: boolean; repositories: string[] | null; agents: string[] | null }
+
+const union = (a: string[] | null, b: string[]) => (a === null || !b.length ? null : [...new Set([...a, ...b])]);
+/** The migrated profiles do not fit the library; committing would drop selections, so the migration stays incomplete. */
+export class ExtensionLibraryMigrationCapacityError extends Error {
+  constructor(readonly overflow: string[]) {
+    super(`Extension library migration cannot complete without dropping configured extensions: ${overflow.join('; ')}. `
+      + 'Remove library items you no longer need in Settings, or retire unused extension profiles (set extension_profiles.deleted), then restart; until then automations that selected a profile are not launched');
+    this.name = 'ExtensionLibraryMigrationCapacityError';
+  }
+}
+/** Merged limits longer than an item holds; truncating them would drop repositories or agents an automation relies on. */
+function limitOverflow(label: string, limits: { repositories: string[] | null; agents: string[] | null }): string[] {
+  return (['repositories', 'agents'] as const).filter(field => (limits[field]?.length ?? 0) > EXTENSION_LIBRARY_LIMITS[field])
+    .map(field => `${label} would need ${limits[field]!.length} ${field === 'repositories' ? 'repository' : 'agent'} limits (an item holds at most ${EXTENSION_LIBRARY_LIMITS[field]})`);
+}
+// Enabled state is part of the identity: merging an inactive source into an active item would activate it for that source.
+const identity = (server: ExtensionMcpDescriptor, token: string | undefined, enabled: boolean) => JSON.stringify(server.kind === 'https'
+  ? ['https', server.url, [...server.tools].sort(), server.capability, server.authentication, token ?? null, enabled]
+  : ['catalog', server.catalogId, server.digest, [...server.tools].sort(), server.capability, enabled]);
+const NONTERMINAL_RUN_STATES = AUTOMATION_RUN_STATES.filter(state => !isTerminalAutomationRunState(state));
+function suffixed(name: string, taken: Set<string>): string {
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`; const candidate = name.slice(0, 48 - suffix.length) + suffix;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+async function tablesReady(database: Knex): Promise<boolean> {
+  for (const table of ['extension_instance_identity', 'extension_library', 'extension_library_revisions', 'extension_legacy_profile_items', 'extension_library_migration']) {
+    if (!await database.schema.hasTable(table)) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether the profile migration no longer gates launches: it completed (its
+ * marker commits with the migrated data), or there is nothing to migrate
+ * because extension profiles were never set up on this instance.
+ */
+export async function extensionLibraryMigrationSettled(database: Knex): Promise<boolean> {
+  if (!await database.schema.hasTable('extension_library_migration')) return true;
+  if (await database('extension_library_migration').where({ id: 1 }).first('id')) return true;
+  return !await database('extension_instance_identity').where({ id: 1 }).first('instance_id');
+}
+
+/** A definition or run snapshot as stored; snapshots captured before the upgrade carry `extensionProfile`. */
+type LegacyAutomationView = { id: string; extensions?: unknown; extensionProfile?: unknown };
+/**
+ * Whether an automation still has a profile selection the migration has not
+ * translated. Its `extensions` would read as empty, so launching it would
+ * silently drop the extensions it selected.
+ */
+export async function legacyAutomationExtensionsPending(definition: LegacyAutomationView, database: Knex, options: { snapshotOnly?: boolean } = {}): Promise<boolean> {
+  const snapshotSelection = Boolean(definition.extensionProfile) && definition.extensions === undefined;
+  if (!snapshotSelection && (options.snapshotOnly || !await legacyDefinitionRow(definition.id, database))) return false;
+  return !await extensionLibraryMigrationSettled(database);
+}
+/** The stored definition names a profile and has no translated `extensions` yet. */
+async function legacyDefinitionRow(id: string, database: Knex): Promise<boolean> {
+  return (await storedLegacyDefinitionExtensions(id, database))?.extensions === null;
+}
+/**
+ * The persisted `extensions` column of a definition saved with a profile
+ * selection (null while untranslated); undefined when the stored row has no
+ * profile selection, so a definition read from it never needs translation.
+ */
+export async function storedLegacyDefinitionExtensions(id: string, database: Knex): Promise<{ extensions: string | null } | undefined> {
+  if (!await database.schema.hasTable('agent_definitions') || !await database.schema.hasColumn('agent_definitions', 'extension_profile') || !await database.schema.hasColumn('agent_definitions', 'extensions')) return undefined;
+  const row = await database('agent_definitions').where({ id }).first('extension_profile', 'extensions');
+  if (!row?.extension_profile) return undefined;
+  try { if (!JSON.parse(row.extension_profile)?.profileId) return undefined; } catch { return undefined; }
+  return { extensions: row.extensions ?? null };
+}
+/** The migrated items of a legacy selection: only when it selected the revision migrated. */
+function selectedRevisionItems(selection: unknown, mapped: { revision: number | null; items: { servers: string[]; skills: string[] } } | undefined) {
+  const revision = (selection as { revision?: unknown } | null)?.revision;
+  return mapped && mapped.revision !== null && mapped.revision === revision ? mapped.items : undefined;
+}
+/**
+ * The translated selection of a run snapshot captured before the upgrade,
+ * once the migration has settled: the same legacy mapping the migration wrote
+ * into the stored snapshot (an unavailable profile or superseded revision adds nothing).
+ */
+export async function legacySnapshotExtensions(selection: unknown, database: Knex): Promise<{ servers: string[]; skills: string[] }> {
+  const profileId = (selection as { profileId?: unknown } | null)?.profileId;
+  if (typeof profileId !== 'string' || !await database.schema.hasTable('extension_legacy_profile_items')) return { servers: [], skills: [] };
+  const row = await database('extension_legacy_profile_items').where({ profile_id: profileId }).first('revision', 'servers', 'skills');
+  const mapped = row ? { revision: row.revision ?? null, items: { servers: JSON.parse(row.servers), skills: JSON.parse(row.skills) } } : undefined;
+  return selectedRevisionItems(selection, mapped) ?? { servers: [], skills: [] };
+}
+/** Retry the startup migration now when it has not completed; true once it has settled. */
+export async function ensureExtensionLibraryMigrated(database: Knex, environment: NodeJS.ProcessEnv = process.env, log: Log = defaultLogger): Promise<boolean> {
+  if (await extensionLibraryMigrationSettled(database)) return true;
+  await migrateExtensionProfilesToLibrary(database, environment, log);
+  return extensionLibraryMigrationSettled(database);
+}
+
+export async function migrateExtensionProfilesToLibrary(database: Knex, environment: NodeJS.ProcessEnv = process.env, log: Log = defaultLogger): Promise<ExtensionLibraryMigrationReport> {
+  const report: ExtensionLibraryMigrationReport = { migrated: false, profiles: 0, servers: 0, skills: 0, automations: 0, renamed: [], warnings: [] };
+  if (!await tablesReady(database) || await database('extension_library_migration').where({ id: 1 }).first()) return report;
+  const instance = await database('extension_instance_identity').where({ id: 1 }).first('instance_id');
+  if (!instance) return report;
+  const instanceId = instance.instance_id as string;
+  try {
+    // eslint-disable-next-line complexity -- merging, renaming, custody re-binding and automation mapping share one transaction
+    await database.transaction(async trx => {
+      // Claim the marker first: a concurrent process's insert conflicts and backs off.
+      await trx('extension_library_migration').insert({ id: 1, completed_at: Date.now(), report: '{}' });
+      const profiles: LegacyExtensionProfileRevision[] = []; const secretsByProfile = new Map<string, Record<string, string> | null>();
+      if (await trx.schema.hasTable('extension_profiles')) {
+        const rows = await trx('extension_profiles as p').join('extension_profile_revisions as r', function () { this.on('p.id', 'r.profile_id').andOn('p.revision', 'r.revision'); })
+          .where({ 'p.instance_id': instanceId, 'p.deleted': false }).orderBy('p.id').select('r.snapshot', 'r.secrets_encrypted', 'p.enabled');
+        for (const row of rows) {
+          const snapshot = JSON.parse(row.snapshot) as LegacyExtensionProfileRevision;
+          if (snapshot.instanceId !== instanceId) continue;
+          snapshot.enabled = snapshot.enabled && Boolean(row.enabled);
+          profiles.push(snapshot);
+          try { secretsByProfile.set(snapshot.profileId, row.secrets_encrypted === '' ? {} : unsealExtensionSecrets(row.secrets_encrypted, `${snapshot.instanceId}/${snapshot.profileId}/${snapshot.revision}`, environment)); }
+          catch {
+            secretsByProfile.set(snapshot.profileId, null);
+            report.warnings.push(`Credentials of extension profile ${snapshot.profileId} could not be decrypted; its Bearer servers were migrated without a configured secret`);
+          }
+        }
+      }
+      report.profiles = profiles.length;
+      // Start from the current library, if any, so names never collide with existing items.
+      const pointer = await trx('extension_library').where({ instance_id: instanceId }).first('revision');
+      const headRow = pointer ? await trx('extension_library_revisions').where({ instance_id: instanceId, revision: pointer.revision }).first() : undefined;
+      const head = headRow ? JSON.parse(headRow.snapshot) as ExtensionLibraryRevision : undefined;
+      const headSecrets = headRow ? unsealLibrarySecrets(headRow.secrets_encrypted, instanceId, head!.revision, environment) : {};
+      const taken = new Set((head?.servers ?? []).map(s => s.name));
+      const candidates = new Map<string, Candidate>(); const byIdentity = new Map<string, string>();
+      const skills = new Map<string, { enabled: boolean; repositories: string[] | null; agents: string[] | null }>();
+      const mapping = new Map<string, { servers: string[]; skills: string[] }>(); const migratedRevisions = new Map<string, number>();
+      // Skills a disabled profile selected: kept in its mapping only if the merged item stays disabled.
+      const inactiveSkills = new Map<string, Set<string>>();
+      for (const profile of profiles) {
+        const secrets = secretsByProfile.get(profile.profileId);
+        const items = { servers: [] as string[], skills: [] as string[] };
+        for (const server of [...profile.mcpServers].sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
+          const token = server.kind === 'https' && server.authentication === 'bearer' ? secrets?.[server.name] : undefined;
+          const enabled = profile.enabled && server.enabled;
+          const key = identity(server, token, enabled);
+          let name = byIdentity.get(key);
+          if (name) {
+            const merged = candidates.get(name)!;
+            merged.enabled ||= enabled; merged.repositories = union(merged.repositories, profile.repositoryScope); merged.agents = union(merged.agents, profile.agentScope);
+          } else {
+            name = taken.has(server.name) ? suffixed(server.name, taken) : server.name;
+            if (name !== server.name) {
+              report.renamed.push({ profileId: profile.profileId, from: server.name, to: name });
+              log.info({ profileId: profile.profileId, from: server.name, to: name }, 'Extension server renamed during library migration');
+            }
+            taken.add(name); byIdentity.set(key, name);
+            candidates.set(name, { server: { ...server, name }, token, status: profile.secrets?.[server.name], enabled, repositories: profile.repositoryScope.length ? [...profile.repositoryScope] : null, agents: profile.agentScope.length ? [...profile.agentScope] : null });
+          }
+          // Differently named identical servers of one profile merge into one item, which its selection names once.
+          if (!items.servers.includes(name)) items.servers.push(name);
+        }
+        for (const bundleId of profile.skillBundleIds) {
+          const current = skills.get(bundleId); const enabled = profile.enabled;
+          const own = { enabled, repositories: profile.repositoryScope.length ? [...profile.repositoryScope] : null, agents: profile.agentScope.length ? [...profile.agentScope] : null };
+          // An enabled bundle's limits come only from its enabled sources: a
+          // disabled profile never widens what an enabled one authorized.
+          if (!current || (enabled && !current.enabled)) skills.set(bundleId, own);
+          else if (enabled === current.enabled) { current.repositories = union(current.repositories, profile.repositoryScope); current.agents = union(current.agents, profile.agentScope); }
+          items.skills.push(bundleId);
+          if (!enabled) inactiveSkills.set(profile.profileId, (inactiveSkills.get(profile.profileId) ?? new Set()).add(bundleId));
+        }
+        mapping.set(profile.profileId, items); migratedRevisions.set(profile.profileId, profile.revision);
+      }
+      const servers: ExtensionLibraryServer[] = [...(head?.servers ?? [])];
+      const secrets: Record<string, string> = { ...headSecrets };
+      const statuses: Record<string, ExtensionSecretStatus> = { ...(head?.secrets ?? {}) };
+      // Items that do not fit: collected, then the whole migration is refused rather than committed without them.
+      const overflow: string[] = []; const serverOverflow: string[] = [];
+      for (const [name, candidate] of candidates) {
+        const tooLong = limitOverflow(`Extension server ${name}`, candidate);
+        if (tooLong.length) { overflow.push(...tooLong); continue; }
+        if (servers.length >= EXTENSION_LIBRARY_LIMITS.servers) { serverOverflow.push(name); continue; }
+        const parsed = extensionLibraryServerSchema.safeParse({ ...candidate.server, enabled: candidate.enabled, repositories: candidate.repositories ?? [], agents: candidate.agents ?? [], autoApply: false });
+        if (!parsed.success) { report.warnings.push(`Extension server ${name} was not migrated: invalid stored descriptor`); continue; }
+        servers.push(parsed.data);
+        if (parsed.data.kind === 'https' && parsed.data.authentication === 'bearer') {
+          if (candidate.token) secrets[name] = candidate.token;
+          statuses[name] = { fields: ['bearerToken'], configured: Boolean(candidate.token) };
+        } else if (parsed.data.kind === 'catalog') {
+          const status = candidate.status as { count?: number; fields?: string[]; configured: boolean } | undefined;
+          statuses[name] = { count: status?.count ?? status?.fields?.length ?? 0, configured: status?.configured ?? false };
+        }
+      }
+      const bundleRows = skills.size ? await trx('extension_skill_bundles').where({ instance_id: instanceId }).whereIn('id', [...skills.keys()]) : [];
+      const descriptors = new Map(bundleRows.map(row => [row.id as string, JSON.parse(row.descriptor) as ExtensionSkillBundle]));
+      const librarySkills: ExtensionLibrarySkill[] = [...(head?.skills ?? [])];
+      const skillBundles: ExtensionSkillBundle[] = [...(head?.skillBundles ?? [])];
+      const skillOverflow: string[] = [];
+      for (const [bundleId, skill] of skills) {
+        if (librarySkills.some(s => s.bundleId === bundleId)) continue;
+        if (!descriptors.has(bundleId)) { report.warnings.push(`Skill bundle ${bundleId} was not migrated: bundle unavailable`); continue; }
+        const tooLong = limitOverflow(`Skill bundle ${bundleId}`, skill);
+        if (tooLong.length) { overflow.push(...tooLong); continue; }
+        if (librarySkills.length >= EXTENSION_LIBRARY_LIMITS.bundles) { skillOverflow.push(bundleId); continue; }
+        librarySkills.push(extensionLibrarySkillSchema.parse({ bundleId, enabled: skill.enabled, repositories: skill.repositories ?? [], agents: skill.agents ?? [], autoApply: false }));
+        skillBundles.push(descriptors.get(bundleId)!);
+      }
+      if (serverOverflow.length) overflow.push(`${servers.length + serverOverflow.length} servers are needed but the library holds at most ${EXTENSION_LIBRARY_LIMITS.servers} (${head?.servers.length ?? 0} already in it); not placed: ${serverOverflow.join(', ')}`);
+      if (skillOverflow.length) overflow.push(`${librarySkills.length + skillOverflow.length} skill bundles are needed but the library holds at most ${EXTENSION_LIBRARY_LIMITS.bundles} (${head?.skills.length ?? 0} already in it); not placed: ${skillOverflow.join(', ')}`);
+      if (overflow.length) throw new ExtensionLibraryMigrationCapacityError(overflow);
+      const keptServers = new Set(servers.map(s => s.name)); const keptSkills = new Set(librarySkills.map(s => s.bundleId));
+      const activeSkills = new Set(librarySkills.filter(s => s.enabled).map(s => s.bundleId));
+      report.servers = servers.length - (head?.servers.length ?? 0); report.skills = librarySkills.length - (head?.skills.length ?? 0);
+      if (report.servers || report.skills) {
+        const revision = (head?.revision ?? 0) + 1; const now = Date.now();
+        const snapshot: ExtensionLibraryRevision = {
+          version: EXTENSION_LIBRARY_VERSION, instanceId, revision, createdAt: head?.createdAt ?? now, updatedAt: now, auditActor: EXTENSION_LIBRARY_MIGRATION_ACTOR,
+          servers, skills: librarySkills, secrets: statuses, skillBundles,
+        };
+        const sealed = Object.fromEntries(Object.entries(secrets).filter(([name, token]) => token && keptServers.has(name)));
+        if (head) {
+          if (!await trx('extension_library').where({ instance_id: instanceId, revision: head.revision }).update({ revision })) throw new Error('Extension library changed during migration');
+        } else await trx('extension_library').insert({ instance_id: instanceId, revision });
+        await trx('extension_library_revisions').insert({ instance_id: instanceId, revision, snapshot: JSON.stringify(snapshot), secrets_encrypted: sealExtensionSecrets(sealed, libraryIdentity(instanceId, revision), environment) });
+      }
+      for (const [profileId, items] of mapping) {
+        const inactive = inactiveSkills.get(profileId);
+        const kept = { servers: items.servers.filter(n => keptServers.has(n)), skills: items.skills.filter(id => keptSkills.has(id) && !(inactive?.has(id) && activeSkills.has(id))) };
+        mapping.set(profileId, kept);
+        await trx('extension_legacy_profile_items').insert({ profile_id: profileId, revision: migratedRevisions.get(profileId), servers: JSON.stringify(kept.servers), skills: JSON.stringify(kept.skills) }).onConflict('profile_id').ignore();
+      }
+      // A selection maps to the migrated items only if it selected the migrated revision.
+      const translate = (selection: unknown, subject: string) => {
+        const profileId = (selection as { profileId?: unknown } | null)?.profileId;
+        const items = typeof profileId === 'string' ? mapping.get(profileId) : undefined;
+        const selected = items ? selectedRevisionItems(selection, { revision: migratedRevisions.get(profileId as string) ?? null, items }) : undefined;
+        if (!items) report.warnings.push(`${subject} selected an unavailable extension profile; it now adds no extensions`);
+        else if (!selected) report.warnings.push(`${subject} selected a superseded revision of extension profile ${profileId as string}; it now adds no extensions rather than the current revision's`);
+        return selected ?? { servers: [], skills: [] };
+      };
+      if (await trx.schema.hasTable('agent_definitions') && await trx.schema.hasColumn('agent_definitions', 'extension_profile') && await trx.schema.hasColumn('agent_definitions', 'extensions')) {
+        const automations = await trx('agent_definitions').whereNotNull('extension_profile').whereNull('extensions').select('id', 'extension_profile');
+        for (const automation of automations) {
+          let selection: unknown; try { selection = JSON.parse(automation.extension_profile); } catch { /* unreadable selection */ }
+          await trx('agent_definitions').where({ id: automation.id }).update({ extensions: JSON.stringify(translate(selection, `Automation ${automation.id}`)) });
+          report.automations += 1;
+        }
+      }
+      // Runs already created capture their definition: translate the selection of those that can still launch.
+      if (await trx.schema.hasTable('agent_runs') && await trx.schema.hasColumn('agent_runs', 'definition_snapshot')) {
+        const runs = await trx('agent_runs').whereIn('state', NONTERMINAL_RUN_STATES).whereNotNull('definition_snapshot').select('id', 'definition_snapshot');
+        for (const run of runs) {
+          let snapshot: Record<string, unknown>; try { snapshot = JSON.parse(run.definition_snapshot); } catch { continue; }
+          if (!snapshot || typeof snapshot !== 'object' || !snapshot.extensionProfile || snapshot.extensions) continue;
+          await trx('agent_runs').where({ id: run.id }).update({ definition_snapshot: JSON.stringify({ ...snapshot, extensions: translate(snapshot.extensionProfile, `Automation run ${run.id}`) }) });
+        }
+      }
+      report.migrated = true;
+      await trx('extension_library_migration').where({ id: 1 }).update({ completed_at: Date.now(), report: JSON.stringify(report) });
+    });
+  } catch (error) {
+    // Another process completed it, or the migration failed: either way startup continues and old tables stay readable.
+    if (await database('extension_library_migration').where({ id: 1 }).first().catch(() => undefined)) return { ...report, migrated: false, warnings: [] };
+    if (error instanceof ExtensionLibraryMigrationCapacityError) {
+      log.warn({ overflow: error.overflow }, error.message);
+      return { ...report, migrated: false, warnings: [error.message] };
+    }
+    log.warn({ err: error instanceof Error ? error.message : 'unknown' }, 'Extension library migration did not complete; profile tables are unchanged and it will retry at the next start');
+    return { ...report, migrated: false };
+  }
+  for (const warning of report.warnings) log.warn(warning);
+  if (report.profiles || report.automations) log.info({ profiles: report.profiles, servers: report.servers, skills: report.skills, automations: report.automations, renamed: report.renamed.length }, 'Extension profiles migrated to the extension library');
+  return report;
+}

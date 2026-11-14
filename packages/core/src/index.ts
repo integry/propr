@@ -48,6 +48,8 @@ export * from './config/configManager.js';
 // Note: loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel
 // are re-exported via configManager.ts (which re-exports from configManagerUltrafix.ts).
 // Do NOT add explicit re-exports here — they would conflict with the wildcard export above.
+export { recordPlanIssueDependencies } from './config/planIssueDependencies.js';
+export * from './services/planDependencyLinks.js';
 export {
     createPlanIssue,
     getPlanIssuesByDraft,
@@ -509,6 +511,7 @@ export type {
     Agent,
     AgentConfig,
     AgentTaskOptions,
+    AgentExtensionRequest,
     AgentToolPolicy,
     AgentToolPolicyMcpServer,
     AgentExecutionResult,
@@ -664,8 +667,11 @@ export {
 } from './utils/tokenOutlierAlert.js';
 export type { TokenUsageSample, TokenBaselineKey, TokenOutlierEvaluation, TokenOutlierAlert, TokenOutlierDependencies, TokenOutlierResult, TokenOutlierPause, TokenOutlierNotificationOutcome } from './utils/tokenOutlierAlert.js';
 export * from './services/agents/agentRunDeferredRetry.js';
+export * from './services/agents/agentEventTriggerStore.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/taskPlanning/epicQueueBlockedHead.js';
+export * from './services/taskPlanning/epicQueueActions.js';
+export { deliverEpicQueueBlockedEvents, blockedNotificationKey } from './services/taskPlanning/epicQueueBlockedNotify.js';
 export * from './services/reviewScoreStore.js';
 // Durable repository change-event journal (pull requests, epic queues, plan issues).
 export * from './services/repositoryEventJournal.js';
@@ -690,6 +696,8 @@ export { generateManagedDependencies } from './storage/managedDependencies.js';
 export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storage/lifecycle.js';
 
 export * from './extensions/extensionProfileStore.js';
+export { extensionResolutionEvent, type ExtensionResolutionEvent } from './extensions/extensionRunResolution.js';
+export { migrateExtensionProfilesToLibrary, ensureExtensionLibraryMigrated, extensionLibraryMigrationSettled, legacyAutomationExtensionsPending, type ExtensionLibraryMigrationReport } from './extensions/extensionLibraryMigration.js';
 
 export { runningContainerMountSources, probeWorktreeReclamationDocker } from './git/worktreeMounts.js';
 export { resolveRepositoryWorktreeRoot } from './git/repositoryPaths.js';

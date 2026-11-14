@@ -10,7 +10,7 @@ Use **New Task** for one bounded change, **New Plan** when you want to review a 
 ## Start a task
 
 1. Open **New Task** (`/tasks/new`) and select an enabled repository.
-2. Enter the **Prompt** with the intended result and acceptance criteria. Attach relevant files if needed (up to 10), and choose an agent and model under **Advanced Options** when overriding the default. **Plan first** opens the same request in Planner Studio instead.
+2. Enter the **Prompt** with the intended result and acceptance criteria. Attach relevant files if needed (up to 10), and choose an agent and model under **Advanced Options** when overriding the default. **Advanced Options** also lists the [extension library](./agent-extensions.md#new-task) items that will apply to the run, with **Run without extensions** and, when a write server applies, the write opt-in for this task's first run. **Plan first** opens the same request in Planner Studio instead.
 3. Choose **Run task**. ProPR creates a GitHub issue and submits the ordinary implementation task. Follow the linked task for progress and its resulting PR.
 
 ![New task form with a repository, invoice formatting instruction and Run task action](/img/screenshots/0.9.0/new-task.png)
