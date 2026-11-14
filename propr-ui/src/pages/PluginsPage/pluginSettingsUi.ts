@@ -10,19 +10,22 @@ export interface RepositoryMapRow { repository: string; text: string }
  * value at all. A saved empty collection (`set` with no rows) is a value; a removed setting (`set: false`) is not.
  */
 export interface CollectionDraft<Row> { set: boolean; rows: Row[] }
-/** What a field holds while it is edited: text for text and number fields, a tick for a checkbox, entries for a list or repository map. */
-export type SettingDraft = string | boolean | CollectionDraft<string> | CollectionDraft<RepositoryMapRow>;
+/**
+ * What a field holds while it is edited: text for text and number fields, `''`, `'true'` or `'false'` for a true/false
+ * setting (so an unset setting is told apart from an explicit `false`), entries for a list or repository map.
+ */
+export type SettingDraft = string | CollectionDraft<string> | CollectionDraft<RepositoryMapRow>;
 export type SettingDrafts = Record<string, SettingDraft>;
 
 const filledRows = (rows: RepositoryMapRow[]) => rows.map(row => ({ repository: row.repository.trim(), text: row.text })).filter(row => row.repository || row.text);
 const hasValue = (values: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(values, key);
 
-/** The field state of one saved value; an unset setting starts empty (or unticked). List entries are kept exactly. */
+/** The field state of one saved value; an unset setting starts empty (Not set). List entries are kept exactly. */
 export function draftOf(setting: PluginSetting, value: PluginSettingValue | undefined): SettingDraft {
   switch (setting.type) {
     case 'string': return typeof value === 'string' ? value : '';
     case 'number': return typeof value === 'number' ? String(value) : '';
-    case 'boolean': return value === true;
+    case 'boolean': return typeof value === 'boolean' ? String(value) : '';
     case 'array': return Array.isArray(value) ? { set: true, rows: value.map(String) } : { set: false, rows: [] };
     case 'object': return value && typeof value === 'object' && !Array.isArray(value)
       ? { set: true, rows: Object.entries(value).map(([repository, text]) => ({ repository, text: String(text) })) }
@@ -31,7 +34,8 @@ export function draftOf(setting: PluginSetting, value: PluginSettingValue | unde
 }
 
 /**
- * The value a field saves: `null` removes the setting (an empty text or number, or a cleared list or map). A list saves
+ * The value a field saves: `null` removes the setting (an empty text or number, a true/false setting chosen as Not set,
+ * or a cleared list or map). A list saves
  * its entries as typed, and an empty list or map that is still set saves as empty. A number that does not parse stays a
  * string so validation names the problem instead of dropping it.
  */
@@ -39,7 +43,7 @@ export function valueOf(setting: PluginSetting, draft: SettingDraft): unknown {
   switch (setting.type) {
     case 'string': return draft === '' ? null : draft;
     case 'number': { const text = String(draft).trim(); return text === '' ? null : (Number.isFinite(Number(text)) ? Number(text) : text); }
-    case 'boolean': return draft === true;
+    case 'boolean': return draft === '' ? null : draft === 'true';
     case 'array': { const list = draft as CollectionDraft<string>; return list.set || list.rows.length ? [...list.rows] : null; }
     case 'object': {
       const map = draft as CollectionDraft<RepositoryMapRow>;

@@ -242,7 +242,7 @@ test('installs, connects, configures, enables, shows the managed items, disables
   await expect(settings.getByLabel('Greeting')).toHaveValue('hello');
   await expect(settings.getByLabel('Verbosity')).toHaveValue('normal');
   await expect(settings.getByLabel('Maximum items')).toHaveValue('10');
-  await expect(settings.getByRole('checkbox', { name: 'Include draft pull requests' })).not.toBeChecked();
+  await expect(settings.getByLabel('Include draft pull requests')).toHaveValue('false');
 
   // A required setting left empty blocks Enable, with the reason.
   await settings.getByLabel('Verbosity').selectOption('');
@@ -263,7 +263,7 @@ test('installs, connects, configures, enables, shows the managed items, disables
 
   await settingsForm().getByLabel('Maximum items').fill('20');
   await settingsForm().getByLabel('Verbosity').selectOption('detailed');
-  await settingsForm().getByRole('checkbox', { name: 'Include draft pull requests' }).check();
+  await settingsForm().getByLabel('Include draft pull requests').selectOption('true');
   await settingsForm().getByRole('button', { name: 'Add entry to Labels to watch' }).click();
   await settingsForm().getByLabel('Labels to watch: entry 1').fill(' bug ');
   await settingsForm().getByRole('button', { name: 'Add entry to Labels to watch' }).click();
@@ -279,7 +279,7 @@ test('installs, connects, configures, enables, shows the managed items, disables
   await page.reload();
   await expect(settingsForm().getByLabel('Verbosity')).toHaveValue('detailed');
   await expect(settingsForm().getByLabel('Maximum items')).toHaveValue('20');
-  await expect(settingsForm().getByRole('checkbox', { name: 'Include draft pull requests' })).toBeChecked();
+  await expect(settingsForm().getByLabel('Include draft pull requests')).toHaveValue('true');
   await expect(settingsForm().getByLabel('Labels to watch: entry 1')).toHaveValue(' bug ');
   await expect(settingsForm().getByLabel('Labels to watch: entry 2')).toHaveValue('first\nsecond');
   await expect(settingsForm().getByLabel('Channel per repository: value for repository 1')).toHaveValue('#propr');

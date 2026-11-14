@@ -132,20 +132,6 @@ function RepositoryMapField({ setting, draft, required, error, disabled, reposit
   );
 }
 
-function CheckboxField({ setting, draft, required, error, disabled, onChange }: SettingFieldProps) {
-  const ids = useFieldIds(error);
-  return (
-    <div className="text-sm">
-      <label className="flex items-start gap-2">
-        <input id={ids.id} type="checkbox" className="mt-1" checked={draft === true} disabled={disabled}
-          aria-describedby={ids.describedBy} aria-invalid={ids.invalid || undefined} onChange={event => onChange(event.target.checked)} />
-        <span className="font-medium text-slate-900 [overflow-wrap:anywhere]">{setting.label}</span>
-      </label>
-      <div className="pl-6"><FieldText setting={setting} required={required} helpId={ids.helpId} errorId={ids.errorId} error={error} /></div>
-    </div>
-  );
-}
-
 function ValueField(props: SettingFieldProps) {
   const { setting, draft, required, error, disabled, onChange } = props;
   const ids = useFieldIds(error);
@@ -154,7 +140,16 @@ function ValueField(props: SettingFieldProps) {
     className: `${inputClass} ${error ? invalidClass : ''}`,
   };
   let control: ReactNode;
-  if (setting.type === 'string' && setting.enum) {
+  if (setting.type === 'boolean') {
+    // Not set is its own choice, so an explicit "No" (false) can be saved and an existing value can be removed.
+    control = (
+      <select {...common} value={String(draft)} onChange={event => onChange(event.target.value)}>
+        <option value="">Not set</option>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    );
+  } else if (setting.type === 'string' && setting.enum) {
     control = (
       <select {...common} value={String(draft)} onChange={event => onChange(event.target.value)}>
         <option value="">Not set</option>
@@ -170,10 +165,9 @@ function ValueField(props: SettingFieldProps) {
   return <Labelled setting={setting} required={required} ids={ids} error={error}>{control}</Labelled>;
 }
 
-/** One generated field: text, number, checkbox, select, list or repository map, chosen from the setting's schema. */
+/** One generated field: text, number, select (a choice list, or Not set / Yes / No), list or repository map, chosen from the setting's schema. */
 export function PluginSettingField(props: SettingFieldProps) {
   if (props.setting.type === 'array') return <ListField {...props} />;
-  if (props.setting.type === 'boolean') return <CheckboxField {...props} />;
   if (props.setting.type === 'object') return <RepositoryMapField {...props} />;
   return <ValueField {...props} />;
 }

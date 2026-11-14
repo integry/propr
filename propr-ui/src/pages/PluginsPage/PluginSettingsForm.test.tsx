@@ -32,7 +32,9 @@ describe('PluginSettingsForm', () => {
     expect(screen.getByLabelText('Maximum items')).toHaveAttribute('type', 'number');
     expect(screen.getByLabelText('Maximum items')).toHaveValue(25);
     expect(field('maxItems')).toHaveTextContent('A whole number, at least 1, at most 50');
-    expect(screen.getByRole('checkbox', { name: 'Include draft pull requests' })).toBeChecked();
+    const drafts = screen.getByLabelText('Include draft pull requests');
+    expect(within(drafts).getAllByRole('option').map(option => option.textContent)).toEqual(['Not set', 'Yes', 'No']);
+    expect(drafts).toHaveValue('true');
     const labels = screen.getByRole('group', { name: 'Labels to watch' });
     expect(within(labels).getByLabelText('Labels to watch: entry 1')).toHaveValue('bug');
     expect(within(labels).getByLabelText('Labels to watch: entry 2')).toHaveValue('docs');
@@ -52,7 +54,7 @@ describe('PluginSettingsForm', () => {
     fireEvent.change(screen.getByLabelText('Greeting'), { target: { value: '' } });
     fireEvent.change(screen.getByLabelText('Verbosity'), { target: { value: 'quiet' } });
     fireEvent.change(screen.getByLabelText('Maximum items'), { target: { value: '7' } });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Include draft pull requests' }));
+    fireEvent.change(screen.getByLabelText('Include draft pull requests'), { target: { value: 'false' } });
     const labels = screen.getByRole('group', { name: 'Labels to watch' });
     fireEvent.change(within(labels).getByLabelText('Labels to watch: entry 2'), { target: { value: ' release\nnotes ' } });
     fireEvent.click(within(labels).getByRole('button', { name: 'Add entry to Labels to watch' }));
@@ -100,6 +102,28 @@ describe('PluginSettingsForm', () => {
     const { onSave } = renderForm(withSettings({ verbosity: 'normal' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     expect(onSave).toHaveBeenCalledWith({ greeting: null, verbosity: 'normal', maxItems: null, includeDrafts: null, labels: null, channels: null });
+  });
+
+  it('saves an explicit false for a previously unset required true/false setting, so it no longer blocks enabling', () => {
+    const settings = { ...EXAMPLE_SETTINGS, required: ['verbosity', 'includeDrafts'] };
+    const view = withSettings({ verbosity: 'normal' });
+    const onSave = vi.fn().mockResolvedValue(true);
+    render(<PluginSettingsForm view={{ ...view, manifest: { ...view.manifest!, settings: settings as never } }} busy={false} apiError="" repositories={[]} onSave={onSave} />);
+    const drafts = screen.getByLabelText('Include draft pull requests');
+    expect(drafts).toHaveValue('');
+    fireEvent.change(drafts, { target: { value: 'false' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenCalledWith({ greeting: null, verbosity: 'normal', maxItems: null, includeDrafts: false, labels: null, channels: null });
+  });
+
+  it('keeps a saved false unchanged and removes a saved true/false setting when it is set back to Not set', () => {
+    const { onSave } = renderForm(withSettings({ ...saved, includeDrafts: false }));
+    expect(screen.getByLabelText('Include draft pull requests')).toHaveValue('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenLastCalledWith({ ...saved, includeDrafts: false });
+    fireEvent.change(screen.getByLabelText('Include draft pull requests'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenLastCalledWith({ ...saved, includeDrafts: null });
   });
 
   it('validates before saving and shows each problem next to its field', () => {

@@ -251,7 +251,7 @@ Each setting becomes one field, labelled with its `label` and described by its
 | `string` | A text box (limited to `maxLength`). |
 | `string` with `enum` | A list to pick one value from, or **Not set**. |
 | `number` | A number box, with the range and whether it must be a whole number shown under it. |
-| `boolean` | A checkbox. |
+| `boolean` | A list with **Not set**, **Yes** and **No**, so an explicit **No** (`false`) is saved and kept apart from an unset setting. |
 | `array` of `string` | One box per entry, with **Add entry** and **Remove**. Each entry is saved exactly as typed, including spaces, empty entries and line breaks. |
 | `object` with `format: repository-map` | One row per repository: the repository (`owner/name`, with this instance's repositories suggested) and its value, with **Add repository** and **Remove**. |
 
@@ -259,7 +259,7 @@ The form starts from the saved settings; a fresh installation starts from the
 manifest's defaults. **Save settings** sends every setting at once
 (`PUT /api/instance/plugins/v1/<id>/settings`). A field you did not change
 sends its saved value unchanged. An emptied text or number field removes that
-setting. A list or map whose last entry is removed is saved as empty;
+setting, and so does choosing **Not set** for a true/false setting. A list or map whose last entry is removed is saved as empty;
 **Clear** removes the setting. The page checks the values with the same rules as the
 API before sending them, and when the API refuses a value its message (for
 example "maxItems must be at most 50") is shown under that field. A required
