@@ -7,6 +7,11 @@ import {
 import { withEpicProgressLeaseIfFree } from '../../webhook/epicMergeProgressRetry.js';
 import { PR_BODY_MAX_LENGTH, readStatusSlot } from '@propr/shared';
 import type { EpicStatusFacts, PullRequestStatus } from './pullRequestStatus.js';
+import {
+    advanceEpicActivityFence, isEpicActivitySnapshotSuperseded, orderEpicActivityRead, UNFENCED_EPIC_ACTIVITY_SNAPSHOT,
+    type EpicActivityFenceRedis, type EpicActivitySnapshot,
+} from './pullRequestStatusEpicActivityFence.js';
+import type { PullRequestBodyLease } from './pullRequestBodyLock.js';
 import { applyPullRequestStatusBlock, describeChildStatus, extractPullRequestStatusBlock } from './pullRequestStatusBlock.js';
 import { recordEpicChildStatus } from './pullRequestStatusEpicChildRecord.js';
 import { paginatingGitHub } from './pullRequestStatusEpicFacts.js';
@@ -53,22 +58,42 @@ export type EpicProgressLeaseRedis = Pick<Redis, 'set' | 'eval'>;
  * the epic and its comment are read again under it (syncOpenEpicProgressComment),
  * so a merge, or a finalized comment, written while this pass read its facts
  * is never overwritten. A lease the merge progress update keeps is left to it:
- * it signals a status sync once it is done. Never throws: the next transition
- * of the epic writes it again.
+ * it signals a status sync once it is done.
+ *
+ * The lease orders the writes, not the facts they came from: a pass that
+ * waited for it may hold facts older than those a later pass already wrote.
+ * The target's `snapshot` (claimed under the body lock, pullRequestStatusEpicActivityFence)
+ * is therefore checked under the lease, and an activity superseded by a
+ * higher sequence is dropped: the comment already shows the newer one. A
+ * pass that lost the body lock before claiming its sequence (`unordered`)
+ * writes nothing and asks for a fresh update instead. Never throws: the next
+ * transition of the epic writes it again.
  */
 export async function syncEpicProgressCommentForStatus(
-    github: PullRequestStatusGitHub, redis: EpicProgressLeaseRedis | null, target: { repository: string; prNumber: number }, epic: EpicStatusFacts,
+    github: PullRequestStatusGitHub, redis: EpicProgressLeaseRedis | null,
+    target: { repository: string; prNumber: number; snapshot?: EpicActivitySnapshot }, epic: EpicStatusFacts,
 ): Promise<void> {
     if (!epic.progress || !epic.epicBranch) return;
+    const snapshot = target.snapshot ?? UNFENCED_EPIC_ACTIVITY_SNAPSHOT;
+    if (snapshot.sequence === null && snapshot.reason === 'unordered') {
+        logger.debug(target, 'The epic activity read lost the body lock before it was ordered; a fresh epic update refreshes the comment');
+        requestEpicPullRequestStatusSync(target.repository, epic.epicBranch);
+        return;
+    }
     const activity = renderEpicProgressActivity(epicProgressActivity(epic));
     const [owner, repo] = target.repository.split('/');
-    const write = async (assertOwned: () => Promise<void>) =>
-        await syncOpenEpicProgressComment(paginatingGitHub(github), { owner, repo, epicPrNumber: target.prNumber }, { activity, assertOwned });
+    const write = async (assertOwned: () => Promise<void>): Promise<'updated' | 'unchanged' | 'skipped' | 'superseded'> => {
+        if (await isEpicActivitySnapshotSuperseded(redis, target.repository, target.prNumber, snapshot)) return 'superseded';
+        const outcome = await syncOpenEpicProgressComment(paginatingGitHub(github), { owner, repo, epicPrNumber: target.prNumber }, { activity, assertOwned });
+        await advanceEpicActivityFence(redis, target.repository, target.prNumber, snapshot);
+        return outcome;
+    };
     try {
         const outcome = redis
             ? await withEpicProgressLeaseIfFree({ owner, repo, epicBranch: epic.epicBranch }, redis, async lease => await write(lease.assertOwned))
             : { acquired: true as const, value: await write(async () => undefined) };
         if (!outcome.acquired) logger.debug(target, 'The epic progress update holds the epic; it signals the status sync that refreshes the comment');
+        else if (outcome.value === 'superseded') logger.debug(target, 'A later epic update already wrote newer activity to the progress comment; this read is dropped');
         else if (outcome.value === 'updated') logger.debug(target, 'Updated the epic progress comment');
     } catch (error) {
         logger.warn({ ...target, error: (error as Error).message }, 'Failed to update the epic progress comment; the next epic update writes it');
@@ -152,6 +177,23 @@ export interface EpicSyncNotes {
     statusChanged: boolean;
     /** The status the update computed, whether or not the block or title could show it; null once the pull request is closed or merged. */
     status: PullRequestStatus | null;
+    /** The place of this update's epic facts among the epic's activity reads (pullRequestStatusEpicActivityFence). */
+    activitySnapshot: EpicActivitySnapshot;
+}
+
+/**
+ * The notes of one update, taken while its body lock is still held: an open
+ * epic's facts read is ordered among the epic's activity reads there
+ * (orderEpicActivityRead), before the lock is released and the progress
+ * lease is waited for.
+ */
+export async function epicSyncNotes(
+    redis: EpicActivityFenceRedis | null, target: { repository: string; prNumber: number; lease: PullRequestBodyLease },
+    desired: { status: PullRequestStatus | null; epic: EpicStatusFacts | null; pull: PullRequestStatusPull }, statusChanged: boolean,
+): Promise<EpicSyncNotes> {
+    const epic = desired.status ? desired.epic : null;
+    const activitySnapshot = await orderEpicActivityRead(redis, target, epic, target.lease);
+    return { epic, baseRef: desired.pull.base?.ref ?? null, statusChanged, status: desired.status, activitySnapshot };
 }
 
 /** How long after an update that left sub-PRs unread the next one reads them (pullRequestStatusEpicChildReads). */
@@ -231,7 +273,7 @@ export function withEpicChildReadContinuation(
 export async function syncEpicSideOfStatus(
     github: PullRequestStatusGitHub, redis: EpicProgressLeaseRedis | null, target: { repository: string; prNumber: number }, notes: EpicSyncNotes,
 ): Promise<void> {
-    if (notes.epic) await syncEpicProgressCommentForStatus(github, redis, target, notes.epic);
+    if (notes.epic) await syncEpicProgressCommentForStatus(github, redis, { ...target, snapshot: notes.activitySnapshot }, notes.epic);
     if (!isEpicBranchName(notes.baseRef)) return;
     const recordChanged = await recordEpicChildStatus(redis, target.repository, target.prNumber, notes.status);
     if (notes.statusChanged || recordChanged) requestEpicPullRequestStatusSync(target.repository, notes.baseRef);

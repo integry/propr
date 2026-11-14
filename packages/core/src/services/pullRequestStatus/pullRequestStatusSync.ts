@@ -10,7 +10,9 @@ import { getIssueQueue } from '../../queue/taskQueue.js';
 import logger from '../../utils/logger.js';
 import { findPRsForCommitCached, getUltrafixStateRedis } from '../../webhook/checkRunHelpers.js';
 import { computePullRequestStatus, isUndeterminedPullRequestStatus, type EpicStatusFacts, type PullRequestStatus } from './pullRequestStatus.js';
-import { startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, withEpicChildReadContinuation, type EpicSyncNotes } from './pullRequestStatusEpicSync.js';
+import {
+    epicSyncNotes, startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, withEpicChildReadContinuation, type EpicSyncNotes,
+} from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
@@ -271,10 +273,6 @@ async function statusForLatestPull(
 }
 
 
-function epicSyncNotes(desired: DesiredStatus & { pull: PullRequestStatusPull }, statusChanged: boolean): EpicSyncNotes {
-    return { epic: desired.status ? desired.epic : null, baseRef: desired.pull.base?.ref ?? null, statusChanged, status: desired.status };
-}
-
 async function syncPullRequestStatusOnce(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps>,
 ): Promise<SyncOutcome> {
@@ -303,7 +301,7 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
         const read = {
             awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
             titleSettleInMs: withEpicChildReadContinuation(title.settleInMs, desired),
-            notes: epicSyncNotes(desired, bodyChanged || title.title !== null),
+            notes: await epicSyncNotes(deps.redis, { repository, prNumber, lease }, desired, bodyChanged || title.title !== null),
         };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };
         // The facts read can outlast the lease; a writer that took the lock
