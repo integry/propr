@@ -137,7 +137,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal }), record: recordCall,
     })),
     http: connection => live(http(connection)),
-    // Writes are tied to this installation: once it is uninstalled (or replaced by a reinstall) they are refused.
+    // State is tied to this installation: once it is uninstalled (or replaced by a reinstall) every operation is refused.
     state: liveMethods(pluginStateStore(deps.database, pluginId, now, { installedAt: record.installedAt, signal })),
     log: Object.freeze(log),
     signal,

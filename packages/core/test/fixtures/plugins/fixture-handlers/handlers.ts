@@ -66,11 +66,20 @@ export async function fetchProbe(input: PluginHandlerInput, ctx: PluginContext) 
   }
 }
 
-/** Wait on a ctx.propr read (the test holds it), then write state: a handler still running across an uninstall. */
+/**
+ * Wait on a ctx.propr read (the test holds it), then use state: a handler still
+ * running across an uninstall. `op` defaults to writing `key`.
+ */
 export async function suspendThenSet(input: PluginHandlerInput, ctx: PluginContext) {
-  const { key } = payload(input) as { key: string };
+  const { key, op = 'set' } = payload(input) as { key: string; op?: 'set' | 'get' | 'delete' | 'keys' };
   await ctx.propr.getIssue('owner/allowed', 3).catch(() => undefined);
-  try { await ctx.state.set(key, 'written after resuming'); return { ok: true }; } catch (error) {
+  try {
+    if (op === 'get') return { ok: true, value: (await ctx.state.get(key)) ?? null };
+    if (op === 'delete') return { ok: true, value: await ctx.state.delete(key) };
+    if (op === 'keys') return { ok: true, value: await ctx.state.keys() };
+    await ctx.state.set(key, 'written after resuming');
+    return { ok: true };
+  } catch (error) {
     return { ok: false, code: (error as { code?: string }).code ?? null, message: (error as Error).message };
   }
 }

@@ -218,3 +218,27 @@ test('the GitHub backend sends nothing once the handler run has ended, even when
   await assert.rejects(backend.createTask('owner/allowed', 5, { requestedBy: 'plugin:x' }), { code: 'unavailable' });
   assert.deepEqual(requests, []);
 });
+
+test('the default enqueue adds no job when the run ends while the issue queue is initialized', async () => {
+  const controller = new AbortController();
+  const added: string[] = [];
+  let release!: () => void;
+  const initialized = new Promise<void>(resolve => { release = resolve; });
+  let initializing!: () => void;
+  const started = new Promise<void>(resolve => { initializing = resolve; });
+  const backend = githubPluginProprBackend({
+    database: {} as never, signal: controller.signal,
+    issueQueue: async () => { initializing(); await initialized; return { add: async (_name: string, _data: IssueJobData, options: Record<string, unknown>) => { added.push(String(options.jobId)); } }; },
+  });
+  const pending = backend.createTask('owner/allowed', 5, { requestedBy: 'plugin:x' });
+  await started;
+  controller.abort();
+  release();
+  await assert.rejects(pending, { code: 'unavailable' });
+  assert.deepEqual(added, []);
+
+  // A live run's task is added to the same queue.
+  const live = githubPluginProprBackend({ database: {} as never, signal: new AbortController().signal, issueQueue: async () => ({ add: async (_n: string, _d: IssueJobData, options: Record<string, unknown>) => { added.push(String(options.jobId)); } }) });
+  assert.equal((await live.createTask('owner/allowed', 5, { requestedBy: 'plugin:x' })).jobId, 'issue-owner-allowed-5');
+  assert.deepEqual(added, ['issue-owner-allowed-5']);
+});

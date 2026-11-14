@@ -5,6 +5,11 @@ import { generateCorrelationId } from '../utils/logger.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
 import type { PluginCommentTarget, PluginProprBackend } from './pluginProprClient.js';
 
+/** The part of the issue task queue the default enqueue uses. */
+export interface PluginIssueQueue {
+  add(name: string, data: IssueJobData, options: Record<string, unknown>): Promise<unknown>;
+}
+
 /** The part of an authenticated Octokit the backend uses. */
 export interface PluginGitHubClient {
   request(route: string, parameters: Record<string, unknown>): Promise<{ data: unknown }>;
@@ -13,8 +18,13 @@ export interface GitHubPluginBackendOptions {
   database: Knex;
   /** The ProPR GitHub App client; defaults to the configured one. */
   github?: () => Promise<PluginGitHubClient>;
-  /** Queue an issue task job; defaults to the issue queue, as the task API does. */
-  enqueueIssueTask?: (data: IssueJobData, jobId: string) => Promise<void>;
+  /**
+   * Queue an issue task job; defaults to adding it to `issueQueue`, as the task API does.
+   * Receives the handler run's signal: a job must not be added once it is aborted.
+   */
+  enqueueIssueTask?: (data: IssueJobData, jobId: string, signal?: AbortSignal) => Promise<void>;
+  /** The issue task queue the default enqueue adds to; defaults to the configured one. */
+  issueQueue?: () => Promise<PluginIssueQueue>;
   /** The handler run's signal: once aborted no further GitHub request or queued task starts, and requests in flight are cancelled. */
   signal?: AbortSignal;
 }
@@ -38,11 +48,18 @@ async function defaultGitHub(): Promise<PluginGitHubClient> {
   const { getAuthenticatedOctokit } = await import('../auth/githubAuth.js');
   return await getAuthenticatedOctokit() as unknown as PluginGitHubClient;
 }
-async function defaultEnqueue(data: IssueJobData, jobId: string): Promise<void> {
+async function defaultIssueQueue(): Promise<PluginIssueQueue> {
   // Loaded on use: the queue module connects to Redis, which a handler that never creates a task does not need.
   const { getIssueQueue } = await import('../queue/taskQueue.js');
-  const queue = await getIssueQueue();
-  await queue.add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
+  return await getIssueQueue() as unknown as PluginIssueQueue;
+}
+function queueEnqueue(issueQueue: () => Promise<PluginIssueQueue>) {
+  return async (data: IssueJobData, jobId: string, signal?: AbortSignal): Promise<void> => {
+    const queue = await issueQueue();
+    // The run may have ended while the queue was initialized: no job is added for an ended handler.
+    if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
+    await queue.add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
+  };
 }
 
 /** The latest recorded state of a task. */
@@ -59,7 +76,7 @@ async function taskState(database: Knex, taskId: string): Promise<string | null>
 export function githubPluginProprBackend(options: GitHubPluginBackendOptions): PluginProprBackend {
   const { database } = options;
   const github = options.github ?? defaultGitHub;
-  const enqueue = options.enqueueIssueTask ?? defaultEnqueue;
+  const enqueue = options.enqueueIssueTask ?? queueEnqueue(options.issueQueue ?? defaultIssueQueue);
   const { signal } = options;
   const live = () => { if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended'); };
   const request = async <T>(route: string, parameters: Record<string, unknown>) => {
@@ -108,7 +125,7 @@ export function githubPluginProprBackend(options: GitHubPluginBackendOptions): P
       const { owner, repo } = split(repository);
       const jobId = `issue-${owner}-${repo}-${issueNumber}`;
       live();
-      await enqueue({ repoOwner: owner, repoName: repo, number: issueNumber, requestedBy: attribution.requestedBy, correlationId: generateCorrelationId() }, jobId);
+      await enqueue({ repoOwner: owner, repoName: repo, number: issueNumber, requestedBy: attribution.requestedBy, correlationId: generateCorrelationId() }, jobId, signal);
       return { repository, issueNumber, jobId };
     },
     async comment(repository, number, body, target) {

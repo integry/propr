@@ -26,39 +26,53 @@ function serialize(value: unknown): string {
 }
 
 export interface PluginStateWriteGuard {
-  /** The installation the writes belong to (its `installed_at`); a write is refused once it is uninstalled or replaced. */
+  /** The installation the state belongs to (its `installed_at`); every operation is refused once it is uninstalled or replaced. */
   installedAt: number;
-  /** The handler run's signal: a write that has not committed when the run ends is refused. */
+  /** The handler run's signal: an operation that has not committed when the run ends is refused and rolled back. */
   signal?: AbortSignal;
 }
 
 const isSqlite = (database: Knex) => ['better-sqlite3', 'sqlite3'].includes(String(database.client.config.client));
 
+function requireLive(guard: PluginStateWriteGuard): void {
+  if (guard.signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
+}
+
 /**
- * Inside a state write's transaction: require the installation to still exist
- * (the same one, not a reinstall) and keep it until commit. Uninstall deletes
- * the installation row before the state rows, so a write either commits
- * first and is deleted with the rest, or finds the installation gone.
- * SQLite runs write transactions one at a time.
+ * Inside a state operation's transaction: require the installation to still
+ * exist (the same one, not a reinstall) and keep it until commit. Uninstall
+ * deletes the installation row before the state rows, so an operation either
+ * commits first (a write is then deleted with the rest), or finds the
+ * installation gone. SQLite runs write transactions one at a time.
  */
 async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<void> {
   const query = trx('plugin_installations').where({ plugin_id: pluginId });
   const row = await (isSqlite(trx) ? query : query.forShare()).first('installed_at') as { installed_at: number | string } | undefined;
   if (!row || Number(row.installed_at) !== guard.installedAt) throw new PluginSdkError('unavailable', 'The plugin is no longer installed');
-  if (guard.signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
+  requireLive(guard);
 }
 
 /**
  * `ctx.state`: JSON values per installation in `plugin_state`, with a key
  * count, a per-value size and a total size limit. A write that would exceed
- * a limit throws `state_limit` and changes nothing. With a `guard`, a write
- * also requires its installation to still exist.
+ * a limit throws `state_limit` and changes nothing. With a `guard`, every
+ * operation (read, write, delete, list) runs in a transaction that requires
+ * its installation to still exist, and is refused (a change rolled back)
+ * when the handler run ends before it commits.
  */
 export function pluginStateStore(database: Knex, pluginId: string, now: () => number = Date.now, guard?: PluginStateWriteGuard): PluginStateStore {
-  const rows = () => database(PLUGIN_STATE_TABLE).where({ plugin_id: pluginId });
+  const fenced = <R>(run: (trx: Knex.Transaction) => Promise<R>): Promise<R> => database.transaction(async trx => {
+    if (guard) await requireInstallation(trx, pluginId, guard);
+    const result = await run(trx);
+    // Cancellation observed during the operation: throwing rolls a change back.
+    if (guard) requireLive(guard);
+    return result;
+  });
+  const rows = (trx: Knex.Transaction) => trx(PLUGIN_STATE_TABLE).where({ plugin_id: pluginId });
   return {
     async get<T extends PluginJsonValue = PluginJsonValue>(key: string): Promise<T | undefined> {
-      const row = await rows().where({ state_key: checkKey(key) }).first('value');
+      const stateKey = checkKey(key);
+      const row = await fenced(trx => rows(trx).where({ state_key: stateKey }).first('value'));
       return row ? JSON.parse(row.value as string) as T : undefined;
     },
     async set(key: string, value: PluginJsonValue): Promise<void> {
@@ -66,11 +80,11 @@ export function pluginStateStore(database: Knex, pluginId: string, now: () => nu
       const text = serialize(value);
       const bytes = Buffer.byteLength(text);
       if (bytes > PLUGIN_STATE_LIMITS.valueBytes) throw new PluginSdkError('state_limit', `A state value is at most ${PLUGIN_STATE_LIMITS.valueBytes} bytes; this one is ${bytes}`);
-      await database.transaction(async trx => {
-        if (guard) await requireInstallation(trx, pluginId, guard);
+      await fenced(async trx => {
         // The other keys' count and size: a rewrite of a key replaces its own bytes.
-        const totals = await trx(PLUGIN_STATE_TABLE).where({ plugin_id: pluginId }).whereNot({ state_key: stateKey })
+        const totals = await rows(trx).whereNot({ state_key: stateKey })
           .first(trx.raw('COUNT(*) AS count'), trx.raw('COALESCE(SUM(bytes), 0) AS total')) as { count: number | string; total: number | string } | undefined;
+        if (guard) requireLive(guard);
         const count = Number(totals?.count ?? 0); const total = Number(totals?.total ?? 0);
         if (count + 1 > PLUGIN_STATE_LIMITS.keys) throw new PluginSdkError('state_limit', `The plugin state holds at most ${PLUGIN_STATE_LIMITS.keys} keys`);
         if (total + bytes > PLUGIN_STATE_LIMITS.totalBytes) throw new PluginSdkError('state_limit', `The plugin state holds at most ${PLUGIN_STATE_LIMITS.totalBytes} bytes`);
@@ -79,11 +93,12 @@ export function pluginStateStore(database: Knex, pluginId: string, now: () => nu
       });
     },
     async delete(key: string): Promise<boolean> {
-      return (await rows().where({ state_key: checkKey(key) }).delete()) > 0;
+      const stateKey = checkKey(key);
+      return (await fenced(trx => rows(trx).where({ state_key: stateKey }).delete())) > 0;
     },
     async keys(prefix = ''): Promise<string[]> {
       if (typeof prefix !== 'string') throw new PluginSdkError('invalid_input', 'The key prefix must be text');
-      const list = await rows().orderBy('state_key').pluck('state_key') as string[];
+      const list = await fenced(trx => rows(trx).orderBy('state_key').pluck('state_key')) as string[];
       return list.filter(key => key.startsWith(prefix));
     },
   };
