@@ -32,7 +32,8 @@ describe('Plugin settings and approval', () => {
     const configure = step('Configure');
     expect(within(configure).getByLabelText('Greeting')).toHaveValue('hello');
     fireEvent.change(within(configure).getByLabelText('Greeting'), { target: { value: 'hey' } });
-    fireEvent.change(within(configure).getByLabelText('Labels to watch'), { target: { value: 'bug' } });
+    fireEvent.click(within(configure).getByRole('button', { name: 'Add entry to Labels to watch' }));
+    fireEvent.change(within(configure).getByLabelText('Labels to watch: entry 1'), { target: { value: 'bug' } });
     const next = withSettings(exampleAt('connected'), { ...EXAMPLE_DEFAULTS, greeting: 'hey', labels: ['bug'] });
     vi.mocked(setPluginSettings).mockResolvedValue({ plugin: next });
     await act(async () => { fireEvent.click(within(configure).getByRole('button', { name: 'Save settings' })); });

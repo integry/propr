@@ -33,8 +33,9 @@ describe('PluginSettingsForm', () => {
     expect(screen.getByLabelText('Maximum items')).toHaveValue(25);
     expect(field('maxItems')).toHaveTextContent('A whole number, at least 1, at most 50');
     expect(screen.getByRole('checkbox', { name: 'Include draft pull requests' })).toBeChecked();
-    expect(screen.getByLabelText('Labels to watch').tagName).toBe('TEXTAREA');
-    expect(screen.getByLabelText('Labels to watch')).toHaveValue('bug\ndocs');
+    const labels = screen.getByRole('group', { name: 'Labels to watch' });
+    expect(within(labels).getByLabelText('Labels to watch: entry 1')).toHaveValue('bug');
+    expect(within(labels).getByLabelText('Labels to watch: entry 2')).toHaveValue('docs');
     const channels = screen.getByRole('group', { name: 'Channel per repository' });
     expect(within(channels).getByLabelText('Channel per repository: repository 1')).toHaveValue('acme/web');
     expect(within(channels).getByLabelText('Channel per repository: value for repository 2')).toHaveValue('#api');
@@ -52,7 +53,9 @@ describe('PluginSettingsForm', () => {
     fireEvent.change(screen.getByLabelText('Verbosity'), { target: { value: 'quiet' } });
     fireEvent.change(screen.getByLabelText('Maximum items'), { target: { value: '7' } });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Include draft pull requests' }));
-    fireEvent.change(screen.getByLabelText('Labels to watch'), { target: { value: ' bug \n\nrelease\n' } });
+    const labels = screen.getByRole('group', { name: 'Labels to watch' });
+    fireEvent.change(within(labels).getByLabelText('Labels to watch: entry 2'), { target: { value: ' release\nnotes ' } });
+    fireEvent.click(within(labels).getByRole('button', { name: 'Add entry to Labels to watch' }));
     const channels = screen.getByRole('group', { name: 'Channel per repository' });
     fireEvent.click(within(channels).getByRole('button', { name: 'Remove repository 2 from Channel per repository' }));
     fireEvent.click(within(channels).getByRole('button', { name: 'Add repository to Channel per repository' }));
@@ -60,8 +63,43 @@ describe('PluginSettingsForm', () => {
     fireEvent.change(within(channels).getByLabelText('Channel per repository: value for repository 2'), { target: { value: '#docs' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     expect(onSave).toHaveBeenCalledWith({
-      greeting: null, verbosity: 'quiet', maxItems: 7, includeDrafts: false, labels: ['bug', 'release'], channels: { 'acme/web': '#web', 'acme/docs': '#docs' },
+      greeting: null, verbosity: 'quiet', maxItems: 7, includeDrafts: false, labels: ['bug', ' release\nnotes ', ''], channels: { 'acme/web': '#web', 'acme/docs': '#docs' },
     });
+  });
+
+  it('saves list entries with spaces, empty entries and line breaks, and empty collections, unchanged when another setting is edited', () => {
+    const exact = { ...saved, labels: [' bug ', '', 'first\nsecond'], channels: {} };
+    const unchanged = renderForm(withSettings(exact, true));
+    expect(within(screen.getByRole('group', { name: 'Labels to watch' })).getByLabelText('Labels to watch: entry 3')).toHaveValue('first\nsecond');
+    expect(within(screen.getByRole('group', { name: 'Channel per repository' })).getByTestId('plugin-setting-state')).toHaveTextContent('No repositories yet.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(unchanged.onSave).toHaveBeenCalledWith(exact);
+    unchanged.unmount();
+
+    const edited = renderForm(withSettings({ ...exact, labels: [] }, true));
+    expect(within(screen.getByRole('group', { name: 'Labels to watch' })).getByTestId('plugin-setting-state')).toHaveTextContent('Empty list.');
+    fireEvent.change(screen.getByLabelText('Greeting'), { target: { value: 'changed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(edited.onSave).toHaveBeenCalledWith({ ...exact, labels: [], greeting: 'changed' });
+  });
+
+  it('keeps an empty list after its last entry is removed and removes the setting only when cleared', () => {
+    const { onSave } = renderForm(withSettings({ ...saved, labels: ['bug'] }));
+    const labels = screen.getByRole('group', { name: 'Labels to watch' });
+    fireEvent.click(within(labels).getByRole('button', { name: 'Remove entry 1 from Labels to watch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenLastCalledWith({ ...saved, labels: [] });
+    fireEvent.click(within(labels).getByRole('button', { name: 'Clear Labels to watch' }));
+    fireEvent.click(within(screen.getByRole('group', { name: 'Channel per repository' })).getByRole('button', { name: 'Clear Channel per repository' }));
+    expect(within(labels).getByTestId('plugin-setting-state')).toHaveTextContent('Not set.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenLastCalledWith({ ...saved, labels: null, channels: null });
+  });
+
+  it('leaves unset settings unset on an unchanged save', () => {
+    const { onSave } = renderForm(withSettings({ verbosity: 'normal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenCalledWith({ greeting: null, verbosity: 'normal', maxItems: null, includeDrafts: null, labels: null, channels: null });
   });
 
   it('validates before saving and shows each problem next to its field', () => {
@@ -80,6 +118,13 @@ describe('PluginSettingsForm', () => {
     // Editing the field clears its error.
     fireEvent.change(screen.getByLabelText('Maximum items'), { target: { value: '5' } });
     expect(errorOf('maxItems')).toBeUndefined();
+  });
+
+  it('accepts an unchanged save of a required empty collection while the plugin is enabled', () => {
+    const settings = { ...EXAMPLE_SETTINGS, required: ['verbosity', 'labels'] };
+    const drafts = draftsOf(settings, { ...saved, labels: [] });
+    expect(clientSettingErrors(settings, drafts, true, { ...saved, labels: [] })).toEqual({});
+    expect(settingsPayload(settings, drafts, { ...saved, labels: [] }).labels).toEqual([]);
   });
 
   it('refuses to remove a required setting while the plugin is enabled', () => {
@@ -115,7 +160,7 @@ describe('plugin settings helpers', () => {
   });
 
   it('keeps a number that does not parse so validation names it, and finds a repository listed twice', () => {
-    const drafts = { ...draftsOf(EXAMPLE_SETTINGS, {}), maxItems: '1e', channels: [{ repository: 'acme/web', text: 'a' }, { repository: 'acme/web', text: 'b' }] };
+    const drafts = { ...draftsOf(EXAMPLE_SETTINGS, {}), maxItems: '1e', channels: { set: true, rows: [{ repository: 'acme/web', text: 'a' }, { repository: 'acme/web', text: 'b' }] } };
     expect(settingsPayload(EXAMPLE_SETTINGS, drafts).maxItems).toBe('1e');
     expect(clientSettingErrors(EXAMPLE_SETTINGS, drafts, false)).toEqual({ maxItems: 'maxItems must be a number', channels: 'channels lists acme/web more than once' });
   });

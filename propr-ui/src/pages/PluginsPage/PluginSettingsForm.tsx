@@ -7,8 +7,9 @@ import { apiSettingErrors, clientSettingErrors, draftsOf, settingsOf, settingsPa
 
 /**
  * The settings form ProPR generates from the manifest's settings schema. It is validated here with the API's own rules
- * before saving; a refusal from the API is split into the field it names, next to that field. Keyed by the saved
- * settings, so a successful save starts it afresh from what the API returned.
+ * before saving; a refusal from the API is split into the field it names, next to that field. Fields left as they
+ * started save their saved values unchanged. Keyed by the saved settings, so a successful save starts it afresh from
+ * what the API returned.
  */
 export function PluginSettingsForm({ view, busy, apiError, repositories, onSave }: {
   view: PluginView;
@@ -36,11 +37,11 @@ export function PluginSettingsForm({ view, busy, apiError, repositories, onSave 
   };
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    const problems = clientSettingErrors(settings, drafts, enabled);
+    const problems = clientSettingErrors(settings, drafts, enabled, saved);
     setClientErrors(problems);
     if (Object.keys(problems).length) return;
     setEdited([]);
-    await onSave(settingsPayload(settings, drafts));
+    await onSave(settingsPayload(settings, drafts, saved));
   };
   const invalid = keys.some(key => errorOf(key));
   return (

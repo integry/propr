@@ -248,6 +248,8 @@ test('installs, connects, configures, enables, shows the managed items, disables
   await settings.getByLabel('Verbosity').selectOption('');
   await settings.getByRole('button', { name: 'Save settings' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Settings saved.' })).toBeVisible();
+  // Untouched settings keep their saved values, including the empty default list.
+  expect(state.settings).toEqual({ greeting: 'hello', maxItems: 10, includeDrafts: false, labels: [] });
   await expect(enable.getByRole('checkbox', { name: /Enabled/ })).toBeDisabled();
   await expect(enable.getByRole('status')).toContainText('Required setting Verbosity (verbosity) is missing');
   await expect(configure.getByRole('status').first()).toHaveText('Set Verbosity to enable the plugin.');
@@ -262,20 +264,24 @@ test('installs, connects, configures, enables, shows the managed items, disables
   await settingsForm().getByLabel('Maximum items').fill('20');
   await settingsForm().getByLabel('Verbosity').selectOption('detailed');
   await settingsForm().getByRole('checkbox', { name: 'Include draft pull requests' }).check();
-  await settingsForm().getByLabel('Labels to watch').fill('bug\nrelease');
+  await settingsForm().getByRole('button', { name: 'Add entry to Labels to watch' }).click();
+  await settingsForm().getByLabel('Labels to watch: entry 1').fill(' bug ');
+  await settingsForm().getByRole('button', { name: 'Add entry to Labels to watch' }).click();
+  await settingsForm().getByLabel('Labels to watch: entry 2').fill('first\nsecond');
   await settingsForm().getByRole('button', { name: 'Add repository to Channel per repository' }).click();
   await settingsForm().getByLabel('Channel per repository: repository 1').fill('integry/propr');
   await settingsForm().getByLabel('Channel per repository: value for repository 1').fill('#propr');
   await settingsForm().getByRole('button', { name: 'Save settings' }).click();
   await expect(enable.getByRole('checkbox', { name: /Enabled/ })).toBeEnabled();
-  expect(state.settings).toEqual({ greeting: 'hello', verbosity: 'detailed', maxItems: 20, includeDrafts: true, labels: ['bug', 'release'], channels: { 'integry/propr': '#propr' } });
+  expect(state.settings).toEqual({ greeting: 'hello', verbosity: 'detailed', maxItems: 20, includeDrafts: true, labels: [' bug ', 'first\nsecond'], channels: { 'integry/propr': '#propr' } });
 
   // The saved values round-trip through a fresh read.
   await page.reload();
   await expect(settingsForm().getByLabel('Verbosity')).toHaveValue('detailed');
   await expect(settingsForm().getByLabel('Maximum items')).toHaveValue('20');
   await expect(settingsForm().getByRole('checkbox', { name: 'Include draft pull requests' })).toBeChecked();
-  await expect(settingsForm().getByLabel('Labels to watch')).toHaveValue('bug\nrelease');
+  await expect(settingsForm().getByLabel('Labels to watch: entry 1')).toHaveValue(' bug ');
+  await expect(settingsForm().getByLabel('Labels to watch: entry 2')).toHaveValue('first\nsecond');
   await expect(settingsForm().getByLabel('Channel per repository: value for repository 1')).toHaveValue('#propr');
   await expect(step(page, 'Configure')).toHaveAttribute('data-done', 'true');
 

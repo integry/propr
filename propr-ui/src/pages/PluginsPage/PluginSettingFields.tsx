@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from 'react';
 import type { PluginSetting } from '@propr/shared';
 import { buttonClass, inputClass } from './pluginUi';
-import type { RepositoryMapRow, SettingDraft } from './pluginSettingsUi';
+import type { CollectionDraft, RepositoryMapRow, SettingDraft } from './pluginSettingsUi';
 
 export interface SettingFieldProps {
   name: string;
@@ -43,7 +43,6 @@ function hint(setting: PluginSetting): string {
     const range = [setting.minimum !== undefined ? `at least ${setting.minimum}` : '', setting.maximum !== undefined ? `at most ${setting.maximum}` : ''].filter(Boolean).join(', ');
     return [setting.integer ? 'A whole number' : 'A number', range].filter(Boolean).join(', ');
   }
-  if (setting.type === 'array') return `One entry per line${setting.maxItems ? `, up to ${setting.maxItems}` : ''}.`;
   return '';
 }
 
@@ -59,17 +58,60 @@ function Labelled({ setting, required, ids, error, children }: { setting: Plugin
   );
 }
 
+/** Whether a list or map is unset, set but empty, or has entries, and the action that removes the setting. */
+function CollectionState({ label, draft, empty, disabled, onChange }: { label: string; draft: CollectionDraft<unknown>; empty: string; disabled: boolean; onChange: (draft: CollectionDraft<never>) => void }) {
+  if (!draft.set && draft.rows.length === 0) return <p data-testid="plugin-setting-state" className="mt-1 text-xs text-slate-500">Not set.</p>;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      {draft.rows.length === 0 && <p data-testid="plugin-setting-state" className="text-xs text-slate-500">{empty}</p>}
+      <button type="button" className={buttonClass} disabled={disabled} onClick={() => onChange({ set: false, rows: [] })}>Clear {label}</button>
+    </div>
+  );
+}
+
+const lineCount = (text: string) => Math.max(1, text.split('\n').length);
+
+function ListField({ setting, draft, required, error, disabled, onChange }: SettingFieldProps) {
+  const ids = useFieldIds(error);
+  const list = draft as CollectionDraft<string>;
+  const max = setting.type === 'array' ? setting.maxItems : undefined;
+  const rows = (next: string[]) => onChange({ set: true, rows: next });
+  return (
+    <fieldset className="min-w-0 text-sm" aria-describedby={ids.describedBy} aria-invalid={ids.invalid || undefined}>
+      <legend className="font-medium text-slate-900 [overflow-wrap:anywhere]">{setting.label}</legend>
+      <span className="block text-xs text-slate-500">One entry per box{max ? `, up to ${max}` : ''}; each is saved exactly as typed.</span>
+      <CollectionState label={setting.label} draft={list} empty="Empty list." disabled={disabled} onChange={onChange} />
+      <ul className="mt-1 space-y-2">
+        {list.rows.map((entry, index) => (
+          <li key={index} className="flex flex-col gap-2 sm:flex-row sm:items-start">
+            <textarea className={`${inputClass} mt-0 sm:flex-1 ${error ? invalidClass : ''}`} rows={lineCount(entry)} value={entry} disabled={disabled}
+              aria-label={`${setting.label}: entry ${index + 1}`} onChange={event => rows(list.rows.map((item, i) => (i === index ? event.target.value : item)))} />
+            <button type="button" className={buttonClass} disabled={disabled} aria-label={`Remove entry ${index + 1} from ${setting.label}`}
+              onClick={() => rows(list.rows.filter((_, i) => i !== index))}>Remove</button>
+          </li>
+        ))}
+      </ul>
+      <button type="button" className={`${buttonClass} mt-2`} disabled={disabled} onClick={() => rows([...list.rows, ''])}>
+        Add entry to {setting.label}
+      </button>
+      <FieldText setting={setting} required={required} helpId={ids.helpId} errorId={ids.errorId} error={error} />
+    </fieldset>
+  );
+}
+
 function RepositoryMapField({ setting, draft, required, error, disabled, repositories, onChange }: SettingFieldProps) {
   const ids = useFieldIds(error);
-  const rows = draft as RepositoryMapRow[];
+  const map = draft as CollectionDraft<RepositoryMapRow>;
+  const rows = map.rows;
   const listId = `${ids.id}-repositories`;
-  const update = (index: number, patch: Partial<RepositoryMapRow>) => onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  const set = (next: RepositoryMapRow[]) => onChange({ set: true, rows: next });
+  const update = (index: number, patch: Partial<RepositoryMapRow>) => set(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   return (
     <fieldset className="min-w-0 text-sm" aria-describedby={ids.describedBy} aria-invalid={ids.invalid || undefined}>
       <legend className="font-medium text-slate-900 [overflow-wrap:anywhere]">{setting.label}</legend>
       <span className="block text-xs text-slate-500">Maps a repository (owner/name) to a value.</span>
       <datalist id={listId}>{repositories.map(name => <option key={name} value={name} />)}</datalist>
-      {rows.length === 0 && <p className="mt-1 text-xs text-slate-500">No repositories yet.</p>}
+      <CollectionState label={setting.label} draft={map} empty="No repositories yet." disabled={disabled} onChange={onChange} />
       <ul className="mt-1 space-y-2">
         {rows.map((row, index) => (
           <li key={index} className="flex flex-col gap-2 sm:flex-row sm:items-start">
@@ -78,11 +120,11 @@ function RepositoryMapField({ setting, draft, required, error, disabled, reposit
             <input className={`${inputClass} mt-0 sm:flex-1 ${error ? invalidClass : ''}`} value={row.text} disabled={disabled}
               aria-label={`${setting.label}: value for repository ${index + 1}`} onChange={event => update(index, { text: event.target.value })} />
             <button type="button" className={buttonClass} disabled={disabled} aria-label={`Remove repository ${index + 1} from ${setting.label}`}
-              onClick={() => onChange(rows.filter((_, i) => i !== index))}>Remove</button>
+              onClick={() => set(rows.filter((_, i) => i !== index))}>Remove</button>
           </li>
         ))}
       </ul>
-      <button type="button" className={`${buttonClass} mt-2`} disabled={disabled} onClick={() => onChange([...rows, { repository: '', text: '' }])}>
+      <button type="button" className={`${buttonClass} mt-2`} disabled={disabled} onClick={() => set([...rows, { repository: '', text: '' }])}>
         Add repository to {setting.label}
       </button>
       <FieldText setting={setting} required={required} helpId={ids.helpId} errorId={ids.errorId} error={error} />
@@ -119,8 +161,6 @@ function ValueField(props: SettingFieldProps) {
         {setting.enum.map(option => <option key={option} value={option}>{option}</option>)}
       </select>
     );
-  } else if (setting.type === 'array') {
-    control = <textarea {...common} rows={3} value={String(draft)} onChange={event => onChange(event.target.value)} />;
   } else if (setting.type === 'number') {
     control = <input {...common} type="number" inputMode="decimal" step={setting.integer ? 1 : 'any'} min={setting.minimum} max={setting.maximum}
       value={String(draft)} onChange={event => onChange(event.target.value)} />;
@@ -132,6 +172,7 @@ function ValueField(props: SettingFieldProps) {
 
 /** One generated field: text, number, checkbox, select, list or repository map, chosen from the setting's schema. */
 export function PluginSettingField(props: SettingFieldProps) {
+  if (props.setting.type === 'array') return <ListField {...props} />;
   if (props.setting.type === 'boolean') return <CheckboxField {...props} />;
   if (props.setting.type === 'object') return <RepositoryMapField {...props} />;
   return <ValueField {...props} />;
