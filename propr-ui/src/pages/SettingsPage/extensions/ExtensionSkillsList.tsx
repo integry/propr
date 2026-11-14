@@ -27,7 +27,7 @@ export function ExtensionSkillsList({ state }: { state: ExtensionLibraryState })
     state.setNotice(added ? `Skill ${nameOf(skill.bundleId)} added.` : `Skill ${nameOf(skill.bundleId)} saved.`);
   };
   const form = (skill?: ExtensionLibrarySkill) => (
-    <ExtensionSkillForm initial={skill} bundle={skill ? bundleOf(skill.bundleId) : undefined} available={available} choices={state.choices}
+    <ExtensionSkillForm initial={skill} pluginName={skill?.managedBy && state.pluginNames[skill.managedBy.plugin]} bundle={skill ? bundleOf(skill.bundleId) : undefined} available={available} choices={state.choices}
       onImported={state.addBundle} onSave={save} onCancel={() => setEditing(null)} />
   );
   return (
@@ -46,7 +46,8 @@ export function ExtensionSkillsList({ state }: { state: ExtensionLibraryState })
       {skills.length === 0 && !editing && <p className="text-sm text-slate-500">No skills yet.</p>}
       <ul className="space-y-2">
         {skills.map(skill => (editing?.opened?.bundleId === skill.bundleId ? <li key={skill.bundleId}>{form(editing.opened)}</li> : (
-          <ExtensionItemRow key={skill.bundleId} testId="extension-skill" managedBy={skill.managedBy} name={nameOf(skill.bundleId)}
+          <ExtensionItemRow key={skill.bundleId} testId="extension-skill" managedBy={skill.managedBy}
+            pluginName={skill.managedBy && state.pluginNames[skill.managedBy.plugin]} name={nameOf(skill.bundleId)}
             kind={({ github: 'Skill from GitHub', plugin: 'Skill from a plugin', archive: 'Skill archive' } as const)[bundleOf(skill.bundleId)?.source.kind ?? 'archive']}
             item={skill} enabled={state.shownEnabled(skillRef(skill), skill.enabled)} pending={state.isPending(skillRef(skill))}
             busy={editing !== null} notes={itemNotes(skill, { usage: state.usage, choices: state.choices })}

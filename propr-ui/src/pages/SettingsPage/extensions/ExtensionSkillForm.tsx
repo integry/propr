@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import type { ExtensionLibrarySkill, ExtensionSkillBundle } from '@propr/shared';
 import { ExtensionItemLimits } from './ExtensionItemLimits';
+import { ManagedDefinitionNote } from './ExtensionManagedItem';
 import { ExtensionSkillSource, SkillBundleDetails } from './ExtensionSkillImport';
 import { NEW_ITEM_LIMITS, buttonClass, primaryButtonClass, type ExtensionChoices, type ItemLimitFields } from './extensionUi';
 
@@ -8,9 +9,11 @@ import { NEW_ITEM_LIMITS, buttonClass, primaryButtonClass, type ExtensionChoices
  * Add or edit one skill: a new skill first picks or imports its bundle, then
  * both set the item limits. Saving writes the library at once.
  */
-export function ExtensionSkillForm({ initial, bundle: initialBundle, available, choices, onImported, onSave, onCancel }: {
+export function ExtensionSkillForm({ initial, pluginName, bundle: initialBundle, available, choices, onImported, onSave, onCancel }: {
   /** The saved skill being edited; absent for a new one. */
   initial?: ExtensionLibrarySkill;
+  /** The managing plugin's display name, for a skill a plugin contributes. */
+  pluginName?: string;
   bundle?: ExtensionSkillBundle;
   /** Imported bundles not yet in the library. */
   available: ExtensionSkillBundle[];
@@ -37,6 +40,7 @@ export function ExtensionSkillForm({ initial, bundle: initialBundle, available, 
     <form aria-labelledby={titleId} onSubmit={event => void submit(event)} data-testid="extension-skill-form"
       className="space-y-4 rounded-md border border-teal-200 bg-white p-4">
       <h5 id={titleId} className="text-sm font-semibold">{label}</h5>
+      {initial?.managedBy && <ManagedDefinitionNote managedBy={initial.managedBy} pluginName={pluginName} />}
       <fieldset disabled={busy} className="min-w-0 space-y-4">
         {bundle ? (
           <div className="rounded-md border border-slate-200 p-3">

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { EXTENSION_LIBRARY_LIMITS, type ExtensionLibraryServer } from '@propr/shared';
 import { ExtensionItemRow } from './ExtensionItemRow';
 import { ExtensionServerForm } from './ExtensionServerForm';
+import { ManagedServerForm } from './ExtensionManagedItem';
 import { ExtensionOAuthConnection } from './ExtensionOAuthConnection';
 import { itemNotes } from './extensionNotes';
 import { withServer } from './libraryEdits';
@@ -42,10 +43,14 @@ export function ExtensionServersList({ state }: { state: ExtensionLibraryState }
       <ul className="space-y-2">
         {servers.map(server => (editing?.opened?.name === server.name ? (
           <li key={server.name}>
-            <ExtensionServerForm initial={editing.opened} servers={servers} catalog={state.catalog} secrets={library.secrets} acknowledgements={library.acknowledgements} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />
+            {editing.opened.managedBy ? (
+              <ManagedServerForm server={{ ...editing.opened, managedBy: editing.opened.managedBy }} pluginName={state.pluginNames[editing.opened.managedBy.plugin]}
+                choices={state.choices} onSave={save} onCancel={() => setEditing(null)} />
+            ) : <ExtensionServerForm initial={editing.opened} servers={servers} catalog={state.catalog} secrets={library.secrets} acknowledgements={library.acknowledgements} choices={state.choices} redirectUri={state.oauth.redirectUri} onSave={save} onCancel={() => setEditing(null)} />}
           </li>
         ) : (
-          <ExtensionItemRow key={server.name} testId="extension-server" managedBy={server.managedBy} name={server.name}
+          <ExtensionItemRow key={server.name} testId="extension-server" managedBy={server.managedBy}
+            pluginName={server.managedBy && state.pluginNames[server.managedBy.plugin]} name={server.name}
             kind={serverKindLabel(server)} capability={server.capability}
             item={server} enabled={state.shownEnabled(serverRef(server), server.enabled)} pending={state.isPending(serverRef(server))}
             busy={editing !== null} notes={itemNotes(server, { usage: state.usage, choices: state.choices, secrets: library.secrets })}

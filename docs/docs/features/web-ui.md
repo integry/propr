@@ -129,9 +129,10 @@ for the operator walkthrough and the log's filters.
 1. The catalog shows a card per plugin with its name, description, category and a state badge (**Not installed**, **Enabled**, **Off**, **Needs connection**, **Needs approval** or **Degraded**). Filter by category or search by name, then open a card.
 2. **Install** lists what the plugin adds and the permissions it asks for. If a local package server receives secret variables, tick the acknowledgement that names its package, version and variables, then choose **Install**.
 3. **Connect** has one row per connection: **Connect** for an OAuth sign-in (it opens in a new tab), or a write-only field for an API token or signing secret.
-4. **Configure** offers **Limit to repositories**; leave it empty to apply everywhere.
+4. **Configure** shows the plugin's settings as a form generated from its manifest (text, number, Not set / Yes / No, list of choices, one-per-line list and a value per repository) and **Limit to repositories**; leave the limit empty to apply everywhere. A value the API refuses shows its message under the field. Required settings are marked **Required to enable**.
 5. Tick **Enabled**. While something is missing, the checkbox is unavailable and the step lists what to do first. Untick it to disable the plugin and keep its settings.
-6. **What it added** links the plugin's managed items in Skills & MCP servers. **Uninstall…** lists what will be removed before you confirm, and shows the API's message if an automation still uses one of the plugin's items.
+6. After an upgrade that asks for more, **Install** shows the new permissions and what changed in each package server, with **Approve**.
+7. **What it added** links the plugin's managed items in Skills & MCP servers, where they carry a **From plugin** badge linking back and only their enabled checkbox, limits and automatic apply can be changed. **Uninstall…** lists what will be removed before you confirm, and shows the API's message if an automation still uses one of the plugin's items.
 
 ## Access
 

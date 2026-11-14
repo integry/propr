@@ -4,9 +4,12 @@ import path from 'node:path';
 
 /**
  * The Plugins page end to end against a stateful plugin API fixture: the
- * example plugin is installed, connected, limited to a repository, enabled,
- * disabled and uninstalled entirely from the page. With PROPR_CAPTURE_PREVIEWS
- * set it also captures the catalog and the detail steps at desktop and phone widths.
+ * example plugin is installed, connected, configured through the generated
+ * settings form, limited to a repository and enabled; its managed items are
+ * then shown in Skills & MCP servers; it is disabled and uninstalled entirely
+ * from the page. An upgrade asking for more is approved from the detail page.
+ * With PROPR_CAPTURE_PREVIEWS set it also captures the catalog and the detail
+ * steps at desktop and phone widths.
  */
 
 const NOW = Date.parse('2026-11-14T09:00:00.000Z');
@@ -25,7 +28,18 @@ const MANIFEST = {
     { type: 'oauth', name: 'example-account', label: 'Example account', help: 'Sign in with the example service account that the remote MCP server should act as.', helpUrl: 'https://example.com/docs/oauth' },
     { type: 'token', name: 'example-token', label: 'Example API token', help: 'Create a read-only API token in the example service settings and paste it here.', helpUrl: 'https://example.com/docs/tokens' },
   ],
-  settings: { type: 'object', properties: {}, required: [] },
+  settings: {
+    type: 'object',
+    properties: {
+      greeting: { type: 'string', label: 'Greeting', help: 'Text the local example server prefixes to every echo.', default: 'hello' },
+      verbosity: { type: 'string', label: 'Verbosity', enum: ['quiet', 'normal', 'detailed'], default: 'normal' },
+      maxItems: { type: 'number', label: 'Maximum items', minimum: 1, maximum: 50, integer: true, default: 10 },
+      includeDrafts: { type: 'boolean', label: 'Include draft pull requests', default: false },
+      labels: { type: 'array', items: { type: 'string' }, label: 'Labels to watch', default: [] },
+      channels: { type: 'object', format: 'repository-map', additionalProperties: { type: 'string' }, label: 'Channel per repository', help: 'Maps owner/repo to a channel name.' },
+    },
+    required: ['verbosity'],
+  },
   outboundHosts: ['api.example.com'],
   contributes: {
     mcpServers: [
@@ -40,16 +54,28 @@ const OTHERS = [
   { id: 'deploy-hooks', name: 'Deploy hooks', category: 'deployment', description: 'Adds the /deploy command and reports deployment status.' },
 ];
 
-interface State { installed: boolean; enabled: boolean; token: boolean; oauth: boolean; repositories: string[] | null; refuseUninstall: boolean }
+const DEFAULTS = { greeting: 'hello', verbosity: 'normal', maxItems: 10, includeDrafts: false, labels: [] };
+/** The upgrade awaiting approval: version 0.2.0 asks for one more permission and moves the package server to a new version with one more secret variable. */
+const UPGRADE = { version: '0.2.0', permission: { name: 'pull_requests.read', description: 'Read pull requests and their status' }, package: 'propr-fixture-mcp', packageVersion: '1.1.0', secretEnv: ['FIXTURE_TOKEN', 'FIXTURE_REGION'] };
+
+interface State {
+  installed: boolean; enabled: boolean; token: boolean; oauth: boolean; repositories: string[] | null; refuseUninstall: boolean;
+  settings?: Record<string, unknown>; upgrade?: boolean;
+}
+
+const blockers = (state: State) => [
+  ...(state.settings?.verbosity === undefined ? ['Required setting Verbosity (verbosity) is missing'] : []),
+  ...(state.token ? [] : ['Connection Example API token (example-token) is not set']),
+];
 
 function view(state: State) {
   const active = state.enabled;
   const library = '/api/instance/extensions/v1';
   return {
-    id: 'example-pack', available: true, manifest: MANIFEST,
+    id: 'example-pack', available: true, manifest: state.upgrade ? upgradedManifest() : MANIFEST,
     state: !state.installed ? 'available' : state.enabled ? 'enabled' : 'installed',
     installation: state.installed ? {
-      installedVersion: '0.1.0', enabled: state.enabled, settings: {}, repositories: state.repositories, grantedPermissions: ['events.read', 'tasks.read'],
+      installedVersion: '0.1.0', enabled: state.enabled, settings: state.settings ?? {}, repositories: state.repositories, grantedPermissions: ['events.read', 'tasks.read'],
       acknowledgements: { 'example-local': { actor: '1042', at: NOW, package: 'propr-fixture-mcp', version: '1.0.0', secretEnv: ['FIXTURE_TOKEN'] } },
       installedBy: '1042', installedAt: NOW, updatedBy: '1042', updatedAt: NOW,
     } : null,
@@ -57,8 +83,9 @@ function view(state: State) {
       { name: 'example-account', type: 'oauth', label: 'Example account', state: state.oauth ? 'connected' : 'not_connected', required: false },
       { name: 'example-token', type: 'token', label: 'Example API token', state: state.token ? 'connected' : 'not_connected', required: true, ...(state.token ? { setBy: '1042', setAt: NOW } : {}) },
     ],
-    needsApproval: false, pendingPermissions: [], pendingAcknowledgements: [],
-    enableBlockers: state.installed && !state.token ? ['Connection Example API token (example-token) is not set'] : [],
+    needsApproval: Boolean(state.upgrade), pendingPermissions: state.upgrade ? [UPGRADE.permission.name] : [],
+    pendingAcknowledgements: state.upgrade ? [{ server: 'example-local', package: UPGRADE.package, version: UPGRADE.packageVersion, secretEnv: UPGRADE.secretEnv }] : [],
+    enableBlockers: state.installed ? blockers(state) : [],
     contributions: {
       mcpServers: [
         { name: 'example-remote', kind: 'https', managed: state.installed ? { kind: 'server', name: 'example-remote', enabled: true, active } : null, href: library },
@@ -69,6 +96,67 @@ function view(state: State) {
     },
   };
 }
+function upgradedManifest() {
+  const servers = MANIFEST.contributes.mcpServers.map(server => (server.kind === 'package'
+    ? { ...server, version: UPGRADE.packageVersion, secretEnv: UPGRADE.secretEnv.map(name => ({ name, connection: 'example-token' })) } : server));
+  return { ...MANIFEST, version: UPGRADE.version, permissions: [...MANIFEST.permissions, UPGRADE.permission], contributes: { ...MANIFEST.contributes, mcpServers: servers } };
+}
+
+/** The extension library as Skills & MCP servers reads it: the plugin's managed items once it is installed, next to one own server. */
+function extensionLibrary(state: State) {
+  const managedBy = (item: string) => ({ plugin: 'example-pack', item, active: state.enabled });
+  const limits = { repositories: state.repositories ?? [], agents: [], autoApply: true };
+  const bundleId = '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e';
+  const own = { kind: 'https', name: 'docs', url: 'https://tools.example.com/mcp', enabled: true, tools: ['search'], capability: 'read', authentication: 'none', repositories: [], agents: [], autoApply: true };
+  const servers = state.installed ? [
+    { kind: 'https', name: 'example-remote', url: 'https://mcp.example.com/mcp', enabled: true, tools: ['search', 'fetch'], capability: 'read', authentication: 'oauth', ...limits, managedBy: { ...managedBy('example-remote'), registrations: ['dynamic'] } },
+    {
+      kind: 'package', name: 'example-local', ecosystem: 'npm', package: 'propr-fixture-mcp', version: '1.0.0', integrity: `sha512-${'Q'.repeat(86)}==`, bin: 'propr-fixture-mcp',
+      args: [], env: [{ name: 'FIXTURE_GREETING', value: 'hello' }], secretEnv: ['FIXTURE_TOKEN'], enabled: true, tools: ['echo', 'secret_length'], capability: 'read', ...limits, managedBy: managedBy('example-local'),
+    },
+    own,
+  ] : [own];
+  const bundle = { id: bundleId, instanceId: 'instance', name: 'example-notes', digest: 'd'.repeat(64), files: 1, bytes: 512, source: { kind: 'plugin', plugin: 'example-pack', version: '0.1.0', path: 'skills/example-notes' }, requirements: [], createdAt: NOW, auditActor: '1042' };
+  return {
+    instanceId: 'instance', bundles: [], catalog: [],
+    library: {
+      instanceId: 'instance', revision: 7, version: 1, createdAt: NOW, updatedAt: NOW, auditActor: '1042', servers,
+      skills: state.installed ? [{ bundleId, enabled: true, ...limits, managedBy: managedBy('example-notes') }] : [], skillBundles: state.installed ? [bundle] : [], secrets: {},
+    },
+    oauth: { redirectUri: 'https://propr.example.com/api/instance/extensions/v1/oauth/callback', clientMetadataUrl: null, connections: {} },
+  };
+}
+
+/** The settings route of the fixture: the same checks as the API for the one rule the page is driven into, and null removes a setting. */
+function saveSettings(state: State, settings: Record<string, unknown>) {
+  if (typeof settings.maxItems === 'number' && (settings.maxItems < 1 || settings.maxItems > 50)) return { status: 400, error: `maxItems must be ${settings.maxItems < 1 ? 'at least 1' : 'at most 50'}` };
+  if (state.enabled && settings.verbosity === null) return { status: 409, error: 'Required settings cannot be removed while the plugin is enabled: verbosity' };
+  state.settings = Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== null));
+  return null;
+}
+
+const ACKNOWLEDGE = 'Confirm that the secret variables of example-local are readable';
+const acknowledges = (body: Record<string, unknown>) => (body.acknowledgements as string[] | undefined)?.includes('example-local');
+/** The example plugin's mutation routes: null when the path is not one, a refusal, or `{}` once the state changed. */
+function pluginMutation(state: State, route: string, body: Record<string, unknown>): { status?: number; error?: string } | null {
+  switch (route) {
+    case '/install':
+      if (!acknowledges(body)) return { status: 400, error: ACKNOWLEDGE };
+      Object.assign(state, { installed: true, settings: { ...DEFAULTS } }); return {};
+    case '/settings': return saveSettings(state, body.settings as Record<string, unknown>) ?? {};
+    case '/approve':
+      if (!acknowledges(body)) return { status: 400, error: ACKNOWLEDGE };
+      state.upgrade = false; return {};
+    case '/connections/example-token': state.token = body.value !== null; return {};
+    case '/repositories': state.repositories = body.repositories as string[] | null; return {};
+    case '/enabled': state.enabled = body.enabled === true; return {};
+    case '/uninstall':
+      if (state.refuseUninstall) { state.refuseUninstall = false; return { status: 409, error: REFUSAL }; }
+      Object.assign(state, { installed: false, enabled: false, token: false, oauth: false, repositories: null, settings: undefined }); return {};
+    default: return null;
+  }
+}
+
 const otherView = (other: typeof OTHERS[number], enabled: boolean) => ({
   ...view({ installed: enabled, enabled, token: true, oauth: true, repositories: null, refuseUninstall: false }),
   id: other.id, manifest: { ...MANIFEST, ...other, connections: [], contributes: { ...MANIFEST.contributes, mcpServers: [] } }, connections: [],
@@ -85,17 +173,9 @@ async function installFixture(page: Page, state: State): Promise<void> {
     const reply = () => route.fulfill({ json: { plugin: view(state) } });
     if (pathname === BASE) return route.fulfill({ json: { plugins: [view(state), otherView(OTHERS[0], true), otherView(OTHERS[1], false)] } });
     if (pathname === `${BASE}/example-pack`) return route.fulfill({ json: { plugin: { ...view(state), audit: [] } } });
-    if (pathname === `${BASE}/example-pack/install`) {
-      if (!(body.acknowledgements as string[] | undefined)?.includes('example-local')) return route.fulfill({ status: 400, json: { error: 'Confirm that the secret variables of example-local are readable' } });
-      state.installed = true; return reply();
-    }
-    if (pathname === `${BASE}/example-pack/connections/example-token`) { state.token = body.value !== null; return reply(); }
-    if (pathname === `${BASE}/example-pack/repositories`) { state.repositories = body.repositories as string[] | null; return reply(); }
-    if (pathname === `${BASE}/example-pack/enabled`) { state.enabled = body.enabled === true; return reply(); }
-    if (pathname === `${BASE}/example-pack/uninstall`) {
-      if (state.refuseUninstall) { state.refuseUninstall = false; return route.fulfill({ status: 409, json: { error: REFUSAL } }); }
-      Object.assign(state, { installed: false, enabled: false, token: false, oauth: false, repositories: null }); return reply();
-    }
+    const mutated = pluginMutation(state, pathname.slice(`${BASE}/example-pack`.length), body);
+    if (mutated) return mutated.error ? route.fulfill({ status: mutated.status, json: { error: mutated.error } }) : reply();
+    if (pathname === '/api/instance/extensions/v1') return route.fulfill({ json: extensionLibrary(state) });
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: false },
       '/api/auth/user': {
@@ -103,7 +183,6 @@ async function installFixture(page: Page, state: State): Promise<void> {
         permissions: ['instance.manage_settings', 'instance.manage_members', 'instance.manage_agents'], authorizationSource: 'local',
       },
       '/api/instance/catalog': { agents: [], repositories: [{ name: 'integry/propr' }, { name: 'integry/propr-docs' }] },
-      '/api/instance/extensions/v1': { oauth: { redirectUri: 'https://propr.example.com/api/instance/extensions/v1/oauth/callback', clientMetadataUrl: null, connections: {} } },
       '/api/notifications/unread-count': { unreadCount: 0 },
       '/api/notifications/config': { push: { configured: false, vapidPublicKey: null } },
     };
@@ -124,7 +203,7 @@ async function capture(page: Page, name: string, focus?: ReturnType<Page['locato
 const step = (page: Page, title: string) => page.getByRole('region', { name: new RegExp(`^\\d\\. ${title}`) });
 const badge = (page: Page) => page.getByRole('heading', { level: 1 }).getByTestId('plugin-state');
 
-test('installs, connects, limits, enables, disables and uninstalls the example plugin from the page', async ({ page }) => {
+test('installs, connects, configures, enables, shows the managed items, disables and uninstalls the example plugin', async ({ page }) => {
   const state: State = { installed: false, enabled: false, token: false, oauth: false, repositories: null, refuseUninstall: true };
   await page.setViewportSize({ width: 1440, height: 900 });
   await installFixture(page, state);
@@ -157,19 +236,105 @@ test('installs, connects, limits, enables, disables and uninstalls the example p
   await expect(token).toContainText('Stored by administrator 1042');
   await expect(token.getByLabel('Replace Example API token')).toHaveValue('');
 
+  // Configure: the form is generated from the manifest's settings schema and starts from the installed defaults.
   const configure = step(page, 'Configure');
-  await configure.getByRole('checkbox', { name: 'integry/propr', exact: true }).check();
-  await configure.getByRole('button', { name: 'Save repositories' }).click();
+  const settings = configure.getByRole('form', { name: 'Plugin settings' });
+  await expect(settings.getByLabel('Greeting')).toHaveValue('hello');
+  await expect(settings.getByLabel('Verbosity')).toHaveValue('normal');
+  await expect(settings.getByLabel('Maximum items')).toHaveValue('10');
+  await expect(settings.getByLabel('Include draft pull requests')).toHaveValue('false');
+
+  // A required setting left empty blocks Enable, with the reason.
+  await settings.getByLabel('Verbosity').selectOption('');
+  await settings.getByRole('button', { name: 'Save settings' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Settings saved.' })).toBeVisible();
+  // Untouched settings keep their saved values, including the empty default list.
+  expect(state.settings).toEqual({ greeting: 'hello', maxItems: 10, includeDrafts: false, labels: [] });
+  await expect(enable.getByRole('checkbox', { name: /Enabled/ })).toBeDisabled();
+  await expect(enable.getByRole('status')).toContainText('Required setting Verbosity (verbosity) is missing');
+  await expect(configure.getByRole('status').first()).toHaveText('Set Verbosity to enable the plugin.');
+
+  // Invalid input shows the error next to its field.
+  const settingsForm = () => step(page, 'Configure').getByRole('form', { name: 'Plugin settings' });
+  // Text the browser cannot read as a number shows an error instead of removing the saved value. The browser reports
+  // it as an empty value, so it is typed key by key (fill refuses it), both over the saved number and into an emptied field.
+  let settingsSaves = 0;
+  page.on('request', request => { if (request.method() === 'PUT' && request.url().endsWith('/settings')) settingsSaves += 1; });
+  const maxItemsError = () => settingsForm().locator('[data-setting="maxItems"]').getByTestId('plugin-setting-error');
+  for (const [fills, typed] of [[['10'], '1e'], [['7', ''], '-']] as const) {
+    for (const value of fills) await settingsForm().getByLabel('Maximum items').fill(value);
+    await expect(maxItemsError()).toHaveCount(0);
+    await settingsForm().getByLabel('Maximum items').press('ControlOrMeta+a');
+    await settingsForm().getByLabel('Maximum items').pressSequentially(typed);
+    expect(await settingsForm().getByLabel('Maximum items').evaluate(input => (input as HTMLInputElement).validity.badInput)).toBe(true);
+    await settingsForm().getByRole('button', { name: 'Save settings' }).click();
+    await expect(maxItemsError()).toHaveText('maxItems must be a number');
+  }
+  expect(settingsSaves).toBe(0);
+  expect(state.settings).toEqual({ greeting: 'hello', maxItems: 10, includeDrafts: false, labels: [] });
+
+  await settingsForm().getByLabel('Maximum items').fill('99');
+  await settingsForm().getByRole('button', { name: 'Save settings' }).click();
+  await expect(settingsForm().locator('[data-setting="maxItems"]').getByTestId('plugin-setting-error')).toHaveText('maxItems must be at most 50');
+  await capture(page, 'plugins-settings-field-error-desktop', settingsForm());
+
+  await settingsForm().getByLabel('Maximum items').fill('20');
+  await settingsForm().getByLabel('Verbosity').selectOption('detailed');
+  await settingsForm().getByLabel('Include draft pull requests').selectOption('true');
+  await settingsForm().getByRole('button', { name: 'Add entry to Labels to watch' }).click();
+  await settingsForm().getByLabel('Labels to watch: entry 1').fill(' bug ');
+  await settingsForm().getByRole('button', { name: 'Add entry to Labels to watch' }).click();
+  await settingsForm().getByLabel('Labels to watch: entry 2').fill('first\nsecond');
+  await settingsForm().getByRole('button', { name: 'Add repository to Channel per repository' }).click();
+  await settingsForm().getByLabel('Channel per repository: repository 1').fill('integry/propr');
+  await settingsForm().getByLabel('Channel per repository: value for repository 1').fill('#propr');
+  await settingsForm().getByRole('button', { name: 'Save settings' }).click();
+  await expect(enable.getByRole('checkbox', { name: /Enabled/ })).toBeEnabled();
+  expect(state.settings).toEqual({ greeting: 'hello', verbosity: 'detailed', maxItems: 20, includeDrafts: true, labels: [' bug ', 'first\nsecond'], channels: { 'integry/propr': '#propr' } });
+
+  // The saved values round-trip through a fresh read.
+  await page.reload();
+  await expect(settingsForm().getByLabel('Verbosity')).toHaveValue('detailed');
+  await expect(settingsForm().getByLabel('Maximum items')).toHaveValue('20');
+  await expect(settingsForm().getByLabel('Include draft pull requests')).toHaveValue('true');
+  await expect(settingsForm().getByLabel('Labels to watch: entry 1')).toHaveValue(' bug ');
+  await expect(settingsForm().getByLabel('Labels to watch: entry 2')).toHaveValue('first\nsecond');
+  await expect(settingsForm().getByLabel('Channel per repository: value for repository 1')).toHaveValue('#propr');
+  await expect(step(page, 'Configure')).toHaveAttribute('data-done', 'true');
+
+  await step(page, 'Configure').getByRole('checkbox', { name: 'integry/propr', exact: true }).check();
+  await step(page, 'Configure').getByRole('button', { name: 'Save repositories' }).click();
   await expect(page.getByTestId('plugin-repository-limit')).toHaveText('Limited to integry/propr.');
   expect(state.repositories).toEqual(['integry/propr']);
 
-  await enable.getByRole('checkbox', { name: /Enabled/ }).check();
+  await step(page, 'Enable').getByRole('checkbox', { name: /Enabled/ }).check();
   await expect(badge(page)).toHaveText('Degraded'); // the OAuth account is still to sign in
   await expect(page.getByTestId('plugin-contributions')).toContainText('MCP server example-remote · Active');
   state.oauth = true;
   await page.reload();
   await expect(badge(page)).toHaveText('Enabled');
   await capture(page, 'plugins-enabled-desktop', step(page, 'Configure'));
+
+  // The managed items in Skills & MCP servers: badged, linked to the plugin, definition read-only.
+  await page.getByTestId('plugin-contributions').getByRole('link', { name: 'Skills & MCP servers' }).first().click();
+  const library = page.getByRole('region', { name: 'Skills & MCP servers' });
+  const local = library.getByTestId('extension-server').filter({ hasText: 'example-local' });
+  await expect(local.getByRole('link', { name: 'From plugin: Example pack' })).toHaveAttribute('href', '/plugins/example-pack');
+  await expect(library.getByTestId('extension-skill').getByRole('link', { name: 'From plugin: Example pack' })).toBeVisible();
+  await expect(local.getByRole('button', { name: 'Remove' })).toHaveCount(0);
+  const own = library.getByTestId('extension-server').filter({ has: page.getByText('docs', { exact: true }) });
+  await expect(own.getByRole('button', { name: 'Remove' })).toHaveCount(1);
+  await expect(own.getByTestId('extension-managed-badge')).toHaveCount(0);
+  await local.getByRole('button', { name: 'Edit limits' }).click();
+  const managedForm = library.getByTestId('extension-server-form');
+  await expect(managedForm.getByTestId('extension-managed-definition')).toContainText('propr-fixture-mcp');
+  await expect(managedForm.getByTestId('extension-managed-definition')).toContainText('FIXTURE_TOKEN');
+  await expect(managedForm.getByLabel('Package')).toHaveCount(0);
+  await expect(managedForm.getByRole('checkbox', { name: /Apply automatically/ })).toBeEnabled();
+  await capture(page, 'plugins-managed-item-library-desktop', managedForm);
+  await managedForm.getByRole('button', { name: 'Cancel' }).click();
+  await local.getByRole('link', { name: 'From plugin: Example pack' }).click();
+  await expect(badge(page)).toHaveText('Enabled');
 
   await step(page, 'Enable').getByRole('checkbox', { name: /Enabled/ }).uncheck();
   await expect(badge(page)).toHaveText('Off');
@@ -181,6 +346,27 @@ test('installs, connects, limits, enables, disables and uninstalls the example p
   await capture(page, 'plugins-uninstall-refused-desktop', page.getByTestId('plugin-contributions'));
   await page.getByRole('button', { name: 'Uninstall Example pack' }).click();
   await expect(badge(page)).toHaveText('Not installed');
+});
+
+test('shows what an upgrade asks for and approving it clears Needs approval', async ({ page }) => {
+  const state: State = { installed: true, enabled: true, token: true, oauth: true, repositories: null, refuseUninstall: false, settings: { ...DEFAULTS }, upgrade: true };
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installFixture(page, state);
+  await page.goto('/plugins/example-pack');
+  await expect(badge(page)).toHaveText('Needs approval');
+  const approval = page.getByTestId('plugin-approval');
+  await expect(approval).toContainText('Version 0.2.0 needs your approval (approved: 0.1.0)');
+  await expect(approval.getByTestId('plugin-approval-permissions')).toContainText('pull_requests.read: Read pull requests and their status');
+  await expect(approval.getByTestId('plugin-approval-package')).toContainText('Version changes from 1.0.0 to 1.1.0');
+  await expect(approval.getByTestId('plugin-approval-package')).toContainText('Secret variables added: FIXTURE_REGION');
+  const approve = approval.getByRole('button', { name: 'Approve' });
+  await expect(approve).toBeDisabled();
+  await capture(page, 'plugins-needs-approval-desktop', approval);
+  await approval.getByRole('checkbox', { name: /propr-fixture-mcp@1\.1\.0 receives the secret variables FIXTURE_TOKEN, FIXTURE_REGION/ }).check();
+  await approve.click();
+  await expect(badge(page)).toHaveText('Enabled');
+  await expect(page.getByTestId('plugin-approval')).toHaveCount(0);
+  expect(state.upgrade).toBe(false);
 });
 
 test('keeps the plugin steps usable on a phone', async ({ page }) => {

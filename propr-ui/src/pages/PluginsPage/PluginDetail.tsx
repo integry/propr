@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { PluginConfigureStep } from './PluginConfigureStep';
 import { PluginConnections } from './PluginConnections';
+import { PluginActivity } from './PluginActivity';
 import { PluginContributions } from './PluginContributions';
 import { PluginEnableStep } from './PluginEnableStep';
 import { PluginInstallStep } from './PluginInstallStep';
@@ -16,7 +17,7 @@ const back = (
   </Link>
 );
 
-/** One plugin: its header, the four steps in a fixed order, what it added and uninstall. */
+/** One plugin: its header, the four steps in a fixed order, what it added, its activity and uninstall. */
 export function PluginDetail({ id }: { id: string }) {
   const detail = usePluginDetail(id);
   const { view } = detail;
@@ -56,9 +57,10 @@ export function PluginDetail({ id }: { id: string }) {
         redirectUri: detail.redirectUri, busy: detail.busy, oauthBusy: detail.oauthBusy,
         onConnect: name => void detail.connectOAuth(name), onDisconnect: name => void detail.disconnectOAuth(name), onSetSecret: detail.setSecret,
       }} />
-      <PluginConfigureStep key={(view.installation?.repositories ?? []).join(',')} view={view} busy={detail.busy} onSave={detail.setRepositories} />
+      <PluginConfigureStep view={view} busy={detail.busy} settingsError={detail.errors.settings} onSaveSettings={detail.setSettings} onSaveRepositories={detail.setRepositories} />
       <PluginEnableStep view={view} busy={detail.busy} onChange={detail.setEnabled} />
       <PluginContributions view={view} />
+      {view.installation && <PluginActivity />}
       <PluginUninstall view={view} busy={detail.busy} error={detail.errors.uninstall} onUninstall={() => void detail.uninstall()} />
     </div>
   );

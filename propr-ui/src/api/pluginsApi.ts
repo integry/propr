@@ -46,6 +46,9 @@ export const installPlugin = (id: string, acknowledgements: string[]): Plugin =>
 /** Approve permissions and acknowledgements a newer manifest asks for. */
 export const approvePlugin = (id: string, acknowledgements: string[]): Plugin =>
   request(plugin(id, '/approve'), { method: 'POST', body: acknowledgements.length ? { acknowledgements } : {} });
+/** Replace the settings; a `null` value removes that setting. The API validates them against the manifest's settings schema. */
+export const setPluginSettings = (id: string, settings: ProprApi.PluginSettingsRequest['settings']): Plugin =>
+  request(plugin(id, '/settings'), { method: 'PUT', body: { settings } satisfies ProprApi.PluginSettingsRequest });
 /** `null` (or an empty list) for all repositories. */
 export const setPluginRepositories = (id: string, repositories: string[] | null): Plugin =>
   request(plugin(id, '/repositories'), { method: 'PUT', body: { repositories: repositories?.length ? repositories : null } satisfies ProprApi.PluginRepositoriesRequest });
