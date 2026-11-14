@@ -487,7 +487,7 @@ async function createEpicPR(
     try {
         prResponse = await createEpicPRWithDraftFallback(octokit, {
             owner, repo, title, head: baseBranch, base: defaultBranch, body,
-            // The title starts with the count this merge reached (`🔨 1/N`); the status sync corrects it if more merged meanwhile.
+            // The title starts with the count this merge reached (`◔ 1/N`); the status sync corrects it if more merged meanwhile.
             progress: planDetails ? epicProgressAfterMerge(context.mergedChildPrNumber, planDetails.issues) : null,
         });
     } catch (error) {

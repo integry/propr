@@ -235,7 +235,7 @@ export function setEpicChildReadContinueMsForTests(ms: number | null): void {
     epicChildReadContinueMs = ms ?? DEFAULT_EPIC_CHILD_READ_CONTINUE_MS;
 }
 
-const TITLE_SLOT_STATE: Array<[RegExp, PullRequestStatus['state']]> = [[/^\u{1F528}/u, 'working'], [/^⚠/u, 'needs_attention'], [/^✅/u, 'ready']];
+const TITLE_SLOT_STATE: Array<[RegExp, PullRequestStatus['state']]> = [[/^(?:\u{1F528}|[\u25CB\u25D4\u25D1\u25D5])/u, 'working'], [/^⚠/u, 'needs_attention'], [/^✅/u, 'ready']];
 const BLOCK_COUNT_PATTERN = /^(\*\*ProPR\*\* (?:\u{1F528}|⚠️?|✅) )\d+ of \d+( issues merged)/mu;
 const BLOCK_STAMP_PATTERN = / · updated \d{2}:\d{2} UTC/;
 

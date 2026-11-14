@@ -223,7 +223,7 @@ test('a merge into the epic branch renames the title once, and the next queued i
     const renamesBefore = github.writes.filter(write => typeof write.params.title === 'string').length;
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.equal(github.epic().title, '🔨 2/3 [Epic] Scheduler primitives');
+    assert.equal(github.epic().title, '◑ 2/3 [Epic] Scheduler primitives');
     assert.equal(github.writes.filter(write => typeof write.params.title === 'string').length, renamesBefore + 1, 'one rename per merge');
     assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 2 of 3 issues merged · #802 starts next · /);
     assert.match(github.progressComment(), /Merged child PRs: #910, #911\n\nUp next: #802 \(Third issue\)\n/);
@@ -698,7 +698,7 @@ test('an epic whose unread sub-PRs could be working keeps its published state, w
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     // Listed without an update time, no read status is kept: no state is claimed from incomplete sub-PR statuses.
     assert.equal(statusLine(), working.replace('1 of 3', '1 of 13'), 'the published state stays; only its merged count changes');
-    assert.equal(github.epic().title, '🔨 1/13 [Epic] Scheduler primitives');
+    assert.equal(github.epic().title, '◔ 1/13 [Epic] Scheduler primitives');
     const writes = github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length;
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length, writes, 'nothing new: neither the block nor the title is written');
@@ -734,7 +734,7 @@ test('more open sub-PRs than the read budget: later updates read the rest, keep 
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(subPrReads(), 10, 'one update reads at most ten sub-PRs');
     assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #801 in progress/, 'undetermined: the state stays, the count is updated');
-    assert.equal(github.epic().title, '🔨 1/14 [Epic] Scheduler primitives');
+    assert.equal(github.epic().title, '◔ 1/14 [Epic] Scheduler primitives');
 
     // The next update reads the two left unread and keeps the ten read before: the state is established.
     github.reads = [];

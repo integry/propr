@@ -16,9 +16,17 @@ describe('title parsers and the PR status slot', () => {
     });
   }
 
+  for (const slot of ['○ 0/21 ', '◔ 3/21 ', '◑ 11/21 ', '◕ 17/21 ', '🔨 3/21 ', '✅ 21/21 ']) {
+    it(`strips the epic slot "${slot}"`, () => {
+      expect(getCleanDocumentTitle(`${slot}[Epic] Plugin system`)).toBe('[Epic] Plugin system');
+      expect(cleanHeaderTaskTitle(`Followup: ${slot}[3510 by Claude Opus 5.5] Apply library extensions`)).toBe('Apply library extensions');
+    });
+  }
+
   it('strips only a strict leading slot', () => {
     expect(getCleanDocumentTitle('✅ done is not a model tag')).toBe('done is not a model tag');
     expect(getCleanDocumentTitle('🔨Hammer time')).toBe('🔨Hammer time');
+    expect(getCleanDocumentTitle('◔ Not a count')).toBe('◔ Not a count');
     expect(cleanHeaderTaskTitle(undefined)).toBe('');
   });
 });

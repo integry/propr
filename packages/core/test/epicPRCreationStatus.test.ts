@@ -29,14 +29,14 @@ function recordingOctokit() {
     return { created, octokit: octokit as unknown as Parameters<typeof createEpicPRWithDraftFallback>[0] };
 }
 
-test('a new epic PR is created with 🔨 0/N before [Epic] and the status block in its body', async () => {
+test('a new epic PR is created with ○ 0/N before [Epic] and the status block in its body', async () => {
     enablePullRequestStatusSync({ redis: null });
     const { created, octokit } = recordingOctokit();
     await createEpicPRWithDraftFallback(octokit, {
         owner: 'integry', repo: 'propr', title: '[Epic] Scheduler primitives', head: '800-epic-scheduler-primitives-x7y', base: 'main',
         body: '## Epic PR', progress: { merged: 0, total: 5 }, nextIssue: 800,
     });
-    assert.equal(created[0].title, '🔨 0/5 [Epic] Scheduler primitives');
+    assert.equal(created[0].title, '○ 0/5 [Epic] Scheduler primitives');
     assert.match(String(created[0].body), /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 0 of 5 issues merged · #800 starts next · updated \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n## Epic PR$/);
     assert.equal('progress' in created[0], false, 'only GitHub fields are sent');
 });

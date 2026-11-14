@@ -13,7 +13,7 @@ interface CreatePROptions {
   head: string;
   base: string;
   body: string;
-  /** Epic progress the title slot starts with (`🔨 merged/total`). */
+  /** Epic progress the title slot starts with (`○ merged/total` while working, a pie circle filling with the count). */
   progress?: { merged: number; total: number } | null;
   /** The plan issue that starts next, named in the initial status block. */
   nextIssue?: number | null;
@@ -27,7 +27,7 @@ export async function createEpicPRWithDraftFallback(
   octokit: OctokitLike,
   opts: CreatePROptions
 ): Promise<{ data: { number: number; html_url: string } }> {
-  // Created with the 🔨 title slot (and the epic's merged/total) when prTitleStatus is on, so creation costs no rename.
+  // Created with the working title slot (○ and the epic's merged/total) when prTitleStatus is on, so creation costs no rename.
   const { progress, nextIssue, ...fields } = opts;
   const repository = `${opts.owner}/${opts.repo}`;
   opts = { ...fields, title: await initialPullRequestTitle(repository, opts.title, progress) };
@@ -70,7 +70,7 @@ export interface EnsureEpicPROptions {
   planName: string;
   baseBranch?: string;
   correlationId?: string;
-  /** Issues in the plan; a new epic PR's title then starts with `🔨 0/N`. */
+  /** Issues in the plan; a new epic PR's title then starts with `○ 0/N`. */
   issueCount?: number;
 }
 

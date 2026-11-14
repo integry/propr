@@ -8,9 +8,18 @@
  *     ✅⑧ [3510 by Claude Opus 5.5] Apply library extensions automatically …
  *
  * An epic pull request follows its emoji with how many of its issues are
- * merged into the epic branch, and shows no score:
+ * merged into the epic branch, and shows no score. While it is working, a pie
+ * circle chosen from that count replaces 🔨, so an epic in progress is told
+ * apart from an ordinary working pull request: ○ none merged, ◔ under half,
+ * ◑ half to under three quarters, ◕ three quarters or more but not all.
+ * ⚠️ and ✅ are written as for any pull request:
  *
- *     🔨 3/5 [Epic] Scheduler primitives
+ *     ○ 0/21 [Epic] Plugin system
+ *     ◔ 3/21 [Epic] Plugin system
+ *     ✅ 21/21 [Epic] Plugin system
+ *
+ * An older epic title with `🔨 N/M` is still read as the working slot, so it
+ * is rewritten to its circle on its next status update.
  *
  * The API, the worker and the UI share these helpers: the slot is recognised
  * only by the strict pattern below, anchored at the start of the title, and
@@ -33,15 +42,30 @@ const WORKING = '\u{1F528}';
 /** ⚠️ is U+26A0 followed by the emoji variation selector U+FE0F; the slot is written with both. */
 const NEEDS_ATTENTION = '⚠️';
 const READY = '✅';
+/** Working epics: ○ (U+25CB), ◔ (U+25D4), ◑ (U+25D1), ◕ (U+25D5), written without a variation selector. */
+const EPIC_NONE = '\u25CB';
+const EPIC_QUARTER = '\u25D4';
+const EPIC_HALF = '\u25D1';
+const EPIC_THREE_QUARTERS = '\u25D5';
 /** ① (U+2460) to ⑩ (U+2469). */
 const CIRCLED_ONE = 0x2460;
 
 /**
  * The slot, anchored at the start of the title and followed by exactly one
  * space. ⚠ is accepted with and without its variation selector. The score is
- * only recognised beside ⚠️ and ✅. An epic's ` merged/total` may follow.
+ * only recognised beside ⚠️ and ✅. An epic's ` merged/total` may follow; a
+ * working epic's circle is recognised only with it.
  */
-export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:\u{1F528}|(?:⚠️?|✅)[①-⑩]?)(?: \d{1,6}\/\d{1,6})? /u;
+export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:(?:\u{1F528}|(?:⚠️?|✅)[①-⑩]?)(?: \d{1,6}\/\d{1,6})?|[\u25CB\u25D4\u25D1\u25D5] \d{1,6}\/\d{1,6}) /u;
+
+/** The circle a working epic shows for `merged` of `total` issues merged. */
+function epicWorkingCircle(merged: number, total: number): string {
+    if (merged <= 0) return EPIC_NONE;
+    if (merged * 2 < total) return EPIC_QUARTER;
+    if (merged * 4 < total * 3) return EPIC_HALF;
+    // Three quarters or more; also every issue merged while the epic is still working (✅ is a state, not a count).
+    return EPIC_THREE_QUARTERS;
+}
 
 function circledScore(score: number | null | undefined): string {
     if (typeof score !== 'number' || !Number.isFinite(score)) return '';
@@ -64,7 +88,10 @@ function progressText(progress: TitleStatus['progress']): string {
 export function renderStatusSlot(status: TitleStatus | null | undefined): string | null {
     if (!status) return null;
     const progress = progressText(status.progress);
-    if (status.state === 'working') return `${WORKING}${progress}`;
+    if (status.state === 'working') {
+        // progressText writes a count only when status.progress holds valid counts.
+        return progress && status.progress ? `${epicWorkingCircle(status.progress.merged, status.progress.total)}${progress}` : WORKING;
+    }
     const emoji = status.state === 'ready' ? READY : NEEDS_ATTENTION;
     // An epic shows its progress and no review score.
     return progress ? `${emoji}${progress}` : `${emoji}${circledScore(status.score)}`;

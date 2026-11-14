@@ -256,7 +256,7 @@ export async function decidePullRequestTitleForSync(input: {
  * The title a new ProPR pull request is created with: `🔨 ` first when this
  * process maintains the status and the repository shows it in the title, so
  * creation costs no rename. A new epic passes its progress and starts with
- * `🔨 0/N `. Otherwise, or when the setting cannot be read, the title is
+ * `○ 0/N `. Otherwise, or when the setting cannot be read, the title is
  * returned exactly as given.
  */
 export async function initialPullRequestTitle(

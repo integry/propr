@@ -403,7 +403,7 @@ test('the edited webhook of a ProPR rename causes no further write or work', asy
 });
 
 test('[Epic] detection accepts titles with and without the slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️⑥ ', '⚠ ', '✅⑧ ', '🔨 3/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
+    for (const slot of ['', '🔨 ', '⚠️⑥ ', '⚠ ', '✅⑧ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
     assert.equal(isEpicPullRequestTitle('Not an [Epic]'), false);
     assert.equal(isEpicPullRequestTitle(null), false);
 });

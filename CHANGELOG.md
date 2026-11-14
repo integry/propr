@@ -14,8 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the epic branch. Its status line reads, for example, `🔨 3 of 5 issues
   merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10)`,
   and with `prTitleStatus` on its title slot is followed by the count
-  (`🔨 3/5 [Epic] Scheduler primitives`); new epic PRs are created with
-  `🔨 0/N` and the line in their body. The epic is `working` while a sub-PR
+  (`◑ 3/5 [Epic] Scheduler primitives`). While the epic is working, a pie
+  circle chosen from the count replaces 🔨 so it is told apart from an
+  ordinary working pull request: `○` none merged, `◔` under half, `◑` half
+  to under three quarters, `◕` three quarters or more but not all; `⚠️` and
+  `✅` (`✅ 5/5` once all are merged) are unchanged, and an older `🔨 N/M`
+  epic title is rewritten to its circle on its next update. New epic PRs are
+  created with `○ 0/N` and the line in their body. The epic is `working` while a sub-PR
   or issue is being worked on or the next issue is about to start,
   `needs_attention` when nothing runs and a sub-PR needs you or is ready and
   waits to be merged into the epic branch, the queue is paused or the epic

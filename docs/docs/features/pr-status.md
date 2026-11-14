@@ -57,7 +57,7 @@ GitHub's pull request list shows only titles, labels and a check icon, so ProPR 
 | `needs_attention` | `⚠️⑥ [3475 by Claude Opus 5.5] …`, with the latest review score (① to ⑩) when there is one |
 | `ready` | `✅⑧ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
 
-The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. A `none` pull request has no slot.
+The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
 
 Every title change adds a "changed the title" entry to the timeline, so the title changes far less often than the body line:
 
@@ -104,7 +104,16 @@ The body line leads with the progress, then says what is running or what waits o
 
 > **ProPR** ✅ 5 of 5 issues merged · checks: 12 passed · updated 10:02 UTC
 
-With `prTitleStatus` on, the title slot is followed by `merged/total`, for example `🔨 3/5 [Epic] Scheduler primitives` or `✅ 5/5 [Epic] Scheduler primitives`. A new epic PR is created with `🔨 0/N` (or the count its first merge reached) and with the line already in its body. The title is renamed when a sub-PR merges into the epic branch (the count changes) and when the state changes, never for activity inside a state, and the 30-second hold before ⚠️ or ✅ applies as for any pull request: while the queue is about to start the next issue, the epic stays `🔨` and is not renamed. With the setting off, epic titles stay exactly as they are; the line in the body is still written. `[Epic]` detection reads the title without the slot and count.
+With `prTitleStatus` on, the title slot is followed by `merged/total`. While the epic is `working`, a pie circle chosen from that count takes the place of 🔨, so an epic in progress is told apart from an ordinary working pull request at a glance:
+
+| Merged | Title |
+| --- | --- |
+| none | `○ 0/21 [Epic] Plugin system` |
+| at least one, under half | `◔ 3/21 [Epic] Plugin system` |
+| half or more, under three quarters | `◑ 11/21 [Epic] Plugin system` |
+| three quarters or more, not all | `◕ 17/21 [Epic] Plugin system` |
+
+`⚠️` and `✅` are shown as for any pull request, for example `⚠️ 3/21 [Epic] Plugin system` or `✅ 21/21 [Epic] Plugin system` once every issue is merged. The circle changes only when a sub-PR merges, which already renames the title for the count, so it adds no renames. An epic title written earlier with `🔨 3/21` is rewritten to its circle on its next status update. A new epic PR is created with `○ 0/N` (or the count its first merge reached) and with the line already in its body. The title is renamed when a sub-PR merges into the epic branch (the count changes) and when the state changes, never for activity inside a state, and the 30-second hold before ⚠️ or ✅ applies as for any pull request: while the queue is about to start the next issue, the epic keeps its working circle and is not renamed. With the setting off, epic titles stay exactly as they are; the line in the body is still written. `[Epic]` detection reads the title without the slot and count.
 
 When ProPR rewrites the epic body (its issue list and `Fixes #` lines), it keeps the status line. The epic PR's status is updated when a sub-PR into the epic branch opens, changes status, merges or closes, and when an issue of the plan starts or finishes. A sub-PR's status change counts even when nothing on the sub-PR can show it, for example with `prTitleStatus` off and a description too full for its status line.
 

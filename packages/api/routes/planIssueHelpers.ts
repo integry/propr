@@ -50,7 +50,7 @@ export interface EpicPRParams {
   planName: string;
   issueNumber: number;
   baseBranch?: string;
-  /** Issues in the plan, for the new epic PR's `🔨 0/N` title slot. */
+  /** Issues in the plan, for the new epic PR's `○ 0/N` title slot. */
   issueCount?: number;
   correlationId: string;
   labelLogger: ReturnType<typeof logger.withCorrelation>;

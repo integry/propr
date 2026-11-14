@@ -12,7 +12,7 @@ import {
 import {
     describeChildStatus, renderCompactPullRequestStatusBlock, renderPullRequestStatusLine,
 } from '../src/services/pullRequestStatus/pullRequestStatusBlock.js';
-import { titleStatusOf } from '../src/services/pullRequestStatus/pullRequestStatusTitle.js';
+import { decidePullRequestTitle, titleStatusOf } from '../src/services/pullRequestStatus/pullRequestStatusTitle.js';
 
 // The progress comment module reads GitHub credentials on import.
 process.env.PROPR_DEMO_MODE = 'true';
@@ -158,10 +158,28 @@ test('the compact block keeps the progress', () => {
 
 test('the title slot shows the state and merged/total, never a score', () => {
     const slot = (status: PullRequestStatus) => renderStatusSlot(titleStatusOf(status));
-    assert.equal(slot(computePullRequestStatus(epic({ nextIssueQueued: true }))), '🔨 3/5');
+    assert.equal(slot(computePullRequestStatus(epic({ nextIssueQueued: true }))), '◑ 3/5');
     assert.equal(slot(computePullRequestStatus(epic({ children: [child(READY_CHILD)] }))), '⚠️ 3/5');
     assert.equal(slot(computePullRequestStatus(epic({ merged: 5, total: 5 }))), '✅ 5/5');
-    assert.equal(readStatusSlot('🔨 3/5 [Epic] Scheduler primitives'), '🔨 3/5');
+    assert.equal(readStatusSlot('🔨 3/5 [Epic] Scheduler primitives'), '🔨 3/5', 'a legacy working epic slot is still read');
+    assert.equal(readStatusSlot('◑ 3/5 [Epic] Scheduler primitives'), '◑ 3/5');
+});
+
+test('a working epic title shows a pie circle; ⚠️, ✅ and ordinary working pull requests are unchanged', () => {
+    const slot = (overrides: Partial<EpicStatusFacts>) => renderStatusSlot(titleStatusOf(computePullRequestStatus(epic(overrides))));
+    assert.equal(slot({ merged: 0, total: 5, nextIssueQueued: true }), '○ 0/5');
+    assert.equal(slot({ merged: 1, total: 5, nextIssueQueued: true }), '◔ 1/5');
+    assert.equal(slot({ merged: 4, total: 5, nextIssueQueued: true }), '◕ 4/5');
+    assert.equal(slot({ merged: 5, total: 5 }), '✅ 5/5');
+    assert.equal(renderStatusSlot(titleStatusOf(computePullRequestStatus(facts({ checks: { complete: false, passed: 3, failed: 0, pending: 2, failedNames: [] } })))), '🔨');
+});
+
+test('a legacy 🔨 epic title is rewritten to its circle once, as one slot, and then left alone', async () => {
+    const status = computePullRequestStatus(epic({ merged: 3, total: 21, nextIssueQueued: true }));
+    const input = { repository: 'integry/propr', prNumber: 7, status, isProprPullRequest: true, enabled: true, redis: null };
+    const legacy = await decidePullRequestTitle({ ...input, title: '🔨 3/21 [Epic] Plugin system' });
+    assert.deepEqual(legacy, { title: '◔ 3/21 [Epic] Plugin system', settleInMs: null });
+    assert.deepEqual(await decidePullRequestTitle({ ...input, title: '◔ 3/21 [Epic] Plugin system' }), { title: null, settleInMs: null }, 'no rename when the slot is right');
 });
 
 test('activity inside working leaves the epic title slot as it is', () => {

@@ -63,10 +63,10 @@ test('merge commit titles carry no slot', () => {
 
 test('an epic slot carries merged/total after the emoji and no score', () => {
     const EPIC = '[Epic] Scheduler primitives';
-    assert.equal(renderStatusSlot({ state: 'working', progress: { merged: 3, total: 5 } }), '🔨 3/5');
+    assert.equal(renderStatusSlot({ state: 'working', progress: { merged: 3, total: 5 } }), '◑ 3/5');
     assert.equal(renderStatusSlot({ state: 'ready', score: 8, progress: { merged: 5, total: 5 } }), '✅ 5/5', 'no score beside an epic count');
     assert.equal(renderStatusSlot({ state: 'needs_attention', progress: { merged: 0, total: 0 } }), '⚠️', 'no count for an epic without issues');
-    assert.equal(withStatusSlot(EPIC, { state: 'working', progress: { merged: 0, total: 5 } }), `🔨 0/5 ${EPIC}`);
+    assert.equal(withStatusSlot(EPIC, { state: 'working', progress: { merged: 0, total: 5 } }), `○ 0/5 ${EPIC}`);
     assert.equal(withStatusSlot(`🔨 3/5 ${EPIC}`, { state: 'needs_attention', progress: { merged: 4, total: 5 } }), `⚠️ 4/5 ${EPIC}`);
     assert.equal(readStatusSlot(`⚠️ 4/5 ${EPIC}`), '⚠️ 4/5');
     assert.equal(readStatusSlot(`⚠ 4/5 ${EPIC}`), '⚠ 4/5');
@@ -76,4 +76,42 @@ test('an epic slot carries merged/total after the emoji and no score', () => {
     for (const title of [`🔨3/5 ${EPIC}`, `3/5 ${EPIC}`]) assert.equal(stripStatusSlot(title), title, title);
     assert.equal(stripStatusSlot(`🔨 3/ ${EPIC}`), `3/ ${EPIC}`, "a malformed count is the title's, not the slot's");
     assert.deepEqual(mergeCommitTitleFields({ number: 9, title: `✅ 5/5 ${EPIC}` }, 'squash'), { commit_title: `${EPIC} (#9)` });
+});
+
+test('a working epic shows a pie circle chosen from merged/total instead of 🔨', () => {
+    const working = (merged: number, total: number) => renderStatusSlot({ state: 'working', progress: { merged, total } });
+    for (const [merged, total, slot] of [
+        [0, 21, '○ 0/21'], [1, 21, '◔ 1/21'], [10, 21, '◔ 10/21'], [11, 21, '◑ 11/21'],
+        [2, 4, '◑ 2/4'], [15, 21, '◑ 15/21'], [16, 21, '◕ 16/21'], [3, 4, '◕ 3/4'], [2, 4 * 1, '◑ 2/4'],
+        [17, 21, '◕ 17/21'], [20, 21, '◕ 20/21'], [1, 2, '◑ 1/2'], [1, 1, '◕ 1/1'],
+    ] as const) assert.equal(working(merged, total), slot, `${merged}/${total}`);
+    // Just under / exactly at three quarters of 20: 14 and 15.
+    assert.equal(working(14, 20), '◑ 14/20');
+    assert.equal(working(15, 20), '◕ 15/20');
+    // Just under / exactly at half of 20: 9 and 10.
+    assert.equal(working(9, 20), '◔ 9/20');
+    assert.equal(working(10, 20), '◑ 10/20');
+    for (const slot of ['○ 0/21', '◔ 3/21', '◑ 11/21', '◕ 17/21']) {
+        assert.ok(!/\uFE0F/u.test(slot), 'no variation selector');
+        assert.equal(readStatusSlot(`${slot} [Epic] Plugin system`), slot);
+        assert.equal(stripStatusSlot(`${slot} [Epic] Plugin system`), '[Epic] Plugin system');
+    }
+    // Every issue merged: ✅ N/N, as before; ⚠️ unchanged on an epic.
+    assert.equal(renderStatusSlot({ state: 'ready', progress: { merged: 21, total: 21 } }), '✅ 21/21');
+    assert.equal(renderStatusSlot({ state: 'needs_attention', progress: { merged: 3, total: 21 } }), '⚠️ 3/21');
+    // Ordinary pull requests keep 🔨.
+    assert.equal(renderStatusSlot({ state: 'working' }), '🔨');
+    assert.equal(withStatusSlot('[3545 by Claude Opus 5.5] Fix it', { state: 'working' }), '🔨 [3545 by Claude Opus 5.5] Fix it');
+});
+
+test('a legacy 🔨 epic title is rewritten to its circle as one slot', () => {
+    const EPIC = '[Epic] Plugin system';
+    assert.equal(readStatusSlot(`🔨 3/21 ${EPIC}`), '🔨 3/21', 'the legacy slot is still read as the slot');
+    assert.equal(withStatusSlot(`🔨 3/21 ${EPIC}`, { state: 'working', progress: { merged: 3, total: 21 } }), `◔ 3/21 ${EPIC}`);
+    assert.equal(withStatusSlot(`◔ 3/21 ${EPIC}`, { state: 'working', progress: { merged: 11, total: 21 } }), `◑ 11/21 ${EPIC}`);
+    assert.equal(withStatusSlot(`◕ 20/21 ${EPIC}`, { state: 'ready', progress: { merged: 21, total: 21 } }), `✅ 21/21 ${EPIC}`);
+    assert.equal(withStatusSlot(`◔ 3/21 ${EPIC}`, { state: 'needs_attention', progress: { merged: 3, total: 21 } }), `⚠️ 3/21 ${EPIC}`);
+    assert.equal(withStatusSlot(`◔ 3/21 ${EPIC}`, null), EPIC);
+    // A circle is the slot only with its count.
+    for (const title of [`◔ ${EPIC}`, `◔3/21 ${EPIC}`, `● 3/21 ${EPIC}`]) assert.equal(stripStatusSlot(title), title, title);
 });
