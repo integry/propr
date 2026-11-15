@@ -11,7 +11,7 @@ import { effectivePluginPermissions, type PluginInstallationTarget } from './plu
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
 import {
-  clipError, journalHead, notifyAdministratorsOfDegradedPlugin, pluginDeliveryId, pluginPauseAfterFailures, restartPluginDispatch, sendPendingDegradedNotices, storedLogs,
+  clipError, journalHead, notifyAdministratorsOfDegradedPlugin, owedNoticesWith, pluginDeliveryId, pluginPauseAfterFailures, restartPluginDispatch, sendPendingDegradedNotices, storedLogs,
   type PluginDegradedNotice, type PluginDegradedNotifier, type PluginDeliveryRow, type PluginDispatchRow,
 } from './pluginDeliveries.js';
 
@@ -293,7 +293,8 @@ export class PluginDispatcher {
     for (const row of rows) {
       const [event] = await listRepositoryEvents(this.database, { repository: row.repository, afterSeq: Number(row.event_seq) - 1, limit: 1 });
       if (!event || event.seq !== Number(row.event_seq)) {
-        await this.database('plugin_deliveries').where({ id: row.id }).update({ status: 'failed', manual: false, next_attempt_at: null, error: 'The event is no longer in the journal' });
+        await this.fenced(installation, trx => trx('plugin_deliveries').where({ id: row.id, status: row.status, attempt: row.attempt })
+          .update({ status: 'failed', manual: false, next_attempt_at: null, error: 'The event is no longer in the journal' }));
         continue;
       }
       await this.attempt(installation, row, event);
@@ -406,9 +407,9 @@ export class PluginDispatcher {
     if (!manual && event.seq <= Number(state.start_seq)) throw new Stopped();
     if (inScope(target.record.repositories, event.repository)) return true;
     if (!manual) throw new Stopped();
-    await this.database('plugin_deliveries').where({ id: row.id }).update({
+    await this.fenced(installation, trx => trx('plugin_deliveries').where({ id: row.id, status: row.status, attempt: row.attempt }).update({
       status: 'failed', manual: false, next_attempt_at: null, finished_at: this.now(), error: "Not delivered: the repository is outside the plugin's repository limit",
-    });
+    }));
     return false;
   }
 
@@ -418,9 +419,16 @@ export class PluginDispatcher {
     const { pluginId } = installation.target;
     const manual = Boolean(row.manual);
     const attempt = Number(row.attempt) + 1;
-    // Only from the state just read: a restart or another writer that changed the record since stops this pass.
-    const marked = await this.database('plugin_deliveries').where({ id: row.id, status: row.status, attempt: row.attempt })
-      .update({ status: 'running', attempt, started_at: this.now(), finished_at: null });
+    // The claim is fenced: only while this dispatcher still holds the lease of the installation and start it read,
+    // the installation is still that one and enabled, and the record is unchanged. The lease is renewed in the same
+    // write, so a worker suspended since `admit` (its lease taken over meanwhile) never starts the handler.
+    const marked = await this.fenced(installation, async trx => {
+      const enabled = await trx('plugin_installations').where({ plugin_id: pluginId, installed_at: installation.target.record.installedAt, enabled: true }).first('plugin_id');
+      if (!enabled) return 0;
+      const now = this.now();
+      await trx('plugin_dispatch').where({ plugin_id: pluginId, lease_owner: this.owner }).update({ lease_expires_at: now + (this.options.leaseMs ?? DEFAULT_LEASE_MS) });
+      return trx('plugin_deliveries').where({ id: row.id, status: row.status, attempt: row.attempt }).update({ status: 'running', attempt, started_at: now, finished_at: null });
+    });
     if (marked !== 1) throw new Stopped();
     installation.attempts++;
     let run: PluginHandlerRun;
@@ -461,9 +469,9 @@ export class PluginDispatcher {
 
   /**
    * Count the attempt into the installation's health; returns whether it just
-   * became Degraded and whether it is paused now. Becoming Degraded stores the
-   * notification owed in the same write, so a failed send or a crash before it
-   * leaves it to be sent again.
+   * became Degraded and whether it is paused now. Becoming Degraded queues the
+   * notification owed in the same write, behind any earlier one not sent yet,
+   * so a failed send or a crash before it leaves it to be sent again.
    */
   private async recordHealth(trx: Knex.Transaction, state: PluginDispatchRow, run: PluginHandlerRun, now: number): Promise<{ notice: boolean; paused: boolean }> {
     const where = { plugin_id: state.plugin_id };
@@ -477,7 +485,9 @@ export class PluginDispatcher {
     const notice: PluginDegradedNotice = { pluginId: state.plugin_id, installedAt: Number(state.installed_at), degradedAt: now, consecutiveFailures: failures, lastError: error };
     await trx('plugin_dispatch').where(where).update({
       consecutive_failures: failures, last_error: error, last_error_at: now, updated_at: now,
-      ...(becomesDegraded ? { degraded_at: now, degraded_notice: JSON.stringify(notice) } : {}), ...(state.paused_at === null && failures >= this.pauseAfter ? { paused_at: now } : {}),
+      // Queued after any notice still owed from an earlier transition (`state` was read in this transaction).
+      ...(becomesDegraded ? { degraded_at: now, degraded_notice: owedNoticesWith(state.degraded_notice, notice) } : {}),
+      ...(state.paused_at === null && failures >= this.pauseAfter ? { paused_at: now } : {}),
     });
     const paused = state.paused_at !== null || failures >= this.pauseAfter;
     if (paused && state.paused_at === null) logger.warn({ pluginId: state.plugin_id, failures }, '[plugins] Event deliveries paused after repeated failures');

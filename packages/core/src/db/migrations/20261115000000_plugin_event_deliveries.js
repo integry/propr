@@ -5,8 +5,9 @@
 // enabled), the delivery lease (only one worker delivers per installation;
 // the lease is a row with an expiry, not a database lock), and its delivery
 // health (consecutive failures, last error, Degraded and paused times).
-// `degraded_notice` is the administrator notification owed for becoming
-// Degraded, written with that transition and cleared once it was created.
+// `degraded_notice` is the queue (a JSON list) of administrator notifications
+// owed for becoming Degraded: each is appended with its transition and removed
+// once it was created.
 //
 // `plugin_delivery_cursors` holds, per installation and repository, the last
 // journal `seq` whose deliveries are final, and the journal floor already

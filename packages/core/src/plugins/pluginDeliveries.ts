@@ -20,7 +20,7 @@ export interface PluginDispatchRow {
   lease_owner: string | null; lease_expires_at: number | string | null;
   consecutive_failures: number; last_error: string | null; last_error_at: number | string | null;
   degraded_at: number | string | null; paused_at: number | string | null; updated_at: number | string;
-  /** The Degraded notification still owed (a `PluginDegradedNotice` as JSON), or null. */
+  /** The Degraded notifications still owed, oldest first (a JSON list of `PluginDegradedNotice`), or null. */
   degraded_notice?: string | null;
 }
 /** A `plugin_deliveries` row as stored. */
@@ -174,7 +174,7 @@ export async function restartPluginDispatch(trx: Knex, pluginId: string, install
     plugin_id: pluginId, installed_at: installedAt, start_seq: start, lease_owner: null, lease_expires_at: null,
     consecutive_failures: 0, last_error: null, last_error_at: null, degraded_at: null, paused_at: null, updated_at: now,
   }).onConflict('plugin_id').merge();
-  // A Degraded notification still owed (`degraded_notice`, not merged) is kept: it is sent once it can be.
+  // Degraded notifications still owed (`degraded_notice`, not merged) are kept: they are sent once they can be.
   // Deliveries that never finished would otherwise run after the restart: they belong to before it.
   await trx('plugin_deliveries').where({ plugin_id: pluginId }).whereIn('status', ['pending', 'running', 'retrying'])
     .update({ status: 'failed', manual: false, next_attempt_at: null, error: 'Not delivered: the plugin was disabled' });
@@ -241,29 +241,51 @@ export async function notifySafely(notify: PluginDegradedNotifier, notice: Plugi
   }
 }
 
-function parseNotice(text: string): PluginDegradedNotice | null {
+const isNotice = (value: unknown): value is PluginDegradedNotice => {
+  const notice = value as Partial<PluginDegradedNotice> | null;
+  return Boolean(notice) && typeof notice!.pluginId === 'string' && typeof notice!.installedAt === 'number' && typeof notice!.degradedAt === 'number';
+};
+/** The notices owed, oldest first: `degraded_notice` holds a JSON list (a single notice, as an earlier copy stored it, counts as one). */
+function owedNotices(text: string | null | undefined): PluginDegradedNotice[] {
+  if (!text) return [];
   try {
-    const value = JSON.parse(text) as Partial<PluginDegradedNotice> | null;
-    return value && typeof value.pluginId === 'string' && typeof value.installedAt === 'number' && typeof value.degradedAt === 'number' ? value as PluginDegradedNotice : null;
-  } catch { return null; }
+    const value: unknown = JSON.parse(text);
+    return (Array.isArray(value) ? value : [value]).filter(isNotice);
+  } catch { return []; }
+}
+const sameNotice = (a: PluginDegradedNotice, b: PluginDegradedNotice) => a.pluginId === b.pluginId && a.installedAt === b.installedAt && a.degradedAt === b.degradedAt;
+const storedNotices = (notices: readonly PluginDegradedNotice[]) => (notices.length ? JSON.stringify(notices) : null);
+
+/** `degraded_notice` with `notice` queued after the notices still owed: an unsent notice is never written over. */
+export function owedNoticesWith(text: string | null | undefined, notice: PluginDegradedNotice): string {
+  return JSON.stringify([...owedNotices(text).filter(owed => !sameNotice(owed, notice)), notice]);
 }
 
 /**
- * Send the Degraded notifications still owed (`degraded_notice`, written in
- * the transaction that made the installation Degraded). Each is cleared only
- * once its notifier succeeded, and only if it is still the same notice, so a
- * failed or interrupted send is tried again; the notification's
- * deduplication key keeps a repeat, or two dispatchers sending it, to one
- * Inbox entry. Returns whether every one went out.
+ * Send the Degraded notifications still owed (`degraded_notice`, a queue
+ * appended to in the transaction that made the installation Degraded), oldest
+ * first. Each is removed from the queue only once its notifier succeeded, in
+ * a transaction that reads the queue as it is then, so a notice queued while
+ * the others were being sent stays owed, and a failed or interrupted send is
+ * tried again; the notification's deduplication key keeps a repeat, or two
+ * dispatchers sending it, to one Inbox entry. Returns whether every one went out.
  */
 export async function sendPendingDegradedNotices(database: Knex, notify: PluginDegradedNotifier, pluginId?: string): Promise<boolean> {
   const rows = await database('plugin_dispatch').whereNotNull('degraded_notice').modify(q => { if (pluginId) void q.where({ plugin_id: pluginId }); })
     .select('plugin_id', 'degraded_notice') as { plugin_id: string; degraded_notice: string }[];
   let sent = true;
   for (const row of rows) {
-    const notice = parseNotice(row.degraded_notice);
-    if (notice && !await notifySafely(notify, notice)) { sent = false; continue; }
-    await database('plugin_dispatch').where({ plugin_id: row.plugin_id, degraded_notice: row.degraded_notice }).update({ degraded_notice: null });
+    const delivered: PluginDegradedNotice[] = [];
+    for (const notice of owedNotices(row.degraded_notice)) {
+      if (await notifySafely(notify, notice)) delivered.push(notice); else sent = false;
+    }
+    await database.transaction(async trx => {
+      const current = await trx('plugin_dispatch').where({ plugin_id: row.plugin_id }).first('degraded_notice') as { degraded_notice: string | null } | undefined;
+      if (!current?.degraded_notice) return;
+      const remaining = owedNotices(current.degraded_notice).filter(owed => !delivered.some(done => sameNotice(done, owed)));
+      const stored = storedNotices(remaining);
+      if (stored !== current.degraded_notice) await trx('plugin_dispatch').where({ plugin_id: row.plugin_id }).update({ degraded_notice: stored });
+    });
   }
   return sent;
 }
