@@ -7654,7 +7654,7 @@ paths:
     post:
       operationId: receivePluginWebhook
       summary: Receive an inbound webhook request for a plugin
-      description: Public. ProPR verifies the request with the webhook's scheme (`hmac-sha256`, `slack-v0` or `token-header`) and the plugin's signing secret before any plugin code runs, then queues the plugin's handler as a delivery of kind `webhook`. The body is read raw, up to 256 KiB; the webhook rate limiter applies. Bodies and signature headers are never stored or logged.
+      description: Public. ProPR verifies the request with the webhook's scheme (`hmac-sha256`, `slack-v0` or `token-header`) and the plugin's signing secret before any plugin code runs, then queues the plugin's handler as a delivery of kind `webhook`. The body is read raw, exactly as transmitted, up to 256 KiB, and verified over those bytes; a `Content-Encoding` of gzip, deflate or br is decoded only after verification, to at most 256 KiB. The webhook rate limiter applies. Bodies and signature headers are never stored or logged.
       tags:
         - Webhooks
       security: []
@@ -7692,7 +7692,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JsonObject"
         "400":
-          description: The delivery id header is malformed.
+          description: The delivery id header is malformed, or a verified compressed body could not be decoded.
           content:
             application/json:
               schema:
@@ -7716,7 +7716,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/LegacyError"
         "413":
-          description: The body is larger than 256 KiB.
+          description: The body is larger than 256 KiB, as sent or once decoded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "415":
+          description: A verified body has an unsupported `Content-Encoding` (only gzip, deflate or br, one of them).
           content:
             application/json:
               schema:

@@ -14,18 +14,27 @@ import { pluginRouteHandler } from './pluginRoutes.js';
  * Inbound plugin webhooks, `POST /api/plugins/:installationKey/hooks/:webhookName`.
  * Public: the request is authenticated by the unguessable installation key and
  * then by the webhook's verification scheme, both checked before any plugin
- * code runs. The webhook rate limiter applies, the raw body is read up to
+ * code runs. The webhook rate limiter applies, the raw body is read exactly as
+ * transmitted (never inflated: a signature covers the sent bytes) up to
  * `PLUGIN_WEBHOOK_LIMITS.bodyBytes` (413 beyond), and nothing here logs the
  * body or a header.
  */
 export function createPluginWebhookHandlers(receiver: () => PluginWebhookReceiver | null, environment: NodeJS.ProcessEnv = process.env): RequestHandler[] {
   const raw = express.raw({ type: () => true, limit: PLUGIN_WEBHOOK_LIMITS.bodyBytes });
-  const readBody: RequestHandler = (req, res, next) => raw(req, res, error => {
-    if (!error) return next();
-    const status = (error as { status?: number }).status;
-    // The body is not echoed or logged, whatever was wrong with it.
-    res.status(status === 413 ? 413 : 400).set('Cache-Control', 'no-store').json({ error: status === 413 ? `The request body is larger than ${PLUGIN_WEBHOOK_LIMITS.bodyBytes} bytes` : 'The request body could not be read' });
-  });
+  // The signature covers the bytes as transmitted, so the body is read without inflation: the
+  // parser (which reads the header synchronously) sees no Content-Encoding, and the receiver
+  // decodes the body only after verifying it. The limit applies to the transmitted bytes here.
+  const readBody: RequestHandler = (req, res, next) => {
+    const encoding = req.headers['content-encoding'];
+    delete req.headers['content-encoding'];
+    raw(req, res, error => {
+      if (encoding !== undefined) req.headers['content-encoding'] = encoding;
+      if (!error) return next();
+      const status = (error as { status?: number }).status;
+      // The body is not echoed or logged, whatever was wrong with it.
+      res.status(status === 413 ? 413 : 400).set('Cache-Control', 'no-store').json({ error: status === 413 ? `The request body is larger than ${PLUGIN_WEBHOOK_LIMITS.bodyBytes} bytes` : 'The request body could not be read' });
+    });
+  };
   const send = (res: express.Response, reply: PluginWebhookReply) => {
     res.status(reply.status).set({ 'Cache-Control': 'no-store', 'Content-Type': reply.contentType, 'X-Content-Type-Options': 'nosniff' });
     if (reply.retryAfterSeconds) res.set('Retry-After', String(reply.retryAfterSeconds));

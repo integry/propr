@@ -8,7 +8,7 @@ import { officialPluginHandlers, type PluginHandlerSource } from './pluginHandle
 import { PluginStore } from './pluginStore.js';
 import type { PluginWebhookRunner } from './pluginWebhookRunner.js';
 import {
-  handlerHeaders, recordPluginWebhookRejection, resolvePluginWebhook, senderDeliveryId, verifyPluginWebhook,
+  decodePluginWebhookBody, handlerHeaders, recordPluginWebhookRejection, resolvePluginWebhook, senderDeliveryId, verifyPluginWebhook,
   type PluginWebhookRejection, type ResolvedPluginWebhook,
 } from './pluginWebhooks.js';
 
@@ -18,9 +18,11 @@ import {
  *
  * 1. The key and name must address an enabled installation and a declared
  *    webhook: otherwise 404 and nothing runs.
- * 2. ProPR verifies the request with the webhook's scheme and signing secret:
- *    otherwise 401, counted on the installation, logged without the body or
- *    any header.
+ * 2. ProPR verifies the request with the webhook's scheme and signing secret,
+ *    over the body bytes exactly as transmitted (still compressed, when the
+ *    sender compressed them): otherwise 401, counted on the installation,
+ *    logged without the body or any header. Only then is a `Content-Encoding`
+ *    of gzip, deflate or br decoded, to at most the body limit (415, 400, 413).
  * 3. The delivery id is derived (400 when the sender's is malformed) and
  *    reserved: one already recorded is a replay, 409, and no plugin code runs.
  * 4. A `respond` function may answer at once (a challenge echo): it gets the
@@ -44,11 +46,17 @@ export interface PluginWebhookReceiverOptions {
   now?: () => number;
 }
 
+/** `body` is the request body exactly as transmitted: not decompressed, so a signature over the sent bytes verifies. */
 export interface PluginWebhookRequestInput { key: string; name: string; headers: IncomingHttpHeaders; body: Buffer }
 export interface PluginWebhookReply { status: number; contentType: 'application/json' | 'text/plain'; body: string; retryAfterSeconds?: number }
 
 const json = (status: number, value: Record<string, unknown>, extra: Partial<PluginWebhookReply> = {}): PluginWebhookReply => ({ status, contentType: 'application/json', body: JSON.stringify(value), ...extra });
 const NOT_FOUND = json(404, { error: 'Not found' });
+const UNDECODABLE: Record<number, PluginWebhookReply> = {
+  415: json(415, { error: 'Unsupported Content-Encoding' }),
+  400: json(400, { error: 'The request body could not be decoded' }),
+  413: json(413, { error: `The decoded request body is larger than ${PLUGIN_WEBHOOK_LIMITS.bodyBytes} bytes` }),
+};
 const BUSY = json(503, { error: 'Too many webhook deliveries are waiting' }, { retryAfterSeconds: 60 });
 
 /** A respond function's answer, checked: a 2xx status, a short text body and a supported content type. */
@@ -123,6 +131,9 @@ export class PluginWebhookReceiver {
     if (!secret) return this.reject(resolved, 'no_secret');
     const verdict = verifyPluginWebhook({ verification: webhook.verification, secret, headers: request.headers, body: request.body, now: receivedAt });
     if (!verdict.ok) return this.reject(resolved, verdict.reason);
+    // Verified over the bytes as sent; only now is a compressed body decoded (bounded), before any id is taken or plugin code runs.
+    const decoded = await decodePluginWebhookBody(request.body, request.headers);
+    if (!decoded.ok) return UNDECODABLE[decoded.status];
 
     // The delivery id is checked and taken before any plugin code runs (the respond function included): a replay runs nothing.
     const derived = this.deliveryId(webhook, request.headers);
@@ -137,7 +148,7 @@ export class PluginWebhookReceiver {
     }
     const { recordId } = reserved;
     try {
-      const body = request.body.toString('utf8');
+      const body = decoded.body.toString('utf8');
       const headers = Object.freeze(handlerHeaders(request.headers, webhook));
       const answer = await this.respond(resolved, Object.freeze({ webhook: webhook.name, headers, body, receivedAt }));
       if (answer) {

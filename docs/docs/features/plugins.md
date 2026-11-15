@@ -835,10 +835,12 @@ failed. The handler receives:
 ```
 
 - `body` is the raw body as text, whatever its content type (JSON,
-  form-encoded or plain text).
+  form-encoded or plain text). A body sent with `Content-Encoding: gzip`,
+  `deflate` or `br` is verified over the compressed bytes as sent, as the
+  service signed them, and the handler gets it decoded.
 - `headers` are the request's headers with lower-case names. ProPR removes the
-  verification headers, `Authorization`, `Cookie` and the hop-by-hop headers
-  first.
+  verification headers, `Authorization`, `Cookie`, `Content-Encoding` and the
+  hop-by-hop headers first.
 - `deliveryId` is the same on every attempt. When the webhook declares
   `deliveryIdHeader` and the service sends it, it is `whk-<webhook>:<id>` with
   that value as `<id>`. Otherwise ProPR assigns one: `whk-<webhook>/<uuid>`.
@@ -850,7 +852,8 @@ Other limits and refusals:
 
 | Situation | Answer |
 | --- | --- |
-| Body larger than 256 KiB | **413**. Nothing runs. |
+| Body larger than 256 KiB, as sent or once decoded | **413**. Nothing runs. |
+| A verified body with a `Content-Encoding` other than `gzip`, `deflate` or `br` (or more than one) | **415**. Nothing runs. A compressed body that cannot be decoded gets **400**. |
 | A `deliveryIdHeader` value already received, whose delivery succeeded or is still under way | **409** (a replay). Nothing runs, not even the `respond` function. Delivery ids are remembered for as long as Activity records are kept (14 days). A delivery that *failed* is not a replay: sending it again with the same delivery id delivers it (see below). |
 | A `deliveryIdHeader` value that is not 1 to 200 printable characters | **400**. |
 | Event deliveries of the plugin are [paused](#health-degraded-and-resume) | **503** with `Retry-After`. |

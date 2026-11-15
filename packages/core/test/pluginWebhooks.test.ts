@@ -2,11 +2,12 @@ import test, { mock, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
 import type { Knex } from 'knex';
 import { parsePluginManifest, type PluginWebhookVerification } from '@propr/shared';
 import { loadPluginHandlers } from '../../plugins/src/index.js';
 import { FIXTURE_REGISTRY, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
-import { verifyPluginWebhook, pluginWebhookEndpoints, senderDeliveryId, regeneratePluginWebhookKey, resolvePluginWebhook } from '../src/plugins/pluginWebhooks.js';
+import { decodePluginWebhookBody, verifyPluginWebhook, pluginWebhookEndpoints, senderDeliveryId, regeneratePluginWebhookKey, resolvePluginWebhook } from '../src/plugins/pluginWebhooks.js';
 import { PluginWebhookRunner } from '../src/plugins/pluginWebhookRunner.js';
 import { PluginWebhookReceiver } from '../src/plugins/pluginWebhookReceiver.js';
 import { listPluginActivity } from '../src/plugins/pluginDeliveries.js';
@@ -613,4 +614,43 @@ test('a credential or verification header is never taken as the sender\'s delive
   assert.equal(senderDeliveryId(headers, webhook('proxy-authorization')), undefined);
   assert.equal(senderDeliveryId(headers, webhook('x-hook-token')), undefined);
   assert.equal(senderDeliveryId(headers, webhook('x-delivery')), 'd-1');
+});
+
+test('a compressed body is verified over the bytes as sent, then decoded (bounded) before its delivery id is taken or plugin code runs', async t => {
+  const s = await setup(t);
+  const text = '{"action":"opened","padding":"' + 'p'.repeat(2_000) + '"}';
+  const gzipped = gzipSync(text);
+  const receive = (body: Buffer, headers: IncomingHttpHeaders, name = 'signed') => s.receiver.receive({ key: s.key, name, headers, body });
+  const sign = (bytes: Buffer) => `sha256=${createHmac('sha256', SECRET).update(bytes).digest('hex')}`;
+
+  const accepted = await receive(gzipped, { 'content-encoding': 'gzip', 'content-type': 'application/json', 'x-hub-signature-256': sign(gzipped), 'x-github-delivery': 'z-1' });
+  assert.equal(accepted.status, 202, 'a signature over the gzip bytes as sent verifies');
+  await s.runner.idle();
+  assert.deepEqual((await s.seen()).map(e => [e.id, e.bodyBytes, e.headers]), [['whk-signed:z-1', Buffer.byteLength(text), ['content-type', 'x-github-delivery']]],
+    'the handler gets the decoded body, without the Content-Encoding that described the sent bytes');
+  const overDecoded = await receive(gzipped, { 'content-encoding': 'gzip', 'x-hub-signature-256': sign(Buffer.from(text)), 'x-github-delivery': 'z-2' });
+  assert.equal(overDecoded.status, 401, 'a signature over the decoded bytes is not the one the sender made');
+
+  const loadsBefore = s.loads.length;
+  const bomb = gzipSync(Buffer.alloc(256 * 1024 + 1, 'a'));
+  assert.ok(bomb.length < 2_000, 'small as sent');
+  const tooLarge = await receive(bomb, { 'content-encoding': 'gzip', 'x-hub-signature-256': sign(bomb), 'x-github-delivery': 'z-3' });
+  assert.equal(tooLarge.status, 413, 'decoded beyond the body limit');
+  const corrupt = gzipped.subarray(0, 20);
+  assert.equal((await receive(corrupt, { 'content-encoding': 'gzip', 'x-hub-signature-256': sign(corrupt), 'x-github-delivery': 'z-4' })).status, 400);
+  assert.equal((await receive(gzipped, { 'content-encoding': 'compress', 'x-hub-signature-256': sign(gzipped), 'x-github-delivery': 'z-5' })).status, 415);
+  assert.equal((await receive(gzipped, { 'content-encoding': 'gzip, gzip', 'x-hub-signature-256': sign(gzipped), 'x-github-delivery': 'z-6' })).status, 415, 'one encoding only');
+  assert.equal(s.loads.length, loadsBefore, 'no plugin module was loaded for an undecodable body');
+  assert.equal((await s.deliveries()).length, 1, 'an undecodable body takes no delivery id');
+  assert.equal(await s.rejected(), 1, 'only the bad signature counts as unverified');
+  const plain = Buffer.from(text);
+  assert.equal((await receive(plain, { 'x-hub-signature-256': sign(plain), 'x-github-delivery': 'z-3' })).status, 202, 'the refused delivery id can be sent again');
+
+  // Slack signs the transmitted bytes too; deflate and br decode as gzip does.
+  const challenge = deflateSync(JSON.stringify({ type: 'url_verification', challenge: 'zipped-challenge' }));
+  const timestamp = String(Math.floor(NOW / 1000));
+  const slack = await receive(challenge, { 'content-encoding': 'deflate', 'x-slack-request-timestamp': timestamp, 'x-slack-signature': `v0=${createHmac('sha256', SECRET).update(`v0:${timestamp}:`).update(challenge).digest('hex')}` }, 'slack');
+  assert.deepEqual([slack.status, slack.body], [200, 'zipped-challenge']);
+  assert.deepEqual(await decodePluginWebhookBody(brotliCompressSync(text), { 'content-encoding': 'BR' }), { ok: true, body: Buffer.from(text) });
+  assert.deepEqual(await decodePluginWebhookBody(plain, { 'content-encoding': 'identity' }), { ok: true, body: plain });
 });

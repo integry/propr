@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 import type { Knex } from 'knex';
 import {
   PLUGIN_WEBHOOK_CREDENTIAL_HEADERS, PLUGIN_WEBHOOK_LIMITS, pluginWebhookVerificationHeaders,
@@ -88,8 +90,38 @@ export function verifyPluginWebhook({ verification, secret, headers, body, now }
   return given && sameBytes(given, hmac(secret, body)) ? { ok: true } : fail('bad_signature');
 }
 
-/** Request headers never handed to a handler: credentials of the HTTP layer. Verification headers are removed too. */
-const WITHHELD_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'host', 'connection', 'content-length', 'transfer-encoding']);
+/** Why a verified body could not be decoded: unsupported `Content-Encoding` (415), corrupt (400), or larger than the limit once decoded (413). */
+export type PluginWebhookBodyFailure = 415 | 400 | 413;
+const DECODERS: Record<string, (body: Buffer, options: zlib.ZlibOptions & zlib.BrotliOptions) => Promise<Buffer>> = {
+  gzip: promisify(zlib.gunzip), 'x-gzip': promisify(zlib.gunzip), deflate: promisify(zlib.inflate), br: promisify(zlib.brotliDecompress),
+};
+
+/**
+ * The body a handler receives. The route reads the bytes exactly as sent (no
+ * automatic inflation) and verification runs over those, as the sender signed
+ * them; only then is a `Content-Encoding` of gzip, deflate or br decoded, to at
+ * most `PLUGIN_WEBHOOK_LIMITS.bodyBytes`. One encoding only; identity or none
+ * passes the body through.
+ */
+export async function decodePluginWebhookBody(body: Buffer, headers: IncomingHttpHeaders): Promise<{ ok: true; body: Buffer } | { ok: false; status: PluginWebhookBodyFailure }> {
+  const raw = headers['content-encoding'];
+  if (raw === undefined) return { ok: true, body };
+  const encoding = (typeof raw === 'string' ? raw : '').trim().toLowerCase();
+  if (encoding === 'identity' || encoding === '') return { ok: true, body };
+  const decode = Object.hasOwn(DECODERS, encoding) ? DECODERS[encoding] : undefined;
+  if (!decode) return { ok: false, status: 415 };
+  try {
+    return { ok: true, body: await decode(body, { maxOutputLength: PLUGIN_WEBHOOK_LIMITS.bodyBytes }) };
+  } catch (error) {
+    return { ok: false, status: error instanceof RangeError || (error as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE' ? 413 : 400 };
+  }
+}
+
+/**
+ * Request headers never handed to a handler: credentials of the HTTP layer. Verification headers are removed too.
+ * `content-encoding` describes the transmitted bytes, and the handler gets the decoded body.
+ */
+const WITHHELD_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'host', 'connection', 'content-length', 'transfer-encoding', 'content-encoding']);
 /** The headers a handler receives: lower-case names, without the verification headers and HTTP credentials. */
 export function handlerHeaders(headers: IncomingHttpHeaders, webhook: PluginWebhook): Record<string, string> {
   const withheld = new Set([...WITHHELD_HEADERS, ...pluginWebhookVerificationHeaders(webhook.verification)]);

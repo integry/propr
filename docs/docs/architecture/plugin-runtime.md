@@ -234,14 +234,22 @@ before the JSON parser and the session middleware:
 1. The webhook rate limiter (`createWebhookRequestRateLimiter`, the one
    `/webhook` uses), on top of the general `/api` limiter.
 2. `express.raw` for any content type, up to `PLUGIN_WEBHOOK_LIMITS.bodyBytes`
-   (256 KiB). A larger body gets 413 and is neither echoed nor logged.
+   (256 KiB). A larger body gets 413 and is neither echoed nor logged. The body
+   is read exactly as transmitted, never inflated: a sender signs the bytes it
+   sends, compressed or not, so the parser is called with `Content-Encoding`
+   set aside and the header is put back for the receiver.
 3. `PluginWebhookReceiver.receive`:
    1. Resolve the key and name, as described above (404).
    2. Open the webhook's `signing_secret` connection and run
       `verifyPluginWebhook`. A failure gets 401 and is counted on the key row
       (`recordPluginWebhookRejection`). It is logged as
       `{ pluginId, webhook, reason }`, never with the body or a header.
-   3. Derive the delivery id: `whk-<webhook>:<value of deliveryIdHeader>`, or
+   3. Decode the verified body (`decodePluginWebhookBody`): a single
+      `Content-Encoding` of `gzip`, `x-gzip`, `deflate` or `br`, inflated to at
+      most `PLUGIN_WEBHOOK_LIMITS.bodyBytes`. Beyond that 413; another encoding
+      415; a corrupt body 400. Nothing is decompressed before verification, and
+      a refused body takes no delivery id.
+   4. Derive the delivery id: `whk-<webhook>:<value of deliveryIdHeader>`, or
       `whk-<webhook>/<random UUID>` when the webhook declares no header or the
       request does not send it. A webhook name contains neither `:` nor `/`, so
       the character after the name ends it: webhook `a` with id `b-c` and
@@ -250,7 +258,7 @@ before the JSON parser and the session middleware:
       manifest schema refuses `authorization` and `proxy-authorization` (and the
       webhook's verification headers) as `deliveryIdHeader`, and
       `senderDeliveryId` never reads them either.
-   4. `PluginWebhookRunner.reserve` inserts the `plugin_deliveries` row (kind
+   5. `PluginWebhookRunner.reserve` inserts the `plugin_deliveries` row (kind
       `webhook`, `event_type` `webhook.<name>`, empty repository, `event_seq` 0,
       status `pending`, `webhook_owner` this runner) before any plugin code
       runs. The unique `(plugin_id, delivery_id)` index turns a replay into a
@@ -262,14 +270,14 @@ before the JSON parser and the session middleware:
       record and drops it. Rows that are `pending`, `running`, `retrying` or
       `succeeded` still make the request a 409. When 1,000 deliveries are
       already held or reserved, the answer is 503.
-   5. If the webhook has `respond`, call it (see below). A response is sent as
+   6. If the webhook has `respond`, call it (see below). A response is sent as
       it is and the request ends there. A 2xx answer to a request with the
       sender's delivery id marks the row succeeded (handler: the respond
       function), so the id stays taken; otherwise the row is deleted
       (`release`), and a failed respond function's request may be sent again.
-   6. Refuse with 503 while the installation's event deliveries are paused,
+   7. Refuse with 503 while the installation's event deliveries are paused,
       releasing the row so the sender's retry is not a replay.
-   7. `start` hands the delivery to the runner, and the answer is 202.
+   8. `start` hands the delivery to the runner, and the answer is 202.
 
 | Scheme | Computation | Notes |
 | --- | --- | --- |
@@ -318,7 +326,8 @@ process's memory, keyed by its `plugin_deliveries` id. It then:
 
 The handler's headers are the request's minus the verification headers,
 `authorization`, `proxy-authorization`, `cookie`, `host`, `connection`,
-`content-length` and `transfer-encoding`.
+`content-length`, `transfer-encoding` and `content-encoding` (the handler gets
+the decoded body).
 
 Each runner has an owner name (`webhooks-<pid>-<uuid>`) and a heartbeat row in
 `plugin_webhook_runners`, renewed every 30 seconds; each delivery record names
