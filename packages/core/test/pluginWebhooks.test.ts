@@ -5,7 +5,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { parsePluginManifest, type PluginWebhookVerification } from '@propr/shared';
 import { loadPluginHandlers } from '../../plugins/src/index.js';
 import { FIXTURE_REGISTRY, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
-import { verifyPluginWebhook, pluginWebhookEndpoints, regeneratePluginWebhookKey } from '../src/plugins/pluginWebhooks.js';
+import { verifyPluginWebhook, pluginWebhookEndpoints, regeneratePluginWebhookKey, resolvePluginWebhook } from '../src/plugins/pluginWebhooks.js';
 import { PluginWebhookRunner } from '../src/plugins/pluginWebhookRunner.js';
 import { PluginWebhookReceiver } from '../src/plugins/pluginWebhookReceiver.js';
 import { listPluginActivity } from '../src/plugins/pluginDeliveries.js';
@@ -347,4 +347,84 @@ test('starting another runner leaves a live runner\'s deliveries alone and fails
   assert.equal(lost.status, 'failed');
   assert.equal(await s.f.database('plugin_webhook_runners').where({ owner: 'webhooks-stopped' }).first(), undefined, 'the stopped runner is forgotten');
   assert.ok(await s.f.database('plugin_webhook_runners').where({ owner: s.runner.owner }).first(), 'A is still registered');
+});
+
+test('an async respond function that throws, before or after an await, answers 500 and leaves no unhandled rejection', async t => {
+  const s = await setup(t);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => { process.off('unhandledRejection', onUnhandled); });
+  const throwers = {
+    // eslint-disable-next-line @typescript-eslint/require-await -- deliberately async: it rejects without awaiting
+    async throwsAtOnce(): Promise<never> { throw new Error('responder failed at once'); },
+    async throwsAfterAwait(): Promise<never> { await new Promise(resolve => setTimeout(resolve, 5)); throw new Error('responder failed after an await'); },
+  };
+  for (const [name, responder] of Object.entries(throwers)) {
+    const handlers = async (id: string) => ({ ...(await loadPluginHandlers(id, { root: FIXTURE_REGISTRY, includeDevelopment: true }))!, slackChallenge: responder as never });
+    const receiver = new PluginWebhookReceiver({ database: s.f.database, runner: s.runner, catalog: s.f.options.catalog, handlers, environment: s.f.options.environment, now: () => s.clock.now });
+    const body = JSON.stringify({ type: 'url_verification', challenge: name });
+    const timestamp = String(Math.floor(NOW / 1000));
+    const reply = await receiver.receive({ key: s.key, name: 'slack', headers: { 'x-slack-request-timestamp': timestamp, 'x-slack-signature': slackSignature(timestamp, body) }, body: Buffer.from(body) });
+    assert.deepEqual(reply, { status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'The webhook could not answer' }) }, `${name}: an asynchronous answer is refused`);
+  }
+  // Let both rejections settle, and Node report any left unhandled.
+  await new Promise(resolve => setTimeout(resolve, 30));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(unhandled, [], 'each rejection was consumed');
+  await s.runner.idle();
+  assert.deepEqual(await s.deliveries(), [], 'nothing was queued, and the reservations were given back');
+  assert.deepEqual(await s.seen(), []);
+});
+
+test('concurrent requests at the limit are admitted against one count; a duplicate or refused reservation gives its slot back', async t => {
+  const s = await setup(t);
+  const runner = new PluginWebhookRunner({ ...s.f.options, now: () => s.clock.now, maxPending: 2 });
+  t.after(() => runner.stop());
+  const resolved = (await resolvePluginWebhook(s.f.database, s.key, 'a', await s.f.options.catalog!()))!;
+  const reserve = (id: string, target = resolved.target) => runner.reserve({ target, handler: 'onWebhook', deliveryId: `whk-a:${id}`, webhook: 'a' });
+  const burst = await Promise.all(['c-1', 'c-2', 'c-3', 'c-4', 'c-5'].map(id => reserve(id)));
+  assert.equal(burst.filter(r => r.accepted).length, 2, 'only maxPending of a concurrent burst are admitted');
+  assert.deepEqual(burst.filter(r => !r.accepted).map(r => !r.accepted && r.reason), ['busy', 'busy', 'busy']);
+  assert.equal((await s.deliveries()).length, 2, 'the refused requests recorded nothing');
+  assert.deepEqual(await reserve('c-6'), { accepted: false, reason: 'busy' });
+
+  const [first, second] = burst.filter(r => r.accepted).map(r => (r as { recordId: number }).recordId);
+  await runner.release(first);
+  const secondId = (await s.deliveries()).find(d => d.id === second)!.deliveryId.slice('whk-a:'.length);
+  assert.deepEqual(await reserve(secondId), { accepted: false, reason: 'duplicate' }, 'a replay takes no slot');
+  const stale = { ...resolved.target, record: { ...resolved.target.record, installedAt: resolved.target.record.installedAt - 1 } };
+  assert.deepEqual(await reserve('c-7', stale), { accepted: false, reason: 'gone' }, 'a stale installation takes no slot');
+  const again = await Promise.all([reserve('c-8'), reserve('c-9')]);
+  assert.deepEqual(again.map(r => r.accepted), [true, false], 'the released slot, and only it, is free again');
+});
+
+test('a request resolved before an uninstall and reinstall records nothing, and does not poison the new installation\'s delivery ids', async t => {
+  const s = await setup(t);
+  let open!: () => void;
+  const gate = new Promise<void>(resolve => { open = resolve; });
+  let waiting!: () => void;
+  const resolvedA = new Promise<void>(resolve => { waiting = resolve; });
+  // Suspends a verified request of installation A after its key was resolved, before its delivery is reserved.
+  const connectionSecret = async () => { waiting(); await gate; return SECRET; };
+  const receiver = new PluginWebhookReceiver({ database: s.f.database, runner: s.runner, catalog: s.f.options.catalog, connectionSecret, now: () => s.clock.now });
+  const headers = { 'x-gitlab-token': SECRET, 'x-delivery-id': 'u-1' };
+  const old = receiver.receive({ key: s.key, name: 'a', headers, body: Buffer.from('{}') });
+  await resolvedA;
+
+  await s.f.store.uninstall('1', ID, ID);
+  await s.f.store.install('1', ID);
+  await s.f.store.setConnection('1', ID, 'hook-secret', SECRET);
+  await s.f.store.setEnabled('1', ID, true);
+  open();
+  assert.equal((await old).status, 404, 'A\'s request is answered as to a dead URL');
+  assert.deepEqual(await s.f.database('plugin_deliveries').where({ plugin_id: ID }).select('delivery_id'), [], 'and records nothing');
+
+  const { webhooks } = await pluginWebhookEndpoints(s.f.database, ID, { manifest: s.f.manifest, origin: null });
+  const keyB = webhooks.find(w => w.name === 'a')!.path.split('/')[3];
+  assert.notEqual(keyB, s.key);
+  const fresh = await s.send('a', '{}', headers, keyB);
+  assert.equal(fresh.status, 202, 'B receives the delivery id A never delivered');
+  await s.runner.idle();
+  assert.deepEqual((await s.seen()).map(x => x.id), ['whk-a:u-1']);
 });

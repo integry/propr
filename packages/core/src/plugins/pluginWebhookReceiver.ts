@@ -54,7 +54,13 @@ const BUSY = json(503, { error: 'Too many webhook deliveries are waiting' }, { r
 /** A respond function's answer, checked: a 2xx status, a short text body and a supported content type. */
 function checkedResponse(value: unknown): PluginWebhookResponse | null {
   if (value === null || value === undefined) return null;
-  if (typeof value !== 'object' || typeof (value as { then?: unknown }).then === 'function') throw new Error('A respond function must return a response synchronously');
+  if (typeof value !== 'object') throw new Error('A respond function must return a response synchronously');
+  const then = (value as { then?: unknown }).then;
+  if (typeof then === 'function') {
+    // Refused, but its rejection is consumed: an async respond function that throws must not leave an unhandled rejection behind.
+    try { Reflect.apply(then, value, [undefined, () => undefined]); } catch { /* a thenable whose then throws: nothing to consume */ }
+    throw new Error('A respond function must return a response synchronously');
+  }
   const { status = 200, contentType = 'text/plain', body } = value as PluginWebhookResponse;
   if (!Number.isInteger(status) || status < 200 || status > 299) throw new Error('A respond function answers with a 2xx status');
   if (contentType !== 'text/plain' && contentType !== 'application/json') throw new Error('A respond function answers text/plain or application/json');
@@ -124,7 +130,11 @@ export class PluginWebhookReceiver {
     const { runner } = this.options;
     const deliveryId = derived.id;
     const reserved = await runner.reserve({ target, handler: webhook.handler, deliveryId, webhook: webhook.name });
-    if (!reserved.accepted) return reserved.reason === 'duplicate' ? json(409, { error: 'This delivery was already received' }) : BUSY;
+    if (!reserved.accepted) {
+      // Uninstalled, reinstalled or disabled since the key was resolved: as a request to a dead URL.
+      if (reserved.reason === 'gone') return NOT_FOUND;
+      return reserved.reason === 'duplicate' ? json(409, { error: 'This delivery was already received' }) : BUSY;
+    }
     const { recordId } = reserved;
     try {
       const body = request.body.toString('utf8');

@@ -47,7 +47,8 @@ export interface PluginWebhookJob {
   deliveryId: string;
   input: Omit<PluginWebhookInput, 'attempt' | 'deliveryId'>;
 }
-export type PluginWebhookAcceptance = { accepted: true; recordId: number } | { accepted: false; reason: 'duplicate' | 'busy' };
+/** `gone`: the installation that accepted the request was uninstalled, reinstalled or disabled since; nothing was recorded. */
+export type PluginWebhookAcceptance = { accepted: true; recordId: number } | { accepted: false; reason: 'duplicate' | 'busy' | 'gone' };
 
 interface Held { job: PluginWebhookJob; recordId: number; attempt: number; timer?: NodeJS.Timeout }
 
@@ -77,6 +78,8 @@ export class PluginWebhookRunner {
   private readonly delays: readonly number[];
   /** Records reserved (`reserve`) and not yet started, released or answered. */
   private readonly reserved = new Set<number>();
+  /** Capacity slots claimed by `reserve` calls still awaiting their record: counted with `held` and `reserved`, so concurrent requests cannot exceed `maxPending`. */
+  private claiming = 0;
   private closed = false;
   /** This runner's name in `plugin_deliveries.webhook_owner` and `plugin_webhook_runners`. */
   readonly owner: string;
@@ -146,23 +149,43 @@ export class PluginWebhookRunner {
    * Record the delivery, owned by this runner, without running it yet: the
    * delivery id is taken, so a replay is refused while the receiver decides.
    * Then `start`, `answered` or `release` it. Refused as `duplicate` when the
-   * installation already recorded this delivery id (a replay), and as `busy`
-   * when too many deliveries are held.
+   * installation already recorded this delivery id (a replay), as `busy` when
+   * too many deliveries are held, and as `gone` when the target installation
+   * is no longer installed (as the same installation) and enabled.
+   *
+   * The capacity slot is claimed before the first await and handed to
+   * `reserved` (or given back) when the record is written or refused, so
+   * concurrent requests are admitted against one count. The installation is
+   * checked in the transaction that writes the record: an uninstall either
+   * commits first (nothing is recorded) or after (and deletes the record).
    */
   async reserve(job: Pick<PluginWebhookJob, 'target' | 'handler' | 'deliveryId'> & { webhook: string }): Promise<PluginWebhookAcceptance> {
-    if (this.closed || this.held.size + this.reserved.size >= (this.options.maxPending ?? PLUGIN_WEBHOOK_LIMITS.pending)) return { accepted: false, reason: 'busy' };
-    await this.register();
-    const now = this.now();
-    const inserted = await this.options.database('plugin_deliveries').insert({
-      plugin_id: job.target.pluginId, delivery_id: job.deliveryId, kind: 'webhook', repository: '', event_seq: 0,
-      event_type: `webhook.${job.webhook}`, handler: job.handler, status: 'pending', attempt: 0, next_attempt_at: now, created_at: now, logs: '[]',
-      webhook_owner: this.owner,
-    }).onConflict(['plugin_id', 'delivery_id']).ignore().returning('id') as Array<{ id: number } | number>;
-    const first = inserted[0];
-    if (first === undefined) return { accepted: false, reason: 'duplicate' };
-    const recordId = typeof first === 'number' ? first : Number(first.id);
-    this.reserved.add(recordId);
-    return { accepted: true, recordId };
+    if (this.closed || this.held.size + this.reserved.size + this.claiming >= (this.options.maxPending ?? PLUGIN_WEBHOOK_LIMITS.pending)) return { accepted: false, reason: 'busy' };
+    this.claiming++;
+    try {
+      await this.register();
+      if (this.closed) return { accepted: false, reason: 'busy' };
+      const { target } = job;
+      const recordId = await this.options.database.transaction(async trx => {
+        const installed = await trx('plugin_installations').where({ plugin_id: target.pluginId }).first('enabled', 'installed_at') as Pick<PluginInstallationRow, 'enabled' | 'installed_at'> | undefined;
+        if (!installed || !installed.enabled || Number(installed.installed_at) !== target.record.installedAt) return 'gone' as const;
+        const now = this.now();
+        const inserted = await trx('plugin_deliveries').insert({
+          plugin_id: target.pluginId, delivery_id: job.deliveryId, kind: 'webhook', repository: '', event_seq: 0,
+          event_type: `webhook.${job.webhook}`, handler: job.handler, status: 'pending', attempt: 0, next_attempt_at: now, created_at: now, logs: '[]',
+          webhook_owner: this.owner,
+        }).onConflict(['plugin_id', 'delivery_id']).ignore().returning('id') as Array<{ id: number } | number>;
+        const first = inserted[0];
+        if (first === undefined) return 'duplicate' as const;
+        return typeof first === 'number' ? first : Number(first.id);
+      });
+      if (typeof recordId !== 'number') return { accepted: false, reason: recordId };
+      // Synchronously with giving the claimed slot back (finally): the slot passes to the record.
+      this.reserved.add(recordId);
+      return { accepted: true, recordId };
+    } finally {
+      this.claiming--;
+    }
   }
 
   /** Give a reserved delivery id back (the request was refused before delivery): the sender may send it again. */
