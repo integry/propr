@@ -13300,7 +13300,7 @@ components:
           description: The activity record id, used by the retry route.
         deliveryId:
           type: string
-          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>-<id>` for a webhook); the same on every attempt.
+          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook); the same on every attempt.
         kind:
           type: string
           enum:

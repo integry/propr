@@ -690,7 +690,7 @@ async function start(): Promise<void> {
     if (!demoMode) {
       // Inbound plugin webhooks run in this process; their requests are held in memory only.
       const runner = new PluginWebhookRunner({ database: db });
-      await runner.recover().catch(error => console.warn('Could not close webhook deliveries left by an earlier process:', (error as Error).message));
+      await runner.recover().catch(error => console.warn('Could not close webhook deliveries left by a stopped API process:', (error as Error).message));
       pluginWebhooks = { runner, receiver: new PluginWebhookReceiver({ database: db, runner }) };
       await initializeNotificationBackground();
       // Every API process drops its MCP cache on a published config event, so an

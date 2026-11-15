@@ -839,32 +839,37 @@ failed. The handler receives:
 - `headers` are the request's headers with lower-case names. ProPR removes the
   verification headers, `Authorization`, `Cookie` and the hop-by-hop headers
   first.
-- `deliveryId` is `whk-<webhook>-<id>` and is the same on every attempt. When
-  the webhook declares `deliveryIdHeader` and the service sends it, `<id>` is
-  that value. Otherwise ProPR assigns one.
+- `deliveryId` is the same on every attempt. When the webhook declares
+  `deliveryIdHeader` and the service sends it, it is `whk-<webhook>:<id>` with
+  that value as `<id>`. Otherwise ProPR assigns one: `whk-<webhook>/<uuid>`.
 
 Other limits and refusals:
 
 | Situation | Answer |
 | --- | --- |
 | Body larger than 256 KiB | **413**. Nothing runs. |
-| A `deliveryIdHeader` value already received | **409** (a replay). Nothing runs. Delivery ids are remembered for as long as Activity records are kept (14 days). |
+| A `deliveryIdHeader` value already received | **409** (a replay). Nothing runs, not even the `respond` function. Delivery ids are remembered for as long as Activity records are kept (14 days). |
 | A `deliveryIdHeader` value that is not 1 to 200 printable characters | **400**. |
 | Event deliveries of the plugin are [paused](#health-degraded-and-resume) | **503** with `Retry-After`. |
 | 1,000 webhook deliveries already waiting | **503** with `Retry-After`. |
 | More requests than the webhook rate limit allows | **429**. This is the limiter `POST /webhook` uses: `PROPR_WEBHOOK_RATE_LIMIT_MAX` requests per `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS`, 300 per minute by default. |
 
 Each webhook delivery appears in the plugin's [Activity](#activity) as
-`webhook.<name>`, with its handler, outcome, attempts, error and log lines.
-ProPR never stores or logs request bodies, signature headers or tokens. The
+`webhook.<name>`, with its handler, outcome and attempts. ProPR never stores
+or logs request bodies, signature headers or tokens. Because a handler could
+log or throw part of the request, a webhook delivery keeps only the level and
+time of each log line, not its message or fields, and its error says only that
+the handler failed or timed out. The
 request is held in the API process's memory only until its delivery is final.
 Two things follow from that:
 
 - A failed webhook delivery has no **Retry** button. The service has to send it
   again.
-- A delivery still waiting when the API stops is marked failed with
-  *ProPR stopped before the delivery finished*. Most services redeliver on
-  their own.
+- A delivery still waiting when its API process stops is marked failed with
+  *ProPR stopped before the delivery finished*, by the next API process to
+  start or by another one running (within about two minutes). Starting an API
+  process never fails the deliveries of another one still running. Most
+  services redeliver on their own.
 
 Webhook failures do not count towards the plugin's Degraded and paused
 [health](#health-degraded-and-resume), which tracks event deliveries.
@@ -873,8 +878,8 @@ Webhook failures do not count towards the plugin's Degraded and paused
 
 Some services check a new URL by sending a challenge that must be echoed in the
 response, such as Slack's `url_verification`. `respond` names another exported
-function of `handlers.ts`. It runs after verification and before the request is
-queued, and it receives only the frozen request
+function of `handlers.ts`. It runs after verification and the replay check, and
+before the request is queued, and it receives only the frozen request
 `{ webhook, headers, body, receivedAt }`. It gets no `ctx`, so it cannot read
 state, call ProPR or send HTTP requests. It must return synchronously:
 
@@ -891,7 +896,8 @@ export const slackChallenge = definePluginWebhookResponder(request => {
 
 When it returns a response (a 2xx `status`, 200 by default, a `text/plain` or
 `application/json` `contentType` and a `body` of at most 4 KiB), ProPR sends
-that response and the handler does not run. When it returns `null`, the request
+that response and the handler does not run; the delivery id stays taken, so a
+replayed challenge gets 409. When it returns `null`, the request
 is queued as usual. If it throws, returns a promise or returns an invalid
 response, ProPR answers **500** and runs nothing.
 

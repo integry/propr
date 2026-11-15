@@ -10,10 +10,15 @@
 // `rejected_count`, `last_rejected_at` and `last_rejected_reason` count
 // requests that failed verification. Request bodies and signature headers are
 // never stored, here or anywhere else.
+//
+// A webhook delivery's request is held only in the memory of the API process
+// that accepted it. `plugin_deliveries.webhook_owner` names that process's
+// webhook runner, and `plugin_webhook_runners` holds each live runner's
+// heartbeat: another process fails an unfinished webhook delivery only once its
+// owner's heartbeat has lapsed (or it has no owner).
 
 export async function up(knex) {
-  if (await knex.schema.hasTable('plugin_webhook_keys')) return;
-  await knex.schema.createTable('plugin_webhook_keys', t => {
+  if (!await knex.schema.hasTable('plugin_webhook_keys')) await knex.schema.createTable('plugin_webhook_keys', t => {
     t.string('plugin_id').primary();
     t.bigInteger('installed_at').notNullable();
     t.string('key_hash', 64).notNullable().unique();
@@ -24,6 +29,15 @@ export async function up(knex) {
     t.bigInteger('last_rejected_at');
     t.string('last_rejected_reason');
   });
+  if (!await knex.schema.hasTable('plugin_webhook_runners')) {
+    await knex.schema.createTable('plugin_webhook_runners', t => {
+      t.string('owner').primary();
+      t.bigInteger('heartbeat_at').notNullable();
+    });
+  }
+  if (await knex.schema.hasTable('plugin_deliveries') && !await knex.schema.hasColumn('plugin_deliveries', 'webhook_owner')) {
+    await knex.schema.alterTable('plugin_deliveries', t => { t.string('webhook_owner'); });
+  }
 }
 
 // Webhook keys belong to installations, which stay on rollback; older versions ignore them.

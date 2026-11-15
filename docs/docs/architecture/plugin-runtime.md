@@ -241,17 +241,25 @@ before the JSON parser and the session middleware:
       `verifyPluginWebhook`. A failure gets 401 and is counted on the key row
       (`recordPluginWebhookRejection`). It is logged as
       `{ pluginId, webhook, reason }`, never with the body or a header.
-   3. If the webhook has `respond`, call it (see below). A response is sent as
-      it is and the request ends there.
-   4. Derive the delivery id: `whk-<webhook>-<value of deliveryIdHeader>`, or a
-      random UUID in place of the value when the webhook declares no header or
-      the request does not send it. A malformed value gets 400.
-   5. Refuse with 503 while the installation's event deliveries are paused.
-   6. `PluginWebhookRunner.accept` inserts the `plugin_deliveries` row (kind
-      `webhook`, `event_type` `webhook.<name>`, empty repository, `event_seq` 0).
-      The unique `(plugin_id, delivery_id)` index turns a replay into a 409.
-      When 1,000 deliveries are already held, the answer is 503. Otherwise it
-      answers 202.
+   3. Derive the delivery id: `whk-<webhook>:<value of deliveryIdHeader>`, or
+      `whk-<webhook>/<random UUID>` when the webhook declares no header or the
+      request does not send it. A webhook name contains neither `:` nor `/`, so
+      the character after the name ends it: webhook `a` with id `b-c` and
+      webhook `a-b` with id `c` get different ids. A malformed value gets 400.
+   4. `PluginWebhookRunner.reserve` inserts the `plugin_deliveries` row (kind
+      `webhook`, `event_type` `webhook.<name>`, empty repository, `event_seq` 0,
+      status `pending`, `webhook_owner` this runner) before any plugin code
+      runs. The unique `(plugin_id, delivery_id)` index turns a replay into a
+      409, so a replay never reaches the `respond` function either. When 1,000
+      deliveries are already held or reserved, the answer is 503.
+   5. If the webhook has `respond`, call it (see below). A response is sent as
+      it is and the request ends there. A 2xx answer to a request with the
+      sender's delivery id marks the row succeeded (handler: the respond
+      function), so the id stays taken; otherwise the row is deleted
+      (`release`), and a failed respond function's request may be sent again.
+   6. Refuse with 503 while the installation's event deliveries are paused,
+      releasing the row so the sender's retry is not a replay.
+   7. `start` hands the delivery to the runner, and the answer is 202.
 
 | Scheme | Computation | Notes |
 | --- | --- | --- |
@@ -277,8 +285,8 @@ argument fails.
 A returned thenable is refused, so the function must be synchronous. The
 response is checked: a 2xx status, `text/plain` or `application/json`, and a
 string body of at most `PLUGIN_WEBHOOK_LIMITS.responseBytes` (4 KiB). A refusal
-or a throw gets 500. The error is logged by name only, because its message
-could quote the request.
+or a throw gets 500. Nothing of the error is logged (not even its name),
+because it could quote the request.
 
 ### Webhook delivery runner
 
@@ -302,9 +310,14 @@ The handler's headers are the request's minus the verification headers,
 `authorization`, `proxy-authorization`, `cookie`, `host`, `connection`,
 `content-length` and `transfer-encoding`.
 
-When the API starts, `recover()` marks webhook deliveries that an earlier
-process left unfinished as failed: *ProPR stopped before the delivery finished,
-and webhook requests are not kept*. `stop()` (on SIGTERM) lets attempts under
+Each runner has an owner name (`webhooks-<pid>-<uuid>`) and a heartbeat row in
+`plugin_webhook_runners`, renewed every 30 seconds; each delivery record names
+its owner in `webhook_owner`. When the API starts, and with every heartbeat,
+`recover()` marks failed the unfinished webhook deliveries whose owner has
+stopped: its heartbeat is older than 2 minutes, or the record has no owner.
+They read *ProPR stopped before the delivery finished, and webhook requests are
+not kept*. This is one `UPDATE`, so another API process starting while one is
+alive never fails that process's pending or retrying deliveries. `stop()` (on SIGTERM) lets attempts under
 way finish and fails the deliveries still waiting. A failed webhook delivery
 cannot be retried from Activity (`retryPluginDelivery` only accepts event
 deliveries), because the request is gone.
@@ -315,7 +328,11 @@ installation refuses new webhook requests with 503.
 
 **What is stored.** The key row (the key, its hash and the rejection count) and
 the delivery record (the ids, the webhook and handler names, status, timing,
-and the handler's redacted error and log lines). The body, the signature and
+and the level and time of each log line). A handler may log or throw any part
+of the request, which the credential redaction does not recognize, so a
+webhook attempt keeps no handler log message or field and no error text: the
+error is *The webhook handler failed* or *The webhook handler timed out*
+(`webhookDiagnostics`). The body, the signature and
 token headers, and the other request headers are never written to the database
 or a log. The sentinel tests in `pluginWebhooks.test.ts` and
 `packages/api/test/pluginWebhookRoutes.test.ts` dump every table and capture

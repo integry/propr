@@ -933,7 +933,7 @@ export interface PluginConnectionRequest {
 export interface PluginDelivery {
   /** The activity record id, used by the retry route. */
   id: number;
-  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>-<id>` for a webhook); the same on every attempt. */
+  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook); the same on every attempt. */
   deliveryId: string;
   /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. */
   kind: "event" | "gap" | "webhook";

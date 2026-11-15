@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
-import { PLUGIN_DELIVERY_RETRY_DELAYS_MS, PLUGIN_WEBHOOK_LIMITS, type PluginHandlerRun, type PluginWebhookInput } from '@propr/shared';
+import { PLUGIN_DELIVERY_RETRY_DELAYS_MS, PLUGIN_WEBHOOK_LIMITS, type PluginHandlerRun, type PluginLogLine, type PluginWebhookInput } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
-import { clipError, storedLogs, type PluginDeliveryRow } from './pluginDeliveries.js';
+import { storedLogs, type PluginDeliveryRow } from './pluginDeliveries.js';
 import type { PluginInstallationTarget } from './pluginContext.js';
 
 /**
@@ -14,13 +15,26 @@ import type { PluginInstallationTarget } from './pluginContext.js';
  *
  * The request (body and headers) is held in this process's memory only, never
  * written anywhere: the delivery record carries the webhook and handler
- * names, the delivery id, status, timing and the handler's redacted error and
- * log lines. A delivery still waiting when the process stops cannot be
- * resumed by another one and is marked failed.
+ * names, the delivery id, status and timing. The handler's error and log
+ * messages are not kept either, since a handler may log or throw any part of
+ * the request: only each log line's level and time, and whether the attempt
+ * failed or timed out (see `webhookDiagnostics`).
+ *
+ * Each delivery record names the runner holding its request
+ * (`webhook_owner`), and each runner keeps a heartbeat in
+ * `plugin_webhook_runners`. A delivery whose owner stopped cannot be resumed
+ * by another process: once the owner's heartbeat has lapsed, any runner marks
+ * it failed. A live runner's deliveries are never touched by another.
  */
 export interface PluginWebhookRunnerOptions extends Omit<RunPluginHandlerOptions, 'database'> {
   database: Knex;
   retryDelaysMs?: readonly number[];
+  /** This runner's owner name; unique per process by default. */
+  owner?: string;
+  /** Interval between heartbeats (and recoveries of deliveries whose owner stopped). */
+  heartbeatMs?: number;
+  /** A runner whose heartbeat is older than this is taken to have stopped. */
+  ownerTtlMs?: number;
   /** Deliveries held in memory at once; further requests are refused (503) until some finish. */
   maxPending?: number;
   run?: typeof runPluginHandler;
@@ -29,7 +43,7 @@ export interface PluginWebhookRunnerOptions extends Omit<RunPluginHandlerOptions
 export interface PluginWebhookJob {
   target: PluginInstallationTarget;
   handler: string;
-  /** The delivery id the handler receives: `whk-<webhook>-<sender's id or a ProPR id>`. */
+  /** The delivery id the handler receives: `whk-<webhook>:<sender's id>`, or `whk-<webhook>/<ProPR id>` without one. */
   deliveryId: string;
   input: Omit<PluginWebhookInput, 'attempt' | 'deliveryId'>;
 }
@@ -39,6 +53,20 @@ interface Held { job: PluginWebhookJob; recordId: number; attempt: number; timer
 
 const LOST = 'Not delivered: ProPR stopped before the delivery finished, and webhook requests are not kept';
 const UNFINISHED = ['pending', 'running', 'retrying'] as const;
+const DEFAULT_HEARTBEAT_MS = 30_000;
+const DEFAULT_OWNER_TTL_MS = 120_000;
+const WITHHELD_LOG = 'Message not kept: webhook handler output may contain the request';
+
+/**
+ * What a webhook attempt keeps of the handler's diagnostics: its log lines'
+ * levels and times, and a fixed error. Never a message, field or error text
+ * the handler wrote, which may repeat any part of the request (the
+ * credential redaction does not recognize arbitrary request content).
+ */
+export function webhookDiagnostics(run: Pick<PluginHandlerRun, 'outcome' | 'timedOut' | 'logs'>): { error: string | null; logs: PluginLogLine[] } {
+  const error = run.outcome === 'succeeded' ? null : run.timedOut ? 'The webhook handler timed out' : 'The webhook handler failed (its error is not kept: it may contain the request)';
+  return { error, logs: run.logs.map(line => ({ level: line.level, message: WITHHELD_LOG, at: line.at })) };
+}
 
 export class PluginWebhookRunner {
   private readonly held = new Map<number, Held>();
@@ -47,41 +75,128 @@ export class PluginWebhookRunner {
   private readonly due = new Set<number>();
   private readonly now: () => number;
   private readonly delays: readonly number[];
+  /** Records reserved (`reserve`) and not yet started, released or answered. */
+  private readonly reserved = new Set<number>();
   private closed = false;
+  /** This runner's name in `plugin_deliveries.webhook_owner` and `plugin_webhook_runners`. */
+  readonly owner: string;
+  private registered?: Promise<void>;
+  private heartbeat?: NodeJS.Timeout;
 
   constructor(private readonly options: PluginWebhookRunnerOptions) {
     this.now = options.now ?? Date.now;
     this.delays = options.retryDelaysMs ?? PLUGIN_DELIVERY_RETRY_DELAYS_MS;
+    this.owner = options.owner ?? `webhooks-${process.pid}-${randomUUID()}`;
   }
 
   /** Deliveries held right now (waiting, running or retrying). */
   get pending(): number { return this.held.size; }
 
-  /** Mark webhook deliveries an earlier process left unfinished as failed: their requests were never stored. */
-  async recover(): Promise<number> {
-    return this.options.database('plugin_deliveries').where({ kind: 'webhook' }).whereIn('status', UNFINISHED)
-      .modify(q => { if (this.held.size) void q.whereNotIn('id', [...this.held.keys()]); })
-      .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST });
+  /** Record this runner's heartbeat; the first call also starts renewing it. Before any record names this runner as its owner. */
+  private register(): Promise<void> {
+    this.registered ??= this.beat().then(() => {
+      if (this.closed) return;
+      this.heartbeat = setInterval(() => {
+        void this.beat().then(() => this.recoverStopped()).catch((error: unknown) => {
+          logger.warn({ owner: this.owner, error: error instanceof Error ? error.message : String(error) }, '[plugins] Webhook runner heartbeat failed');
+        });
+      }, this.options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+      this.heartbeat.unref?.();
+    }, (error: unknown) => { this.registered = undefined; throw error; });
+    return this.registered;
+  }
+
+  private async beat(): Promise<void> {
+    if (this.closed) return;
+    await this.options.database('plugin_webhook_runners').insert({ owner: this.owner, heartbeat_at: this.now() }).onConflict('owner').merge(['heartbeat_at']);
   }
 
   /**
-   * Record the delivery and run it soon. Refused as `duplicate` when the
+   * Mark failed the unfinished webhook deliveries whose owner has stopped
+   * (its heartbeat lapsed, or the record has no owner): their requests were
+   * never stored. One statement, so a live owner's renewed heartbeat and its
+   * deliveries are read together; this runner's own are never touched.
+   */
+  private async recoverStopped(): Promise<number> {
+    const { database } = this.options;
+    const cutoff = this.now() - (this.options.ownerTtlMs ?? DEFAULT_OWNER_TTL_MS);
+    const failed = await database('plugin_deliveries').where({ kind: 'webhook' }).whereIn('status', UNFINISHED)
+      .where(q => {
+        void q.whereNull('webhook_owner').orWhere(owner => {
+          void owner.whereNot('webhook_owner', this.owner)
+            .whereNotIn('webhook_owner', database('plugin_webhook_runners').where('heartbeat_at', '>=', cutoff).select('owner'));
+        });
+      })
+      .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST });
+    await database('plugin_webhook_runners').where('heartbeat_at', '<', cutoff).whereNot('owner', this.owner).delete();
+    return failed;
+  }
+
+  /**
+   * Start this runner's heartbeat and mark failed the webhook deliveries left
+   * unfinished by runners that have stopped. Deliveries of runners still alive
+   * (in other API processes) are left alone. Repeated with every heartbeat.
+   */
+  async recover(): Promise<number> {
+    await this.register();
+    return this.recoverStopped();
+  }
+
+  /**
+   * Record the delivery, owned by this runner, without running it yet: the
+   * delivery id is taken, so a replay is refused while the receiver decides.
+   * Then `start`, `answered` or `release` it. Refused as `duplicate` when the
    * installation already recorded this delivery id (a replay), and as `busy`
    * when too many deliveries are held.
    */
-  async accept(job: PluginWebhookJob): Promise<PluginWebhookAcceptance> {
-    if (this.closed || this.held.size >= (this.options.maxPending ?? PLUGIN_WEBHOOK_LIMITS.pending)) return { accepted: false, reason: 'busy' };
+  async reserve(job: Pick<PluginWebhookJob, 'target' | 'handler' | 'deliveryId'> & { webhook: string }): Promise<PluginWebhookAcceptance> {
+    if (this.closed || this.held.size + this.reserved.size >= (this.options.maxPending ?? PLUGIN_WEBHOOK_LIMITS.pending)) return { accepted: false, reason: 'busy' };
+    await this.register();
     const now = this.now();
     const inserted = await this.options.database('plugin_deliveries').insert({
       plugin_id: job.target.pluginId, delivery_id: job.deliveryId, kind: 'webhook', repository: '', event_seq: 0,
-      event_type: `webhook.${job.input.webhook}`, handler: job.handler, status: 'pending', attempt: 0, next_attempt_at: now, created_at: now, logs: '[]',
+      event_type: `webhook.${job.webhook}`, handler: job.handler, status: 'pending', attempt: 0, next_attempt_at: now, created_at: now, logs: '[]',
+      webhook_owner: this.owner,
     }).onConflict(['plugin_id', 'delivery_id']).ignore().returning('id') as Array<{ id: number } | number>;
     const first = inserted[0];
     if (first === undefined) return { accepted: false, reason: 'duplicate' };
     const recordId = typeof first === 'number' ? first : Number(first.id);
+    this.reserved.add(recordId);
+    return { accepted: true, recordId };
+  }
+
+  /** Give a reserved delivery id back (the request was refused before delivery): the sender may send it again. */
+  async release(recordId: number): Promise<void> {
+    if (!this.reserved.delete(recordId)) return;
+    await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner }).delete();
+  }
+
+  /** A reserved delivery answered at once by the webhook's respond function: final, and its delivery id stays taken. */
+  async answered(recordId: number, respond: string): Promise<void> {
+    if (!this.reserved.delete(recordId)) return;
+    const now = this.now();
+    await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner })
+      .update({ status: 'succeeded', handler: respond, next_attempt_at: null, started_at: now, finished_at: now, duration_ms: 0 });
+  }
+
+  /** Run a reserved delivery soon. False when this runner has stopped since: the record is marked failed. */
+  async start(recordId: number, job: PluginWebhookJob): Promise<boolean> {
+    if (!this.reserved.delete(recordId)) return false;
+    if (this.closed) {
+      await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner })
+        .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST });
+      return false;
+    }
     this.held.set(recordId, { job, recordId, attempt: 0 });
     this.schedule(recordId, 0);
-    return { accepted: true, recordId };
+    return true;
+  }
+
+  /** `reserve` then `start`: record the delivery and run it soon. */
+  async accept(job: PluginWebhookJob): Promise<PluginWebhookAcceptance> {
+    const reserved = await this.reserve({ ...job, webhook: job.input.webhook });
+    if (!reserved.accepted) return reserved;
+    return await this.start(reserved.recordId, job) ? reserved : { accepted: false, reason: 'busy' };
   }
 
   /** Wait until no attempt is under way or due at once: every held delivery is final or waits for a retry (tests). */
@@ -95,6 +210,7 @@ export class PluginWebhookRunner {
   /** Stop: no further attempt starts; attempts under way finish; deliveries still waiting are marked failed. */
   async stop(): Promise<void> {
     this.closed = true;
+    clearInterval(this.heartbeat);
     for (const held of this.held.values()) clearTimeout(held.timer);
     this.due.clear();
     await this.idle();
@@ -102,6 +218,9 @@ export class PluginWebhookRunner {
     this.held.clear();
     if (ids.length) await this.options.database('plugin_deliveries').whereIn('id', ids).whereIn('status', UNFINISHED)
       .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST }).catch(() => undefined);
+    // Wait for a heartbeat under way, then withdraw it: another process may fail what is left at once.
+    await this.registered?.catch(() => undefined);
+    await this.options.database('plugin_webhook_runners').where({ owner: this.owner }).delete().catch(() => undefined);
   }
 
   private schedule(recordId: number, delayMs: number): void {
@@ -158,8 +277,9 @@ export class PluginWebhookRunner {
     const status = run.outcome === 'succeeded' ? 'succeeded' : attempt > this.delays.length ? 'failed' : 'retrying';
     const nextAttemptAt = status === 'retrying' ? now + this.delays[attempt - 1] : null;
     // Only while the record is still this attempt's: a restart (enabled again) or an uninstall since then wins.
+    const diagnostics = webhookDiagnostics(run);
     const recorded = await database('plugin_deliveries').where({ id: held.recordId, status: 'running', attempt }).update({
-      status, finished_at: now, duration_ms: run.durationMs, timed_out: run.timedOut, error: clipError(run.error), logs: storedLogs(run.logs), next_attempt_at: nextAttemptAt,
+      status, finished_at: now, duration_ms: run.durationMs, timed_out: run.timedOut, error: diagnostics.error, logs: storedLogs(diagnostics.logs), next_attempt_at: nextAttemptAt,
     });
     if (recorded !== 1 || status !== 'retrying') { this.held.delete(held.recordId); return; }
     this.schedule(held.recordId, nextAttemptAt! - now);

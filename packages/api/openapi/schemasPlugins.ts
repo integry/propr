@@ -89,7 +89,7 @@ export const PluginOAuthStartResponse = component('PluginOAuthStartResponse', z.
 const PluginLogLine = z.object({ level: z.enum(['debug', 'info', 'warn', 'error']), message: z.string(), fields: z.record(z.string(), z.unknown()).optional(), at: z.number() });
 export const PluginDelivery = component('PluginDelivery', z.object({
   id: z.number().int().describe('The activity record id, used by the retry route.'),
-  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>-<id>` for a webhook); the same on every attempt.'),
+  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook); the same on every attempt.'),
   kind: z.enum(PLUGIN_DELIVERY_KINDS).describe('`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler.'),
   repository: z.string().describe('The event\'s repository; empty for a webhook delivery.'),
   eventSeq: z.number().int().describe('The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery.'),

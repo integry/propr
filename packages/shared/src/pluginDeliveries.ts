@@ -36,7 +36,7 @@ export type PluginDeliveryKind = typeof PLUGIN_DELIVERY_KINDS[number];
 export interface PluginDeliveryView {
   /** The activity record id, used by the retry route. */
   id: number;
-  /** The stable delivery id handlers receive (`evt-<seq>-<handler>`, `whk-<webhook>-<id>`); the same on every attempt. */
+  /** The stable delivery id handlers receive (`evt-<seq>-<handler>`, `whk-<webhook>:<id>`, `whk-<webhook>/<uuid>`); the same on every attempt. */
   deliveryId: string;
   kind: PluginDeliveryKind;
   /** The event's repository; empty for a webhook delivery. */

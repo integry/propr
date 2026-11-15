@@ -106,7 +106,7 @@ describe('Plugin activity', () => {
   });
 
   it('lists a webhook delivery by its webhook, without a repository, event number or Retry (its request is not kept)', async () => {
-    const webhook = delivery({ id: 5, deliveryId: 'whk-events-d-1', kind: 'webhook', repository: '', eventSeq: 0, eventType: 'webhook.events', handler: 'onEvent', status: 'failed', attempt: 5, error: 'chat API answered 503', logs: [] });
+    const webhook = delivery({ id: 5, deliveryId: 'whk-events:d-1', kind: 'webhook', repository: '', eventSeq: 0, eventType: 'webhook.events', handler: 'onEvent', status: 'failed', attempt: 5, error: 'chat API answered 503', logs: [] });
     await open({ health: healthy, deliveries: [webhook] });
     const [item] = items();
     expect(item).toHaveTextContent('webhook.events');

@@ -116,7 +116,7 @@ test('plugin webhook route: verified requests are queued, oversized bodies and u
   assert.equal(listed.status, 200);
   assertConforms(schemas.PluginWebhooksResponse, listed.body, 'webhooks');
   const urls = Object.fromEntries((listed.body.webhooks as { name: string; url: string; scheme: string }[]).map(w => [w.name, w.url]));
-  assert.deepEqual((listed.body.webhooks as { name: string; scheme: string }[]).map(w => [w.name, w.scheme]), [['signed', 'hmac-sha256'], ['slack', 'slack-v0'], ['token', 'token-header'], ['probe', 'token-header']]);
+  assert.deepEqual((listed.body.webhooks as { name: string; scheme: string }[]).map(w => [w.name, w.scheme]), [['signed', 'hmac-sha256'], ['slack', 'slack-v0'], ['token', 'token-header'], ['probe', 'token-header'], ['answered', 'token-header'], ['a', 'token-header'], ['a-b', 'token-header'], ['leaky', 'token-header']]);
   assert.match(urls.signed, /^https:\/\/propr\.example\.com\/api\/plugins\/[A-Za-z0-9_-]{43}\/hooks\/signed$/);
 
   // Verified: answered 202 at once, then run from the queue exactly once.

@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "fixture-webhooks",
   "name": "Fixture webhooks",
-  "description": "Test fixture for plugin inbound webhooks: one webhook per verification scheme, a Slack challenge responder, a failing handler and a respond function that reaches for ctx.",
+  "description": "Test fixture for plugin inbound webhooks: one webhook per verification scheme, a Slack challenge responder, a failing handler and a respond function that reaches for ctx, a counted challenge responder with a delivery id header, two names one extending the other, and a handler that leaks the body into its log and error.",
   "version": "1.0.0",
   "category": "other",
   "homepage": "https://example.com/fixture-webhooks",
@@ -27,6 +27,25 @@
       },
       {
         "name": "probe", "description": "A respond function that reaches for ctx", "handler": "onWebhook", "respond": "probeRespond",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" }
+      },
+      {
+        "name": "answered", "description": "A counted challenge responder with a sender delivery id", "handler": "onWebhook", "respond": "countedChallenge",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-Delivery-Id"
+      },
+      {
+        "name": "a", "description": "A short name, for delivery id collisions", "handler": "onWebhook",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-Delivery-Id"
+      },
+      {
+        "name": "a-b", "description": "A name extending another, for delivery id collisions", "handler": "onWebhook",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-Delivery-Id"
+      },
+      {
+        "name": "leaky", "description": "A handler that logs and throws the request body", "handler": "leakyWebhook",
         "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" }
       }
     ]

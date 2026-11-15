@@ -98,15 +98,15 @@ test('a verified request runs its handler once; a bad signature, a stale timesta
   const body = '{"action":"opened"}';
   const accepted = await s.send('signed', body, { 'x-hub-signature-256': hubSignature(body), 'x-github-delivery': 'd-1', 'content-type': 'application/json', cookie: 'sid=1', authorization: 'Basic eA==' });
   assert.equal(accepted.status, 202);
-  assert.deepEqual(JSON.parse(accepted.body), { accepted: true, deliveryId: 'whk-signed-d-1' });
+  assert.deepEqual(JSON.parse(accepted.body), { accepted: true, deliveryId: 'whk-signed:d-1' });
   await s.runner.idle();
   const seen = await s.seen();
   assert.equal(seen.length, 1);
-  assert.deepEqual(seen[0], { id: 'whk-signed-d-1', webhook: 'signed', attempt: 1, bodyBytes: Buffer.byteLength(body), headers: ['content-type', 'x-github-delivery'] },
+  assert.deepEqual(seen[0], { id: 'whk-signed:d-1', webhook: 'signed', attempt: 1, bodyBytes: Buffer.byteLength(body), headers: ['content-type', 'x-github-delivery'] },
     'the handler gets the body, but not the signature, cookie or authorization headers');
   const [delivery] = await s.deliveries();
   assert.deepEqual({ kind: delivery.kind, status: delivery.status, eventType: delivery.eventType, handler: delivery.handler, attempt: delivery.attempt, deliveryId: delivery.deliveryId },
-    { kind: 'webhook', status: 'succeeded', eventType: 'webhook.signed', handler: 'onWebhook', attempt: 1, deliveryId: 'whk-signed-d-1' });
+    { kind: 'webhook', status: 'succeeded', eventType: 'webhook.signed', handler: 'onWebhook', attempt: 1, deliveryId: 'whk-signed:d-1' });
 
   const loadsBefore = s.loads.length;
   const replay = await s.send('signed', body, { 'x-hub-signature-256': hubSignature(body), 'x-github-delivery': 'd-1' });
@@ -210,9 +210,10 @@ test('a failing webhook handler is retried on the delivery schedule, then marked
   assert.equal((await s.send('token', '{"n":2}', { 'x-gitlab-token': SECRET })).status, 202);
   await settle();
   [delivery] = await s.deliveries();
-  assert.deepEqual({ status: delivery.status, attempt: delivery.attempt, error: delivery.error }, { status: 'failed', attempt: 3, error: 'webhook failure, attempt 3' }, 'three attempts with two retry delays, then failed');
+  assert.deepEqual({ status: delivery.status, attempt: delivery.attempt, error: delivery.error }, { status: 'failed', attempt: 3, error: 'The webhook handler failed (its error is not kept: it may contain the request)' }, 'three attempts with two retry delays, then failed, without the error text of the handler');
 
   const orphan = new PluginWebhookRunner({ ...s.f.options, retryDelaysMs: [60_000] });
+  t.after(() => orphan.stop());
   await s.f.database('plugin_deliveries').insert({ plugin_id: ID, delivery_id: 'whk-token-orphan', kind: 'webhook', repository: '', event_seq: 0, event_type: 'webhook.token', handler: 'flakyWebhook', status: 'retrying', attempt: 1, created_at: NOW, logs: '[]' });
   assert.equal(await orphan.recover(), 1);
   const lost = (await s.deliveries()).find(d => d.deliveryId === 'whk-token-orphan')!;
@@ -254,4 +255,96 @@ test('request bodies and signature headers are never stored or logged (sentinel)
     assert.ok(!dump.some(text => text.includes(sentinel)), `${sentinel} is not stored in any table`);
     assert.ok(!lines.some(line => line.includes(sentinel)), `${sentinel} is not logged`);
   }
+});
+
+test('a responder runs only after its delivery id is reserved: a replay, challenge or not, runs no plugin code', async t => {
+  const s = await setup(t);
+  const module = await loadPluginHandlers(ID, { root: FIXTURE_REGISTRY, includeDevelopment: true });
+  const calls = () => (module!.challengeCalls as unknown as () => number)();
+  const send = (body: string, id: string) => s.send('answered', body, { 'x-gitlab-token': SECRET, 'x-delivery-id': id });
+  const event = '{"type":"event_callback"}';
+  const before = calls();
+  assert.equal((await send(event, 'r-1')).status, 202);
+  await s.runner.idle();
+  assert.equal(calls(), before + 1);
+  const loads = s.loads.length;
+  assert.equal((await send(event, 'r-1')).status, 409, 'the replayed ordinary event is refused');
+  assert.equal(calls(), before + 1, 'without running the responder again');
+  assert.equal(s.loads.length, loads, 'or loading the plugin module');
+
+  const challenge = JSON.stringify({ type: 'url_verification', challenge: 'c-123' });
+  assert.deepEqual(await send(challenge, 'r-2'), { status: 200, contentType: 'text/plain', body: 'c-123' });
+  assert.equal(calls(), before + 2);
+  assert.equal((await send(challenge, 'r-2')).status, 409, 'an answered challenge keeps its delivery id taken');
+  assert.equal(calls(), before + 2, 'its replay runs no responder');
+  assert.equal(s.loads.length, loads + 1);
+  const answered = (await s.deliveries()).find(d => d.deliveryId === 'whk-answered:r-2')!;
+  assert.deepEqual({ status: answered.status, handler: answered.handler }, { status: 'succeeded', handler: 'countedChallenge' });
+
+  // Refused before delivery (paused): the reservation is given back, so the sender's retry is delivered.
+  const installedAt = Number((await s.f.database('plugin_installations').where({ plugin_id: ID }).first('installed_at')).installed_at);
+  await s.f.database('plugin_dispatch').insert({ plugin_id: ID, installed_at: installedAt, start_seq: 0, updated_at: NOW, paused_at: NOW }).onConflict('plugin_id').merge(['paused_at']);
+  assert.equal((await send(event, 'r-3')).status, 503);
+  await s.f.database('plugin_dispatch').where({ plugin_id: ID }).update({ paused_at: null });
+  assert.equal((await send(event, 'r-3')).status, 202, 'the retry of a refused request is not a replay');
+  await s.runner.idle();
+  assert.deepEqual((await s.seen()).map(x => x.id), ['whk-answered:r-1', 'whk-answered:r-3']);
+});
+
+test('delivery ids of different webhooks never collide', async t => {
+  const s = await setup(t);
+  const a = await s.send('a', '{}', { 'x-gitlab-token': SECRET, 'x-delivery-id': 'b-c' });
+  const ab = await s.send('a-b', '{}', { 'x-gitlab-token': SECRET, 'x-delivery-id': 'c' });
+  assert.deepEqual([a.status, ab.status], [202, 202], 'webhook a with id b-c and webhook a-b with id c are two deliveries');
+  assert.notEqual(JSON.parse(a.body).deliveryId, JSON.parse(ab.body).deliveryId);
+  const propr = await s.send('a', '{}', { 'x-gitlab-token': SECRET });
+  assert.match(JSON.parse(propr.body).deliveryId as string, /^whk-a\/[0-9a-f-]{36}$/, 'a ProPR id is spelled apart from any sender id');
+  await s.runner.idle();
+  assert.deepEqual((await s.seen()).map(x => [x.webhook, x.id]).slice(0, 2), [['a', 'whk-a:b-c'], ['a-b', 'whk-a-b:c']]);
+});
+
+test('a handler that logs or throws the request body has neither stored nor logged (sentinel)', async t => {
+  const s = await setup(t, { retryDelaysMs: [] });
+  const lines: string[] = [];
+  for (const level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const) {
+    mock.method(logger, level, (...args: unknown[]) => { lines.push(JSON.stringify(args, (_k, v: unknown) => (v instanceof Error ? `${v.name}: ${v.message}` : v))); });
+  }
+  t.after(() => mock.restoreAll());
+  const BODY = 'customer-private-message-123';
+  assert.equal((await s.send('leaky', JSON.stringify({ text: BODY }), { 'x-gitlab-token': SECRET })).status, 202);
+  await s.runner.idle();
+  const [delivery] = await s.deliveries();
+  assert.equal(delivery.status, 'failed');
+  assert.equal(delivery.error, 'The webhook handler failed (its error is not kept: it may contain the request)');
+  assert.deepEqual(delivery.logs.map(line => [line.level, line.fields]), [['info', undefined], ['warn', undefined]], 'the lines are kept as levels and times only');
+  const tables = (await s.f.database.raw("SELECT name FROM sqlite_master WHERE type = 'table'") as { name: string }[]).map(row => row.name);
+  for (const table of tables) assert.ok(!JSON.stringify(await s.f.database(table).select()).includes(BODY), `the body is not stored in ${table}`);
+  assert.ok(lines.length > 0);
+  assert.ok(!lines.some(line => line.includes(BODY)), 'the body is not logged');
+});
+
+test('starting another runner leaves a live runner\'s deliveries alone and fails only those of a stopped one', async t => {
+  const s = await setup(t, { retryDelaysMs: [30] });
+  await s.f.database('plugin_state').insert({ plugin_id: ID, state_key: 'fail', value: '1', bytes: 1, updated_at: 0 });
+  assert.equal((await s.send('token', '{}', { 'x-gitlab-token': SECRET })).status, 202);
+  await s.runner.idle();
+  assert.equal((await s.deliveries())[0].status, 'retrying', 'A holds a delivery waiting for its retry');
+
+  // B starts against the same database while A is alive.
+  const other = new PluginWebhookRunner({ ...s.f.options, now: () => s.clock.now });
+  t.after(() => other.stop());
+  assert.equal(await other.recover(), 0, 'B fails nothing of A');
+  assert.equal((await s.deliveries())[0].status, 'retrying');
+  for (let i = 0; i < 50 && (s.runner.pending || (await s.runner.idle(), s.runner.pending)); i++) await new Promise(r => setTimeout(r, 10));
+  const [delivery] = await s.deliveries();
+  assert.deepEqual({ status: delivery.status, attempt: delivery.attempt }, { status: 'succeeded', attempt: 2 }, 'A\'s retry ran');
+
+  // A runner whose heartbeat lapsed has stopped: its unfinished delivery is failed by the next recovery.
+  await s.f.database('plugin_webhook_runners').insert({ owner: 'webhooks-stopped', heartbeat_at: NOW - 121_000 });
+  await s.f.database('plugin_deliveries').insert({ plugin_id: ID, delivery_id: 'whk-token/stopped', kind: 'webhook', repository: '', event_seq: 0, event_type: 'webhook.token', handler: 'flakyWebhook', status: 'retrying', attempt: 1, created_at: NOW, logs: '[]', webhook_owner: 'webhooks-stopped' });
+  assert.equal(await other.recover(), 1);
+  const lost = (await s.deliveries()).find(d => d.deliveryId === 'whk-token/stopped')!;
+  assert.equal(lost.status, 'failed');
+  assert.equal(await s.f.database('plugin_webhook_runners').where({ owner: 'webhooks-stopped' }).first(), undefined, 'the stopped runner is forgotten');
+  assert.ok(await s.f.database('plugin_webhook_runners').where({ owner: s.runner.owner }).first(), 'A is still registered');
 });

@@ -21,12 +21,15 @@ import {
  * 2. ProPR verifies the request with the webhook's scheme and signing secret:
  *    otherwise 401, counted on the installation, logged without the body or
  *    any header.
- * 3. A `respond` function may answer at once (a challenge echo): it gets the
+ * 3. The delivery id is derived (400 when the sender's is malformed) and
+ *    reserved: one already recorded is a replay, 409, and no plugin code runs.
+ * 4. A `respond` function may answer at once (a challenge echo): it gets the
  *    frozen request as its only argument, no `ctx`, and must return
- *    synchronously.
- * 4. A delivery id already recorded is a replay: 409.
+ *    synchronously. Its answer keeps the delivery id taken; when it fails
+ *    (500) the reservation is given back, so the sender may send it again.
  * 5. Otherwise the delivery is queued (202) and the handler runs from the
- *    queue. While deliveries are paused, or the queue is full, 503.
+ *    queue. While deliveries are paused, or the queue is full, 503 (and the
+ *    reservation is given back).
  *
  * The body size limit and the rate limiter are applied by the route before this.
  */
@@ -46,6 +49,7 @@ export interface PluginWebhookReply { status: number; contentType: 'application/
 
 const json = (status: number, value: Record<string, unknown>, extra: Partial<PluginWebhookReply> = {}): PluginWebhookReply => ({ status, contentType: 'application/json', body: JSON.stringify(value), ...extra });
 const NOT_FOUND = json(404, { error: 'Not found' });
+const BUSY = json(503, { error: 'Too many webhook deliveries are waiting' }, { retryAfterSeconds: 60 });
 
 /** A respond function's answer, checked: a 2xx status, a short text body and a supported content type. */
 function checkedResponse(value: unknown): PluginWebhookResponse | null {
@@ -84,16 +88,23 @@ export class PluginWebhookReceiver {
       if (typeof responder !== 'function') throw new Error(`Plugin ${target.pluginId} has no function ${webhook.respond}`);
       const response = checkedResponse(Reflect.apply(responder, undefined, [request]));
       return response ? { status: response.status!, contentType: response.contentType!, body: response.body } : null;
-    } catch (error) {
-      logger.warn({ pluginId: target.pluginId, webhook: webhook.name, error: error instanceof Error ? error.name : 'Error' }, '[plugins] Webhook respond function failed');
+    } catch {
+      // Nothing of the error: a respond function may throw (or name its error after) any part of the request.
+      logger.warn({ pluginId: target.pluginId, webhook: webhook.name }, '[plugins] Webhook respond function failed');
       return json(500, { error: 'The webhook could not answer' });
     }
   }
 
-  private deliveryId(webhook: PluginWebhook, headers: IncomingHttpHeaders): string | null {
+  /**
+   * `whk-<webhook>:<sender's id>`, or `whk-<webhook>/<ProPR id>` without one.
+   * A webhook name has neither `:` nor `/`, so the character after it ends the
+   * name unambiguously and tells a sender's id from ProPR's: distinct webhooks
+   * and ids never share a delivery id (`a` with `b-c` and `a-b` with `c` differ).
+   */
+  private deliveryId(webhook: PluginWebhook, headers: IncomingHttpHeaders): { id: string; fromSender: boolean } | null {
     const sender = senderDeliveryId(headers, webhook);
     if (sender === null) return null;
-    return `whk-${webhook.name}-${sender ?? randomUUID()}`;
+    return sender === undefined ? { id: `whk-${webhook.name}/${randomUUID()}`, fromSender: false } : { id: `whk-${webhook.name}:${sender}`, fromSender: true };
   }
 
   async receive(request: PluginWebhookRequestInput): Promise<PluginWebhookReply> {
@@ -107,19 +118,34 @@ export class PluginWebhookReceiver {
     const verdict = verifyPluginWebhook({ verification: webhook.verification, secret, headers: request.headers, body: request.body, now: receivedAt });
     if (!verdict.ok) return this.reject(resolved, verdict.reason);
 
-    const body = request.body.toString('utf8');
-    const headers = Object.freeze(handlerHeaders(request.headers, webhook));
-    const answer = await this.respond(resolved, Object.freeze({ webhook: webhook.name, headers, body, receivedAt }));
-    if (answer) return answer;
-
-    const deliveryId = this.deliveryId(webhook, request.headers);
-    if (deliveryId === null) return json(400, { error: `Invalid ${webhook.deliveryIdHeader} header` });
-    const dispatch = await database('plugin_dispatch').where({ plugin_id: target.pluginId, installed_at: target.record.installedAt }).first('paused_at') as { paused_at: number | null } | undefined;
-    if (dispatch && dispatch.paused_at !== null) return json(503, { error: 'Deliveries of this plugin are paused' }, { retryAfterSeconds: 300 });
-    const accepted = await this.options.runner.accept({ target, handler: webhook.handler, deliveryId, input: { kind: 'webhook', webhook: webhook.name, headers: { ...headers }, body, receivedAt } });
-    if (!accepted.accepted) {
-      return accepted.reason === 'duplicate' ? json(409, { error: 'This delivery was already received' }) : json(503, { error: 'Too many webhook deliveries are waiting' }, { retryAfterSeconds: 60 });
+    // The delivery id is checked and taken before any plugin code runs (the respond function included): a replay runs nothing.
+    const derived = this.deliveryId(webhook, request.headers);
+    if (derived === null) return json(400, { error: `Invalid ${webhook.deliveryIdHeader} header` });
+    const { runner } = this.options;
+    const deliveryId = derived.id;
+    const reserved = await runner.reserve({ target, handler: webhook.handler, deliveryId, webhook: webhook.name });
+    if (!reserved.accepted) return reserved.reason === 'duplicate' ? json(409, { error: 'This delivery was already received' }) : BUSY;
+    const { recordId } = reserved;
+    try {
+      const body = request.body.toString('utf8');
+      const headers = Object.freeze(handlerHeaders(request.headers, webhook));
+      const answer = await this.respond(resolved, Object.freeze({ webhook: webhook.name, headers, body, receivedAt }));
+      if (answer) {
+        // Answered: a sender's delivery id stays taken, so its replay is refused; ProPR's own id is never sent again. A failed respond function delivered nothing.
+        if (answer.status < 300 && derived.fromSender) await runner.answered(recordId, webhook.respond!);
+        else await runner.release(recordId);
+        return answer;
+      }
+      const dispatch = await database('plugin_dispatch').where({ plugin_id: target.pluginId, installed_at: target.record.installedAt }).first('paused_at') as { paused_at: number | null } | undefined;
+      if (dispatch && dispatch.paused_at !== null) {
+        await runner.release(recordId);
+        return json(503, { error: 'Deliveries of this plugin are paused' }, { retryAfterSeconds: 300 });
+      }
+      if (!await runner.start(recordId, { target, handler: webhook.handler, deliveryId, input: { kind: 'webhook', webhook: webhook.name, headers: { ...headers }, body, receivedAt } })) return BUSY;
+      return json(202, { accepted: true, deliveryId });
+    } catch (error) {
+      await runner.release(recordId).catch(() => undefined);
+      throw error;
     }
-    return json(202, { accepted: true, deliveryId });
   }
 }
