@@ -317,7 +317,15 @@ its owner in `webhook_owner`. When the API starts, and with every heartbeat,
 stopped: its heartbeat is older than 2 minutes, or the record has no owner.
 They read *ProPR stopped before the delivery finished, and webhook requests are
 not kept*. This is one `UPDATE`, so another API process starting while one is
-alive never fails that process's pending or retrying deliveries. `stop()` (on SIGTERM) lets attempts under
+alive never fails that process's pending or retrying deliveries.
+
+A runner keeps a request in memory until the database write that moves its
+delivery on has succeeded. A failed write is retried after 1 s, 5 s, 30 s and
+then every minute. If the handler had already run, only the outcome is
+written again; the handler does not run a second time. A reservation (a
+refused or answered request) stays counted until its record is deleted or
+marked answered. Each heartbeat also marks failed any of the runner's own
+unfinished records that it no longer holds. `stop()` (on SIGTERM) lets attempts under
 way finish and fails the deliveries still waiting. A failed webhook delivery
 cannot be retried from Activity (`retryPluginDelivery` only accepts event
 deliveries), because the request is gone.

@@ -2,6 +2,7 @@ import test, { mock, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import type { Knex } from 'knex';
 import { parsePluginManifest, type PluginWebhookVerification } from '@propr/shared';
 import { loadPluginHandlers } from '../../plugins/src/index.js';
 import { FIXTURE_REGISTRY, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
@@ -72,13 +73,14 @@ test('each verification scheme accepts its documented test vector and refuses a 
 const hubSignature = (body: string, secret = SECRET) => `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
 const slackSignature = (timestamp: string, body: string, secret = SECRET) => `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:${body}`).digest('hex')}`;
 
-async function setup(t: TestContext, options: { retryDelaysMs?: number[] } = {}) {
+async function setup(t: TestContext, options: { retryDelaysMs?: number[]; wrap?: (database: Knex) => Knex } = {}) {
   const f = await pluginHandlerFixture(t, { pluginId: ID, repositories: null });
   await f.store.setConnection('1', ID, 'hook-secret', SECRET);
   const clock = { now: NOW };
   const loads: string[] = [];
   const handlers = (id: string) => { loads.push(id); return loadPluginHandlers(id, { root: FIXTURE_REGISTRY, includeDevelopment: true }); };
-  const runner = new PluginWebhookRunner({ ...f.options, handlers, now: () => clock.now, timeoutMs: 500, retryDelaysMs: options.retryDelaysMs ?? [5, 5] });
+  const database = options.wrap ? options.wrap(f.database) : f.database;
+  const runner = new PluginWebhookRunner({ ...f.options, database, handlers, now: () => clock.now, timeoutMs: 500, retryDelaysMs: options.retryDelaysMs ?? [5, 5], persistRetryMs: [5] });
   t.after(() => runner.stop());
   const receiver = new PluginWebhookReceiver({ database: f.database, runner, catalog: f.options.catalog, handlers, environment: f.options.environment, now: () => clock.now });
   const { webhooks } = await pluginWebhookEndpoints(f.database, ID, { manifest: f.manifest, origin: null });
@@ -427,4 +429,108 @@ test('a request resolved before an uninstall and reinstall records nothing, and 
   assert.equal(fresh.status, 202, 'B receives the delivery id A never delivered');
   await s.runner.idle();
   assert.deepEqual((await s.seen()).map(x => x.id), ['whk-a:u-1']);
+});
+
+/**
+ * The runner's database, failing chosen `plugin_deliveries` writes once each:
+ * `reject` before the write, `lost` after it committed (the reply was lost).
+ */
+function failingWrites(rules: Array<{ method: 'update' | 'delete'; when: (values: Record<string, unknown> | undefined) => boolean; mode: 'reject' | 'lost' }>) {
+  const fired: string[] = [];
+  const wrap = (real: Knex) => new Proxy(real, {
+    apply(target, self, args: unknown[]) {
+      const query = Reflect.apply(target, self, args) as Knex.QueryBuilder;
+      if (args[0] !== 'plugin_deliveries') return query;
+      for (const method of ['update', 'delete'] as const) {
+        const original = query[method].bind(query) as (...a: unknown[]) => Promise<number>;
+        (query as unknown as Record<string, unknown>)[method] = (...a: unknown[]) => {
+          const values = a[0] as Record<string, unknown> | undefined;
+          const rule = rules.find(r => r.method === method && r.when(values));
+          if (!rule) return original(...a);
+          rules.splice(rules.indexOf(rule), 1);
+          fired.push(`${method}:${rule.mode}`);
+          if (rule.mode === 'reject') return Promise.reject(new Error('transient database write failure'));
+          return original(...a).then(() => { throw new Error('connection reset after commit'); });
+        };
+      }
+      return query;
+    },
+  });
+  return { wrap, fired };
+}
+
+const settled = async (s: Awaited<ReturnType<typeof setup>>) => {
+  for (let i = 0; i < 100 && (s.runner.pending || (await s.runner.idle(), s.runner.pending)); i++) await new Promise(r => setTimeout(r, 10));
+};
+
+test('a failed outcome write is retried without running the handler again, and the delivery reaches its final state', async t => {
+  const writes = failingWrites([
+    { method: 'update', mode: 'reject', when: v => v?.status === 'retrying' },
+    { method: 'update', mode: 'lost', when: v => v?.status === 'succeeded' && 'duration_ms' in v },
+  ]);
+  const s = await setup(t, { retryDelaysMs: [5], wrap: writes.wrap });
+  await s.f.database('plugin_state').insert({ plugin_id: ID, state_key: 'fail', value: '1', bytes: 1, updated_at: 0 });
+  assert.equal((await s.send('token', '{}', { 'x-gitlab-token': SECRET })).status, 202);
+  await settled(s);
+  assert.deepEqual(writes.fired, ['update:reject', 'update:lost'], 'both outcome writes failed once');
+  assert.deepEqual((await s.seen()).map(x => x.attempt), [1, 2], 'one handler run per attempt: the failed writes ran nothing again');
+  const [delivery] = await s.deliveries();
+  assert.deepEqual({ status: delivery.status, attempt: delivery.attempt }, { status: 'succeeded', attempt: 2 });
+  assert.equal(s.runner.pending, 0, 'nothing is held once the delivery is final');
+});
+
+test('a failed write before the handler ran retries the attempt, once, even when the write committed', async t => {
+  for (const mode of ['reject', 'lost'] as const) {
+    await t.test(mode, async t => {
+      const writes = failingWrites([{ method: 'update', mode, when: v => v?.status === 'running' }]);
+      const s = await setup(t, { wrap: writes.wrap });
+      assert.equal((await s.send('token', '{}', { 'x-gitlab-token': SECRET })).status, 202);
+      await settled(s);
+      assert.deepEqual(writes.fired, [`update:${mode}`]);
+      assert.deepEqual((await s.seen()).map(x => x.attempt), [1], 'the handler ran once, as attempt 1');
+      const [delivery] = await s.deliveries();
+      assert.deepEqual({ status: delivery.status, attempt: delivery.attempt }, { status: 'succeeded', attempt: 1 });
+    });
+  }
+});
+
+test('a reservation is kept until its release or answer is written: the sender can deliver again', async t => {
+  const writes = failingWrites([
+    { method: 'delete', mode: 'reject', when: () => true },
+    { method: 'update', mode: 'reject', when: v => v?.handler === 'countedChallenge' },
+  ]);
+  const s = await setup(t, { wrap: writes.wrap });
+  const send = (body: string, id: string) => s.send('answered', body, { 'x-gitlab-token': SECRET, 'x-delivery-id': id });
+
+  // Refused while paused, and the reservation's delete fails once: it is retried, so the sender's retry is delivered.
+  const installedAt = Number((await s.f.database('plugin_installations').where({ plugin_id: ID }).first('installed_at')).installed_at);
+  await s.f.database('plugin_dispatch').insert({ plugin_id: ID, installed_at: installedAt, start_seq: 0, updated_at: NOW, paused_at: NOW }).onConflict('plugin_id').merge(['paused_at']);
+  assert.equal((await send('{}', 'p-1')).status, 503);
+  await s.runner.idle();
+  assert.deepEqual(writes.fired, ['delete:reject']);
+  assert.deepEqual(await s.deliveries(), [], 'the release was retried until the record was given back');
+  await s.f.database('plugin_dispatch').where({ plugin_id: ID }).update({ paused_at: null });
+  assert.equal((await send('{}', 'p-1')).status, 202, 'not a replay');
+  await s.runner.idle();
+
+  // The challenge answer fails to record: the request fails, and its reservation is given back rather than left pending.
+  const challenge = JSON.stringify({ type: 'url_verification', challenge: 'c-9' });
+  await assert.rejects(send(challenge, 'p-2'), /transient database write failure/);
+  await s.runner.idle();
+  assert.equal((await s.deliveries()).find(d => d.deliveryId === 'whk-answered:p-2'), undefined, 'no unfinished record is left');
+  assert.deepEqual(await send(challenge, 'p-2'), { status: 200, contentType: 'text/plain', body: 'c-9' }, 'the sender\'s retry is answered');
+  assert.equal((await s.deliveries()).find(d => d.deliveryId === 'whk-answered:p-2')!.status, 'succeeded');
+});
+
+test('a live runner fails its own unfinished records it no longer holds, and leaves the ones it holds', async t => {
+  const s = await setup(t, { retryDelaysMs: [60_000] });
+  await s.f.database('plugin_state').insert({ plugin_id: ID, state_key: 'fail', value: '1', bytes: 1, updated_at: 0 });
+  assert.equal((await s.send('token', '{}', { 'x-gitlab-token': SECRET })).status, 202);
+  await s.runner.idle();
+  assert.equal((await s.deliveries())[0].status, 'retrying', 'held, waiting for its retry');
+  await s.f.database('plugin_deliveries').insert({ plugin_id: ID, delivery_id: 'whk-token/orphaned', kind: 'webhook', repository: '', event_seq: 0, event_type: 'webhook.token', handler: 'flakyWebhook', status: 'running', attempt: 1, created_at: NOW, logs: '[]', webhook_owner: s.runner.owner });
+  assert.equal(await s.runner.recover(), 1);
+  const rows = await s.deliveries();
+  assert.equal(rows.find(d => d.deliveryId === 'whk-token/orphaned')!.status, 'failed', 'the record this runner lost track of is final');
+  assert.equal(rows.find(d => d.deliveryId !== 'whk-token/orphaned')!.status, 'retrying', 'the held delivery is untouched');
 });

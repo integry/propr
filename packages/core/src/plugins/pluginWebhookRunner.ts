@@ -25,6 +25,13 @@ import type { PluginInstallationTarget } from './pluginContext.js';
  * `plugin_webhook_runners`. A delivery whose owner stopped cannot be resumed
  * by another process: once the owner's heartbeat has lapsed, any runner marks
  * it failed. A live runner's deliveries are never touched by another.
+ *
+ * A delivery stays this runner's obligation until its database transition
+ * succeeds: a failed write (a transient database error) is retried on
+ * `persistRetryMs`, without running the handler again, and a reservation is
+ * kept until its record is given back or answered. A record of this runner's
+ * that it no longer holds (nor reserved) is marked failed with the next
+ * heartbeat.
  */
 export interface PluginWebhookRunnerOptions extends Omit<RunPluginHandlerOptions, 'database'> {
   database: Knex;
@@ -37,6 +44,8 @@ export interface PluginWebhookRunnerOptions extends Omit<RunPluginHandlerOptions
   ownerTtlMs?: number;
   /** Deliveries held in memory at once; further requests are refused (503) until some finish. */
   maxPending?: number;
+  /** Delays between retries of a database write that failed; the last repeats. */
+  persistRetryMs?: readonly number[];
   run?: typeof runPluginHandler;
 }
 
@@ -50,12 +59,22 @@ export interface PluginWebhookJob {
 /** `gone`: the installation that accepted the request was uninstalled, reinstalled or disabled since; nothing was recorded. */
 export type PluginWebhookAcceptance = { accepted: true; recordId: number } | { accepted: false; reason: 'duplicate' | 'busy' | 'gone' };
 
-interface Held { job: PluginWebhookJob; recordId: number; attempt: number; timer?: NodeJS.Timeout }
+/** The outcome of an attempt whose handler ran, until it is recorded. */
+interface Outcome { attempt: number; status: 'succeeded' | 'failed' | 'retrying'; update: Partial<PluginDeliveryRow>; finishedAt: number; nextAttemptAt: number | null }
+interface Held {
+  job: PluginWebhookJob; recordId: number; attempt: number; timer?: NodeJS.Timeout;
+  /** The attempt number being marked `running`: set before the write, so a mark that committed but reported failure is recognized. */
+  marking?: number;
+  outcome?: Outcome;
+  /** Consecutive failed database writes. */
+  failures: number;
+}
 
 const LOST = 'Not delivered: ProPR stopped before the delivery finished, and webhook requests are not kept';
 const UNFINISHED = ['pending', 'running', 'retrying'] as const;
 const DEFAULT_HEARTBEAT_MS = 30_000;
 const DEFAULT_OWNER_TTL_MS = 120_000;
+const DEFAULT_PERSIST_RETRY_MS = [1_000, 5_000, 30_000, 60_000] as const;
 const WITHHELD_LOG = 'Message not kept: webhook handler output may contain the request';
 
 /**
@@ -80,6 +99,8 @@ export class PluginWebhookRunner {
   private readonly reserved = new Set<number>();
   /** Capacity slots claimed by `reserve` calls still awaiting their record: counted with `held` and `reserved`, so concurrent requests cannot exceed `maxPending`. */
   private claiming = 0;
+  /** Reserved records being given back (`release`), with the timer of the next try after a failed delete. */
+  private readonly releasing = new Map<number, NodeJS.Timeout | undefined>();
   private closed = false;
   /** This runner's name in `plugin_deliveries.webhook_owner` and `plugin_webhook_runners`. */
   readonly owner: string;
@@ -132,7 +153,22 @@ export class PluginWebhookRunner {
       })
       .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST });
     await database('plugin_webhook_runners').where('heartbeat_at', '<', cutoff).whereNot('owner', this.owner).delete();
-    return failed;
+    return failed + await this.recoverOrphaned();
+  }
+
+  /**
+   * Mark failed this runner's unfinished deliveries it no longer holds or has
+   * reserved: their request is gone (a write lost track of them). Skipped
+   * while a reservation is being written, whose record may not be known yet.
+   */
+  private async recoverOrphaned(): Promise<number> {
+    const { database } = this.options;
+    const own = (await database('plugin_deliveries').where({ kind: 'webhook', webhook_owner: this.owner }).whereIn('status', UNFINISHED).pluck('id') as unknown[]).map(Number);
+    if (this.claiming) return 0;
+    const orphans = own.filter(id => !this.held.has(id) && !this.reserved.has(id));
+    if (!orphans.length) return 0;
+    return database('plugin_deliveries').whereIn('id', orphans).where({ webhook_owner: this.owner }).whereIn('status', UNFINISHED)
+      .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST });
   }
 
   /**
@@ -188,18 +224,44 @@ export class PluginWebhookRunner {
     }
   }
 
-  /** Give a reserved delivery id back (the request was refused before delivery): the sender may send it again. */
+  /**
+   * Give a reserved delivery id back (the request was refused before
+   * delivery): the sender may send it again. The reservation is kept until
+   * the record is deleted; a failed delete is retried in the background
+   * (until this runner stops, when its records are failed by recovery).
+   */
   async release(recordId: number): Promise<void> {
-    if (!this.reserved.delete(recordId)) return;
-    await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner }).delete();
+    if (!this.reserved.has(recordId) || this.releasing.has(recordId)) return;
+    this.releasing.set(recordId, undefined);
+    await this.giveBack(recordId, 0);
   }
 
-  /** A reserved delivery answered at once by the webhook's respond function: final, and its delivery id stays taken. */
+  private async giveBack(recordId: number, failures: number): Promise<void> {
+    this.releasing.set(recordId, undefined);
+    try {
+      await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner }).delete();
+      this.releasing.delete(recordId);
+      this.reserved.delete(recordId);
+    } catch (error) {
+      logger.warn({ recordId, error: error instanceof Error ? error.message : String(error) }, '[plugins] Webhook reservation failed to release; retrying');
+      if (this.closed) { this.releasing.delete(recordId); return; }
+      const timer = setTimeout(() => { void this.giveBack(recordId, failures + 1); }, this.persistDelay(failures));
+      timer.unref?.();
+      this.releasing.set(recordId, timer);
+    }
+  }
+
+  /**
+   * A reserved delivery answered at once by the webhook's respond function:
+   * final, and its delivery id stays taken. When the write fails it throws
+   * and the reservation is kept, for the caller to `release`.
+   */
   async answered(recordId: number, respond: string): Promise<void> {
-    if (!this.reserved.delete(recordId)) return;
+    if (!this.reserved.has(recordId) || this.releasing.has(recordId)) return;
     const now = this.now();
     await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner })
       .update({ status: 'succeeded', handler: respond, next_attempt_at: null, started_at: now, finished_at: now, duration_ms: 0 });
+    this.reserved.delete(recordId);
   }
 
   /** Run a reserved delivery soon. False when this runner has stopped since: the record is marked failed. */
@@ -210,7 +272,7 @@ export class PluginWebhookRunner {
         .update({ status: 'failed', next_attempt_at: null, finished_at: this.now(), error: LOST });
       return false;
     }
-    this.held.set(recordId, { job, recordId, attempt: 0 });
+    this.held.set(recordId, { job, recordId, attempt: 0, failures: 0 });
     this.schedule(recordId, 0);
     return true;
   }
@@ -222,9 +284,9 @@ export class PluginWebhookRunner {
     return await this.start(reserved.recordId, job) ? reserved : { accepted: false, reason: 'busy' };
   }
 
-  /** Wait until no attempt is under way or due at once: every held delivery is final or waits for a retry (tests). */
+  /** Wait until no attempt, write or release is under way or due: every held delivery is final or waits for a retry (tests). */
   async idle(): Promise<void> {
-    while (this.running.size || this.due.size) {
+    while (this.running.size || this.due.size || this.releasing.size) {
       if (this.running.size) await Promise.all([...this.running]);
       else await new Promise(resolve => setImmediate(resolve));
     }
@@ -235,6 +297,8 @@ export class PluginWebhookRunner {
     this.closed = true;
     clearInterval(this.heartbeat);
     for (const held of this.held.values()) clearTimeout(held.timer);
+    for (const timer of this.releasing.values()) clearTimeout(timer);
+    this.releasing.clear();
     this.due.clear();
     await this.idle();
     const ids = [...this.held.keys()];
@@ -246,15 +310,26 @@ export class PluginWebhookRunner {
     await this.options.database('plugin_webhook_runners').where({ owner: this.owner }).delete().catch(() => undefined);
   }
 
-  private schedule(recordId: number, delayMs: number): void {
+  private persistDelay(failures: number): number {
+    const delays = this.options.persistRetryMs ?? DEFAULT_PERSIST_RETRY_MS;
+    return delays.length ? delays[Math.min(failures, delays.length - 1)] : 0;
+  }
+
+  /**
+   * Run the delivery's next step after `delayMs`. A database write that fails
+   * keeps the delivery held and tries again on `persistRetryMs`: before its
+   * handler ran, the attempt starts over; after, only its outcome is written.
+   */
+  private schedule(recordId: number, delayMs: number, writeRetry = false): void {
     const held = this.held.get(recordId);
     if (!held || this.closed) return;
-    if (delayMs <= 0) this.due.add(recordId);
+    // A write being retried counts as under way, like an attempt due at once.
+    if (delayMs <= 0 || writeRetry) this.due.add(recordId);
     held.timer = setTimeout(() => {
       this.due.delete(recordId);
-      const attempt = this.attempt(held).catch((error: unknown) => {
-        logger.warn({ pluginId: held.job.target.pluginId, deliveryId: held.job.deliveryId, error: error instanceof Error ? error.message : String(error) }, '[plugins] Webhook delivery attempt failed to record');
-        this.held.delete(recordId);
+      const attempt = this.attempt(held).then(() => { held.failures = 0; }, (error: unknown) => {
+        logger.warn({ pluginId: held.job.target.pluginId, deliveryId: held.job.deliveryId, error: error instanceof Error ? error.message : String(error) }, '[plugins] Webhook delivery attempt failed to record; retrying');
+        this.schedule(recordId, this.persistDelay(held.failures++), true);
       }).finally(() => { this.running.delete(attempt); });
       this.running.add(attempt);
     }, delayMs);
@@ -275,20 +350,27 @@ export class PluginWebhookRunner {
 
   private async attempt(held: Held): Promise<void> {
     if (this.closed) return;
+    if (held.outcome) return this.record(held, held.outcome);
     const { database } = this.options;
     const target = await this.current(held);
-    const previous = await database('plugin_deliveries').where({ id: held.recordId }).first('status') as Pick<PluginDeliveryRow, 'status'> | undefined;
+    const previous = await database('plugin_deliveries').where({ id: held.recordId }).first('status', 'attempt') as Pick<PluginDeliveryRow, 'status' | 'attempt'> | undefined;
+    const attempt = held.attempt + 1;
+    // This attempt's mark committed although its write reported failure: the handler has not run yet.
+    const marked = previous?.status === 'running' && held.marking === attempt && Number(previous.attempt) === attempt;
     // Uninstalled (the record is gone) or finished by someone else (enabled again marks unfinished deliveries failed).
-    if (!previous || (previous.status !== 'pending' && previous.status !== 'retrying')) { this.held.delete(held.recordId); return; }
+    if (!previous || (!marked && previous.status !== 'pending' && previous.status !== 'retrying')) { this.held.delete(held.recordId); return; }
     if (!target) {
       await this.finish(held, { status: 'failed', next_attempt_at: null, finished_at: this.now(), error: 'Not delivered: the plugin was disabled' });
       this.held.delete(held.recordId);
       return;
     }
-    const attempt = held.attempt + 1;
-    const marked = await database('plugin_deliveries').where({ id: held.recordId, status: previous.status })
-      .update({ status: 'running', attempt, started_at: this.now(), finished_at: null });
-    if (marked !== 1) { this.held.delete(held.recordId); return; }
+    if (!marked) {
+      held.marking = attempt;
+      const updated = await database('plugin_deliveries').where({ id: held.recordId, status: previous.status })
+        .update({ status: 'running', attempt, started_at: this.now(), finished_at: null });
+      if (updated !== 1) { this.held.delete(held.recordId); return; }
+    }
+    held.marking = undefined;
     held.attempt = attempt;
     let run: PluginHandlerRun;
     try {
@@ -301,10 +383,25 @@ export class PluginWebhookRunner {
     const nextAttemptAt = status === 'retrying' ? now + this.delays[attempt - 1] : null;
     // Only while the record is still this attempt's: a restart (enabled again) or an uninstall since then wins.
     const diagnostics = webhookDiagnostics(run);
-    const recorded = await database('plugin_deliveries').where({ id: held.recordId, status: 'running', attempt }).update({
-      status, finished_at: now, duration_ms: run.durationMs, timed_out: run.timedOut, error: diagnostics.error, logs: storedLogs(diagnostics.logs), next_attempt_at: nextAttemptAt,
-    });
-    if (recorded !== 1 || status !== 'retrying') { this.held.delete(held.recordId); return; }
-    this.schedule(held.recordId, nextAttemptAt! - now);
+    // Kept until written: a failed write is retried without running the handler again.
+    held.outcome = {
+      attempt, status, finishedAt: now, nextAttemptAt,
+      update: { status, finished_at: now, duration_ms: run.durationMs, timed_out: run.timedOut, error: diagnostics.error, logs: storedLogs(diagnostics.logs), next_attempt_at: nextAttemptAt },
+    };
+    await this.record(held, held.outcome);
+  }
+
+  /** Write an attempt's outcome, then retry later or let the delivery go. */
+  private async record(held: Held, outcome: Outcome): Promise<void> {
+    const { database } = this.options;
+    let recorded = await database('plugin_deliveries').where({ id: held.recordId, status: 'running', attempt: outcome.attempt }).update(outcome.update) === 1;
+    if (!recorded && held.failures > 0) {
+      // A previous write may have committed although it reported failure.
+      const row = await database('plugin_deliveries').where({ id: held.recordId }).first('status', 'attempt', 'finished_at') as Pick<PluginDeliveryRow, 'status' | 'attempt' | 'finished_at'> | undefined;
+      recorded = row?.status === outcome.status && Number(row.attempt) === outcome.attempt && Number(row.finished_at) === outcome.finishedAt;
+    }
+    held.outcome = undefined;
+    if (!recorded || outcome.status !== 'retrying') { this.held.delete(held.recordId); return; }
+    this.schedule(held.recordId, outcome.nextAttemptAt! - this.now());
   }
 }
