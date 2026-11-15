@@ -20,6 +20,8 @@ export interface PluginDispatchRow {
   lease_owner: string | null; lease_expires_at: number | string | null;
   consecutive_failures: number; last_error: string | null; last_error_at: number | string | null;
   degraded_at: number | string | null; paused_at: number | string | null; updated_at: number | string;
+  /** The Degraded notification still owed (a `PluginDegradedNotice` as JSON), or null. */
+  degraded_notice?: string | null;
 }
 /** A `plugin_deliveries` row as stored. */
 export interface PluginDeliveryRow {
@@ -172,6 +174,7 @@ export async function restartPluginDispatch(trx: Knex, pluginId: string, install
     plugin_id: pluginId, installed_at: installedAt, start_seq: start, lease_owner: null, lease_expires_at: null,
     consecutive_failures: 0, last_error: null, last_error_at: null, degraded_at: null, paused_at: null, updated_at: now,
   }).onConflict('plugin_id').merge();
+  // A Degraded notification still owed (`degraded_notice`, not merged) is kept: it is sent once it can be.
   // Deliveries that never finished would otherwise run after the restart: they belong to before it.
   await trx('plugin_deliveries').where({ plugin_id: pluginId }).whereIn('status', ['pending', 'running', 'retrying'])
     .update({ status: 'failed', manual: false, next_attempt_at: null, error: 'Not delivered: the plugin was disabled' });
@@ -230,9 +233,37 @@ export function notifyAdministratorsOfDegradedPlugin(database: Knex): PluginDegr
   };
 }
 
-/** Run a notifier without letting it fail the caller. */
-export async function notifySafely(notify: PluginDegradedNotifier, notice: PluginDegradedNotice): Promise<void> {
-  try { await notify(notice); } catch (error) {
+/** Run a notifier without letting it fail the caller; whether it succeeded. */
+export async function notifySafely(notify: PluginDegradedNotifier, notice: PluginDegradedNotice): Promise<boolean> {
+  try { await notify(notice); return true; } catch (error) {
     logger.warn({ pluginId: notice.pluginId, error: error instanceof Error ? error.message : String(error) }, '[plugins] Could not notify administrators of a degraded plugin');
+    return false;
   }
+}
+
+function parseNotice(text: string): PluginDegradedNotice | null {
+  try {
+    const value = JSON.parse(text) as Partial<PluginDegradedNotice> | null;
+    return value && typeof value.pluginId === 'string' && typeof value.installedAt === 'number' && typeof value.degradedAt === 'number' ? value as PluginDegradedNotice : null;
+  } catch { return null; }
+}
+
+/**
+ * Send the Degraded notifications still owed (`degraded_notice`, written in
+ * the transaction that made the installation Degraded). Each is cleared only
+ * once its notifier succeeded, and only if it is still the same notice, so a
+ * failed or interrupted send is tried again; the notification's
+ * deduplication key keeps a repeat, or two dispatchers sending it, to one
+ * Inbox entry. Returns whether every one went out.
+ */
+export async function sendPendingDegradedNotices(database: Knex, notify: PluginDegradedNotifier, pluginId?: string): Promise<boolean> {
+  const rows = await database('plugin_dispatch').whereNotNull('degraded_notice').modify(q => { if (pluginId) void q.where({ plugin_id: pluginId }); })
+    .select('plugin_id', 'degraded_notice') as { plugin_id: string; degraded_notice: string }[];
+  let sent = true;
+  for (const row of rows) {
+    const notice = parseNotice(row.degraded_notice);
+    if (notice && !await notifySafely(notify, notice)) { sent = false; continue; }
+    await database('plugin_dispatch').where({ plugin_id: row.plugin_id, degraded_notice: row.degraded_notice }).update({ degraded_notice: null });
+  }
+  return sent;
 }

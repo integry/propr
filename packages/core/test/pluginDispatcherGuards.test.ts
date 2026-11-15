@@ -158,3 +158,89 @@ test('a repository emptied before the plugin ever delivered to it has its gap re
   const [gap] = await s.deliveries();
   assert.equal(gap.kind, 'gap'); assert.equal(gap.repository, SECOND); assert.equal(gap.eventSeq, pruned);
 });
+
+/** Runs `change` once, the first time the dispatcher's private `method` is called (before or after the original). */
+function intercept(dispatcher: object, method: 'acquire' | 'cursor', change: () => Promise<unknown>, when: 'before' | 'after') {
+  const internals = dispatcher as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = internals[method].bind(dispatcher);
+  let done = false;
+  internals[method] = async (...args) => {
+    const first = !done; done = true;
+    if (first && when === 'before') await change();
+    const value = await original(...args);
+    if (first && when === 'after') await change();
+    return value;
+  };
+}
+const enableAgain = async (s: Setup) => { await s.f.store.setEnabled('1', ID, false); await s.f.store.setEnabled('1', ID, true); };
+
+for (const [moment, method, when] of [
+  ['between reading the installation and taking its lease', 'acquire', 'before'],
+  ['between creating the cursor and the delivery record', 'cursor', 'after'],
+] as const) {
+  test(`enabling again ${moment} leaves no state of the earlier start behind: later events are delivered`, async t => {
+    const s = await setup(t);
+    const first = s.dispatcher();
+    assert.equal(await drain(first), 0, 'the dispatch state starts at the journal end');
+    await first.stop(); // hands the lease back
+    const earlier = await s.append(ALLOWED, 'pull_request', 'opened', 1);
+    const dispatcher = s.dispatcher();
+    intercept(dispatcher, method, () => enableAgain(s), when);
+    assert.equal(await drain(dispatcher), 0, 'the event before enabling again is not delivered');
+    assert.deepEqual(await s.f.database('plugin_delivery_cursors').where({ plugin_id: ID }).select(), [], 'no cursor at the earlier start');
+    assert.deepEqual(await s.f.database('plugin_deliveries').where({ plugin_id: ID, event_seq: earlier }).select(), [], 'no record of the earlier event');
+
+    const later = await s.append(ALLOWED, 'pull_request', 'opened', 2);
+    assert.equal(await drain(dispatcher), 1);
+    assert.deepEqual((await s.seen()).map(e => e.seq), [later]);
+    const [cursor] = await s.f.database('plugin_delivery_cursors').where({ plugin_id: ID }).select() as { cursor_seq: number }[];
+    assert.equal(Number(cursor.cursor_seq), later);
+  });
+}
+
+test('a Degraded notification whose send failed is sent again until it succeeds, once, even after the pause', async t => {
+  const s = await setup(t);
+  await s.setState('fail', 1000);
+  const sent: unknown[] = [];
+  let inboxDown = true;
+  const notify = async (notice: unknown) => { if (inboxDown) throw new Error('inbox down'); sent.push(notice); };
+  const dispatcher = s.dispatcher({ degradedAfterFailures: 1, pauseAfterFailures: 2, retryDelaysMs: [], notify });
+  await s.append(ALLOWED, 'task', 'failed', 'task-a');
+  await s.append(ALLOWED, 'task', 'failed', 'task-b');
+  const degradedAt = s.clock.now;
+  assert.equal(await drain(dispatcher), 2);
+  assert.equal((await listPluginActivity(s.f.database, ID)).health.state, 'paused');
+  const owed = async () => (await s.f.database('plugin_dispatch').where({ plugin_id: ID }).first() as { degraded_notice: string | null }).degraded_notice;
+  assert.notEqual(await owed(), null, 'the notification is still owed');
+
+  // Failing again: a pass tries once a minute, not on every pass.
+  await dispatcher.pass();
+  s.clock.now += 60_000;
+  await dispatcher.pass();
+  assert.deepEqual(sent, []);
+  inboxDown = false;
+  await dispatcher.pass();
+  assert.deepEqual(sent, [], 'not before the retry wait');
+  s.clock.now += 60_000;
+  await dispatcher.pass();
+  const installedAt = (await s.f.store.get('1', ID)).installation!.installedAt;
+  assert.deepEqual(sent, [{ pluginId: ID, installedAt, degradedAt, consecutiveFailures: 1, lastError: (await s.deliveries()).at(-1)!.error }]);
+  assert.equal(await owed(), null, 'cleared once sent');
+  s.clock.now += 60_000;
+  await dispatcher.pass();
+  await s.dispatcher({ notify }).pass();
+  assert.equal(sent.length, 1, 'sent once');
+});
+
+test('a Degraded notification owed when the worker stopped is sent by the next dispatcher', async t => {
+  const s = await setup(t);
+  await s.setState('fail', 1000);
+  // The worker exits after recording the transition, before its notifier finishes.
+  const crashed = s.dispatcher({ degradedAfterFailures: 1, retryDelaysMs: [], notify: () => new Promise<void>(() => undefined) });
+  await s.append(ALLOWED, 'task', 'failed', 'task-a');
+  void crashed.pass();
+  await until(async () => (await s.f.database('plugin_dispatch').where({ plugin_id: ID }).first() as { degraded_notice: string | null } | undefined)?.degraded_notice != null, 'the Degraded transition');
+  await s.dispatcher({ owner: 'worker-e' }).pass();
+  assert.equal(s.notices.length, 1);
+  assert.equal((s.notices[0] as { pluginId: string }).pluginId, ID);
+});

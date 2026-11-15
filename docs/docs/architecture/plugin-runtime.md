@@ -162,12 +162,18 @@ count and clears Degraded. At 3 (`PLUGIN_DEGRADED_AFTER_FAILURES`) the
 installation becomes Degraded: `degraded_at` is set, and every durable
 administrator gets one `system_failure` Inbox notification (component
 `plugins.dispatcher`, deduplicated by installation and the time it became
-Degraded). At `PROPR_PLUGIN_PAUSE_AFTER_FAILURES` (default 10, at least 3)
+Degraded). The notification owed is stored as `degraded_notice` in the same
+write that sets `degraded_at` and cleared only once it was created; when
+sending fails, or the worker stops first, later passes send it again (at
+most once a minute after a failure), paused installations included. At `PROPR_PLUGIN_PAUSE_AFTER_FAILURES` (default 10, at least 3)
 `paused_at` is set and the dispatcher skips the installation. Resume clears
 both, resets the count and makes waiting retries due.
 
 Installing a plugin, or enabling it again, restarts its dispatch state at the
-journal's end; deliveries left unfinished are marked failed. Uninstalling
+journal's end; deliveries left unfinished are marked failed. A pass writes a
+cursor or a delivery record only in a transaction that confirms it still holds
+the lease of the installation and start it read, so a pass that started before
+a restart writes nothing of the earlier start. Uninstalling
 deletes the dispatch state, the cursors and the records.
 
 ### What is stored

@@ -11,7 +11,7 @@ import { effectivePluginPermissions, type PluginInstallationTarget } from './plu
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
 import {
-  clipError, journalHead, notifyAdministratorsOfDegradedPlugin, notifySafely, pluginDeliveryId, pluginPauseAfterFailures, restartPluginDispatch, storedLogs,
+  clipError, journalHead, notifyAdministratorsOfDegradedPlugin, pluginDeliveryId, pluginPauseAfterFailures, restartPluginDispatch, sendPendingDegradedNotices, storedLogs,
   type PluginDegradedNotice, type PluginDegradedNotifier, type PluginDeliveryRow, type PluginDispatchRow,
 } from './pluginDeliveries.js';
 
@@ -62,6 +62,8 @@ const DEFAULT_LEASE_MS = 2 * 60_000;
 const DEFAULT_POLL_MS = 5_000;
 const DEFAULT_BATCH = 50;
 const WAKE_DELAY_MS = 200;
+/** Wait before a pass tries again to send Degraded notifications that failed. */
+const NOTICE_RETRY_MS = 60_000;
 
 const lower = (value: string) => value.toLowerCase();
 /** The event value a filter key names: an event field or `payload.<key>`; a missing value is null. */
@@ -111,6 +113,8 @@ export class PluginDispatcher {
   private polling = false;
   /** `stop` was called: no further attempt starts. */
   private closed = false;
+  /** When a pass next sends owed Degraded notifications (after one failed). */
+  private noticesDue = 0;
 
   constructor(private readonly options: PluginDispatcherOptions) {
     this.database = options.database;
@@ -167,6 +171,8 @@ export class PluginDispatcher {
 
   private async passOnce(): Promise<PluginDispatchPass> {
     const result: PluginDispatchPass = { attempts: 0, leased: [] };
+    // Notifications owed by any installation, paused ones included.
+    if (this.now() >= this.noticesDue) await this.sendNotices();
     let installations: Installation[];
     try { installations = await this.installations(); } catch (error) {
       logger.warn({ error: error instanceof Error ? error.message : String(error) }, '[plugins] Could not read plugin installations for event delivery');
@@ -291,14 +297,29 @@ export class PluginDispatcher {
     for (const event of events) {
       const subscriptions = manifest.contributes.subscriptions.filter(s => subscriptionMatches(s, event));
       for (const subscription of subscriptions) {
-        const row = await this.delivery(pluginId, event, subscription.handler);
+        const row = await this.delivery(installation, event, subscription.handler);
         if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'skipped') continue;
         if (row.status !== 'running' && Number(row.next_attempt_at ?? 0) > this.now()) throw new Blocked();
         const status = await this.attempt(installation, row, event);
         if (status !== 'succeeded' && status !== 'failed') throw new Blocked();
       }
-      await this.database('plugin_delivery_cursors').where({ plugin_id: pluginId, repository }).update({ cursor_seq: event.seq });
+      await this.fenced(installation, trx => trx('plugin_delivery_cursors').where({ plugin_id: pluginId, repository }).where('cursor_seq', '<', event.seq).update({ cursor_seq: event.seq }));
     }
+  }
+
+  /**
+   * Run a cursor or record write in one transaction with the check that this
+   * dispatcher still holds the lease of the installation it read: the same
+   * installation and journal start. A restart (enabled again) or a reinstall
+   * since the read ends the pass instead of writing state of the earlier one.
+   */
+  private async fenced<T>(installation: Installation, write: (trx: Knex.Transaction) => Promise<T>): Promise<T> {
+    const { state } = installation;
+    return this.database.transaction(async trx => {
+      const current = await trx('plugin_dispatch').where({ plugin_id: state.plugin_id, lease_owner: this.owner, installed_at: state.installed_at, start_seq: state.start_seq }).first();
+      if (!current) throw new Stopped();
+      return write(trx);
+    });
   }
 
   /** The repository's cursor, created at the installation's start; records a gap once when retention removed events not yet delivered. */
@@ -308,39 +329,43 @@ export class PluginDispatcher {
     let row = await this.database('plugin_delivery_cursors').where(where).first() as { cursor_seq: number | string; floor_seq: number | string } | undefined;
     if (!row) {
       const start = Number(installation.state.start_seq);
-      await this.database('plugin_delivery_cursors').insert({ ...where, cursor_seq: start, floor_seq: 1 }).onConflict(['plugin_id', 'repository']).ignore();
-      row = { cursor_seq: start, floor_seq: 1 };
+      // Only while the start read is still the installation's: a restart since then (enabled again) deleted the cursors and moved the start.
+      row = await this.fenced(installation, async trx => {
+        await trx('plugin_delivery_cursors').insert({ ...where, cursor_seq: start, floor_seq: 1 }).onConflict(['plugin_id', 'repository']).ignore();
+        return await trx('plugin_delivery_cursors').where(where).first() as { cursor_seq: number | string; floor_seq: number | string };
+      });
     }
     const seq = Number(row.cursor_seq);
     // The highest floor of any spelling: completeness of the stream ends there.
     const floors = await this.database('repository_event_floors').whereRaw('repository = ? COLLATE NOCASE', [repository]).max({ floor: 'floor_seq' }).first() as { floor: number | string | null } | undefined;
     const floor = Number(floors?.floor ?? 1);
-    if (floor > Number(row.floor_seq)) {
+    if (floor > Number(row.floor_seq)) await this.fenced(installation, async trx => {
       if (seq < floor - 1) {
         const now = this.now();
-        await this.database('plugin_deliveries').insert({
+        await trx('plugin_deliveries').insert({
           plugin_id: pluginId, delivery_id: `gap-${seq + 1}-${floor - 1}-${repository}`.slice(0, 255), kind: 'gap', repository, event_seq: seq + 1,
           event_type: null, handler: null, status: 'skipped', attempt: 0, next_attempt_at: null, created_at: now, finished_at: now,
           error: `Events after ${seq} up to ${floor - 1} may have left the journal (retention) before they were delivered`, logs: '[]',
         }).onConflict(['plugin_id', 'delivery_id']).ignore();
       }
       // Unfinished deliveries of events retention removed are final now; retained events below the floor still go out.
-      await this.database('plugin_deliveries').where({ plugin_id: pluginId, kind: 'event' }).whereRaw('repository = ? COLLATE NOCASE', [repository])
+      await trx('plugin_deliveries').where({ plugin_id: pluginId, kind: 'event' }).whereRaw('repository = ? COLLATE NOCASE', [repository])
         .whereIn('status', UNFINISHED).where('event_seq', '<', floor)
         .whereNotExists(q => { void q.select(1).from('repository_events').whereRaw('?? = ??', ['repository_events.seq', 'plugin_deliveries.event_seq']); })
         .update({ status: 'skipped', manual: false, next_attempt_at: null, finished_at: this.now(), error: 'The event left the journal (retention) before it was delivered' });
-      await this.database('plugin_delivery_cursors').where(where).update({ floor_seq: floor });
-    }
+      await trx('plugin_delivery_cursors').where(where).update({ floor_seq: floor });
+    });
     return { seq };
   }
 
   /** The delivery record of one event to one handler, created pending on first sight. */
-  private async delivery(pluginId: string, event: RepositoryEvent, handler: string): Promise<PluginDeliveryRow> {
+  private async delivery(installation: Installation, event: RepositoryEvent, handler: string): Promise<PluginDeliveryRow> {
+    const { pluginId } = installation.target;
     const deliveryId = pluginDeliveryId(event.seq, handler);
-    await this.database('plugin_deliveries').insert({
+    await this.fenced(installation, trx => trx('plugin_deliveries').insert({
       plugin_id: pluginId, delivery_id: deliveryId, kind: 'event', repository: event.repository, event_seq: event.seq,
       event_type: `${event.domain}.${event.type}`, handler, status: 'pending', attempt: 0, next_attempt_at: this.now(), created_at: this.now(), logs: '[]',
-    }).onConflict(['plugin_id', 'delivery_id']).ignore();
+    }).onConflict(['plugin_id', 'delivery_id']).ignore());
     return await this.database('plugin_deliveries').where({ plugin_id: pluginId, delivery_id: deliveryId }).first() as PluginDeliveryRow;
   }
 
@@ -397,7 +422,7 @@ export class PluginDispatcher {
     const now = this.now();
     const exhausted = manual || attempt > this.delays.length;
     const status = run.outcome === 'succeeded' ? 'succeeded' : exhausted ? 'failed' : 'retrying';
-    const health: { notice: PluginDegradedNotice | null; paused: boolean } = { notice: null, paused: false };
+    const health: { notice: boolean; paused: boolean } = { notice: false, paused: false };
     await this.database.transaction(async trx => {
       // A dispatcher that lost the lease while the handler ran records nothing: the lease holder delivers it again, with the same id.
       const state = await trx('plugin_dispatch').where({ plugin_id: pluginId, lease_owner: this.owner }).first() as PluginDispatchRow | undefined;
@@ -408,27 +433,43 @@ export class PluginDispatcher {
       });
       Object.assign(health, await this.recordHealth(trx, state, run, now));
     });
-    if (health.notice) await notifySafely(this.options.notify ?? notifyAdministratorsOfDegradedPlugin(this.database), health.notice);
+    if (health.notice) await this.sendNotices(pluginId);
     if (health.paused) throw new Stopped();
     return status;
   }
 
-  /** Count the attempt into the installation's health; returns the notice when it just became Degraded, and whether it is paused now. */
-  private async recordHealth(trx: Knex.Transaction, state: PluginDispatchRow, run: PluginHandlerRun, now: number): Promise<{ notice: PluginDegradedNotice | null; paused: boolean }> {
+  /** Send the Degraded notifications owed (of one installation); after a failure, passes try again after `NOTICE_RETRY_MS`. */
+  private async sendNotices(pluginId?: string): Promise<void> {
+    const sent = await sendPendingDegradedNotices(this.database, this.options.notify ?? notifyAdministratorsOfDegradedPlugin(this.database), pluginId)
+      .catch((error: unknown) => {
+        logger.warn({ pluginId, error: error instanceof Error ? error.message : String(error) }, '[plugins] Could not read the Degraded notifications owed');
+        return false;
+      });
+    if (!sent) this.noticesDue = this.now() + NOTICE_RETRY_MS;
+  }
+
+  /**
+   * Count the attempt into the installation's health; returns whether it just
+   * became Degraded and whether it is paused now. Becoming Degraded stores the
+   * notification owed in the same write, so a failed send or a crash before it
+   * leaves it to be sent again.
+   */
+  private async recordHealth(trx: Knex.Transaction, state: PluginDispatchRow, run: PluginHandlerRun, now: number): Promise<{ notice: boolean; paused: boolean }> {
     const where = { plugin_id: state.plugin_id };
     if (run.outcome === 'succeeded') {
       await trx('plugin_dispatch').where(where).update({ consecutive_failures: 0, degraded_at: null, updated_at: now });
-      return { notice: null, paused: state.paused_at !== null };
+      return { notice: false, paused: state.paused_at !== null };
     }
     const failures = Number(state.consecutive_failures) + 1;
     const becomesDegraded = state.degraded_at === null && failures >= this.degradedAfter;
     const error = clipError(run.error);
+    const notice: PluginDegradedNotice = { pluginId: state.plugin_id, installedAt: Number(state.installed_at), degradedAt: now, consecutiveFailures: failures, lastError: error };
     await trx('plugin_dispatch').where(where).update({
       consecutive_failures: failures, last_error: error, last_error_at: now, updated_at: now,
-      ...(becomesDegraded ? { degraded_at: now } : {}), ...(state.paused_at === null && failures >= this.pauseAfter ? { paused_at: now } : {}),
+      ...(becomesDegraded ? { degraded_at: now, degraded_notice: JSON.stringify(notice) } : {}), ...(state.paused_at === null && failures >= this.pauseAfter ? { paused_at: now } : {}),
     });
     const paused = state.paused_at !== null || failures >= this.pauseAfter;
     if (paused && state.paused_at === null) logger.warn({ pluginId: state.plugin_id, failures }, '[plugins] Event deliveries paused after repeated failures');
-    return { notice: becomesDegraded ? { pluginId: state.plugin_id, installedAt: Number(state.installed_at), degradedAt: now, consecutiveFailures: failures, lastError: error } : null, paused };
+    return { notice: becomesDegraded, paused };
   }
 }

@@ -5,6 +5,8 @@
 // enabled), the delivery lease (only one worker delivers per installation;
 // the lease is a row with an expiry, not a database lock), and its delivery
 // health (consecutive failures, last error, Degraded and paused times).
+// `degraded_notice` is the administrator notification owed for becoming
+// Degraded, written with that transition and cleared once it was created.
 //
 // `plugin_delivery_cursors` holds, per installation and repository, the last
 // journal `seq` whose deliveries are final, and the journal floor already
@@ -30,8 +32,13 @@ export async function up(knex) {
       t.bigInteger('last_error_at');
       t.bigInteger('degraded_at');
       t.bigInteger('paused_at');
+      t.text('degraded_notice');
       t.bigInteger('updated_at').notNullable();
     });
+  }
+  // A database that ran an earlier copy of this migration lacks the column.
+  if (!await knex.schema.hasColumn('plugin_dispatch', 'degraded_notice')) {
+    await knex.schema.alterTable('plugin_dispatch', t => { t.text('degraded_notice'); });
   }
   if (!await knex.schema.hasTable('plugin_delivery_cursors')) {
     await knex.schema.createTable('plugin_delivery_cursors', t => {
