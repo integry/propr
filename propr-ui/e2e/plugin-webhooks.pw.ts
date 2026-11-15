@@ -16,7 +16,7 @@ const WEBHOOKS = [
 
 /** The example plugin with two webhooks verified with a signing secret, its webhook routes, and the key generation in use. */
 async function withWebhooks(page: Page, state: State) {
-  const current = { key: 0, rejected: { count: 3, lastAt: NOW - 42 * 60_000, lastReason: 'bad_signature' as string | null } };
+  const current = { key: 0, rejected: { count: 3, lastAt: (NOW - 42 * 60_000) as number | null, lastReason: 'bad_signature' as string | null } };
   const endpoints = () => ({
     webhooks: WEBHOOKS.map(w => ({ ...w, path: `/api/plugins/${KEYS[current.key]}/hooks/${w.name}`, url: `https://propr.example.com/api/plugins/${KEYS[current.key]}/hooks/${w.name}` })),
     rejected: current.rejected, keyCreatedAt: NOW, keyCreatedBy: current.key ? '1042' : 'system',
