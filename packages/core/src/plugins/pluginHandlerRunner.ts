@@ -67,8 +67,26 @@ function resultValue(value: unknown): PluginJsonValue | undefined {
   return JSON.parse(text) as PluginJsonValue;
 }
 
-// Kept past ERROR_CHARS: `finish` cuts it only after redacting it, so a credential straddling the limit is redacted whole.
-const message = (error: unknown) => retainForRedaction(error instanceof Error ? error.message : String(error), ERROR_CHARS) || 'The handler failed';
+const HANDLER_FAILED = 'The handler failed';
+
+/**
+ * The message of whatever the run failed with. A handler may throw any value: one
+ * that cannot be converted to a string (`Object.create(null)`, an own non-callable
+ * `toString`), an `Error` whose `message` is not a string or is a throwing getter,
+ * or a proxy whose traps throw. None of them may escape the runner's catch block,
+ * so a value that does not yield a string falls back to a constant message.
+ * Kept past ERROR_CHARS: `finish` cuts it only after redacting it, so a credential straddling the limit is redacted whole.
+ */
+function message(error: unknown): string {
+  let text: unknown;
+  try { text = error instanceof Error ? error.message : String(error); } catch { return HANDLER_FAILED; }
+  return typeof text === 'string' && text ? retainForRedaction(text, ERROR_CHARS) : HANDLER_FAILED;
+}
+
+/** Whether the run failed on its time limit; never throws, whatever the handler threw. */
+function isTimeout(error: unknown): boolean {
+  try { return error instanceof HandlerTimeout; } catch { return false; }
+}
 
 /** Run the handler, failing it once it runs past `timeoutMs`; the signal tells the handler to stop. */
 async function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, controller: AbortController): Promise<T> {
@@ -115,6 +133,6 @@ export async function runPluginHandler(installation: PluginInstallationRef, hand
     const result = resultValue(value);
     return finish({ outcome: 'succeeded', timedOut: false, error: null, ...(result === undefined ? {} : { result: redact(result) }) });
   } catch (error) {
-    return finish({ outcome: 'failed', timedOut: error instanceof HandlerTimeout, error: message(error) });
+    return finish({ outcome: 'failed', timedOut: isTimeout(error), error: message(error) });
   }
 }

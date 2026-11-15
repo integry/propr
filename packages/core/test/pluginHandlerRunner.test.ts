@@ -51,6 +51,35 @@ test('a throwing handler, a hanging handler and other failures return a failed o
   assert.match((await runPluginHandler(FIXTURE_ID, 'succeed', invoke(), f.options)).error ?? '', /is not enabled/);
 });
 
+test('a handler throwing a value that cannot be converted to a string returns a failed outcome and ends the run', async t => {
+  const f = await pluginHandlerFixture(t);
+  const signals: AbortSignal[] = [];
+  const throwing = (value: () => unknown) => ({ ...f.options, handlers: async () => ({
+    throwsValue: async (_input: PluginHandlerInput, ctx: { signal: AbortSignal }) => { signals.push(ctx.signal); throw value(); },
+  }) });
+  const nonStringMessage = () => Object.assign(new Error('x'), { message: { toString: 'upstream field' } });
+  const throwingMessage = () => Object.defineProperty(new Error('x'), 'message', { get() { throw new Error('getter'); } });
+  const trappedProxy = () => new Proxy({}, { getPrototypeOf() { throw new Error('trap'); } });
+  const cases: [string, () => unknown][] = [
+    // JSON-compatible: an invocation payload can carry it.
+    ['own non-callable toString', () => ({ message: 'Upstream failed', toString: 'upstream field' })],
+    ['null prototype', () => Object.create(null)],
+    ['Error with a non-string message', nonStringMessage],
+    ['Error with a throwing message getter', throwingMessage],
+    ['proxy whose getPrototypeOf trap throws', trappedProxy],
+  ];
+  for (const [name, value] of cases) {
+    const run = await runPluginHandler(FIXTURE_ID, 'throwsValue', invoke(), throwing(value));
+    assert.equal(run.outcome, 'failed', name);
+    assert.equal(run.timedOut, false, name);
+    assert.equal(run.error, 'The handler failed', name);
+    assert.equal(signals.at(-1)?.aborted, true, `${name}: the run's context is aborted`);
+  }
+  assert.equal(signals.length, cases.length);
+  // A primitive still gives its own message.
+  assert.equal((await runPluginHandler(FIXTURE_ID, 'throwsValue', invoke(), throwing(() => 'plain text'))).error, 'plain text');
+});
+
 test('the official registry loads example-pack handlers through the plugin registry', async t => {
   const f = await pluginHandlerFixture(t);
   const { getOfficialPlugin } = await import('../../plugins/src/index.js');
