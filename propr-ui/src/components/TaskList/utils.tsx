@@ -20,7 +20,7 @@ export const shouldDimTask = (task: Task): boolean => {
  * @returns Clean title in format "issueId: title" or the original title if no pattern matches
  */
 /**
- * The title without a PR status slot (`🔨 `, `✅⑧ `), at its start or right
+ * The title without a PR status slot (`🔨 `, `✅➇ `), at its start or right
  * after a `Followup:` / `New Issue:` prefix.
  */
 const withoutStatusSlot = (title: string): string => {

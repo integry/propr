@@ -3,7 +3,7 @@ import { getCleanDocumentTitle } from './utils.tsx';
 import { cleanHeaderTaskTitle } from '../headerUtils';
 
 describe('title parsers and the PR status slot', () => {
-  for (const slot of ['', '🔨 ', '⚠️⑥ ', '⚠ ', '✅⑧ ']) {
+  for (const slot of ['', '🔨 ', '⚠️➅ ', '⚠ ', '✅➇ ']) {
     it(`getCleanDocumentTitle reads the [N by Model] prefix with slot "${slot}"`, () => {
       expect(getCleanDocumentTitle(`${slot}[3475 by Claude Opus 5.5] Let an automation run`)).toBe('3475: Let an automation run');
       expect(getCleanDocumentTitle(`Followup: ${slot}[870 by Claude Opus] Update checkout`)).toBe('870: Update checkout');
