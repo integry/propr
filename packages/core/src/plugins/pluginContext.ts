@@ -30,9 +30,45 @@ export interface PluginContextDeps {
 /** What building a context returns besides `ctx`: the captured log and redaction of anything returned to the caller. */
 export interface BuiltPluginContext {
   ctx: PluginContext;
-  logs: PluginLogLine[];
+  /** The log lines for the caller: each redacted again with every credential of the run, then cut to `PLUGIN_LOG_LIMITS.messageChars`. */
+  finalLogs(): PluginLogLine[];
   /** Redact a value for the caller: connection credentials used in this run (in every spelling, percent-escaped too) and the general secret patterns. */
   redact<T>(value: T): T;
+  /** Redact `text` (kept with `retainForRedaction`), then cut it to `limit` characters, withholding a credential the cut would leave partly visible. */
+  clip(text: string, limit: number): string;
+}
+
+/**
+ * Characters of a message kept past its length limit until the run's final
+ * redaction. A credential that straddles the limit (and may only be acquired
+ * after the line was written) is then still matched whole and redacted before
+ * the message is cut, rather than cut first and left one character short. It
+ * covers every spelling of a storable connection secret (at most 4,096
+ * characters, `PLUGIN_SECRET_PATTERN`): the hex of its header value, each
+ * character percent-escaped, is about 24,600 characters.
+ */
+const REDACTION_MARGIN_CHARS = 32 * 1024;
+/** `text` as kept for a later redaction and cut to `limit`: `limit` characters and the margin. */
+export const retainForRedaction = (text: string, limit: number): string => text.slice(0, limit + REDACTION_MARGIN_CHARS);
+
+/** The raw spellings of a credential whose start a cut message could end with (`[spelling, any letter case]`). */
+function cutSpellings(secret: string): [string, boolean][] {
+  return [secret, `Bearer ${secret}`].flatMap(value => [
+    [value, false], [Buffer.from(value).toString('base64'), false], [Buffer.from(value).toString('base64url'), false],
+    [encodeURIComponent(value), false], [Buffer.from(value).toString('hex'), true],
+  ] as [string, boolean][]);
+}
+/** How many trailing characters of `text` begin a credential spelling: a credential longer than the margin, cut at the limit. */
+function cutCredentialTail(text: string, credentials: readonly string[]): number {
+  let longest = 0;
+  const folded = text.toLowerCase();
+  for (const [spelling, anyCase] of credentials.filter(Boolean).flatMap(cutSpellings)) {
+    const haystack = anyCase ? folded : text;
+    for (let length = Math.min(spelling.length - 1, haystack.length); length > longest; length--) {
+      if (haystack.endsWith(spelling.slice(0, length))) { longest = length; break; }
+    }
+  }
+  return longest;
 }
 
 /** The audit action of each recorded `ctx.propr` call outcome. */
@@ -113,9 +149,17 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   const now = deps.now ?? Date.now;
   const environment = deps.environment ?? process.env;
   const credentials: string[] = [];
+  // Messages are kept past their limit (`retainForRedaction`) and cut only after the final redaction: see `clip`.
   const logs: PluginLogLine[] = [];
   // The extension output redaction matches one URL-encoded spelling only; the response scrubbing also catches `%2f` and other escapes first.
   const redact = <T>(value: T): T => redactExtensionOutput(scrubCredentialValues(value, credentials), credentials) as T;
+  // Redacted first, so a credential straddling the limit is replaced whole; a credential longer than the kept margin has its visible start withheld.
+  const clip = (text: string, limit: number): string => {
+    const redacted = redact(text);
+    if (redacted.length <= limit) return redacted;
+    const cut = redacted.slice(0, limit);
+    return cut.slice(0, cut.length - cutCredentialTail(cut, credentials));
+  };
   let dropped = false;
 
   const write = (level: PluginLogLevel, message: unknown, fields?: Record<string, unknown>) => {
@@ -124,7 +168,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       if (!dropped) { dropped = true; logs.push({ level: 'warn', message: `Log limit of ${PLUGIN_LOG_LIMITS.lines} lines reached; later lines were dropped`, at: now() }); }
       return;
     }
-    const text = String(message).slice(0, PLUGIN_LOG_LIMITS.messageChars);
+    const text = retainForRedaction(String(message), PLUGIN_LOG_LIMITS.messageChars);
     const json = logFields(fields);
     logs.push({ level, message: redact(text), ...(json ? { fields: redact(json) } : {}), at: now() });
   };
@@ -191,5 +235,10 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     log: Object.freeze(log),
     signal,
   };
-  return { ctx: Object.freeze(ctx), logs, redact };
+  // Lines logged before a credential was acquired were redacted without it: redact every line again with all the credentials of this run, then cut it.
+  const finalLogs = (): PluginLogLine[] => logs.map(line => {
+    const redacted = redact(line);
+    return { ...redacted, message: clip(redacted.message, PLUGIN_LOG_LIMITS.messageChars) };
+  });
+  return { ctx: Object.freeze(ctx), finalLogs, redact, clip };
 }

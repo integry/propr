@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PLUGIN_STATE_LIMITS, type PluginHandlerInput, type PluginJsonValue } from '@propr/shared';
+import { PLUGIN_LOG_LIMITS, PLUGIN_STATE_LIMITS, type PluginHandlerInput, type PluginJsonValue } from '@propr/shared';
 import { runPluginHandler } from '../src/plugins/pluginHandlerRunner.js';
 import { FIXTURE_ID, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
 
@@ -153,6 +153,43 @@ test('a credential logged before the handler acquires it is redacted from the re
     assert.equal(visible.includes(spelling), false, `${spelling} leaked`);
   }
   assert.equal(JSON.stringify(await f.database('plugin_audit').select()).includes(SENTINEL), false);
+});
+
+/** Whether `text` shows the first `length` characters of `secret` or more. */
+const showsPrefix = (text: string, secret: string, length = 8) => text.includes(secret.slice(0, length));
+
+test('a credential straddling the log or error length limit is redacted before the message is cut', async t => {
+  const f = await pluginHandlerFixture(t, { secret: SENTINEL });
+  const request = { url: 'https://api.fixture.example/v1', connection: 'api-token' };
+  // All of the credential but its last character falls inside the limit.
+  const straddling = (limit: number) => `${'x'.repeat(limit - SENTINEL.length + 1)}${SENTINEL}`;
+  const note = straddling(PLUGIN_LOG_LIMITS.messageChars);
+  for (const handler of ['logThenFetch', 'fetchThenLog']) {
+    const run = await runPluginHandler(FIXTURE_ID, handler, invoke({ ...request, note }), f.options);
+    assert.equal(run.outcome, 'succeeded', run.error ?? '');
+    const line = run.logs.find(l => l.level === 'info')!;
+    assert.ok(line.message.length <= PLUGIN_LOG_LIMITS.messageChars, handler);
+    assert.ok(line.message.startsWith('x'.repeat(100)), handler);
+    assert.equal(showsPrefix(JSON.stringify(run), SENTINEL), false, `${handler}: a prefix of the credential leaked`);
+  }
+  const failed = await runPluginHandler(FIXTURE_ID, 'fetchThenThrow', invoke({ ...request, note: straddling(1_000) }), f.options);
+  assert.equal(failed.outcome, 'failed');
+  assert.ok((failed.error ?? '').length <= 1_000);
+  assert.match(failed.error ?? '', /^x{100}/);
+  assert.equal(showsPrefix(JSON.stringify(failed), SENTINEL), false, 'a prefix of the credential leaked from the error message');
+});
+
+test('a credential longer than the kept margin and cut at the limit has its visible start withheld', async t => {
+  // Longer than a stored connection secret can be: a custom `connectionSecret` source.
+  const secret = `long-credential-${'k'.repeat(40 * 1024)}-end`;
+  const f = await pluginHandlerFixture(t);
+  const prefix = 'x'.repeat(PLUGIN_LOG_LIMITS.messageChars - 100);
+  const note = `${prefix}${secret}`;
+  const run = await runPluginHandler(FIXTURE_ID, 'logThenFetch', invoke({ url: 'https://api.fixture.example/v1', connection: 'api-token', note }), { ...f.options, connectionSecret: async () => secret });
+  assert.equal(f.http.requests[0]?.headers.authorization, `Bearer ${secret}`, 'the credential was acquired after the line was logged');
+  const line = run.logs.find(l => l.level === 'info')!;
+  assert.equal(line.message, prefix);
+  assert.equal(showsPrefix(JSON.stringify(run), secret, 4), false);
 });
 
 test('ctx.http refuses hosts not in outboundHosts, private addresses, plain HTTP and unusable connections', async t => {

@@ -127,6 +127,13 @@ export async function suspendThenSet(input: PluginHandlerInput, ctx: PluginConte
   }
 }
 
+/** Make an authenticated request (the run then holds its credential), then fail with `note`, a value from the input, as the error message. */
+export async function fetchThenThrow(input: PluginHandlerInput, ctx: PluginContext) {
+  const { url, connection, note } = payload(input) as { url: string; connection: string; note: string };
+  await ctx.http(connection)(url);
+  throw new Error(note);
+}
+
 /** Wait on a ctx.propr read (the test holds it), then make one ctx.propr call: a mutation resuming across an uninstall. */
 export async function suspendThenPropr(input: PluginHandlerInput, ctx: PluginContext) {
   await ctx.propr.getIssue('owner/allowed', 3).catch(() => undefined);

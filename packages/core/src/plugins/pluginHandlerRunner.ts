@@ -5,7 +5,7 @@ import {
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { officialPluginCatalog, type PluginCatalogSource } from './pluginCatalog.js';
-import { buildPluginContext, type PluginContextDeps, type PluginInstallationTarget } from './pluginContext.js';
+import { buildPluginContext, retainForRedaction, type PluginContextDeps, type PluginInstallationTarget } from './pluginContext.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
 
 /** The handlers module of a plugin (its `handlers.ts`), or null when it has none. */
@@ -67,7 +67,8 @@ function resultValue(value: unknown): PluginJsonValue | undefined {
   return JSON.parse(text) as PluginJsonValue;
 }
 
-const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, ERROR_CHARS) || 'The handler failed';
+// Kept past ERROR_CHARS: `finish` cuts it only after redacting it, so a credential straddling the limit is redacted whole.
+const message = (error: unknown) => retainForRedaction(error instanceof Error ? error.message : String(error), ERROR_CHARS) || 'The handler failed';
 
 /** Run the handler, failing it once it runs past `timeoutMs`; the signal tells the handler to stop. */
 async function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, controller: AbortController): Promise<T> {
@@ -92,15 +93,16 @@ async function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, controll
 export async function runPluginHandler(installation: PluginInstallationRef, handlerName: string, input: PluginHandlerInput, options: RunPluginHandlerOptions): Promise<PluginHandlerRun> {
   const started = performance.now();
   const controller = new AbortController();
-  let logs: PluginLogLine[] = [];
+  let finalLogs = (): PluginLogLine[] => [];
   let redact = <T>(value: T): T => value;
+  let clip = (text: string, limit: number): string => text.slice(0, limit);
   const pluginId = typeof installation === 'string' ? installation : installation?.pluginId;
   const finish = (run: Omit<PluginHandlerRun, 'durationMs' | 'logs'>): PluginHandlerRun => {
     const durationMs = Math.round(performance.now() - started);
     // Ends the run for anything the handler left running: ctx refuses further calls and log lines.
     if (!controller.signal.aborted) controller.abort(new Error('The handler run has ended'));
-    // Lines logged before a credential was acquired were redacted without it: redact every line again with all the credentials of this run.
-    const result: PluginHandlerRun = { ...run, error: run.error === null ? null : redact(run.error), durationMs, logs: logs.map(line => redact(line)) };
+    // Lines logged (and errors raised) before a credential was acquired were redacted without it: redact them again with all the credentials of this run, then cut them.
+    const result: PluginHandlerRun = { ...run, error: run.error === null ? null : clip(run.error, ERROR_CHARS), durationMs, logs: finalLogs() };
     try { logger.info({ pluginId, handler: handlerName, outcome: result.outcome, timedOut: result.timedOut, durationMs }, '[plugins] Handler run'); } catch { /* logging never fails a run */ }
     return result;
   };
@@ -108,7 +110,7 @@ export async function runPluginHandler(installation: PluginInstallationRef, hand
     const target = await loadTarget(installation, options.database, options.catalog ?? officialPluginCatalog);
     const handler = await loadHandler(target, handlerName, options.handlers ?? officialPluginHandlers);
     const built = buildPluginContext(target, options, handlerName, controller.signal);
-    logs = built.logs; redact = built.redact;
+    finalLogs = built.finalLogs; redact = built.redact; clip = built.clip;
     const value = await withTimeout(() => handler(input, built.ctx), options.timeoutMs ?? PLUGIN_HANDLER_TIMEOUT_MS, controller);
     const result = resultValue(value);
     return finish({ outcome: 'succeeded', timedOut: false, error: null, ...(result === undefined ? {} : { result: redact(result) }) });

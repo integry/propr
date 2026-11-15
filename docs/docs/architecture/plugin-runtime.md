@@ -259,6 +259,12 @@ removes those credentials again, plus the general secret patterns (GitHub,
 cloud and API tokens, `Authorization` values and secret-like assignments) and
 headers such as `authorization` and `cookie`.
 
+Messages (2,000 characters) and error messages (1,000) are cut only after the
+final redaction when the run ends, which uses every credential the run
+acquired. A credential that straddles the limit is replaced whole instead of
+being left one character short. A credential too long to be matched whole before the cut has
+its visible start withheld.
+
 ## Import rule
 
 The root `eslint.config.js` has an override for `packages/plugins/**`, which
