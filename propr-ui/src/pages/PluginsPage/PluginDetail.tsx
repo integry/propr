@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { PluginConfigureStep } from './PluginConfigureStep';
 import { PluginConnections } from './PluginConnections';
-import { PluginActivity } from './PluginActivity';
+import { PluginActivity, PluginHealthBadge } from './PluginActivity';
 import { PluginContributions } from './PluginContributions';
 import { PluginEnableStep } from './PluginEnableStep';
 import { PluginInstallStep } from './PluginInstallStep';
@@ -10,6 +10,7 @@ import { PluginUninstall } from './PluginUninstall';
 import { ExternalLink, PluginIcon, PluginStateBadge } from './PluginBits';
 import { CATEGORY_LABELS, PLUGINS_PATH, safeHttpsUrl } from './pluginUi';
 import { usePluginDetail } from './usePluginDetail';
+import { usePluginActivity } from './usePluginActivity';
 
 const back = (
   <Link to={PLUGINS_PATH} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-teal-700 hover:text-teal-800 sm:min-h-0">
@@ -17,10 +18,11 @@ const back = (
   </Link>
 );
 
-/** One plugin: its header, the four steps in a fixed order, what it added, its activity and uninstall. */
+/** One plugin: its header (with Degraded or Paused delivery health), the four steps in a fixed order, what it added, its activity and uninstall. */
 export function PluginDetail({ id }: { id: string }) {
   const detail = usePluginDetail(id);
   const { view } = detail;
+  const activity = usePluginActivity(id, Boolean(view?.installation));
   if (!view) {
     return (
       <div className="space-y-4">
@@ -40,6 +42,7 @@ export function PluginDetail({ id }: { id: string }) {
           <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold text-slate-900">
             <span className="[overflow-wrap:anywhere]">{manifest?.name ?? view.id}</span>
             <PluginStateBadge view={view} />
+            {view.installation && <PluginHealthBadge health={activity.activity?.health} />}
           </h1>
           {manifest && <p className="text-sm text-slate-600 [overflow-wrap:anywhere]">{manifest.description}</p>}
           <p className="flex flex-wrap gap-x-3 text-xs text-slate-500">
@@ -60,7 +63,7 @@ export function PluginDetail({ id }: { id: string }) {
       <PluginConfigureStep view={view} busy={detail.busy} settingsError={detail.errors.settings} onSaveSettings={detail.setSettings} onSaveRepositories={detail.setRepositories} />
       <PluginEnableStep view={view} busy={detail.busy} onChange={detail.setEnabled} />
       <PluginContributions view={view} />
-      {view.installation && <PluginActivity />}
+      {view.installation && <PluginActivity activity={activity} />}
       <PluginUninstall view={view} busy={detail.busy} error={detail.errors.uninstall} onUninstall={() => void detail.uninstall()} />
     </div>
   );

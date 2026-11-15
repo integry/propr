@@ -918,9 +918,56 @@ export interface PluginAcknowledgementRequest {
   acknowledgements?: string[];
 }
 
+export interface PluginActivityResponse {
+  health: PluginHealth;
+  /** The newest 100 delivery records, newest first. */
+  deliveries: PluginDelivery[];
+}
+
 export interface PluginConnectionRequest {
   /** The secret to store (write-only), or null to clear it. */
   value: string | null;
+}
+
+/** One event delivery to a plugin handler, or a recorded gap. Holds the event id and type only: never the event payload or a credential. */
+export interface PluginDelivery {
+  /** The activity record id, used by the retry route. */
+  id: number;
+  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`); the same on every attempt. */
+  deliveryId: string;
+  /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. */
+  kind: "event" | "gap";
+  repository: string;
+  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing. */
+  eventSeq: number;
+  /** `<domain>.<type>`; null for a gap. */
+  eventType: string | null;
+  handler: string | null;
+  status: "pending" | "running" | "retrying" | "succeeded" | "failed" | "skipped";
+  /** Attempts made so far. */
+  attempt: number;
+  /** When the next attempt is due, while pending or retrying. */
+  nextAttemptAt: number | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  timedOut: boolean;
+  /** The latest attempt's redacted error message. */
+  error: string | null;
+  /** The latest attempt's redacted log lines. */
+  logs: Array<{
+    level: "debug" | "info" | "warn" | "error";
+    message: string;
+    fields?: {
+      [key: string]: unknown;
+    };
+    at: number;
+  }>;
+}
+
+export interface PluginDeliveryResponse {
+  delivery: PluginDelivery;
 }
 
 export interface PluginDetailResponse {
@@ -1069,7 +1116,7 @@ export interface PluginDetailResponse {
     };
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused" | "retry_delivery" | "resume_deliveries";
       actor: string;
       at: number;
       detail: {
@@ -1083,6 +1130,22 @@ export type PluginEmptyRequest = Record<string, never>;
 
 export interface PluginEnabledRequest {
   enabled: boolean;
+}
+
+/** Delivery health of a plugin installation. */
+export interface PluginHealth {
+  /** `degraded` after repeated consecutive failures; `paused` after the configured number of them, until an administrator resumes deliveries. */
+  state: "healthy" | "degraded" | "paused";
+  consecutiveFailures: number;
+  pauseAfterFailures: number;
+  lastError: string | null;
+  lastErrorAt: number | null;
+  degradedAt: number | null;
+  pausedAt: number | null;
+}
+
+export interface PluginHealthResponse {
+  health: PluginHealth;
 }
 
 export interface PluginList {

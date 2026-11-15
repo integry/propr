@@ -2,6 +2,14 @@ import { z } from 'zod';
 import { EXTENSION_OAUTH_REGISTRATIONS } from './extensionOAuth.js';
 import { extensionServerNameSchema, remoteMcpSchema } from './extensionProfiles.js';
 import { extensionPackageEnvNameSchema, extensionPackageIntegritySchema, packageServerFields, EXACT_VERSION_PATTERN } from './extensionPackages.js';
+import { isRepositoryEventType } from './repositoryEvents.js';
+
+/** Whether `name` is `<domain>.<type>` of a repository journal event. */
+export function isPluginSubscriptionEvent(name: unknown): boolean {
+  if (typeof name !== 'string') return false;
+  const dot = name.indexOf('.');
+  return dot > 0 && isRepositoryEventType(name.slice(0, dot), name.slice(dot + 1));
+}
 
 /**
  * Plugins as data. An official plugin is a folder `packages/plugins/<id>/`
@@ -150,8 +158,35 @@ export const pluginSkillSchema = z.strictObject({ name: keySchema, path: pluginA
 export const pluginAutomationTemplateSchema = z.strictObject({ id: keySchema, path: pluginAssetPathSchema });
 /** Accepted and validated now; ignored at runtime until commands land. */
 export const pluginCommandSchema = z.strictObject({ name: keySchema, description: textSchema(200), permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_LIMITS.permissions).default([]) });
-/** Accepted and validated now; ignored at runtime until subscriptions land. */
-export const pluginSubscriptionSchema = z.strictObject({ event: z.string().regex(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/, 'Use a dotted event name such as task.completed') });
+/** A handler name: an exported function of the plugin's `handlers.ts`. */
+export const pluginHandlerNameSchema = z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/, 'Use the name of an exported handler function');
+/** Event fields a subscription filter can match, besides `payload.<key>`. */
+export const PLUGIN_SUBSCRIPTION_FILTER_FIELDS = ['repository', 'entityId', 'prNumber', 'issueNumber', 'planId', 'headSha'] as const;
+const isFilterKey = (key: string) => (PLUGIN_SUBSCRIPTION_FILTER_FIELDS as readonly string[]).includes(key) || /^payload\.[A-Za-z][A-Za-z0-9_]{0,47}$/.test(key);
+const filterScalarSchema = z.union([z.string().max(PLUGIN_LIMITS.text), z.number().finite(), z.boolean(), z.null()]);
+/**
+ * Equality filter of a subscription: every key must match. A key is an event
+ * field (`repository` compares without letter case) or `payload.<key>`; a list
+ * value matches any of its entries.
+ */
+export const pluginSubscriptionFilterSchema = z.record(z.string(), z.union([filterScalarSchema, z.array(filterScalarSchema).min(1).max(32)]))
+  .superRefine((filter, ctx) => {
+    const keys = Object.keys(filter);
+    if (keys.length > 16) ctx.addIssue({ code: 'custom', message: 'A filter has at most 16 keys' });
+    for (const key of keys.filter(k => !isFilterKey(k))) ctx.addIssue({ code: 'custom', path: [key], message: `Filter keys are ${PLUGIN_SUBSCRIPTION_FILTER_FIELDS.join(', ')} or payload.<key>` });
+  });
+export type PluginSubscriptionFilter = z.infer<typeof pluginSubscriptionFilterSchema>;
+/**
+ * An event subscription: `on` is `<domain>.<type>` of a repository journal
+ * event (for example `pull_request.merged`), `handler` the exported function
+ * that receives it and `filter` narrows which events of that type it gets.
+ */
+export const pluginSubscriptionSchema = z.strictObject({
+  on: z.string().refine(isPluginSubscriptionEvent, 'Use a repository event name such as pull_request.merged or task.completed'),
+  handler: pluginHandlerNameSchema,
+  filter: pluginSubscriptionFilterSchema.optional(),
+});
+export type PluginSubscription = z.infer<typeof pluginSubscriptionSchema>;
 /** Accepted and validated now; ignored at runtime until webhooks land. Each webhook is verified with a `signing_secret` connection. */
 export const pluginWebhookSchema = z.strictObject({ name: keySchema, description: textSchema(200), connection: keySchema });
 
@@ -260,7 +295,7 @@ export const pluginManifestSchema = pluginManifestObjectSchema.superRefine((mani
   unique(contributes.skills.map(s => s.name), 'skill name', ['contributes', 'skills']);
   unique(contributes.automationTemplates.map(t => t.id), 'automation template id', ['contributes', 'automationTemplates']);
   unique(contributes.commands.map(c => c.name), 'command name', ['contributes', 'commands']);
-  unique(contributes.subscriptions.map(s => s.event), 'subscription', ['contributes', 'subscriptions']);
+  unique(contributes.subscriptions.map(s => `${s.on} → ${s.handler}`), 'subscription', ['contributes', 'subscriptions']);
   unique(contributes.webhooks.map(w => w.name), 'webhook name', ['contributes', 'webhooks']);
   checkConnectionReferences(manifest, issue);
   checkSettings(manifest.settings, issue);
@@ -320,7 +355,7 @@ export function publicPluginManifest(manifest: PluginManifest): PublicPluginMani
       skills: contributes.skills.map(s => s.name),
       automationTemplates: contributes.automationTemplates.map(t => t.id),
       commands: contributes.commands.map(c => ({ name: c.name, description: c.description })),
-      subscriptions: contributes.subscriptions.map(s => s.event),
+      subscriptions: contributes.subscriptions.map(s => s.on),
       webhooks: contributes.webhooks.map(w => ({ name: w.name, description: w.description })),
     },
   };

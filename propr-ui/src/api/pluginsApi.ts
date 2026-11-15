@@ -64,3 +64,14 @@ export const startPluginOAuth = (id: string, name: string) =>
   request<ProprApi.PluginOAuthStartResponse>(connection(id, name, '/oauth/start'), { method: 'POST', body: {} });
 export const disconnectPluginOAuth = (id: string, name: string): Plugin =>
   request(connection(id, name, '/oauth/disconnect'), { method: 'POST', body: {} });
+
+export type PluginActivityView = ProprApi.PluginActivityResponse;
+export type PluginDeliveryView = ProprApi.PluginDelivery;
+export type PluginHealthView = ProprApi.PluginHealth;
+/** Event delivery health (healthy, degraded or paused) and the newest delivery records, newest first. */
+export const getPluginActivity = (id: string) => request<ProprApi.PluginActivityResponse>(plugin(id, '/activity'));
+/** Give a failed delivery one more attempt, with the same delivery id. */
+export const retryPluginDelivery = (id: string, recordId: number) =>
+  request<ProprApi.PluginDeliveryResponse>(plugin(id, `/activity${segment(String(recordId))}/retry`), { method: 'POST', body: {} });
+/** Resume deliveries paused after repeated failures. */
+export const resumePluginDeliveries = (id: string) => request<ProprApi.PluginHealthResponse>(plugin(id, '/resume'), { method: 'POST', body: {} });

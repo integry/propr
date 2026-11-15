@@ -45,6 +45,7 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { sweepRepositoryEvents } from './daemon/repositoryEventRetention.js';
+import { startPluginEventDispatch, sweepPluginDeliveries } from './daemon/pluginEventDispatch.js';
 import { sweepPushRescues } from './daemon/rescueRefSweep.js';
 import { scheduleWorktreeSweep } from './daemon/worktreeSweep.js';
 import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
@@ -184,10 +185,11 @@ interface DaemonOptions {
 // Reclaim stale draft context (generated_context + cached file previews) past its TTL.
 // The first run on startup also backfills any historically-accumulated context, then
 // it runs on an interval. Returns the interval handle so the caller can clear it on shutdown.
-// The same hourly sweep prunes repository journal events past their 30-day retention.
+// The same hourly sweep prunes repository journal events past their 30-day retention
+// and plugin delivery records past theirs.
 async function scheduleDraftContextSweep(): Promise<NodeJS.Timeout> {
     const DRAFT_CONTEXT_SWEEP_INTERVAL_MS = parseInt(process.env.DRAFT_CONTEXT_SWEEP_INTERVAL_MS || `${60 * 60 * 1000}`, 10);
-    const sweep = async () => { await sweepDraftContext(); await sweepRepositoryEvents(); };
+    const sweep = async () => { await sweepDraftContext(); await sweepRepositoryEvents(); await sweepPluginDeliveries(); };
     await sweep();
     return setInterval(() => { void sweep(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
 }
@@ -271,6 +273,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
     const draftContextSweepInterval = await scheduleDraftContextSweep();
+    // Plugin event subscriptions read the journal the retention sweep above prunes.
+    const stopPluginEventDispatch = startPluginEventDispatch();
     const pushRescueSweepInterval = schedulePushRescueSweep();
     const worktreeSweepInterval = scheduleWorktreeSweep();
     // Fires scheduled agents, retries runs the cost gate deferred, fails runs
@@ -456,6 +460,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             noChangeCompletionRecoveryInterval, autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
         stopManagedDiagnostics();
         await stopAgentRunSweeps();
+        await stopPluginEventDispatch();
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

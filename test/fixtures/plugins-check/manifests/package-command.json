@@ -82,7 +82,8 @@
     ],
     "subscriptions": [
       {
-        "event": "task.completed"
+        "on": "task.completed",
+        "handler": "onTaskCompleted"
       }
     ]
   }

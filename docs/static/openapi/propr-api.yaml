@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 339
-    documented: 101
+    total: 342
+    documented: 104
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4897,6 +4897,96 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/activity:
+    get:
+      operationId: getPluginActivity
+      summary: "Read the plugin's event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records: time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Health and delivery records, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginActivityResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/activity/{deliveryId}/retry:
+    post:
+      operationId: retryPluginDelivery
+      summary: "Retry a failed event delivery: it gets one more attempt, with the same delivery id, the next time the dispatcher runs (after Resume while deliveries are paused). Refused (409) for a delivery that has not failed."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: deliveryId
+          in: path
+          required: true
+          description: The activity record id (`id` of a delivery).
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The delivery, pending again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginDeliveryResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
   /api/instance/plugins/v1/{pluginId}/approve:
     post:
       operationId: approvePlugin
@@ -5350,6 +5440,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/resume:
+    post:
+      operationId: resumePluginDeliveries
+      summary: "Resume event deliveries paused after repeated failures: the failure count starts over, Degraded clears and waiting retries are due at once. Refused (409) when deliveries are not paused."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The new delivery health.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginHealthResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -12957,6 +13095,20 @@ components:
           items:
             type: string
       additionalProperties: false
+    PluginActivityResponse:
+      type: object
+      properties:
+        health:
+          $ref: "#/components/schemas/PluginHealth"
+        deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginDelivery"
+          description: The newest 100 delivery records, newest first.
+      required:
+        - health
+        - deliveries
+      additionalProperties: false
     PluginConnectionRequest:
       type: object
       properties:
@@ -12968,6 +13120,128 @@ components:
           description: The secret to store (write-only), or null to clear it.
       required:
         - value
+      additionalProperties: false
+    PluginDelivery:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: The activity record id, used by the retry route.
+        deliveryId:
+          type: string
+          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`); the same on every attempt.
+        kind:
+          type: string
+          enum:
+            - event
+            - gap
+          description: "`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered."
+        repository:
+          type: string
+        eventSeq:
+          type: integer
+          description: The journal `seq` of the event; for a gap, the first `seq` that may be missing.
+        eventType:
+          description: "`<domain>.<type>`; null for a gap."
+          type:
+            - string
+            - "null"
+        handler:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - retrying
+            - succeeded
+            - failed
+            - skipped
+        attempt:
+          type: integer
+          description: Attempts made so far.
+        nextAttemptAt:
+          description: When the next attempt is due, while pending or retrying.
+          type:
+            - number
+            - "null"
+        createdAt:
+          type: number
+        startedAt:
+          type:
+            - number
+            - "null"
+        finishedAt:
+          type:
+            - number
+            - "null"
+        durationMs:
+          type:
+            - number
+            - "null"
+        timedOut:
+          type: boolean
+        error:
+          description: The latest attempt's redacted error message.
+          type:
+            - string
+            - "null"
+        logs:
+          type: array
+          items:
+            type: object
+            properties:
+              level:
+                type: string
+                enum:
+                  - debug
+                  - info
+                  - warn
+                  - error
+              message:
+                type: string
+              fields:
+                type: object
+                propertyNames:
+                  type: string
+                additionalProperties: {}
+              at:
+                type: number
+            required:
+              - level
+              - message
+              - at
+            additionalProperties: false
+          description: The latest attempt's redacted log lines.
+      required:
+        - id
+        - deliveryId
+        - kind
+        - repository
+        - eventSeq
+        - eventType
+        - handler
+        - status
+        - attempt
+        - nextAttemptAt
+        - createdAt
+        - startedAt
+        - finishedAt
+        - durationMs
+        - timedOut
+        - error
+        - logs
+      additionalProperties: false
+      description: "One event delivery to a plugin handler, or a recorded gap. Holds the event id and type only: never the event payload or a credential."
+    PluginDeliveryResponse:
+      type: object
+      properties:
+        delivery:
+          $ref: "#/components/schemas/PluginDelivery"
+      required:
+        - delivery
       additionalProperties: false
     PluginDetailResponse:
       type: object
@@ -13475,6 +13749,8 @@ components:
                       - handler_attempt
                       - handler_call
                       - handler_refused
+                      - retry_delivery
+                      - resume_deliveries
                   actor:
                     type: string
                   at:
@@ -13517,6 +13793,54 @@ components:
           type: boolean
       required:
         - enabled
+      additionalProperties: false
+    PluginHealth:
+      type: object
+      properties:
+        state:
+          type: string
+          enum:
+            - healthy
+            - degraded
+            - paused
+          description: "`degraded` after repeated consecutive failures; `paused` after the configured number of them, until an administrator resumes deliveries."
+        consecutiveFailures:
+          type: integer
+        pauseAfterFailures:
+          type: integer
+        lastError:
+          type:
+            - string
+            - "null"
+        lastErrorAt:
+          type:
+            - number
+            - "null"
+        degradedAt:
+          type:
+            - number
+            - "null"
+        pausedAt:
+          type:
+            - number
+            - "null"
+      required:
+        - state
+        - consecutiveFailures
+        - pauseAfterFailures
+        - lastError
+        - lastErrorAt
+        - degradedAt
+        - pausedAt
+      additionalProperties: false
+      description: Delivery health of a plugin installation.
+    PluginHealthResponse:
+      type: object
+      properties:
+        health:
+          $ref: "#/components/schemas/PluginHealth"
+      required:
+        - health
       additionalProperties: false
     PluginList:
       type: object

@@ -13,6 +13,7 @@ import { discardOAuthConnectionsOf, oauthConnectionStates } from '../extensions/
 import { PluginContributions, oauthServersOf, pluginContributionViews, type PluginOAuthClient } from './pluginContributions.js';
 import { pluginTemplateIds } from './pluginTemplates.js';
 import { deletePluginState } from './pluginStateStore.js';
+import { deletePluginDispatch, restartPluginDispatch } from './pluginDeliveries.js';
 import {
   PluginError, enableBlockers, installationRecord, nextAcknowledgements, parseAcknowledgements, pendingAcknowledgements, pendingPermissions, pluginView,
   type PluginInstallationRow, type PluginSecretRow,
@@ -190,6 +191,8 @@ export class PluginStore {
         granted_permissions: JSON.stringify([...manifest.permissions]), acknowledgements: JSON.stringify(acknowledgements),
         installed_by: actor, installed_at: now, updated_by: actor, updated_at: now,
       });
+      // Event subscriptions start at the journal's current end: history is not replayed.
+      await restartPluginDispatch(trx, pluginId, now, now);
       return { action: 'install', detail: { version: manifest.version, permissions: [...manifest.permissions], acknowledged: Object.keys(acknowledgements) } };
     });
   }
@@ -285,6 +288,8 @@ export class PluginStore {
         if (blockers.length) throw new PluginError(409, `The plugin cannot be enabled: ${blockers.join('; ')}`);
       }
       await trx('plugin_installations').where({ plugin_id: pluginId }).update({ enabled, ...this.touched(actor, loaded) });
+      // Events journaled while the plugin was disabled are not delivered.
+      if (enabled && !row.enabled) await restartPluginDispatch(trx, pluginId, Number(row.installed_at), this.now());
       // A disable only deactivates the managed items as they are: it never depends on applying an upgraded manifest or its assets.
       return { action: enabled ? 'enable' : 'disable', deactivateOnly: !enabled };
     });
@@ -315,6 +320,7 @@ export class PluginStore {
       // The installation row first: a concurrent ctx.state write holds it until it commits (so its row is deleted below) or finds it gone.
       await trx('plugin_installations').where({ plugin_id: pluginId }).delete();
       const state = await deletePluginState(trx, pluginId);
+      await deletePluginDispatch(trx, pluginId);
       return { action: 'uninstall', detail: { version: row.manifest_version, stateKeys: state } };
     });
   }

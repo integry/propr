@@ -1,10 +1,11 @@
 import type { createPluginRoutes } from './routes/pluginRoutes.js';
+import type { createPluginActivityRoutes } from './routes/pluginActivityRoutes.js';
 import { requireManageSettings } from './permissionGuards.js';
 import type { RouteEntry } from './routeRegistry.js';
 import { PLUGIN_API_BASE } from '@propr/shared';
 
-/** Plugin installation routes; kept out of `routeRegistry.ts`, which is at its size limit. */
-export function createPluginRouteEntries(plugins: ReturnType<typeof createPluginRoutes>): RouteEntry[] {
+/** Plugin installation and delivery activity routes; kept out of `routeRegistry.ts`, which is at its size limit. */
+export function createPluginRouteEntries(plugins: ReturnType<typeof createPluginRoutes>, activity: ReturnType<typeof createPluginActivityRoutes>): RouteEntry[] {
   const base = PLUGIN_API_BASE;
   return [
     ['get', base, requireManageSettings, plugins.list],
@@ -20,5 +21,8 @@ export function createPluginRouteEntries(plugins: ReturnType<typeof createPlugin
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/start`, requireManageSettings, plugins.startOAuth],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/complete`, requireManageSettings, plugins.completeOAuth],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/disconnect`, requireManageSettings, plugins.disconnectOAuth],
+    ['get', `${base}/:pluginId/activity`, requireManageSettings, activity.list],
+    ['post', `${base}/:pluginId/activity/:deliveryId/retry`, requireManageSettings, activity.retry],
+    ['post', `${base}/:pluginId/resume`, requireManageSettings, activity.resume],
   ];
 }

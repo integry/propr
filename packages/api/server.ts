@@ -3,6 +3,7 @@ import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataList
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
 import { createPluginRouteEntries } from './pluginRouteRegistry.js';
 import { createPluginRoutes } from './routes/pluginRoutes.js';
+import { createPluginActivityRoutes } from './routes/pluginActivityRoutes.js';
 import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
 import { createDefaultStorageService, createInstanceStorageRoutes } from './routes/instanceStorageRoutes.js';
 import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
@@ -515,7 +516,7 @@ export function setupRoutes(): void {
   const routes = [
     ...operationalRoutes,
     ...createStorageRouteEntries(storageRoutes),
-    ...createPluginRouteEntries(createPluginRoutes()),
+    ...createPluginRouteEntries(createPluginRoutes(), createPluginActivityRoutes()),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createManagementRouteEntries({
       adminRoutes,

@@ -10,6 +10,9 @@ import { up as libraryMigration } from '../../src/db/migrations/20261113000000_e
 import { up as oauthMigration } from '../../src/db/migrations/20261113120000_extension_oauth.js';
 import { up as pluginMigration } from '../../src/db/migrations/20261114000000_plugin_installations.js';
 import { up as stateMigration } from '../../src/db/migrations/20261114180000_plugin_state.js';
+import { up as journalMigration } from '../../src/db/migrations/20261112160000_create_repository_events.js';
+import { up as taskDomainMigration } from '../../src/db/migrations/20261114120000_add_task_repository_event_domain.js';
+import { up as deliveriesMigration } from '../../src/db/migrations/20261115000000_plugin_event_deliveries.js';
 import { PluginStore } from '../../src/plugins/pluginStore.js';
 import type { PluginProprBackend } from '../../src/plugins/pluginProprClient.js';
 import type { PluginHttpTransport, PluginHttpTransportRequest } from '../../src/plugins/pluginHttp.js';
@@ -18,7 +21,9 @@ import type { RunPluginHandlerOptions } from '../../src/plugins/pluginHandlerRun
 /** A registry root holding the `fixture-handlers` plugin (and the lint-only `fixture-imports-core` folder). */
 export const FIXTURE_REGISTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'plugins');
 export const FIXTURE_ID = 'fixture-handlers';
-export const fixtureManifest = (): PluginManifest => getOfficialPlugin(FIXTURE_ID, { root: FIXTURE_REGISTRY, includeDevelopment: true })!.manifest;
+/** The event subscription fixture plugin. */
+export const EVENTS_FIXTURE_ID = 'fixture-events';
+export const fixtureManifest = (id = FIXTURE_ID): PluginManifest => getOfficialPlugin(id, { root: FIXTURE_REGISTRY, includeDevelopment: true })!.manifest;
 export const ENVIRONMENT = { SYSTEM_TASK_SECRET: 'plugin-handler-test-root' };
 
 /** Hosts the fake resolver knows: one public, one private. */
@@ -72,19 +77,20 @@ export function recordingBackend() {
  * An in-memory instance with the fixture plugin installed through the real
  * plugin store: `api-token` set (sealed), limited to `owner/allowed`, enabled.
  */
-export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null } = {}) {
+export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string } = {}) {
   const database = extensionTestResources(t).database();
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, stateMigration]) await migrate(database);
-  const manifest = fixtureManifest();
+  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, stateMigration, journalMigration, taskDomainMigration, deliveriesMigration]) await migrate(database);
+  const pluginId = options.pluginId ?? FIXTURE_ID;
+  const manifest = fixtureManifest(pluginId);
   const catalog = async () => [manifest];
   const store = new PluginStore(database, ENVIRONMENT, catalog);
-  await store.install('1', FIXTURE_ID);
-  if (options.secret) await store.setConnection('1', FIXTURE_ID, 'api-token', options.secret);
-  await store.setRepositories('1', FIXTURE_ID, options.repositories === undefined ? ['owner/allowed'] : options.repositories);
-  await store.setEnabled('1', FIXTURE_ID, true);
+  await store.install('1', pluginId);
+  if (options.secret) await store.setConnection('1', pluginId, 'api-token', options.secret);
+  await store.setRepositories('1', pluginId, options.repositories === undefined ? ['owner/allowed'] : options.repositories);
+  await store.setEnabled('1', pluginId, true);
   const { backend, calls } = recordingBackend();
   const http = echoTransport();
   const runOptions: RunPluginHandlerOptions = {
