@@ -22,13 +22,17 @@ export class ExtensionUpstreamUnauthorizedError extends Error { constructor() { 
 export function extensionPublicAddress(address: string): boolean {
   return !isNonPublicAddress(address) && !additional.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4');
 }
+/** Names that resolve to this host, the local network or cloud metadata, whatever DNS says. */
+export function extensionReservedHostname(host: string): boolean {
+  return /^(localhost|.*\.localhost|.*\.local|metadata\.google\.internal)$/i.test(host);
+}
 export function extensionEndpoint(value: string): URL {
   let url: URL; try { url = new URL(value); } catch { throw new Error('Invalid MCP endpoint'); }
   // Query parameters can be credentials; v1 accepts path-only endpoints.
   if (!value.startsWith('https://') || /[?#]/.test(value) || url.protocol !== 'https:' || url.username || url.password || url.hash || url.search || (url.port && url.port !== '443') || value.length > 2048) throw new Error('MCP endpoints require HTTPS without credentials, query parameters or fragments');
   const host = url.hostname.replace(/^\[|\]$/g, '');
   if (isIP(host) && !extensionPublicAddress(host)) throw new Error('MCP endpoint must be public');
-  if (/^(localhost|.*\.localhost|.*\.local|metadata\.google\.internal)$/i.test(host)) throw new Error('MCP endpoint must be public');
+  if (extensionReservedHostname(host)) throw new Error('MCP endpoint must be public');
   return url;
 }
 export type ExtensionLookup = (host: string) => Promise<Array<{ address: string; family: number }>>;

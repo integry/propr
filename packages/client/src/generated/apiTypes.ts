@@ -936,7 +936,7 @@ export interface PluginDetailResponse {
       category: "messaging" | "issue-tracking" | "observability" | "deployment" | "context" | "other";
       homepage: string;
       permissions: Array<{
-        name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send";
+        name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send";
         description: string;
       }>;
       connections: Array<{
@@ -989,7 +989,7 @@ export interface PluginDetailResponse {
       };
       /** Repositories (`owner/repo`) the plugin is limited to; null for all repositories. */
       repositories: string[] | null;
-      grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+      grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
       /** Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names. */
       acknowledgements: {
         [key: string]: {
@@ -1019,7 +1019,7 @@ export interface PluginDetailResponse {
     }>;
     /** The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant. */
     needsApproval: boolean;
-    pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+    pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
     pendingAcknowledgements: {
       server: string;
       package: string;
@@ -1069,7 +1069,7 @@ export interface PluginDetailResponse {
     };
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused";
       actor: string;
       at: number;
       detail: {
@@ -1150,7 +1150,7 @@ export interface PluginView {
     category: "messaging" | "issue-tracking" | "observability" | "deployment" | "context" | "other";
     homepage: string;
     permissions: Array<{
-      name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send";
+      name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send";
       description: string;
     }>;
     connections: Array<{
@@ -1203,7 +1203,7 @@ export interface PluginView {
     };
     /** Repositories (`owner/repo`) the plugin is limited to; null for all repositories. */
     repositories: string[] | null;
-    grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+    grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
     /** Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names. */
     acknowledgements: {
       [key: string]: {
@@ -1233,7 +1233,7 @@ export interface PluginView {
   }>;
   /** The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant. */
   needsApproval: boolean;
-  pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "repositories.read" | "notifications.send">;
+  pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
   pendingAcknowledgements: {
     server: string;
     package: string;

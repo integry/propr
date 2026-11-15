@@ -4,7 +4,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
 import { getStateManager } from '../utils/workerStateManager.js';
-import { isBookkeepingCancellation, type IssueRef, type TaskStateData, type TaskTerminalReason } from '../utils/workerStateManager.types.js';
+import { isBookkeepingCancellation, type TaskStateData, type TaskTerminalReason } from '../utils/workerStateManager.types.js';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
@@ -13,14 +13,10 @@ import { WITHDRAWAL_CLEANUP_KEY, openIssueCleanupStep, releaseWithdrawalCleanup,
 export { releaseWithdrawalCleanup } from './withdrawalCleanup.js';
 import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
 
+import { taskIntentIssueRef, type IntentTarget } from './taskIntentIssueRef.js';
+export { taskIntentIssueRef, type IntentTarget } from './taskIntentIssueRef.js';
+
 export type IntentCancellationReason = 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed';
-export interface IntentTarget {
-    repoOwner: string;
-    repoName: string;
-    number: number;
-    kind: 'issue' | 'pr';
-    triggeringLabel?: string;
-}
 
 export function taskIntentTarget(data: Record<string, unknown>, type = typeof data.type === 'string' ? data.type : undefined): IntentTarget | null {
     // Goals, imports and system maintenance are not issue implementations.
@@ -33,18 +29,6 @@ export function taskIntentTarget(data: Record<string, unknown>, type = typeof da
     const number = pr ?? data.number ?? data.issueNumber;
     if (!repoOwner || !repoName || typeof number !== 'number' || number <= 0) return null;
     return { repoOwner, repoName, number, kind, ...(typeof data.triggeringLabel === 'string' ? { triggeringLabel: data.triggeringLabel } : {}) };
-}
-
-/** Persist only the small reference needed for intent, display and task identity. */
-export function taskIntentIssueRef(data: object, target: IntentTarget): IssueRef {
-    const fields = data as Record<string, unknown>;
-    return {
-        number: target.number, repoOwner: target.repoOwner, repoName: target.repoName,
-        type: target.kind === 'pr' ? 'pr-comment' : 'issue',
-        ...(target.kind === 'pr' ? { pullRequestNumber: target.number } : {}),
-        ...Object.fromEntries(['triggeringLabel', 'modelName', 'agentAlias', 'correlationId'].flatMap(key =>
-            typeof fields[key] === 'string' ? [[key, fields[key]]] : [])),
-    };
 }
 
 async function readCurrentTaskIntent(target: IntentTarget): Promise<CurrentTaskIntent> {

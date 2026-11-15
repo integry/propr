@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "plugins": [
+    { "id": "fixture-handlers", "development": true }
+  ]
+}

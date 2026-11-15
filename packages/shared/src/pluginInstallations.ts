@@ -81,8 +81,13 @@ export interface PluginView {
   /** Managed library items and templates; items are null until the plugin is installed. */
   contributions?: PluginContributionViews;
 }
+/**
+ * One audit trail entry. Management actions name the administrator; `handler_attempt`
+ * (a mutation about to be dispatched), `handler_call` (completed) and `handler_refused`
+ * (refused or failed) record a handler's `ctx.propr` calls with `plugin:<id>` as the actor.
+ */
 export interface PluginAuditEvent { action: PluginAuditAction; actor: string; at: number; detail: Record<string, unknown> }
-export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client'] as const;
+export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'handler_attempt', 'handler_call', 'handler_refused'] as const;
 export type PluginAuditAction = typeof PLUGIN_AUDIT_ACTIONS[number];
 export interface PluginDetail extends PluginView { audit: PluginAuditEvent[] }
 

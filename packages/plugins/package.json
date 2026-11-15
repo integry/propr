@@ -2,15 +2,18 @@
   "name": "@propr/plugins",
   "version": "0.9.1",
   "private": true,
-  "description": "Registry of the official ProPR plugins: manifests and their assets",
+  "description": "Registry of the official ProPR plugins: manifests, assets, handlers and the plugin test kit",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc && tsc -p tsconfig.handlers.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.handlers.json --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@propr/shared": "^0.9.1"

@@ -12,6 +12,7 @@ import { extensionOAuth, type ExtensionOAuthUrls } from '../extensions/extension
 import { discardOAuthConnectionsOf, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
 import { PluginContributions, oauthServersOf, pluginContributionViews, type PluginOAuthClient } from './pluginContributions.js';
 import { pluginTemplateIds } from './pluginTemplates.js';
+import { deletePluginState } from './pluginStateStore.js';
 import {
   PluginError, enableBlockers, installationRecord, nextAcknowledgements, parseAcknowledgements, pendingAcknowledgements, pendingPermissions, pluginView,
   type PluginInstallationRow, type PluginSecretRow,
@@ -305,14 +306,16 @@ export class PluginStore {
     });
   }
 
-  /** Delete the installation, its settings and its connections. `confirm` must repeat the plugin id. The audit trail stays. */
+  /** Delete the installation, its settings, its connections and its handler state (`ctx.state`). `confirm` must repeat the plugin id. The audit trail stays. */
   async uninstall(actor: string, id: unknown, confirm: unknown): Promise<PluginView> {
     return this.write(actor, id, async (trx, loaded, pluginId) => {
       const row = PluginStore.installed(loaded);
       if (confirm !== pluginId) throw new PluginError(400, 'Confirm the uninstall by repeating the plugin id; settings and connections are deleted');
       await trx('plugin_secrets').where({ plugin_id: pluginId }).delete();
+      // The installation row first: a concurrent ctx.state write holds it until it commits (so its row is deleted below) or finds it gone.
       await trx('plugin_installations').where({ plugin_id: pluginId }).delete();
-      return { action: 'uninstall', detail: { version: row.manifest_version } };
+      const state = await deletePluginState(trx, pluginId);
+      return { action: 'uninstall', detail: { version: row.manifest_version, stateKeys: state } };
     });
   }
 
