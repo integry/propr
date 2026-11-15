@@ -15,8 +15,8 @@ integrity check as the [extension library's local package servers](./agent-exten
 :::note Work in progress
 This page describes the plugin **manifest**, the official plugin registry, the
 [Plugins page](#the-plugins-page), the installation API and the
-[handler interface](#handlers). Delivering events to handlers, inbound webhooks
-and commands are added by later releases.
+[handler interface](#handlers) and [event subscriptions](#event-subscriptions).
+Inbound webhooks and commands are added by later releases.
 :::
 
 ## Where plugins live
@@ -109,7 +109,7 @@ defined.
 | `skills` | `{ "name", "path" }`: a skill bundle folder inside the plugin folder. Its `SKILL.md` front matter must use the same `name`. |
 | `automationTemplates` | `{ "id", "path" }`: a template folder in the automation template format. It must pass the same checks as the shipped templates. |
 | `commands` | `{ "name", "description", "permissions" }`. Accepted and validated; not used yet. |
-| `subscriptions` | `{ "event" }`, a dotted event name such as `task.completed`. Accepted and validated; not used yet. |
+| `subscriptions` | `{ "on", "handler", "filter"? }`: deliver a repository event (`<domain>.<type>`, such as `pull_request.merged`) to an exported handler. See [Event subscriptions](#event-subscriptions). Needs the `events.read` permission. |
 | `webhooks` | `{ "name", "description", "connection" }`, where the connection is a `signing_secret`. Accepted and validated; not used yet. |
 
 Names are unique within each list, and command names are unique across all
@@ -232,9 +232,11 @@ Open a card to see the plugin's steps, always in this order, each marked
 Below the steps, **What it added** lists the plugin's managed MCP servers and
 skills, with a link to Skills & MCP servers where they are listed, and its
 automation templates, each with whether it applies now. **Activity** follows
-once the plugin is installed; it lists the events the plugin received and their
-results once plugins receive ProPR events, and until then says there is no
-activity yet.
+once the plugin is installed: each event delivered to the plugin's handlers and
+its result, with **Retry** on a failed delivery (see [Activity](#activity)). A
+plugin whose deliveries keep failing shows **Degraded** next to its state, and
+**Paused** with **Resume deliveries** once deliveries stopped (see
+[Health, Degraded and Resume](#health-degraded-and-resume)).
 
 **Uninstall** is a separate action. Its confirmation lists what is removed:
 the settings and repository limit, each connection and stored credential, the
@@ -541,8 +543,10 @@ The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
 (a [repository journal event](../architecture/repository-event-journal.md)),
 `{ kind: 'webhook', webhook, headers, body, receivedAt }`,
 `{ kind: 'command', command, args, repository, actor }` or
-`{ kind: 'invoke', payload }`. Delivering events, webhooks and commands to
-handlers is added by later releases.
+`{ kind: 'invoke', payload }`. Events are delivered by
+[event subscriptions](#event-subscriptions), with a stable `deliveryId` and the
+`attempt` number. Delivering webhooks and commands to handlers is added by later
+releases.
 
 A call `ctx` refuses throws a `PluginSdkError` with a `code` such as
 `permission_denied`, `repository_not_allowed`, `host_not_allowed`,
@@ -614,3 +618,130 @@ and captured logs. It applies the same permission, repository, host and state
 checks as the real one. `packages/plugins/test/testing.test.ts` uses it on the
 example plugin's `recordEvent` handler.
 
+## Event subscriptions
+
+A plugin with the `events.read` permission can subscribe its handlers to
+[repository journal events](../architecture/repository-event-journal.md):
+
+```json
+"contributes": {
+  "subscriptions": [
+    { "on": "pull_request.merged", "handler": "onMerged" },
+    { "on": "task.completed", "handler": "onTask", "filter": { "payload.kind": ["implementation", "review"] } }
+  ]
+}
+```
+
+```ts
+// handlers.ts
+export const onMerged = definePluginHandler<PluginEventInput>(async ({ event, deliveryId }, ctx) => {
+  if (await ctx.state.get(`posted:${deliveryId}`)) return; // delivered before: do nothing twice
+  await ctx.http('chat-token')('https://api.chat.example/messages', { method: 'POST', json: { text: `#${event.prNumber} merged` } });
+  await ctx.state.set(`posted:${deliveryId}`, true);
+});
+```
+
+`on` is `<domain>.<type>` of a journal event. `handler` is an exported function
+of the plugin's `handlers.ts`. One event can go to several handlers, and one
+handler can take several events. A pair of `on` and `handler` may appear only
+once.
+
+`filter` is optional. Every key must match. A key is an event field
+(`repository`, `entityId`, `prNumber`, `issueNumber`, `planId`, `headSha`) or a
+payload field (`payload.<key>`). A value is a string, number, boolean or `null`,
+or a list of them, which matches any entry. `repository` is compared without
+letter case. Filters only narrow what a subscription receives: the plugin's
+repository limit always applies.
+
+### Events and payloads
+
+Each handler receives `{ kind: 'event', event, deliveryId, attempt }`. `event`
+is the journal event: `seq`, `repository`, `domain`, `type`, `entityId`,
+`prNumber`, `issueNumber`, `planId`, `headSha`, `payload` and `occurredAt`.
+Payloads carry identifiers and short coded values only, never pull request
+bodies, comments, prompts, logs or diffs.
+
+| `on` | When | `payload` |
+| --- | --- | --- |
+| `pull_request.opened` | A pull request was opened | `baseRef`, `draft` |
+| `pull_request.head_changed` | New commits were pushed (`headSha` is the new head) | `previousHeadSha` |
+| `pull_request.review_scored` | A review was scored | `score`, `goal`, `goalReached`, `source`, `cycle`, `reviewerModel` |
+| `pull_request.ultrafix_started` | An Ultrafix loop started | `goal`, `maxCycles`, `workEpoch` |
+| `pull_request.ultrafix_ended` | An Ultrafix loop ended | `outcome`, `finalScore`, `reason`, `workEpoch` |
+| `pull_request.auto_merge_decision` | Auto-merge decided on a head | The auto-merge decision fields |
+| `pull_request.merged` | The pull request was merged | none |
+| `pull_request.closed` | The pull request was closed unmerged | none |
+| `epic_queue.started` | An epic queue started | `issues`, `advanceOn`, `parallel` |
+| `epic_queue.advanced` | The queue moved to the next issue | `fromIssue`, `toIssue`, `cursor` |
+| `epic_queue.blocked` | The queue head is blocked | `headIssue`, `blockedReason` |
+| `epic_queue.completed` | The queue finished | `fromIssue`, `cursor` |
+| `plan_issue.status_changed` | A plan issue changed status | `from`, `to` |
+| `task.queued`, `task.started` | A task was queued, or started running | `taskId`, `kind`, `issueNumber`, `prNumber`, `agent`, `model`, `attempts` |
+| `task.completed`, `task.failed`, `task.cancelled` | A task finished | The `task.queued` fields and `status`, `terminalReason`, `durationMs`, `pullRequest`, `failureCategory` |
+
+The [journal page](../architecture/repository-event-journal.md#event-types)
+describes each field.
+
+### Delivery guarantees and limits
+
+- **At least once.** A delivery can repeat, for example when a worker stops
+  while a handler runs. `deliveryId` (`evt-<seq>-<handler>`) is the same on
+  every attempt, after a restart too, so a handler with side effects should
+  record the ids it has handled (`ctx.state` is meant for this).
+- **In order per repository.** One plugin receives the events of one
+  repository one at a time, in journal order. The next event waits until the
+  current one has succeeded or finally failed. Other repositories go on
+  meanwhile.
+- **30 seconds** per attempt. A handler still running then has failed.
+- **Retries.** A failed attempt is retried after 1 minute, 5 minutes,
+  30 minutes and 2 hours. After the fifth attempt the delivery is marked
+  failed and the next event follows.
+- **No history.** Installing a plugin, or enabling it again, starts its
+  subscriptions at that moment. Earlier events, and events journaled while it
+  was disabled, are not delivered.
+- **Repository limit.** Events of repositories outside the plugin's limit are
+  not delivered.
+- **Retention gaps.** The journal keeps 30 days of events. If events leave the
+  journal before they were delivered (for example while deliveries were
+  paused for a long time), they are skipped and the Activity list records the
+  gap.
+- **Never in the way.** Delivery runs after the event is journaled, in the
+  daemon. A handler that fails, times out or crashes never fails or delays the
+  task, review, merge or queue step that produced the event.
+- **One deliverer.** When several daemons run, only one delivers to a given
+  plugin at a time.
+
+### Health, Degraded and Resume
+
+After 3 failed attempts in a row the plugin is shown as **Degraded** on its
+page, with the last error, and every administrator gets one Inbox
+notification. A successful delivery clears it.
+
+After 10 failed attempts in a row (set `PROPR_PLUGIN_PAUSE_AFTER_FAILURES` to
+change this; it is never below 3) deliveries pause: nothing is delivered to the
+plugin, and new events wait in the journal. **Resume deliveries** on the plugin
+page starts them again; the failure count starts over and waiting retries run
+at once.
+
+### Activity
+
+Each delivery is recorded on the plugin page under **Activity**, newest
+first: the time, the event type and `seq`, the handler, the outcome, the
+duration, the attempt, the error message and the handler's log lines (all
+redacted). Event payloads, handler results and credentials are never stored.
+Records are kept for 14 days and are deleted when the plugin is uninstalled.
+
+**Retry** on a failed delivery gives it one more attempt, with the same
+`deliveryId`, outside the repository's order. While deliveries are paused, the
+retry waits for Resume.
+
+The same records are available to administrators through the API:
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/instance/plugins/v1/:pluginId/activity` | Delivery health and the newest 100 records. |
+| `POST /api/instance/plugins/v1/:pluginId/activity/:id/retry` | Retry a failed delivery (409 otherwise). |
+| `POST /api/instance/plugins/v1/:pluginId/resume` | Resume paused deliveries (409 when not paused). |
+
+Mutations need the same `X-ProPR-Plugins: 1` JSON contract as the other plugin
+routes, and Retry and Resume are recorded in the plugin's audit trail.

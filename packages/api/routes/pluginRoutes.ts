@@ -6,16 +6,13 @@ import { refuseDemoViewer } from '../permissionGuards.js';
 import { extensionOAuthUrls } from './extensionOAuthRoutes.js';
 
 /**
- * Plugin installation state under `/api/instance/plugins/v1`. Every route,
- * reads included, needs a current durable administrator with
- * `instance.manage_settings`; mutations additionally need the
- * preflight-protected JSON contract (`X-ProPR-Plugins: 1`). Connection
- * secrets are write-only: no response carries them. `oauth` connections are
- * signed in through the extension OAuth module: the provider redirects to the
- * extension callback, which completes the sign-in as `oauth/complete` does.
+ * The plugin routes' request wrapper: refuses the demo viewer, a missing user,
+ * anyone but a durable administrator with `instance.manage_settings`, and a
+ * mutation without the preflight-protected JSON contract; answers `no-store`
+ * JSON, and a refusal as `{ error }` with the plugin error's status.
  */
-export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env) {
-  const handle = (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
+export function pluginRouteHandler(store: PluginStore) {
+  return (run: (req: Request, actor: string) => Promise<unknown>): RequestHandler => async (req, res, next) => {
     // Plugins hold sealed per-installation secrets; the demo explains instead of reading them.
     if (isDemoViewer(req.authorization)) return refuseDemoViewer(req, res, next);
     try {
@@ -29,6 +26,19 @@ export function createPluginRoutes(store = new PluginStore(db), environment: Nod
       res.status(error instanceof PluginError ? error.status : 400).json({ error: error instanceof PluginError ? error.message : 'Plugin operation unavailable or invalid' });
     }
   };
+}
+
+/**
+ * Plugin installation state under `/api/instance/plugins/v1`. Every route,
+ * reads included, needs a current durable administrator with
+ * `instance.manage_settings`; mutations additionally need the
+ * preflight-protected JSON contract (`X-ProPR-Plugins: 1`). Connection
+ * secrets are write-only: no response carries them. `oauth` connections are
+ * signed in through the extension OAuth module: the provider redirects to the
+ * extension callback, which completes the sign-in as `oauth/complete` does.
+ */
+export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env) {
+  const handle = pluginRouteHandler(store);
   const body = (req: Request, keys: string[], required: string[] = keys): Record<string, unknown> => {
     const value = req.body as unknown;
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k)) || required.some(k => !Object.hasOwn(value, k))) throw new PluginError(400, 'Invalid plugin request');

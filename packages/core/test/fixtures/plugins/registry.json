@@ -1,6 +1,7 @@
 {
   "version": 1,
   "plugins": [
-    { "id": "fixture-handlers", "development": true }
+    { "id": "fixture-handlers", "development": true },
+    { "id": "fixture-events", "development": true }
   ]
 }

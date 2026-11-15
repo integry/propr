@@ -8,6 +8,7 @@ import { EXAMPLE_SETTINGS, exampleAt, examplePlugin, renderPluginsPage } from '.
 
 vi.mock('../../api/pluginsApi', async importOriginal => ({
   ...(await importOriginal<object>()),
+  getPluginActivity: vi.fn().mockResolvedValue({ health: { state: 'healthy', consecutiveFailures: 0, pauseAfterFailures: 10, lastError: null, lastErrorAt: null, degradedAt: null, pausedAt: null }, deliveries: [] }),
   getPlugin: vi.fn(), installPlugin: vi.fn(), approvePlugin: vi.fn(), setPluginConnection: vi.fn(), setPluginEnabled: vi.fn(),
   setPluginRepositories: vi.fn(), uninstallPlugin: vi.fn(), startPluginOAuth: vi.fn(), disconnectPluginOAuth: vi.fn(),
 }));

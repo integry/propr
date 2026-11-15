@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Plugin Runtime"
 title: "Plugin runtime: handlers and their context"
-description: "How plugin handlers run: the handler SDK, runPluginHandler, the scoped ctx.propr client, outbound HTTP through the endpoint policy, installation state, logging and redaction, and the import rule."
+description: "How plugin handlers run: the handler SDK, runPluginHandler, the event dispatcher (cursors, ordering, retries, lease, health), the scoped ctx.propr client, outbound HTTP through the endpoint policy, installation state, logging and redaction, and the import rule."
 ---
 
 # Plugin runtime
@@ -32,6 +32,9 @@ Ordinary task runs stay one-shot.
 | `ctx.http` | `pluginHttp.ts` on `extensions/endpointPolicy.ts` | Outbound HTTPS. |
 | `ctx.state` | `pluginStateStore.ts`, table `plugin_state` | Installation-scoped key-value store. |
 | Test kit | `packages/plugins/testing` | A fake `ctx` for plugin unit tests. |
+| Event dispatcher | `packages/core/src/plugins/pluginDispatcher.ts`, started by the daemon (`src/daemon/pluginEventDispatch.ts`) | Reads the journal per installation and repository, runs subscribed handlers, retries, holds the lease. |
+| Delivery records | `packages/core/src/plugins/pluginDeliveries.ts`, tables `plugin_dispatch`, `plugin_delivery_cursors`, `plugin_deliveries` | Activity records, health, Retry, Resume, retention, the Degraded notification. |
+| Activity API | `packages/api/routes/pluginActivityRoutes.ts` | `GET …/:pluginId/activity`, `POST …/activity/:id/retry`, `POST …/:pluginId/resume`. |
 
 ## Invocation
 
@@ -61,10 +64,107 @@ for anything the handler left running. A late call to `ctx.propr`, `ctx.http` or
 ignores `ctx.signal` can keep its own timers alive, but it can no longer act
 through ProPR.
 
-The next issues call the runner from the event dispatcher (`PluginEventInput`),
-the inbound webhook route (`PluginWebhookInput`) and commands
-(`PluginCommandInput`). `PluginInvokeInput` carries a JSON payload for direct
-calls and tests.
+The [event dispatcher](#event-dispatcher) calls the runner with
+`PluginEventInput`. Later issues call it from the inbound webhook route
+(`PluginWebhookInput`) and commands (`PluginCommandInput`).
+`PluginInvokeInput` carries a JSON payload for direct calls and tests.
+
+## Event dispatcher
+
+`PluginDispatcher` delivers [journal events](./repository-event-journal.md) to
+the handlers a plugin names in `contributes.subscriptions`. The daemon starts
+one at boot and stops it on shutdown; the hourly maintenance sweep that prunes
+the journal also prunes delivery records. The feature page lists the
+[events, payloads and guarantees](../features/plugins.md#event-subscriptions).
+
+### Reading the journal
+
+The dispatcher only reads the journal. An append notifies it in the same
+process (`subscribeRepositoryEventAppends`), and it polls every 5 seconds for
+appends from other processes. Nothing that appends an event waits for a
+delivery, so a handler can never fail or delay the step that produced the
+event.
+
+Each pass looks at every enabled installation whose current manifest has
+subscriptions and that holds `events.read`. For each one:
+
+1. `plugin_dispatch` holds `start_seq`, the journal's highest `seq` when the
+   plugin was installed or last enabled. Only later events are delivered. An
+   installation without a row (or with a row of an earlier installation)
+   starts at the journal's end.
+2. The repositories with events after `start_seq` are read, minus those outside
+   the repository limit. Each has a cursor in `plugin_delivery_cursors`: the
+   last `seq` whose deliveries are final.
+3. For each repository, the events after the cursor are read in `seq` order
+   (50 per pass). Each event goes to every subscription whose `on` and
+   `filter` match it, in manifest order. A delivery gets a record in
+   `plugin_deliveries` the first time it is seen, keyed by its delivery id
+   `evt-<seq>-<handler>`.
+4. When every delivery of an event is final (succeeded or failed), the cursor
+   moves past it. A delivery waiting for a retry stops that repository until the
+   retry is due; other repositories and other plugins go on. Installations are
+   delivered side by side.
+
+Before the events, failed deliveries an administrator retried get their one
+extra attempt.
+
+### Attempts and retries
+
+An attempt marks the record `running`, increments `attempt`, and calls
+`runPluginHandler` with `{ kind: 'event', event, deliveryId, attempt }` and the
+30 second limit. The runner never throws. The outcome, duration, redacted error
+and redacted log lines (at most 100 lines and 64 KiB) are written to the record.
+A failed attempt becomes `retrying` with `next_attempt_at` 1 minute, 5 minutes,
+30 minutes and 2 hours later (`PLUGIN_DELIVERY_RETRY_DELAYS_MS`); the fifth
+failure is final (`failed`). A manual retry (`pending` with attempts made) gets
+one attempt.
+
+### Lease
+
+Several daemons may run against one database. Only one delivers to a given
+installation: the holder of its lease, `lease_owner` and `lease_expires_at` on
+the `plugin_dispatch` row. ProPR runs on SQLite only, so the lease is this row
+with an expiry, not a database lock. A dispatcher takes the lease with one
+conditional `UPDATE` (free, expired or already its own) and renews it before
+every attempt. The lease lasts 2 minutes, longer than an attempt can run. On
+shutdown the dispatcher hands its leases back.
+
+The outcome of an attempt is written only while the dispatcher still holds the
+lease. A dispatcher that stalled past its lease writes nothing; the new holder
+finds the record still `running` and delivers it again with the same delivery
+id. This is why delivery is at least once.
+
+### Gaps
+
+Retention deletes journal events after 30 days and records each repository's
+floor (`getRepositoryEventFloor`). When a cursor is below the floor, events may
+have gone undelivered: the dispatcher records one `gap` record (status
+`skipped`, from the cursor to the floor) and goes on with the events that are
+left. `floor_seq` on the cursor keeps it from recording the same gap twice.
+
+### Health
+
+`plugin_dispatch` also counts consecutive failed attempts. A success resets the
+count and clears Degraded. At 3 (`PLUGIN_DEGRADED_AFTER_FAILURES`) the
+installation becomes Degraded: `degraded_at` is set, and every durable
+administrator gets one `system_failure` Inbox notification (component
+`plugins.dispatcher`, deduplicated by installation and the time it became
+Degraded). At `PROPR_PLUGIN_PAUSE_AFTER_FAILURES` (default 10, at least 3)
+`paused_at` is set and the dispatcher skips the installation. Resume clears
+both, resets the count and makes waiting retries due.
+
+Installing a plugin, or enabling it again, restarts its dispatch state at the
+journal's end; deliveries left unfinished are marked failed. Uninstalling
+deletes the dispatch state, the cursors and the records.
+
+### What is stored
+
+A delivery record holds the plugin id, delivery id, kind, repository, event
+`seq` and `<domain>.<type>`, handler, status, attempt, times, duration, the
+timeout flag, and the latest attempt's redacted error and log lines. It never
+holds the event payload, the handler's result or a credential. Records are
+kept for 14 days (`PLUGIN_DELIVERY_RETENTION_DAYS`); pending and retrying
+records are kept until they finish.
 
 ## `ctx.propr`: the scoped client
 

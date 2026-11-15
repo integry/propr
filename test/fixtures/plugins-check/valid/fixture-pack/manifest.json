@@ -21,6 +21,6 @@
     "skills": [{ "name": "fixture-skill", "path": "skills/fixture-skill" }],
     "automationTemplates": [{ "id": "fixture-report", "path": "templates/fixture-report" }],
     "commands": [{ "name": "status", "description": "Show the status" }],
-    "subscriptions": [{ "event": "task.completed" }]
+    "subscriptions": [{ "on": "task.completed", "handler": "onTaskCompleted" }]
   }
 }

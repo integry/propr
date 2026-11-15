@@ -5,6 +5,7 @@ import { EXAMPLE_DEFAULTS, exampleAt, renderPluginsPage } from './pluginFixtures
 
 vi.mock('../../api/pluginsApi', async importOriginal => ({
   ...(await importOriginal<object>()),
+  getPluginActivity: vi.fn().mockResolvedValue({ health: { state: 'healthy', consecutiveFailures: 0, pauseAfterFailures: 10, lastError: null, lastErrorAt: null, degradedAt: null, pausedAt: null }, deliveries: [] }),
   getPlugin: vi.fn(), approvePlugin: vi.fn(), setPluginSettings: vi.fn(), setPluginEnabled: vi.fn(),
 }));
 vi.mock('../../api/proprApi', () => ({ getInstanceCatalog: vi.fn().mockResolvedValue({ agents: [], repositories: [{ name: 'acme/web' }] }) }));
@@ -96,8 +97,9 @@ describe('Plugin settings and approval', () => {
     expect(screen.queryByTestId('plugin-approval-permissions')).toBeNull();
   });
 
-  it('shows the activity placeholder once installed', async () => {
+  it('shows the empty activity list once installed', async () => {
     await open(exampleAt('installed'));
+    expect(await screen.findByText(/No activity yet/)).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Activity' })).toHaveTextContent('No activity yet');
   });
 });

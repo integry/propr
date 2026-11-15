@@ -138,7 +138,13 @@ export interface PluginContext {
 }
 
 /** Handler input envelopes. The dispatcher, webhook route and commands each build one. */
-export interface PluginEventInput { kind: 'event'; event: RepositoryEvent }
+/**
+ * A journal event delivered to a subscribed handler. Delivery is at least
+ * once: `deliveryId` is the same on every attempt (and after a worker
+ * restart), so a handler with side effects can de-duplicate on it. `attempt`
+ * counts from 1.
+ */
+export interface PluginEventInput { kind: 'event'; event: RepositoryEvent; deliveryId: string; attempt: number }
 export interface PluginWebhookInput { kind: 'webhook'; webhook: string; headers: Record<string, string>; body: string; receivedAt: number }
 export interface PluginCommandInput { kind: 'command'; command: string; args: string; repository: string | null; actor: string }
 export interface PluginInvokeInput { kind: 'invoke'; payload: PluginJsonValue }

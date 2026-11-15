@@ -677,6 +677,9 @@ export * from './services/reviewScoreStore.js';
 export * from './services/pullRequestStatus/index.js';
 // Durable repository change-event journal (pull requests, epic queues, plan issues).
 export * from './services/repositoryEventJournal.js';
+// Plugin event subscriptions: the journal dispatcher and its delivery records.
+export { PluginDispatcher, type PluginDispatcherOptions, type PluginDispatchPass } from './plugins/pluginDispatcher.js';
+export { prunePluginDeliveries } from './plugins/pluginDeliveries.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

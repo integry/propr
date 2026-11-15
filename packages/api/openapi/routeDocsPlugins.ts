@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import {
   PluginAcknowledgementRequest, PluginConnectionRequest, PluginDetailResponse, PluginEnabledRequest, PluginList, PluginRepositoriesRequest, PluginResponse,
   PluginSettingsRequest, PluginUninstallRequest, PluginEmptyRequest, PluginOAuthClientRequest, PluginOAuthCompleteRequest, PluginOAuthStartResponse,
+  PluginActivityResponse, PluginDeliveryResponse, PluginHealthResponse,
 } from './schemasPlugins.js';
 import type { RouteDoc } from './types.js';
 
@@ -39,5 +40,15 @@ export const PLUGIN_ROUTE_DOCS: Record<string, RouteDoc> = {
     pathParams: oauthParams, responses: { 200: { description: 'The authorization URL to open.', schema: PluginOAuthStartResponse } },
   }),
   [`POST ${BASE}/:pluginId/connections/:connectionName/oauth/complete`]: mutation('completePluginOAuth', 'Complete a sign-in of this connection with the state and code the provider returned, in the session that started it. The extension OAuth callback completes it too.', PluginOAuthCompleteRequest, { pathParams: oauthParams }),
+  [`GET ${BASE}/:pluginId/activity`]: {
+    operationId: 'getPluginActivity', summary: 'Read the plugin\'s event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records: time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days.', description, tags: ['Configuration'],
+    pathParams: pluginId, responses: { 200: { description: 'Health and delivery records, newest first.', schema: PluginActivityResponse } },
+  },
+  [`POST ${BASE}/:pluginId/activity/:deliveryId/retry`]: mutation('retryPluginDelivery', 'Retry a failed event delivery: it gets one more attempt, with the same delivery id, the next time the dispatcher runs (after Resume while deliveries are paused). Refused (409) for a delivery that has not failed.', PluginEmptyRequest, {
+    pathParams: { ...pluginId, deliveryId: 'The activity record id (`id` of a delivery).' }, responses: { 200: { description: 'The delivery, pending again.', schema: PluginDeliveryResponse } },
+  }),
+  [`POST ${BASE}/:pluginId/resume`]: mutation('resumePluginDeliveries', 'Resume event deliveries paused after repeated failures: the failure count starts over, Degraded clears and waiting retries are due at once. Refused (409) when deliveries are not paused.', PluginEmptyRequest, {
+    responses: { 200: { description: 'The new delivery health.', schema: PluginHealthResponse } },
+  }),
   [`POST ${BASE}/:pluginId/connections/:connectionName/oauth/disconnect`]: mutation('disconnectPluginOAuth', 'Disconnect an `oauth` connection: its managed servers\' tokens are revoked where possible and deleted, and later runs leave the servers out.', PluginEmptyRequest, { pathParams: oauthParams }),
 };

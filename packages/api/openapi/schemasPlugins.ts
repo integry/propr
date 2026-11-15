@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { PLUGIN_AUDIT_ACTIONS, PLUGIN_CATEGORIES, PLUGIN_CONNECTION_TYPES, PLUGIN_PERMISSIONS } from '@propr/shared';
+import {
+  PLUGIN_AUDIT_ACTIONS, PLUGIN_CATEGORIES, PLUGIN_CONNECTION_TYPES, PLUGIN_DELIVERY_KINDS, PLUGIN_DELIVERY_STATUSES, PLUGIN_HEALTH_STATES, PLUGIN_PERMISSIONS,
+} from '@propr/shared';
 import { component } from './schemas.js';
 
 /** OpenAPI schemas of the plugin installation routes. Connection secrets never appear in any response. */
@@ -83,3 +85,29 @@ export const PluginOAuthCompleteRequest = component('PluginOAuthCompleteRequest'
   state: z.string().describe('The `state` the provider returned to the redirect URI.'), code: z.string().optional(), error: z.string().optional(), iss: z.string().optional(),
 }));
 export const PluginOAuthStartResponse = component('PluginOAuthStartResponse', z.object({ authorizationUrl: z.string().describe('Open this URL to sign in; the provider redirects to the extension OAuth callback.'), server: z.string().describe('The managed library server being signed in.') }));
+
+const PluginLogLine = z.object({ level: z.enum(['debug', 'info', 'warn', 'error']), message: z.string(), fields: z.record(z.string(), z.unknown()).optional(), at: z.number() });
+export const PluginDelivery = component('PluginDelivery', z.object({
+  id: z.number().int().describe('The activity record id, used by the retry route.'),
+  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`); the same on every attempt.'),
+  kind: z.enum(PLUGIN_DELIVERY_KINDS).describe('`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered.'),
+  repository: z.string(),
+  eventSeq: z.number().int().describe('The journal `seq` of the event; for a gap, the first `seq` that may be missing.'),
+  eventType: z.string().nullable().describe('`<domain>.<type>`; null for a gap.'),
+  handler: z.string().nullable(),
+  status: z.enum(PLUGIN_DELIVERY_STATUSES),
+  attempt: z.number().int().describe('Attempts made so far.'),
+  nextAttemptAt: z.number().nullable().describe('When the next attempt is due, while pending or retrying.'),
+  createdAt: z.number(), startedAt: z.number().nullable(), finishedAt: z.number().nullable(), durationMs: z.number().nullable(),
+  timedOut: z.boolean(),
+  error: z.string().nullable().describe('The latest attempt\'s redacted error message.'),
+  logs: z.array(PluginLogLine).describe('The latest attempt\'s redacted log lines.'),
+}), 'One event delivery to a plugin handler, or a recorded gap. Holds the event id and type only: never the event payload or a credential.');
+export const PluginHealth = component('PluginHealth', z.object({
+  state: z.enum(PLUGIN_HEALTH_STATES).describe('`degraded` after repeated consecutive failures; `paused` after the configured number of them, until an administrator resumes deliveries.'),
+  consecutiveFailures: z.number().int(), pauseAfterFailures: z.number().int(),
+  lastError: z.string().nullable(), lastErrorAt: z.number().nullable(), degradedAt: z.number().nullable(), pausedAt: z.number().nullable(),
+}), 'Delivery health of a plugin installation.');
+export const PluginActivityResponse = component('PluginActivityResponse', z.object({ health: PluginHealth, deliveries: z.array(PluginDelivery).describe('The newest 100 delivery records, newest first.') }));
+export const PluginDeliveryResponse = component('PluginDeliveryResponse', z.object({ delivery: PluginDelivery }));
+export const PluginHealthResponse = component('PluginHealthResponse', z.object({ health: PluginHealth }));

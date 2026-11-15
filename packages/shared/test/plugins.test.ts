@@ -39,7 +39,7 @@ const valid = (): PluginManifestInput => ({
     skills: [{ name: 'acme-style', path: 'skills/acme-style' }],
     automationTemplates: [{ id: 'acme-digest', path: 'templates/acme-digest' }],
     commands: [{ name: 'notify', description: 'Post a message', permissions: ['pull_requests.read'] }],
-    subscriptions: [{ event: 'task.completed' }],
+    subscriptions: [{ on: 'task.completed', handler: 'onTask' }],
     webhooks: [{ name: 'events', description: 'Acme event callbacks', connection: 'events-secret' }],
   },
 });
@@ -109,7 +109,7 @@ test('duplicate names are refused in every section', () => {
   rejects(variant(m => { m.contributes.automationTemplates.push({ id: 'acme-digest', path: 'x' }); }), /Duplicate automation template id acme-digest/);
   rejects(variant(m => { m.contributes.commands.push({ name: 'notify', description: 'Again' }); }), /Duplicate command name notify/);
   rejects(variant(m => { m.contributes.webhooks.push({ ...m.contributes.webhooks[0] }); }), /Duplicate webhook name events/);
-  rejects(variant(m => { m.contributes.subscriptions.push({ event: 'task.completed' }); }), /Duplicate subscription task\.completed/);
+  rejects(variant(m => { m.contributes.subscriptions.push({ on: 'task.completed', handler: 'onTask' }); }), /Duplicate subscription task\.completed → onTask/);
   rejects(variant(m => { m.outboundHosts.push('api.acme.example.com'); }), /Duplicate outbound host/);
 });
 
@@ -159,4 +159,16 @@ test('the public projection leaves out package launch details', () => {
   assert.equal(JSON.stringify(projection).includes('ACME_REGION'), false);
   assert.deepEqual(projection.contributes.skills, ['acme-style']);
   assert.deepEqual(projection.contributes.commands, [{ name: 'notify', description: 'Post a message' }]);
+});
+
+test('subscriptions name a journal event, a handler and an optional equality filter', () => {
+  const ok = variant(m => { m.contributes.subscriptions = [{ on: 'pull_request.merged', handler: 'onMerged', filter: { repository: 'Owner/Repo', 'payload.kind': ['implementation', 'review'] } }]; });
+  const parsed = pluginManifestSchema.safeParse(ok);
+  assert.ok(parsed.success, parsed.success ? '' : parsed.error.message);
+  rejects(variant(m => { m.contributes.subscriptions = [{ on: 'pull_request.exploded', handler: 'onMerged' }]; }), /repository event name/);
+  rejects(variant(m => { m.contributes.subscriptions = [{ on: 'task', handler: 'onTask' }]; }), /repository event name/);
+  rejects(variant(m => { m.contributes.subscriptions = [{ on: 'task.completed', handler: 'not-an-identifier' }]; }), /exported handler/);
+  rejects(variant(m => { m.contributes.subscriptions = [{ on: 'task.completed', handler: 'onTask', filter: { body: 'x' } }]; }), /Filter keys/);
+  rejects(variant(m => { m.contributes.subscriptions = [{ on: 'task.completed', handler: 'onTask', filter: { 'payload.kind': { nested: true } } }]; }), /filter/);
+  rejects(variant(m => { m.contributes.subscriptions = [{ event: 'task.completed' }]; }), /subscriptions/);
 });

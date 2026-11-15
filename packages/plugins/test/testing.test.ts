@@ -7,6 +7,7 @@ import { recordEvent } from '../example-pack/handlers.js';
 const event = (overrides: Partial<RepositoryEvent> = {}): PluginEventInput => ({
   kind: 'event',
   event: { seq: 4, repository: 'owner/repo', domain: 'task', type: 'completed', entityId: 'task-9', prNumber: null, issueNumber: 2, planId: null, headSha: null, payload: {}, occurredAt: '', ...overrides },
+  deliveryId: `evt-${overrides.seq ?? 4}-recordEvent`, attempt: 1,
 });
 
 test('the test kit runs a handler with recorded propr calls, in-memory state and captured logs', async () => {
