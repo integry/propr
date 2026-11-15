@@ -24,7 +24,7 @@ export interface PluginDispatchRow {
 /** A `plugin_deliveries` row as stored. */
 export interface PluginDeliveryRow {
   id: number; plugin_id: string; delivery_id: string; kind: PluginDeliveryKind; repository: string; event_seq: number | string;
-  event_type: string | null; handler: string | null; status: PluginDeliveryStatus; attempt: number; next_attempt_at: number | string | null;
+  event_type: string | null; handler: string | null; status: PluginDeliveryStatus; attempt: number; manual: number | boolean; next_attempt_at: number | string | null;
   created_at: number | string; started_at: number | string | null; finished_at: number | string | null; duration_ms: number | null;
   timed_out: number | boolean; error: string | null; logs: string;
 }
@@ -128,8 +128,8 @@ export async function retryPluginDelivery(database: Knex, pluginId: string, id: 
     const row = await trx('plugin_deliveries').where({ plugin_id: pluginId, id: recordId }).first() as PluginDeliveryRow | undefined;
     if (!row) throw new PluginError(404, 'Delivery not found');
     if (row.kind !== 'event' || row.status !== 'failed') throw new PluginError(409, 'Only a failed event delivery can be retried');
-    // `pending` with attempts made is a manual retry: one attempt, then final.
-    await trx('plugin_deliveries').where({ id: recordId }).update({ status: 'pending', next_attempt_at: now });
+    // A manual retry: one attempt, then final; `manual` lets a dispatcher recover it after a crash mid-attempt.
+    await trx('plugin_deliveries').where({ id: recordId, status: 'failed' }).update({ status: 'pending', manual: true, next_attempt_at: now });
     await audit(trx, pluginId, 'retry_delivery', actor, now, { deliveryId: row.delivery_id, eventSeq: Number(row.event_seq), handler: row.handler });
     return deliveryView({ ...row, status: 'pending', next_attempt_at: now });
   });
@@ -174,7 +174,7 @@ export async function restartPluginDispatch(trx: Knex, pluginId: string, install
   }).onConflict('plugin_id').merge();
   // Deliveries that never finished would otherwise run after the restart: they belong to before it.
   await trx('plugin_deliveries').where({ plugin_id: pluginId }).whereIn('status', ['pending', 'running', 'retrying'])
-    .update({ status: 'failed', next_attempt_at: null, error: 'Not delivered: the plugin was disabled' });
+    .update({ status: 'failed', manual: false, next_attempt_at: null, error: 'Not delivered: the plugin was disabled' });
 }
 
 /** Delete the dispatch state and delivery records of an installation (uninstall). */

@@ -13,7 +13,8 @@
 // `plugin_deliveries` records each delivery (one journal event to one handler)
 // and each gap: status, attempts, the latest attempt's duration, redacted
 // error and log lines. The event payload is never stored, only its `seq` and
-// type. Rows are pruned after a retention period.
+// type. `manual` marks an administrator's Retry until its one attempt is
+// final. Rows are pruned after a retention period.
 
 export async function up(knex) {
   if (!await knex.schema.hasTable('plugin_dispatch')) {
@@ -54,6 +55,8 @@ export async function up(knex) {
       t.string('handler');
       t.string('status').notNullable();
       t.integer('attempt').notNullable().defaultTo(0);
+      // An administrator's Retry: one attempt, out of the stream's order; recovered after a crash until it is final.
+      t.boolean('manual').notNullable().defaultTo(false);
       t.bigInteger('next_attempt_at');
       t.bigInteger('created_at').notNullable();
       t.bigInteger('started_at');

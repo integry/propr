@@ -92,8 +92,11 @@ subscriptions and that holds `events.read`. For each one:
    plugin was installed or last enabled. Only later events are delivered. An
    installation without a row (or with a row of an earlier installation)
    starts at the journal's end.
-2. The repositories with events after `start_seq` are read, minus those outside
-   the repository limit. Each has a cursor in `plugin_delivery_cursors`: the
+2. The repositories to visit are those with events after `start_seq`, those
+   with unfinished deliveries, and those whose journal floor moved past
+   `start_seq` and past what their cursor last recorded (so a repository that
+   retention emptied is still visited), minus those outside the repository
+   limit. Each has a cursor in `plugin_delivery_cursors`: the
    last `seq` whose deliveries are final.
 3. For each repository, the events after the cursor are read in `seq` order
    (50 per pass). Each event goes to every subscription whose `on` and
@@ -106,18 +109,24 @@ subscriptions and that holds `events.read`. For each one:
    delivered side by side.
 
 Before the events, failed deliveries an administrator retried get their one
-extra attempt.
+extra attempt. A retry is marked `manual` until that attempt is final, so one
+a crashed worker left `running` gets its attempt again from the next lease
+holder, with the same delivery id.
 
 ### Attempts and retries
 
 An attempt marks the record `running`, increments `attempt`, and calls
 `runPluginHandler` with `{ kind: 'event', event, deliveryId, attempt }` and the
-30 second limit. The runner never throws. The outcome, duration, redacted error
+30 second limit. Before each attempt the dispatcher renews its lease and reads
+the installation again: an installation that is paused, disabled, enabled
+again since the pass began, or no longer granted `events.read` ends the pass,
+and so does an event outside the current repository limit (a manual retry of
+one is marked failed instead). The handler gets the installation as it is now.
+An attempt that pauses the installation ends the pass too. The runner never throws. The outcome, duration, redacted error
 and redacted log lines (at most 100 lines and 64 KiB) are written to the record.
 A failed attempt becomes `retrying` with `next_attempt_at` 1 minute, 5 minutes,
 30 minutes and 2 hours later (`PLUGIN_DELIVERY_RETRY_DELAYS_MS`); the fifth
-failure is final (`failed`). A manual retry (`pending` with attempts made) gets
-one attempt.
+failure is final (`failed`). A manual retry gets one attempt.
 
 ### Lease
 
@@ -141,6 +150,8 @@ floor (`getRepositoryEventFloor`). When a cursor is below the floor, events may
 have gone undelivered: the dispatcher records one `gap` record (status
 `skipped`, from the cursor to the floor) and goes on with the events that are
 left. `floor_seq` on the cursor keeps it from recording the same gap twice.
+Unfinished deliveries of events that are no longer in the journal become
+`skipped`. Unexpired events below the floor are still delivered.
 
 ### Health
 

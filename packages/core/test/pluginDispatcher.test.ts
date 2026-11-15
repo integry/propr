@@ -1,4 +1,4 @@
-import test, { mock, type TestContext } from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { PLUGIN_DELIVERY_RETRY_DELAYS_MS, type PluginHandlerRun } from '@propr/shared';
 
@@ -9,51 +9,13 @@ import { PLUGIN_DELIVERY_RETRY_DELAYS_MS, type PluginHandlerRun } from '@propr/s
  * event (no Redis in tests).
  */
 await mock.module('../src/utils/eventPublisher.js', { namedExports: { getEventPublisher: () => ({ publishActivity: async () => true }) } });
-const { pluginHandlerFixture, EVENTS_FIXTURE_ID: ID } = await import('./helpers/pluginHandlerFixture.js');
-const { PluginDispatcher } = await import('../src/plugins/pluginDispatcher.js');
+const { EVENTS_FIXTURE_ID: ID } = await import('./helpers/pluginHandlerFixture.js');
+const { ALLOWED, SECOND, drain, setup } = await import('./helpers/pluginDispatcherFixture.js');
 const { listPluginActivity, prunePluginDeliveries, resumePluginDeliveries, retryPluginDelivery } = await import('../src/plugins/pluginDeliveries.js');
 const { appendRepositoryEvent, pruneRepositoryEvents } = await import('../src/services/repositoryEventJournal.js');
 const { recordPullRequestOutcome } = await import('../src/services/reviewScoreStore.js');
 const { up: pullRequestStateMigration } = await import('../src/db/migrations/20260829010000_add_notification_pull_request_state.js');
 const { up: reviewScoresMigration } = await import('../src/db/migrations/20261006000000_create_review_scores.js');
-
-type Fixture = Awaited<ReturnType<typeof pluginHandlerFixture>>;
-type Seen = { id: string; seq: number; repository: string; attempt: number }[];
-const ALLOWED = 'owner/allowed';
-const SECOND = 'owner/second';
-
-async function setup(t: TestContext) {
-  const f = await pluginHandlerFixture(t, { pluginId: ID, repositories: [ALLOWED, SECOND] });
-  const clock = { now: 1_700_000_000_000 };
-  const notices: unknown[] = [];
-  const dispatcher = (extra: Partial<ConstructorParameters<typeof PluginDispatcher>[0]> = {}) => new PluginDispatcher({
-    ...f.options, now: () => clock.now, timeoutMs: 200, pauseAfterFailures: 100, notify: async notice => { notices.push(notice); }, ...extra,
-  });
-  const append = async (repository: string, domain: 'pull_request' | 'task', type: string, entityId: number | string, payload: Record<string, unknown> = {}) => {
-    const result = await appendRepositoryEvent(f.database, { repository, domain, type, entityId, ...(domain === 'pull_request' ? { prNumber: Number(entityId) } : {}), payload }, { publish: false });
-    assert.equal(result.status, 'appended');
-    return (result as { seq: number }).seq;
-  };
-  const state = async <T>(key: string) => {
-    const row = await f.database('plugin_state').where({ plugin_id: ID, state_key: key }).first() as { value: string } | undefined;
-    return row ? JSON.parse(row.value) as T : undefined;
-  };
-  const setState = (key: string, value: unknown) => f.database('plugin_state').insert({ plugin_id: ID, state_key: key, value: JSON.stringify(value), bytes: 8, updated_at: 0 }).onConflict(['plugin_id', 'state_key']).merge();
-  const seen = async () => (await state<Seen>('seen')) ?? [];
-  const deliveries = async () => (await listPluginActivity(f.database, ID)).deliveries;
-  return { f, clock, notices, dispatcher, append, seen, setState, deliveries };
-}
-
-/** Passes until one makes no attempt. */
-async function drain(dispatcher: InstanceType<typeof PluginDispatcher>) {
-  let total = 0;
-  for (let i = 0; i < 20; i++) {
-    const { attempts } = await dispatcher.pass();
-    if (!attempts) return total;
-    total += attempts;
-  }
-  throw new Error('the dispatcher did not settle');
-}
 
 test('a subscribed handler runs once per matching event, in order per repository, with filters and the repository limit honoured', async t => {
   const s = await setup(t);

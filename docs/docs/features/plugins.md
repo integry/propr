@@ -700,7 +700,8 @@ describes each field.
   subscriptions at that moment. Earlier events, and events journaled while it
   was disabled, are not delivered.
 - **Repository limit.** Events of repositories outside the plugin's limit are
-  not delivered.
+  not delivered. A change to the limit, disabling the plugin or revoking
+  `events.read` applies from the next delivery, even within a batch.
 - **Retention gaps.** The journal keeps 30 days of events. If events leave the
   journal before they were delivered (for example while deliveries were
   paused for a long time), they are skipped and the Activity list records the
@@ -733,7 +734,8 @@ Records are kept for 14 days and are deleted when the plugin is uninstalled.
 
 **Retry** on a failed delivery gives it one more attempt, with the same
 `deliveryId`, outside the repository's order. While deliveries are paused, the
-retry waits for Resume.
+retry waits for Resume. A retried delivery of a repository now outside the
+plugin's limit is not delivered; it is marked failed again.
 
 The same records are available to administrators through the API:
 
