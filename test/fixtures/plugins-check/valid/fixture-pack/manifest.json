@@ -20,7 +20,7 @@
     ],
     "skills": [{ "name": "fixture-skill", "path": "skills/fixture-skill" }],
     "automationTemplates": [{ "id": "fixture-report", "path": "templates/fixture-report" }],
-    "commands": [{ "name": "status", "description": "Show the status" }],
+    "commands": [{ "name": "status", "description": "Show the status", "where": ["pull_request"], "kind": "prompt", "prompt": "Report the status of the pull request." }],
     "subscriptions": [{ "on": "task.completed", "handler": "onTaskCompleted" }]
   }
 }

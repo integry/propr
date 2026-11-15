@@ -38,7 +38,7 @@ const valid = (): PluginManifestInput => ({
     ],
     skills: [{ name: 'acme-style', path: 'skills/acme-style' }],
     automationTemplates: [{ id: 'acme-digest', path: 'templates/acme-digest' }],
-    commands: [{ name: 'notify', description: 'Post a message', permissions: ['pull_requests.read'] }],
+    commands: [{ name: 'notify', description: 'Post a message', where: ['pull_request'], kind: 'prompt', prompt: 'Summarise the pull request for the team.', skills: ['acme-style'], servers: ['acme'], permissions: ['pull_requests.read'] }],
     subscriptions: [{ on: 'task.completed', handler: 'onTask' }],
     webhooks: [{ name: 'events', description: 'Acme event callbacks', handler: 'onAcmeEvent', verification: { scheme: 'hmac-sha256', header: 'X-Acme-Signature', prefix: 'sha256=', connection: 'events-secret' }, deliveryIdHeader: 'x-acme-delivery' }],
   },
@@ -130,7 +130,7 @@ test('duplicate names are refused in every section', () => {
   rejects(variant(m => { m.contributes.mcpServers[1].name = 'acme'; }), /Duplicate server name acme/);
   rejects(variant(m => { m.contributes.skills.push({ name: 'acme-style', path: 'skills/other' }); }), /Duplicate skill name acme-style/);
   rejects(variant(m => { m.contributes.automationTemplates.push({ id: 'acme-digest', path: 'x' }); }), /Duplicate automation template id acme-digest/);
-  rejects(variant(m => { m.contributes.commands.push({ name: 'notify', description: 'Again' }); }), /Duplicate command name notify/);
+  rejects(variant(m => { m.contributes.commands.push({ ...m.contributes.commands[0], description: 'Again' }); }), /Duplicate command name notify/);
   rejects(variant(m => { m.contributes.webhooks.push({ ...m.contributes.webhooks[0] }); }), /Duplicate webhook name events/);
   rejects(variant(m => { m.contributes.subscriptions.push({ on: 'task.completed', handler: 'onTask' }); }), /Duplicate subscription task\.completed → onTask/);
   rejects(variant(m => { m.outboundHosts.push('api.acme.example.com'); }), /Duplicate outbound host/);
@@ -181,7 +181,27 @@ test('the public projection leaves out package launch details', () => {
   assert.equal(JSON.stringify(projection).includes(INTEGRITY), false);
   assert.equal(JSON.stringify(projection).includes('ACME_REGION'), false);
   assert.deepEqual(projection.contributes.skills, ['acme-style']);
-  assert.deepEqual(projection.contributes.commands, [{ name: 'notify', description: 'Post a message' }]);
+  assert.deepEqual(projection.contributes.commands, [{ name: 'notify', description: 'Post a message', where: ['pull_request'], kind: 'prompt', skills: ['acme-style'], servers: ['acme'], needsWrite: false }]);
+  assert.equal(JSON.stringify(projection).includes('Summarise the pull request'), false, 'the prompt text is not public');
+});
+
+test('commands are lower-case, never shadow a built-in command and add only their own read contributions', () => {
+  const parsed = pluginManifestSchema.parse(valid());
+  assert.equal(parsed.contributes.commands[0].needsWrite, false);
+  for (const name of ['review', 'fix', 'merge', 'switch', 'use', 'ultrafix']) {
+    rejects(variant(m => { m.contributes.commands[0].name = name; }), new RegExp(`contributes\\.commands\\.0\\.name: /${name} is a built-in ProPR command`));
+  }
+  rejects(variant(m => { m.contributes.commands[0].name = 'Deploy'; }), /contributes\.commands\.0\.name: Command names are lower-case/);
+  rejects(variant(m => { m.contributes.commands[0].name = 'de_ploy'; }), /Command names are lower-case/);
+  rejects(variant(m => { m.contributes.commands[0].where = []; }), /contributes\.commands\.0\.where/);
+  rejects(variant(m => { m.contributes.commands[0].where = ['discussion']; }), /contributes\.commands\.0\.where\.0/);
+  rejects(variant(m => { m.contributes.commands[0].where = ['issue', 'issue']; }), /Command notify lists issue more than once/);
+  rejects(variant(m => { m.contributes.commands[0].kind = 'handler'; }), /contributes\.commands\.0\.kind/);
+  rejects(variant(m => { delete m.contributes.commands[0].prompt; }), /contributes\.commands\.0\.prompt/);
+  rejects(variant(m => { m.contributes.commands[0].skills = ['other-skill']; }), /Command notify adds skill other-skill, which the plugin does not contribute/);
+  rejects(variant(m => { m.contributes.commands[0].servers = ['elsewhere']; }), /Command notify adds server elsewhere, which the plugin does not contribute/);
+  rejects(variant(m => { m.contributes.commands[0].servers = ['acme-local']; }), /Command notify adds the write server acme-local; set needsWrite/);
+  assert.ok(parsePluginManifest(variant(m => { m.contributes.commands[0].servers = ['acme-local']; m.contributes.commands[0].needsWrite = true; })).ok);
 });
 
 test('subscriptions name a journal event, a handler and an optional equality filter', () => {

@@ -25,6 +25,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
+import { resolveCommentPluginCommand, type PluginCommandResolution, type PluginCommandRun } from '../plugins/pluginCommands.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -92,7 +93,7 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; onSubmissionAttempt?: (jobId?: string) => void }
-interface EnqueueCommentOptions { onSubmissionAttempt?: (jobId?: string) => void; payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; jobId?: string }
+interface EnqueueCommentOptions { onSubmissionAttempt?: (jobId?: string) => void; payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; jobId?: string; pluginCommand?: PluginCommandRun }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
@@ -777,6 +778,48 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
     return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
 }
 
+type PluginCommandCommentOptions = Omit<SlashCommentOptions, 'parsedCommand'> & { resolution: Exclude<PluginCommandResolution, { status: 'none' }> };
+
+/**
+ * A plugin `prompt` command on a pull request: the same claim and assignment
+ * gate as a built-in command, then one one-shot follow-up job of its own whose
+ * instruction and library additions come from the plugin's manifest. It is
+ * never batched into another job, so the additions cannot reach other requests.
+ */
+async function processPluginCommandComment(opts: PluginCommandCommentOptions): Promise<DeliveryDisposition> {
+    const { resolution, comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck } = opts;
+    const { redisClient } = config;
+    const { owner, repo, prNumber } = gateCheck.repoContext;
+    const trackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
+    if (!await claimCommentForProcessing(redisClient, trackingKey)) {
+        correlatedLogger.debug({ repository: `${owner}/${repo}`, pullRequestNumber: prNumber, commentId: comment.id }, 'Plugin command comment already processed, skipping redelivery');
+        return { status: 'ignored', reason: 'duplicate_delivery' };
+    }
+    try {
+        const refusal = await checkFollowupAssignmentGate(gateCheck);
+        if (refusal) {
+            await redisClient.del(trackingKey);
+            return refusal;
+        }
+        if (resolution.status === 'refused') {
+            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, plugin: resolution.pluginId, command: resolution.command }, 'Plugin command refused');
+            const octokit = await getAuthenticatedOctokit();
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, body: `@${commentAuthor} ${resolution.message}` });
+            return { status: 'ignored', reason: 'plugin_command_refused' };
+        }
+        const { run } = resolution;
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} detected, enqueuing follow-up job`);
+        await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, {
+            payload, redisClient, onSubmissionAttempt: config.onSubmissionAttempt, PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
+            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, pluginCommand: run,
+        });
+    } catch (error) {
+        await redisClient.del(trackingKey);
+        throw error;
+    }
+    return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
+}
+
 /** Register before posting: GitHub can deliver the webhook before POST returns. */
 export async function prepareApiFollowup(
     redis: Redis, context: RepoContext, body: string,
@@ -898,6 +941,13 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     if (parsedCommand) {
         return processSlashCommandComment({ parsedCommand, comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck });
+    }
+
+    // After the built-ins: a command an enabled plugin contributes for this repository.
+    // Anything else, a disabled plugin's command included, stays an ordinary comment.
+    const pluginCommand = await resolveCommentPluginCommand({ body: comment.body, repository: repoFullName, target: 'pull_request', author: commentAuthor });
+    if (pluginCommand.status !== 'none') {
+        return processPluginCommandComment({ resolution: pluginCommand, comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck });
     }
 
     // Fetch PR labels early to check for processing label
@@ -1094,7 +1144,7 @@ function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedCo
 
 async function enqueueNewCommentJob(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<CommentDispatchOutcome> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity, pluginCommand } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
@@ -1111,11 +1161,14 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
             commandCommentType: unprocessedComment.type,
         } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
+        ...(pluginCommand ? { pluginCommand } : {}),
     };
     jobData.agentAdmissionParent = parentScopeFromCommentJob(jobData, jobData.comments);
     const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
     const commentRevisionSlug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
-    const jobId = options.jobId ?? (manualCommand
+    const jobId = options.jobId ?? (pluginCommand
+        ? `pr-plugin-command-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
+        : manualCommand
         ? `pr-comments-batch-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
         : `pr-comments-batch-${owner}-${repo}-${prNumber}-${Date.now()}`);
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;

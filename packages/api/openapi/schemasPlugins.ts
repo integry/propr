@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  PLUGIN_AUDIT_ACTIONS, PLUGIN_CATEGORIES, PLUGIN_CONNECTION_TYPES, PLUGIN_DELIVERY_KINDS, PLUGIN_DELIVERY_STATUSES, PLUGIN_HEALTH_STATES, PLUGIN_PERMISSIONS, PLUGIN_WEBHOOK_SCHEMES,
+  COMMAND_TARGETS, PLUGIN_AUDIT_ACTIONS, PLUGIN_CATEGORIES, PLUGIN_COMMAND_KINDS, PLUGIN_CONNECTION_TYPES, PLUGIN_DELIVERY_KINDS, PLUGIN_DELIVERY_STATUSES, PLUGIN_HEALTH_STATES, PLUGIN_PERMISSIONS, PLUGIN_WEBHOOK_SCHEMES,
 } from '@propr/shared';
 import { component } from './schemas.js';
 
@@ -16,7 +16,13 @@ const PluginManifestSummary = z.object({
   contributes: z.object({
     mcpServers: z.array(z.object({}).loose()).describe('Contributed MCP servers without launch arguments or environment values.'),
     skills: z.array(z.string()), automationTemplates: z.array(z.string()),
-    commands: z.array(z.object({ name: z.string(), description: z.string() })), subscriptions: z.array(z.string()),
+    commands: z.array(z.object({
+      name: z.string().describe('Used as /<name> in a comment.'), description: z.string(),
+      where: z.array(z.enum(COMMAND_TARGETS)).describe('Where the command can be used: pull request comments, issue comments or both.'),
+      kind: z.enum(PLUGIN_COMMAND_KINDS).describe('prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue).'),
+      skills: z.array(z.string()).describe('Skills of this plugin the command adds to its run.'), servers: z.array(z.string()).describe('MCP servers of this plugin the command adds to its run.'),
+      needsWrite: z.boolean().describe('The command needs write access; such commands are refused for now.'),
+    })).describe('Slash commands the plugin adds; never their prompt text.'), subscriptions: z.array(z.string()),
     webhooks: z.array(z.object({ name: z.string(), description: z.string(), scheme: z.enum(PLUGIN_WEBHOOK_SCHEMES).describe('How ProPR verifies the webhook\'s requests.') })),
   }),
 }).describe('The public projection of the plugin manifest.');

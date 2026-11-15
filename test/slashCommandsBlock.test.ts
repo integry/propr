@@ -62,3 +62,23 @@ describe('buildSlashCommandsBlock', () => {
         assert.ok(useLine.toLowerCase().includes('single') || useLine.toLowerCase().includes('override'));
     });
 });
+
+describe('buildSlashCommandsBlock with plugin commands', () => {
+    test('is unchanged without plugin commands', () => {
+        assert.strictEqual(buildSlashCommandsBlock([]), buildSlashCommandsBlock());
+    });
+
+    test('lists enabled plugin commands after the built-ins, with their description and plugin name', () => {
+        const result = buildSlashCommandsBlock([{ name: 'example-notes', description: 'Write release notes for the work so far', pluginName: 'Example pack' }]);
+        const lines = result.split('\n');
+        const ultrafix = lines.findIndex(line => line.startsWith('| `/ultrafix`'));
+        assert.strictEqual(lines[ultrafix + 1], '| `/example-notes` | Write release notes for the work so far (from the Example pack plugin) | `/example-notes` |');
+        assert.strictEqual(lines[ultrafix + 2], '');
+    });
+
+    test('plugin text cannot break the table or add markup', () => {
+        const result = buildSlashCommandsBlock([{ name: 'deploy', description: 'a | b\n<img src=x>', pluginName: 'Ship|it' }]);
+        const row = result.split('\n').find(line => line.startsWith('| `/deploy`'))!;
+        assert.strictEqual(row, '| `/deploy` | a \\| b img src=x (from the Ship\\|it plugin) | `/deploy` |');
+    });
+});

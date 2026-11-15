@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- admission, execution, failure settlement and handoff ownership share one PR lease lifecycle */
 import { formatTaskTerminalReason, taskRunExtensionRequest } from '@propr/shared';
+import { pluginCommandExtensionBase, pluginCommandRequestText } from './pluginCommandTask.js';
 import { prepareRepositoryWorkflow, resolveAttemptRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata,
     withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, nonRetryableRepositoryWorkflowError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
@@ -108,10 +109,13 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     const primaryProcessingLabels = await getPrimaryLabels();
     const isBatchJob = !!comments && Array.isArray(comments);
     const initialComments: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
-    const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
+    // A plugin command runs alone: its instruction and library additions are its own, never other comments'.
+    const { commentsToProcess, pickedUpComments } = job.data.pluginCommand
+        ? { commentsToProcess: initialComments, pickedUpComments: [] as UnprocessedComment[] }
+        : await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
     applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
     const { branchName: jobBranchName, llm: jobLlm } = job.data;
-    const jobRequest = { commandMode: job.data.commandMode, ultrafixMeta: job.data.ultrafixMeta };
+    const jobRequest = { commandMode: job.data.commandMode, ultrafixMeta: job.data.ultrafixMeta, pluginCommand: job.data.pluginCommand };
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta, jobRequest };
 }
 
@@ -278,7 +282,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         // Opt-in per repository; a failure there never stops the implementation.
         await suspendObsoleteValidationForImplementation({ ref: context, continuation: publication.continuation, taskId, correlationId }, { octokit, log: correlatedLogger });
 
-        const requestBody = isFixMode ? (fixSelection.instructions || 'Apply only the selected review records below.') : combinedCommentBody;
+        // A plugin command's instruction comes from its manifest, with the comment's argument delimited inside it.
+        const requestBody = isFixMode ? (fixSelection.instructions || 'Apply only the selected review records below.') : pluginCommandRequestText(job.data.pluginCommand, combinedCommentBody);
         const localizedCombinedCommentBody = await localizeContentImages(requestBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
         let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
         if (job.data.ultrafixMeta) {
@@ -330,7 +335,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             onContainerInfo: containerId => markExecutionHandoffContainer(state, containerId),
             // Read library items only (follow-ups never carry write authorization);
             // the pull request's labels, loaded for this run, can remove them.
-            extensions: taskRunExtensionRequest({ kind: 'pull_request', repository: `${repoOwner}/${repoName}`, labels: prData!.data.labels }),
+            // A plugin command adds its manifest's own skills and servers explicitly.
+            extensions: taskRunExtensionRequest({ kind: 'pull_request', repository: `${repoOwner}/${repoName}`, labels: prData!.data.labels, base: pluginCommandExtensionBase(job.data.pluginCommand) }),
         }));
         state.claudeResult = claudeResult;
         await markExecutionHandoffAgentExited(state, claudeResult.success === true, claudeResult.success === true ? noChangeAnalysisSummary(claudeResult) : null);

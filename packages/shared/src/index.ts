@@ -591,6 +591,7 @@ export * from './extensionProfiles.js';
 export * from './extensionLibrary.js';
 export * from './extensionPackages.js';
 export * from './extensionOAuth.js';
+export * from './commands.js';
 export * from './plugins.js';
 export * from './pluginInstallations.js';
 export * from './pluginSdk.js';

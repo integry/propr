@@ -20,7 +20,7 @@ describe('plugin page helpers', () => {
       'Runs 1 local server inside the task container',
       'Adds 1 skill the agent reads when relevant: example-notes',
       'Adds 1 automation template: example-weekly-digest',
-      'Adds the /deploy command',
+      'Adds the /example-notes command',
       'Sends requests to api.example.com',
     ]);
   });

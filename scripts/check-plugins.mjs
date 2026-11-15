@@ -6,7 +6,9 @@
  *   - every manifest.json passes the plugin manifest schema of @propr/shared
  *     (which also checks connection references and exact package pins) and
  *     its id matches its folder;
- *   - command names are unique across all plugins;
+ *   - command names are unique across all plugins, and none is a built-in
+ *     ProPR command (the manifest schema refuses those, with the built-in
+ *     list of @propr/shared's commands module);
  *   - the README, the icon, every skill folder (with a SKILL.md naming the
  *     skill) and every automation template folder exist, and the templates
  *     pass the automation template contract.

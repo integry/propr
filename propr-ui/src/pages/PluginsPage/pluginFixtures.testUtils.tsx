@@ -46,7 +46,7 @@ export function examplePlugin(overrides: Partial<PluginView> = {}): PluginView {
           { kind: 'https', name: 'example-remote', url: 'https://mcp.example.com/mcp', tools: ['search'], capability: 'read', authentication: 'oauth', connection: 'example-account' },
           { kind: 'package', name: 'example-local', ecosystem: 'npm', package: 'propr-fixture-mcp', version: '1.0.0', tools: ['echo'], capability: 'read', secretEnv: [{ name: 'FIXTURE_TOKEN', connection: 'example-token' }] },
         ],
-        skills: ['example-notes'], automationTemplates: ['example-weekly-digest'], commands: [{ name: 'deploy', description: 'Deploy' }], subscriptions: [], webhooks: [],
+        skills: ['example-notes'], automationTemplates: ['example-weekly-digest'], commands: [{ name: 'example-notes', description: 'Write release notes for the work so far', where: ['pull_request', 'issue'], kind: 'prompt', skills: ['example-notes'], servers: ['example-remote'], needsWrite: false }], subscriptions: [], webhooks: [],
       },
     },
     connections: [

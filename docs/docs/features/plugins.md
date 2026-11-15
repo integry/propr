@@ -108,12 +108,50 @@ defined.
 | `mcpServers` | MCP servers, in the [extension library](./agent-extensions.md)'s item shapes (below). |
 | `skills` | `{ "name", "path" }`: a skill bundle folder inside the plugin folder. Its `SKILL.md` front matter must use the same `name`. |
 | `automationTemplates` | `{ "id", "path" }`: a template folder in the automation template format. It must pass the same checks as the shipped templates. |
-| `commands` | `{ "name", "description", "permissions" }`. Accepted and validated; not used yet. |
+| `commands` | `{ "name", "description", "where", "kind", "prompt", "skills"?, "servers"?, "needsWrite"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
 | `subscriptions` | `{ "on", "handler", "filter"? }`: deliver a repository event (`<domain>.<type>`, such as `pull_request.merged`) to an exported handler. See [Event subscriptions](#event-subscriptions). Needs the `events.read` permission. |
 | `webhooks` | `{ "name", "description", "handler", "verification", "deliveryIdHeader"?, "respond"? }`: an inbound webhook URL whose verified requests run `handler`. `verification` is a built-in scheme with a `signing_secret` connection. See [Inbound webhooks](#inbound-webhooks). |
 
 Names are unique within each list, and command names are unique across all
 plugins.
+
+#### Commands
+
+```json
+{
+  "name": "example-notes",
+  "description": "Write release notes for the work so far",
+  "where": ["pull_request", "issue"],
+  "kind": "prompt",
+  "prompt": "Write short release notes for the changes in this repository's current work and add them to NOTES.md.",
+  "skills": ["example-notes"],
+  "servers": ["example-remote"]
+}
+```
+
+A command is used as `/<name>` on the first line of a comment, on pull requests,
+issues or both (`where`). The name is lower-case letters, digits and `-`,
+starting with a letter, and can never be a built-in ProPR command (`review`,
+`fix`, `merge`, `switch`, `use`, `ultrafix`); the built-in list is shared with
+the comment parser, so the manifest check and enabling both refuse a name that
+shadows one.
+
+A `prompt` command queues an ordinary one-shot task: a follow-up on a pull
+request, an implementation task on an issue. Its instruction is `prompt`. The
+rest of the comment's command line is appended as the person's argument,
+delimited and marked as untrusted text, so it can never become part of the
+instruction. `skills` and `servers` name this plugin's own skill and server
+contributions to add to that run explicitly; they must be contributed by the
+same manifest, and a server with `capability: "write"` needs `needsWrite`. A
+command with `needsWrite: true` is accepted by the manifest check but refused
+when used, until write authorization for commands is available.
+
+Commands apply only while the plugin is enabled and inside its repository limit,
+and follow the same author rules as the built-in commands. Enabling a plugin is
+refused while another enabled plugin contributes a command of the same name;
+the refusal names that plugin, and the Enable step shows it beforehand. See
+[Plugin Commands](./pr-commands.md#plugin-commands) for how they behave in a
+comment.
 
 #### Remote servers
 
@@ -158,7 +196,8 @@ npm run plugins:check
 
 validates every plugin in `packages/plugins`: the manifest schema and its
 cross-references, that `registry.json` lists each plugin folder exactly once,
-that ids match their folders, that command names are unique, and that the
+that ids match their folders, that command names are unique across plugins and
+never shadow a built-in command, and that the
 README, icon, skill folders and automation templates exist and are valid. CI
 runs it on every pull request.
 
@@ -202,7 +241,7 @@ Open a card to see the plugin's steps, always in this order, each marked
 
 1. **Install.** The step says what the plugin adds in plain words, for example
    "Adds 1 MCP server the agent can read from", "Runs 1 local server inside
-   the task container" or "Adds the /deploy command", and lists the
+   the task container" or "Adds the /example-notes command", and lists the
    permissions it asks for, each with a one-line explanation. When a local
    package server receives secret variables, the step shows the package, its
    exact version and the variable names, with a required checkbox confirming
@@ -230,8 +269,10 @@ Open a card to see the plugin's steps, always in this order, each marked
    settings and connections are kept.
 
 Below the steps, **What it added** lists the plugin's managed MCP servers and
-skills, with a link to Skills & MCP servers where they are listed, and its
-automation templates, each with whether it applies now. **Activity** follows
+skills, with a link to Skills & MCP servers where they are listed, its
+commands (for example "Command /example-notes · Write release notes for the
+work so far · in pull request and issue comments · Active") and its automation
+templates, each with whether it applies now. **Activity** follows
 once the plugin is installed: each event delivered to the plugin's handlers and
 its result, with **Retry** on a failed delivery (see [Activity](#activity)). A
 plugin whose deliveries keep failing shows **Degraded** next to its state, and
@@ -486,6 +527,15 @@ install (or the latest approval) satisfies the library's acknowledgement
 requirement; while an upgrade waits for a new acknowledgement the server is
 inactive and is never installed or launched.
 
+### Commands
+
+An enabled plugin's commands work in the comments of the repositories inside
+its repository limit; the plugin page lists each under **What it added** with
+its description, where it can be used (pull request comments, issue comments
+or both) and whether it is active. A command of a disabled or uninstalled
+plugin is an unknown command again. See
+[Plugin Commands](./pr-commands.md#plugin-commands).
+
 ### Skills and automation templates
 
 A plugin skill becomes a skill bundle whose source is the plugin, its version
@@ -547,7 +597,8 @@ The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
 [event subscriptions](#event-subscriptions), with a stable `deliveryId` and the
 `attempt` number. Webhook requests are delivered by
 [inbound webhooks](#inbound-webhooks), also with a `deliveryId` and `attempt`.
-Delivering commands to handlers is added by a later release.
+Delivering commands to handlers is added by a later release; `prompt` commands
+need no handler (see [Commands](#commands)).
 
 A call `ctx` refuses throws a `PluginSdkError` with a `code` such as
 `permission_denied`, `repository_not_allowed`, `host_not_allowed`,

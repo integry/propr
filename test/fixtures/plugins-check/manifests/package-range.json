@@ -76,7 +76,7 @@
     "commands": [
       {
         "name": "status",
-        "description": "Show the status"
+        "description": "Show the status", "where": ["pull_request"], "kind": "prompt", "prompt": "Report the status of the pull request."
       }
     ],
     "subscriptions": [

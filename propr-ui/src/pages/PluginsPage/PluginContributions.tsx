@@ -8,12 +8,23 @@ const state = (managed: { enabled: boolean; active: boolean } | null) => {
   return managed.enabled ? 'Active' : 'Switched off in Skills & MCP servers';
 };
 
+type PluginCommandView = NonNullable<PluginView['manifest']>['contributes']['commands'][number];
+const commandTargets = (where: PluginCommandView['where']) => {
+  const onPulls = where.includes('pull_request'); const onIssues = where.includes('issue');
+  return onPulls && onIssues ? 'in pull request and issue comments' : onIssues ? 'in issue comments' : 'in pull request comments';
+};
+const commandState = (view: PluginView, needsWrite: boolean) => {
+  if (needsWrite) return 'Refused for now: it needs write access';
+  return view.state === 'enabled' ? 'Active' : 'Works once the plugin is enabled';
+};
+
 /** What it added: a read-only list of the plugin's managed items and templates, with links. */
 export function PluginContributions({ view }: { view: PluginView }) {
   const contributions = view.contributions;
   if (!contributions) return null;
   const { mcpServers, skills, automationTemplates } = contributions;
-  if (!mcpServers.length && !skills.length && !automationTemplates.length) return null;
+  const commands = view.manifest?.contributes.commands ?? [];
+  if (!mcpServers.length && !skills.length && !automationTemplates.length && !commands.length) return null;
   const library = <Link to={EXTENSION_LIBRARY_PATH} className="font-medium text-teal-700 underline hover:text-teal-800">Skills & MCP servers</Link>;
   return (
     <section aria-labelledby="plugin-contributions" className="rounded-lg border border-slate-200 bg-white p-4 sm:p-5">
@@ -28,6 +39,11 @@ export function PluginContributions({ view }: { view: PluginView }) {
         {skills.map(skill => (
           <li key={`skill:${skill.name}`} className="break-words">
             Skill <strong>{skill.name}</strong> · {state(skill.managed)}{skill.managed && <> · managed in {library}</>}
+          </li>
+        ))}
+        {commands.map(command => (
+          <li key={`command:${command.name}`} data-testid={`plugin-command-${command.name}`} className="break-words">
+            Command <code className="font-mono font-semibold text-slate-900">/{command.name}</code> · {command.description} · {commandTargets(command.where)} · {commandState(view, command.needsWrite)}
           </li>
         ))}
         {automationTemplates.map(template => (
