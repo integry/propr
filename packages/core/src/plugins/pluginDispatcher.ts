@@ -5,7 +5,7 @@ import {
   type PluginHandlerRun, type PluginManifest, type PluginSubscription, type RepositoryEvent,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
-import { getRepositoryEventFloor, listRepositoryEvents, subscribeRepositoryEventAppends } from '../services/repositoryEventJournal.js';
+import { listRepositoryEvents, subscribeRepositoryEventAppends } from '../services/repositoryEventJournal.js';
 import { officialPluginCatalog } from './pluginCatalog.js';
 import { effectivePluginPermissions, type PluginInstallationTarget } from './pluginContext.js';
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
@@ -19,7 +19,8 @@ import {
  * Delivers repository journal events to the handlers plugins subscribe to.
  *
  * Each installation reads the journal from its own durable cursor, kept per
- * repository: events of one repository reach one plugin in `seq` order, one
+ * repository (case-insensitive: every spelling of a name is one stream, keyed
+ * by its lower-case form): events of one repository reach one plugin in `seq` order, one
  * at a time, while another repository's events go on. Delivery is at least
  * once, with a stable delivery id. A failed attempt is retried after 1 min,
  * 5 min, 30 min and 2 h; then the delivery is marked failed and the next event
@@ -101,6 +102,8 @@ export class PluginDispatcher {
   private readonly pauseAfter: number;
   private readonly degradedAfter: number;
   private timer: NodeJS.Timeout | undefined;
+  /** When the scheduled pass is due (wall clock). */
+  private timerDue = 0;
   private unsubscribe: (() => void) | undefined;
   private running: Promise<PluginDispatchPass> | undefined;
   private again = false;
@@ -135,10 +138,14 @@ export class PluginDispatcher {
     await this.database('plugin_dispatch').where({ lease_owner: this.owner }).update({ lease_owner: null, lease_expires_at: null }).catch(() => undefined);
   }
 
+  /** Schedule a pass in `delayMs`, unless one is due sooner: appends arriving without pause never push a pass back. */
   private wake(delayMs: number): void {
     if (!this.polling) return;
     if (this.running) { this.again = true; return; }
+    const due = Date.now() + delayMs;
+    if (this.timer && this.timerDue <= due) return;
     clearTimeout(this.timer);
+    this.timerDue = due;
     this.timer = setTimeout(() => { void this.loop(); }, delayMs);
     this.timer.unref?.();
   }
@@ -230,7 +237,7 @@ export class PluginDispatcher {
   /** Deliver what is due for one installation. Ends with `Stopped` once it may no longer deliver (paused, for one). */
   private async deliver(installation: Installation): Promise<void> {
     await this.manualRetries(installation);
-    for (const repository of await this.repositories(installation)) {
+    for (const repository of await this.repositories(installation)) { // canonical (lower-case) names
       if (!inScope(installation.target.record.repositories, repository)) continue;
       try { await this.deliverRepository(installation, repository); } catch (error) {
         if (!(error instanceof Blocked)) throw error;
@@ -242,20 +249,22 @@ export class PluginDispatcher {
    * The repositories to visit: those with events after the installation's
    * start, with unfinished deliveries, and those whose journal floor moved
    * past the start and past what their cursor has recorded, so a repository
-   * that retention emptied still has its gap recorded.
+   * that retention emptied still has its gap recorded. Each is named once, in
+   * lower case, whatever spellings its events use.
    */
   private async repositories(installation: Installation): Promise<string[]> {
     const { pluginId } = installation.target;
     const start = Number(installation.state.start_seq);
-    const lists = await Promise.all([
+    type Floor = { repository: string; floor_seq: number | string };
+    const [events, unfinished, floors, cursors] = await Promise.all([
       this.database('repository_events').where('seq', '>', start).distinct('repository'),
       this.database('plugin_deliveries').where({ plugin_id: pluginId, kind: 'event' }).whereIn('status', UNFINISHED).distinct('repository'),
-      this.database('repository_event_floors as f')
-        .leftJoin('plugin_delivery_cursors as c', join => { join.on('c.repository', '=', 'f.repository').andOnVal('c.plugin_id', '=', pluginId); })
-        .where('f.floor_seq', '>', start + 1).where(q => { void q.whereNull('c.floor_seq').orWhereRaw('?? > ??', ['f.floor_seq', 'c.floor_seq']); })
-        .distinct('f.repository as repository'),
-    ]) as { repository: string }[][];
-    return [...new Set(lists.flat().map(r => r.repository))].sort();
+      this.database('repository_event_floors').where('floor_seq', '>', start + 1).select('repository', 'floor_seq'),
+      this.database('plugin_delivery_cursors').where({ plugin_id: pluginId }).select('repository', 'floor_seq'),
+    ]) as [{ repository: string }[], { repository: string }[], Floor[], Floor[]];
+    const recorded = new Map(cursors.map(c => [c.repository, Number(c.floor_seq)]));
+    const moved = floors.filter(f => Number(f.floor_seq) > (recorded.get(lower(f.repository)) ?? 0));
+    return [...new Set([...events, ...unfinished, ...moved].map(r => lower(r.repository)))].sort();
   }
 
   /** Administrator retries: one attempt each, out of the stream's order; one a crashed worker left `running` is attempted again. */
@@ -274,11 +283,11 @@ export class PluginDispatcher {
     }
   }
 
-  /** Deliver one repository's events in order, until one waits for a retry or the batch is done. */
+  /** Deliver one repository's events (every spelling, `repository` is the lower-case name) in order, until one waits for a retry or the batch is done. */
   private async deliverRepository(installation: Installation, repository: string): Promise<void> {
     const { pluginId, manifest } = installation.target;
     const cursor = await this.cursor(installation, repository);
-    const events = await listRepositoryEvents(this.database, { repository, afterSeq: cursor.seq, limit: this.options.batchSize ?? DEFAULT_BATCH });
+    const events = await listRepositoryEvents(this.database, { repository, anyCase: true, afterSeq: cursor.seq, limit: this.options.batchSize ?? DEFAULT_BATCH });
     for (const event of events) {
       const subscriptions = manifest.contributes.subscriptions.filter(s => subscriptionMatches(s, event));
       for (const subscription of subscriptions) {
@@ -303,7 +312,9 @@ export class PluginDispatcher {
       row = { cursor_seq: start, floor_seq: 1 };
     }
     const seq = Number(row.cursor_seq);
-    const floor = await getRepositoryEventFloor(this.database, repository);
+    // The highest floor of any spelling: completeness of the stream ends there.
+    const floors = await this.database('repository_event_floors').whereRaw('repository = ? COLLATE NOCASE', [repository]).max({ floor: 'floor_seq' }).first() as { floor: number | string | null } | undefined;
+    const floor = Number(floors?.floor ?? 1);
     if (floor > Number(row.floor_seq)) {
       if (seq < floor - 1) {
         const now = this.now();
@@ -314,7 +325,8 @@ export class PluginDispatcher {
         }).onConflict(['plugin_id', 'delivery_id']).ignore();
       }
       // Unfinished deliveries of events retention removed are final now; retained events below the floor still go out.
-      await this.database('plugin_deliveries').where({ plugin_id: pluginId, repository, kind: 'event' }).whereIn('status', UNFINISHED).where('event_seq', '<', floor)
+      await this.database('plugin_deliveries').where({ plugin_id: pluginId, kind: 'event' }).whereRaw('repository = ? COLLATE NOCASE', [repository])
+        .whereIn('status', UNFINISHED).where('event_seq', '<', floor)
         .whereNotExists(q => { void q.select(1).from('repository_events').whereRaw('?? = ??', ['repository_events.seq', 'plugin_deliveries.event_seq']); })
         .update({ status: 'skipped', manual: false, next_attempt_at: null, finished_at: this.now(), error: 'The event left the journal (retention) before it was delivered' });
       await this.database('plugin_delivery_cursors').where(where).update({ floor_seq: floor });

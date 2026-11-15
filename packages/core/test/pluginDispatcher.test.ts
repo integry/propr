@@ -33,7 +33,8 @@ test('a subscribed handler runs once per matching event, in order per repository
   const seen = await s.seen();
   assert.deepEqual(seen.map(e => e.seq).sort((x, y) => x - y), expected.map(e => e.seq).sort((x, y) => x - y), 'each matching event once');
   for (const repository of [ALLOWED, SECOND]) {
-    const order = seen.filter(e => e.repository === repository).map(e => e.seq);
+    // Every spelling of a repository name is one stream.
+    const order = seen.filter(e => e.repository.toLowerCase() === repository).map(e => e.seq);
     assert.deepEqual(order, [...order].sort((x, y) => x - y), `events of ${repository} in order`);
   }
   assert.deepEqual(seen.map(e => e.id).sort(), expected.map(e => `evt-${e.seq}-record`).sort(), 'stable delivery ids');

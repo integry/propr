@@ -13,7 +13,9 @@
       { "on": "pull_request.opened", "handler": "record" },
       { "on": "pull_request.merged", "handler": "onMerged" },
       { "on": "task.completed", "handler": "record", "filter": { "payload.kind": ["implementation", "review"] } },
-      { "on": "task.failed", "handler": "flaky" }
+      { "on": "task.failed", "handler": "flaky" },
+      { "on": "pull_request.closed", "handler": "record" },
+      { "on": "pull_request.closed", "handler": "flaky" }
     ]
   }
 }

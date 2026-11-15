@@ -730,7 +730,8 @@ Each delivery is recorded on the plugin page under **Activity**, newest
 first: the time, the event type and `seq`, the handler, the outcome, the
 duration, the attempt, the error message and the handler's log lines (all
 redacted). Event payloads, handler results and credentials are never stored.
-Records are kept for 14 days and are deleted when the plugin is uninstalled.
+Records are kept for 14 days (longer while their event still waits on another
+handler or on Resume) and are deleted when the plugin is uninstalled.
 
 **Retry** on a failed delivery gives it one more attempt, with the same
 `deliveryId`, outside the repository's order. While deliveries are paused, the

@@ -80,8 +80,9 @@ the journal also prunes delivery records. The feature page lists the
 ### Reading the journal
 
 The dispatcher only reads the journal. An append notifies it in the same
-process (`subscribeRepositoryEventAppends`), and it polls every 5 seconds for
-appends from other processes. Nothing that appends an event waits for a
+process (`subscribeRepositoryEventAppends`): a pass starts within 200 ms, and
+a steady stream of appends never pushes that pass back. It also polls every 5
+seconds for appends from other processes. Nothing that appends an event waits for a
 delivery, so a handler can never fail or delay the step that produced the
 event.
 
@@ -96,10 +97,11 @@ subscriptions and that holds `events.read`. For each one:
    with unfinished deliveries, and those whose journal floor moved past
    `start_seq` and past what their cursor last recorded (so a repository that
    retention emptied is still visited), minus those outside the repository
-   limit. Each has a cursor in `plugin_delivery_cursors`: the
-   last `seq` whose deliveries are final.
-3. For each repository, the events after the cursor are read in `seq` order
-   (50 per pass). Each event goes to every subscription whose `on` and
+   limit. Repository names are case-insensitive: every spelling of a name is
+   one repository, keyed by its lower-case form. Each has a cursor in
+   `plugin_delivery_cursors`: the last `seq` whose deliveries are final.
+3. For each repository, the events after the cursor, in any spelling, are
+   read in `seq` order (50 per pass). Each event goes to every subscription whose `on` and
    `filter` match it, in manifest order. A delivery gets a record in
    `plugin_deliveries` the first time it is seen, keyed by its delivery id
    `evt-<seq>-<handler>`.
@@ -175,7 +177,10 @@ A delivery record holds the plugin id, delivery id, kind, repository, event
 timeout flag, and the latest attempt's redacted error and log lines. It never
 holds the event payload, the handler's result or a credential. Records are
 kept for 14 days (`PLUGIN_DELIVERY_RETENTION_DAYS`); pending and retrying
-records are kept until they finish.
+records are kept until they finish. A final record is also kept while its
+event is still in the journal and ahead of the repository's cursor (another
+handler of the event is retrying, or deliveries are paused), so reading the
+event again does not run a handler that already succeeded or failed for good.
 
 ## `ctx.propr`: the scoped client
 

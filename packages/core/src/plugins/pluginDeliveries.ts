@@ -184,10 +184,29 @@ export async function deletePluginDispatch(trx: Knex, pluginId: string): Promise
   return trx('plugin_deliveries').where({ plugin_id: pluginId }).delete();
 }
 
-/** Delete final delivery records older than the retention period. */
+/**
+ * Delete final delivery records older than the retention period. A record of
+ * an event still in the journal and ahead of its repository's cursor (the
+ * cursor of the lower-cased name, or the installation's start before one
+ * exists) is kept: the event is read again (a handler after it is retrying,
+ * or deliveries are paused), and the record is what makes a handler that
+ * already succeeded or failed for good not run again with its attempts reset.
+ */
 export async function prunePluginDeliveries(database: Knex, options: { olderThanDays?: number; now?: () => number } = {}): Promise<number> {
   const cutoff = (options.now ?? Date.now)() - (options.olderThanDays ?? PLUGIN_DELIVERY_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
-  return database('plugin_deliveries').where('created_at', '<', cutoff).whereIn('status', ['succeeded', 'failed', 'skipped']).delete();
+  return database('plugin_deliveries').where('created_at', '<', cutoff).whereIn('status', ['succeeded', 'failed', 'skipped'])
+    .whereNot(needed => {
+      void needed.where('plugin_deliveries.kind', 'event')
+        .whereExists(q => { void q.select(1).from('repository_events as e').whereRaw('?? = ??', ['e.seq', 'plugin_deliveries.event_seq']); })
+        .whereExists(q => {
+          void q.select(1).from('plugin_dispatch as d').whereRaw('?? = ??', ['d.plugin_id', 'plugin_deliveries.plugin_id'])
+            .whereRaw('?? > COALESCE((SELECT ?? FROM ?? AS c WHERE ?? = ?? AND ?? = lower(??)), ??)', [
+              'plugin_deliveries.event_seq', 'c.cursor_seq', 'plugin_delivery_cursors', 'c.plugin_id', 'plugin_deliveries.plugin_id',
+              'c.repository', 'plugin_deliveries.repository', 'd.start_seq',
+            ]);
+        });
+    })
+    .delete();
 }
 
 export interface PluginDegradedNotice { pluginId: string; installedAt: number; degradedAt: number; consecutiveFailures: number; lastError: string | null }
