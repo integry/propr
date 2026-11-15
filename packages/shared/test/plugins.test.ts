@@ -40,7 +40,7 @@ const valid = (): PluginManifestInput => ({
     automationTemplates: [{ id: 'acme-digest', path: 'templates/acme-digest' }],
     commands: [{ name: 'notify', description: 'Post a message', permissions: ['pull_requests.read'] }],
     subscriptions: [{ on: 'task.completed', handler: 'onTask' }],
-    webhooks: [{ name: 'events', description: 'Acme event callbacks', connection: 'events-secret' }],
+    webhooks: [{ name: 'events', description: 'Acme event callbacks', handler: 'onAcmeEvent', verification: { scheme: 'hmac-sha256', header: 'X-Acme-Signature', prefix: 'sha256=', connection: 'events-secret' }, deliveryIdHeader: 'x-acme-delivery' }],
   },
 });
 type Mutable = Record<string, any>;
@@ -91,8 +91,31 @@ test('contributions must reference declared connections of the right type', () =
   rejects(variant(m => { m.contributes.mcpServers[0].connection = 'bot-token'; }), /which is token, not oauth/);
   rejects(variant(m => { m.contributes.mcpServers[0].authentication = 'bearer'; }), /which is oauth, not token/);
   rejects(variant(m => { m.contributes.mcpServers[1].connection = 'bot-token'; }), /no authentication and takes no connection/);
-  rejects(variant(m => { m.contributes.webhooks[0].connection = 'bot-token'; }), /Webhook events references connection bot-token, which is token, not signing_secret/);
+  rejects(variant(m => { m.contributes.webhooks[0].verification.connection = 'bot-token'; }), /Webhook events references connection bot-token, which is token, not signing_secret/);
   rejects(variant(m => { m.contributes.mcpServers[2].secretEnv[0].connection = 'nowhere'; }), /Variable ACME_TOKEN of server acme-local references connection nowhere/);
+});
+
+test('webhooks declare a handler and a built-in verification scheme', () => {
+  const parsed = parsePluginManifest(valid());
+  assert.ok(parsed.ok);
+  const [webhook] = parsed.manifest.contributes.webhooks;
+  assert.deepEqual(webhook.verification, { scheme: 'hmac-sha256', header: 'x-acme-signature', prefix: 'sha256=', encoding: 'hex', connection: 'events-secret' }, 'header names are lower-cased; hex is the default encoding');
+  for (const verification of [{ scheme: 'slack-v0', connection: 'events-secret' }, { scheme: 'token-header', header: 'x-gitlab-token', connection: 'events-secret' }]) {
+    assert.deepEqual(errors(variant(m => { m.contributes.webhooks[0].verification = verification; })), []);
+  }
+  rejects(variant(m => { m.contributes.webhooks[0].verification = { scheme: 'md5', header: 'x-sig', connection: 'events-secret' }; }), /scheme/);
+  rejects(variant(m => { delete m.contributes.webhooks[0].handler; }), /handler/);
+  rejects(variant(m => { delete m.contributes.webhooks[0].verification.header; }), /header/);
+  rejects(variant(m => { m.contributes.webhooks[0].verification.header = 'x sig'; }), /HTTP header name/);
+  rejects(variant(m => { m.contributes.webhooks[0].verification.header = 'Cookie'; }), /Webhook events cannot use header cookie/);
+  rejects(variant(m => { m.contributes.webhooks[0].deliveryIdHeader = 'X-Acme-Signature'; }), /both for verification and as its delivery id/);
+  rejects(variant(m => { m.contributes.webhooks[0].deliveryIdHeader = 'Authorization'; }), /Webhook events cannot use the credential header authorization as its delivery id/);
+  rejects(variant(m => { m.contributes.webhooks[0].deliveryIdHeader = 'proxy-authorization'; }), /Webhook events cannot use the credential header proxy-authorization as its delivery id/);
+  rejects(variant(m => { m.contributes.webhooks[0].verification = { scheme: 'token-header', header: 'x-hook-token', connection: 'events-secret' }; m.contributes.webhooks[0].deliveryIdHeader = 'authorization'; }), /credential header authorization/,
+    'even when another header verifies the request');
+  assert.deepEqual(errors(variant(m => { m.contributes.webhooks[0].verification = { scheme: 'token-header', header: 'Authorization', prefix: 'Bearer ', connection: 'events-secret' }; })), [], 'authorization still verifies a request');
+  rejects(variant(m => { m.contributes.webhooks[0].respond = 'onAcmeEvent'; }), /respond function other than its handler/);
+  rejects(variant(m => { m.contributes.webhooks[0].connection = 'events-secret'; }), /connection/);
 });
 
 test('secretEnv must map to a token connection', () => {

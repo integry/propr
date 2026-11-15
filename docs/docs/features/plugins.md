@@ -15,8 +15,8 @@ integrity check as the [extension library's local package servers](./agent-exten
 :::note Work in progress
 This page describes the plugin **manifest**, the official plugin registry, the
 [Plugins page](#the-plugins-page), the installation API and the
-[handler interface](#handlers) and [event subscriptions](#event-subscriptions).
-Inbound webhooks and commands are added by later releases.
+[handler interface](#handlers), [event subscriptions](#event-subscriptions)
+and [inbound webhooks](#inbound-webhooks). Commands are added by a later release.
 :::
 
 ## Where plugins live
@@ -110,7 +110,7 @@ defined.
 | `automationTemplates` | `{ "id", "path" }`: a template folder in the automation template format. It must pass the same checks as the shipped templates. |
 | `commands` | `{ "name", "description", "permissions" }`. Accepted and validated; not used yet. |
 | `subscriptions` | `{ "on", "handler", "filter"? }`: deliver a repository event (`<domain>.<type>`, such as `pull_request.merged`) to an exported handler. See [Event subscriptions](#event-subscriptions). Needs the `events.read` permission. |
-| `webhooks` | `{ "name", "description", "connection" }`, where the connection is a `signing_secret`. Accepted and validated; not used yet. |
+| `webhooks` | `{ "name", "description", "handler", "verification", "deliveryIdHeader"?, "respond"? }`: an inbound webhook URL whose verified requests run `handler`. `verification` is a built-in scheme with a `signing_secret` connection. See [Inbound webhooks](#inbound-webhooks). |
 
 Names are unique within each list, and command names are unique across all
 plugins.
@@ -545,8 +545,9 @@ The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
 `{ kind: 'command', command, args, repository, actor }` or
 `{ kind: 'invoke', payload }`. Events are delivered by
 [event subscriptions](#event-subscriptions), with a stable `deliveryId` and the
-`attempt` number. Delivering webhooks and commands to handlers is added by later
-releases.
+`attempt` number. Webhook requests are delivered by
+[inbound webhooks](#inbound-webhooks), also with a `deliveryId` and `attempt`.
+Delivering commands to handlers is added by a later release.
 
 A call `ctx` refuses throws a `PluginSdkError` with a `code` such as
 `permission_denied`, `repository_not_allowed`, `host_not_allowed`,
@@ -748,3 +749,175 @@ The same records are available to administrators through the API:
 
 Mutations need the same `X-ProPR-Plugins: 1` JSON contract as the other plugin
 routes, and Retry and Resume are recorded in the plugin's audit trail.
+
+## Inbound webhooks
+
+A plugin can receive requests from an external service: a chat mention, an
+issue tracker update, an error alert. Each webhook in `contributes.webhooks`
+gets its own URL. ProPR verifies every request with the webhook's scheme before
+any plugin code runs, then runs the webhook's `handler` from the delivery queue.
+
+```json
+"webhooks": [
+  {
+    "name": "events",
+    "description": "Issue tracker updates",
+    "handler": "onTrackerEvent",
+    "verification": { "scheme": "hmac-sha256", "header": "X-Hub-Signature-256", "prefix": "sha256=", "connection": "tracker-signing" },
+    "deliveryIdHeader": "X-GitHub-Delivery"
+  },
+  {
+    "name": "slack",
+    "description": "Slack Events API",
+    "handler": "onSlackEvent",
+    "respond": "slackChallenge",
+    "verification": { "scheme": "slack-v0", "connection": "slack-signing" }
+  }
+]
+```
+
+### The webhook URL
+
+```text
+POST https://<your ProPR>/api/plugins/<installation key>/hooks/<name>
+```
+
+The installation key is 43 random characters, created for each installation.
+Copy the URLs from the plugin's **Connect** step on the Plugins page, under
+**Webhook URLs**. Each one has a Copy button. When the instance has no public
+base URL, only the path is shown. Prefix it with the address services use to
+reach ProPR.
+
+Treat the URL as a secret, although it is not the only check. **Regenerate**
+replaces the key in every URL at once: the old URLs answer 404 straight away,
+so give each service its new URL afterwards. Regenerating is recorded in the
+plugin's audit trail. Uninstalling deletes the key, and a reinstall gets a new
+one.
+
+Requests for a disabled or uninstalled plugin, or for a webhook name the
+manifest does not declare, get 404 and run nothing. Enabling the plugin again
+brings back the same URLs.
+
+### Verification schemes
+
+Each scheme checks the request against the value of a `signing_secret`
+connection, set in the Connect step. Header names are matched without regard to
+letter case.
+
+| Scheme | Fields | What ProPR checks |
+| --- | --- | --- |
+| `hmac-sha256` | `header`, `prefix`?, `encoding`? (`hex`, the default, or `base64`), `connection` | `header` equals `prefix` followed by the HMAC-SHA256 of the raw body, keyed with the secret. GitHub's `X-Hub-Signature-256: sha256=…` is this scheme with `prefix: "sha256="`. |
+| `slack-v0` | `connection` | Slack's [signed requests](https://api.slack.com/authentication/verifying-requests-from-slack): `X-Slack-Signature` equals `v0=` followed by the hex HMAC-SHA256 of `v0:<X-Slack-Request-Timestamp>:<raw body>`. The timestamp must be within 5 minutes of ProPR's clock, in either direction. |
+| `token-header` | `header`, `prefix`?, `connection` | `header` equals `prefix` followed by the secret itself, as GitLab's `X-Gitlab-Token` does. Use `"header": "authorization", "prefix": "Bearer "` for a bearer token. |
+
+Signatures and tokens are compared in constant time. A request that fails
+verification gets **401** and runs nothing. This also covers a missing or wrong
+signature, a stale Slack timestamp, and a webhook whose signing secret is not
+set. ProPR counts each one on the installation, and the Webhook URLs section
+shows the count, the time of the last one and its reason. The rejection is
+logged with the plugin, the webhook and the reason only.
+
+The tests use the published test vectors: GitHub's
+([validating deliveries](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)),
+RFC 4231 test case 2 for plain HMAC-SHA256, and Slack's documented request.
+They are in `packages/core/test/pluginWebhooks.test.ts`.
+
+### Delivery
+
+After a request is verified, ProPR answers **202** at once with
+`{ "accepted": true, "deliveryId" }`. The handler then runs from the queue as a
+delivery of kind `webhook`, with the same 30 second limit and the same retry
+schedule as event deliveries: 1 minute, 5 minutes, 30 minutes and 2 hours, then
+failed. The handler receives:
+
+```ts
+{ kind: 'webhook', webhook, headers, body, receivedAt, deliveryId, attempt }
+```
+
+- `body` is the raw body as text, whatever its content type (JSON,
+  form-encoded or plain text). A body sent with `Content-Encoding: gzip`,
+  `deflate` or `br` is verified over the compressed bytes as sent, as the
+  service signed them, and the handler gets it decoded.
+- `headers` are the request's headers with lower-case names. ProPR removes the
+  verification headers, `Authorization`, `Cookie`, `Content-Encoding` and the
+  hop-by-hop headers first.
+- `deliveryId` is the same on every attempt. When the webhook declares
+  `deliveryIdHeader` and the service sends it, it is `whk-<webhook>:<id>` with
+  that value as `<id>`. Otherwise ProPR assigns one: `whk-<webhook>/<uuid>`.
+  The delivery id is shown in Activity, so `deliveryIdHeader` cannot be
+  `Authorization` or `Proxy-Authorization` (nor a verification header); the
+  manifest is refused. Verifying with `Authorization` is still allowed.
+
+Other limits and refusals:
+
+| Situation | Answer |
+| --- | --- |
+| Body larger than 256 KiB, as sent or once decoded | **413**. Nothing runs. |
+| A verified body with a `Content-Encoding` other than `gzip`, `deflate` or `br` (or more than one) | **415**. Nothing runs. A compressed body that cannot be decoded gets **400**. |
+| A `deliveryIdHeader` value already received, whose delivery succeeded or is still under way | **409** (a replay). Nothing runs, not even the `respond` function. Delivery ids are remembered for as long as Activity records are kept (14 days). A delivery that *failed* is not a replay: sending it again with the same delivery id delivers it (see below). |
+| A `deliveryIdHeader` value that is not 1 to 200 printable characters | **400**. |
+| Event deliveries of the plugin are [paused](#health-degraded-and-resume) | **503** with `Retry-After`. |
+| 1,000 webhook deliveries already waiting | **503** with `Retry-After`. |
+| More requests than the webhook rate limit allows | **429**. This is the limiter `POST /webhook` uses: `PROPR_WEBHOOK_RATE_LIMIT_MAX` requests per `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS`, 300 per minute by default. |
+
+Each webhook delivery appears in the plugin's [Activity](#activity) as
+`webhook.<name>`, with its handler, outcome and attempts. ProPR never stores
+or logs request bodies, signature headers or tokens. Because a handler could
+log or throw part of the request, a webhook delivery keeps only the level and
+time of each log line, not its message or fields, and its error says only that
+the handler failed or timed out. The
+request is held in the API process's memory only until its delivery is final.
+Two things follow from that:
+
+- A failed webhook delivery has no **Retry** button. The service has to send it
+  again, and it may reuse the delivery id: a request whose delivery id belongs
+  to a failed delivery is accepted (**202**) and replaces that delivery's
+  Activity record with a new one. With GitHub, for example, use **Redeliver**
+  on the webhook's Recent Deliveries. A delivery id whose delivery succeeded,
+  or is still waiting or running, is still refused with 409.
+- A delivery still waiting when its API process stops is marked failed with
+  *ProPR stopped before the delivery finished*, by the next API process to
+  start or by another one running (within about two minutes). Starting an API
+  process never fails the deliveries of another one still running. Most
+  services redeliver on their own.
+
+Webhook failures do not count towards the plugin's Degraded and paused
+[health](#health-degraded-and-resume), which tracks event deliveries.
+
+### Challenge responses
+
+Some services check a new URL by sending a challenge that must be echoed in the
+response, such as Slack's `url_verification`. `respond` names another exported
+function of `handlers.ts`. It runs after verification and the replay check, and
+before the request is queued, and it receives only the frozen request
+`{ webhook, headers, body, receivedAt }`. It gets no `ctx`, so it cannot read
+state, call ProPR or send HTTP requests. It must return synchronously:
+
+```ts
+import { definePluginWebhookResponder } from '@propr/shared';
+
+export const slackChallenge = definePluginWebhookResponder(request => {
+  const body = JSON.parse(request.body) as { type?: string; challenge?: string };
+  return body.type === 'url_verification' && body.challenge
+    ? { contentType: 'text/plain', body: body.challenge }
+    : null;
+});
+```
+
+When it returns a response (a 2xx `status`, 200 by default, a `text/plain` or
+`application/json` `contentType` and a `body` of at most 4 KiB), ProPR sends
+that response and the handler does not run; the delivery id stays taken, so a
+replayed challenge gets 409. When it returns `null`, the request
+is queued as usual. If it throws, returns a promise or returns an invalid
+response, ProPR answers **500** and runs nothing.
+
+### Webhook URL routes
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/instance/plugins/v1/:pluginId/webhooks` | The webhook URLs of an installed plugin and its count of rejected requests (409 when not installed). |
+| `POST /api/instance/plugins/v1/:pluginId/webhooks/regenerate` | Replace the installation key. The old URLs stop working at once. |
+| `POST /api/plugins/:installationKey/hooks/:webhookName` | The public webhook endpoint described above. |
+
+The first two need a durable instance administrator, like the other plugin
+routes, and Regenerate needs the `X-ProPR-Plugins: 1` JSON contract.

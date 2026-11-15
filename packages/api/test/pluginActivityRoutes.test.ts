@@ -21,6 +21,7 @@ import { up as pluginStateMigration } from '../../core/src/db/migrations/2026111
 import { up as journalMigration } from '../../core/src/db/migrations/20261112160000_create_repository_events.js';
 import { up as taskDomainMigration } from '../../core/src/db/migrations/20261114120000_add_task_repository_event_domain.js';
 import { up as deliveriesMigration } from '../../core/src/db/migrations/20261115000000_plugin_event_deliveries.js';
+import { up as webhookKeysMigration } from '../../core/src/db/migrations/20261116000000_plugin_webhook_keys.js';
 
 /** The fixture plugin of the core dispatcher tests: its `flaky` handler fails while state key `fail` is above zero. */
 const REGISTRY = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'core', 'test', 'fixtures', 'plugins');
@@ -38,6 +39,7 @@ test('plugin activity API: deliveries and health are listed, a failed delivery i
   process.env.DB_FILENAME = path.join(root, 'fixture.sqlite');
   const { createPluginRoutes } = await import('../routes/pluginRoutes.js');
   const { createPluginActivityRoutes } = await import('../routes/pluginActivityRoutes.js');
+  const { createPluginWebhookAdminRoutes } = await import('../routes/pluginWebhookRoutes.js');
   const { createPluginRouteEntries } = await import('../pluginRouteRegistry.js');
   const { registerRouteEntries } = await import('../routeRegistry.js');
   const schemas = await import('../openapi/schemasPlugins.js');
@@ -46,7 +48,7 @@ test('plugin activity API: deliveries and health are listed, a failed delivery i
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, pluginStateMigration, journalMigration, taskDomainMigration, deliveriesMigration]) await migrate(database);
+  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, pluginStateMigration, journalMigration, taskDomainMigration, deliveriesMigration, webhookKeysMigration]) await migrate(database);
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
   const manifest = getOfficialPlugin(ID, { root: REGISTRY, includeDevelopment: true })!.manifest;
   const catalog = async () => [manifest];
@@ -61,7 +63,7 @@ test('plugin activity API: deliveries and health are listed, a failed delivery i
     req.authorization = { role: member ? 'member' : 'admin', permissions: member ? [] : ['instance.manage_settings'], source: 'local' };
     next();
   });
-  const entries = createPluginRouteEntries(createPluginRoutes(store, {}), createPluginActivityRoutes(store, database, { PROPR_PLUGIN_PAUSE_AFTER_FAILURES: '3' }));
+  const entries = createPluginRouteEntries(createPluginRoutes(store, {}), createPluginActivityRoutes(store, database, { PROPR_PLUGIN_PAUSE_AFTER_FAILURES: '3' }), createPluginWebhookAdminRoutes(store, database, {}));
   registerRouteEntries(app, entries);
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   t.after(async () => { await new Promise<void>(r => server.close(() => r())); await database.destroy(); await (await import('@propr/core')).closeConnection(); await fs.rm(root, { recursive: true, force: true }); });

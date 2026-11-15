@@ -75,3 +75,10 @@ export const retryPluginDelivery = (id: string, recordId: number) =>
   request<ProprApi.PluginDeliveryResponse>(plugin(id, `/activity${segment(String(recordId))}/retry`), { method: 'POST', body: {} });
 /** Resume deliveries paused after repeated failures. */
 export const resumePluginDeliveries = (id: string) => request<ProprApi.PluginHealthResponse>(plugin(id, '/resume'), { method: 'POST', body: {} });
+
+export type PluginWebhooksView = ProprApi.PluginWebhooksResponse;
+/** The installed plugin's inbound webhook URLs (the installation key is part of each) and its count of rejected requests. */
+export const getPluginWebhooks = (id: string) => request<ProprApi.PluginWebhooksResponse>(plugin(id, '/webhooks'));
+/** Replace the installation key: every webhook URL changes and the old ones stop working at once. */
+export const regeneratePluginWebhookKey = (id: string) =>
+  request<ProprApi.PluginWebhooksResponse>(plugin(id, '/webhooks/regenerate'), { method: 'POST', body: {} });

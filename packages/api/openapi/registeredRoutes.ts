@@ -43,7 +43,7 @@ export function listRegistryRouteEntries(): RouteEntry[] {
   return [
     ...createOperationalRouteEntries(placeholderDeps()),
     ...createStorageRouteEntries(placeholderDeps()),
-    ...createPluginRouteEntries(placeholderDeps(), placeholderDeps()),
+    ...createPluginRouteEntries(placeholderDeps(), placeholderDeps(), placeholderDeps()),
     ...createMemberCatalogRouteEntries(placeholderDeps()),
     ...createManagementRouteEntries(placeholderDeps()),
   ];

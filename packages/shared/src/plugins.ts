@@ -187,8 +187,50 @@ export const pluginSubscriptionSchema = z.strictObject({
   filter: pluginSubscriptionFilterSchema.optional(),
 });
 export type PluginSubscription = z.infer<typeof pluginSubscriptionSchema>;
-/** Accepted and validated now; ignored at runtime until webhooks land. Each webhook is verified with a `signing_secret` connection. */
-export const pluginWebhookSchema = z.strictObject({ name: keySchema, description: textSchema(200), connection: keySchema });
+/** An HTTP header name, matched without letter case (stored lower-case). */
+export const pluginHeaderNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/, 'Enter an HTTP header name such as x-signature').transform(name => name.toLowerCase());
+const headerPrefixSchema = z.string().min(1).max(32).regex(/^[\x20-\x7e]+$/, 'A prefix is printable ASCII');
+/** Headers a webhook never names: ProPR or the HTTP layer own them. */
+const RESERVED_WEBHOOK_HEADERS = ['host', 'content-length', 'content-type', 'cookie', 'connection', 'transfer-encoding'];
+/**
+ * HTTP credential headers: a webhook may verify with one (`token-header`), but
+ * never names one as its `deliveryIdHeader`, whose value is stored in the
+ * delivery record and shown in Activity.
+ */
+export const PLUGIN_WEBHOOK_CREDENTIAL_HEADERS: readonly string[] = ['authorization', 'proxy-authorization'];
+/** Inbound webhook verification schemes; ProPR verifies a request before any plugin code runs. */
+export const PLUGIN_WEBHOOK_SCHEMES = ['hmac-sha256', 'slack-v0', 'token-header'] as const;
+export type PluginWebhookScheme = typeof PLUGIN_WEBHOOK_SCHEMES[number];
+/**
+ * How ProPR verifies an inbound webhook, with a `signing_secret` connection:
+ * - `hmac-sha256`: `header` carries `prefix` + the HMAC-SHA256 of the raw body (`hex` or `base64`), as GitHub's `X-Hub-Signature-256: sha256=…`.
+ * - `slack-v0`: Slack's `X-Slack-Signature: v0=` + HMAC-SHA256 of `v0:<X-Slack-Request-Timestamp>:<body>`; the timestamp must be within 5 minutes.
+ * - `token-header`: `header` carries `prefix` + the secret itself, compared in constant time (as GitLab's `X-Gitlab-Token`).
+ */
+export const pluginWebhookVerificationSchema = z.discriminatedUnion('scheme', [
+  z.strictObject({ scheme: z.literal('hmac-sha256'), header: pluginHeaderNameSchema, prefix: headerPrefixSchema.optional(), encoding: z.enum(['hex', 'base64']).default('hex'), connection: keySchema }),
+  z.strictObject({ scheme: z.literal('slack-v0'), connection: keySchema }),
+  z.strictObject({ scheme: z.literal('token-header'), header: pluginHeaderNameSchema, prefix: headerPrefixSchema.optional(), connection: keySchema }),
+]);
+export type PluginWebhookVerification = z.infer<typeof pluginWebhookVerificationSchema>;
+/**
+ * An inbound webhook: `POST /api/plugins/<installation key>/hooks/<name>`.
+ * A verified request runs `handler` from the delivery queue. `deliveryIdHeader`
+ * names the header carrying the sender's delivery id, used to refuse replays.
+ * `respond` names an exported function of `handlers.ts` that may answer the
+ * request at once (a challenge echo): it receives the request only, never `ctx`.
+ */
+export const pluginWebhookSchema = z.strictObject({
+  name: keySchema, description: textSchema(200), handler: pluginHandlerNameSchema,
+  verification: pluginWebhookVerificationSchema,
+  deliveryIdHeader: pluginHeaderNameSchema.optional(),
+  respond: pluginHandlerNameSchema.optional(),
+});
+export type PluginWebhook = z.infer<typeof pluginWebhookSchema>;
+/** The headers a webhook's verification reads: never stored, logged or handed to the handler. */
+export function pluginWebhookVerificationHeaders(verification: PluginWebhookVerification): string[] {
+  return verification.scheme === 'slack-v0' ? ['x-slack-signature', 'x-slack-request-timestamp'] : [verification.header];
+}
 
 export const pluginContributesSchema = z.strictObject({
   mcpServers: z.array(pluginMcpServerSchema).max(PLUGIN_LIMITS.mcpServers).default([]),
@@ -223,7 +265,15 @@ function checkConnectionReferences(manifest: z.infer<typeof pluginManifestObject
     const names = [...server.env.map(e => e.name), ...server.secretEnv.map(e => e.name)];
     for (const name of duplicates(names)) issue(`Variable ${name} of server ${server.name} is listed more than once`, [...at, 'env']);
   });
-  manifest.contributes.webhooks.forEach((webhook, index) => expect(webhook.connection, 'signing_secret', ['contributes', 'webhooks', index, 'connection'], `Webhook ${webhook.name}`));
+  manifest.contributes.webhooks.forEach((webhook, index) => {
+    const at = ['contributes', 'webhooks', index];
+    expect(webhook.verification.connection, 'signing_secret', [...at, 'verification', 'connection'], `Webhook ${webhook.name}`);
+    const verified = pluginWebhookVerificationHeaders(webhook.verification);
+    for (const header of [...verified, ...(webhook.deliveryIdHeader ? [webhook.deliveryIdHeader] : [])].filter(h => RESERVED_WEBHOOK_HEADERS.includes(h))) issue(`Webhook ${webhook.name} cannot use header ${header}`, at);
+    if (webhook.deliveryIdHeader && PLUGIN_WEBHOOK_CREDENTIAL_HEADERS.includes(webhook.deliveryIdHeader)) issue(`Webhook ${webhook.name} cannot use the credential header ${webhook.deliveryIdHeader} as its delivery id`, [...at, 'deliveryIdHeader']);
+    if (webhook.deliveryIdHeader && verified.includes(webhook.deliveryIdHeader)) issue(`Webhook ${webhook.name} uses ${webhook.deliveryIdHeader} both for verification and as its delivery id`, [...at, 'deliveryIdHeader']);
+    if (webhook.respond && webhook.respond === webhook.handler) issue(`Webhook ${webhook.name} needs a respond function other than its handler`, [...at, 'respond']);
+  });
 }
 
 type SettingProblem = { message: string; field?: string };
@@ -335,7 +385,7 @@ export interface PublicPluginManifest {
     automationTemplates: string[];
     commands: { name: string; description: string }[];
     subscriptions: string[];
-    webhooks: { name: string; description: string }[];
+    webhooks: { name: string; description: string; scheme: PluginWebhookScheme }[];
   };
 }
 
@@ -356,7 +406,7 @@ export function publicPluginManifest(manifest: PluginManifest): PublicPluginMani
       automationTemplates: contributes.automationTemplates.map(t => t.id),
       commands: contributes.commands.map(c => ({ name: c.name, description: c.description })),
       subscriptions: contributes.subscriptions.map(s => s.on),
-      webhooks: contributes.webhooks.map(w => ({ name: w.name, description: w.description })),
+      webhooks: contributes.webhooks.map(w => ({ name: w.name, description: w.description, scheme: w.verification.scheme })),
     },
   };
 }

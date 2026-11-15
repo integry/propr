@@ -34,6 +34,8 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'get', path: '/api/instance/extensions/v1/oauth/client-metadata.json', auth: 'public', source: 'server.ts' },
   { method: 'get', path: '/health', auth: 'public', source: 'server.ts' },
   { method: 'post', path: '/webhook', auth: 'webhook', source: 'server.ts' },
+  // Plugin webhooks: the unguessable installation key, then the webhook's own verification scheme.
+  { method: 'post', path: '/api/plugins/:installationKey/hooks/:webhookName', auth: 'public', source: 'server.ts' },
   { method: 'get', path: '/api/compatibility', auth: 'public', source: 'server.ts' },
   // Agent run containers authenticate with a request signed by SYSTEM_TASK_SECRET.
   { method: 'post', path: '/api/internal/agent-runs/:runId/mcp-grants', auth: 'public', source: 'server.ts' },

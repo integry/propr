@@ -35,6 +35,10 @@ Ordinary task runs stay one-shot.
 | Event dispatcher | `packages/core/src/plugins/pluginDispatcher.ts`, started by the daemon (`src/daemon/pluginEventDispatch.ts`) | Reads the journal per installation and repository, runs subscribed handlers, retries, holds the lease. |
 | Delivery records | `packages/core/src/plugins/pluginDeliveries.ts`, tables `plugin_dispatch`, `plugin_delivery_cursors`, `plugin_deliveries` | Activity records, health, Retry, Resume, retention, the Degraded notification. |
 | Activity API | `packages/api/routes/pluginActivityRoutes.ts` | `GET …/:pluginId/activity`, `POST …/activity/:id/retry`, `POST …/:pluginId/resume`. |
+| Webhook verification and keys | `packages/core/src/plugins/pluginWebhooks.ts`, table `plugin_webhook_keys` | The verification schemes, the installation key, its lookup and regeneration, the rejected-request count. |
+| Webhook receiver | `packages/core/src/plugins/pluginWebhookReceiver.ts` | One inbound request: lookup, verification, the `respond` function, de-duplication, enqueue. |
+| Webhook delivery runner | `packages/core/src/plugins/pluginWebhookRunner.ts`, started by the API (`packages/api/server.ts`) | Runs queued webhook deliveries in memory, with the event retry schedule, and records them in `plugin_deliveries`. |
+| Webhook routes | `packages/api/routes/pluginWebhookRoutes.ts` | `POST /api/plugins/:installationKey/hooks/:webhookName` (public), `GET …/:pluginId/webhooks`, `POST …/:pluginId/webhooks/regenerate`. |
 
 ## Invocation
 
@@ -65,8 +69,9 @@ ignores `ctx.signal` can keep its own timers alive, but it can no longer act
 through ProPR.
 
 The [event dispatcher](#event-dispatcher) calls the runner with
-`PluginEventInput`. Later issues call it from the inbound webhook route
-(`PluginWebhookInput`) and commands (`PluginCommandInput`).
+`PluginEventInput`, and the [webhook delivery runner](#inbound-webhooks) calls
+it with `PluginWebhookInput`. A later issue calls it from commands
+(`PluginCommandInput`).
 `PluginInvokeInput` carries a JSON payload for direct calls and tests.
 
 ## Event dispatcher
@@ -194,6 +199,177 @@ records are kept until they finish. A final record is also kept while its
 event is still in the journal and ahead of the repository's cursor (another
 handler of the event is retrying, or deliveries are paused), so reading the
 event again does not run a handler that already succeeded or failed for good.
+
+## Inbound webhooks
+
+A plugin declares webhooks in `contributes.webhooks`. Each one is served at
+
+```text
+POST /api/plugins/<installation key>/hooks/<name>
+```
+
+### Installation key
+
+`plugin_webhook_keys` has one row per installation. It holds the key (32 random
+bytes, base64url, 43 characters), its SHA-256 (`key_hash`, unique, which
+requests are looked up by), the `installed_at` of the installation it belongs
+to, who created it and when, and the count, time and reason of the last
+rejected request. The row is created the first time the Plugins page reads the
+URLs. **Regenerate** replaces it in one transaction with an audit entry
+(`regenerate_webhook_key`), so the old key matches nothing from then on.
+Uninstalling deletes the row. A row from an earlier installation never matches,
+because `installed_at` must equal the current installation's.
+
+A request resolves to a webhook only when all of these hold: the key's hash is
+in the table, the installation exists, is enabled and is the one the key
+belongs to, the plugin is in the registry, and its manifest declares the
+webhook name. Anything else gets 404 before a secret is read or plugin code is
+loaded.
+
+### Request path
+
+The route is registered in `packages/api/server.ts` next to `POST /webhook`,
+before the JSON parser and the session middleware:
+
+1. The webhook rate limiter (`createWebhookRequestRateLimiter`, the one
+   `/webhook` uses), on top of the general `/api` limiter.
+2. `express.raw` for any content type, up to `PLUGIN_WEBHOOK_LIMITS.bodyBytes`
+   (256 KiB). A larger body gets 413 and is neither echoed nor logged. The body
+   is read exactly as transmitted, never inflated: a sender signs the bytes it
+   sends, compressed or not, so the parser is called with `Content-Encoding`
+   set aside and the header is put back for the receiver.
+3. `PluginWebhookReceiver.receive`:
+   1. Resolve the key and name, as described above (404).
+   2. Open the webhook's `signing_secret` connection and run
+      `verifyPluginWebhook`. A failure gets 401 and is counted on the key row
+      (`recordPluginWebhookRejection`). It is logged as
+      `{ pluginId, webhook, reason }`, never with the body or a header.
+   3. Decode the verified body (`decodePluginWebhookBody`): a single
+      `Content-Encoding` of `gzip`, `x-gzip`, `deflate` or `br`, inflated to at
+      most `PLUGIN_WEBHOOK_LIMITS.bodyBytes`. Beyond that 413; another encoding
+      415; a corrupt body 400. Nothing is decompressed before verification, and
+      a refused body takes no delivery id.
+   4. Derive the delivery id: `whk-<webhook>:<value of deliveryIdHeader>`, or
+      `whk-<webhook>/<random UUID>` when the webhook declares no header or the
+      request does not send it. A webhook name contains neither `:` nor `/`, so
+      the character after the name ends it: webhook `a` with id `b-c` and
+      webhook `a-b` with id `c` get different ids. A malformed value gets 400.
+      The value is stored in `delivery_id` and shown in Activity, so the
+      manifest schema refuses `authorization` and `proxy-authorization` (and the
+      webhook's verification headers) as `deliveryIdHeader`, and
+      `senderDeliveryId` never reads them either.
+   5. `PluginWebhookRunner.reserve` inserts the `plugin_deliveries` row (kind
+      `webhook`, `event_type` `webhook.<name>`, empty repository, `event_seq` 0,
+      status `pending`, `webhook_owner` this runner) before any plugin code
+      runs. The unique `(plugin_id, delivery_id)` index turns a replay into a
+      409, so a replay never reaches the `respond` function either. A `failed`
+      webhook row with the same delivery id is deleted first, in the same
+      transaction: its request was not kept, so the sender's redelivery is the
+      only way to deliver it. The new row has a new id, so a runner still
+      holding the old one (another process whose heartbeat lapsed) finds no
+      record and drops it. Rows that are `pending`, `running`, `retrying` or
+      `succeeded` still make the request a 409. When 1,000 deliveries are
+      already held or reserved, the answer is 503.
+   6. If the webhook has `respond`, call it (see below). A response is sent as
+      it is and the request ends there. A 2xx answer to a request with the
+      sender's delivery id marks the row succeeded (handler: the respond
+      function), so the id stays taken; otherwise the row is deleted
+      (`release`), and a failed respond function's request may be sent again.
+      If the write marking the answer reports an error, the row is read back:
+      when the answer committed, it is sent. Otherwise, or when the row cannot
+      be read, the request fails with 500 and the row is deleted, whether it
+      is still pending or holds that unsent answer, so the sender may send it
+      again.
+   7. Refuse with 503 while the installation's event deliveries are paused,
+      releasing the row so the sender's retry is not a replay.
+   8. `start` hands the delivery to the runner, and the answer is 202.
+
+| Scheme | Computation | Notes |
+| --- | --- | --- |
+| `hmac-sha256` | `prefix + enc(HMAC-SHA256(secret, rawBody))`, `enc` hex (case-insensitive) or base64 | The digest is decoded and compared with `timingSafeEqual`. A repeated header is treated as missing. |
+| `slack-v0` | `"v0=" + hex(HMAC-SHA256(secret, "v0:" + timestamp + ":" + rawBody))` | `X-Slack-Request-Timestamp` must be within `PLUGIN_WEBHOOK_LIMITS.timestampToleranceSeconds` (300) of now, in either direction. |
+| `token-header` | `header == prefix + secret` | The SHA-256 digests of both sides are compared with `timingSafeEqual`, so neither the length nor the content leaks through timing. |
+
+The test vectors are GitHub's documented delivery (`It's a Secret to
+Everybody`, `Hello, World!`), RFC 4231 test case 2 (`Jefe`), and Slack's
+documented slash command request. They are in
+`packages/core/test/pluginWebhooks.test.ts`.
+
+### The `respond` function
+
+`respond` names a function exported from `handlers.ts`, of type
+`PluginWebhookResponder`. The receiver loads the handlers module and calls the
+function with `Reflect.apply`, passing exactly one argument: the frozen request
+`{ webhook, headers, body, receivedAt }`, whose headers are frozen too. No
+`ctx` is built for it. It therefore cannot reach ProPR, outbound HTTP, state
+or the log, and the tests check that a function that reaches for a second
+argument fails.
+
+A returned thenable is refused, so the function must be synchronous. The
+response is checked: a 2xx status, `text/plain` or `application/json`, and a
+string body of at most `PLUGIN_WEBHOOK_LIMITS.responseBytes` (4 KiB). A refusal
+or a throw gets 500. Nothing of the error is logged (not even its name),
+because it could quote the request.
+
+### Webhook delivery runner
+
+Request bodies must never be stored, so webhook deliveries do not go through
+the journal or Redis. `PluginWebhookRunner` holds each accepted delivery (the
+request body, the filtered headers and the target installation) in the API
+process's memory, keyed by its `plugin_deliveries` id. It then:
+
+1. Re-reads the installation before each attempt. A disabled, uninstalled or
+   reinstalled plugin fails the delivery (`Not delivered: the plugin was
+   disabled`). A record another writer already finished is dropped. Enabling
+   the plugin again runs `restartPluginDispatch`, which marks every unfinished
+   delivery failed, and that includes webhook deliveries.
+2. Marks the record `running` only when it is still in the status it was read
+   in, runs the handler with `{ kind: 'webhook', …, deliveryId, attempt }`, and
+   records the outcome only while the record is still that attempt.
+3. Retries on `PLUGIN_DELIVERY_RETRY_DELAYS_MS` (1 min, 5 min, 30 min, 2 h).
+   After the last delay the delivery is failed and its memory is released.
+
+The handler's headers are the request's minus the verification headers,
+`authorization`, `proxy-authorization`, `cookie`, `host`, `connection`,
+`content-length`, `transfer-encoding` and `content-encoding` (the handler gets
+the decoded body).
+
+Each runner has an owner name (`webhooks-<pid>-<uuid>`) and a heartbeat row in
+`plugin_webhook_runners`, renewed every 30 seconds; each delivery record names
+its owner in `webhook_owner`. When the API starts, and with every heartbeat,
+`recover()` marks failed the unfinished webhook deliveries whose owner has
+stopped: its heartbeat is older than 2 minutes, or the record has no owner.
+They read *ProPR stopped before the delivery finished, and webhook requests are
+not kept*. This is one `UPDATE`, so another API process starting while one is
+alive never fails that process's pending or retrying deliveries.
+
+A runner keeps a request in memory until the database write that moves its
+delivery on has succeeded. A failed write is retried after 1 s, 5 s, 30 s and
+then every minute. If the handler had already run, only the outcome is
+written again; the handler does not run a second time. A reservation (a
+refused or answered request) stays counted until its record is deleted or
+marked answered. Each heartbeat also marks failed any of the runner's own
+unfinished records that it no longer holds. `stop()` (on SIGTERM) lets attempts under
+way finish and fails the deliveries still waiting. A failed webhook delivery
+cannot be retried from Activity (`retryPluginDelivery` only accepts event
+deliveries), because the request is gone. The sender's redelivery with the
+same delivery id replaces it instead (see `reserve` above).
+
+Webhook attempts do not update `plugin_dispatch` health. The dispatcher's
+failure count, Degraded state and pause track event deliveries only. A paused
+installation refuses new webhook requests with 503.
+
+**What is stored.** The key row (the key, its hash and the rejection count) and
+the delivery record (the ids, the webhook and handler names, status, timing,
+and the level and time of each log line). A handler may log or throw any part
+of the request, which the credential redaction does not recognize, so a
+webhook attempt keeps no handler log message or field and no error text: the
+error is *The webhook handler failed* or *The webhook handler timed out*
+(`webhookDiagnostics`). The body, the signature and
+token headers, and the other request headers are never written to the database
+or a log. The sentinel tests in `pluginWebhooks.test.ts` and
+`packages/api/test/pluginWebhookRoutes.test.ts` dump every table and capture
+every logger and console line to check this.
 
 ## `ctx.propr`: the scoped client
 

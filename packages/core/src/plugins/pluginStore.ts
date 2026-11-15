@@ -14,6 +14,7 @@ import { PluginContributions, oauthServersOf, pluginContributionViews, type Plug
 import { pluginTemplateIds } from './pluginTemplates.js';
 import { deletePluginState } from './pluginStateStore.js';
 import { deletePluginDispatch, restartPluginDispatch } from './pluginDeliveries.js';
+import { deletePluginWebhookKey } from './pluginWebhooks.js';
 import {
   PluginError, enableBlockers, installationRecord, nextAcknowledgements, parseAcknowledgements, pendingAcknowledgements, pendingPermissions, pluginView,
   type PluginInstallationRow, type PluginSecretRow,
@@ -321,6 +322,7 @@ export class PluginStore {
       await trx('plugin_installations').where({ plugin_id: pluginId }).delete();
       const state = await deletePluginState(trx, pluginId);
       await deletePluginDispatch(trx, pluginId);
+      await deletePluginWebhookKey(trx, pluginId);
       return { action: 'uninstall', detail: { version: row.manifest_version, stateKeys: state } };
     });
   }

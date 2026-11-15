@@ -8,6 +8,7 @@ import { up as pluginMigration } from '../src/db/migrations/20261114000000_plugi
 import { up as pluginStateMigration } from '../src/db/migrations/20261114180000_plugin_state.js';
 import { up as journalMigration } from '../src/db/migrations/20261112160000_create_repository_events.js';
 import { up as deliveriesMigration } from '../src/db/migrations/20261115000000_plugin_event_deliveries.js';
+import { up as webhookKeysMigration } from '../src/db/migrations/20261116000000_plugin_webhook_keys.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
 import { up as oauthMigration } from '../src/db/migrations/20261113120000_extension_oauth.js';
@@ -31,7 +32,7 @@ function upgraded(change: { permissions?: boolean; packageVersion?: string } = {
 const withSigningSecret = (): PluginManifest => pluginManifestSchema.parse({
   ...structuredClone(example),
   connections: [...example.connections, { type: 'signing_secret', name: 'example-signing', label: 'Signing secret', help: 'The webhook signing secret.', helpUrl: 'https://example.com/docs/webhooks' }],
-  contributes: { ...structuredClone(example.contributes), webhooks: [{ name: 'events', description: 'Example events', connection: 'example-signing' }] },
+  contributes: { ...structuredClone(example.contributes), webhooks: [{ name: 'events', description: 'Example events', handler: 'onEvent', verification: { scheme: 'token-header', header: 'x-example-token', connection: 'example-signing' } }] },
 });
 
 async function fixture(t: TestContext, initial: PluginManifest = example) {
@@ -39,7 +40,7 @@ async function fixture(t: TestContext, initial: PluginManifest = example) {
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database); await pluginStateMigration(database); await journalMigration(database); await deliveriesMigration(database);
+  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database); await pluginStateMigration(database); await journalMigration(database); await deliveriesMigration(database); await webhookKeysMigration(database);
   let manifests: PluginManifest[] = [initial];
   let clock = 1_700_000_000_000;
   const store = new PluginStore(database, { SYSTEM_TASK_SECRET: 'plugin-store-test-root' }, async () => manifests, () => clock);

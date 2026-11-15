@@ -48,20 +48,22 @@ function HealthNotice({ health, busy, onResume }: { health: PluginHealthView; bu
 function DeliveryItem({ delivery, busy, onRetry }: { delivery: PluginDeliveryView; busy: boolean; onRetry: () => void }) {
   const status = STATUS[delivery.status];
   const gap = delivery.kind === 'gap';
+  // A webhook request is never stored, so a failed webhook delivery cannot be retried from here.
+  const webhook = delivery.kind === 'webhook';
   return (
     <li data-testid="plugin-delivery" data-status={delivery.status} className="space-y-1 border-t border-slate-100 py-3 first:border-t-0">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-medium text-slate-900 [overflow-wrap:anywhere]">{gap ? 'Events not delivered' : delivery.eventType}</span>
         {delivery.handler && <code className="rounded bg-slate-100 px-1 text-xs text-slate-700">{delivery.handler}</code>}
         <span className={`rounded px-1.5 py-0.5 text-[11px] leading-4 font-semibold uppercase tracking-wide ${status.className}`}>{status.label}</span>
-        {delivery.status === 'failed' && !gap && (
+        {delivery.status === 'failed' && !gap && !webhook && (
           <button type="button" className={`${buttonClass} ml-auto`} disabled={busy} onClick={onRetry} aria-label={`Retry ${delivery.eventType} to ${delivery.handler}`}>Retry</button>
         )}
       </div>
       <p className="flex flex-wrap gap-x-3 text-xs text-slate-500">
         <span>{time(delivery.startedAt ?? delivery.createdAt)}</span>
-        <span className="[overflow-wrap:anywhere]">{delivery.repository}</span>
-        {!gap && <span>Event #{delivery.eventSeq}</span>}
+        {delivery.repository && <span className="[overflow-wrap:anywhere]">{delivery.repository}</span>}
+        {!gap && !webhook && <span>Event #{delivery.eventSeq}</span>}
         {!gap && <span>Attempt {delivery.attempt}</span>}
         {delivery.durationMs !== null && <span>{duration(delivery.durationMs)}{delivery.timedOut ? ' (timed out)' : ''}</span>}
         {delivery.nextAttemptAt !== null && delivery.status === 'retrying' && <span>Next attempt {time(delivery.nextAttemptAt)}</span>}
@@ -80,8 +82,8 @@ function DeliveryItem({ delivery, busy, onRetry }: { delivery: PluginDeliveryVie
 }
 
 /**
- * Activity: each event delivered to the plugin's handlers and its result, newest first, with Retry for a failed
- * delivery, and the plugin's delivery health with Resume once deliveries are paused.
+ * Activity: each event and webhook request delivered to the plugin's handlers and its result, newest first, with Retry
+ * for a failed event delivery, and the plugin's delivery health with Resume once deliveries are paused.
  */
 export function PluginActivity({ activity: state }: { activity: Activity }) {
   const { activity, error, notice, busy } = state;
@@ -107,7 +109,7 @@ export function PluginActivity({ activity: state }: { activity: Activity }) {
           ))}
         </ul>
       )}
-      <p className="text-xs text-slate-500">Records are kept for 14 days. They hold the event id and type, never its contents.</p>
+      <p className="text-xs text-slate-500">Records are kept for 14 days. They hold the event id and type, never its contents, and never a webhook request's body or headers.</p>
     </section>
   );
 }

@@ -145,7 +145,15 @@ export interface PluginContext {
  * counts from 1.
  */
 export interface PluginEventInput { kind: 'event'; event: RepositoryEvent; deliveryId: string; attempt: number }
-export interface PluginWebhookInput { kind: 'webhook'; webhook: string; headers: Record<string, string>; body: string; receivedAt: number }
+/**
+ * A verified inbound webhook request delivered to its handler. `headers` are
+ * the request's headers (lower-case names) without the verification headers,
+ * cookies and authorization; `body` is the raw body as text. Neither is
+ * stored by ProPR. `deliveryId` is the same on every attempt: the sender's
+ * delivery id when the webhook declares `deliveryIdHeader`, otherwise one ProPR
+ * assigns. `attempt` counts from 1.
+ */
+export interface PluginWebhookInput { kind: 'webhook'; webhook: string; headers: Record<string, string>; body: string; receivedAt: number; deliveryId: string; attempt: number }
 export interface PluginCommandInput { kind: 'command'; command: string; args: string; repository: string | null; actor: string }
 export interface PluginInvokeInput { kind: 'invoke'; payload: PluginJsonValue }
 export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput;
@@ -156,6 +164,29 @@ export type PluginHandler<I extends PluginHandlerInput = PluginHandlerInput, R e
 export type PluginHandlerModule = Record<string, PluginHandler>;
 /** Declare a handler with typed input; identity at runtime. */
 export const definePluginHandler = <I extends PluginHandlerInput, R extends PluginHandlerResultValue = void>(handler: PluginHandler<I, R>): PluginHandler<I, R> => handler;
+
+/** What a webhook's `respond` function receives: the verified request, frozen. It gets no `ctx`. */
+export interface PluginWebhookRequest { webhook: string; headers: Readonly<Record<string, string>>; body: string; receivedAt: number }
+/** A synchronous answer: sent as the response, and the handler does not run. */
+export interface PluginWebhookResponse {
+  /** 200 by default; a 2xx status. */
+  status?: number;
+  /** `text/plain` by default; `application/json` for a JSON body. */
+  contentType?: 'text/plain' | 'application/json';
+  /** At most `PLUGIN_WEBHOOK_LIMITS.responseBytes`. */
+  body: string;
+}
+/**
+ * A webhook's `respond` function: a pure, synchronous function of the
+ * request, for services that require an immediate challenge echo (Slack's
+ * `url_verification`). Return a response to answer with it (the handler does
+ * not run), or null to deliver the request to the handler as usual.
+ */
+export type PluginWebhookResponder = (request: PluginWebhookRequest) => PluginWebhookResponse | null | undefined;
+/** Declare a webhook `respond` function; identity at runtime. */
+export const definePluginWebhookResponder = (responder: PluginWebhookResponder): PluginWebhookResponder => responder;
+/** Limits of inbound webhooks: the raw body size, the response a `respond` function may give, the delivery id length and Slack's timestamp tolerance. */
+export const PLUGIN_WEBHOOK_LIMITS = { bodyBytes: 256 * 1024, responseBytes: 4 * 1024, deliveryIdChars: 200, timestampToleranceSeconds: 5 * 60, pending: 1_000 } as const;
 
 /** What `runPluginHandler` returns; it never throws. */
 export interface PluginHandlerRun {

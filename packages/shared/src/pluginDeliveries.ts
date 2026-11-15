@@ -25,20 +25,25 @@ export const PLUGIN_ACTIVITY_LIMIT = 100;
  */
 export const PLUGIN_DELIVERY_STATUSES = ['pending', 'running', 'retrying', 'succeeded', 'failed', 'skipped'] as const;
 export type PluginDeliveryStatus = typeof PLUGIN_DELIVERY_STATUSES[number];
-/** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. */
-export const PLUGIN_DELIVERY_KINDS = ['event', 'gap'] as const;
+/**
+ * `event`: one journal event to one handler. `gap`: journal retention removed
+ * events before they were delivered. `webhook`: one verified inbound webhook
+ * request to its handler (its body is held in memory only, never stored).
+ */
+export const PLUGIN_DELIVERY_KINDS = ['event', 'gap', 'webhook'] as const;
 export type PluginDeliveryKind = typeof PLUGIN_DELIVERY_KINDS[number];
 
 export interface PluginDeliveryView {
   /** The activity record id, used by the retry route. */
   id: number;
-  /** The stable delivery id handlers receive (`evt-<seq>-<handler>`); the same on every attempt. */
+  /** The stable delivery id handlers receive (`evt-<seq>-<handler>`, `whk-<webhook>:<id>`, `whk-<webhook>/<uuid>`); the same on every attempt. */
   deliveryId: string;
   kind: PluginDeliveryKind;
+  /** The event's repository; empty for a webhook delivery. */
   repository: string;
-  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing. */
+  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook. */
   eventSeq: number;
-  /** `<domain>.<type>`; null for a gap. */
+  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap. */
   eventType: string | null;
   handler: string | null;
   status: PluginDeliveryStatus;

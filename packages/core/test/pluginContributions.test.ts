@@ -17,6 +17,7 @@ import { up as pluginMigration } from '../src/db/migrations/20261114000000_plugi
 import { up as pluginStateMigration } from '../src/db/migrations/20261114180000_plugin_state.js';
 import { up as journalMigration } from '../src/db/migrations/20261112160000_create_repository_events.js';
 import { up as deliveriesMigration } from '../src/db/migrations/20261115000000_plugin_event_deliveries.js';
+import { up as webhookKeysMigration } from '../src/db/migrations/20261116000000_plugin_webhook_keys.js';
 import { PluginError, PluginStore } from '../src/plugins/pluginStore.js';
 import { PluginContributions } from '../src/plugins/pluginContributions.js';
 import { officialPluginAssets, type PluginAssetSource } from '../src/plugins/pluginAssets.js';
@@ -65,7 +66,7 @@ async function fixture(t: TestContext, options: { advertise?: SyntheticOAuthOpti
   await database.schema.createTable('tasks', c => c.string('task_id').primary());
   await database.schema.createTable('task_history', c => { c.string('task_id'); c.string('state'); c.string('timestamp'); c.text('reason'); c.text('metadata'); });
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
-  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database); await pluginStateMigration(database); await journalMigration(database); await deliveriesMigration(database);
+  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database); await pluginStateMigration(database); await journalMigration(database); await deliveriesMigration(database); await webhookKeysMigration(database);
   const environment = { SYSTEM_TASK_SECRET: 'synthetic-plugin-custody', PROPR_EXTENSION_NPM_REGISTRY: registry.url, PROPR_EGRESS_SOCKET_DIR: path.join(root, 'egress'), PATH: process.env.PATH };
   let manifests = [exampleManifest()];
   const catalog = async () => manifests;
