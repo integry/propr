@@ -71,6 +71,8 @@ export interface ScopedProprOptions {
    * the permission the call needs and the repository it names: throws to
    * refuse it (the installation the permissions and repository limit were
    * read from was removed, replaced, disabled, or no longer grants them).
+   * `getTask` names no repository until the task is read: it is called again
+   * then, with the task's repository, before the task is returned.
    */
   authorize?: (call: PluginProprCallScope) => Promise<void>;
 }
@@ -124,6 +126,16 @@ export function scopedProprClient(options: ScopedProprOptions): PluginProprClien
     return value;
   };
   const allowedRepository = (name: string) => !limit || limit.includes(name.toLowerCase());
+  /** The current installation's authority over a task's repository; the refusal names no repository, as the handler did not. */
+  const authorizeTaskRepository = async (name: string) => {
+    if (!options.authorize) return;
+    try {
+      await options.authorize({ permission: PLUGIN_PROPR_OPERATIONS.getTask, repository: name });
+    } catch (error) {
+      if (error instanceof PluginSdkError && error.code === 'repository_not_allowed') throw new PluginSdkError('repository_not_allowed', 'This plugin is no longer enabled for the task\'s repository');
+      throw error;
+    }
+  };
 
   async function call<T>(operation: PluginProprOperation, target: () => Target, run: (checked: Target) => Promise<T>): Promise<T> {
     const permission = PLUGIN_PROPR_OPERATIONS[operation];
@@ -169,6 +181,8 @@ export function scopedProprClient(options: ScopedProprOptions): PluginProprClien
       if (!task) throw new PluginSdkError('not_found', 'Task not found');
       // The repository is known only once the task is read; a task outside the limit is not returned.
       if (!allowedRepository(task.repository)) throw new PluginSdkError('repository_not_allowed', 'This plugin is not enabled for the task\'s repository');
+      // The call's authorization named no repository (none was known): the installation must still allow this one now, not only as the run started.
+      await authorizeTaskRepository(task.repository);
       return task;
     }),
     listEvents: input => call('listEvents', () => ({ repository: repository(input?.repository) }), t => backend.listEvents({

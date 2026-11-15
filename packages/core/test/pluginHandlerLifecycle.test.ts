@@ -593,3 +593,40 @@ test('the GitHub backend rechecks the installation\'s enabled state, grants and 
   await backend.addLabel('owner/second', 3, 'ok');
   assert.deepEqual(sent, ['POST /repos/{owner}/{repo}/issues/{issue_number}/labels'], 'the revoked permission\'s read was not sent either');
 });
+
+test('a handler resuming after its repository limit changed cannot read a task of the repository it started with', async t => {
+  // getTask names no repository, so the authorization before the read passes on tasks.read alone; the task's repository is checked once it is read.
+  for (const [change, restrict, expected] of RESTRICTIONS) {
+    const f = await pluginHandlerFixture(t);
+    const held = deferred();
+    const reached = deferred();
+    const backend = { ...f.backend, getIssue: async () => { reached.resolve(); await held.promise; throw new Error('released'); } };
+    const running = runPluginHandler(FIXTURE_ID, 'suspendThenPropr', invoke({ operation: 'getTask', args: ['task-1'] }), { ...f.options, backend });
+    await reached.promise;
+    if (change === 'permission revoked') {
+      await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).update({ granted_permissions: JSON.stringify(['issues.read']) });
+    } else {
+      await restrict(f);
+    }
+    held.resolve();
+    const run = await running;
+    assert.equal(run.outcome, 'succeeded', run.error ?? '');
+    const result = run.result as { ok: boolean; code: string; message: string; value?: unknown };
+    assert.equal(result.ok, false, change);
+    assert.equal(result.code, expected.code, change);
+    assert.equal(result.value, undefined, `${change}: the task was not returned`);
+    // The limit changed: the refusal names the task's repository no more than the handler did.
+    if (change === 'limited to another repository') assert.equal(result.message, 'This plugin is no longer enabled for the task\'s repository');
+    else assert.match(result.message, expected.message instanceof RegExp ? expected.message : new RegExp(`^${expected.message}$`), change);
+    // Only the repository restriction is discovered after the read: the task itself is read, then withheld. The other changes refuse before the backend.
+    assert.deepEqual(f.calls.map(c => c.operation), change === 'limited to another repository' ? ['getTask'] : [], change);
+    const refused = (await f.database('plugin_audit').where({ plugin_id: FIXTURE_ID, action: 'handler_refused' }).orderBy('id').select('detail')).map(row => JSON.parse(row.detail) as { operation: string; reason: string });
+    assert.deepEqual(refused.map(r => [r.operation, r.reason]), [['getIssue', 'unavailable'], ['getTask', expected.code]], change);
+  }
+  // Unchanged, the same suspended read returns the task: the recheck refuses only what the administrator took away.
+  const f = await pluginHandlerFixture(t);
+  const backend = { ...f.backend, getIssue: async () => { throw new Error('released'); } };
+  const run = await runPluginHandler(FIXTURE_ID, 'suspendThenPropr', invoke({ operation: 'getTask', args: ['task-1'] }), { ...f.options, backend });
+  assert.equal((run.result as { ok: boolean; value: { repository: string } }).ok, true);
+  assert.equal((run.result as { ok: boolean; value: { repository: string } }).value.repository, 'owner/allowed');
+});

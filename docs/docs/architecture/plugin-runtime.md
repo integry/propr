@@ -105,7 +105,8 @@ Every call is checked before it reaches the backend:
   call's permission on the repository it names, as an administrator last set
   them; the default backend checks the same again right before it sends each
   GitHub request or adds a task job, after the App client or the queue is
-  ready. A handler that resumes after its plugin was uninstalled, or
+  ready. `getTask` names no repository until the task is read, so it checks
+  the task's repository against the current limit then, before returning it. A handler that resumes after its plugin was uninstalled, or
   uninstalled and reinstalled, gets `unavailable` ("The plugin is no longer
   installed"); after it was disabled, `unavailable` ("The plugin is
   disabled"); after its repository limit was changed to exclude the
