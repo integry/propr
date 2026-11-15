@@ -99,13 +99,19 @@ Every call is checked before it reaches the backend:
   `commentOnIssue` read the number first and refuse a pull request;
   `commentOnPullRequest` refuses an issue (`not_found`, nothing is posted). An
   `issues.comment` grant cannot comment on a pull request, nor the reverse.
-- **Installation.** The permissions and the repository limit are those of the
-  installation the run started with. Every call requires that installation
-  to still be installed, and the default backend checks again right before it
-  sends each GitHub request or adds a task job, after the App client or the
-  queue is ready. A handler that resumes after its plugin was uninstalled, or
-  uninstalled and reinstalled, gets `unavailable`: it creates no issue,
-  comment, label or task. Uninstall does not wait for a GitHub request that
+- **Installation.** The permissions and the repository limit are first those
+  of the installation the run started with. Every call then requires that
+  installation to still be installed and enabled, and to still grant the
+  call's permission on the repository it names, as an administrator last set
+  them; the default backend checks the same again right before it sends each
+  GitHub request or adds a task job, after the App client or the queue is
+  ready. A handler that resumes after its plugin was uninstalled, or
+  uninstalled and reinstalled, gets `unavailable` ("The plugin is no longer
+  installed"); after it was disabled, `unavailable` ("The plugin is
+  disabled"); after its repository limit was changed to exclude the
+  repository, `repository_not_allowed`; after a grant was revoked,
+  `permission_denied`. In each case it creates no issue, comment, label or
+  task. An administrative change does not wait for a GitHub request that
   passed this check and is already being sent.
 
 A refused call throws `PluginSdkError` with code `permission_denied`,
@@ -163,7 +169,10 @@ the request is sent and is injected as `Authorization: Bearer <secret>`. An
 (`connection_unavailable`). The handler never receives the secret: it is not
 part of `ctx`, and the secret (plain, JSON-escaped, base64, base64url, hex,
 URL-encoded and as the full header value) is replaced with `[REDACTED]` in the
-response headers and body before the handler sees them. Each of these spellings
+response headers and body before the handler sees them. The hex spelling is
+matched in any letter case (`Buffer.from(hex, 'hex')` decodes `AB`, `ab` and
+`aB` alike); every other spelling is matched exactly, so a value that merely
+differs from the secret in case is not touched. Each of these spellings
 is also replaced where some of its characters are percent-escaped, with
 lowercase or uppercase hex digits (`%2f` as well as `%2F`, or an escaped
 letter), since `decodeURIComponent` recovers all of them. A JSON body is also
@@ -186,10 +195,13 @@ back.
 
 **Installation binding.** The secret is read from the installation the run
 belongs to, in one transaction with it, and every authenticated request checks
-again before it is sent that this installation is still installed. A run that
-resumes after its plugin was uninstalled, or uninstalled and reinstalled with a
-new connection of the same name, gets `unavailable` and sends nothing; it never
-receives the replacement installation's secret.
+again before it is sent that this installation is still installed and enabled.
+A run that resumes after its plugin was uninstalled, or uninstalled and
+reinstalled with a new connection of the same name, gets `unavailable` and
+sends nothing; it never receives the replacement installation's secret. A run
+that resumes after its plugin was disabled gets `unavailable` ("The plugin is
+disabled") and sends nothing either. An unauthenticated `ctx.http()` request
+carries nothing of the installation and is not bound to its enabled state.
 
 **Run lifetime.** The run's signal reaches the request: it is checked again
 after the DNS lookup and after the credential is read, and no request starts

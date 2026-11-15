@@ -9,8 +9,8 @@ import type { ExtensionLookup } from '../extensions/endpointPolicy.js';
 import { redactExtensionOutput } from '../extensions/extensionOutput.js';
 import { createPluginHttp, scrubCredentialValues, type PluginHttpTransport } from './pluginHttp.js';
 import { githubPluginProprBackend } from './pluginProprBackend.js';
-import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallOutcome, type PluginProprCallRecord } from './pluginProprClient.js';
-import { pluginStateStore, requireInstallation, type PluginStateWriteGuard } from './pluginStateStore.js';
+import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallOutcome, type PluginProprCallRecord, type PluginProprCallScope } from './pluginProprClient.js';
+import { pluginStateStore, requireInstallation, type PluginInstallationAuthority, type PluginStateWriteGuard } from './pluginStateStore.js';
 
 /** An installed plugin as a handler runs it: the current manifest and the installation record. */
 export interface PluginInstallationTarget { pluginId: string; manifest: PluginManifest; record: PluginInstallationRecord }
@@ -39,8 +39,38 @@ export interface BuiltPluginContext {
 const CALL_AUDIT_ACTIONS = { attempted: 'handler_attempt', completed: 'handler_call', refused: 'handler_refused' } as const satisfies Record<PluginProprCallOutcome, PluginAuditAction>;
 
 /** Permissions the handler has: granted by the administrator and still asked for by the current manifest. */
-export function effectivePluginPermissions(manifest: PluginManifest, record: PluginInstallationRecord): PluginPermission[] {
+export function effectivePluginPermissions(manifest: PluginManifest, record: Pick<PluginInstallationRecord, 'grantedPermissions'>): PluginPermission[] {
   return manifest.permissions.filter(permission => record.grantedPermissions.includes(permission));
+}
+
+/** The installation as it is now, required to be the one the run started with (not a reinstall) and enabled. */
+async function currentInstallation(database: Knex, pluginId: string, installation: PluginStateWriteGuard): Promise<PluginInstallationAuthority> {
+  const authority = await database.transaction(trx => requireInstallation(trx, pluginId, installation));
+  if (!authority.enabled) throw new PluginSdkError('unavailable', 'The plugin is disabled');
+  return authority;
+}
+
+/**
+ * Authorization of a run's dispatches against its installation as it is at
+ * that moment, not as the run started: an administrator may have disabled the
+ * plugin, uninstalled it (or reinstalled it), changed its repository limit or
+ * its grants while the handler was suspended. `request` is for an
+ * authenticated `ctx.http` request: the installation must be the same and
+ * enabled. `call` is for a `ctx.propr` dispatch: it must also still grant the
+ * permission (through the run's manifest) and, when the call names a
+ * repository, still allow it.
+ */
+export function installationAuthorizer(database: Knex, pluginId: string, manifest: PluginManifest, installation: PluginStateWriteGuard) {
+  return {
+    request: async (): Promise<void> => { await currentInstallation(database, pluginId, installation); },
+    call: async ({ permission, repository }: PluginProprCallScope): Promise<void> => {
+      const authority = await currentInstallation(database, pluginId, installation);
+      if (!effectivePluginPermissions(manifest, authority).includes(permission)) throw new PluginSdkError('permission_denied', `The ${permission} permission is no longer granted to this plugin`);
+      if (repository && authority.repositories && !authority.repositories.some(allowed => allowed.toLowerCase() === repository.toLowerCase())) {
+        throw new PluginSdkError('repository_not_allowed', `This plugin is no longer enabled for ${repository}`);
+      }
+    },
+  };
 }
 
 /** The installation's settings with the manifest's defaults, validated against the current manifest. */
@@ -61,12 +91,13 @@ function logFields(fields: Record<string, unknown> | undefined): Record<string, 
   } catch { return { invalidFields: true }; }
 }
 
-/** The connection secret of the installation `guard` names, read in one transaction with that installation; refused once it was removed or replaced. */
+/** The connection secret of the installation `guard` names, read in one transaction with that installation; refused once it was removed, replaced or disabled. */
 async function defaultConnectionSecret({ database, environment }: { database: Knex; environment: NodeJS.ProcessEnv }, pluginId: string, connection: string, guard: PluginStateWriteGuard): Promise<string | null> {
   const { PluginStore } = await import('./pluginStore.js');
   const store = new PluginStore(database, environment);
   return database.transaction(async trx => {
-    await requireInstallation(trx, pluginId, guard);
+    const authority = await requireInstallation(trx, pluginId, guard);
+    if (!authority.enabled) throw new PluginSdkError('unavailable', 'The plugin is disabled');
     return store.connectionSecret(pluginId, connection, trx);
   });
 }
@@ -111,10 +142,10 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     }
   };
 
-  // The installation this run belongs to: a credential is read from it only, and a request is sent only while it is still installed.
+  // The installation this run belongs to: a credential is read from it only, and a request is sent only while it is still installed and enabled.
   const installation: PluginStateWriteGuard = { installedAt: record.installedAt, signal };
-  /** Refuses once this run's installation was uninstalled (or replaced by a reinstall), or the run ended. */
-  const authorizeInstallation = () => deps.database.transaction(trx => requireInstallation(trx, pluginId, installation));
+  /** Refuses once this run's installation was uninstalled (or replaced by a reinstall), disabled or restricted, or the run ended. */
+  const authorize = installationAuthorizer(deps.database, pluginId, manifest, installation);
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
     if (connection !== undefined) {
@@ -130,7 +161,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     }
     return createPluginHttp({
       outboundHosts: manifest.outboundHosts, credential, lookup: deps.lookup, transport: deps.transport, signal,
-      authorize: credential ? authorizeInstallation : undefined,
+      authorize: credential ? authorize.request : undefined,
       onDecision: ({ host, allowed, reason }) => write(allowed ? 'debug' : 'warn', allowed ? `ctx.http request to ${host}` : `ctx.http request to ${host} refused: ${reason}`, { host, ...(connection ? { connection } : {}) }),
     });
   };
@@ -146,12 +177,13 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
     pluginId,
     settings: Object.freeze(structuredClone(handlerSettings(manifest, record))),
     repositories: record.repositories ? [...record.repositories] : null,
-    // Its permissions and repository limit are this installation's: every call (and, by default, every GitHub request and queued task) requires it to still be installed.
+    // Its permissions and repository limit are this installation's: every call (and, by default, every GitHub request and queued task) requires it to
+    // still be installed and enabled, and to still grant the call's permission on its repository.
     propr: liveMethods(scopedProprClient({
       pluginId, grantedPermissions: effectivePluginPermissions(manifest, record), repositories: record.repositories,
-      backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal, authorize: authorizeInstallation }), record: recordCall,
+      backend: deps.backend ?? githubPluginProprBackend({ database: deps.database, signal, authorize: authorize.call }), record: recordCall,
       onRecordFailure: (call, error) => logger.error({ pluginId, handler, operation: call.operation, callId: call.callId, outcome: call.outcome, error: error instanceof Error ? error.message : String(error) }, '[plugins] Could not record the outcome of an attempted handler call'),
-      authorize: authorizeInstallation,
+      authorize: authorize.call,
     })),
     http: connection => live(http(connection)),
     // State is tied to this installation: once it is uninstalled (or replaced by a reinstall) every operation is refused.

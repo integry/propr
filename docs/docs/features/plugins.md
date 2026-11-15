@@ -564,7 +564,10 @@ A call `ctx` refuses throws a `PluginSdkError` with a `code` such as
 
 A permission counts only when the administrator granted it and the current
 manifest still asks for it. Each call must also stay inside the plugin's
-repository limit.
+repository limit. These are checked again, as an administrator last set them,
+right before each call is dispatched: a handler that is still running when its
+plugin is disabled, restricted to other repositories or uninstalled cannot act
+under the authority it started with.
 
 Every call, allowed or refused, is recorded in the plugin's audit trail. The
 actor is `plugin:<id>` and the action is `handler_call` or `handler_refused`.

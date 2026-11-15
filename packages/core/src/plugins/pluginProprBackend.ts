@@ -1,9 +1,9 @@
 import type { Knex } from 'knex';
-import { PluginSdkError, type PluginIssueSummary, type PluginPullRequestSummary, type PluginTaskSummary, type RepositoryEventDomain } from '@propr/shared';
+import { PLUGIN_PROPR_OPERATIONS, PluginSdkError, type PluginIssueSummary, type PluginProprOperation, type PluginPullRequestSummary, type PluginTaskSummary, type RepositoryEventDomain } from '@propr/shared';
 import { listRepositoryEvents } from '../services/repositoryEventJournal.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
-import type { PluginCommentTarget, PluginProprBackend } from './pluginProprClient.js';
+import type { PluginCommentTarget, PluginProprBackend, PluginProprCallScope } from './pluginProprClient.js';
 
 /** The part of the issue task queue the default enqueue uses. */
 export interface PluginIssueQueue {
@@ -29,10 +29,12 @@ export interface GitHubPluginBackendOptions {
   signal?: AbortSignal;
   /**
    * Called right before every GitHub request is sent and every task job is
-   * added, after the App client or the queue is initialized: throws to refuse
-   * it (the plugin's installation was removed or replaced meanwhile).
+   * added, after the App client or the queue is initialized, with the
+   * permission and repository the operation acts under: throws to refuse it
+   * (the plugin's installation was removed, replaced, disabled or restricted
+   * meanwhile).
    */
-  authorize?: () => Promise<void>;
+  authorize?: (call: PluginProprCallScope) => Promise<void>;
 }
 
 type GitHubIssue = {
@@ -59,12 +61,12 @@ async function defaultIssueQueue(): Promise<PluginIssueQueue> {
   const { getIssueQueue } = await import('../queue/taskQueue.js');
   return await getIssueQueue() as unknown as PluginIssueQueue;
 }
-function queueEnqueue(issueQueue: () => Promise<PluginIssueQueue>, authorize: () => Promise<void>) {
-  return async (data: IssueJobData, jobId: string, signal?: AbortSignal): Promise<void> => {
+function queueEnqueue(issueQueue: () => Promise<PluginIssueQueue>, authorize: (scope: PluginProprCallScope) => Promise<void>) {
+  return async (data: IssueJobData, jobId: string, scope: PluginProprCallScope, signal?: AbortSignal): Promise<void> => {
     const queue = await issueQueue();
-    // The run may have ended, or the plugin been uninstalled, while the queue was initialized: no job is added then.
+    // The run may have ended, or the plugin been uninstalled, disabled or restricted, while the queue was initialized: no job is added then.
     if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
-    await authorize();
+    await authorize(scope);
     await queue.add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
   };
 }
@@ -85,30 +87,33 @@ export function githubPluginProprBackend(options: GitHubPluginBackendOptions): P
   const github = options.github ?? defaultGitHub;
   const { signal } = options;
   const live = () => { if (signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended'); };
-  /** The run is live and its installation still installed: checked last before anything is dispatched. */
-  const authorized = async () => {
+  /** The run is live and its installation still installed and authorizing `scope`: checked last before anything is dispatched. */
+  const authorized = async (scope: PluginProprCallScope) => {
     live();
-    if (options.authorize) await options.authorize();
+    if (options.authorize) await options.authorize(scope);
     live();
   };
   const custom = options.enqueueIssueTask;
   const enqueue = custom
-    ? async (data: IssueJobData, jobId: string, runSignal?: AbortSignal) => { await authorized(); await custom(data, jobId, runSignal); }
+    ? async (data: IssueJobData, jobId: string, scope: PluginProprCallScope, runSignal?: AbortSignal) => { await authorized(scope); await custom(data, jobId, runSignal); }
     : queueEnqueue(options.issueQueue ?? defaultIssueQueue, authorized);
-  const request = async <T>(route: string, parameters: Record<string, unknown>) => {
+  const request = async <T>(route: string, parameters: Record<string, unknown>, scope: PluginProprCallScope) => {
     live();
     const client = await github();
-    // The run may have ended, or the plugin been uninstalled, while the App token was fetched: nothing is sent then.
-    await authorized();
+    // The run may have ended, or the plugin been uninstalled, disabled or restricted, while the App token was fetched: nothing is sent then.
+    await authorized(scope);
     return (await client.request(route, { ...parameters, ...(signal ? { request: { signal } } : {}) })).data as T;
   };
+  /** The scope an operation on `repository` dispatches under. */
+  const scope = (operation: PluginProprOperation, repository: string): PluginProprCallScope => ({ permission: PLUGIN_PROPR_OPERATIONS[operation], repository });
   /**
    * The issue or pull request `number` names, required to be of the kind the
    * operation's permission covers: the issue routes accept either, so the
-   * method alone does not establish the target.
+   * method alone does not establish the target. Read under the scope of the
+   * operation it is part of (`operation`).
    */
-  const issueOfKind = async (repository: string, number: number, kind: PluginCommentTarget): Promise<GitHubIssue> => {
-    const issue = await request<GitHubIssue>('GET /repos/{owner}/{repo}/issues/{issue_number}', { ...split(repository), issue_number: number });
+  const issueOfKind = async (repository: string, number: number, kind: PluginCommentTarget, operation: PluginProprOperation): Promise<GitHubIssue> => {
+    const issue = await request<GitHubIssue>('GET /repos/{owner}/{repo}/issues/{issue_number}', { ...split(repository), issue_number: number }, scope(operation, repository));
     if (Boolean(issue.pull_request) !== (kind === 'pull_request')) {
       throw new PluginSdkError('not_found', `${repository}#${number} is not ${kind === 'pull_request' ? 'a pull request' : 'an issue'}`);
     }
@@ -116,10 +121,10 @@ export function githubPluginProprBackend(options: GitHubPluginBackendOptions): P
   };
   return {
     async getIssue(repository, number) {
-      return issueSummary(repository, await issueOfKind(repository, number, 'issue'));
+      return issueSummary(repository, await issueOfKind(repository, number, 'issue', 'getIssue'));
     },
     async getPullRequest(repository, number): Promise<PluginPullRequestSummary> {
-      const pull = await request<GitHubPull>('GET /repos/{owner}/{repo}/pulls/{pull_number}', { ...split(repository), pull_number: number });
+      const pull = await request<GitHubPull>('GET /repos/{owner}/{repo}/pulls/{pull_number}', { ...split(repository), pull_number: number }, scope('getPullRequest', repository));
       return { ...issueSummary(repository, pull), draft: Boolean(pull.draft), merged: Boolean(pull.merged ?? pull.merged_at), headRef: pull.head.ref, baseRef: pull.base.ref, headSha: pull.head.sha };
     },
     async getTask(taskId): Promise<PluginTaskSummary | null> {
@@ -134,26 +139,27 @@ export function githubPluginProprBackend(options: GitHubPluginBackendOptions): P
       return listRepositoryEvents(database, { repository: input.repository, afterSeq: input.afterSeq, domains: input.domains as RepositoryEventDomain[] | undefined, limit: input.limit });
     },
     async createIssue(repository, issue) {
-      const created = await request<GitHubIssue>('POST /repos/{owner}/{repo}/issues', { ...split(repository), title: issue.title, body: issue.body, labels: issue.labels });
+      const created = await request<GitHubIssue>('POST /repos/{owner}/{repo}/issues', { ...split(repository), title: issue.title, body: issue.body, labels: issue.labels }, scope('createIssue', repository));
       return { repository, number: created.number, url: created.html_url };
     },
     async createTask(repository, issueNumber, attribution) {
       const { owner, repo } = split(repository);
       const jobId = `issue-${owner}-${repo}-${issueNumber}`;
       live();
-      await enqueue({ repoOwner: owner, repoName: repo, number: issueNumber, requestedBy: attribution.requestedBy, correlationId: generateCorrelationId() }, jobId, signal);
+      await enqueue({ repoOwner: owner, repoName: repo, number: issueNumber, requestedBy: attribution.requestedBy, correlationId: generateCorrelationId() }, jobId, scope('createTask', repository), signal);
       return { repository, issueNumber, jobId };
     },
     async comment(repository, number, body, target) {
-      await issueOfKind(repository, number, target);
-      const created = await request<{ id: number; html_url: string }>('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { ...split(repository), issue_number: number, body });
+      const operation = target === 'pull_request' ? 'commentOnPullRequest' : 'commentOnIssue';
+      await issueOfKind(repository, number, target, operation);
+      const created = await request<{ id: number; html_url: string }>('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { ...split(repository), issue_number: number, body }, scope(operation, repository));
       return { repository, number, id: created.id, url: created.html_url };
     },
     async addLabel(repository, number, label) {
-      await request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', { ...split(repository), issue_number: number, labels: [label] });
+      await request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', { ...split(repository), issue_number: number, labels: [label] }, scope('addLabel', repository));
     },
     async removeLabel(repository, number, label) {
-      await request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', { ...split(repository), issue_number: number, name: label });
+      await request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', { ...split(repository), issue_number: number, name: label }, scope('removeLabel', repository));
     },
   };
 }

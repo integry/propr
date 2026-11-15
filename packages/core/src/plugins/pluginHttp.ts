@@ -45,15 +45,62 @@ const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]{0,8192}$/;
 
 const defaultLookup: ExtensionLookup = host => dns.lookup(host, { all: true, verbatim: true });
 
+/**
+ * One spelling of a credential. `anyCase`: the spelling reads the same in any
+ * letter case (its hex encoding: `Buffer.from(hex, 'hex')` accepts `AB`, `ab`
+ * and `aB` alike), so it is matched with ASCII letters folded; every other
+ * spelling (the secret itself, its base64) is matched exactly.
+ */
+export interface CredentialSpelling { text: string; anyCase: boolean }
+
 /** Every spelling of a credential (alone and as the header value sent) a response could echo back. */
-function credentialSpellings(secret: string): string[] {
-  const encodings = (value: string) => {
+function credentialSpellings(secret: string): CredentialSpelling[] {
+  const encodings = (value: string): CredentialSpelling[] => {
     // Inside a JSON string: quotes, backslashes and control characters escaped, `/` optionally too.
     const json = JSON.stringify(value).slice(1, -1);
-    return [value, json, json.split('/').join('\\/'), Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url'), Buffer.from(value).toString('hex'), encodeURIComponent(value)];
+    const exact = [value, json, json.split('/').join('\\/'), Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url'), encodeURIComponent(value)];
+    return [...exact.map(text => ({ text, anyCase: false })), { text: Buffer.from(value).toString('hex'), anyCase: true }];
   };
-  // Longest first: the header value's encodings are not made of the secret's.
-  return [...new Set([...encodings(`Bearer ${secret}`), ...encodings(secret)])].filter(Boolean).sort((a, b) => b.length - a.length);
+  return uniqueSpellings([...encodings(`Bearer ${secret}`), ...encodings(secret)]);
+}
+/** Distinct spellings, longest first: the header value's encodings are not made of the secret's. */
+function uniqueSpellings(spellings: readonly CredentialSpelling[]): CredentialSpelling[] {
+  const seen = new Map<string, CredentialSpelling>();
+  for (const spelling of spellings) if (spelling.text) seen.set(`${spelling.anyCase ? 'i' : 'x'}:${spelling.text}`, spelling);
+  return [...seen.values()].sort((a, b) => b.text.length - a.text.length);
+}
+
+/** `text` with its ASCII letters lowercased and nothing else changed: the same length, so an index in it is an index in `text`. */
+const foldAscii = (text: string) => text.replace(/[A-Z]+/g, run => run.toLowerCase());
+/** The haystacks a spelling is searched in: `text` itself, or its ASCII-folded copy for an any-case spelling. */
+function haystacks(text: string): (spelling: CredentialSpelling) => string {
+  let folded: string | undefined;
+  return spelling => (spelling.anyCase ? (folded ??= foldAscii(text)) : text);
+}
+/** Where `text` holds any spelling: `[start, end)` ranges, overlapping ones included. */
+function spellingRanges(text: string, spellings: readonly CredentialSpelling[]): [number, number][] {
+  const haystack = haystacks(text);
+  const ranges: [number, number][] = [];
+  for (const spelling of spellings) {
+    const source = haystack(spelling);
+    for (let at = source.indexOf(spelling.text); at >= 0; at = source.indexOf(spelling.text, at + 1)) ranges.push([at, at + spelling.text.length]);
+  }
+  return ranges;
+}
+/** Whether `text` holds any spelling (an any-case one in any letter case). */
+function holdsSpelling(text: string, spellings: readonly CredentialSpelling[]): boolean {
+  const haystack = haystacks(text);
+  return spellings.some(spelling => haystack(spelling).includes(spelling.text));
+}
+/** `text` with each range replaced by `[REDACTED]`; overlapping ranges (the header value holds the secret) become one replacement. */
+function redactRanges(text: string, ranges: [number, number][]): string {
+  if (!ranges.length) return text;
+  let scrubbed = ''; let cursor = 0;
+  for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+    if (start >= cursor) scrubbed += `${text.slice(cursor, start)}[REDACTED]`;
+    cursor = Math.max(cursor, end);
+  }
+  return scrubbed + text.slice(cursor);
 }
 
 /** One percent-escaped ASCII character, its hex digits in either case: `%2f`, `%2F`, `%61`. */
@@ -67,7 +114,7 @@ const ASCII_PERCENT_ESCAPE = /%[0-7][0-9a-fA-F]/g;
  * escapes of ASCII characters can spell one. The text is decoded once and each
  * match is mapped back to the characters and escapes it was decoded from.
  */
-function scrubPercentEscaped(text: string, spellings: readonly string[]): string {
+function scrubPercentEscaped(text: string, spellings: readonly CredentialSpelling[]): string {
   // The decoded position of each escaped character: a decoded index maps back past two more characters per escape before it.
   const escapes: number[] = [];
   const decoded = text.replace(ASCII_PERCENT_ESCAPE, (escape, offset: number) => {
@@ -80,21 +127,11 @@ function scrubPercentEscaped(text: string, spellings: readonly string[]): string
     while (low < high) { const middle = (low + high) >> 1; if (escapes[middle] < index) low = middle + 1; else high = middle; }
     return index + 2 * low;
   };
-  const matches: [number, number][] = [];
-  for (const spelling of spellings) {
-    for (let at = decoded.indexOf(spelling); at >= 0; at = decoded.indexOf(spelling, at + 1)) matches.push([original(at), original(at + spelling.length)]);
-  }
-  if (!matches.length) return text;
-  // Overlapping matches (the header value holds the secret) become one replacement.
-  let scrubbed = ''; let cursor = 0;
-  for (const [start, end] of matches.sort((a, b) => a[0] - b[0])) {
-    if (start >= cursor) scrubbed += `${text.slice(cursor, start)}[REDACTED]`;
-    cursor = Math.max(cursor, end);
-  }
-  return scrubbed + text.slice(cursor);
+  return redactRanges(text, spellingRanges(decoded, spellings).map(([start, end]) => [original(start), original(end)]));
 }
-const scrub = (text: string, spellings: readonly string[]) => spellings.length
-  ? scrubPercentEscaped(spellings.reduce((value, spelling) => value.split(spelling).join('[REDACTED]'), text), spellings)
+/** `text` with every spelling replaced: as written (an any-case spelling in any letter case), then where percent-escaped. */
+const scrub = (text: string, spellings: readonly CredentialSpelling[]) => spellings.length
+  ? scrubPercentEscaped(redactRanges(text, spellingRanges(text, spellings)), spellings)
   : text;
 
 const JSON_ESCAPE = /\\(u[0-9a-fA-F]{4}|["\\/bfnrt])/g;
@@ -123,14 +160,14 @@ const DECODED_VARIANTS = 8;
  * so counts too. `fold` is applied to each decoded text before comparing
  * (header names compare case-insensitively).
  */
-function revealsCredential(text: string, spellings: readonly string[], fold: (value: string) => string = value => value): boolean {
+function revealsCredential(text: string, spellings: readonly CredentialSpelling[], fold: (value: string) => string = value => value): boolean {
   let variants = [text];
   for (let round = 0; round < UNESCAPE_ROUNDS; round++) {
     // Every decoding shortens the text, so no variant comes back.
     const next = new Set(variants.flatMap(variant => DECODINGS.map(decode => decode(variant)).filter(decoded => decoded !== variant)));
     if (!next.size) return false;
     if (next.size > DECODED_VARIANTS) return true;
-    if ([...next].some(variant => { const folded = fold(variant); return spellings.some(spelling => folded.includes(spelling)); })) return true;
+    if ([...next].some(variant => holdsSpelling(fold(variant), spellings))) return true;
     variants = [...next];
   }
   return true;
@@ -142,7 +179,7 @@ function revealsCredential(text: string, spellings: readonly string[], fold: (va
  * (serialized JSON inside the string, a value URL-encoded twice) is withheld
  * whole.
  */
-function scrubJson(value: unknown, spellings: readonly string[]): { value: unknown; changed: boolean } {
+function scrubJson(value: unknown, spellings: readonly CredentialSpelling[]): { value: unknown; changed: boolean } {
   let changed = false;
   const clean = (text: string) => {
     const literal = scrub(text, spellings);
@@ -169,7 +206,7 @@ function scrubJson(value: unknown, spellings: readonly string[]): { value: unkno
  * are decoded is withheld entirely: a handler could recover it by decoding the
  * escaped part itself.
  */
-function scrubbedBody(raw: string, spellings: readonly string[]): string {
+function scrubbedBody(raw: string, spellings: readonly CredentialSpelling[]): string {
   const text = scrub(raw, spellings);
   if (!spellings.length) return text;
   let body = text;
@@ -196,7 +233,7 @@ function scrubbedBody(raw: string, spellings: readonly string[]): string {
  * URL-encoded twice) is withheld entirely: a handler could recover it with
  * `JSON.parse` or `decodeURIComponent`.
  */
-function scrubbedHeader(raw: string, spellings: readonly string[]): string {
+function scrubbedHeader(raw: string, spellings: readonly CredentialSpelling[]): string {
   const text = scrub(raw, spellings);
   if (!spellings.length) return text;
   return revealsCredential(text, spellings) ? '[REDACTED]' : text;
@@ -209,7 +246,7 @@ function scrubbedHeader(raw: string, spellings: readonly string[]): string {
  * string that still decodes to one withheld whole.
  */
 export function scrubCredentialValues<T>(value: T, secrets: readonly string[]): T {
-  const spellings = [...new Set(secrets.filter(Boolean).flatMap(credentialSpellings))].sort((a, b) => b.length - a.length);
+  const spellings = uniqueSpellings(secrets.filter(Boolean).flatMap(credentialSpellings));
   return spellings.length ? scrubJson(value, spellings).value as T : value;
 }
 
@@ -223,10 +260,10 @@ const lowerCase = (value: string) => value.toLowerCase();
  * A name cannot be scrubbed in place without colliding with others, so a
  * header whose name holds one is dropped.
  */
-function nameRevealsCredential(name: string, spellings: readonly string[]): boolean {
+function nameRevealsCredential(name: string, spellings: readonly CredentialSpelling[]): boolean {
   if (!spellings.length) return false;
-  const folded = spellings.map(lowerCase);
-  return folded.some(spelling => name.includes(spelling)) || revealsCredential(name, folded, lowerCase);
+  const folded = spellings.map(spelling => ({ ...spelling, text: lowerCase(spelling.text) }));
+  return holdsSpelling(name, folded) || revealsCredential(name, folded, lowerCase);
 }
 
 /** The error a request gets once the handler run has ended. */
@@ -333,7 +370,7 @@ export const httpsPluginTransport: PluginHttpTransport = request => new Promise(
   outgoing.end(request.body);
 });
 
-function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spellings: readonly string[]): PluginHttpResponse {
+function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spellings: readonly CredentialSpelling[]): PluginHttpResponse {
   const text = scrubbedBody(response.body.toString('utf8'), spellings);
   // A header whose name echoes the credential is dropped: the handler can read names as well as values.
   const headers = Object.fromEntries(Object.entries(response.headers)

@@ -1,5 +1,5 @@
 import type { Knex } from 'knex';
-import { PLUGIN_STATE_LIMITS, PluginSdkError, type PluginJsonValue, type PluginStateStore } from '@propr/shared';
+import { PLUGIN_STATE_LIMITS, PluginSdkError, type PluginJsonValue, type PluginPermission, type PluginStateStore } from '@propr/shared';
 
 export const PLUGIN_STATE_TABLE = 'plugin_state';
 const KEY_PATTERN = /^[\x21-\x7e]+$/;
@@ -38,18 +38,40 @@ function requireLive(guard: PluginStateWriteGuard): void {
   if (guard.signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
 }
 
+/** What an installation currently authorizes, as an administrator last set it. */
+export interface PluginInstallationAuthority {
+  enabled: boolean;
+  grantedPermissions: PluginPermission[];
+  /** The repository limit (`owner/repo`); null for all repositories. */
+  repositories: string[] | null;
+}
+type AuthorityRow = { installed_at: number | string; enabled: number | boolean; granted_permissions: string | null; repositories: string | null };
+const json = <T>(value: string | null, fallback: T): T => {
+  if (value === null || value === undefined) return fallback;
+  try { return JSON.parse(value) as T; } catch { return fallback; }
+};
+
 /**
  * Inside a state operation's transaction: require the installation to still
  * exist (the same one, not a reinstall) and keep it until commit. Uninstall
  * deletes the installation row before the state rows, so an operation either
  * commits first (a write is then deleted with the rest), or finds the
- * installation gone. SQLite runs write transactions one at a time.
+ * installation gone. SQLite runs write transactions one at a time. Returns
+ * what the installation authorizes right now (enabled, grants, repository
+ * limit), read in the same transaction, for a caller about to act on it.
  */
-export async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<void> {
+export async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<PluginInstallationAuthority> {
   const query = trx('plugin_installations').where({ plugin_id: pluginId });
-  const row = await (isSqlite(trx) ? query : query.forShare()).first('installed_at') as { installed_at: number | string } | undefined;
+  const row = await (isSqlite(trx) ? query : query.forShare()).first('installed_at', 'enabled', 'granted_permissions', 'repositories') as AuthorityRow | undefined;
   if (!row || Number(row.installed_at) !== guard.installedAt) throw new PluginSdkError('unavailable', 'The plugin is no longer installed');
   requireLive(guard);
+  const permissions = json<unknown>(row.granted_permissions, []);
+  const repositories = json<unknown>(row.repositories, null);
+  return {
+    enabled: Boolean(row.enabled),
+    grantedPermissions: Array.isArray(permissions) ? permissions.filter((p): p is PluginPermission => typeof p === 'string') : [],
+    repositories: Array.isArray(repositories) ? repositories.filter((r): r is string => typeof r === 'string') : null,
+  };
 }
 
 /**

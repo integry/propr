@@ -67,12 +67,16 @@ export interface ScopedProprOptions {
   /** Told when the outcome of an already attempted mutation could not be recorded. */
   onRecordFailure?: (call: PluginProprCallRecord, error: unknown) => void;
   /**
-   * Called before every call reaches the backend, after its own checks:
-   * throws to refuse it (the installation the permissions and repository
-   * limit were read from was removed or replaced).
+   * Called before every call reaches the backend, after its own checks, with
+   * the permission the call needs and the repository it names: throws to
+   * refuse it (the installation the permissions and repository limit were
+   * read from was removed, replaced, disabled, or no longer grants them).
    */
-  authorize?: () => Promise<void>;
+  authorize?: (call: PluginProprCallScope) => Promise<void>;
 }
+
+/** What a dispatch needs the installation to authorize right now: a permission, on a repository when the call names one. */
+export interface PluginProprCallScope { permission: PluginPermission; repository?: string }
 
 /** The actor ProPR records for anything a plugin's handler does. */
 export const pluginActor = (pluginId: string) => `plugin:${pluginId}`;
@@ -137,8 +141,8 @@ export function scopedProprClient(options: ScopedProprOptions): PluginProprClien
       if (!options.grantedPermissions.includes(permission)) throw new PluginSdkError('permission_denied', `${operation} needs the ${permission} permission, which is not granted to this plugin`);
       checked = target();
       if (checked.repository && !allowedRepository(checked.repository)) throw new PluginSdkError('repository_not_allowed', `This plugin is not enabled for ${checked.repository}`);
-      // The checks above use the installation as the run started: it must still be that installation.
-      if (options.authorize) await options.authorize();
+      // The checks above use the installation as the run started: it must still be that installation, and still authorize this call.
+      if (options.authorize) await options.authorize({ permission, ...(checked.repository ? { repository: checked.repository } : {}) });
       if (PLUGIN_PROPR_MUTATIONS.has(operation)) {
         // Attributed before it is dispatched: a mutation the audit trail cannot name is never sent.
         try { await options.record(entry('attempted')); } catch { throw new PluginSdkError('unavailable', `ProPR could not record ${operation}, so it was not sent`); }

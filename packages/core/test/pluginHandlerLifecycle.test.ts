@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PluginHandlerInput, PluginJsonValue } from '@propr/shared';
 import { runPluginHandler } from '../src/plugins/pluginHandlerRunner.js';
-import { createPluginHttp, type PluginHttpTransport, type PluginHttpTransportRequest } from '../src/plugins/pluginHttp.js';
+import { createPluginHttp, scrubCredentialValues, type PluginHttpTransport, type PluginHttpTransportRequest } from '../src/plugins/pluginHttp.js';
 import { PluginStore } from '../src/plugins/pluginStore.js';
 import { githubPluginProprBackend } from '../src/plugins/pluginProprBackend.js';
 import { pluginStateStore, requireInstallation } from '../src/plugins/pluginStateStore.js';
+import { installationAuthorizer } from '../src/plugins/pluginContext.js';
 import { ENVIRONMENT, FIXTURE_ID, lookup, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
 
 const invoke = (payload: PluginJsonValue = {}): PluginHandlerInput => ({ kind: 'invoke', payload });
@@ -448,4 +449,147 @@ test('the GitHub backend rechecks the installation after the App client or the q
   const custom = githubPluginProprBackend({ database: f.database, signal, authorize, enqueueIssueTask: async (_data, jobId) => { sent.push(jobId); } });
   await assert.rejects(custom.createTask('owner/allowed', 3, { requestedBy: 'plugin:x' }), { code: 'unavailable' });
   assert.deepEqual(sent, [], 'nothing was sent or queued');
+});
+
+/** A credential with letters in both cases: its hex encoding differs from itself in any case, and its own case matters. */
+const HEX_SECRET = 'Plugin-Credential-Sentinel-5d0e9a';
+const upperHex = (value: string) => Buffer.from(value).toString('hex').toUpperCase();
+/** Hex digits alternating in case, as a handler could not care about: `Buffer.from(mixed, 'hex')` decodes it all the same. */
+const mixedHex = (value: string) => [...Buffer.from(value).toString('hex')].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join('');
+/** Whether `text` holds a run of hex digits, in any case, that decodes to `secret` (what a handler recovers with `Buffer.from(run, 'hex')`). */
+const hexRecovers = (text: string, secret: string) => (text.match(/[0-9a-fA-F]{2,}/g) ?? []).some(run => Buffer.from(run, 'hex').toString('utf8').includes(secret));
+
+test('an uppercase or mixed-case hex echo of the credential is scrubbed from the body, the headers, the logs and the result', async t => {
+  const f = await pluginHandlerFixture(t, { secret: HEX_SECRET });
+  const echo = (encode: (value: string) => string, body: 'json' | 'text'): PluginHttpTransport => async request => {
+    const authorization = request.headers.authorization ?? '';
+    const secret = encode(authorization.slice('Bearer '.length));
+    const header = encode(authorization);
+    return {
+      status: 200, headers: { 'x-echo-token': secret, 'x-echo-header': `v=${header}; path=/` },
+      body: Buffer.from(body === 'json' ? JSON.stringify({ token: secret, header, keep: 'visible' }) : `token=${secret}&header=${header}&keep=visible`),
+    };
+  };
+  for (const [name, encode] of [['uppercase hex', upperHex], ['mixed-case hex', mixedHex]] as const) {
+    for (const body of ['json', 'text'] as const) {
+      const run = await runPluginHandler(FIXTURE_ID, 'fetchUrl', invoke({ url: 'https://api.fixture.example/v1', connection: 'api-token' }), { ...f.options, transport: echo(encode, body) });
+      const label = `${name}, ${body} body`;
+      assert.equal(run.outcome, 'succeeded', run.error ?? '');
+      const result = run.result as { body: string; headers: Record<string, string> };
+      // Replaced in place: the rest of the value is kept.
+      assert.equal(result.body, body === 'json' ? JSON.stringify({ token: '[REDACTED]', header: '[REDACTED]', keep: 'visible' }) : 'token=[REDACTED]&header=[REDACTED]&keep=visible', label);
+      assert.deepEqual(result.headers, { 'x-echo-token': '[REDACTED]', 'x-echo-header': 'v=[REDACTED]; path=/' }, label);
+      // Nothing handler-visible (the result, its logged copy) decodes to the credential.
+      assert.equal(hexRecovers(JSON.stringify(run), HEX_SECRET), false, label);
+    }
+    // json() of the parsed body, through the HTTP client directly.
+    const response = await createPluginHttp({ outboundHosts: ['api.fixture.example'], credential: async () => HEX_SECRET, lookup, transport: echo(encode, 'json') })('https://api.fixture.example/v1');
+    assert.deepEqual(await response.json(), { token: '[REDACTED]', header: '[REDACTED]', keep: 'visible' }, name);
+  }
+  // The same spellings in a log line and a result, through the run's redaction.
+  assert.deepEqual(scrubCredentialValues({ a: `id ${upperHex(HEX_SECRET)} b`, [mixedHex(`Bearer ${HEX_SECRET}`)]: 1 }, [HEX_SECRET]), { a: 'id [REDACTED] b', '[REDACTED]': 1 });
+  // Ordinary spellings stay case-sensitive: another case of the secret is a different value, and so is its base64.
+  const other = { a: HEX_SECRET.toUpperCase(), b: Buffer.from(HEX_SECRET).toString('base64').toLowerCase(), c: 'ABCDEF0123' };
+  assert.deepEqual(scrubCredentialValues(other, [HEX_SECRET]), other);
+  const kept = await createPluginHttp({ outboundHosts: ['api.fixture.example'], credential: async () => HEX_SECRET, lookup, transport: async () => ({ status: 200, headers: { 'x-id': 'DEADBEEF' }, body: Buffer.from(HEX_SECRET.toUpperCase()) }) })('https://api.fixture.example/v1');
+  assert.equal(await kept.text(), HEX_SECRET.toUpperCase());
+  assert.equal(kept.headers['x-id'], 'DEADBEEF');
+});
+
+/** Administrative changes to the fixture installation while a handler is suspended, and the refusal each must cause. */
+const RESTRICTIONS = [
+  ['disabled', async (f: Awaited<ReturnType<typeof pluginHandlerFixture>>) => { await f.store.setEnabled('1', FIXTURE_ID, false); }, { code: 'unavailable', message: 'The plugin is disabled' }],
+  ['limited to another repository', async (f: Awaited<ReturnType<typeof pluginHandlerFixture>>) => { await f.store.setRepositories('1', FIXTURE_ID, ['owner/other']); }, { code: 'repository_not_allowed', message: 'This plugin is no longer enabled for owner/allowed' }],
+  ['permission revoked', async (f: Awaited<ReturnType<typeof pluginHandlerFixture>>) => {
+    const row = await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).first('granted_permissions');
+    const granted = (JSON.parse(row.granted_permissions) as string[]).filter(permission => permission !== 'issues.create' && permission !== 'tasks.create');
+    await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).update({ granted_permissions: JSON.stringify(granted) });
+  }, { code: 'permission_denied', message: /is no longer granted to this plugin$/ }],
+] as const;
+
+test('a handler resuming after its installation was disabled or restricted cannot create an issue or a task', async t => {
+  for (const [operation, args] of [['createIssue', ['owner/allowed', { title: 'late', body: 'after restriction' }]], ['createTask', ['owner/allowed', 3]]] as const) {
+    for (const [change, restrict, expected] of RESTRICTIONS) {
+      const f = await pluginHandlerFixture(t);
+      const held = deferred();
+      const reached = deferred();
+      const backend = { ...f.backend, getIssue: async () => { reached.resolve(); await held.promise; throw new Error('released'); } };
+      const running = runPluginHandler(FIXTURE_ID, 'suspendThenPropr', invoke({ operation, args: args as unknown as PluginJsonValue[] }), { ...f.options, backend });
+      await reached.promise;
+      await restrict(f);
+      held.resolve();
+      const run = await running;
+      const label = `${operation}, ${change}`;
+      assert.equal(run.outcome, 'succeeded', run.error ?? '');
+      const result = run.result as { ok: boolean; code: string; message: string };
+      assert.equal(result.ok, false, label);
+      assert.equal(result.code, expected.code, label);
+      assert.match(result.message, expected.message instanceof RegExp ? expected.message : new RegExp(`^${expected.message}$`), label);
+      assert.deepEqual(f.calls, [], `${label}: nothing reached the backend`);
+      // The mutation is recorded as refused with the refusal's code; no attempt was recorded for it.
+      const audit = (await f.database('plugin_audit').where({ plugin_id: FIXTURE_ID }).whereIn('action', ['handler_attempt', 'handler_refused']).orderBy('id').select('action', 'detail'))
+        .map(row => [row.action, (JSON.parse(row.detail) as { operation: string; reason?: string }).operation, (JSON.parse(row.detail) as { reason?: string }).reason]);
+      assert.deepEqual(audit, [['handler_refused', 'getIssue', 'unavailable'], ['handler_refused', operation, expected.code]], label);
+    }
+  }
+});
+
+test('an authenticated request resuming after its installation was disabled is never sent', async t => {
+  const f = await pluginHandlerFixture(t, { secret: HEX_SECRET });
+  for (const stage of ['lookup', 'credential'] as const) {
+    const held = deferred();
+    const reached = deferred();
+    const heldLookup = async (host: string) => { if (stage === 'lookup') { reached.resolve(); await held.promise; } return lookup(host); };
+    const connectionSecret = stage === 'credential' ? async () => { reached.resolve(); await held.promise; return HEX_SECRET; } : undefined;
+    const running = runPluginHandler(FIXTURE_ID, 'fetchUrl', invoke({ url: 'https://api.fixture.example/v1/mutate', connection: 'api-token', init: { method: 'POST', json: { change: true } } }), { ...f.options, lookup: heldLookup, ...(connectionSecret ? { connectionSecret } : {}) });
+    await reached.promise;
+    await f.store.setEnabled('1', FIXTURE_ID, false);
+    held.resolve();
+    const run = await running;
+    assert.equal(run.outcome, 'succeeded', run.error ?? '');
+    assert.deepEqual(run.result, { ok: false, code: 'unavailable', message: 'The plugin is disabled' }, stage);
+    assert.equal(f.http.requests.length, 0, `${stage}: nothing reached the transport`);
+    assert.equal(run.logs.some(line => line.message === 'ctx.http request to api.fixture.example refused: unavailable'), true, stage);
+    await f.store.setEnabled('1', FIXTURE_ID, true);
+  }
+  // An unauthenticated request carries no credential of the installation and is not bound to its enabled state.
+  await f.store.setEnabled('1', FIXTURE_ID, false);
+  const plain = await createPluginHttp({ outboundHosts: ['api.fixture.example'], lookup, transport: f.http.transport })('https://api.fixture.example/v1');
+  assert.equal(plain.status, 200);
+});
+
+test('the GitHub backend rechecks the installation\'s enabled state, grants and repository limit right before dispatching', async t => {
+  const f = await pluginHandlerFixture(t, { repositories: ['owner/allowed', 'owner/second'] });
+  const installedAt = Number((await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).first('installed_at')).installed_at);
+  const authorize = installationAuthorizer(f.database, FIXTURE_ID, f.manifest, { installedAt, signal: new AbortController().signal }).call;
+  const sent: string[] = [];
+  const held = { token: deferred(), queue: deferred() };
+  const backend = githubPluginProprBackend({
+    database: f.database, signal: new AbortController().signal, authorize,
+    github: async () => { await held.token.promise; return { request: async (route: string) => { sent.push(route); return { data: { number: 1, html_url: 'u', id: 5 } }; } }; },
+    issueQueue: async () => { await held.queue.promise; return { add: async (_n: string, _d: unknown, options: Record<string, unknown>) => { sent.push(String(options.jobId)); } }; },
+  });
+  // The limit changes to exclude owner/allowed while the App token is fetched and the queue is initialized: nothing for it is sent, a call on owner/second is.
+  const refused = [backend.createIssue('owner/allowed', { title: 't', body: 'b', labels: [] }), backend.createTask('owner/allowed', 3, { requestedBy: 'plugin:x' }), backend.addLabel('owner/allowed', 3, 'late')];
+  const allowed = backend.createIssue('owner/second', { title: 't', body: 'b', labels: [] });
+  await tick();
+  await f.store.setRepositories('1', FIXTURE_ID, ['owner/second']);
+  held.token.resolve(); held.queue.resolve();
+  for (const call of refused) await assert.rejects(call, { code: 'repository_not_allowed', message: 'This plugin is no longer enabled for owner/allowed' });
+  assert.equal((await allowed).number, 1);
+  assert.deepEqual(sent, ['POST /repos/{owner}/{repo}/issues'], 'only the still-allowed repository was reached');
+  sent.length = 0;
+  // Disabled: every dispatch is refused, the custom enqueue included; reads too.
+  await f.store.setEnabled('1', FIXTURE_ID, false);
+  await assert.rejects(backend.createIssue('owner/second', { title: 't', body: 'b', labels: [] }), { code: 'unavailable', message: 'The plugin is disabled' });
+  await assert.rejects(backend.getIssue('owner/second', 3), { code: 'unavailable', message: 'The plugin is disabled' });
+  const custom = githubPluginProprBackend({ database: f.database, authorize, enqueueIssueTask: async (_data, jobId) => { sent.push(jobId); } });
+  await assert.rejects(custom.createTask('owner/second', 3, { requestedBy: 'plugin:x' }), { code: 'unavailable', message: 'The plugin is disabled' });
+  await f.store.setEnabled('1', FIXTURE_ID, true);
+  // A grant revoked: the commenting read and the comment carry the comment permission, the label the label permission.
+  const row = await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).first('granted_permissions');
+  await f.database('plugin_installations').where({ plugin_id: FIXTURE_ID }).update({ granted_permissions: JSON.stringify((JSON.parse(row.granted_permissions) as string[]).filter(p => p !== 'issues.comment')) });
+  await assert.rejects(backend.comment('owner/second', 3, 'late', 'issue'), { code: 'permission_denied' });
+  await backend.addLabel('owner/second', 3, 'ok');
+  assert.deepEqual(sent, ['POST /repos/{owner}/{repo}/issues/{issue_number}/labels'], 'the revoked permission\'s read was not sent either');
 });
