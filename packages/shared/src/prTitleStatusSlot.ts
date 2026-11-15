@@ -60,8 +60,10 @@ const CIRCLED_ONE = 0x2780;
  * space. ⚠ is accepted with and without its variation selector. The score is
  * only recognised beside ⚠️ and ✅, as ➀–➉ or the older ①–⑩. An epic's
  * ` merged/total` may follow; a working epic's circle is recognised only with it.
+ * Every non-ASCII character is escaped: the desktop renderer can decode the
+ * bundle as Latin-1, where a literal ➀ turns into an out-of-order range.
  */
-export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:(?:\u{1F528}|(?:⚠️?|✅)[①-⑩➀-➉]?)(?: \d{1,6}\/\d{1,6})?|[\u25CB\u25D4\u25D1\u25D5] \d{1,6}\/\d{1,6}) /u;
+export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:(?:\u{1F528}|(?:\u26A0\uFE0F?|\u2705)[\u2460-\u2469\u2780-\u2789]?)(?: \d{1,6}\/\d{1,6})?|[\u25CB\u25D4\u25D1\u25D5] \d{1,6}\/\d{1,6}) /u;
 
 /** The circle a working epic shows for `merged` of `total` issues merged. */
 function epicWorkingCircle(merged: number, total: number): string {
