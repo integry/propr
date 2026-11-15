@@ -95,7 +95,7 @@ describe('review input capacity resolution', () => {
         assert.equal(opus55.tokenizerProfile, 'anthropic-calibrated');
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-sonnet-5-5' }).contextWindow, 1000000);
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-haiku-5-5' }).contextWindow, 1000000);
-        // Claude Code 2.1.323 marks Fable 5.2 native_1m
+        // Claude Code 2.1.325 marks Fable 5.2 native_1m
         const fable52 = resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-fable-5-2' });
         assert.equal(fable52.source, 'runtime-verified');
         assert.equal(fable52.contextWindow, 1000000);

@@ -176,7 +176,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.323'
+    defaultCliVersion: '2.1.325'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -192,7 +192,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.8'
+    defaultCliVersion: '1.5.9'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

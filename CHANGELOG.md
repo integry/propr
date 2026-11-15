@@ -209,6 +209,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the
+  `propr/agent` image moves from Claude Code 2.1.323 and Antigravity CLI
+  1.5.8. Codex stays on 0.168.0 and Mistral Vibe on 2.25.8.
+  - Antigravity 1.5.9 is release `4515810895593472`, SHA-512 checked against
+    Google's linux_amd64 install manifest. Its model list is unchanged. It
+    gives every user the `run_workflow` tool, which lets the agent fan work
+    out to subagents from a Python script, so large headless tasks may use
+    more tokens and run longer. `-p`, `--print-timeout` and exit codes are
+    unchanged.
+  - Claude Code 2.1.325 asks for permission before sandboxed Bash commands
+    and before read-only git commands in other repositories. ProPR runs are
+    unaffected: tasks and goals pass `--dangerously-skip-permissions`,
+    analysis runs use `--tools ''` or the repository-scout MCP allow-list,
+    and ProPR never turns on Claude Code's sandbox. The bundled model catalog
+    is unchanged.
 - **Faster pull request checks**: `Validate Changes` runs its lint, typecheck
   and build gate before the browser smoke test and skips the browser run when
   the gate fails, so a lint error is reported in minutes instead of after an
