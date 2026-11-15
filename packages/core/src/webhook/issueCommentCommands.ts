@@ -1,4 +1,5 @@
 import type { IssueCommentEvent } from '@octokit/webhooks-types';
+import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilters.js';
@@ -21,7 +22,7 @@ import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
  * filters (allowlist, blocklist, bots) and the ignore keywords.
  */
 export interface IssueCommandDependencies {
-  redis: Pick<Redis, 'set' | 'del'>;
+  redis: Pick<Redis, 'set' | 'del' | 'eval'>;
   github?: () => Promise<{ request(route: string, parameters: Record<string, unknown>): Promise<unknown> }>;
   /** Adds a job to the issue queue. */
   enqueue?: (data: IssueJobData, jobId: string) => Promise<void>;
@@ -33,6 +34,13 @@ export interface IssueCommandDependencies {
 
 const DEDUPE_TTL_SECONDS = 30;
 const CLAIM_TTL_SECONDS = 86400;
+/** Deletes a key only while it still holds the caller's reservation token. */
+const RELEASE_OWNED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+
+/** The lifecycle labels of every configured processing label family. */
+function lifecycleLabels(primaryLabels: string[]): string[] {
+  return primaryLabels.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`]);
+}
 
 async function defaultGitHub() {
   const { getAuthenticatedOctokit } = await import('../auth/githubAuth.js');
@@ -82,27 +90,36 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
 
   const claimKey = `issue-comment-command:${owner}:${repo}:${issue.number}:${comment.id}`;
   if (await deps.redis.set(claimKey, Date.now().toString(), 'EX', CLAIM_TTL_SECONDS, 'NX') !== 'OK') return { status: 'ignored', reason: 'duplicate_delivery' };
-  const github = await (deps.github ?? defaultGitHub)();
-  const reply = (text: string) => github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issue.number, body: `@${author} ${text}` });
+  const dedupeKey = `issue:dedup:${owner}:${repo}:${issue.number}`;
+  // Set only once this attempt holds the issue's dedupe window, so a failure
+  // releases that window and an immediate redelivery can start the task.
+  let dedupeToken: string | null = null;
   try {
+    const github = await (deps.github ?? defaultGitHub)();
+    const reply = (text: string) => github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issue.number, body: `@${author} ${text}` });
     if (resolution.status === 'refused') {
       log.info({ repository, issueNumber: issue.number, plugin: resolution.pluginId, command: resolution.command }, 'Plugin command refused');
       await reply(resolution.message);
       return { status: 'ignored', reason: 'plugin_command_refused' };
     }
     const { run } = resolution;
-    const [triggeringLabel] = await (deps.primaryLabels ?? defaultPrimaryLabels)();
+    const primaryLabels = await (deps.primaryLabels ?? defaultPrimaryLabels)();
+    // New work starts with the first label; work started through any configured
+    // label family makes the issue busy.
+    const [triggeringLabel] = primaryLabels;
     if (!triggeringLabel) throw new Error('No primary processing label is configured');
     const labels = issue.labels?.map(label => label.name) ?? [];
-    const busy = labels.find(label => [`${triggeringLabel}-processing`, `${triggeringLabel}-done`, `${triggeringLabel}-cancelled`].includes(label));
-    const dedupeKey = `issue:dedup:${owner}:${repo}:${issue.number}`;
+    const lifecycle = lifecycleLabels(primaryLabels);
+    const busy = labels.find(label => lifecycle.includes(label));
+    const token = `${correlationId}:${randomUUID()}`;
     if (busy || await (deps.hasQueuedIssueJob ?? defaultHasQueuedIssueJob)(owner, repo, issue.number)
-      || await deps.redis.set(dedupeKey, correlationId, 'EX', DEDUPE_TTL_SECONDS, 'NX') !== 'OK') {
+      || await deps.redis.set(dedupeKey, token, 'EX', DEDUPE_TTL_SECONDS, 'NX') !== 'OK') {
       await reply(busy
         ? `/${run.command} was not started: this issue already has the ${busy} label. Remove it to start a new task.`
         : `/${run.command} was not started: a ProPR task for this issue is already starting or running. Run the command again when it has finished.`);
       return { status: 'ignored', reason: 'job_already_queued' };
     }
+    dedupeToken = token;
     if (!labels.includes(triggeringLabel)) {
       await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', { owner, repo, issue_number: issue.number, labels: [triggeringLabel] });
     }
@@ -114,7 +131,16 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     log.info({ repository, issueNumber: issue.number, commentId: comment.id, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} started an implementation task`);
     return { status: 'accepted', billing: { seatConsumed: !/\[bot\]$/i.test(author) } };
   } catch (error) {
-    await deps.redis.del(claimKey);
+    // This attempt created no task: release what it reserved so a redelivery
+    // is handled afresh. The dedupe window is released only while it is still
+    // this attempt's, never one a later label event or command has taken.
+    const releases = await Promise.allSettled([
+      ...(dedupeToken ? [deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, dedupeToken)] : []),
+      deps.redis.del(claimKey),
+    ]);
+    for (const release of releases) {
+      if (release.status === 'rejected') log.warn({ repository, issueNumber: issue.number, err: release.reason }, 'Could not release a plugin command reservation');
+    }
     throw error;
   }
 }

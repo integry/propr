@@ -263,6 +263,12 @@ function createMockRedis() {
             return 'OK';
         }),
         del: mock.fn(async (key: string) => { store.delete(key); }),
+        // Only the compare-and-delete release script is used here.
+        eval: mock.fn(async (_script: string, _keys: number, key: string, token: string) => {
+            if (store.get(key) !== token) return 0;
+            store.delete(key);
+            return 1;
+        }),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),
         _store: store,
@@ -415,5 +421,56 @@ describe('plugin prompt command on an issue', () => {
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes', ['AI-done']), 'c', done.deps as never)).reason, 'job_already_queued');
         assert.match(String(done.requests[0].parameters.body), /already has the AI-done label/);
         assert.strictEqual(busy.enqueued.length + done.enqueued.length, 0);
+    });
+
+    test('an issue finished through a secondary processing label is refused; new work still starts with the first label', async () => {
+        const done = deps({ primaryLabels: async () => ['AI', 'propr'] });
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes', ['propr-done']), 'c', done.deps as never)).reason, 'job_already_queued');
+        assert.match(String(done.requests[0].parameters.body), /already has the propr-done label/);
+        assert.strictEqual(done.enqueued.length, 0);
+        const fresh = deps({ primaryLabels: async () => ['AI', 'propr'] });
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'c', fresh.deps as never)).status, 'accepted');
+        assert.strictEqual(fresh.enqueued[0].data.triggeringLabel, 'AI');
+    });
+
+    for (const step of ['GitHub sign-in', 'adding the processing label', 'queueing the job'] as const) {
+        test(`a failure while ${step} leaves the command retryable: an immediate redelivery starts the task`, async () => {
+            let failNext = true;
+            const fail = () => { if (failNext) { failNext = false; throw new Error(`${step} failed`); } };
+            const f = deps();
+            const requests = f.requests;
+            const failing = {
+                ...f.deps,
+                github: async () => {
+                    if (step === 'GitHub sign-in') fail();
+                    return { request: async (route: string, parameters: Record<string, unknown>) => {
+                        if (step === 'adding the processing label' && route.endsWith('/labels')) fail();
+                        requests.push({ route, parameters });
+                        return {};
+                    } };
+                },
+                enqueue: async (data: Record<string, unknown>, jobId: string) => {
+                    if (step === 'queueing the job') fail();
+                    f.enqueued.push({ data, jobId });
+                },
+            };
+            await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-first', failing as never), new RegExp(`${step} failed`));
+            assert.strictEqual(f.deps.redis._store.size, 0, 'the failed attempt holds neither the comment claim nor the issue dedupe window');
+            const retry = await processIssueCommentCommand(issueComment('/example-notes'), 'corr-retry', failing as never);
+            assert.strictEqual(retry.status, 'accepted');
+            assert.strictEqual(f.enqueued.length, 1);
+            assert.ok(!requests.some(r => /already starting or running/.test(String(r.parameters.body))), 'no false "already running" reply');
+        });
+    }
+
+    test('a failed attempt never releases a dedupe window someone else took', async () => {
+        const f = deps();
+        const redis = f.deps.redis;
+        const failing = { ...f.deps, enqueue: async () => {
+            redis._store.set('issue:dedup:testowner:testrepo:7', 'label-event');
+            throw new Error('queue down');
+        } };
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-x', failing as never), /queue down/);
+        assert.strictEqual(redis._store.get('issue:dedup:testowner:testrepo:7'), 'label-event');
     });
 });
