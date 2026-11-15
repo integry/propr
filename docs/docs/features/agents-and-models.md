@@ -177,6 +177,8 @@ Gemini 4 Hydrogen, the fast member of the Gemini 4 family, needs Antigravity CLI
 
 Gemini 4 Carbon is not in the catalog. Antigravity CLI 1.5.8 offers it only to accounts that connect with a Gemini API key (`GEMINI_API_KEY`) or sign in with Application Default Credentials (`AGY_ADC_AUTH`), and the setup above signs in with `agy login`.
 
+From Antigravity CLI 1.5.9, the agent has a `run_workflow` tool that runs a Python script to hand parts of a task to several subagents and combine their results. On large tasks this can use more tokens and take longer than a single agent working alone.
+
 :::note[Gemini Enterprise review policy]
 ProPR runs Antigravity tasks with `--dangerously-skip-permissions` and repository inspection with `--sandbox`, so the Auto Agent Mode that Antigravity CLI 1.5.7 made the default for headless runs does not change how ProPR runs approve actions. From Antigravity CLI 1.5.2, when a Gemini Enterprise admin requires review of agent actions, that flag no longer approves actions outside the workspace in headless runs: the CLI denies them. Work inside the task's worktree is unaffected, but a step that needs a path outside it fails instead of running. Ask the admin to relax the review requirement for the account ProPR uses if tasks need such actions.
 :::
