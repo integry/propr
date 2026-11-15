@@ -63,7 +63,7 @@ function taskTypeLabel(taskType: string | null | undefined): string | null {
 }
 
 export function splitWorkTitle(title: string | null | undefined, taskType?: string | null): WorkTitle {
-  // A PR title may lead with its status slot (`✅⑧ `); older task titles copied it after the prefix.
+  // A PR title may lead with its status slot (`✅➇ `); older task titles copied it after the prefix.
   let rest = stripStatusSlot((title ?? '').trim());
   let type: string | null = null;
 

@@ -3091,7 +3091,7 @@ describe('auto_merge.require_up_to_date sweep retries', () => {
     test('ProPR\'s own merge passes a commit title without the title status slot', async () => {
         resetMocks();
         useUpToDatePolicy();
-        mockCurrentPR({ title: '✅⑧ [12 by Claude Opus 5.5] Add retries' });
+        mockCurrentPR({ title: '✅➇ [12 by Claude Opus 5.5] Add retries' });
         await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
         assert.equal(mergeCalls().length, 1);
         const params = mergeCalls()[0].arguments[1] as Record<string, unknown>;

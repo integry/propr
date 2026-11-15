@@ -203,7 +203,7 @@ test('creation costs no rename, and a full Ultrafix loop to the goal with passin
     await syncSettled();
     await syncSettled();
 
-    assert.deepEqual(github.renames, [`✅⑧ ${TITLE}`]);
+    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`]);
 });
 
 test('checks pending keep 🔨; a failure without follow-up shows ⚠️, passing checks show ✅', async () => {
@@ -218,12 +218,12 @@ test('checks pending keep 🔨; a failure without follow-up shows ⚠️, passin
     assert.equal(github.pull.title, `🔨 ${TITLE}`, '⚠️ is held until it settles');
     await new Promise(resolve => setTimeout(resolve, SETTLE_MS + 10));
     await sync();
-    assert.equal(github.pull.title, `⚠️⑧ ${TITLE}`);
+    assert.equal(github.pull.title, `⚠️➇ ${TITLE}`);
 
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await syncSettled();
-    assert.equal(github.pull.title, `✅⑧ ${TITLE}`);
-    assert.deepEqual(github.renames, [`⚠️⑧ ${TITLE}`, `✅⑧ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+    assert.deepEqual(github.renames, [`⚠️➇ ${TITLE}`, `✅➇ ${TITLE}`]);
 });
 
 test('a brief ⚠️ between a failed check and its queued follow-up costs no rename', async () => {
@@ -245,7 +245,7 @@ test('a follow-up on a ✅ pull request renames it to 🔨 at once and back only
     await addTask('issue', 'completed');
     await addScore(8);
     await syncSettled();
-    assert.equal(github.pull.title, `✅⑧ ${TITLE}`);
+    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
 
     const followUp = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'default' }] });
     await sync();
@@ -256,8 +256,8 @@ test('a follow-up on a ✅ pull request renames it to 🔨 at once and back only
     assert.equal(github.pull.title, `🔨 ${TITLE}`, 'still 🔨 while the checks of the follow-up run');
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await syncSettled();
-    assert.equal(github.pull.title, `✅⑧ ${TITLE}`);
-    assert.deepEqual(github.renames, [`✅⑧ ${TITLE}`, `🔨 ${TITLE}`, `✅⑧ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`, `🔨 ${TITLE}`, `✅➇ ${TITLE}`]);
 });
 
 test('a person\'s edit to the rest of the title survives later state changes', async () => {
@@ -267,7 +267,7 @@ test('a person\'s edit to the rest of the title survives later state changes', a
     await setTaskState(implementation, 'completed');
     await addScore(9);
     await syncSettled();
-    assert.equal(github.pull.title, '✅⑨ [12 by Claude Opus 5.5] A better title, by a person');
+    assert.equal(github.pull.title, '✅➈ [12 by Claude Opus 5.5] A better title, by a person');
 });
 
 test('a slot a person removed comes back on the next state change, not before', async () => {
@@ -403,7 +403,7 @@ test('the edited webhook of a ProPR rename causes no further write or work', asy
 });
 
 test('[Epic] detection accepts titles with and without the slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️⑥ ', '⚠ ', '✅⑧ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
+    for (const slot of ['', '🔨 ', '⚠️➅ ', '⚠ ', '✅➇ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
     assert.equal(isEpicPullRequestTitle('Not an [Epic]'), false);
     assert.equal(isEpicPullRequestTitle(null), false);
 });
