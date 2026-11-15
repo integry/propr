@@ -14,6 +14,7 @@ import { restoreIssueTrigger, settleWithdrawalCleanups } from '../services/taskI
 import type { CleanupVerdict } from '../services/withdrawalCleanup.js';
 import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { readPendingIssueCommand, issueCommandJobFields, settlePendingIssueCommand } from '../plugins/issueCommandIntent.js';
 
 export type { DetectedIssue };
 
@@ -288,6 +289,10 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         triggeringLabel: triggeringLabel
     }, 'Enqueueing parent job for matrix dispatch');
 
+    // A plugin command that published this issue's label but failed to queue
+    // its job: the label starts the job carrying that command, not ordinary work.
+    const pendingCommand = await readPendingIssueCommand(redisClient, issue.repoOwner, issue.repoName, issue.number);
+
     try {
         const timestamp = Date.now();
         // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
@@ -298,7 +303,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             number: issue.number,
             ...(issue.triggeredById ? { userId: issue.triggeredById } : {}),
             triggeringLabel: triggeringLabel,
-            correlationId: generateCorrelationId()
+            correlationId: generateCorrelationId(),
+            ...issueCommandJobFields(pendingCommand),
         };
 
         const addToQueueWithRetry = (): Promise<unknown> => withRetry(
@@ -314,6 +320,8 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         );
 
         await addToQueueWithRetry();
+
+        await settlePendingIssueCommand(redisClient, pendingCommand, correlatedLogger);
 
         try {
             const activity = {

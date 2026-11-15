@@ -1,0 +1,102 @@
+import type { Redis } from 'ioredis';
+import type { Logger } from 'pino';
+import type { PluginCommandRun } from './pluginCommands.js';
+
+/**
+ * A plugin command accepted on an issue, kept until a job carrying it is
+ * queued.
+ *
+ * The command publishes the issue's processing label before it queues its
+ * job, and that label's webhook can start the issue's work on its own. If the
+ * command's own enqueue fails after the label is on the issue, the label
+ * webhook (or a redelivery of it) is what starts the task, so label-triggered
+ * intake reads this record and queues the command-bearing job instead of an
+ * ordinary one. The record is only released on evidence that such a job was
+ * queued: the command's own enqueue deletes it, and the label path marks it
+ * `queued` so a redelivery of the same comment does not reply that a task is
+ * already running.
+ */
+export interface IssueCommandIntent {
+  state: 'pending' | 'queued';
+  commentId: number;
+  /** The GitHub user who ran the command; the task belongs to them. */
+  userId: string;
+  pluginCommand: PluginCommandRun;
+  /** Distinguishes this attempt's record from a later one for the same issue. */
+  token: string;
+}
+
+/** Lives as long as the comment claim, the window in which a redelivery is handled. */
+export const ISSUE_COMMAND_INTENT_TTL_SECONDS = 86400;
+
+/** Deletes a key only while it still holds the caller's value. */
+const RELEASE_IF_UNCHANGED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+/** Replaces a key's value, keeping its expiry, only while it still holds the caller's value. */
+const REPLACE_IF_UNCHANGED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') return 1 else return 0 end";
+
+export interface StoredIssueCommandIntent {
+  intent: IssueCommandIntent;
+  /** The stored value, the ownership token of conditional updates. */
+  raw: string;
+}
+
+export function issueCommandIntentKey(owner: string, repo: string, number: number): string {
+  return `issue:plugin-command-intent:${owner}:${repo}:${number}`;
+}
+
+/** Records a pending command for the issue, replacing any earlier record. Returns the stored value. */
+export async function recordIssueCommandIntent(redis: Pick<Redis, 'set'>, key: string, intent: Omit<IssueCommandIntent, 'state'>): Promise<string> {
+  const raw = JSON.stringify({ ...intent, state: 'pending' } satisfies IssueCommandIntent);
+  await redis.set(key, raw, 'EX', ISSUE_COMMAND_INTENT_TTL_SECONDS);
+  return raw;
+}
+
+function isIntent(value: unknown): value is IssueCommandIntent {
+  const intent = value as Partial<IssueCommandIntent> | null;
+  return !!intent && (intent.state === 'pending' || intent.state === 'queued') && typeof intent.commentId === 'number'
+    && typeof intent.userId === 'string' && typeof intent.token === 'string'
+    && !!intent.pluginCommand && typeof intent.pluginCommand.instruction === 'string';
+}
+
+export async function readIssueCommandIntent(redis: Pick<Redis, 'get'>, key: string): Promise<StoredIssueCommandIntent | null> {
+  const raw = await redis.get(key);
+  if (!raw) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  return isIntent(parsed) ? { intent: parsed, raw } : null;
+}
+
+/** Deletes the record only while it is still the one the caller read or wrote. */
+export async function releaseIssueCommandIntent(redis: Pick<Redis, 'eval'>, key: string, raw: string): Promise<void> {
+  await redis.eval(RELEASE_IF_UNCHANGED_SCRIPT, 1, key, raw);
+}
+
+/** Marks a pending record as carried by a queued job, only while it is unchanged. */
+export async function markIssueCommandIntentQueued(redis: Pick<Redis, 'eval'>, key: string, stored: StoredIssueCommandIntent): Promise<void> {
+  await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw, JSON.stringify({ ...stored.intent, state: 'queued' } satisfies IssueCommandIntent));
+}
+
+export interface PendingIssueCommand extends StoredIssueCommandIntent {
+  key: string;
+}
+
+/** The issue's pending command, for label-triggered intake to queue in place of ordinary work. */
+export async function readPendingIssueCommand(redis: Pick<Redis, 'get'>, owner: string, repo: string, number: number): Promise<PendingIssueCommand | null> {
+  const key = issueCommandIntentKey(owner, repo, number);
+  const stored = await readIssueCommandIntent(redis, key);
+  return stored?.intent.state === 'pending' ? { ...stored, key } : null;
+}
+
+/** The job fields that make a label-triggered issue job carry the pending command. */
+export function issueCommandJobFields(pending: PendingIssueCommand | null): { userId?: string; pluginCommand?: PluginCommandRun } {
+  return pending ? { userId: pending.intent.userId, pluginCommand: pending.intent.pluginCommand } : {};
+}
+
+/** After the job carrying the pending command is queued: marks the command started. */
+export async function settlePendingIssueCommand(redis: Pick<Redis, 'eval'>, pending: PendingIssueCommand | null, log: Pick<Logger, 'info' | 'warn'>): Promise<void> {
+  if (!pending) return;
+  log.info({ key: pending.key, commentId: pending.intent.commentId, command: pending.intent.pluginCommand.command }, 'Queued the plugin command whose own enqueue failed');
+  await markIssueCommandIntentQueued(redis, pending.key, pending).catch((error: unknown) => {
+    log.warn({ key: pending.key, error: (error as Error).message }, 'Could not mark the plugin command intent as queued');
+  });
+}

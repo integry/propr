@@ -192,6 +192,7 @@ const { pullRequestJobAllowed } = await import('../src/jobs/prCommentLabelGate.j
 const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('../src/jobs/pluginCommandTask.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
+const { processDetectedIssue } = await import('../packages/core/src/daemon/issueDetection.js');
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -263,12 +264,16 @@ function createMockRedis() {
             return 'OK';
         }),
         del: mock.fn(async (key: string) => { store.delete(key); }),
-        // Only the compare-and-delete release script is used here.
-        eval: mock.fn(async (_script: string, _keys: number, key: string, token: string) => {
+        // Compare-and-delete, or compare-and-replace when a new value is given.
+        eval: mock.fn(async (_script: string, _keys: number, key: string, token: string, replacement?: string) => {
             if (store.get(key) !== token) return 0;
-            store.delete(key);
+            if (replacement === undefined) store.delete(key);
+            else store.set(key, replacement);
             return 1;
         }),
+        smembers: mock.fn(async () => []),
+        lpush: mock.fn(async () => 1),
+        ltrim: mock.fn(async () => 'OK'),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),
         _store: store,
@@ -363,6 +368,7 @@ describe('plugin prompt command on a pull request', () => {
 // ========== Issues ==========
 
 describe('plugin prompt command on an issue', () => {
+    const INTENT_KEY = 'issue:plugin-command-intent:testowner:testrepo:7';
     const deps = (overrides: Record<string, unknown> = {}) => {
         const enqueued: Array<{ data: Record<string, unknown>; jobId: string }> = [];
         const requests: Array<{ route: string; parameters: Record<string, unknown> }> = [];
@@ -455,13 +461,69 @@ describe('plugin prompt command on an issue', () => {
                 },
             };
             await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-first', failing as never), new RegExp(`${step} failed`));
-            assert.strictEqual(f.deps.redis._store.size, 0, 'the failed attempt holds neither the comment claim nor the issue dedupe window');
+            // Only the command intent may outlive the attempt, and only once the label may be on the issue.
+            assert.deepStrictEqual([...f.deps.redis._store.keys()], step === 'GitHub sign-in' ? [] : [INTENT_KEY],
+                'the failed attempt holds neither the comment claim nor the issue dedupe window');
             const retry = await processIssueCommentCommand(issueComment('/example-notes'), 'corr-retry', failing as never);
             assert.strictEqual(retry.status, 'accepted');
             assert.strictEqual(f.enqueued.length, 1);
+            assert.ok(!f.deps.redis._store.has(INTENT_KEY), 'the queued job carries the command; its intent is released');
             assert.ok(!requests.some(r => /already starting or running/.test(String(r.parameters.body))), 'no false "already running" reply');
         });
     }
+
+    // A label event for issue #7, as the webhook of the label the command published delivers it.
+    const labelEvent = () => ({
+        id: 1007, number: 7, title: 'Issue', url: 'https://github.com/testowner/testrepo/issues/7', repoOwner: 'testowner', repoName: 'testrepo',
+        labels: ['AI'], createdAt: '', updatedAt: '', triggeredBy: 'propr-dev[bot]', triggeredById: '999', source: 'webhook' as const,
+    });
+
+    test('a queue failure after the label is published: the label webhook queues the command, and the redelivery starts nothing else', async () => {
+        mockQueueAdd.mock.resetCalls();
+        const f = deps();
+        const failing = { ...f.deps, enqueue: async () => { throw new Error('queue down'); } };
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-first', failing as never), /queue down/);
+        assert.ok(f.requests.some(r => r.route.endsWith('/labels')), 'the processing label was published');
+
+        // The published label's webhook arrives before the command is redelivered.
+        const label = await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never);
+        assert.strictEqual(label.status, 'accepted');
+        const [job] = queued();
+        assert.strictEqual(queued().length, 1);
+        assert.strictEqual(job.name, 'processGitHubIssue');
+        const data = job.data as QueuedJob & { userId?: string };
+        assert.strictEqual(data.pluginCommand?.command, 'example-notes');
+        assert.deepStrictEqual(data.pluginCommand?.extensions, EXPECTED_EXTENSIONS);
+        assert.match(data.pluginCommand?.instruction ?? '', /"cover the CLI"/);
+        assert.notStrictEqual(data.userId, '999', 'the task belongs to the command author, not the label applier');
+
+        // The redelivered command sees the job the label queued for it.
+        mockWaitingJobs = [{ name: 'processGitHubIssue', data: { ...data, repoOwner: 'testowner', repoName: 'testrepo', number: 7 } }];
+        try {
+            const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-retry', { ...f.deps, hasQueuedIssueJob: async () => true } as never);
+            assert.strictEqual(redelivery.reason, 'duplicate_delivery');
+        } finally {
+            mockWaitingJobs = [];
+        }
+        assert.strictEqual(f.enqueued.length, 0);
+        assert.ok(!f.requests.some(r => /already starting or running/.test(String(r.parameters.body))), 'no false "already running" reply');
+
+        // A later label event is ordinary work again.
+        f.deps.redis._store.delete('issue:dedup:testowner:testrepo:7');
+        await processDetectedIssue(labelEvent(), 'corr-label-2', f.deps.redis as never);
+        assert.strictEqual(queued().length, 2);
+        assert.strictEqual(queued()[1].data.pluginCommand, undefined);
+    });
+
+    test('a label event with no pending command queues ordinary work; a started command leaves none pending', async () => {
+        mockQueueAdd.mock.resetCalls();
+        const f = deps();
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'corr-ok', f.deps as never)).status, 'accepted');
+        assert.ok(!f.deps.redis._store.has(INTENT_KEY));
+        f.deps.redis._store.delete('issue:dedup:testowner:testrepo:7');
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
+        assert.strictEqual(queued()[0].data.pluginCommand, undefined);
+    });
 
     test('a failed attempt never releases a dedupe window someone else took', async () => {
         const f = deps();

@@ -6,6 +6,7 @@ import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilte
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
 import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
+import { issueCommandIntentKey, readIssueCommandIntent, recordIssueCommandIntent, releaseIssueCommandIntent } from '../plugins/issueCommandIntent.js';
 
 /**
  * Plugin commands in issue comments. ProPR has no built-in issue command, so
@@ -18,11 +19,14 @@ import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
  * processing label and queues the issue's matrix dispatch with the command's
  * instruction and library additions. The label-detection path's dedupe key is
  * taken first, so the label webhook that follows does not queue a second,
- * command-less dispatch. Access follows the comment trigger rules: the author
+ * command-less dispatch. The command is also recorded as the issue's pending
+ * command intent before the label is published: if the enqueue then fails,
+ * the published label's webhook queues the job carrying the command instead
+ * of ordinary work (see `issueCommandIntent.ts`). Access follows the comment trigger rules: the author
  * filters (allowlist, blocklist, bots) and the ignore keywords.
  */
 export interface IssueCommandDependencies {
-  redis: Pick<Redis, 'set' | 'del' | 'eval'>;
+  redis: Pick<Redis, 'get' | 'set' | 'del' | 'eval'>;
   github?: () => Promise<{ request(route: string, parameters: Record<string, unknown>): Promise<unknown> }>;
   /** Adds a job to the issue queue. */
   enqueue?: (data: IssueJobData, jobId: string) => Promise<void>;
@@ -91,6 +95,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   const claimKey = `issue-comment-command:${owner}:${repo}:${issue.number}:${comment.id}`;
   if (await deps.redis.set(claimKey, Date.now().toString(), 'EX', CLAIM_TTL_SECONDS, 'NX') !== 'OK') return { status: 'ignored', reason: 'duplicate_delivery' };
   const dedupeKey = `issue:dedup:${owner}:${repo}:${issue.number}`;
+  const intentKey = issueCommandIntentKey(owner, repo, issue.number);
   // Set only once this attempt holds the issue's dedupe window, so a failure
   // releases that window and an immediate redelivery can start the task.
   let dedupeToken: string | null = null;
@@ -103,6 +108,13 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       return { status: 'ignored', reason: 'plugin_command_refused' };
     }
     const { run } = resolution;
+    // An earlier attempt for this comment published the label and failed to
+    // queue; the label's webhook then queued the job carrying this command.
+    const earlier = await readIssueCommandIntent(deps.redis, intentKey);
+    if (earlier?.intent.state === 'queued' && earlier.intent.commentId === comment.id) {
+      log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command already started through its processing label');
+      return { status: 'ignored', reason: 'duplicate_delivery' };
+    }
     const primaryLabels = await (deps.primaryLabels ?? defaultPrimaryLabels)();
     // New work starts with the first label; work started through any configured
     // label family makes the issue busy.
@@ -120,20 +132,30 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       return { status: 'ignored', reason: 'job_already_queued' };
     }
     dedupeToken = token;
+    // Recorded before the label is published and kept if this attempt fails:
+    // from here on the label may start the issue's work without this attempt.
+    const userId = String(payload.sender.id);
+    const intentValue = await recordIssueCommandIntent(deps.redis, intentKey, { commentId: comment.id, userId, pluginCommand: run, token });
     if (!labels.includes(triggeringLabel)) {
       await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', { owner, repo, issue_number: issue.number, labels: [triggeringLabel] });
     }
     const data: IssueJobData = {
-      repoOwner: owner, repoName: repo, number: issue.number, userId: String(payload.sender.id), triggeringLabel,
+      repoOwner: owner, repoName: repo, number: issue.number, userId, triggeringLabel,
       correlationId: generateCorrelationId(), pluginCommand: run,
     };
     await (deps.enqueue ?? defaultEnqueue)(data, `issue-${owner}-${repo}-${issue.number}`);
+    // The queued job carries the command; a later label event must not.
+    await releaseIssueCommandIntent(deps.redis, intentKey, intentValue).catch((err: unknown) => {
+      log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task');
+    });
     log.info({ repository, issueNumber: issue.number, commentId: comment.id, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} started an implementation task`);
     return { status: 'accepted', billing: { seatConsumed: !/\[bot\]$/i.test(author) } };
   } catch (error) {
     // This attempt created no task: release what it reserved so a redelivery
     // is handled afresh. The dedupe window is released only while it is still
-    // this attempt's, never one a later label event or command has taken.
+    // this attempt's, never one a later label event or command has taken. The
+    // command intent is kept: the label this attempt may have published makes
+    // label-triggered intake queue the command, not command-less work.
     const releases = await Promise.allSettled([
       ...(dedupeToken ? [deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, dedupeToken)] : []),
       deps.redis.del(claimKey),
