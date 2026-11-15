@@ -160,7 +160,7 @@ test('a repository emptied before the plugin ever delivered to it has its gap re
 });
 
 /** Runs `change` once, the first time the dispatcher's private `method` is called (before or after the original). */
-function intercept(dispatcher: object, method: 'acquire' | 'cursor', change: () => Promise<unknown>, when: 'before' | 'after') {
+function intercept(dispatcher: object, method: 'acquire' | 'cursor' | 'state', change: () => Promise<unknown>, when: 'before' | 'after') {
   const internals = dispatcher as Record<string, (...args: unknown[]) => Promise<unknown>>;
   const original = internals[method].bind(dispatcher);
   let done = false;
@@ -197,6 +197,59 @@ for (const [moment, method, when] of [
     assert.equal(Number(cursor.cursor_seq), later);
   });
 }
+
+/** Install again after an uninstall (a later `installed_at`), limited and enabled as before. */
+const installAgain = async (s: Setup) => {
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await s.f.store.install('1', ID);
+  await s.f.store.setRepositories('1', ID, [ALLOWED, SECOND]);
+  await s.f.store.setEnabled('1', ID, true);
+};
+const reinstall = async (s: Setup) => { await s.f.store.uninstall('1', ID, ID); await installAgain(s); };
+const dispatchRow = (s: Setup) => s.f.database('plugin_dispatch').where({ plugin_id: ID }).first() as Promise<{ installed_at: number; start_seq: number } | undefined>;
+
+test('a reinstall between reading the installation and its dispatch state keeps the replacement\'s start: its events are delivered', async t => {
+  const s = await setup(t);
+  const dispatcher = s.dispatcher();
+  let event = 0;
+  let replacement: { installed_at: number; start_seq: number } | undefined;
+  intercept(dispatcher, 'state', async () => {
+    await reinstall(s);
+    replacement = await dispatchRow(s);
+    event = await s.append(ALLOWED, 'pull_request', 'opened', 1);
+  }, 'before');
+  assert.equal((await dispatcher.pass()).attempts, 0, 'the stale installation stops');
+  assert.deepEqual(await dispatchRow(s), replacement, 'the replacement\'s state is not written over');
+  assert.equal(await drain(dispatcher), 1);
+  assert.deepEqual((await s.seen()).map(e => e.seq), [event], 'the event after the replacement was enabled is delivered');
+});
+
+test('an uninstall between reading the installation and its missing dispatch state creates none', async t => {
+  const s = await setup(t);
+  await s.f.database('plugin_dispatch').where({ plugin_id: ID }).delete();
+  const dispatcher = s.dispatcher();
+  intercept(dispatcher, 'state', () => s.f.store.uninstall('1', ID, ID), 'before');
+  assert.equal((await dispatcher.pass()).attempts, 0);
+  assert.equal(await dispatchRow(s), undefined, 'no state for a plugin that is not installed');
+  await installAgain(s);
+  const event = await s.append(ALLOWED, 'pull_request', 'opened', 1);
+  assert.equal(await drain(dispatcher), 1);
+  assert.deepEqual((await s.seen()).map(e => e.seq), [event]);
+});
+
+test('an installation whose dispatch state is missing gets one at the journal end', async t => {
+  const s = await setup(t);
+  const earlier = await s.append(ALLOWED, 'pull_request', 'opened', 1);
+  await s.f.database('plugin_dispatch').where({ plugin_id: ID }).delete();
+  const dispatcher = s.dispatcher();
+  assert.equal(await drain(dispatcher), 0, 'history is not replayed');
+  const row = await dispatchRow(s);
+  assert.equal(Number(row?.start_seq), earlier);
+  assert.equal(Number(row?.installed_at), (await s.f.store.get('1', ID)).installation!.installedAt);
+  const later = await s.append(ALLOWED, 'pull_request', 'opened', 2);
+  assert.equal(await drain(dispatcher), 1);
+  assert.deepEqual((await s.seen()).map(e => e.seq), [later]);
+});
 
 test('a Degraded notification whose send failed is sent again until it succeeds, once, even after the pause', async t => {
   const s = await setup(t);

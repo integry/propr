@@ -205,27 +205,38 @@ export class PluginDispatcher {
       // Subscriptions need events.read, granted and still asked for.
       if (!deliversEvents(target)) continue;
       const state = await this.state(row.plugin_id, target.record.installedAt);
-      if (state.paused_at !== null) continue;
+      // Uninstalled, reinstalled or disabled since the read: the next pass starts from the installation as it is then.
+      if (!state || state.paused_at !== null) continue;
       found.push({ target, state, attempts: 0 });
     }
     return found;
   }
 
-  /** The dispatch state of the installation; an installation without one (or with an earlier installation's) starts at the journal's end. */
-  private async state(pluginId: string, installedAt: number): Promise<PluginDispatchRow> {
-    const read = () => this.database('plugin_dispatch').where({ plugin_id: pluginId }).first() as Promise<PluginDispatchRow | undefined>;
-    let row = await read();
-    if (!row) {
-      await this.database('plugin_dispatch').insert({ plugin_id: pluginId, installed_at: installedAt, start_seq: await journalHead(this.database), consecutive_failures: 0, updated_at: this.now() })
-        .onConflict('plugin_id').ignore();
-      row = await read();
-    }
-    if (row && Number(row.installed_at) !== installedAt) {
-      await this.database.transaction(trx => restartPluginDispatch(trx, pluginId, installedAt, this.now()));
-      row = await read();
-    }
-    if (!row) throw new Error(`No dispatch state for plugin ${pluginId}`);
-    return row;
+  /**
+   * The dispatch state of the installation read as `installedAt`; an
+   * installation without one (or with an earlier installation's) starts at the
+   * journal's end. State is only created or replaced in one transaction with
+   * the check that the installation is still that one, enabled, and that the
+   * state it replaces is still not its own: an installation read before an
+   * uninstall, reinstall or disable never writes over its replacement's state
+   * (that would move the replacement's start past events it must receive).
+   * Undefined when the installation changed since it was read.
+   */
+  private async state(pluginId: string, installedAt: number): Promise<PluginDispatchRow | undefined> {
+    const read = (database: Knex) => database('plugin_dispatch').where({ plugin_id: pluginId }).first() as Promise<PluginDispatchRow | undefined>;
+    const row = await read(this.database);
+    if (row && Number(row.installed_at) === installedAt) return row;
+    return this.database.transaction(async trx => {
+      const current = await trx('plugin_installations').where({ plugin_id: pluginId }).first('installed_at', 'enabled') as Pick<PluginInstallationRow, 'installed_at' | 'enabled'> | undefined;
+      if (!current || Number(current.installed_at) !== installedAt || !current.enabled) return undefined;
+      const existing = await read(trx);
+      if (!existing) {
+        await trx('plugin_dispatch').insert({ plugin_id: pluginId, installed_at: installedAt, start_seq: await journalHead(trx), consecutive_failures: 0, updated_at: this.now() });
+      } else if (Number(existing.installed_at) !== installedAt) {
+        await restartPluginDispatch(trx, pluginId, installedAt, this.now());
+      }
+      return read(trx);
+    });
   }
 
   /** Take or renew the installation's lease: free, expired or already ours. */

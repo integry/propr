@@ -92,7 +92,10 @@ subscriptions and that holds `events.read`. For each one:
 1. `plugin_dispatch` holds `start_seq`, the journal's highest `seq` when the
    plugin was installed or last enabled. Only later events are delivered. An
    installation without a row (or with a row of an earlier installation)
-   starts at the journal's end.
+   starts at the journal's end. That row is written only in a transaction
+   that confirms the installation is still the one the pass read, and
+   enabled: a pass that read it before an uninstall, reinstall or disable
+   skips it and never writes over the replacement's start.
 2. The repositories to visit are those with events after `start_seq`, those
    with unfinished deliveries, and those whose journal floor moved past
    `start_seq` and past what their cursor last recorded (so a repository that
