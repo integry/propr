@@ -933,14 +933,15 @@ export interface PluginConnectionRequest {
 export interface PluginDelivery {
   /** The activity record id, used by the retry route. */
   id: number;
-  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`); the same on every attempt. */
+  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>-<id>` for a webhook); the same on every attempt. */
   deliveryId: string;
-  /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. */
-  kind: "event" | "gap";
+  /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. */
+  kind: "event" | "gap" | "webhook";
+  /** The event's repository; empty for a webhook delivery. */
   repository: string;
-  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing. */
+  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery. */
   eventSeq: number;
-  /** `<domain>.<type>`; null for a gap. */
+  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap. */
   eventType: string | null;
   handler: string | null;
   status: "pending" | "running" | "retrying" | "succeeded" | "failed" | "skipped";
@@ -1017,10 +1018,12 @@ export interface PluginDetailResponse {
           description: string;
         }[];
         subscriptions: string[];
-        webhooks: {
+        webhooks: Array<{
           name: string;
           description: string;
-        }[];
+          /** How ProPR verifies the webhook's requests. */
+          scheme: "hmac-sha256" | "slack-v0" | "token-header";
+        }>;
       };
     } | null;
     state: "available" | "installed" | "enabled";
@@ -1116,7 +1119,7 @@ export interface PluginDetailResponse {
     };
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused" | "retry_delivery" | "resume_deliveries";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused" | "retry_delivery" | "resume_deliveries" | "regenerate_webhook_key";
       actor: string;
       at: number;
       detail: {
@@ -1247,10 +1250,12 @@ export interface PluginView {
         description: string;
       }[];
       subscriptions: string[];
-      webhooks: {
+      webhooks: Array<{
         name: string;
         description: string;
-      }[];
+        /** How ProPR verifies the webhook's requests. */
+        scheme: "hmac-sha256" | "slack-v0" | "token-header";
+      }>;
     };
   } | null;
   state: "available" | "installed" | "enabled";
@@ -1344,6 +1349,29 @@ export interface PluginView {
       href: string;
     }[];
   };
+}
+
+/** The inbound webhook URLs of an installed plugin. */
+export interface PluginWebhooksResponse {
+  /** One URL per webhook the plugin declares. */
+  webhooks: Array<{
+    name: string;
+    description: string;
+    scheme: "hmac-sha256" | "slack-v0" | "token-header";
+    /** `/api/plugins/<installation key>/hooks/<name>`. The key is unguessable: treat the URL as a secret. */
+    path: string;
+    /** The full URL; null when the instance has no public base URL. */
+    url: string | null;
+  }>;
+  /** Requests refused because they failed verification. Their bodies and headers are never stored. */
+  rejected: {
+    count: number;
+    lastAt: number | null;
+    lastReason: string | null;
+  };
+  keyCreatedAt: number | null;
+  /** The administrator who last regenerated the key, or `system`. */
+  keyCreatedBy: string | null;
 }
 
 /** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */

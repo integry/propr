@@ -680,6 +680,9 @@ export * from './services/repositoryEventJournal.js';
 // Plugin event subscriptions: the journal dispatcher and its delivery records.
 export { PluginDispatcher, type PluginDispatcherOptions, type PluginDispatchPass } from './plugins/pluginDispatcher.js';
 export { prunePluginDeliveries } from './plugins/pluginDeliveries.js';
+export { PluginWebhookRunner, type PluginWebhookRunnerOptions } from './plugins/pluginWebhookRunner.js';
+export { PluginWebhookReceiver, type PluginWebhookReceiverOptions, type PluginWebhookReply } from './plugins/pluginWebhookReceiver.js';
+export { PLUGIN_WEBHOOK_ROUTE, pluginWebhookEndpoints, regeneratePluginWebhookKey, type PluginWebhookEndpoints } from './plugins/pluginWebhooks.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

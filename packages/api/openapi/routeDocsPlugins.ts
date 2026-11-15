@@ -2,8 +2,9 @@ import type { z } from 'zod';
 import {
   PluginAcknowledgementRequest, PluginConnectionRequest, PluginDetailResponse, PluginEnabledRequest, PluginList, PluginRepositoriesRequest, PluginResponse,
   PluginSettingsRequest, PluginUninstallRequest, PluginEmptyRequest, PluginOAuthClientRequest, PluginOAuthCompleteRequest, PluginOAuthStartResponse,
-  PluginActivityResponse, PluginDeliveryResponse, PluginHealthResponse,
+  PluginActivityResponse, PluginDeliveryResponse, PluginHealthResponse, PluginWebhooksResponse,
 } from './schemasPlugins.js';
+import { JsonObject } from './schemas.js';
 import type { RouteDoc } from './types.js';
 
 /** Plugin installation routes (docs/features/plugins#installing-a-plugin). */
@@ -50,5 +51,31 @@ export const PLUGIN_ROUTE_DOCS: Record<string, RouteDoc> = {
   [`POST ${BASE}/:pluginId/resume`]: mutation('resumePluginDeliveries', 'Resume event deliveries paused after repeated failures: the failure count starts over, Degraded clears and waiting retries are due at once. Refused (409) when deliveries are not paused.', PluginEmptyRequest, {
     responses: { 200: { description: 'The new delivery health.', schema: PluginHealthResponse } },
   }),
+  [`GET ${BASE}/:pluginId/webhooks`]: {
+    operationId: 'getPluginWebhooks', summary: 'Read the installed plugin\'s inbound webhook URLs (one per declared webhook, with its verification scheme) and the count of requests refused because they failed verification. Refused (409) when the plugin is not installed.', description, tags: ['Configuration'],
+    pathParams: pluginId, responses: { 200: { description: 'The webhook URLs.', schema: PluginWebhooksResponse } },
+  },
+  [`POST ${BASE}/:pluginId/webhooks/regenerate`]: mutation('regeneratePluginWebhookKey', 'Replace the plugin\'s installation key: every webhook URL changes and the old URLs answer 404 at once. Update the URL at each sending service afterwards.', PluginEmptyRequest, {
+    responses: { 200: { description: 'The new webhook URLs.', schema: PluginWebhooksResponse } },
+  }),
+  'POST /api/plugins/:installationKey/hooks/:webhookName': {
+    operationId: 'receivePluginWebhook',
+    summary: 'Receive an inbound webhook request for a plugin',
+    description: 'Public. ProPR verifies the request with the webhook\'s scheme (`hmac-sha256`, `slack-v0` or `token-header`) and the plugin\'s signing secret before any plugin code runs, then queues the plugin\'s handler as a delivery of kind `webhook`. The body is read raw, up to 256 KiB; the webhook rate limiter applies. Bodies and signature headers are never stored or logged.',
+    tags: ['Webhooks'],
+    pathParams: { installationKey: 'The unguessable installation key from the Plugins page.', webhookName: 'A webhook name from the plugin manifest.' },
+    requestBody: { schema: JsonObject, description: 'Any body, read raw: JSON, form-encoded or text, as the sending service signs it.' },
+    responses: {
+      200: { description: 'The webhook\'s respond function answered at once (a challenge echo); the handler does not run.', contentType: 'text/plain' },
+      202: { description: 'Verified and queued: `{ accepted: true, deliveryId }`.', schema: JsonObject },
+      400: { description: 'The delivery id header is malformed.' },
+      401: { description: 'Verification failed: missing or wrong signature or token, a stale timestamp, or no signing secret set. Counted on the installation.' },
+      404: { description: 'Unknown or regenerated installation key, a disabled or uninstalled plugin, or an undeclared webhook.' },
+      409: { description: 'The delivery id was already received (a replay).' },
+      413: { description: 'The body is larger than 256 KiB.' },
+      429: { description: 'Rate limited.' },
+      503: { description: 'Deliveries of the plugin are paused, or too many deliveries are waiting; retry after `Retry-After`.' },
+    },
+  },
   [`POST ${BASE}/:pluginId/connections/:connectionName/oauth/disconnect`]: mutation('disconnectPluginOAuth', 'Disconnect an `oauth` connection: its managed servers\' tokens are revoked where possible and deleted, and later runs leave the servers out.', PluginEmptyRequest, { pathParams: oauthParams }),
 };

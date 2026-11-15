@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  PLUGIN_AUDIT_ACTIONS, PLUGIN_CATEGORIES, PLUGIN_CONNECTION_TYPES, PLUGIN_DELIVERY_KINDS, PLUGIN_DELIVERY_STATUSES, PLUGIN_HEALTH_STATES, PLUGIN_PERMISSIONS,
+  PLUGIN_AUDIT_ACTIONS, PLUGIN_CATEGORIES, PLUGIN_CONNECTION_TYPES, PLUGIN_DELIVERY_KINDS, PLUGIN_DELIVERY_STATUSES, PLUGIN_HEALTH_STATES, PLUGIN_PERMISSIONS, PLUGIN_WEBHOOK_SCHEMES,
 } from '@propr/shared';
 import { component } from './schemas.js';
 
@@ -17,7 +17,7 @@ const PluginManifestSummary = z.object({
     mcpServers: z.array(z.object({}).loose()).describe('Contributed MCP servers without launch arguments or environment values.'),
     skills: z.array(z.string()), automationTemplates: z.array(z.string()),
     commands: z.array(z.object({ name: z.string(), description: z.string() })), subscriptions: z.array(z.string()),
-    webhooks: z.array(z.object({ name: z.string(), description: z.string() })),
+    webhooks: z.array(z.object({ name: z.string(), description: z.string(), scheme: z.enum(PLUGIN_WEBHOOK_SCHEMES).describe('How ProPR verifies the webhook\'s requests.') })),
   }),
 }).describe('The public projection of the plugin manifest.');
 const acknowledgement = z.object({ actor: z.string(), at: z.number(), package: z.string(), version: z.string(), secretEnv: z.array(z.string()) });
@@ -89,11 +89,11 @@ export const PluginOAuthStartResponse = component('PluginOAuthStartResponse', z.
 const PluginLogLine = z.object({ level: z.enum(['debug', 'info', 'warn', 'error']), message: z.string(), fields: z.record(z.string(), z.unknown()).optional(), at: z.number() });
 export const PluginDelivery = component('PluginDelivery', z.object({
   id: z.number().int().describe('The activity record id, used by the retry route.'),
-  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`); the same on every attempt.'),
-  kind: z.enum(PLUGIN_DELIVERY_KINDS).describe('`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered.'),
-  repository: z.string(),
-  eventSeq: z.number().int().describe('The journal `seq` of the event; for a gap, the first `seq` that may be missing.'),
-  eventType: z.string().nullable().describe('`<domain>.<type>`; null for a gap.'),
+  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>-<id>` for a webhook); the same on every attempt.'),
+  kind: z.enum(PLUGIN_DELIVERY_KINDS).describe('`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler.'),
+  repository: z.string().describe('The event\'s repository; empty for a webhook delivery.'),
+  eventSeq: z.number().int().describe('The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery.'),
+  eventType: z.string().nullable().describe('`<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap.'),
   handler: z.string().nullable(),
   status: z.enum(PLUGIN_DELIVERY_STATUSES),
   attempt: z.number().int().describe('Attempts made so far.'),
@@ -111,3 +111,14 @@ export const PluginHealth = component('PluginHealth', z.object({
 export const PluginActivityResponse = component('PluginActivityResponse', z.object({ health: PluginHealth, deliveries: z.array(PluginDelivery).describe('The newest 100 delivery records, newest first.') }));
 export const PluginDeliveryResponse = component('PluginDeliveryResponse', z.object({ delivery: PluginDelivery }));
 export const PluginHealthResponse = component('PluginHealthResponse', z.object({ health: PluginHealth }));
+
+const PluginWebhookEndpoint = z.object({
+  name: z.string(), description: z.string(), scheme: z.enum(PLUGIN_WEBHOOK_SCHEMES),
+  path: z.string().describe('`/api/plugins/<installation key>/hooks/<name>`. The key is unguessable: treat the URL as a secret.'),
+  url: z.string().nullable().describe('The full URL; null when the instance has no public base URL.'),
+});
+export const PluginWebhooksResponse = component('PluginWebhooksResponse', z.object({
+  webhooks: z.array(PluginWebhookEndpoint).describe('One URL per webhook the plugin declares.'),
+  rejected: z.object({ count: z.number().int(), lastAt: z.number().nullable(), lastReason: z.string().nullable() }).describe('Requests refused because they failed verification. Their bodies and headers are never stored.'),
+  keyCreatedAt: z.number().nullable(), keyCreatedBy: z.string().nullable().describe('The administrator who last regenerated the key, or `system`.'),
+}), 'The inbound webhook URLs of an installed plugin.');

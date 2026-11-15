@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 342
-    documented: 104
+    total: 345
+    documented: 107
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -5593,6 +5593,90 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/webhooks:
+    get:
+      operationId: getPluginWebhooks
+      summary: Read the installed plugin's inbound webhook URLs (one per declared webhook, with its verification scheme) and the count of requests refused because they failed verification. Refused (409) when the plugin is not installed.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The webhook URLs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginWebhooksResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/webhooks/regenerate:
+    post:
+      operationId: regeneratePluginWebhookKey
+      summary: "Replace the plugin's installation key: every webhook URL changes and the old URLs answer 404 at once. Update the URL at each sending service afterwards."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The new webhook URLs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginWebhooksResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
   /api/instance/storage/v1/capabilities:
     get:
       operationId: getInstanceStorageCapabilities
@@ -7565,6 +7649,93 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-undocumented: true
+      x-legacy-error: true
+  /api/plugins/{installationKey}/hooks/{webhookName}:
+    post:
+      operationId: receivePluginWebhook
+      summary: Receive an inbound webhook request for a plugin
+      description: Public. ProPR verifies the request with the webhook's scheme (`hmac-sha256`, `slack-v0` or `token-header`) and the plugin's signing secret before any plugin code runs, then queues the plugin's handler as a delivery of kind `webhook`. The body is read raw, up to 256 KiB; the webhook rate limiter applies. Bodies and signature headers are never stored or logged.
+      tags:
+        - Webhooks
+      security: []
+      parameters:
+        - name: installationKey
+          in: path
+          required: true
+          description: The unguessable installation key from the Plugins page.
+          schema:
+            type: string
+        - name: webhookName
+          in: path
+          required: true
+          description: A webhook name from the plugin manifest.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: "Any body, read raw: JSON, form-encoded or text, as the sending service signs it."
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonObject"
+      responses:
+        "200":
+          description: The webhook's respond function answered at once (a challenge echo); the handler does not run.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "202":
+          description: "Verified and queued: `{ accepted: true, deliveryId }`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "400":
+          description: The delivery id header is malformed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          description: "Verification failed: missing or wrong signature or token, a stale timestamp, or no signing secret set. Counted on the installation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "404":
+          description: Unknown or regenerated installation key, a disabled or uninstalled plugin, or an undeclared webhook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The delivery id was already received (a replay).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "413":
+          description: The body is larger than 256 KiB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: Deliveries of the plugin are paused, or too many deliveries are waiting; retry after `Retry-After`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
       x-legacy-error: true
   /api/preview-media/comments/{owner}/{repo}/{number}/{assetId}:
     get:
@@ -13129,20 +13300,22 @@ components:
           description: The activity record id, used by the retry route.
         deliveryId:
           type: string
-          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`); the same on every attempt.
+          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>-<id>` for a webhook); the same on every attempt.
         kind:
           type: string
           enum:
             - event
             - gap
-          description: "`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered."
+            - webhook
+          description: "`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler."
         repository:
           type: string
+          description: The event's repository; empty for a webhook delivery.
         eventSeq:
           type: integer
-          description: The journal `seq` of the event; for a gap, the first `seq` that may be missing.
+          description: The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery.
         eventType:
-          description: "`<domain>.<type>`; null for a gap."
+          description: "`<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap."
           type:
             - string
             - "null"
@@ -13400,9 +13573,17 @@ components:
                                 type: string
                               description:
                                 type: string
+                              scheme:
+                                type: string
+                                enum:
+                                  - hmac-sha256
+                                  - slack-v0
+                                  - token-header
+                                description: How ProPR verifies the webhook's requests.
                             required:
                               - name
                               - description
+                              - scheme
                             additionalProperties: false
                       required:
                         - mcpServers
@@ -13751,6 +13932,7 @@ components:
                       - handler_refused
                       - retry_delivery
                       - resume_deliveries
+                      - regenerate_webhook_key
                   actor:
                     type: string
                   at:
@@ -14116,9 +14298,17 @@ components:
                             type: string
                           description:
                             type: string
+                          scheme:
+                            type: string
+                            enum:
+                              - hmac-sha256
+                              - slack-v0
+                              - token-header
+                            description: How ProPR verifies the webhook's requests.
                         required:
                           - name
                           - description
+                          - scheme
                         additionalProperties: false
                   required:
                     - mcpServers
@@ -14453,6 +14643,75 @@ components:
         - enableBlockers
       additionalProperties: false
       description: A plugin with its installation state on this instance.
+    PluginWebhooksResponse:
+      type: object
+      properties:
+        webhooks:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              scheme:
+                type: string
+                enum:
+                  - hmac-sha256
+                  - slack-v0
+                  - token-header
+              path:
+                type: string
+                description: "`/api/plugins/<installation key>/hooks/<name>`. The key is unguessable: treat the URL as a secret."
+              url:
+                description: The full URL; null when the instance has no public base URL.
+                type:
+                  - string
+                  - "null"
+            required:
+              - name
+              - description
+              - scheme
+              - path
+              - url
+            additionalProperties: false
+          description: One URL per webhook the plugin declares.
+        rejected:
+          type: object
+          properties:
+            count:
+              type: integer
+            lastAt:
+              type:
+                - number
+                - "null"
+            lastReason:
+              type:
+                - string
+                - "null"
+          required:
+            - count
+            - lastAt
+            - lastReason
+          additionalProperties: false
+          description: Requests refused because they failed verification. Their bodies and headers are never stored.
+        keyCreatedAt:
+          type:
+            - number
+            - "null"
+        keyCreatedBy:
+          description: The administrator who last regenerated the key, or `system`.
+          type:
+            - string
+            - "null"
+      required:
+        - webhooks
+        - rejected
+        - keyCreatedAt
+        - keyCreatedBy
+      additionalProperties: false
+      description: The inbound webhook URLs of an installed plugin.
     PullRequestReadiness:
       type: object
       properties:

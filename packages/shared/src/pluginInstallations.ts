@@ -87,7 +87,7 @@ export interface PluginView {
  * (refused or failed) record a handler's `ctx.propr` calls with `plugin:<id>` as the actor.
  */
 export interface PluginAuditEvent { action: PluginAuditAction; actor: string; at: number; detail: Record<string, unknown> }
-export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'handler_attempt', 'handler_call', 'handler_refused', 'retry_delivery', 'resume_deliveries'] as const;
+export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'handler_attempt', 'handler_call', 'handler_refused', 'retry_delivery', 'resume_deliveries', 'regenerate_webhook_key'] as const;
 export type PluginAuditAction = typeof PLUGIN_AUDIT_ACTIONS[number];
 export interface PluginDetail extends PluginView { audit: PluginAuditEvent[] }
 

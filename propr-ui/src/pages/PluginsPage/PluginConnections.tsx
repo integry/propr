@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { PluginConnectionView, PluginView } from '../../api/pluginsApi';
 import { ExtensionOAuthConnection } from '../SettingsPage/extensions/ExtensionOAuthConnection';
 import { ExternalLink, PluginStep } from './PluginBits';
+import { PluginWebhookUrls } from './PluginWebhookUrls';
 import { dangerButtonClass, formatWhen, inputClass, primaryButtonClass, safeHttpsUrl } from './pluginUi';
 
 export interface PluginConnectionActions {
@@ -62,7 +63,7 @@ function ConnectionRow({ connection, help, helpUrl, actions, locked }: {
   );
 }
 
-/** Connect: one row per connection with its state and the action its type needs. */
+/** Connect: one row per connection with its state and the action its type needs, then the URL of each webhook the plugin receives. */
 export function PluginConnections({ view, actions }: { view: PluginView; actions: PluginConnectionActions }) {
   const installed = Boolean(view.installation);
   const declared = view.manifest?.connections ?? [];
@@ -85,6 +86,7 @@ export function PluginConnections({ view, actions }: { view: PluginView; actions
       {installed && view.connections.some(c => c.type === 'oauth' && c.state !== 'connected') && (
         <p className="text-xs text-slate-600">Sign-in opens in a new tab. This page refreshes when you come back.</p>
       )}
+      {installed && Boolean(view.manifest?.contributes.webhooks.length) && <PluginWebhookUrls pluginId={view.id} installed={installed} />}
     </PluginStep>
   );
 }
