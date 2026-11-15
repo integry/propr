@@ -275,6 +275,11 @@ before the JSON parser and the session middleware:
       sender's delivery id marks the row succeeded (handler: the respond
       function), so the id stays taken; otherwise the row is deleted
       (`release`), and a failed respond function's request may be sent again.
+      If the write marking the answer reports an error, the row is read back:
+      when the answer committed, it is sent. Otherwise, or when the row cannot
+      be read, the request fails with 500 and the row is deleted, whether it
+      is still pending or holds that unsent answer, so the sender may send it
+      again.
    7. Refuse with 503 while the installation's event deliveries are paused,
       releasing the row so the sender's retry is not a replay.
    8. `start` hands the delivery to the runner, and the answer is 202.

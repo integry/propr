@@ -244,7 +244,8 @@ export class PluginWebhookRunner {
   private async giveBack(recordId: number, failures: number): Promise<void> {
     this.releasing.set(recordId, undefined);
     try {
-      await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner }).delete();
+      // A record still reserved is `succeeded` only by an answer whose write reported failure and could not be read back (`answered` threw): that answer was never sent, so its record is given back too.
+      await this.options.database('plugin_deliveries').where({ id: recordId, webhook_owner: this.owner }).whereIn('status', ['pending', 'succeeded']).delete();
       this.releasing.delete(recordId);
       this.reserved.delete(recordId);
     } catch (error) {
@@ -258,14 +259,24 @@ export class PluginWebhookRunner {
 
   /**
    * A reserved delivery answered at once by the webhook's respond function:
-   * final, and its delivery id stays taken. When the write fails it throws
-   * and the reservation is kept, for the caller to `release`.
+   * final, and its delivery id stays taken. A write that reports failure may
+   * have committed, so the record is read back: when the answer is recorded,
+   * it stands (the caller sends it). Otherwise, or when the record cannot be
+   * read, it throws and the reservation is kept, for the caller to `release`.
    */
   async answered(recordId: number, respond: string): Promise<void> {
     if (!this.reserved.has(recordId) || this.releasing.has(recordId)) return;
+    const { database } = this.options;
     const now = this.now();
-    await this.options.database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner })
-      .update({ status: 'succeeded', handler: respond, next_attempt_at: null, started_at: now, finished_at: now, duration_ms: 0 });
+    try {
+      await database('plugin_deliveries').where({ id: recordId, status: 'pending', webhook_owner: this.owner })
+        .update({ status: 'succeeded', handler: respond, next_attempt_at: null, started_at: now, finished_at: now, duration_ms: 0 });
+    } catch (error) {
+      // Only this answer marks this runner's reserved record succeeded: one that is, at this answer's time, is this write committed.
+      const row = await database('plugin_deliveries').where({ id: recordId, webhook_owner: this.owner }).first('status', 'handler', 'finished_at')
+        .catch(() => undefined) as Pick<PluginDeliveryRow, 'status' | 'handler' | 'finished_at'> | undefined;
+      if (row?.status !== 'succeeded' || row.handler !== respond || Number(row.finished_at) !== now) throw error;
+    }
     this.reserved.delete(recordId);
   }
 

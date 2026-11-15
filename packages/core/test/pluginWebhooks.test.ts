@@ -438,19 +438,20 @@ test('a request resolved before an uninstall and reinstall records nothing, and 
 });
 
 /**
- * The runner's database, failing chosen `plugin_deliveries` writes once each:
- * `reject` before the write, `lost` after it committed (the reply was lost).
+ * The runner's database, failing chosen `plugin_deliveries` writes (and
+ * `first` reads, whose `when` gets no values) once each: `reject` before the
+ * query, `lost` after it ran (for a write: committed, but the reply was lost).
  */
-function failingWrites(rules: Array<{ method: 'update' | 'delete'; when: (values: Record<string, unknown> | undefined) => boolean; mode: 'reject' | 'lost' }>) {
+function failingWrites(rules: Array<{ method: 'update' | 'delete' | 'first'; when: (values: Record<string, unknown> | undefined) => boolean; mode: 'reject' | 'lost' }>) {
   const fired: string[] = [];
   const wrap = (real: Knex) => new Proxy(real, {
     apply(target, self, args: unknown[]) {
       const query = Reflect.apply(target, self, args) as Knex.QueryBuilder;
       if (args[0] !== 'plugin_deliveries') return query;
-      for (const method of ['update', 'delete'] as const) {
-        const original = query[method].bind(query) as (...a: unknown[]) => Promise<number>;
+      for (const method of ['update', 'delete', 'first'] as const) {
+        const original = query[method].bind(query) as (...a: unknown[]) => Promise<unknown>;
         (query as unknown as Record<string, unknown>)[method] = (...a: unknown[]) => {
-          const values = a[0] as Record<string, unknown> | undefined;
+          const values = method === 'first' ? undefined : a[0] as Record<string, unknown> | undefined;
           const rule = rules.find(r => r.method === method && r.when(values));
           if (!rule) return original(...a);
           rules.splice(rules.indexOf(rule), 1);
@@ -526,6 +527,39 @@ test('a reservation is kept until its release or answer is written: the sender c
   assert.equal((await s.deliveries()).find(d => d.deliveryId === 'whk-answered:p-2'), undefined, 'no unfinished record is left');
   assert.deepEqual(await send(challenge, 'p-2'), { status: 200, contentType: 'text/plain', body: 'c-9' }, 'the sender\'s retry is answered');
   assert.equal((await s.deliveries()).find(d => d.deliveryId === 'whk-answered:p-2')!.status, 'succeeded');
+});
+
+test('a challenge answer recorded although its write reported failure is still sent; when that cannot be told, the sender may send it again', async t => {
+  const challenge = (id: string) => JSON.stringify({ type: 'url_verification', challenge: `challenge-${id}` });
+  const answer = (id: string) => ({ status: 200, contentType: 'text/plain', body: `challenge-${id}` });
+  const record = (s: Awaited<ReturnType<typeof setup>>, id: string) => s.deliveries().then(rows => rows.find(d => d.deliveryId === `whk-answered:${id}`));
+
+  await t.test('the answer committed: the original request gets it, and the delivery id stays taken', async t => {
+    const writes = failingWrites([{ method: 'update', mode: 'lost', when: v => v?.handler === 'countedChallenge' }]);
+    const s = await setup(t, { wrap: writes.wrap });
+    const send = (id: string) => s.send('answered', challenge(id), { 'x-gitlab-token': SECRET, 'x-delivery-id': id });
+    assert.deepEqual(await send('k-1'), answer('k-1'));
+    assert.deepEqual(writes.fired, ['update:lost']);
+    await s.runner.idle();
+    assert.deepEqual({ status: (await record(s, 'k-1'))?.status, handler: (await record(s, 'k-1'))?.handler }, { status: 'succeeded', handler: 'countedChallenge' });
+    assert.equal((await send('k-1')).status, 409, 'its replay is refused');
+  });
+
+  await t.test('the answer committed but cannot be read back: 500, and its record is given back for the sender\'s retry', async t => {
+    const writes = failingWrites([
+      { method: 'update', mode: 'lost', when: v => v?.handler === 'countedChallenge' },
+      { method: 'first', mode: 'reject', when: (): boolean => writes.fired.includes('update:lost') },
+    ]);
+    const s = await setup(t, { wrap: writes.wrap });
+    const send = (id: string) => s.send('answered', challenge(id), { 'x-gitlab-token': SECRET, 'x-delivery-id': id });
+    await assert.rejects(send('k-2'), /connection reset after commit/, 'the answer is not sent');
+    assert.deepEqual(writes.fired, ['update:lost', 'first:reject']);
+    await s.runner.idle();
+    assert.equal(await record(s, 'k-2'), undefined, 'the committed answer, never sent, is given back');
+    assert.deepEqual(await send('k-2'), answer('k-2'), 'the sender\'s retry is answered');
+    assert.equal((await record(s, 'k-2'))?.status, 'succeeded');
+    assert.equal((await send('k-2')).status, 409);
+  });
 });
 
 test('a live runner fails its own unfinished records it no longer holds, and leaves the ones it holds', async t => {
