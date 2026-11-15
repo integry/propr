@@ -185,7 +185,10 @@ export class PluginWebhookRunner {
    * Record the delivery, owned by this runner, without running it yet: the
    * delivery id is taken, so a replay is refused while the receiver decides.
    * Then `start`, `answered` or `release` it. Refused as `duplicate` when the
-   * installation already recorded this delivery id (a replay), as `busy` when
+   * installation already recorded this delivery id and the delivery is under
+   * way or succeeded (a replay). A failed delivery's record is replaced: its
+   * request was not kept, so the sender's redelivery is the only way to
+   * deliver it. Refused as `busy` when
    * too many deliveries are held, and as `gone` when the target installation
    * is no longer installed (as the same installation) and enabled.
    *
@@ -205,6 +208,8 @@ export class PluginWebhookRunner {
       const recordId = await this.options.database.transaction(async trx => {
         const installed = await trx('plugin_installations').where({ plugin_id: target.pluginId }).first('enabled', 'installed_at') as Pick<PluginInstallationRow, 'enabled' | 'installed_at'> | undefined;
         if (!installed || !installed.enabled || Number(installed.installed_at) !== target.record.installedAt) return 'gone' as const;
+        // A failed delivery is final and its request is gone: the sender's redelivery replaces its record (a new id, so a runner still holding the old one writes nothing to it).
+        await trx('plugin_deliveries').where({ plugin_id: target.pluginId, delivery_id: job.deliveryId, kind: 'webhook', status: 'failed' }).delete();
         const now = this.now();
         const inserted = await trx('plugin_deliveries').insert({
           plugin_id: target.pluginId, delivery_id: job.deliveryId, kind: 'webhook', repository: '', event_seq: 0,

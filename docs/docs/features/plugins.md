@@ -842,13 +842,16 @@ failed. The handler receives:
 - `deliveryId` is the same on every attempt. When the webhook declares
   `deliveryIdHeader` and the service sends it, it is `whk-<webhook>:<id>` with
   that value as `<id>`. Otherwise ProPR assigns one: `whk-<webhook>/<uuid>`.
+  The delivery id is shown in Activity, so `deliveryIdHeader` cannot be
+  `Authorization` or `Proxy-Authorization` (nor a verification header); the
+  manifest is refused. Verifying with `Authorization` is still allowed.
 
 Other limits and refusals:
 
 | Situation | Answer |
 | --- | --- |
 | Body larger than 256 KiB | **413**. Nothing runs. |
-| A `deliveryIdHeader` value already received | **409** (a replay). Nothing runs, not even the `respond` function. Delivery ids are remembered for as long as Activity records are kept (14 days). |
+| A `deliveryIdHeader` value already received, whose delivery succeeded or is still under way | **409** (a replay). Nothing runs, not even the `respond` function. Delivery ids are remembered for as long as Activity records are kept (14 days). A delivery that *failed* is not a replay: sending it again with the same delivery id delivers it (see below). |
 | A `deliveryIdHeader` value that is not 1 to 200 printable characters | **400**. |
 | Event deliveries of the plugin are [paused](#health-degraded-and-resume) | **503** with `Retry-After`. |
 | 1,000 webhook deliveries already waiting | **503** with `Retry-After`. |
@@ -864,7 +867,11 @@ request is held in the API process's memory only until its delivery is final.
 Two things follow from that:
 
 - A failed webhook delivery has no **Retry** button. The service has to send it
-  again.
+  again, and it may reuse the delivery id: a request whose delivery id belongs
+  to a failed delivery is accepted (**202**) and replaces that delivery's
+  Activity record with a new one. With GitHub, for example, use **Redeliver**
+  on the webhook's Recent Deliveries. A delivery id whose delivery succeeded,
+  or is still waiting or running, is still refused with 409.
 - A delivery still waiting when its API process stops is marked failed with
   *ProPR stopped before the delivery finished*, by the next API process to
   start or by another one running (within about two minutes). Starting an API

@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Knex } from 'knex';
 import {
-  PLUGIN_WEBHOOK_LIMITS, pluginWebhookVerificationHeaders,
+  PLUGIN_WEBHOOK_CREDENTIAL_HEADERS, PLUGIN_WEBHOOK_LIMITS, pluginWebhookVerificationHeaders,
   type PluginManifest, type PluginWebhook, type PluginWebhookScheme, type PluginWebhookVerification,
 } from '@propr/shared';
 import { PluginError, installationRecord, type PluginInstallationRow } from './pluginState.js';
@@ -101,10 +101,14 @@ export function handlerHeaders(headers: IncomingHttpHeaders, webhook: PluginWebh
   return kept;
 }
 
-/** The sender's delivery id from `deliveryIdHeader`: undefined without one, null when it is not 1 to 200 printable characters. */
+/**
+ * The sender's delivery id from `deliveryIdHeader`: undefined without one, null when it is not 1 to 200 printable characters.
+ * Never a credential or verification header (the manifest schema refuses both): their value would be stored as the delivery id.
+ */
 export function senderDeliveryId(headers: IncomingHttpHeaders, webhook: PluginWebhook): string | null | undefined {
-  if (!webhook.deliveryIdHeader) return undefined;
-  const value = headers[webhook.deliveryIdHeader];
+  const name = webhook.deliveryIdHeader;
+  if (!name || PLUGIN_WEBHOOK_CREDENTIAL_HEADERS.includes(name) || pluginWebhookVerificationHeaders(webhook.verification).includes(name)) return undefined;
+  const value = headers[name];
   if (value === undefined) return undefined;
   return typeof value === 'string' && new RegExp(`^[\\x21-\\x7e]{1,${PLUGIN_WEBHOOK_LIMITS.deliveryIdChars}}$`).test(value) ? value : null;
 }

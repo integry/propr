@@ -109,6 +109,11 @@ test('webhooks declare a handler and a built-in verification scheme', () => {
   rejects(variant(m => { m.contributes.webhooks[0].verification.header = 'x sig'; }), /HTTP header name/);
   rejects(variant(m => { m.contributes.webhooks[0].verification.header = 'Cookie'; }), /Webhook events cannot use header cookie/);
   rejects(variant(m => { m.contributes.webhooks[0].deliveryIdHeader = 'X-Acme-Signature'; }), /both for verification and as its delivery id/);
+  rejects(variant(m => { m.contributes.webhooks[0].deliveryIdHeader = 'Authorization'; }), /Webhook events cannot use the credential header authorization as its delivery id/);
+  rejects(variant(m => { m.contributes.webhooks[0].deliveryIdHeader = 'proxy-authorization'; }), /Webhook events cannot use the credential header proxy-authorization as its delivery id/);
+  rejects(variant(m => { m.contributes.webhooks[0].verification = { scheme: 'token-header', header: 'x-hook-token', connection: 'events-secret' }; m.contributes.webhooks[0].deliveryIdHeader = 'authorization'; }), /credential header authorization/,
+    'even when another header verifies the request');
+  assert.deepEqual(errors(variant(m => { m.contributes.webhooks[0].verification = { scheme: 'token-header', header: 'Authorization', prefix: 'Bearer ', connection: 'events-secret' }; })), [], 'authorization still verifies a request');
   rejects(variant(m => { m.contributes.webhooks[0].respond = 'onAcmeEvent'; }), /respond function other than its handler/);
   rejects(variant(m => { m.contributes.webhooks[0].connection = 'events-secret'; }), /connection/);
 });

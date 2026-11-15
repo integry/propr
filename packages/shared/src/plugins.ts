@@ -192,6 +192,12 @@ export const pluginHeaderNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]
 const headerPrefixSchema = z.string().min(1).max(32).regex(/^[\x20-\x7e]+$/, 'A prefix is printable ASCII');
 /** Headers a webhook never names: ProPR or the HTTP layer own them. */
 const RESERVED_WEBHOOK_HEADERS = ['host', 'content-length', 'content-type', 'cookie', 'connection', 'transfer-encoding'];
+/**
+ * HTTP credential headers: a webhook may verify with one (`token-header`), but
+ * never names one as its `deliveryIdHeader`, whose value is stored in the
+ * delivery record and shown in Activity.
+ */
+export const PLUGIN_WEBHOOK_CREDENTIAL_HEADERS: readonly string[] = ['authorization', 'proxy-authorization'];
 /** Inbound webhook verification schemes; ProPR verifies a request before any plugin code runs. */
 export const PLUGIN_WEBHOOK_SCHEMES = ['hmac-sha256', 'slack-v0', 'token-header'] as const;
 export type PluginWebhookScheme = typeof PLUGIN_WEBHOOK_SCHEMES[number];
@@ -264,6 +270,7 @@ function checkConnectionReferences(manifest: z.infer<typeof pluginManifestObject
     expect(webhook.verification.connection, 'signing_secret', [...at, 'verification', 'connection'], `Webhook ${webhook.name}`);
     const verified = pluginWebhookVerificationHeaders(webhook.verification);
     for (const header of [...verified, ...(webhook.deliveryIdHeader ? [webhook.deliveryIdHeader] : [])].filter(h => RESERVED_WEBHOOK_HEADERS.includes(h))) issue(`Webhook ${webhook.name} cannot use header ${header}`, at);
+    if (webhook.deliveryIdHeader && PLUGIN_WEBHOOK_CREDENTIAL_HEADERS.includes(webhook.deliveryIdHeader)) issue(`Webhook ${webhook.name} cannot use the credential header ${webhook.deliveryIdHeader} as its delivery id`, [...at, 'deliveryIdHeader']);
     if (webhook.deliveryIdHeader && verified.includes(webhook.deliveryIdHeader)) issue(`Webhook ${webhook.name} uses ${webhook.deliveryIdHeader} both for verification and as its delivery id`, [...at, 'deliveryIdHeader']);
     if (webhook.respond && webhook.respond === webhook.handler) issue(`Webhook ${webhook.name} needs a respond function other than its handler`, [...at, 'respond']);
   });

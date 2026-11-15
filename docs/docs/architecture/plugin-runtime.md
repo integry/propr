@@ -246,12 +246,22 @@ before the JSON parser and the session middleware:
       request does not send it. A webhook name contains neither `:` nor `/`, so
       the character after the name ends it: webhook `a` with id `b-c` and
       webhook `a-b` with id `c` get different ids. A malformed value gets 400.
+      The value is stored in `delivery_id` and shown in Activity, so the
+      manifest schema refuses `authorization` and `proxy-authorization` (and the
+      webhook's verification headers) as `deliveryIdHeader`, and
+      `senderDeliveryId` never reads them either.
    4. `PluginWebhookRunner.reserve` inserts the `plugin_deliveries` row (kind
       `webhook`, `event_type` `webhook.<name>`, empty repository, `event_seq` 0,
       status `pending`, `webhook_owner` this runner) before any plugin code
       runs. The unique `(plugin_id, delivery_id)` index turns a replay into a
-      409, so a replay never reaches the `respond` function either. When 1,000
-      deliveries are already held or reserved, the answer is 503.
+      409, so a replay never reaches the `respond` function either. A `failed`
+      webhook row with the same delivery id is deleted first, in the same
+      transaction: its request was not kept, so the sender's redelivery is the
+      only way to deliver it. The new row has a new id, so a runner still
+      holding the old one (another process whose heartbeat lapsed) finds no
+      record and drops it. Rows that are `pending`, `running`, `retrying` or
+      `succeeded` still make the request a 409. When 1,000 deliveries are
+      already held or reserved, the answer is 503.
    5. If the webhook has `respond`, call it (see below). A response is sent as
       it is and the request ends there. A 2xx answer to a request with the
       sender's delivery id marks the row succeeded (handler: the respond
@@ -328,7 +338,8 @@ marked answered. Each heartbeat also marks failed any of the runner's own
 unfinished records that it no longer holds. `stop()` (on SIGTERM) lets attempts under
 way finish and fails the deliveries still waiting. A failed webhook delivery
 cannot be retried from Activity (`retryPluginDelivery` only accepts event
-deliveries), because the request is gone.
+deliveries), because the request is gone. The sender's redelivery with the
+same delivery id replaces it instead (see `reserve` above).
 
 Webhook attempts do not update `plugin_dispatch` health. The dispatcher's
 failure count, Degraded state and pause track event deliveries only. A paused

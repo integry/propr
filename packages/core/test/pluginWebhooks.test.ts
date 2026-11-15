@@ -6,7 +6,7 @@ import type { Knex } from 'knex';
 import { parsePluginManifest, type PluginWebhookVerification } from '@propr/shared';
 import { loadPluginHandlers } from '../../plugins/src/index.js';
 import { FIXTURE_REGISTRY, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
-import { verifyPluginWebhook, pluginWebhookEndpoints, regeneratePluginWebhookKey, resolvePluginWebhook } from '../src/plugins/pluginWebhooks.js';
+import { verifyPluginWebhook, pluginWebhookEndpoints, senderDeliveryId, regeneratePluginWebhookKey, resolvePluginWebhook } from '../src/plugins/pluginWebhooks.js';
 import { PluginWebhookRunner } from '../src/plugins/pluginWebhookRunner.js';
 import { PluginWebhookReceiver } from '../src/plugins/pluginWebhookReceiver.js';
 import { listPluginActivity } from '../src/plugins/pluginDeliveries.js';
@@ -80,19 +80,24 @@ async function setup(t: TestContext, options: { retryDelaysMs?: number[]; wrap?:
   const loads: string[] = [];
   const handlers = (id: string) => { loads.push(id); return loadPluginHandlers(id, { root: FIXTURE_REGISTRY, includeDevelopment: true }); };
   const database = options.wrap ? options.wrap(f.database) : f.database;
-  const runner = new PluginWebhookRunner({ ...f.options, database, handlers, now: () => clock.now, timeoutMs: 500, retryDelaysMs: options.retryDelaysMs ?? [5, 5], persistRetryMs: [5] });
-  t.after(() => runner.stop());
-  const receiver = new PluginWebhookReceiver({ database: f.database, runner, catalog: f.options.catalog, handlers, environment: f.options.environment, now: () => clock.now });
+  /** Another API process: its own runner and receiver, on the same database. */
+  const api = () => {
+    const runner = new PluginWebhookRunner({ ...f.options, database, handlers, now: () => clock.now, timeoutMs: 500, retryDelaysMs: options.retryDelaysMs ?? [5, 5], persistRetryMs: [5] });
+    t.after(() => runner.stop());
+    const receiver = new PluginWebhookReceiver({ database: f.database, runner, catalog: f.options.catalog, handlers, environment: f.options.environment, now: () => clock.now });
+    const send = (name: string, body: string, headers: IncomingHttpHeaders, onKey = key) => receiver.receive({ key: onKey, name, headers, body: Buffer.from(body) });
+    return { runner, receiver, send };
+  };
   const { webhooks } = await pluginWebhookEndpoints(f.database, ID, { manifest: f.manifest, origin: null });
   const key = webhooks[0].path.split('/')[3];
-  const send = (name: string, body: string, headers: IncomingHttpHeaders, onKey = key) => receiver.receive({ key: onKey, name, headers, body: Buffer.from(body) });
+  const { runner, receiver, send } = api();
   const seen = async () => {
     const row = await f.database('plugin_state').where({ plugin_id: ID, state_key: 'seen' }).first() as { value: string } | undefined;
     return row ? JSON.parse(row.value) as { id: string; webhook: string; attempt: number; bodyBytes: number; headers: string[] }[] : [];
   };
   const deliveries = async () => (await listPluginActivity(f.database, ID)).deliveries;
   const rejected = async () => Number((await f.database('plugin_webhook_keys').where({ plugin_id: ID }).first('rejected_count')).rejected_count);
-  return { f, clock, loads, runner, receiver, key, send, seen, deliveries, rejected };
+  return { f, clock, loads, runner, receiver, key, send, seen, deliveries, rejected, api };
 }
 
 test('a verified request runs its handler once; a bad signature, a stale timestamp and a replayed delivery id run no plugin code', async t => {
@@ -533,4 +538,79 @@ test('a live runner fails its own unfinished records it no longer holds, and lea
   const rows = await s.deliveries();
   assert.equal(rows.find(d => d.deliveryId === 'whk-token/orphaned')!.status, 'failed', 'the record this runner lost track of is final');
   assert.equal(rows.find(d => d.deliveryId !== 'whk-token/orphaned')!.status, 'retrying', 'the held delivery is untouched');
+});
+
+test('a failed delivery can be sent again with its delivery id; a succeeded or unfinished one is still a replay', async t => {
+  const s = await setup(t);
+  const body = '{"action":"opened"}';
+  const headers = (id: string) => ({ 'x-hub-signature-256': hubSignature(body), 'x-github-delivery': id });
+  const row = async (id: string) => await s.f.database('plugin_deliveries').where({ plugin_id: ID, delivery_id: `whk-signed:${id}` }).first('id', 'status', 'webhook_owner', 'error') as { id: number; status: string; webhook_owner: string; error: string | null } | undefined;
+
+  // Accepted, then the API process stops before the handler runs: the delivery is failed and its request is gone.
+  assert.equal((await s.send('signed', body, headers('d-lost'))).status, 202);
+  await s.runner.stop();
+  const lost = (await row('d-lost'))!;
+  assert.equal(lost.status, 'failed');
+  assert.match(lost.error!, /stopped before the delivery finished/);
+  assert.equal((await s.seen()).length, 0, 'the handler never ran');
+
+  // The sender redelivers it, with the same delivery id, to the next API process: it is delivered.
+  const next = s.api();
+  const redelivered = await next.send('signed', body, headers('d-lost'));
+  assert.equal(redelivered.status, 202, 'a failed delivery is not a replay');
+  assert.deepEqual(JSON.parse(redelivered.body), { accepted: true, deliveryId: 'whk-signed:d-lost' });
+  await next.runner.idle();
+  assert.deepEqual((await s.seen()).map(x => x.id), ['whk-signed:d-lost'], 'the handler ran once, for the redelivery');
+  const delivered = (await row('d-lost'))!;
+  assert.deepEqual({ status: delivered.status, owner: delivered.webhook_owner }, { status: 'succeeded', owner: next.runner.owner });
+  assert.notEqual(delivered.id, lost.id, 'the failed record was replaced, not reused');
+  assert.equal((await s.deliveries()).filter(d => d.deliveryId === 'whk-signed:d-lost').length, 1);
+  assert.equal((await next.send('signed', body, headers('d-lost'))).status, 409, 'once delivered, it is a replay again');
+
+  // Unfinished or succeeded deliveries, in this process or another, are still replays; only a failed one is replaced.
+  for (const status of ['pending', 'running', 'retrying', 'succeeded', 'failed'] as const) {
+    await s.f.database('plugin_deliveries').insert({ plugin_id: ID, delivery_id: `whk-signed:d-${status}`, kind: 'webhook', repository: '', event_seq: 0, event_type: 'webhook.signed', handler: 'onWebhook', status, attempt: 1, created_at: NOW, logs: '[]', webhook_owner: next.runner.owner });
+  }
+  for (const status of ['pending', 'running', 'retrying', 'succeeded'] as const) {
+    assert.equal((await next.send('signed', body, headers(`d-${status}`))).status, 409, `a ${status} delivery is a replay`);
+    assert.equal((await row(`d-${status}`))!.status, status, `the ${status} record is untouched`);
+  }
+  // Two redeliveries of one failed delivery at once: one is delivered, the other is its replay.
+  const both = await Promise.all([next.send('signed', body, headers('d-failed')), next.send('signed', body, headers('d-failed'))]);
+  assert.deepEqual(both.map(r => r.status).sort(), [202, 409]);
+  await next.runner.idle();
+  assert.equal((await s.seen()).filter(x => x.id === 'whk-signed:d-failed').length, 1);
+  assert.equal((await row('d-failed'))!.status, 'succeeded');
+});
+
+test('a runner still holding a failed delivery writes nothing to its redelivery', async t => {
+  const s = await setup(t);
+  const body = '{}';
+  const target = (await resolvePluginWebhook(s.f.database, s.key, 'signed', [s.f.manifest]))!.target;
+  const job = { target, handler: 'onWebhook', deliveryId: 'whk-signed:d-stale', input: { kind: 'webhook' as const, webhook: 'signed', headers: {}, body, receivedAt: NOW } };
+  // A reserved the delivery; another process failed it (A's heartbeat had lapsed) before A started it.
+  const reserved = await s.runner.reserve({ ...job, webhook: 'signed' });
+  assert.ok(reserved.accepted);
+  await s.f.database('plugin_deliveries').where({ id: reserved.recordId }).update({ status: 'failed', finished_at: NOW });
+  const next = s.api();
+  assert.equal((await next.send('signed', body, { 'x-hub-signature-256': hubSignature(body), 'x-github-delivery': 'd-stale' })).status, 202);
+  await next.runner.idle();
+  // A goes on with the record it held: it is gone, so A drops it and runs nothing.
+  assert.equal(await s.runner.start(reserved.recordId, job), true);
+  await s.runner.idle();
+  assert.equal(s.runner.pending, 0);
+  assert.deepEqual((await s.seen()).map(x => x.id), ['whk-signed:d-stale'], 'the handler ran once, in the process that accepted the redelivery');
+  const rows = await s.f.database('plugin_deliveries').where({ plugin_id: ID, delivery_id: 'whk-signed:d-stale' }).select('status', 'webhook_owner', 'attempt');
+  assert.deepEqual(rows.map(r => ({ status: r.status, owner: r.webhook_owner, attempt: Number(r.attempt) })), [{ status: 'succeeded', owner: next.runner.owner, attempt: 1 }]);
+});
+
+test('a credential or verification header is never taken as the sender\'s delivery id', () => {
+  const webhook = (deliveryIdHeader: string, verification: PluginWebhookVerification = { scheme: 'token-header', header: 'x-hook-token', connection: 'secret' }) =>
+    ({ name: 'hook', description: 'Hook', handler: 'run', verification, deliveryIdHeader });
+  const headers = { authorization: 'Bearer secret-credential', 'proxy-authorization': 'Basic c2VjcmV0', 'x-hook-token': 'secret-token', 'x-delivery': 'd-1' };
+  // Refused by the manifest schema; also never read at run time, so a stored value can never be a credential.
+  assert.equal(senderDeliveryId(headers, webhook('authorization')), undefined);
+  assert.equal(senderDeliveryId(headers, webhook('proxy-authorization')), undefined);
+  assert.equal(senderDeliveryId(headers, webhook('x-hook-token')), undefined);
+  assert.equal(senderDeliveryId(headers, webhook('x-delivery')), 'd-1');
 });
