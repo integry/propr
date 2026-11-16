@@ -3,11 +3,12 @@ import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilters.js';
+import { commentSeatConsumed } from './followupAssignmentGate.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
 import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
 import {
-  issueCommandIntentKey, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
+  issueCommandIntentKey, issueCommandTokenFate, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
   reconcileQueuedIssueCommand, releaseIssueCommandIntent, retireIssueCommandIntent, withdrawIssueCommandIntent, type StoredIssueCommandIntent,
 } from '../plugins/issueCommandIntent.js';
 
@@ -133,7 +134,9 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   // Whether a job carries a record the label path marked `queued`: that mark
   // alone is a reservation, left behind when the claim was interrupted.
   const evidence = { storedJobData: () => (deps.storedIssueJob ?? defaultStoredIssueJob)(jobId) };
-  const seatConsumed = !/\[bot\]$/i.test(author);
+  // The classification of pull request comment commands: a GitHub App, one of
+  // ProPR's own logins or a `[bot]` login consumes no seat.
+  const seatConsumed = commentSeatConsumed(author, comment.user.type ?? null);
   // Set only once this attempt holds the issue's dedupe window, so a failure
   // releases that window and an immediate redelivery can start the task.
   let dedupeToken: string | null = null;
@@ -168,12 +171,19 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     const { run } = resolution;
     // An earlier attempt for this comment published the label and failed to
     // queue; the label's webhook then queued (or is queueing) the job carrying
-    // this command. A claim it left behind without a job is this attempt's to
-    // start afresh: the record is replaced below, and withdrawn like any other
-    // of this comment's if this attempt fails too.
+    // this command. Its record is reconciled whatever its state: the token of
+    // a record still `pending` may have been carried by a dispatcher (its claim
+    // was put back after an add that stored the job but reported a failure),
+    // and that command must not be started a second time. A claim left behind
+    // without a job is this attempt's to start afresh: the record is replaced
+    // below, and withdrawn like any other of this comment's if this attempt
+    // fails too. A pending record whose token has no fate is this comment's to
+    // replace (or refuse and retire, which a job holding the token honours).
     earlier = await readIssueCommandIntent(deps.redis, intentKey);
-    if (earlier?.intent.state === 'queued' && earlier.intent.commentId === comment.id) {
-      const verdict = await reconcileQueuedIssueCommand(deps.redis, intentKey, earlier.intent, evidence);
+    if (earlier?.intent.commentId === comment.id) {
+      const verdict = earlier.intent.state === 'queued'
+        ? await reconcileQueuedIssueCommand(deps.redis, intentKey, earlier.intent, evidence)
+        : await issueCommandTokenFate(deps.redis, intentKey, earlier.intent.token) ? 'started' : 'abandoned';
       if (verdict === 'started') return alreadyStarted();
       if (verdict === 'in_flight') {
         // The claim may still be queueing, or may have been interrupted: the
@@ -181,8 +191,10 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
         await deps.redis.del(claimKey);
         return alreadyStarted();
       }
-      log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command claimed by an interrupted label path and never queued; starting it afresh');
-      earlier = null;
+      if (earlier.intent.state === 'queued') {
+        log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command claimed by an interrupted label path and never queued; starting it afresh');
+        earlier = null;
+      }
     }
     const primaryLabels = await (deps.primaryLabels ?? defaultPrimaryLabels)();
     // New work starts with the first label; work started through any configured

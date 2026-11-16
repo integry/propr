@@ -24,7 +24,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
-import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
+import { commentAuthorMayFollowUp, commentSeatConsumed, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
 import { resolveCommentPluginCommand, type PluginCommandResolution, type PluginCommandRun } from '../plugins/pluginCommands.js';
 
 export interface UltrafixDeps {
@@ -629,10 +629,6 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<Comm
         correlatedLogger.warn({ pullRequestNumber: prNumber, error: commentError }, '/ultrafix started successfully but failed to post the confirmation comment');
     }
     return outcome;
-}
-
-function commentSeatConsumed(commentAuthor: string, userType: string | null | undefined, configuredBotUsernames: Set<string>): boolean {
-    return userType !== 'Bot' && !configuredBotUsernames.has(commentAuthor) && !/\[bot\]$/i.test(commentAuthor);
 }
 
 function acceptedCommentDisposition(commentId: number, seatConsumed: boolean): DeliveryDisposition {

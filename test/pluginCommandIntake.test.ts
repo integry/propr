@@ -919,6 +919,45 @@ describe('plugin prompt command on an issue', () => {
         assert.strictEqual(await runsCommand(f.deps.redis, storedIssueJob()), true);
     });
 
+    /**
+     * Label recovery's add stores the job, the dispatcher starts it (carrying
+     * the token), and only then does the add report a failure: the claim is put
+     * back, leaving a pending record whose token is carried.
+     */
+    const dispatchedBeforeAddReportedFailure = async (g: ReturnType<typeof deps>) => {
+        await failAfterPublishing(g);
+        let dispatched: boolean | undefined;
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
+            storeJob(name, data, options);
+            dispatched = await runsCommand(g.deps.redis, storedIssueJob());
+            throw new Error('connection reset');
+        });
+        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-label', g.deps.redis as never), /connection reset/);
+        assert.strictEqual(dispatched, true);
+        const record = JSON.parse(g.deps.redis._store.get(INTENT_KEY)!) as { state: string; token: string };
+        assert.strictEqual(record.state, 'pending', 'the claim is put back after the job started');
+        assert.deepStrictEqual(fates(g.deps.redis), ['carried']);
+        return record;
+    };
+
+    test('a pending record whose token a dispatcher carried is not replayed when the original delivery is retried after the parent has finished dispatching (F10)', async () => {
+        const g = deps();
+        const record = await dispatchedBeforeAddReportedFailure(g);
+        // The parent dispatched its child work and was removed; the dedupe window ran out; GitHub retries the original delivery,
+        // whose payload predates the label and whose parent-only queue check finds nothing.
+        mockStoredJobs.delete(JOB_ID);
+        g.deps.redis._store.delete(DEDUPE_KEY);
+        const retried = await redeliver(g);
+        assert.strictEqual(retried.reason, 'duplicate_delivery', 'the carried command is already started');
+        assert.strictEqual(g.enqueued.length, 0, 'no second dispatch carries the command');
+        assert.strictEqual(notStartedReplies(g), 0);
+        assert.strictEqual(g.requests.filter(r => r.route.endsWith('/labels')).length, 1, 'the label is not published again');
+        assert.strictEqual(JSON.parse(g.deps.redis._store.get(INTENT_KEY)!).token, record.token, 'the carried record is not replaced by a new token');
+        assert.ok(!g.deps.redis._store.has(DEDUPE_KEY), 'the issue dedupe window is not taken');
+        // Nor does a later label event run it a second time.
+        assertOrdinary(await laterOrdinaryTrigger(g.deps.redis));
+    });
+
     test('a label add whose job was stored but reported failed puts the claim back: a refusal then retires it and the job runs without it; a job dispatched first keeps it and nothing is reported', async () => {
         // Refusal first.
         const f = deps();
@@ -939,16 +978,7 @@ describe('plugin prompt command on an issue', () => {
         // Dispatch first: the dispatcher starts the job while the failing add is still reporting.
         mockStoredJobs.clear();
         const g = deps();
-        await failAfterPublishing(g);
-        let dispatched: boolean | undefined;
-        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
-            storeJob(name, data, options);
-            dispatched = await runsCommand(g.deps.redis, storedIssueJob());
-            throw new Error('connection reset');
-        });
-        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-label', g.deps.redis as never), /connection reset/);
-        assert.strictEqual(dispatched, true);
-        assert.strictEqual(JSON.parse(g.deps.redis._store.get(INTENT_KEY)!).state, 'pending', 'the claim is put back after the job started');
+        await dispatchedBeforeAddReportedFailure(g);
         const started = await redeliver(g, { hasQueuedIssueJob: async () => true });
         assert.strictEqual(started.reason, 'duplicate_delivery', 'a carried command is not reported as not started');
         assert.strictEqual(notStartedReplies(g), 0);
@@ -1145,5 +1175,36 @@ describe('plugin prompt command on an issue', () => {
         g.deps.redis._store.set(INTENT_KEY, JSON.stringify(legacy));
         assert.deepStrictEqual(await processDetectedIssue({ ...labelEvent(), triggeredBy: 'octocat', triggeredById: '42' }, 'corr-label-2', g.deps.redis as never), { status: 'accepted', billing: { seatConsumed: true } });
         assert.strictEqual(storedIssueJob()?.pluginCommand?.command, 'example-notes');
+    });
+
+    test('an issue command is billed like a pull request command: a GitHub App or a configured system bot login without the [bot] suffix consumes no seat, directly and when recovered (F11)', async () => {
+        const previous = process.env.GITHUB_BOT_USERNAME;
+        process.env.GITHUB_BOT_USERNAME = 'propr-helper';
+        try {
+            // An allowlisted GitHub App whose login has no `[bot]` suffix.
+            const app = deps();
+            const appEvent = issueComment('/example-notes cover the CLI');
+            appEvent.comment.user.login = 'release-app';
+            appEvent.comment.user.type = 'Bot';
+            assert.deepStrictEqual(await processIssueCommentCommand(appEvent, 'corr-app', app.deps as never), { status: 'accepted', billing: { seatConsumed: false } });
+
+            // One of ProPR's own configured logins, posting as a user.
+            const system = deps();
+            const systemEvent = issueComment('/example-notes cover the CLI');
+            systemEvent.comment.user.login = 'propr-helper';
+            systemEvent.comment.user.type = 'User';
+            await assert.rejects(processIssueCommentCommand(systemEvent, 'corr-system', { ...system.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
+            assert.strictEqual(JSON.parse(system.deps.redis._store.get(INTENT_KEY)!).seatConsumed, false, 'the classification recorded for recovery matches');
+            assert.deepStrictEqual(await processDetectedIssue({ ...labelEvent(), triggeredBy: 'octocat', triggeredById: '42' }, 'corr-label', system.deps.redis as never), { status: 'accepted', billing: { seatConsumed: false } });
+
+            // A human is still charged.
+            const human = deps();
+            const humanEvent = issueComment('/example-notes cover the CLI');
+            humanEvent.comment.user.type = 'User';
+            assert.deepStrictEqual(await processIssueCommentCommand(humanEvent, 'corr-human', human.deps as never), { status: 'accepted', billing: { seatConsumed: true } });
+        } finally {
+            if (previous === undefined) delete process.env.GITHUB_BOT_USERNAME;
+            else process.env.GITHUB_BOT_USERNAME = previous;
+        }
     });
 });

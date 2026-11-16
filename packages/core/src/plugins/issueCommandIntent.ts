@@ -137,6 +137,19 @@ export function issueCommandFateKey(key: string, token: string): string {
   return `${key}:fate:${token}`;
 }
 
+/**
+ * The fate of the attempt token of the issue's record `key`: `carried` once a
+ * dispatcher has started a job carrying its command, `retired` once ProPR gave
+ * the command up, null while it has neither. A record still `pending` whose
+ * token is carried stands for a started command: the label path's claim was
+ * put back after an add that stored the job but reported a failure
+ * (`carryClaimedIssueCommand`), and that command must not start again.
+ */
+export async function issueCommandTokenFate(redis: Pick<Redis, 'get'>, key: string, token: string): Promise<'carried' | 'retired' | null> {
+  const fate = await redis.get(issueCommandFateKey(key, token));
+  return fate === 'carried' || fate === 'retired' ? fate : null;
+}
+
 /** The record without its claim lease, the form of a pending or dispatcher-settled record. */
 function withoutClaimLease<T extends { claimedAt?: number }>(intent: T): Omit<T, 'claimedAt'> {
   const unleased = { ...intent };
@@ -257,7 +270,7 @@ export type QueuedIssueCommandVerdict = 'started' | 'in_flight' | 'abandoned';
 export async function reconcileQueuedIssueCommand(
   redis: Pick<Redis, 'get'>, key: string, intent: IssueCommandIntent, evidence: IssueCommandJobEvidence,
 ): Promise<QueuedIssueCommandVerdict> {
-  if (await redis.get(issueCommandFateKey(key, intent.token))) return 'started';
+  if (await issueCommandTokenFate(redis, key, intent.token)) return 'started';
   if (issueJobCarriesToken(await evidence.storedJobData(), intent.token)) return 'started';
   return intent.claimedAt !== undefined && Date.now() - intent.claimedAt < ISSUE_COMMAND_CLAIM_LEASE_MS ? 'in_flight' : 'abandoned';
 }

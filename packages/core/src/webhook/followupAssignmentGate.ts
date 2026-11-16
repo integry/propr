@@ -77,6 +77,16 @@ export function getSystemBotUsernames(): Set<string> {
     );
 }
 
+/**
+ * Whether accepting a comment command consumes a seat: the author is a human,
+ * not a GitHub App (`Bot` user type), one of ProPR's own logins, or a login
+ * GitHub gives apps (`[bot]` suffix). Both comment intakes (pull request and
+ * issue) classify an accepted command's author with this.
+ */
+export function commentSeatConsumed(commentAuthor: string, userType: string | null | undefined, configuredBotUsernames: Set<string> = getSystemBotUsernames()): boolean {
+    return userType !== 'Bot' && !configuredBotUsernames.has(commentAuthor) && !/\[bot\]$/i.test(commentAuthor);
+}
+
 /** Whether a login is one of ProPR's own, compared as GitHub does, without case. */
 function isSystemBotLogin(login: string): boolean {
     const lower = login.toLowerCase();
