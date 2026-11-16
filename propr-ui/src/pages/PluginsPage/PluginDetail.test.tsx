@@ -91,6 +91,7 @@ describe('Plugin detail', () => {
     expect(setPluginEnabled).toHaveBeenLastCalledWith('example-pack', true);
     expect(badge()).toHaveTextContent('Enabled');
     expect(screen.getByTestId('plugin-contributions')).toHaveTextContent('MCP server example-remote · Active');
+    expect(screen.getByTestId('plugin-command-example-notes')).toHaveTextContent('Command /example-notes · Write release notes for the work so far · in pull request and issue comments · Active');
     expect(within(screen.getByTestId('plugin-contributions')).getAllByRole('link', { name: 'Skills & MCP servers' })[0]).toHaveAttribute('href', '/settings?tab=agent-extensions');
 
     vi.mocked(setPluginEnabled).mockResolvedValueOnce({ plugin: exampleAt('connected', ['acme/web']) });

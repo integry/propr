@@ -29,6 +29,18 @@ const section = async () => {
   await screen.findByText(/Revision 5/);
   return screen.getByRole('region', { name: 'Skills & MCP servers' });
 };
+/**
+ * Counts the window `focus` listeners still attached. The sign-in refresh listener is attached and removed in a passive
+ * effect, which can run after the notice is already in the DOM, so a test waits for it before dispatching `focus`.
+ */
+const watchFocusListeners = () => {
+  const add = vi.spyOn(window, 'addEventListener');
+  const remove = vi.spyOn(window, 'removeEventListener');
+  return () => {
+    const removed = new Set(remove.mock.calls.filter(([type]) => type === 'focus').map(call => call[1]));
+    return add.mock.calls.filter(([type, listener]) => type === 'focus' && !removed.has(listener)).length;
+  };
+};
 
 describe('OAuth MCP servers in Skills & MCP servers', () => {
   beforeEach(() => {
@@ -63,13 +75,16 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
     const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
     vi.mocked(startExtensionOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize?state=s' });
+    const focusListeners = watchFocusListeners();
     const view = await section();
+    const idle = focusListeners();
     fireEvent.click(within(rowOf(view, 'linear')).getByRole('button', { name: 'Connect' }));
     expect(open).toHaveBeenCalledWith('', '_blank');
     await waitFor(() => expect(tab.location.href).toBe('https://auth.example.com/authorize?state=s'));
     expect(tab.opener).toBeNull();
     expect(startExtensionOAuth).toHaveBeenCalledWith('linear');
     expect(await screen.findByText(/Finish signing in to linear in the new tab/)).toBeInTheDocument();
+    await waitFor(() => expect(focusListeners()).toBe(idle + 1));
     vi.mocked(getExtensionLibrary).mockResolvedValue({ instanceId: 'instance', library, bundles: [], catalog: [], oauth: oauth({ ...threeStates.connections, linear: { state: 'connected', connectedBy: '1', connectedAt: Date.now(), scopes: ['issues:read'], registration: 'metadata_document' } }) });
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     await waitFor(() => expect(within(rowOf(view, 'linear')).getByTestId('extension-oauth-connection')).toHaveAttribute('data-state', 'connected'));
@@ -80,9 +95,12 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
     vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
     vi.mocked(startExtensionOAuth).mockResolvedValue({ authorizationUrl: 'https://auth.example.com/authorize?state=r' });
+    const focusListeners = watchFocusListeners();
     const view = await section();
+    const idle = focusListeners();
     fireEvent.click(within(rowOf(view, 'notion')).getByRole('button', { name: 'Reconnect' }));
     expect(await screen.findByText(/Finish signing in to notion in the new tab/)).toBeInTheDocument();
+    await waitFor(() => expect(focusListeners()).toBe(idle + 1));
     // Back in Settings before finishing consent: the original connection is still the one shown.
     const reads = vi.mocked(getExtensionLibrary).mock.calls.length;
     await act(async () => { window.dispatchEvent(new Event('focus')); });
@@ -95,6 +113,7 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     await waitFor(() => expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('Granted scopes: write:docs'));
     expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('by administrator 7');
     // Finished: the listeners are gone.
+    await waitFor(() => expect(focusListeners()).toBe(idle));
     const settled = vi.mocked(getExtensionLibrary).mock.calls.length;
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     expect(vi.mocked(getExtensionLibrary).mock.calls.length).toBe(settled);

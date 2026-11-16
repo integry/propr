@@ -12,8 +12,7 @@ after(async () => {
   await closeConnection();
 });
 
-describe('issueJobDispatcher handleDispatch', () => {
-  test('reads GitHub label objects and stamps the parsed reasoning level onto queued child jobs', async () => {
+function dispatcherFixture() {
     const queuedJobs: Array<{
       jobName: string;
       jobData: IssueJobData;
@@ -72,8 +71,11 @@ describe('issueJobDispatcher handleDispatch', () => {
       })),
       registerRequest: mock.fn(async (issue: IssueJobData) => { order.push(`register:${issue.correlationId}`); }),
     } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+    return { queuedJobs, order, deps };
+}
 
-    const result = await handleDispatchWithDeps({
+function parentJob(data: Partial<IssueJobData> = {}): Job<IssueJobData> {
+    return {
       id: 'parent-job',
       name: 'processGitHubIssue',
       data: {
@@ -81,9 +83,16 @@ describe('issueJobDispatcher handleDispatch', () => {
         repoName: 'propr',
         number: 1701,
         correlationId: 'test-correlation',
+        ...data,
       },
       updateData: async () => undefined,
-    } as unknown as Job<IssueJobData>, deps);
+    } as unknown as Job<IssueJobData>;
+}
+
+describe('issueJobDispatcher handleDispatch', () => {
+  test('reads GitHub label objects and stamps the parsed reasoning level onto queued child jobs', async () => {
+    const { queuedJobs, order, deps } = dispatcherFixture();
+    const result = await handleDispatchWithDeps(parentJob(), deps);
 
     assert.deepEqual(result, {
       status: 'dispatched',
@@ -101,5 +110,48 @@ describe('issueJobDispatcher handleDispatch', () => {
     assert.equal(queuedJobs[0].jobData.dispatchId, 'parent-job');
     // The request is ordered before any child exists, so a child that runs late is still known to be older.
     assert.deepEqual(order, ['register:test-correlation', 'enqueue:test-correlation']);
+  });
+
+  const pluginCommand = { pluginId: 'example-pack', command: 'example-notes', instruction: 'Write notes', extensions: { servers: [], skills: [] } };
+
+  test('settles the plugin command intent the job names before any child carries the command', async () => {
+    const { queuedJobs, order, deps } = dispatcherFixture();
+    const settled: IssueJobData[] = [];
+    deps.settleIssueCommand = async issue => { settled.push(issue); order.push(`settle:${issue.pluginCommandIntent}`); return 'carried'; };
+    const result = await handleDispatchWithDeps(parentJob({ pluginCommand, pluginCommandIntent: 'intent-token' } as Partial<IssueJobData>), deps);
+    assert.equal(result.status, 'dispatched');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0].pluginCommandIntent, 'intent-token');
+    assert.deepEqual(order, ['settle:intent-token', 'register:test-correlation', 'enqueue:test-correlation']);
+    assert.deepEqual(queuedJobs[0].jobData.pluginCommand, pluginCommand);
+  });
+
+  test('an intent that cannot be settled fails the attempt before any child is queued; a job without one settles nothing', async () => {
+    const failing = dispatcherFixture();
+    failing.deps.settleIssueCommand = async () => { throw new Error('redis unavailable'); };
+    await assert.rejects(handleDispatchWithDeps(parentJob({ pluginCommand, pluginCommandIntent: 'intent-token' } as Partial<IssueJobData>), failing.deps), /redis unavailable/);
+    assert.equal(failing.queuedJobs.length, 0, 'no child carries the command while its intent is pending');
+
+    const ordinary = dispatcherFixture();
+    const settle = mock.fn(async () => 'carried' as const);
+    ordinary.deps.settleIssueCommand = settle;
+    assert.equal((await handleDispatchWithDeps(parentJob(), ordinary.deps)).status, 'dispatched');
+    assert.equal(settle.mock.callCount(), 0);
+  });
+
+  test('a command reported as not started after its job was queued is dropped: no child and no saved retry data carries it', async () => {
+    const { queuedJobs, deps } = dispatcherFixture();
+    deps.settleIssueCommand = async () => 'retired';
+    const saved: IssueJobData[] = [];
+    deps.saveDispatchData = async (_job, data) => { saved.push(data); };
+    const result = await handleDispatchWithDeps(parentJob({ pluginCommand, pluginCommandIntent: 'intent-token', userId: '42' } as Partial<IssueJobData>), deps);
+    assert.equal(result.status, 'dispatched');
+    assert.equal(queuedJobs.length, 1);
+    assert.equal(queuedJobs[0].jobData.pluginCommand, undefined, 'the child runs the issue without the refused command');
+    assert.equal(queuedJobs[0].jobData.pluginCommandIntent, undefined);
+    assert.equal(queuedJobs[0].jobData.userId, '42');
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].pluginCommand, undefined, 'a retry of the dispatch does not bring the command back');
+    assert.equal(saved[0].pluginCommandIntent, undefined);
   });
 });

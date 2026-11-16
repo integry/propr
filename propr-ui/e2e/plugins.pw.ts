@@ -122,6 +122,9 @@ test('installs, connects, configures, enables, shows the managed items, disables
   await page.reload();
   await expect(badge(page)).toHaveText('Enabled');
   await capture(page, 'plugins-enabled-desktop', step(page, 'Configure'));
+  // The plugin's slash command is listed with what it does and where it works.
+  await expect(page.getByTestId('plugin-command-example-notes')).toHaveText('Command /example-notes · Write release notes for the work so far · in pull request and issue comments · Active');
+  await capture(page, 'plugins-what-it-added-commands-desktop', page.getByRole('heading', { name: 'What it added' }));
 
   // The managed items in Skills & MCP servers: badged, linked to the plugin, definition read-only.
   await page.getByTestId('plugin-contributions').getByRole('link', { name: 'Skills & MCP servers' }).first().click();

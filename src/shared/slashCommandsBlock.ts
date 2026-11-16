@@ -1,8 +1,17 @@
+/** A command an enabled plugin offers in the repository, listed after the built-in commands. */
+export interface PluginCommandHelpRow { name: string; description: string; pluginName: string }
+
+/** One table cell of plugin-written text: a single line without table or HTML syntax. */
+const cell = (text: string) => text.replace(/[\r\n]+/g, ' ').replace(/[<>]/g, '').replace(/\|/g, '\\|').trim();
+
 /**
  * Builds an expandable HTML <details> block documenting available ProPR slash commands.
- * Used in both PR body and completion comments for discoverability.
+ * Used in both PR body and completion comments for discoverability. Commands
+ * of enabled plugins follow the built-in ones, each naming its plugin; without
+ * any the block is unchanged.
  */
-export function buildSlashCommandsBlock(): string {
+export function buildSlashCommandsBlock(pluginCommands: readonly PluginCommandHelpRow[] = []): string {
+    const pluginRows = pluginCommands.map(command => `| \`/${command.name}\` | ${cell(command.description)} (from the ${cell(command.pluginName)} plugin) | \`/${command.name}\` |`);
     return [
         '<details>',
         '<summary>💡 <strong>ProPR Slash Commands</strong></summary>',
@@ -15,6 +24,7 @@ export function buildSlashCommandsBlock(): string {
         '| `/switch` | Change the AI model for this PR | `/switch claude-opus` |',
         '| `/use` | Override the model for a single follow-up run | `/use claude-sonnet` |',
         '| `/ultrafix` | Loop review→fix cycles until score goal is met | `/ultrafix` or `/ultrafix goal=8 max=10` |',
+        ...pluginRows,
         '',
         '</details>',
         '',

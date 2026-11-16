@@ -15,6 +15,7 @@ import { pluginTemplateIds } from './pluginTemplates.js';
 import { deletePluginState } from './pluginStateStore.js';
 import { deletePluginDispatch, restartPluginDispatch } from './pluginDeliveries.js';
 import { deletePluginWebhookKey } from './pluginWebhooks.js';
+import { pluginCommandConflicts } from './pluginCommands.js';
 import {
   PluginError, enableBlockers, installationRecord, nextAcknowledgements, parseAcknowledgements, pendingAcknowledgements, pendingPermissions, pluginView,
   type PluginInstallationRow, type PluginSecretRow,
@@ -126,9 +127,11 @@ export class PluginStore {
   }
   /** The state view with OAuth connection states and the managed items and templates the plugin contributes. */
   private async view(pluginId: string, loaded: Loaded, library?: Awaited<ReturnType<ExtensionLibraryStore['head']>>['snapshot'], templateIds?: Map<string, Map<string, string>>): Promise<PluginView> {
-    const base = pluginView(pluginId, loaded.manifest, loaded.row, loaded.secrets);
+    const view = pluginView(pluginId, loaded.manifest, loaded.row, loaded.secrets);
     const { manifest, row } = loaded;
-    if (!manifest) return base;
+    if (!manifest) return view;
+    // A disabled plugin whose command another enabled plugin has cannot be enabled: say so before the attempt.
+    const base = row && !row.enabled ? { ...view, enableBlockers: [...view.enableBlockers, ...await this.commandConflicts(pluginId, manifest, this.database)] } : view;
     const snapshot = library ?? (await this.library.head()).snapshot;
     const ids = templateIds ?? pluginTemplateIds(await this.manifests());
     const connections = [];
@@ -140,6 +143,13 @@ export class PluginStore {
       connections.push({ ...status, state });
     }
     return { ...base, connections, contributions: pluginContributionViews(manifest, pluginId, row ? snapshot : null, ids.get(pluginId) ?? new Map(), Boolean(row?.enabled)) };
+  }
+  /** Commands of `manifest` that a built-in command or another enabled plugin already has: enabling it is refused while there are any. */
+  private async commandConflicts(pluginId: string, manifest: PluginManifest | null, database: Knex): Promise<string[]> {
+    if (!manifest?.contributes.commands.length) return [];
+    const rows = await database('plugin_installations').where({ enabled: true }).whereNot({ plugin_id: pluginId }).select('plugin_id') as { plugin_id: string }[];
+    const manifests = await this.manifests();
+    return pluginCommandConflicts(manifest, rows.flatMap(row => manifests.filter(m => m.id === row.plugin_id)));
   }
   /** Columns every update sets. A write with nothing awaiting approval also moves the installed version to the current manifest. */
   private touched(actor: string, loaded: Loaded): Record<string, unknown> {
@@ -285,7 +295,7 @@ export class PluginStore {
     return this.write(actor, id, async (trx, loaded, pluginId) => {
       const row = PluginStore.installed(loaded);
       if (enabled) {
-        const blockers = enableBlockers(loaded.manifest, installationRecord(row), loaded.secrets);
+        const blockers = [...enableBlockers(loaded.manifest, installationRecord(row), loaded.secrets), ...await this.commandConflicts(pluginId, loaded.manifest, trx)];
         if (blockers.length) throw new PluginError(409, `The plugin cannot be enabled: ${blockers.join('; ')}`);
       }
       await trx('plugin_installations').where({ plugin_id: pluginId }).update({ enabled, ...this.touched(actor, loaded) });

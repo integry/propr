@@ -43,7 +43,8 @@ export const MANIFEST = {
       { kind: 'https', name: 'example-remote', url: 'https://mcp.example.com/mcp', tools: ['search', 'fetch'], capability: 'read', authentication: 'oauth', connection: 'example-account' },
       { kind: 'package', name: 'example-local', ecosystem: 'npm', package: 'propr-fixture-mcp', version: '1.0.0', tools: ['echo'], capability: 'read', secretEnv: [{ name: 'FIXTURE_TOKEN', connection: 'example-token' }] },
     ],
-    skills: ['example-notes'], automationTemplates: ['example-weekly-digest'], commands: [], subscriptions: [], webhooks: [],
+    skills: ['example-notes'], automationTemplates: ['example-weekly-digest'], subscriptions: [], webhooks: [],
+    commands: [{ name: 'example-notes', description: 'Write release notes for the work so far', where: ['pull_request', 'issue'], kind: 'prompt', skills: ['example-notes'], servers: ['example-remote'], needsWrite: false }],
   },
 };
 export const OTHERS = [

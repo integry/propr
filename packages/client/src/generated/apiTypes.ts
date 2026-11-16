@@ -1013,10 +1013,22 @@ export interface PluginDetailResponse {
         }[];
         skills: string[];
         automationTemplates: string[];
-        commands: {
+        /** Slash commands the plugin adds; never their prompt text. */
+        commands: Array<{
+          /** Used as /<name> in a comment. */
           name: string;
           description: string;
-        }[];
+          /** Where the command can be used: pull request comments, issue comments or both. */
+          where: Array<"pull_request" | "issue">;
+          /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). */
+          kind: "prompt";
+          /** Skills of this plugin the command adds to its run. */
+          skills: string[];
+          /** MCP servers of this plugin the command adds to its run. */
+          servers: string[];
+          /** The command needs write access; such commands are refused for now. */
+          needsWrite: boolean;
+        }>;
         subscriptions: string[];
         webhooks: Array<{
           name: string;
@@ -1245,10 +1257,22 @@ export interface PluginView {
       }[];
       skills: string[];
       automationTemplates: string[];
-      commands: {
+      /** Slash commands the plugin adds; never their prompt text. */
+      commands: Array<{
+        /** Used as /<name> in a comment. */
         name: string;
         description: string;
-      }[];
+        /** Where the command can be used: pull request comments, issue comments or both. */
+        where: Array<"pull_request" | "issue">;
+        /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). */
+        kind: "prompt";
+        /** Skills of this plugin the command adds to its run. */
+        skills: string[];
+        /** MCP servers of this plugin the command adds to its run. */
+        servers: string[];
+        /** The command needs write access; such commands are refused for now. */
+        needsWrite: boolean;
+      }>;
       subscriptions: string[];
       webhooks: Array<{
         name: string;

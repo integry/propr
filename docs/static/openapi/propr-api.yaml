@@ -13560,12 +13560,45 @@ components:
                             properties:
                               name:
                                 type: string
+                                description: Used as /<name> in a comment.
                               description:
                                 type: string
+                              where:
+                                type: array
+                                items:
+                                  type: string
+                                  enum:
+                                    - pull_request
+                                    - issue
+                                description: "Where the command can be used: pull request comments, issue comments or both."
+                              kind:
+                                type: string
+                                enum:
+                                  - prompt
+                                description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue)."
+                              skills:
+                                type: array
+                                items:
+                                  type: string
+                                description: Skills of this plugin the command adds to its run.
+                              servers:
+                                type: array
+                                items:
+                                  type: string
+                                description: MCP servers of this plugin the command adds to its run.
+                              needsWrite:
+                                type: boolean
+                                description: The command needs write access; such commands are refused for now.
                             required:
                               - name
                               - description
+                              - where
+                              - kind
+                              - skills
+                              - servers
+                              - needsWrite
                             additionalProperties: false
+                          description: Slash commands the plugin adds; never their prompt text.
                         subscriptions:
                           type: array
                           items:
@@ -14285,12 +14318,45 @@ components:
                         properties:
                           name:
                             type: string
+                            description: Used as /<name> in a comment.
                           description:
                             type: string
+                          where:
+                            type: array
+                            items:
+                              type: string
+                              enum:
+                                - pull_request
+                                - issue
+                            description: "Where the command can be used: pull request comments, issue comments or both."
+                          kind:
+                            type: string
+                            enum:
+                              - prompt
+                            description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue)."
+                          skills:
+                            type: array
+                            items:
+                              type: string
+                            description: Skills of this plugin the command adds to its run.
+                          servers:
+                            type: array
+                            items:
+                              type: string
+                            description: MCP servers of this plugin the command adds to its run.
+                          needsWrite:
+                            type: boolean
+                            description: The command needs write access; such commands are refused for now.
                         required:
                           - name
                           - description
+                          - where
+                          - kind
+                          - skills
+                          - servers
+                          - needsWrite
                         additionalProperties: false
+                      description: Slash commands the plugin adds; never their prompt text.
                     subscriptions:
                       type: array
                       items:

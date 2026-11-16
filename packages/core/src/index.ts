@@ -683,6 +683,12 @@ export { prunePluginDeliveries } from './plugins/pluginDeliveries.js';
 export { PluginWebhookRunner, type PluginWebhookRunnerOptions } from './plugins/pluginWebhookRunner.js';
 export { PluginWebhookReceiver, type PluginWebhookReceiverOptions, type PluginWebhookReply } from './plugins/pluginWebhookReceiver.js';
 export { PLUGIN_WEBHOOK_ROUTE, pluginWebhookEndpoints, regeneratePluginWebhookKey, type PluginWebhookEndpoints } from './plugins/pluginWebhooks.js';
+export {
+    applicablePluginCommands, candidatePluginCommandName, listPluginCommandHelp, pluginCommandConflicts, pluginCommandExtensions, resolveCommentPluginCommand, resolvePluginCommand, setPluginCommandResolver,
+    type PluginCommandHelp, type PluginCommandRun, type PluginCommandResolution, type PluginCommandRequest, type PluginCommandResolver,
+} from './plugins/pluginCommands.js';
+export { processIssueCommentCommand } from './webhook/issueCommentCommands.js';
+export { settleDispatchedIssueCommand, type IssueCommandSettlement } from './plugins/issueCommandIntent.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

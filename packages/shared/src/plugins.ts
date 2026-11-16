@@ -3,6 +3,7 @@ import { EXTENSION_OAUTH_REGISTRATIONS } from './extensionOAuth.js';
 import { extensionServerNameSchema, remoteMcpSchema } from './extensionProfiles.js';
 import { extensionPackageEnvNameSchema, extensionPackageIntegritySchema, packageServerFields, EXACT_VERSION_PATTERN } from './extensionPackages.js';
 import { isRepositoryEventType } from './repositoryEvents.js';
+import { BUILT_IN_COMMAND_NAMES, COMMAND_NAME_PATTERN, COMMAND_TARGETS, isBuiltInCommandName, type CommandTarget } from './commands.js';
 
 /** Whether `name` is `<domain>.<type>` of a repository journal event. */
 export function isPluginSubscriptionEvent(name: unknown): boolean {
@@ -156,8 +157,32 @@ export type PluginPackageServer = z.infer<typeof pluginPackageServerSchema>;
 export const pluginSkillSchema = z.strictObject({ name: keySchema, path: pluginAssetPathSchema });
 /** An automation template folder in the shipped template format (`template.json` and `prompt.md`). */
 export const pluginAutomationTemplateSchema = z.strictObject({ id: keySchema, path: pluginAssetPathSchema });
-/** Accepted and validated now; ignored at runtime until commands land. */
-export const pluginCommandSchema = z.strictObject({ name: keySchema, description: textSchema(200), permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_LIMITS.permissions).default([]) });
+/** A plugin command name: lower-case, and never one of ProPR's built-in commands. */
+export const pluginCommandNameSchema = z.string().regex(COMMAND_NAME_PATTERN, 'Command names are lower-case letters, digits and -, starting with a letter (at most 32)')
+  .refine(name => !isBuiltInCommandName(name), { error: issue => `/${String(issue.input)} is a built-in ProPR command; built-in commands are ${BUILT_IN_COMMAND_NAMES.map(n => `/${n}`).join(', ')}` });
+export const PLUGIN_COMMAND_KINDS = ['prompt'] as const;
+export type PluginCommandKind = typeof PLUGIN_COMMAND_KINDS[number];
+/**
+ * A slash command used in issue or pull request comments (`where`). A `prompt`
+ * command queues an ordinary one-shot task: a follow-up on a pull request, an
+ * implementation task on an issue. Its instruction is `prompt`, with the rest
+ * of the command line appended as the person's (untrusted) argument; `skills`
+ * and `servers` name this plugin's own contributions to add to that run.
+ * Commands with `needsWrite` are refused until write authorization for
+ * commands exists.
+ */
+export const pluginCommandSchema = z.strictObject({
+  name: pluginCommandNameSchema,
+  description: textSchema(200),
+  where: z.array(z.enum(COMMAND_TARGETS)).min(1).max(COMMAND_TARGETS.length),
+  kind: z.enum(PLUGIN_COMMAND_KINDS),
+  prompt: textSchema(4000),
+  skills: z.array(keySchema).max(PLUGIN_LIMITS.skills).default([]),
+  servers: z.array(extensionServerNameSchema).max(PLUGIN_LIMITS.mcpServers).default([]),
+  needsWrite: z.boolean().default(false),
+  permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_LIMITS.permissions).default([]),
+});
+export type PluginCommand = z.infer<typeof pluginCommandSchema>;
 /** A handler name: an exported function of the plugin's `handlers.ts`. */
 export const pluginHandlerNameSchema = z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/, 'Use the name of an exported handler function');
 /** Event fields a subscription filter can match, besides `payload.<key>`. */
@@ -276,6 +301,25 @@ function checkConnectionReferences(manifest: z.infer<typeof pluginManifestObject
   });
 }
 
+/** Each command's permissions, targets and the skills and servers it adds: its own plugin's, and read-only unless it needs write access. */
+function checkCommands(manifest: z.infer<typeof pluginManifestObjectSchema>, issue: Issue) {
+  const { contributes } = manifest;
+  contributes.commands.forEach((command, index) => {
+    const at = ['contributes', 'commands', index];
+    const missing = command.permissions.filter(p => !manifest.permissions.includes(p));
+    if (missing.length) issue(`Command ${command.name} uses permissions the plugin does not request: ${missing.join(', ')}`, [...at, 'permissions']);
+    for (const target of duplicates(command.where)) issue(`Command ${command.name} lists ${target} more than once`, [...at, 'where']);
+    for (const skill of duplicates(command.skills)) issue(`Command ${command.name} lists skill ${skill} more than once`, [...at, 'skills']);
+    for (const server of duplicates(command.servers)) issue(`Command ${command.name} lists server ${server} more than once`, [...at, 'servers']);
+    for (const skill of command.skills.filter(name => !contributes.skills.some(s => s.name === name))) issue(`Command ${command.name} adds skill ${skill}, which the plugin does not contribute`, [...at, 'skills']);
+    for (const name of command.servers) {
+      const server = contributes.mcpServers.find(s => s.name === name);
+      if (!server) issue(`Command ${command.name} adds server ${name}, which the plugin does not contribute`, [...at, 'servers']);
+      else if (server.capability === 'write' && !command.needsWrite) issue(`Command ${command.name} adds the write server ${name}; set needsWrite`, [...at, 'servers']);
+    }
+  });
+}
+
 type SettingProblem = { message: string; field?: string };
 type SettingOf<T extends PluginSetting['type']> = Extract<PluginSetting, { type: T }>;
 const outOfRange = (value: number, min?: number, max?: number) => (min !== undefined && value < min) || (max !== undefined && value > max);
@@ -349,10 +393,7 @@ export const pluginManifestSchema = pluginManifestObjectSchema.superRefine((mani
   unique(contributes.webhooks.map(w => w.name), 'webhook name', ['contributes', 'webhooks']);
   checkConnectionReferences(manifest, issue);
   checkSettings(manifest.settings, issue);
-  contributes.commands.forEach((command, index) => {
-    const missing = command.permissions.filter(p => !manifest.permissions.includes(p));
-    if (missing.length) issue(`Command ${command.name} uses permissions the plugin does not request: ${missing.join(', ')}`, ['contributes', 'commands', index, 'permissions']);
-  });
+  checkCommands(manifest, issue);
   if (contributes.subscriptions.length && !manifest.permissions.includes('events.read')) issue('Event subscriptions need the events.read permission', ['contributes', 'subscriptions']);
 });
 export type PluginManifest = z.infer<typeof pluginManifestSchema>;
@@ -373,6 +414,8 @@ export function parsePluginManifest(value: unknown): { ok: true; manifest: Plugi
 export type PublicPluginMcpServer =
   | { kind: 'https'; name: string; url: string; tools: string[]; capability: 'read' | 'write'; authentication: 'none' | 'bearer' | 'oauth'; connection?: string }
   | { kind: 'package'; name: string; ecosystem: string; package: string; version: string; tools: string[]; capability: 'read' | 'write'; secretEnv: { name: string; connection: string }[] };
+/** What the plugin page and API show about a contributed command: never its prompt text. */
+export interface PublicPluginCommand { name: string; description: string; where: CommandTarget[]; kind: PluginCommandKind; skills: string[]; servers: string[]; needsWrite: boolean }
 export interface PublicPluginManifest {
   id: string; name: string; description: string; version: string; category: PluginCategory; homepage: string;
   permissions: { name: PluginPermission; description: string }[];
@@ -383,7 +426,7 @@ export interface PublicPluginManifest {
     mcpServers: PublicPluginMcpServer[];
     skills: string[];
     automationTemplates: string[];
-    commands: { name: string; description: string }[];
+    commands: PublicPluginCommand[];
     subscriptions: string[];
     webhooks: { name: string; description: string; scheme: PluginWebhookScheme }[];
   };
@@ -404,7 +447,7 @@ export function publicPluginManifest(manifest: PluginManifest): PublicPluginMani
         : { kind: 'package', name: server.name, ecosystem: server.ecosystem, package: server.package, version: server.version, tools: [...server.tools], capability: server.capability, secretEnv: server.secretEnv.map(s => ({ ...s })) })),
       skills: contributes.skills.map(s => s.name),
       automationTemplates: contributes.automationTemplates.map(t => t.id),
-      commands: contributes.commands.map(c => ({ name: c.name, description: c.description })),
+      commands: contributes.commands.map(c => ({ name: c.name, description: c.description, where: [...c.where], kind: c.kind, skills: [...c.skills], servers: [...c.servers], needsWrite: c.needsWrite })),
       subscriptions: contributes.subscriptions.map(s => s.on),
       webhooks: contributes.webhooks.map(w => ({ name: w.name, description: w.description, scheme: w.verification.scheme })),
     },

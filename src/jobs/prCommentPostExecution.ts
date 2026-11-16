@@ -28,6 +28,7 @@ import type {
     WorktreeInfo,
 } from '@propr/core';
 import { buildCompletionComment } from './prCompletionComment.js';
+import { enabledPluginCommandHelp } from '../shared/pluginCommandHelp.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { buildCommitMessage } from './prCommentJobUtils.js';
 import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
@@ -254,6 +255,7 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         addressedFeedback,
         visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined,
         reviewDigestSection: options.reviewDigestSection,
+        pluginCommands: await enabledPluginCommandHelp(`${repoOwner}/${repoName}`, 'pull_request'),
     }, state.claudeResult);
     // The handoff marker lets restart recovery recognize this completion if the
     // worker dies before its durable checkpoint records the comment URL.

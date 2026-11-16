@@ -99,6 +99,16 @@ test('command names must be unique across plugins', async () => {
   expectError(root, /^second-pack: command status is also contributed by fixture-pack$/);
 });
 
+test('a command named like a built-in command is refused with the built-in list', async () => {
+  const root = await fixtureRoot((_, plugin) => editManifest(plugin, m => { m.contributes.commands[0].name = 'review'; }));
+  expectError(root, /^fixture-pack\/manifest\.json: contributes\.commands\.0\.name: \/review is a built-in ProPR command; built-in commands are \/review, \/fix, \/merge, \/switch, \/use, \/ultrafix$/);
+});
+
+test('a command must name its own plugin\'s skills and servers', async () => {
+  expectError(await fixtureRoot((_, plugin) => editManifest(plugin, m => { m.contributes.commands[0].skills = ['elsewhere']; })), /Command status adds skill elsewhere, which the plugin does not contribute/);
+  assert.deepEqual(checkPlugins({ root: await fixtureRoot((_, plugin) => editManifest(plugin, m => { m.contributes.commands[0].skills = ['fixture-skill']; m.contributes.commands[0].servers = ['remote']; })) }).errors, []);
+});
+
 test('the command line exits 0 on success and 1 with every problem listed', async () => {
   const ok = await run(process.execPath, ['--import', 'tsx', SCRIPT, '--root', await fixtureRoot()]);
   assert.match(ok.stdout, /1 plugin checked/);

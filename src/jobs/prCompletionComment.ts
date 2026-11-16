@@ -6,7 +6,7 @@ import {
     isEmptyReviewFeedbackSelection,
 } from '@propr/shared';
 import { buildMetricsSection } from './prCommentJobUtils.js';
-import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
+import { buildAttributionLine, buildSlashCommandsBlock, type PluginCommandHelpRow } from '../shared/slashCommandsBlock.js';
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { describeUncommittedFiles, quoteBlockerExplanation } from './blockedRunText.js';
 import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
@@ -45,6 +45,8 @@ export interface CommentContext {
     visualPreviewSection?: string;
     /** Rendered review digest of the follow-up commit; empty or absent without a diff. */
     reviewDigestSection?: string;
+    /** Commands enabled plugins offer in this repository, listed in the slash command help. */
+    pluginCommands?: readonly PluginCommandHelpRow[];
 }
 
 export interface UndoLinkContext {
@@ -255,7 +257,7 @@ export async function buildCompletionComment(
         }
 
         prCommentBody += `\n\n---\n`;
-        prCommentBody += buildSlashCommandsBlock();
+        prCommentBody += buildSlashCommandsBlock(commentContext.pluginCommands);
         prCommentBody += `${buildAttributionLine()}\n`;
         prCommentBody += buildCompletionFooter(unprocessedComments, { partial });
 
@@ -280,7 +282,7 @@ export async function buildCompletionComment(
         }
 
         noChangesBody += `\n\n---\n`;
-        noChangesBody += buildSlashCommandsBlock();
+        noChangesBody += buildSlashCommandsBlock(commentContext.pluginCommands);
         noChangesBody += `${buildAttributionLine()}\n`;
         noChangesBody += buildCompletionFooter(unprocessedComments, { partial });
 
@@ -297,7 +299,7 @@ export async function buildCompletionComment(
 export async function buildBlockedCompletionComment(
     unprocessedComments: UnprocessedComment[],
     blocked: { explanation: string; uncommittedFiles: readonly string[] },
-    commentContext: Pick<CommentContext, 'llm' | 'authorsText' | 'taskUrl' | 'addressedFeedback'>,
+    commentContext: Pick<CommentContext, 'llm' | 'authorsText' | 'taskUrl' | 'addressedFeedback' | 'pluginCommands'>,
     claudeResult: ClaudeCodeResponse,
 ): Promise<string> {
     const { llm, authorsText, taskUrl, addressedFeedback } = commentContext;
@@ -313,7 +315,7 @@ export async function buildBlockedCompletionComment(
     body += await buildMetricsSection(claudeResult, llm, authorsText, true);
     if (taskUrl) body += `\n\n[View Task Execution](${taskUrl})`;
     body += `\n\n---\n`;
-    body += buildSlashCommandsBlock();
+    body += buildSlashCommandsBlock(commentContext.pluginCommands);
     body += `${buildAttributionLine()}\n`;
     body += buildCompletionFooter(unprocessedComments, { partial: true });
     return body;
