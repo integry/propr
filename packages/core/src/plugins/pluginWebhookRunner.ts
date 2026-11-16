@@ -4,7 +4,7 @@ import { PLUGIN_DELIVERY_RETRY_DELAYS_MS, PLUGIN_WEBHOOK_LIMITS, type PluginHand
 import logger from '../utils/logger.js';
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
-import { storedLogs, type PluginDeliveryRow } from './pluginDeliveries.js';
+import { attemptOutcome, storedLogs, type PluginDeliveryRow } from './pluginDeliveries.js';
 import type { PluginInstallationTarget } from './pluginContext.js';
 
 /**
@@ -395,8 +395,7 @@ export class PluginWebhookRunner {
       run = { outcome: 'failed', timedOut: false, durationMs: 0, error: error instanceof Error ? error.message : 'The handler failed', logs: [] };
     }
     const now = this.now();
-    const status = run.outcome === 'succeeded' ? 'succeeded' : attempt > this.delays.length ? 'failed' : 'retrying';
-    const nextAttemptAt = status === 'retrying' ? now + this.delays[attempt - 1] : null;
+    const { status, nextAttemptAt } = attemptOutcome(run, attempt, { delays: this.delays, now });
     // Only while the record is still this attempt's: a restart (enabled again) or an uninstall since then wins.
     const diagnostics = webhookDiagnostics(run);
     // Kept until written: a failed write is retried without running the handler again.

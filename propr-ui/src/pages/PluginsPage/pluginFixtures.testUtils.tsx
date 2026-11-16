@@ -40,7 +40,7 @@ export function examplePlugin(overrides: Partial<PluginView> = {}): PluginView {
         { type: 'token', name: 'example-token', label: 'Example API token', help: 'Create a read-only API token.', helpUrl: 'https://example.com/docs/tokens' },
       ],
       settings: EXAMPLE_SETTINGS,
-      outboundHosts: ['api.example.com'],
+      outboundHosts: ['api.example.com'], outboundHostsFromSettings: [],
       contributes: {
         mcpServers: [
           { kind: 'https', name: 'example-remote', url: 'https://mcp.example.com/mcp', tools: ['search'], capability: 'read', authentication: 'oauth', connection: 'example-account' },

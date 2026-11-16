@@ -1,0 +1,260 @@
+{
+  "manifestVersion": 1,
+  "id": "webhooks",
+  "name": "Outbound webhooks",
+  "description": "Sends ProPR events (pull requests opened, reviews scored, Ultrafix runs ended, pull requests merged or closed, task progress, epic queue blocked or completed) as signed JSON to any HTTPS endpoint. The generic integration for services without a plugin of their own.",
+  "version": "1.0.0",
+  "category": "other",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/webhooks",
+  "icon": "icon.svg",
+  "permissions": [
+    "events.read"
+  ],
+  "connections": [
+    {
+      "type": "signing_secret",
+      "name": "target-1-secret",
+      "label": "Target 1 signing secret",
+      "help": "A random secret of at least 32 characters, also configured on the receiving endpoint. Every delivery to target 1 is signed with it (HMAC-SHA256 in the X-ProPR-Signature header); without it nothing is sent to target 1.",
+      "helpUrl": "https://github.com/integry/propr/blob/main/docs/docs/plugins/webhooks.md#verifying-a-delivery"
+    },
+    {
+      "type": "signing_secret",
+      "name": "target-2-secret",
+      "label": "Target 2 signing secret",
+      "help": "A random secret of at least 32 characters, also configured on the receiving endpoint. Every delivery to target 2 is signed with it (HMAC-SHA256 in the X-ProPR-Signature header); without it nothing is sent to target 2.",
+      "helpUrl": "https://github.com/integry/propr/blob/main/docs/docs/plugins/webhooks.md#verifying-a-delivery"
+    },
+    {
+      "type": "signing_secret",
+      "name": "target-3-secret",
+      "label": "Target 3 signing secret",
+      "help": "A random secret of at least 32 characters, also configured on the receiving endpoint. Every delivery to target 3 is signed with it (HMAC-SHA256 in the X-ProPR-Signature header); without it nothing is sent to target 3.",
+      "helpUrl": "https://github.com/integry/propr/blob/main/docs/docs/plugins/webhooks.md#verifying-a-delivery"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "target1Url": {
+        "type": "string",
+        "format": "https-url",
+        "maxLength": 500,
+        "label": "Target 1 URL",
+        "help": "The https:// endpoint that receives the events, such as https://hooks.example.com/propr. It must be a public host name; private addresses and plain HTTP are refused."
+      },
+      "target1Events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "pull_request.opened",
+            "pull_request.review_scored",
+            "pull_request.ultrafix_ended",
+            "pull_request.merged",
+            "pull_request.closed",
+            "task.queued",
+            "task.started",
+            "task.completed",
+            "task.failed",
+            "task.cancelled",
+            "epic_queue.blocked",
+            "epic_queue.completed"
+          ]
+        },
+        "maxItems": 12,
+        "default": [
+          "pull_request.opened",
+          "pull_request.review_scored",
+          "pull_request.ultrafix_ended",
+          "pull_request.merged",
+          "pull_request.closed",
+          "task.queued",
+          "task.started",
+          "task.completed",
+          "task.failed",
+          "task.cancelled",
+          "epic_queue.blocked",
+          "epic_queue.completed"
+        ],
+        "label": "Target 1 events",
+        "help": "The events sent to target 1. Unselected events are not sent."
+      },
+      "target1Repositories": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 256,
+        "label": "Target 1 repositories",
+        "help": "Only events of these repositories (owner/repo) are sent to target 1. Leave empty for every repository the plugin is enabled for."
+      },
+      "target2Url": {
+        "type": "string",
+        "format": "https-url",
+        "maxLength": 500,
+        "label": "Target 2 URL",
+        "help": "The https:// endpoint that receives the events, such as https://hooks.example.com/propr. It must be a public host name; private addresses and plain HTTP are refused. Leave empty to not use this target."
+      },
+      "target2Events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "pull_request.opened",
+            "pull_request.review_scored",
+            "pull_request.ultrafix_ended",
+            "pull_request.merged",
+            "pull_request.closed",
+            "task.queued",
+            "task.started",
+            "task.completed",
+            "task.failed",
+            "task.cancelled",
+            "epic_queue.blocked",
+            "epic_queue.completed"
+          ]
+        },
+        "maxItems": 12,
+        "default": [
+          "pull_request.opened",
+          "pull_request.review_scored",
+          "pull_request.ultrafix_ended",
+          "pull_request.merged",
+          "pull_request.closed",
+          "task.queued",
+          "task.started",
+          "task.completed",
+          "task.failed",
+          "task.cancelled",
+          "epic_queue.blocked",
+          "epic_queue.completed"
+        ],
+        "label": "Target 2 events",
+        "help": "The events sent to target 2. Unselected events are not sent."
+      },
+      "target2Repositories": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 256,
+        "label": "Target 2 repositories",
+        "help": "Only events of these repositories (owner/repo) are sent to target 2. Leave empty for every repository the plugin is enabled for."
+      },
+      "target3Url": {
+        "type": "string",
+        "format": "https-url",
+        "maxLength": 500,
+        "label": "Target 3 URL",
+        "help": "The https:// endpoint that receives the events, such as https://hooks.example.com/propr. It must be a public host name; private addresses and plain HTTP are refused. Leave empty to not use this target."
+      },
+      "target3Events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "pull_request.opened",
+            "pull_request.review_scored",
+            "pull_request.ultrafix_ended",
+            "pull_request.merged",
+            "pull_request.closed",
+            "task.queued",
+            "task.started",
+            "task.completed",
+            "task.failed",
+            "task.cancelled",
+            "epic_queue.blocked",
+            "epic_queue.completed"
+          ]
+        },
+        "maxItems": 12,
+        "default": [
+          "pull_request.opened",
+          "pull_request.review_scored",
+          "pull_request.ultrafix_ended",
+          "pull_request.merged",
+          "pull_request.closed",
+          "task.queued",
+          "task.started",
+          "task.completed",
+          "task.failed",
+          "task.cancelled",
+          "epic_queue.blocked",
+          "epic_queue.completed"
+        ],
+        "label": "Target 3 events",
+        "help": "The events sent to target 3. Unselected events are not sent."
+      },
+      "target3Repositories": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 256,
+        "label": "Target 3 repositories",
+        "help": "Only events of these repositories (owner/repo) are sent to target 3. Leave empty for every repository the plugin is enabled for."
+      }
+    },
+    "required": [
+      "target1Url"
+    ]
+  },
+  "outboundHostsFromSettings": [
+    "target1Url",
+    "target2Url",
+    "target3Url"
+  ],
+  "contributes": {
+    "subscriptions": [
+      {
+        "on": "pull_request.opened",
+        "handler": "deliver"
+      },
+      {
+        "on": "pull_request.review_scored",
+        "handler": "deliver"
+      },
+      {
+        "on": "pull_request.ultrafix_ended",
+        "handler": "deliver"
+      },
+      {
+        "on": "pull_request.merged",
+        "handler": "deliver"
+      },
+      {
+        "on": "pull_request.closed",
+        "handler": "deliver"
+      },
+      {
+        "on": "task.queued",
+        "handler": "deliver"
+      },
+      {
+        "on": "task.started",
+        "handler": "deliver"
+      },
+      {
+        "on": "task.completed",
+        "handler": "deliver"
+      },
+      {
+        "on": "task.failed",
+        "handler": "deliver"
+      },
+      {
+        "on": "task.cancelled",
+        "handler": "deliver"
+      },
+      {
+        "on": "epic_queue.blocked",
+        "handler": "deliver"
+      },
+      {
+        "on": "epic_queue.completed",
+        "handler": "deliver"
+      }
+    ]
+  }
+}

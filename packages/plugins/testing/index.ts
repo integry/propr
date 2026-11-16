@@ -1,5 +1,6 @@
+import { createHmac } from 'node:crypto';
 import {
-  PLUGIN_PERMISSIONS, PLUGIN_PROPR_OPERATIONS, PLUGIN_STATE_LIMITS, PluginSdkError,
+  PLUGIN_PERMISSIONS, PLUGIN_PROPR_OPERATIONS, PLUGIN_STATE_LIMITS, PluginSdkError, pluginOutboundHosts,
   type PluginContext, type PluginHttpRequestInit, type PluginHttpResponse, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
   type PluginPermission, type PluginProprClient, type PluginProprOperation, type PluginSettingValues,
 } from '@propr/shared';
@@ -10,10 +11,12 @@ import {
  * in memory with the real limits and log lines are captured. Like the real
  * context, a call outside the granted permissions or the repository limit
  * throws a `PluginSdkError`, and so does a request to a host the plugin does
- * not list or over plain HTTP.
+ * not list or over plain HTTP. A request with a `signature` is signed as the
+ * real `ctx.http` signs it, with the connection's secret from `secrets`.
  */
 
 export interface RecordedProprCall { operation: PluginProprOperation; args: unknown[] }
+/** A request as sent: `init.headers` include the signature header of a signed request. */
 export interface RecordedHttpRequest { url: string; init: PluginHttpRequestInit; connection: string | null }
 export interface ScriptedHttpResponse { status?: number; headers?: Record<string, string>; body?: string; json?: PluginJsonValue }
 type Matcher = string | RegExp | ((url: string, init: PluginHttpRequestInit) => boolean);
@@ -26,10 +29,14 @@ export interface TestPluginContextOptions {
   repositories?: string[] | null;
   /** Granted permissions; every permission by default. */
   grantedPermissions?: readonly PluginPermission[];
-  /** The manifest's `outboundHosts`; any host when omitted. */
+  /** The manifest's `outboundHosts`; any host when omitted (and `outboundHostsFromSettings` is too). */
   outboundHosts?: readonly string[];
+  /** The manifest's `outboundHostsFromSettings`: the hosts of these URL settings in `settings` are allowed too. */
+  outboundHostsFromSettings?: readonly string[];
   /** Connection names `ctx.http(connection)` accepts; any when omitted. */
   connections?: readonly string[];
+  /** Secrets of `signing_secret` connections, by name: a request with a `signature` is signed with its connection's secret. */
+  secrets?: Record<string, string>;
   /** Answers to `ctx.propr` calls; an unanswered call resolves with a minimal placeholder. */
   propr?: Answers;
   /** Initial state. */
@@ -72,6 +79,25 @@ function response(url: string, scripted: ScriptedHttpResponse): PluginHttpRespon
   const text = scripted.json !== undefined ? JSON.stringify(scripted.json) : scripted.body ?? '';
   const headers = Object.fromEntries(Object.entries({ ...(scripted.json !== undefined ? { 'content-type': 'application/json' } : {}), ...scripted.headers }).map(([k, v]) => [k.toLowerCase(), v]));
   return { status, ok: status >= 200 && status < 300, url, headers, text: async () => text, json: async <T>() => JSON.parse(text) as T };
+}
+
+/** Sign a request as the real `ctx.http` does: `prefix` + hex HMAC-SHA256 of `<timestamp>.<body>` (or the body). */
+function signed(init: PluginHttpRequestInit, connection: string | undefined, secrets: Record<string, string> | undefined): PluginHttpRequestInit {
+  const secret = connection !== undefined && secrets && Object.hasOwn(secrets, connection) ? secrets[connection] : undefined;
+  if (init.signature === undefined) {
+    if (secret !== undefined) throw new PluginSdkError('invalid_input', 'Requests with a signing_secret connection need a signature');
+    return init;
+  }
+  if (secret === undefined) throw new PluginSdkError(connection === undefined ? 'invalid_input' : 'connection_unavailable', 'signature needs a signing_secret connection with a secret');
+  const headers = Object.fromEntries(Object.entries(init.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const { header, prefix = '', timestampHeader } = init.signature;
+  const timestamp = timestampHeader === undefined ? undefined : headers[timestampHeader.toLowerCase()];
+  if (timestampHeader !== undefined && timestamp === undefined) throw new PluginSdkError('invalid_input', `signature.timestampHeader names ${timestampHeader}, which the request does not set`);
+  const body = init.json !== undefined ? JSON.stringify(init.json) : init.body ?? '';
+  const hmac = createHmac('sha256', secret);
+  if (timestamp !== undefined) hmac.update(`${timestamp}.`);
+  hmac.update(body);
+  return { ...init, headers: { ...headers, [header.toLowerCase()]: `${prefix}${hmac.digest('hex')}` } };
 }
 
 function stateStore(state: Map<string, PluginJsonValue>): PluginContext['state'] {
@@ -129,17 +155,22 @@ export function createTestPluginContext(options: TestPluginContextOptions = {}):
     return result;
   }])) as unknown as PluginProprClient;
 
+  // The manifest's hosts and those of its URL settings, as the real context derives them; any host when neither is given.
+  const hosts = options.outboundHosts || options.outboundHostsFromSettings
+    ? pluginOutboundHosts({ outboundHosts: [...options.outboundHosts ?? []], outboundHostsFromSettings: [...options.outboundHostsFromSettings ?? []] }, options.settings ?? {})
+    : null;
   const http = (connection?: string) => {
     if (connection !== undefined && options.connections && !options.connections.includes(connection)) throw new PluginSdkError('connection_unavailable', `No connection ${connection}`);
     return async (url: string, init: PluginHttpRequestInit = {}) => {
       let parsed: URL;
       try { parsed = new URL(url); } catch { throw new PluginSdkError('invalid_input', 'Invalid URL'); }
       if (parsed.protocol !== 'https:') throw new PluginSdkError('insecure_url', 'Only https:// URLs are allowed');
-      if (options.outboundHosts && !options.outboundHosts.includes(parsed.hostname)) throw new PluginSdkError('host_not_allowed', `${parsed.hostname} is not an outbound host`);
-      requests.push({ url, init: structuredClone(init), connection: connection ?? null });
-      const script = [...scripts].reverse().find(s => matches(s.matcher, url, init));
+      if (hosts && !hosts.includes(parsed.hostname)) throw new PluginSdkError('host_not_allowed', `${parsed.hostname} is not an outbound host`);
+      const sent = signed(init, connection, options.secrets);
+      requests.push({ url, init: structuredClone(sent), connection: connection ?? null });
+      const script = [...scripts].reverse().find(s => matches(s.matcher, url, sent));
       if (!script) throw new PluginSdkError('http_failed', `No scripted response for ${init.method ?? 'GET'} ${url}`);
-      return response(url, typeof script.answer === 'function' ? script.answer(url, init) : script.answer);
+      return response(url, typeof script.answer === 'function' ? script.answer(url, sent) : script.answer);
     };
   };
 

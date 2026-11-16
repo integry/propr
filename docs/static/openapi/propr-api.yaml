@@ -13648,11 +13648,16 @@ components:
                         - properties
                         - required
                       additionalProperties: false
-                      description: "The settings schema: a JSON Schema subset (string, number, boolean, string list, repository map)."
+                      description: "The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map)."
                     outboundHosts:
                       type: array
                       items:
                         type: string
+                    outboundHostsFromSettings:
+                      type: array
+                      items:
+                        type: string
+                      description: Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved.
                     contributes:
                       type: object
                       properties:
@@ -13772,6 +13777,7 @@ components:
                     - connections
                     - settings
                     - outboundHosts
+                    - outboundHostsFromSettings
                     - contributes
                   additionalProperties: false
                   description: The public projection of the plugin manifest.
@@ -14491,11 +14497,16 @@ components:
                     - properties
                     - required
                   additionalProperties: false
-                  description: "The settings schema: a JSON Schema subset (string, number, boolean, string list, repository map)."
+                  description: "The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map)."
                 outboundHosts:
                   type: array
                   items:
                     type: string
+                outboundHostsFromSettings:
+                  type: array
+                  items:
+                    type: string
+                  description: Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved.
                 contributes:
                   type: object
                   properties:
@@ -14615,6 +14626,7 @@ components:
                 - connections
                 - settings
                 - outboundHosts
+                - outboundHostsFromSettings
                 - contributes
               additionalProperties: false
               description: The public projection of the plugin manifest.

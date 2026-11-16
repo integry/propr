@@ -25,6 +25,18 @@ describe('plugin page helpers', () => {
     ]);
   });
 
+  it('names the URL settings whose hosts a plugin may call', () => {
+    const manifest = examplePlugin().manifest!;
+    const webhooks = {
+      ...manifest, outboundHosts: [], outboundHostsFromSettings: ['greeting', 'unknownKey'],
+      contributes: { ...manifest.contributes, mcpServers: [], skills: [], automationTemplates: [], commands: [], subscriptions: ['pull_request.merged'] },
+    };
+    expect(describePluginContributions(webhooks)).toEqual([
+      'Receives ProPR events: pull_request.merged',
+      'Sends requests to the hosts of the URLs you enter in Greeting, unknownKey, and nowhere else',
+    ]);
+  });
+
   it('links only https URLs', () => {
     expect(safeHttpsUrl('https://example.com/docs')).toBe('https://example.com/docs');
     for (const url of ['http://example.com', 'javascript:alert(1)', 'data:text/html,x', 'not a url', undefined]) expect(safeHttpsUrl(url)).toBeNull();

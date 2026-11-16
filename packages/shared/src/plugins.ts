@@ -63,6 +63,8 @@ export const PLUGIN_LIMITS = {
 
 /** Folders of the registry package that can never be plugin ids. */
 export const RESERVED_PLUGIN_IDS = ['src', 'dist', 'test', 'testing', 'node_modules', 'propr'] as const;
+/** The folder of code shared by several official plugins (`packages/plugins/_shared/`); never a plugin. */
+export const PLUGIN_SHARED_FOLDER = '_shared' as const;
 export const pluginIdSchema = z.string().max(48).regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/, 'Plugin ids are lowercase slugs such as my-plugin')
   .refine(id => !(RESERVED_PLUGIN_IDS as readonly string[]).includes(id), 'This plugin id is reserved');
 /** Names of connections, settings, commands and webhooks inside one plugin. */
@@ -76,8 +78,40 @@ export const pluginAssetPathSchema = z.string().max(256)
   .regex(/^(?!\/)[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*$/, 'Use a relative path inside the plugin folder')
   .refine(p => p.split('/').every(segment => segment !== '.' && segment !== '..'), 'Use a relative path inside the plugin folder');
 /** A DNS hostname: lowercase labels, at least two, no scheme, port, path, wildcard or IP literal. */
-export const pluginHostnameSchema = z.string().max(253)
-  .regex(/^(?=.*[a-z])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/, 'Enter a hostname such as api.example.com');
+export const PLUGIN_HOSTNAME_PATTERN = /^(?=.*[a-z])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+export const pluginHostnameSchema = z.string().max(253).regex(PLUGIN_HOSTNAME_PATTERN, 'Enter a hostname such as api.example.com');
+/** Names that always mean this host, the local network or cloud metadata, whatever DNS says (as the extension endpoint policy treats them). */
+export function isLocalPluginHostname(host: string): boolean {
+  return /^(localhost|.*\.localhost|.*\.local|.*\.internal|.*\.home\.arpa)$/i.test(host);
+}
+
+/** The string setting formats: `https-url` is an `https://` URL to a public host name. */
+export const PLUGIN_STRING_SETTING_FORMATS = ['https-url'] as const;
+export type PluginStringSettingFormat = typeof PLUGIN_STRING_SETTING_FORMATS[number];
+/**
+ * Why `value` is not an acceptable `https-url` setting value, or null. The URL
+ * must be `https://`, on the default port, without credentials or a fragment,
+ * and name a public host: a DNS name (never an IP address, so no private or
+ * loopback address can be written down) that is not a local name. Whether the
+ * name resolves to public addresses only is checked when the settings are
+ * saved and again on every request.
+ */
+export function pluginHttpsUrlProblem(value: string): string | null {
+  let url: URL;
+  try { url = new URL(value); } catch { return 'must be an https:// URL'; }
+  if (url.protocol !== 'https:') return `must be an https:// URL, not ${url.protocol.replace(/:$/, '')}`;
+  if (url.username || url.password) return 'must not carry a user name or password';
+  if (url.port && url.port !== '443') return 'must use the default HTTPS port';
+  if (url.hash) return 'must not have a #fragment';
+  const host = url.hostname.toLowerCase();
+  if (!PLUGIN_HOSTNAME_PATTERN.test(host)) return `must name a public host such as hooks.example.com, not ${/^[\d.]+$|^\[/.test(host) ? 'an IP address' : host}`;
+  if (isLocalPluginHostname(host)) return `must name a public host, not the local name ${host}`;
+  return null;
+}
+/** The lower-case host name of an acceptable `https-url` value, or null. */
+export function pluginHttpsUrlHost(value: unknown): string | null {
+  return typeof value === 'string' && value && !pluginHttpsUrlProblem(value) ? new URL(value).hostname.toLowerCase() : null;
+}
 
 const connectionBase = { name: keySchema, label: textSchema(100), help: textSchema(), helpUrl: httpsUrlSchema };
 export const pluginConnectionSchema = z.discriminatedUnion('type', [
@@ -104,6 +138,8 @@ export const pluginSettingSchema = z.discriminatedUnion('type', [
     type: z.literal('string'), ...settingBase, default: z.string().max(PLUGIN_LIMITS.text).optional(),
     enum: z.array(z.string().min(1).max(100)).min(1).max(PLUGIN_LIMITS.enumValues).optional(),
     maxLength: z.number().int().positive().max(PLUGIN_LIMITS.text).optional(),
+    /** `https-url`: an `https://` URL to a public host (see `pluginHttpsUrlProblem`). */
+    format: z.enum(PLUGIN_STRING_SETTING_FORMATS).optional(),
   }),
   z.strictObject({
     type: z.literal('number'), ...settingBase, default: z.number().finite().optional(),
@@ -111,7 +147,9 @@ export const pluginSettingSchema = z.discriminatedUnion('type', [
   }),
   z.strictObject({ type: z.literal('boolean'), ...settingBase, default: z.boolean().optional() }),
   z.strictObject({
-    type: z.literal('array'), ...settingBase, items: z.strictObject({ type: z.literal('string') }),
+    type: z.literal('array'), ...settingBase,
+    /** With `enum`, every entry is one of a fixed list of values (a multiple choice). */
+    items: z.strictObject({ type: z.literal('string'), enum: z.array(z.string().min(1).max(100)).min(1).max(PLUGIN_LIMITS.enumValues).optional() }),
     default: stringList.optional(), maxItems: z.number().int().positive().max(PLUGIN_LIMITS.listItems).optional(),
   }),
   z.strictObject({
@@ -408,6 +446,11 @@ function stringSettingProblems(key: string, setting: SettingOf<'string'>): Setti
   if (setting.enum && duplicates(setting.enum).length) problems.push({ message: `Setting ${key} lists an enum value more than once`, field: 'enum' });
   if (setting.enum && setting.default !== undefined && !setting.enum.includes(setting.default)) problems.push({ message: `Default of setting ${key} is not one of its enum values`, field: 'default' });
   if (setting.maxLength !== undefined && (setting.default?.length ?? 0) > setting.maxLength) problems.push({ message: `Default of setting ${key} is longer than maxLength`, field: 'default' });
+  if (setting.format && setting.enum) problems.push({ message: `Setting ${key} has a format and an enum; use one`, field: 'format' });
+  if (setting.format === 'https-url' && setting.default !== undefined && setting.default !== '') {
+    const problem = pluginHttpsUrlProblem(setting.default);
+    if (problem) problems.push({ message: `Default of setting ${key} ${problem}`, field: 'default' });
+  }
   return problems;
 }
 
@@ -419,11 +462,20 @@ function numberSettingProblems(key: string, setting: SettingOf<'number'>): Setti
   return problems;
 }
 
+function arraySettingProblems(key: string, setting: SettingOf<'array'>): SettingProblem[] {
+  const problems: SettingProblem[] = [];
+  if (setting.maxItems !== undefined && (setting.default?.length ?? 0) > setting.maxItems) problems.push({ message: `Default of setting ${key} has more than maxItems entries`, field: 'default' });
+  const choices = setting.items.enum;
+  if (choices && duplicates(choices).length) problems.push({ message: `Setting ${key} lists an enum value more than once`, field: 'items' });
+  if (choices && setting.default?.some(value => !choices.includes(value))) problems.push({ message: `Default of setting ${key} has an entry that is not one of its enum values`, field: 'default' });
+  return problems;
+}
+
 /** Problems of one setting's own constraints and default. */
 function settingProblems(key: string, setting: PluginSetting): SettingProblem[] {
   if (setting.type === 'string') return stringSettingProblems(key, setting);
   if (setting.type === 'number') return numberSettingProblems(key, setting);
-  if (setting.type === 'array' && setting.maxItems !== undefined && (setting.default?.length ?? 0) > setting.maxItems) return [{ message: `Default of setting ${key} has more than maxItems entries`, field: 'default' }];
+  if (setting.type === 'array') return arraySettingProblems(key, setting);
   return [];
 }
 
@@ -434,6 +486,27 @@ function checkSettings(settings: PluginSettings, issue: Issue) {
   for (const [key, setting] of Object.entries(settings.properties)) {
     for (const { message, field } of settingProblems(key, setting)) issue(message, ['settings', 'properties', key, ...(field ? [field] : [])]);
   }
+}
+
+/** Each setting `outboundHostsFromSettings` names is a defined `https-url` string setting, named once. */
+function checkOutboundHostsFromSettings(manifest: z.infer<typeof pluginManifestObjectSchema>, issue: Issue) {
+  const at = ['outboundHostsFromSettings'];
+  for (const key of duplicates(manifest.outboundHostsFromSettings)) issue(`Setting ${key} is listed more than once`, at);
+  manifest.outboundHostsFromSettings.forEach((key, index) => {
+    const setting = Object.hasOwn(manifest.settings.properties, key) ? manifest.settings.properties[key] : undefined;
+    if (!setting) issue(`outboundHostsFromSettings names setting ${key}, which the plugin does not define`, [...at, index]);
+    else if (setting.type !== 'string' || setting.format !== 'https-url') issue(`outboundHostsFromSettings names setting ${key}, which is not a string setting with format https-url`, [...at, index]);
+  });
+}
+
+/**
+ * The hostnames a plugin's handlers may call with these settings: the
+ * manifest's `outboundHosts` and the host of each `outboundHostsFromSettings`
+ * URL that is set and acceptable. Lower case, each once.
+ */
+export function pluginOutboundHosts(manifest: Pick<PluginManifest, 'outboundHosts' | 'outboundHostsFromSettings'>, settings: Readonly<Record<string, unknown>>): string[] {
+  const fromSettings = manifest.outboundHostsFromSettings.map(key => (Object.hasOwn(settings, key) ? pluginHttpsUrlHost(settings[key]) : null));
+  return [...new Set([...manifest.outboundHosts, ...fromSettings.filter((host): host is string => host !== null)])];
 }
 
 const pluginManifestObjectSchema = z.strictObject({
@@ -451,6 +524,12 @@ const pluginManifestObjectSchema = z.strictObject({
   settings: pluginSettingsSchema.default({ type: 'object', properties: {}, required: [] }),
   /** Hostnames the plugin's handlers may call. */
   outboundHosts: z.array(pluginHostnameSchema).max(PLUGIN_LIMITS.outboundHosts).default([]),
+  /**
+   * Settings (string settings of `format: https-url`) whose URL's host the
+   * handlers may also call, as the administrator saved it: for user-entered
+   * targets such as outbound webhook URLs.
+   */
+  outboundHostsFromSettings: z.array(settingKeySchema).max(PLUGIN_LIMITS.settings).default([]),
   contributes: pluginContributesSchema.default({ mcpServers: [], skills: [], automationTemplates: [], commands: [], subscriptions: [], webhooks: [] }),
 });
 
@@ -472,6 +551,7 @@ export const pluginManifestSchema = pluginManifestObjectSchema.superRefine((mani
   unique(contributes.webhooks.map(w => w.name), 'webhook name', ['contributes', 'webhooks']);
   checkConnectionReferences(manifest, issue);
   checkSettings(manifest.settings, issue);
+  checkOutboundHostsFromSettings(manifest, issue);
   checkCommands(manifest, issue);
   if (contributes.subscriptions.length && !manifest.permissions.includes('events.read')) issue('Event subscriptions need the events.read permission', ['contributes', 'subscriptions']);
 });
@@ -505,6 +585,8 @@ export interface PublicPluginManifest {
   connections: PluginConnection[];
   settings: PluginSettings;
   outboundHosts: string[];
+  /** Settings whose URL host the handlers may also call. */
+  outboundHostsFromSettings: string[];
   contributes: {
     mcpServers: PublicPluginMcpServer[];
     skills: string[];
@@ -524,6 +606,7 @@ export function publicPluginManifest(manifest: PluginManifest): PublicPluginMani
     connections: manifest.connections.map(connection => ({ ...connection })),
     settings: manifest.settings,
     outboundHosts: [...manifest.outboundHosts],
+    outboundHostsFromSettings: [...manifest.outboundHostsFromSettings],
     contributes: {
       mcpServers: contributes.mcpServers.map((server): PublicPluginMcpServer => (server.kind === 'https'
         ? { kind: 'https', name: server.name, url: server.url, tools: [...server.tools], capability: server.capability, authentication: server.authentication, ...(server.connection ? { connection: server.connection } : {}) }

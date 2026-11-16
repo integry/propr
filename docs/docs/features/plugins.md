@@ -32,6 +32,10 @@ repository:
 | skill folders | Skill bundle sources, each with a `SKILL.md`, named by `contributes.skills`. |
 | automation template folders | Templates in the shipped automation template format (`template.json` and `prompt.md`), named by `contributes.automationTemplates`. |
 
+Code several plugins share (for example the event selection of the plugins
+that forward ProPR events) lives in `packages/plugins/_shared/`. It is not a
+plugin, and it uses SDK types only.
+
 `packages/plugins/registry.json` lists the plugins in catalog order. The
 `@propr/plugins` workspace package exports that list with each manifest and the
 resolved paths of its assets.
@@ -41,6 +45,12 @@ left out of the list unless `PROPR_PLUGINS_DEVELOPMENT=1` is set. The
 `example-pack` plugin is one: it contributes one remote MCP server, one local
 package server, one skill and one automation template, and is used by ProPR's
 own tests and as a reference for plugin authors.
+
+### Official plugins
+
+| Plugin | What it does |
+| --- | --- |
+| [Outbound webhooks](../plugins/webhooks.md) (`webhooks`) | Sends ProPR events as signed JSON to any HTTPS endpoint, with a documented, versioned envelope. |
 
 ## The manifest
 
@@ -59,6 +69,7 @@ The schema is defined in `@propr/shared` (`packages/shared/src/plugins.ts`).
 | `connections` | Named credentials the plugin needs (below). |
 | `settings` | The plugin's settings, in a JSON Schema subset (below). |
 | `outboundHosts` | Hostnames, such as `api.example.com`, that the plugin's handlers may call. No scheme, port, path, wildcard or IP address. |
+| `outboundHostsFromSettings` | Keys of URL settings (`format: "https-url"`) whose host the handlers may also call, for endpoints an administrator enters. See [Outbound HTTP and secrets](#outbound-http-and-secrets). |
 | `contributes` | What the plugin adds to ProPR (below). |
 
 Unknown fields are refused everywhere, so a misspelled field is an error rather
@@ -82,7 +93,7 @@ pointing to where the credential is obtained.
 | --- | --- |
 | `oauth` | A sign-in, using the same flow as [OAuth library servers](./agent-extensions.md#oauth-servers). `registrations` limits the client registration methods (`metadata_document`, `dynamic`, `preregistered`; all three by default) and `scopes` lists the scopes to request. |
 | `token` | A secret pasted by the administrator, such as an API token. |
-| `signing_secret` | The shared secret that verifies inbound webhooks. |
+| `signing_secret` | A shared secret: it verifies inbound webhooks, and `ctx.http` signs outbound requests with it. |
 
 ### Settings
 
@@ -92,14 +103,21 @@ one of:
 
 | Shape | Meaning |
 | --- | --- |
-| `{ "type": "string" }` | Text, with optional `maxLength`. With `enum`, one of a fixed list of values. |
+| `{ "type": "string" }` | Text, with optional `maxLength`. With `enum`, one of a fixed list of values. With `"format": "https-url"`, an `https://` URL on a public host (see below). |
 | `{ "type": "number" }` | A number, with optional `minimum`, `maximum` and `integer`. |
 | `{ "type": "boolean" }` | A switch. |
-| `{ "type": "array", "items": { "type": "string" } }` | A list of strings, with optional `maxItems`. |
+| `{ "type": "array", "items": { "type": "string" } }` | A list of strings, with optional `maxItems`. With `"items": { "type": "string", "enum": [ ... ] }`, a multiple choice: every entry is one of the listed values, shown as checkboxes. |
 | `{ "type": "object", "format": "repository-map", "additionalProperties": { "type": "string" } }` | A value per repository, keyed by `owner/repo`. |
 
 Defaults must satisfy their own constraints, and every `required` key must be
 defined.
+
+An `https-url` value must be `https://`, on the default port, without a user
+name, password or `#fragment`, and name a host: never an IP address, and not a
+local name such as `localhost`, `*.local` or `*.internal`. A plain HTTP or
+private-address URL is therefore refused when the settings are saved. When a
+plugin names the setting in `outboundHostsFromSettings`, its host must also
+resolve to public addresses only when a new or changed value is saved.
 
 ### Contributions
 
@@ -647,7 +665,7 @@ export const onTaskEvent = definePluginHandler<PluginEventInput>(async (input, c
 | `ctx.settings` | The installation's settings, validated against the manifest, with its defaults. Read-only. |
 | `ctx.repositories` | The repository limit (`owner/repo` list), or `null` for all repositories. |
 | `ctx.propr` | ProPR, limited to the granted permissions and the repository limit (below). |
-| `ctx.http(connection?)` | `fetch`-like outbound HTTPS to the manifest's `outboundHosts` only. With a `token` connection name, its credential is injected. |
+| `ctx.http(connection?)` | `fetch`-like outbound HTTPS to the manifest's `outboundHosts` (and the hosts of its `outboundHostsFromSettings` URLs) only. With a `token` connection name, its credential is injected. With a `signing_secret` connection name, ProPR signs each request. |
 | `ctx.state` | A small JSON key-value store for this installation: `get`, `set`, `delete`, `keys(prefix?)`. |
 | `ctx.log` | `debug`, `info`, `warn`, `error(message, fields?)`: structured lines returned with the run, redacted. |
 | `ctx.signal` | Aborted when the handler runs past its 30 second limit. |
@@ -657,8 +675,8 @@ The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
 `{ kind: 'webhook', webhook, headers, body, receivedAt }`,
 `{ kind: 'command', command, args, repository, number, target, actor, commentId }` or
 `{ kind: 'invoke', payload }`. Events are delivered by
-[event subscriptions](#event-subscriptions), with a stable `deliveryId` and the
-`attempt` number. Webhook requests are delivered by
+[event subscriptions](#event-subscriptions), with a stable `deliveryId`, the
+`attempt` number and, on the attempt of a manual **Retry**, `manual: true`. Webhook requests are delivered by
 [inbound webhooks](#inbound-webhooks), also with a `deliveryId` and `attempt`.
 `handler` commands are delivered as [command deliveries](#command-deliveries);
 `prompt` commands need no handler (see [Commands](#commands)).
@@ -700,8 +718,11 @@ Handlers observe and create new work: they never interact with a running task.
 
 ### Outbound HTTP and secrets
 
-`ctx.http` reaches only the hostnames in `outboundHosts`, over HTTPS, on the
-default port, and only when every address the name resolves to is public.
+`ctx.http` reaches only the hostnames in `outboundHosts`, and the hosts of the
+URL settings named in `outboundHostsFromSettings` as they are saved, over HTTPS,
+on the default port, and only when every address the name resolves to is
+public. A host that is not one of them is refused (`host_not_allowed`), even
+when it is the host of another setting.
 Private, loopback and link-local addresses and local names are refused, and
 redirects are not followed. Requests are limited to 256 KiB and 10 seconds, and
 responses to 1 MiB.
@@ -710,6 +731,21 @@ Handlers never receive raw secrets. `ctx.http('my-token')` opens the stored
 `token` connection only to send the request, as `Authorization: Bearer …`, and
 removes the credential from the response before the handler reads it. Log lines,
 error messages and results pass the secret redaction.
+
+`ctx.http('my-signing-secret')` uses a `signing_secret` connection to sign
+instead. Every request needs a `signature`, and ProPR sets its header:
+
+```ts
+await ctx.http('target-secret')(url, {
+  method: 'POST', body, headers: { 'x-timestamp': String(Math.floor(Date.now() / 1000)) },
+  // x-signature: sha256=<hex HMAC-SHA256 of "<x-timestamp>.<body>">
+  signature: { header: 'x-signature', prefix: 'sha256=', timestampHeader: 'x-timestamp' },
+});
+```
+
+The signature is the lower-case hex HMAC-SHA256, keyed with the secret, of the
+body bytes as sent, preceded by the timestamp header's value and `.` when
+`timestampHeader` is given.
 
 ### State
 
@@ -730,7 +766,9 @@ for `packages/plugins/**` enforces this. Run it with
 `packages/plugins/testing` provides `createTestPluginContext()`: a fake `ctx`
 with recorded `ctx.propr` calls, scripted `ctx.http` responses, in-memory state
 and captured logs. It applies the same permission, repository, host and state
-checks as the real one. `packages/plugins/test/testing.test.ts` uses it on the
+checks as the real one. `outboundHostsFromSettings` and `secrets` (signing
+secrets by connection name) let it derive hosts from settings and sign requests
+as the real `ctx.http` does. `packages/plugins/test/testing.test.ts` uses it on the
 example plugin's `recordEvent` handler.
 
 ## Event subscriptions
@@ -810,7 +848,12 @@ describes each field.
 - **30 seconds** per attempt. A handler still running then has failed.
 - **Retries.** A failed attempt is retried after 1 minute, 5 minutes,
   30 minutes and 2 hours. After the fifth attempt the delivery is marked
-  failed and the next event follows.
+  failed and the next event follows. A handler can throw a
+  `PluginDeliveryError` to change this for one attempt:
+  `new PluginDeliveryError(message, { retryAfterMs })` waits that long instead
+  (between 1 second and 6 hours, for a service's `Retry-After`, which
+  `parsePluginRetryAfter` reads), and `{ permanent: true }` marks the delivery
+  failed at once, for an error that retrying cannot fix.
 - **No history.** Installing a plugin, or enabling it again, starts its
   subscriptions at that moment. Earlier events, and events journaled while it
   was disabled, are not delivered.
@@ -849,7 +892,10 @@ Records are kept for 14 days (longer while their event still waits on another
 handler or on Resume) and are deleted when the plugin is uninstalled.
 
 **Retry** on a failed delivery gives it one more attempt, with the same
-`deliveryId`, outside the repository's order. While deliveries are paused, the
+`deliveryId`, outside the repository's order, and with `manual: true` in the
+event input, so a handler can try again what it gave up on (for example a
+destination that refused it) while skipping what already succeeded. While
+deliveries are paused, the
 retry waits for Resume. A retried delivery of a repository now outside the
 plugin's limit is not delivered; it is marked failed again.
 

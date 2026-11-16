@@ -1,9 +1,10 @@
+import { createHmac } from 'node:crypto';
 import dns from 'node:dns/promises';
 import https from 'node:https';
 import { isIP } from 'node:net';
 import {
   PLUGIN_HTTP_LIMITS, PluginSdkError,
-  type PluginHttpFetch, type PluginHttpRequestInit, type PluginHttpResponse,
+  type PluginHttpFetch, type PluginHttpRequestInit, type PluginHttpResponse, type PluginHttpSignature,
 } from '@propr/shared';
 import { extensionPublicAddress, extensionReservedHostname, type ExtensionLookup } from '../extensions/endpointPolicy.js';
 
@@ -22,8 +23,14 @@ export type PluginHttpTransport = (request: PluginHttpTransportRequest) => Promi
 export interface PluginHttpOptions {
   /** The manifest's `outboundHosts`: exact hostnames, nothing else is reachable. */
   outboundHosts: readonly string[];
-  /** The credential to inject as `Authorization: Bearer`, resolved on the first request; null for none. */
+  /** The credential to inject as `Authorization: Bearer` (or to sign with), resolved on the first request; null for none. */
   credential?: () => Promise<string | null>;
+  /**
+   * How the credential is used: `bearer` (the default) injects it as
+   * `Authorization: Bearer`; `signature` (a `signing_secret` connection) signs
+   * each request as its `signature` says, and every request must have one.
+   */
+  credentialUse?: 'bearer' | 'signature';
   /**
    * Called before every request is sent, after its lookups: throws to refuse
    * it (the installation the credential belongs to was removed or replaced).
@@ -338,6 +345,49 @@ function requestBody(init: PluginHttpRequestInit, headers: Record<string, string
   return body;
 }
 
+const SIGNATURE_PREFIX = /^[\x20-\x7e]{1,32}$/;
+/** The signature spec as given, checked: its header names are valid, not reserved and not set by the handler; its timestamp header is set. */
+function signatureSpec(signature: unknown, headers: Record<string, string>): { header: string; prefix: string; timestamp?: string } {
+  if (!signature || typeof signature !== 'object' || Array.isArray(signature)) throw new PluginSdkError('invalid_input', 'signature must be { header, prefix?, timestampHeader? }');
+  const { header, prefix, timestampHeader } = signature as PluginHttpSignature;
+  if (typeof header !== 'string' || !HEADER_NAME.test(header) || RESERVED_HEADERS.test(header) || /^(authorization|cookie|content-type)$/i.test(header)) throw new PluginSdkError('invalid_input', 'signature.header must be a header name ProPR does not set');
+  if (Object.hasOwn(headers, header.toLowerCase())) throw new PluginSdkError('invalid_input', `Header ${header} is set by the signature`);
+  if (prefix !== undefined && (typeof prefix !== 'string' || !SIGNATURE_PREFIX.test(prefix))) throw new PluginSdkError('invalid_input', 'signature.prefix must be at most 32 printable ASCII characters');
+  if (timestampHeader === undefined) return { header: header.toLowerCase(), prefix: prefix ?? '' };
+  if (typeof timestampHeader !== 'string' || !HEADER_NAME.test(timestampHeader)) throw new PluginSdkError('invalid_input', 'signature.timestampHeader must be a header name');
+  const timestamp = headers[timestampHeader.toLowerCase()];
+  if (timestamp === undefined || timestampHeader.toLowerCase() === header.toLowerCase()) throw new PluginSdkError('invalid_input', `signature.timestampHeader names ${timestampHeader}, which the request does not set`);
+  return { header: header.toLowerCase(), prefix: prefix ?? '', timestamp };
+}
+
+/** The signature a request gets: required with a signing connection, refused without one. */
+function requestSignature(options: Pick<PluginHttpOptions, 'credentialUse'>, init: PluginHttpRequestInit, headers: Record<string, string>): ReturnType<typeof signatureSpec> | undefined {
+  const signing = options.credentialUse === 'signature';
+  if (!signing && init.signature !== undefined) throw new PluginSdkError('invalid_input', 'signature needs a signing_secret connection: ctx.http(<connection>)');
+  if (signing && init.signature === undefined) throw new PluginSdkError('invalid_input', 'Requests with a signing_secret connection need a signature');
+  return signing ? signatureSpec(init.signature, headers) : undefined;
+}
+
+/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer`. */
+function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | undefined): void {
+  if (spec) {
+    if (!secret) throw new PluginSdkError('connection_unavailable', 'The signing secret is not set');
+    headers[spec.header] = pluginRequestSignature(secret, body, spec);
+  } else if (secret) headers.authorization = `Bearer ${secret}`;
+}
+
+/**
+ * The signature header value of a request: `prefix` + the lower-case hex
+ * HMAC-SHA256, keyed with `secret`, of `<timestamp>.<body>` (with a timestamp
+ * header) or of the body alone. An empty body signs as zero bytes.
+ */
+export function pluginRequestSignature(secret: string, body: Buffer | undefined, spec: { prefix: string; timestamp?: string }): string {
+  const hmac = createHmac('sha256', secret);
+  if (spec.timestamp !== undefined) hmac.update(`${spec.timestamp}.`);
+  if (body) hmac.update(body);
+  return `${spec.prefix}${hmac.digest('hex')}`;
+}
+
 /** The default transport: dial only the vetted address with the original TLS identity; no redirects, proxies, cookies or decompression. */
 export const httpsPluginTransport: PluginHttpTransport = request => new Promise((resolve, reject) => {
   const host = request.url.hostname;
@@ -387,11 +437,12 @@ function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spell
 }
 
 /**
- * `ctx.http`: outbound HTTPS to the manifest's `outboundHosts` only, through
+ * `ctx.http`: outbound HTTPS to the manifest's `outboundHosts` (and the hosts
+ * of its `outboundHostsFromSettings` URLs) only, through
  * the extension endpoint policy (public addresses only, the checked address
  * is the one dialed), with bounded request and response sizes and time. A
- * credential is injected as `Authorization: Bearer` and scrubbed from the
- * response, so the handler never sees it.
+ * token is injected as `Authorization: Bearer`, a signing secret signs the
+ * request; either is scrubbed from the response, so the handler never sees it.
  */
 export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
   const lookup = options.lookup ?? defaultLookup;
@@ -407,12 +458,13 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       if (!METHODS.has(method)) throw new PluginSdkError('invalid_input', `Method ${String(init.method).slice(0, 16)} is not allowed`);
       const headers = requestHeaders(init);
       const body = requestBody(init, headers);
+      const spec = requestSignature(options, init, headers);
       const { signal } = options;
       checkLive(signal);
       const { address, family } = await untilEnded(resolvePublic(host, lookup), signal);
       credential ??= options.credential ? options.credential() : Promise.resolve(null);
       const secret = await untilEnded(credential, signal);
-      if (secret) headers.authorization = `Bearer ${secret}`;
+      applyCredential(headers, body, secret, spec);
       if (options.authorize) await untilEnded(options.authorize(), signal);
       // The run may have ended during the lookups: nothing is sent for an ended handler.
       checkLive(signal);

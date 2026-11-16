@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
-  PLUGIN_PERMISSIONS, parsePluginManifest, pluginManifestSchema, pluginSharedCommandSiblings, publicPluginManifest,
+  PLUGIN_PERMISSIONS, parsePluginManifest, pluginHttpsUrlHost, pluginManifestSchema, pluginOutboundHosts, pluginSharedCommandSiblings, publicPluginManifest,
   type PluginManifestInput,
 } from '../src/plugins.js';
+import { validatePluginSettings } from '../src/pluginInstallations.js';
 
 const INTEGRITY = `sha512-${'A'.repeat(86)}==`;
 const valid = (): PluginManifestInput => ({
@@ -261,4 +262,44 @@ test('an unrelated command of the same kind cannot stand in for a shared handler
   const parsed = parsePluginManifest(variant(m => { m.contributes.commands = [{ ...deploy, specific: ['acme-deploy'] }, status, { ...deploy, name: 'acme-deploy', shared: false }]; }));
   assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('; '));
   if (parsed.ok) assert.deepEqual(pluginSharedCommandSiblings(parsed.manifest.contributes.commands, parsed.manifest.contributes.commands[0]).map(c => c.name), ['acme-deploy']);
+});
+
+test('URL settings and multiple-choice lists: format https-url and items.enum', () => {
+  const withUrl = (change: (manifest: Mutable) => void = () => undefined) => variant(m => {
+    m.settings.properties.hook = { type: 'string', format: 'https-url', label: 'Hook URL' };
+    m.settings.properties.events = { type: 'array', items: { type: 'string', enum: ['task.completed', 'task.failed'] }, label: 'Events', default: ['task.completed'] };
+    m.outboundHostsFromSettings = ['hook'];
+    change(m);
+  });
+  const parsed = parsePluginManifest(withUrl());
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  assert.deepEqual(publicPluginManifest(parsed.manifest).outboundHostsFromSettings, ['hook']);
+  assert.deepEqual(pluginManifestSchema.parse(valid()).outboundHostsFromSettings, [], 'none by default');
+
+  rejects(withUrl(m => { m.outboundHostsFromSettings = ['missing']; }), /^outboundHostsFromSettings\.0: outboundHostsFromSettings names setting missing, which the plugin does not define$/);
+  rejects(withUrl(m => { m.outboundHostsFromSettings = ['channel']; }), /names setting channel, which is not a string setting with format https-url/);
+  rejects(withUrl(m => { m.outboundHostsFromSettings = ['hook', 'hook']; }), /Setting hook is listed more than once/);
+  rejects(withUrl(m => { m.settings.properties.hook.default = 'http://hooks.example.com'; }), /Default of setting hook must be an https:\/\/ URL, not http/);
+  rejects(withUrl(m => { m.settings.properties.hook.enum = ['https://a.example.com']; }), /Setting hook has a format and an enum; use one/);
+  rejects(withUrl(m => { m.settings.properties.hook.format = 'url'; }), /settings\.properties\.hook\.format/);
+  rejects(withUrl(m => { m.settings.properties.events.default = ['task.queued']; }), /Default of setting events has an entry that is not one of its enum values/);
+  rejects(withUrl(m => { m.settings.properties.events.items.enum = ['a', 'a']; }), /Setting events lists an enum value more than once/);
+
+  const { settings } = parsed.ok ? parsed.manifest : (null as never);
+  assert.deepEqual(validatePluginSettings(settings, { hook: 'https://Hooks.Example.com/in?x=1', events: ['task.failed'] }), { ok: true, settings: { hook: 'https://Hooks.Example.com/in?x=1', events: ['task.failed'] } });
+  for (const [hook, message] of [
+    ['http://hooks.example.com/in', 'hook must be an https:// URL, not http'],
+    ['https://192.168.1.10/in', 'hook must name a public host such as hooks.example.com, not an IP address'],
+    ['https://[fd00::1]/in', 'hook must name a public host such as hooks.example.com, not an IP address'],
+    ['https://intranet/in', 'hook must name a public host such as hooks.example.com, not intranet'],
+    ['https://box.home.arpa/in', 'hook must name a public host, not the local name box.home.arpa'],
+    ['https://hooks.example.com/in#x', 'hook must not have a #fragment'],
+  ]) assert.deepEqual(validatePluginSettings(settings, { hook }), { ok: false, errors: [message] }, hook);
+  assert.deepEqual(validatePluginSettings(settings, { events: ['task.queued'] }), { ok: false, errors: ['events has task.queued, which is not one of task.completed, task.failed'] });
+
+  assert.equal(pluginHttpsUrlHost('https://Hooks.Example.com:443/x'), 'hooks.example.com');
+  assert.equal(pluginHttpsUrlHost('http://hooks.example.com/x'), null);
+  assert.deepEqual(pluginOutboundHosts(parsed.manifest, { hook: 'https://Hooks.Example.com/in' }), ['api.acme.example.com', 'hooks.example.com']);
+  assert.deepEqual(pluginOutboundHosts(parsed.manifest, { hook: 'http://plain.example.com/in' }), ['api.acme.example.com'], 'an unacceptable URL gives no host');
+  assert.deepEqual(pluginOutboundHosts(parsed.manifest, { channel: 'https://not.named.example.com' }), ['api.acme.example.com'], 'only the named settings count');
 });

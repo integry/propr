@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  PLUGIN_DEVELOPMENT_FLAG, PLUGINS_ROOT, getOfficialPlugin, officialPlugins, pluginDevelopmentEnabled, readPluginRegistryIndex,
+  PLUGIN_DEVELOPMENT_FLAG, PLUGINS_ROOT, getOfficialPlugin, loadPluginHandlers, officialPlugins, pluginDevelopmentEnabled, readPluginRegistryIndex,
 } from '../src/index.js';
 
 const scratch = await mkdtemp(path.join(tmpdir(), 'propr-plugins-registry-'));
@@ -14,11 +14,11 @@ after(() => rm(scratch, { recursive: true, force: true }));
 
 test('the registry root is the package folder', () => {
   assert.equal(PLUGINS_ROOT, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
-  assert.deepEqual(readPluginRegistryIndex(), [{ id: 'example-pack', development: true }]);
+  assert.deepEqual(readPluginRegistryIndex(), [{ id: 'webhooks', development: false }, { id: 'example-pack', development: true }]);
 });
 
 test('example-pack is exported only when the development flag is set', () => {
-  assert.deepEqual(officialPlugins({ includeDevelopment: false }).map(p => p.manifest.id), []);
+  assert.deepEqual(officialPlugins({ includeDevelopment: false }).map(p => p.manifest.id), ['webhooks']);
   assert.equal(getOfficialPlugin('example-pack', { includeDevelopment: false }), undefined);
   const example = getOfficialPlugin('example-pack', { includeDevelopment: true });
   assert.ok(example);
@@ -34,9 +34,9 @@ test('the development flag is read from the environment', () => {
   const previous = process.env[PLUGIN_DEVELOPMENT_FLAG];
   try {
     process.env[PLUGIN_DEVELOPMENT_FLAG] = '1';
-    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['example-pack']);
+    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks', 'example-pack']);
     delete process.env[PLUGIN_DEVELOPMENT_FLAG];
-    assert.deepEqual(officialPlugins(), []);
+    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks']);
   } finally {
     if (previous === undefined) delete process.env[PLUGIN_DEVELOPMENT_FLAG];
     else process.env[PLUGIN_DEVELOPMENT_FLAG] = previous;
@@ -54,6 +54,15 @@ test('example-pack assets resolve to files in its folder', () => {
   assert.deepEqual(kinds, ['https', 'package']);
   const local = manifest.contributes.mcpServers.find(s => s.kind === 'package');
   assert.equal(local?.kind === 'package' && `${local.package}@${local.version}`, 'propr-fixture-mcp@1.0.0');
+});
+
+test('the webhooks plugin resolves its handlers, which import the shared folder', async () => {
+  const { assets, development } = getOfficialPlugin('webhooks', { includeDevelopment: false })!;
+  assert.equal(development, false);
+  for (const file of [assets.manifest, assets.readme, assets.icon]) assert.ok(existsSync(file), file);
+  assert.equal(assets.handlers, path.join(PLUGINS_ROOT, 'webhooks', 'handlers.ts'));
+  const handlers = await loadPluginHandlers('webhooks', { includeDevelopment: false });
+  assert.deepEqual(Object.keys(handlers ?? {}), ['deliver']);
 });
 
 test('released plugins are listed in registry order and an invalid manifest throws', async () => {

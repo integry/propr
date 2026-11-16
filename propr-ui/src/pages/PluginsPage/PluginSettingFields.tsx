@@ -39,6 +39,7 @@ function useFieldIds(error?: string) {
 }
 
 function hint(setting: PluginSetting): string {
+  if (setting.type === 'string' && setting.format === 'https-url') return 'An https:// URL on a public host';
   if (setting.type === 'number') {
     const range = [setting.minimum !== undefined ? `at least ${setting.minimum}` : '', setting.maximum !== undefined ? `at most ${setting.maximum}` : ''].filter(Boolean).join(', ');
     return [setting.integer ? 'A whole number' : 'A number', range].filter(Boolean).join(', ');
@@ -94,6 +95,38 @@ function ListField({ setting, draft, required, error, disabled, onChange }: Sett
       <button type="button" className={`${buttonClass} mt-2`} disabled={disabled} onClick={() => rows([...list.rows, ''])}>
         Add entry to {setting.label}
       </button>
+      <FieldText setting={setting} required={required} helpId={ids.helpId} errorId={ids.errorId} error={error} />
+    </fieldset>
+  );
+}
+
+/** A list whose entries come from a fixed set (`items.enum`): one checkbox per value, saved in the manifest's order. */
+function ChoiceListField({ setting, draft, required, error, disabled, onChange }: SettingFieldProps) {
+  const ids = useFieldIds(error);
+  const list = draft as CollectionDraft<string>;
+  const choices = setting.type === 'array' ? setting.items.enum ?? [] : [];
+  const toggle = (value: string, checked: boolean) => {
+    const next = new Set(list.rows.filter(row => row !== value));
+    if (checked) next.add(value);
+    // Values the manifest no longer offers stay as they are, so validation names them.
+    onChange({ set: true, rows: [...choices.filter(choice => next.has(choice)), ...[...next].filter(row => !choices.includes(row))] });
+  };
+  return (
+    <fieldset className="min-w-0 text-sm" aria-describedby={ids.describedBy} aria-invalid={ids.invalid || undefined}>
+      <legend className="font-medium text-slate-900 [overflow-wrap:anywhere]">{setting.label}</legend>
+      <span className="block text-xs text-slate-500">Choose any number.</span>
+      <CollectionState label={setting.label} draft={list} empty="None chosen." disabled={disabled} onChange={onChange} />
+      <ul className="mt-1 grid gap-1 sm:grid-cols-2">
+        {choices.map(choice => (
+          <li key={choice}>
+            <label className="flex min-w-0 items-center gap-2">
+              <input type="checkbox" className="h-4 w-4 shrink-0" checked={list.rows.includes(choice)} disabled={disabled}
+                onChange={event => toggle(choice, event.target.checked)} />
+              <code className="text-xs text-slate-800 [overflow-wrap:anywhere]">{choice}</code>
+            </label>
+          </li>
+        ))}
+      </ul>
       <FieldText setting={setting} required={required} helpId={ids.helpId} errorId={ids.errorId} error={error} />
     </fieldset>
   );
@@ -159,15 +192,18 @@ function ValueField(props: SettingFieldProps) {
   } else if (setting.type === 'number') {
     control = <input {...common} type="number" inputMode="decimal" step={setting.integer ? 1 : 'any'} min={setting.minimum} max={setting.maximum}
       value={String(draft)} onChange={event => onChange(event.target.value)} />;
+  } else if (setting.type === 'string' && setting.format === 'https-url') {
+    control = <input {...common} type="url" inputMode="url" autoComplete="off" spellCheck={false} placeholder="https://" maxLength={setting.maxLength}
+      value={String(draft)} onChange={event => onChange(event.target.value)} />;
   } else {
     control = <input {...common} type="text" maxLength={setting.type === 'string' ? setting.maxLength : undefined} value={String(draft)} onChange={event => onChange(event.target.value)} />;
   }
   return <Labelled setting={setting} required={required} ids={ids} error={error}>{control}</Labelled>;
 }
 
-/** One generated field: text, number, select (a choice list, or Not set / Yes / No), list or repository map, chosen from the setting's schema. */
+/** One generated field: text, URL, number, select (a choice list, or Not set / Yes / No), list, multiple choice or repository map, chosen from the setting's schema. */
 export function PluginSettingField(props: SettingFieldProps) {
-  if (props.setting.type === 'array') return <ListField {...props} />;
+  if (props.setting.type === 'array') return props.setting.items.enum ? <ChoiceListField {...props} /> : <ListField {...props} />;
   if (props.setting.type === 'object') return <RepositoryMapField {...props} />;
   return <ValueField {...props} />;
 }

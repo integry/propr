@@ -2,7 +2,8 @@
 /**
  * Validates the official plugin registry in packages/plugins:
  *
- *   - registry.json lists every plugin folder exactly once, and only those;
+ *   - registry.json lists every plugin folder exactly once, and only those
+ *     (`_shared/`, code several plugins import, is not a plugin);
  *   - every manifest.json passes the plugin manifest schema of @propr/shared
  *     (which also checks connection references and exact package pins) and
  *     its id matches its folder;
@@ -26,7 +27,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RESERVED_PLUGIN_IDS, parsePluginManifest, pluginIdSchema } from '../packages/shared/src/plugins.js';
+import { PLUGIN_SHARED_FOLDER, RESERVED_PLUGIN_IDS, parsePluginManifest, pluginIdSchema } from '../packages/shared/src/plugins.js';
 import { validateAutomationTemplate } from '../packages/shared/src/automationTemplateContract.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -101,7 +102,7 @@ export function checkPlugins({ root = PLUGINS_ROOT } = {}) {
   const errors = [];
   const entries = readIndex(root, errors);
   const folders = existsSync(root) ? readdirSync(root, { withFileTypes: true })
-    .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !RESERVED_PLUGIN_IDS.includes(entry.name))
+    .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== PLUGIN_SHARED_FOLDER && !RESERVED_PLUGIN_IDS.includes(entry.name))
     .map(entry => entry.name) : [];
   for (const folder of folders) if (!entries.some(e => e.id === folder)) errors.push(`${folder}: folder is not listed in registry.json`);
 

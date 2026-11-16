@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 import { PLUGIN_STATE_LIMITS, PluginSdkError, type PluginEventInput, type RepositoryEvent } from '@propr/shared';
 import { createTestPluginContext } from '../testing/index.js';
@@ -77,4 +78,22 @@ test('the test kit state applies the real limits', async () => {
   assert.equal(await kit.ctx.state.delete('a'), true);
   const expected = Array.from({ length: PLUGIN_STATE_LIMITS.keys - 1 }, (_, i) => `k${i + 1}`).filter(key => key.startsWith('k1')).sort();
   assert.deepEqual(await kit.ctx.state.keys('k1'), expected);
+});
+
+test('the test kit signs a request with a signing secret and allows the hosts of the URL settings', async () => {
+  const kit = createTestPluginContext({
+    settings: { target: 'https://Hooks.Example.com/in', other: 'http://plain.example/in' }, outboundHosts: ['api.example.com'],
+    outboundHostsFromSettings: ['target', 'other'], secrets: { signing: 'kit-secret' },
+  });
+  kit.respond(() => true, { status: 204 });
+  const signed = kit.ctx.http('signing');
+  await signed('https://hooks.example.com/in', { method: 'POST', body: '{"a":1}', headers: { 'X-Time': '17' }, signature: { header: 'X-Sig', prefix: 'sha256=', timestampHeader: 'x-time' } });
+  assert.equal(kit.requests[0].init.headers!['x-sig'], `sha256=${createHmac('sha256', 'kit-secret').update('17.{"a":1}').digest('hex')}`);
+  await signed('https://api.example.com/v1', { method: 'POST', json: { b: 2 }, signature: { header: 'x-sig' } });
+  assert.equal(kit.requests[1].init.headers!['x-sig'], createHmac('sha256', 'kit-secret').update('{"b":2}').digest('hex'));
+  // The plain-HTTP setting gives no host; other hosts are refused; a signing connection needs a signature and a signature needs one.
+  await assert.rejects(signed('https://plain.example/in', { signature: { header: 'x-sig' } }), (error: unknown) => error instanceof PluginSdkError && error.code === 'host_not_allowed');
+  await assert.rejects(signed('https://hooks.example.com/in'), (error: unknown) => error instanceof PluginSdkError && error.code === 'invalid_input');
+  await assert.rejects(kit.ctx.http()('https://hooks.example.com/in', { signature: { header: 'x-sig' } }), (error: unknown) => error instanceof PluginSdkError && error.code === 'invalid_input');
+  await assert.rejects(kit.ctx.http('unknown')('https://hooks.example.com/in', { signature: { header: 'x-sig' } }), (error: unknown) => error instanceof PluginSdkError && error.code === 'connection_unavailable');
 });

