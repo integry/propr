@@ -65,6 +65,12 @@ function commandLine(command: PluginCommandView): string {
     : line;
 }
 
+/** A setting's label as the manifest names it, or its key. */
+function settingLabel(manifest: PluginManifestView, key: string): string {
+  const setting = (manifest.settings.properties as Record<string, { label?: unknown } | undefined>)[key];
+  return typeof setting?.label === 'string' ? setting.label : key;
+}
+
 /** What a plugin adds, in plain words, generated from its manifest. */
 export function describePluginContributions(manifest: PluginManifestView): string[] {
   const servers = mcpServersOf(manifest);
@@ -83,6 +89,8 @@ export function describePluginContributions(manifest: PluginManifestView): strin
   if (subscriptions.length) lines.push(`Receives ProPR events: ${subscriptions.join(', ')}`);
   if (webhooks.length) lines.push(`Receives ${count(webhooks.length, 'webhook', 'webhooks')} from a service`);
   if (manifest.outboundHosts.length) lines.push(`Sends requests to ${manifest.outboundHosts.join(', ')}`);
+  const urlSettings = (manifest.outboundHostsFromSettings ?? []).map(key => settingLabel(manifest, key));
+  if (urlSettings.length) lines.push(`Sends requests to the hosts of the URLs you enter in ${urlSettings.join(', ')}, and nowhere else`);
   return lines.length ? lines : ['Adds nothing the agent uses yet'];
 }
 

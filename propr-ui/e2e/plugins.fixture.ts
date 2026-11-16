@@ -37,7 +37,7 @@ export const MANIFEST = {
     },
     required: ['verbosity'],
   },
-  outboundHosts: ['api.example.com'],
+  outboundHosts: ['api.example.com'], outboundHostsFromSettings: [],
   contributes: {
     mcpServers: [
       { kind: 'https', name: 'example-remote', url: 'https://mcp.example.com/mcp', tools: ['search', 'fetch'], capability: 'read', authentication: 'oauth', connection: 'example-account' },

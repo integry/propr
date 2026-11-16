@@ -41,6 +41,42 @@ export class PluginSdkError extends Error {
   constructor(readonly code: PluginSdkErrorCode, message: string) { super(message); }
 }
 
+/** Bounds of a retry delay a handler asks for (`PluginDeliveryError.retryAfterMs`): at least 1 second, at most 6 hours. */
+export const PLUGIN_RETRY_AFTER_LIMITS_MS = { min: 1_000, max: 6 * 60 * 60_000 } as const;
+/**
+ * Thrown by a handler to say how its delivery failed. `retryAfterMs`: the
+ * next attempt waits this long instead of the usual schedule (a service's
+ * `Retry-After`), bounded by `PLUGIN_RETRY_AFTER_LIMITS_MS`; the attempt still
+ * counts. `permanent`: retrying cannot help (the service refused the request),
+ * so the delivery is marked failed at once. Any other error is retried on the
+ * usual schedule. The message is shown in Activity, redacted.
+ */
+export class PluginDeliveryError extends Error {
+  readonly name = 'PluginDeliveryError';
+  readonly retryAfterMs?: number;
+  readonly permanent: boolean;
+  constructor(message: string, options: { retryAfterMs?: number | null; permanent?: boolean } = {}) {
+    super(message);
+    this.permanent = options.permanent === true;
+    if (!this.permanent && typeof options.retryAfterMs === 'number' && Number.isFinite(options.retryAfterMs)) this.retryAfterMs = clampPluginRetryAfter(options.retryAfterMs);
+  }
+}
+/** A retry delay within `PLUGIN_RETRY_AFTER_LIMITS_MS`. */
+export const clampPluginRetryAfter = (ms: number): number => Math.min(PLUGIN_RETRY_AFTER_LIMITS_MS.max, Math.max(PLUGIN_RETRY_AFTER_LIMITS_MS.min, Math.round(ms)));
+/**
+ * An HTTP `Retry-After` value as milliseconds from `now`: delay-seconds
+ * (`120`) or an HTTP date. Null when absent or unreadable; a date in the past
+ * is 0.
+ */
+export function parsePluginRetryAfter(value: string | null | undefined, now: number = Date.now()): number | null {
+  const text = value?.trim();
+  if (!text) return null;
+  if (/^\d{1,10}$/.test(text)) return Number(text) * 1000;
+  if (!/^[A-Za-z]{3},/.test(text)) return null;
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
 /** The ProPR operations `ctx.propr` offers and the permission each needs. */
 export const PLUGIN_PROPR_OPERATIONS = {
   getPullRequest: 'pull_requests.read',
@@ -98,6 +134,21 @@ export interface PluginHttpRequestInit {
   /** A text body; use `json` for a JSON body. */
   body?: string;
   json?: PluginJsonValue;
+  /** Sign the request with the `signing_secret` connection given to `ctx.http`; required with one, refused without. */
+  signature?: PluginHttpSignature;
+}
+/**
+ * How ProPR signs an outbound request with a `signing_secret` connection: it
+ * sets `header` to `prefix` followed by the lower-case hex HMAC-SHA256, keyed
+ * with the secret, of the body bytes as sent. With `timestampHeader` (a header
+ * the handler sets), the signed bytes are that header's value, a `.` and the
+ * body. The handler never sees the secret.
+ */
+export interface PluginHttpSignature {
+  header: string;
+  /** Printable ASCII before the hex digest, such as `sha256=`; at most 32 characters. */
+  prefix?: string;
+  timestampHeader?: string;
 }
 /** A buffered response. Redirects are not followed; the connection's credential never appears in it. */
 export interface PluginHttpResponse {
@@ -106,7 +157,7 @@ export interface PluginHttpResponse {
   text(): Promise<string>;
   json<T = unknown>(): Promise<T>;
 }
-/** `fetch`-like outbound HTTPS, limited to the manifest's `outboundHosts`. */
+/** `fetch`-like outbound HTTPS, limited to the manifest's `outboundHosts` and the hosts of its `outboundHostsFromSettings` URLs. */
 export type PluginHttpFetch = (url: string, init?: PluginHttpRequestInit) => Promise<PluginHttpResponse>;
 
 /** A small key-value store scoped to the installation; deleted on uninstall. */
@@ -129,7 +180,11 @@ export interface PluginContext {
   /** Repositories (`owner/repo`) the installation is limited to; `null` for all. */
   repositories: string[] | null;
   propr: PluginProprClient;
-  /** Outbound HTTP; with a connection name, that connection's credential is injected. */
+  /**
+   * Outbound HTTP. With a `token` connection name, its credential is injected
+   * as `Authorization: Bearer`; with a `signing_secret` connection name, each
+   * request must have a `signature` and ProPR signs it.
+   */
   http(connection?: string): PluginHttpFetch;
   state: PluginStateStore;
   log: PluginLogger;
@@ -212,4 +267,8 @@ export interface PluginHandlerRun {
   logs: PluginLogLine[];
   /** The handler's result, redacted, when it succeeded and returned one. */
   result?: PluginJsonValue;
+  /** The handler failed with a `PluginDeliveryError` asking to retry after this long. */
+  retryAfterMs?: number;
+  /** The handler failed with a permanent `PluginDeliveryError`: not retried. */
+  permanent?: boolean;
 }

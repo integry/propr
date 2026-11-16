@@ -1,7 +1,7 @@
 import type { Knex } from 'knex';
 import {
   PLUGIN_ACTIVITY_LIMIT, PLUGIN_DEGRADED_AFTER_FAILURES, PLUGIN_DELIVERY_RETENTION_DAYS, PLUGIN_LOG_LIMITS, PLUGIN_PAUSE_AFTER_FAILURES,
-  type PluginActivity, type PluginAuditAction, type PluginDeliveryKind, type PluginDeliveryStatus, type PluginDeliveryView, type PluginHealthView, type PluginLogLine,
+  type PluginActivity, type PluginAuditAction, type PluginDeliveryKind, type PluginDeliveryStatus, type PluginDeliveryView, type PluginHandlerRun, type PluginHealthView, type PluginLogLine,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { PluginError } from './pluginState.js';
@@ -61,6 +61,20 @@ export function storedLogs(logs: readonly PluginLogLine[]): string {
 }
 
 export const clipError = (error: string | null) => (error === null ? null : error.slice(0, ERROR_CHARS));
+
+/**
+ * The record's status after an attempt and when the next attempt is due. A
+ * success succeeds; a permanent failure (`PluginDeliveryError` with
+ * `permanent`), a `final` attempt (a manual retry) or the last scheduled one
+ * fails; otherwise it is retried after the handler's `retryAfterMs`, or the
+ * scheduled delay of this attempt.
+ */
+export function attemptOutcome(run: Pick<PluginHandlerRun, 'outcome' | 'permanent' | 'retryAfterMs'>, attempt: number, schedule: { delays: readonly number[]; now: number; final?: boolean }): { status: 'succeeded' | 'failed' | 'retrying'; nextAttemptAt: number | null } {
+  const { delays, now, final = false } = schedule;
+  if (run.outcome === 'succeeded') return { status: 'succeeded', nextAttemptAt: null };
+  if (final || run.permanent === true || attempt > delays.length) return { status: 'failed', nextAttemptAt: null };
+  return { status: 'retrying', nextAttemptAt: now + (run.retryAfterMs ?? delays[attempt - 1]) };
+}
 
 function parseLogs(text: string): PluginLogLine[] {
   try {

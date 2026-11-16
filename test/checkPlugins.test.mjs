@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -37,6 +37,12 @@ test('the official registry passes', () => {
   const { errors, plugins } = checkPlugins();
   assert.deepEqual(errors, []);
   assert.ok(plugins.some(plugin => plugin.id === 'example-pack' && plugin.development));
+  assert.ok(plugins.some(plugin => plugin.id === 'webhooks' && !plugin.development));
+});
+
+test('the _shared folder of code several plugins import is not a plugin folder', async () => {
+  const root = await fixtureRoot(async registry => { await mkdir(join(registry, '_shared')); await writeFile(join(registry, '_shared', 'helper.ts'), 'export const x = 1;\n'); });
+  assert.deepEqual(checkPlugins({ root }).errors, []);
 });
 
 test('the valid fixture registry passes', async () => {

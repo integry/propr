@@ -204,4 +204,30 @@ describe('plugin settings helpers', () => {
     expect(settingsPayload(EXAMPLE_SETTINGS, drafts).maxItems).toBe('1e');
     expect(clientSettingErrors(EXAMPLE_SETTINGS, drafts, false)).toEqual({ maxItems: 'maxItems must be a number', channels: 'channels lists acme/web more than once' });
   });
+
+  it('shows a URL setting as a URL field and a multiple-choice list as checkboxes, and checks both before saving', () => {
+    const settings = {
+      type: 'object' as const, required: ['targetUrl'],
+      properties: {
+        targetUrl: { type: 'string' as const, format: 'https-url' as const, label: 'Target URL', maxLength: 500 },
+        targetEvents: { type: 'array' as const, items: { type: 'string' as const, enum: ['pull_request.merged', 'task.completed', 'task.failed'] }, label: 'Target events', default: ['pull_request.merged', 'task.completed', 'task.failed'] },
+      },
+    };
+    const view = withSettings({ targetUrl: 'https://hooks.example.com/propr', targetEvents: ['task.failed', 'pull_request.merged'] });
+    const { onSave } = renderForm({ ...view, manifest: { ...view.manifest!, settings: settings as never, outboundHostsFromSettings: ['targetUrl'] } });
+    const url = screen.getByLabelText('Target URL');
+    expect(url).toHaveAttribute('type', 'url');
+    expect(url).toHaveValue('https://hooks.example.com/propr');
+    expect(field('targetUrl')).toHaveTextContent('An https:// URL on a public host');
+    const events = screen.getByRole('group', { name: 'Target events' });
+    expect(within(events).getAllByRole('checkbox').map(box => (box as HTMLInputElement).checked)).toEqual([true, false, true]);
+    fireEvent.click(within(events).getByLabelText('task.completed'));
+    fireEvent.click(within(events).getByLabelText('task.failed'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenLastCalledWith({ targetUrl: 'https://hooks.example.com/propr', targetEvents: ['pull_request.merged', 'task.completed'] });
+
+    fireEvent.change(url, { target: { value: 'http://hooks.example.com/propr' } });
+    expect(clientSettingErrors(settings, { ...draftsOf(settings, {}), targetUrl: 'http://hooks.example.com/propr' }, false)).toEqual({ targetUrl: 'targetUrl must be an https:// URL, not http' });
+    expect(clientSettingErrors(settings, { ...draftsOf(settings, {}), targetUrl: 'https://10.1.2.3/x' }, false)).toEqual({ targetUrl: 'targetUrl must name a public host such as hooks.example.com, not an IP address' });
+  });
 });

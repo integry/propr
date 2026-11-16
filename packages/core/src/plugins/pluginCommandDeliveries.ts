@@ -5,7 +5,7 @@ import logger from '../utils/logger.js';
 import { officialPluginCatalog } from './pluginCatalog.js';
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
-import { clipError, storedLogs, type PluginDeliveryRow } from './pluginDeliveries.js';
+import { attemptOutcome, clipError, storedLogs, type PluginDeliveryRow } from './pluginDeliveries.js';
 import type { PluginCommandDelivery } from './pluginCommands.js';
 
 /**
@@ -185,7 +185,6 @@ export class PluginCommandRunner {
     return row?.paused_at !== null && row?.paused_at !== undefined;
   }
 
-  // eslint-disable-next-line complexity -- the checks before one attempt stay in reading order
   private async attempt(row: Row): Promise<boolean> {
     const { database } = this.options;
     const input = parseInput(row.command_input);
@@ -212,11 +211,11 @@ export class PluginCommandRunner {
       run = { outcome: 'failed', timedOut: false, durationMs: 0, error: error instanceof Error ? error.message : 'The handler failed', logs: [] };
     }
     const now = this.now();
-    const status = run.outcome === 'succeeded' ? 'succeeded' : attempt > this.delays.length ? 'failed' : 'retrying';
+    const { status, nextAttemptAt } = attemptOutcome(run, attempt, { delays: this.delays, now });
     // Only while the record is still this attempt's: a restart (enabled again) or an uninstall since then wins.
     await database('plugin_deliveries').where({ id: row.id, status: 'running', attempt }).update({
       status, finished_at: now, duration_ms: run.durationMs, timed_out: run.timedOut, error: clipError(run.error), logs: storedLogs(run.logs),
-      next_attempt_at: status === 'retrying' ? now + this.delays[attempt - 1] : null,
+      next_attempt_at: nextAttemptAt,
     });
     return true;
   }

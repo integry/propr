@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import {
-  PLUGIN_HANDLER_TIMEOUT_MS,
+  PLUGIN_HANDLER_TIMEOUT_MS, clampPluginRetryAfter,
   type PluginHandler, type PluginHandlerInput, type PluginHandlerModule, type PluginHandlerRun, type PluginJsonValue, type PluginLogLine, type PluginManifest,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
@@ -88,6 +88,20 @@ function isTimeout(error: unknown): boolean {
   try { return error instanceof HandlerTimeout; } catch { return false; }
 }
 
+/**
+ * What a `PluginDeliveryError` asks of the retry: a delay, or none at all
+ * (`permanent`). Read by name, so a handler bundling its own copy of the SDK
+ * is understood too; never throws, whatever the handler threw.
+ */
+function deliveryHint(error: unknown): { retryAfterMs?: number; permanent?: boolean } {
+  try {
+    if (!(error instanceof Error) || error.name !== 'PluginDeliveryError') return {};
+    const { permanent, retryAfterMs } = error as Error & { permanent?: unknown; retryAfterMs?: unknown };
+    if (permanent === true) return { permanent: true };
+    return typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) ? { retryAfterMs: clampPluginRetryAfter(retryAfterMs) } : {};
+  } catch { return {}; }
+}
+
 /** Run the handler, failing it once it runs past `timeoutMs`; the signal tells the handler to stop. */
 async function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, controller: AbortController): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -133,6 +147,6 @@ export async function runPluginHandler(installation: PluginInstallationRef, hand
     const result = resultValue(value);
     return finish({ outcome: 'succeeded', timedOut: false, error: null, ...(result === undefined ? {} : { result: redact(result) }) });
   } catch (error) {
-    return finish({ outcome: 'failed', timedOut: isTimeout(error), error: message(error) });
+    return finish({ outcome: 'failed', timedOut: isTimeout(error), error: message(error), ...deliveryHint(error) });
   }
 }

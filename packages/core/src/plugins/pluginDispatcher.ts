@@ -11,7 +11,7 @@ import { effectivePluginPermissions, type PluginInstallationTarget } from './plu
 import { runPluginHandler, type RunPluginHandlerOptions } from './pluginHandlerRunner.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
 import {
-  clipError, journalHead, notifyAdministratorsOfDegradedPlugin, owedNoticesWith, pluginDeliveryId, pluginPauseAfterFailures, restartPluginDispatch, sendPendingDegradedNotices, storedLogs,
+  attemptOutcome, clipError, journalHead, notifyAdministratorsOfDegradedPlugin, owedNoticesWith, pluginDeliveryId, pluginPauseAfterFailures, restartPluginDispatch, sendPendingDegradedNotices, storedLogs,
   type PluginDegradedNotice, type PluginDegradedNotifier, type PluginDeliveryRow, type PluginDispatchRow,
 } from './pluginDeliveries.js';
 
@@ -23,8 +23,9 @@ import {
  * by its lower-case form): events of one repository reach one plugin in `seq` order, one
  * at a time, while another repository's events go on. Delivery is at least
  * once, with a stable delivery id. A failed attempt is retried after 1 min,
- * 5 min, 30 min and 2 h; then the delivery is marked failed and the next event
- * follows. Only the worker holding an installation's lease delivers to it.
+ * 5 min, 30 min and 2 h (or after the delay a handler's `PluginDeliveryError`
+ * asks for); then the delivery is marked failed and the next event follows. A
+ * permanent `PluginDeliveryError` marks it failed at once. Only the worker holding an installation's lease delivers to it.
  *
  * The dispatcher only reads the journal. Nothing that appends an event waits
  * for it, so a handler that fails, hangs or crashes never fails or delays the
@@ -439,8 +440,8 @@ export class PluginDispatcher {
       run = { outcome: 'failed', timedOut: false, durationMs: 0, error: error instanceof Error ? error.message : 'The handler failed', logs: [] };
     }
     const now = this.now();
-    const exhausted = manual || attempt > this.delays.length;
-    const status = run.outcome === 'succeeded' ? 'succeeded' : exhausted ? 'failed' : 'retrying';
+    // A permanent failure is not retried; a handler's Retry-After replaces the scheduled wait (the attempt still counts).
+    const { status, nextAttemptAt } = attemptOutcome(run, attempt, { delays: this.delays, now, final: manual });
     const health: { notice: boolean; paused: boolean } = { notice: false, paused: false };
     await this.database.transaction(async trx => {
       // A dispatcher that lost the lease while the handler ran records nothing: the lease holder delivers it again, with the same id.
@@ -448,7 +449,7 @@ export class PluginDispatcher {
       if (!state) throw new LeaseLost();
       await trx('plugin_deliveries').where({ id: row.id }).update({
         status, manual: false, finished_at: now, duration_ms: run.durationMs, timed_out: run.timedOut, error: clipError(run.error), logs: storedLogs(run.logs),
-        next_attempt_at: status === 'retrying' ? now + this.delays[attempt - 1] : null,
+        next_attempt_at: nextAttemptAt,
       });
       Object.assign(health, await this.recordHealth(trx, state, run, now));
     });

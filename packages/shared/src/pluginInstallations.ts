@@ -1,4 +1,4 @@
-import type { PluginConnectionType, PluginManifest, PluginPermission, PluginSetting, PluginSettings, PublicPluginManifest } from './plugins.js';
+import { pluginHttpsUrlProblem, type PluginConnectionType, type PluginManifest, type PluginPermission, type PluginSetting, type PluginSettings, type PublicPluginManifest } from './plugins.js';
 
 /**
  * Installation state of a plugin on one ProPR instance: whether an
@@ -150,6 +150,10 @@ function stringProblem(key: string, setting: Extract<PluginSetting, { type: 'str
   if (typeof value !== 'string') return `${key} must be text`;
   if (value.length > (setting.maxLength ?? 500)) return `${key} is longer than ${setting.maxLength ?? 500} characters`;
   if (setting.enum && !setting.enum.includes(value)) return `${key} must be one of ${setting.enum.join(', ')}`;
+  if (setting.format === 'https-url' && value !== '') {
+    const problem = pluginHttpsUrlProblem(value);
+    if (problem) return `${key} ${problem}`;
+  }
   return null;
 }
 function numberProblem(key: string, setting: Extract<PluginSetting, { type: 'number' }>, value: unknown): string | null {
@@ -162,7 +166,11 @@ function numberProblem(key: string, setting: Extract<PluginSetting, { type: 'num
 function arrayProblem(key: string, setting: Extract<PluginSetting, { type: 'array' }>, value: unknown): string | null {
   const max = setting.maxItems ?? 256;
   if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || item.length > 500)) return `${key} must be a list of text values`;
-  return value.length > max ? `${key} has more than ${max} entries` : null;
+  if (value.length > max) return `${key} has more than ${max} entries`;
+  const choices = setting.items.enum;
+  const unknown = choices ? value.find(item => !choices.includes(item)) : undefined;
+  if (unknown !== undefined) return `${key} has ${unknown.slice(0, 100)}, which is not one of ${choices!.join(', ')}`;
+  return null;
 }
 function repositoryMapProblem(key: string, value: unknown): string | null {
   if (!isRecord(value)) return `${key} must map owner/repo to text`;

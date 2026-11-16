@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import {
-  PLUGIN_LOG_LIMITS, PluginSdkError, defaultPluginSettings, validatePluginSettings,
+  PLUGIN_LOG_LIMITS, PluginSdkError, defaultPluginSettings, pluginOutboundHosts, validatePluginSettings,
   type PluginContext, type PluginHttpFetch, type PluginInstallationRecord, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
   type PluginAuditAction, type PluginLogger, type PluginManifest, type PluginPermission,
 } from '@propr/shared';
@@ -190,12 +190,17 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   const installation: PluginStateWriteGuard = { installedAt: record.installedAt, signal };
   /** Refuses once this run's installation was uninstalled (or replaced by a reinstall), disabled or restricted, or the run ended. */
   const authorize = installationAuthorizer(deps.database, pluginId, manifest, installation);
+  const settings = Object.freeze(structuredClone(handlerSettings(manifest, record)));
+  // The manifest's hosts and those of the URL settings it names, as this run's settings have them.
+  const outboundHosts = pluginOutboundHosts(manifest, settings);
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
+    let credentialUse: 'bearer' | 'signature' = 'bearer';
     if (connection !== undefined) {
       const declared = manifest.connections.find(c => c.name === connection);
       if (!declared) throw new PluginSdkError('connection_unavailable', `The plugin declares no connection ${String(connection).slice(0, 48)}`);
-      if (declared.type !== 'token') throw new PluginSdkError('connection_unavailable', `Connection ${connection} is ${declared.type}; ctx.http injects token connections only`);
+      if (declared.type === 'oauth') throw new PluginSdkError('connection_unavailable', `Connection ${connection} is oauth; ctx.http uses token and signing_secret connections only`);
+      if (declared.type === 'signing_secret') credentialUse = 'signature';
       credential = async () => {
         const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret({ database: deps.database, environment }, id, name, installation)))(pluginId, connection);
         if (!secret) throw new PluginSdkError('connection_unavailable', `Connection ${connection} is not set`);
@@ -204,7 +209,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       };
     }
     return createPluginHttp({
-      outboundHosts: manifest.outboundHosts, credential, lookup: deps.lookup, transport: deps.transport, signal,
+      outboundHosts, credential, credentialUse, lookup: deps.lookup, transport: deps.transport, signal,
       authorize: credential ? authorize.request : undefined,
       onDecision: ({ host, allowed, reason }) => write(allowed ? 'debug' : 'warn', allowed ? `ctx.http request to ${host}` : `ctx.http request to ${host} refused: ${reason}`, { host, ...(connection ? { connection } : {}) }),
     });
@@ -219,7 +224,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
 
   const ctx: PluginContext = {
     pluginId,
-    settings: Object.freeze(structuredClone(handlerSettings(manifest, record))),
+    settings,
     repositories: record.repositories ? [...record.repositories] : null,
     // Its permissions and repository limit are this installation's: every call (and, by default, every GitHub request and queued task) requires it to
     // still be installed and enabled, and to still grant the call's permission on its repository.

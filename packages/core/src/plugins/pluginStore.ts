@@ -12,6 +12,8 @@ import { extensionOAuth, type ExtensionOAuthUrls } from '../extensions/extension
 import { discardOAuthConnectionsOf, oauthConnectionStates } from '../extensions/extensionOAuthState.js';
 import { PluginContributions, oauthServersOf, pluginContributionViews, type PluginOAuthClient } from './pluginContributions.js';
 import { pluginTemplateIds } from './pluginTemplates.js';
+import { pluginSettingHostProblems } from './pluginSettingHosts.js';
+import type { ExtensionLookup } from '../extensions/endpointPolicy.js';
 import { deletePluginState } from './pluginStateStore.js';
 import { deletePluginDispatch, restartPluginDispatch } from './pluginDeliveries.js';
 import { deletePluginWebhookKey } from './pluginWebhooks.js';
@@ -56,6 +58,8 @@ export class PluginStore {
     readonly contributions: PluginContributions = new PluginContributions(new ExtensionLibraryStore(database, environment)),
   ) {}
   get library(): ExtensionLibraryStore { return this.contributions.library; }
+  /** The DNS lookup of the save-time URL setting check; tests replace it. */
+  hostLookup: ExtensionLookup | undefined;
 
   async authorize(actor: string, database: Knex = this.database): Promise<void> {
     // Durable, uncached instance authority; no session or repository fallback.
@@ -214,6 +218,7 @@ export class PluginStore {
 
   /** Replace the settings, validated against the current manifest's settings schema. */
   async updateSettings(actor: string, id: unknown, settings: unknown): Promise<PluginView> {
+    await this.vetSettingHosts(actor, id, settings);
     return this.write(actor, id, async (trx, loaded, pluginId) => {
       const row = PluginStore.installed(loaded); const manifest = PluginStore.current(loaded);
       const result = validatePluginSettings(manifest.settings, settings);
@@ -225,6 +230,21 @@ export class PluginStore {
       await trx('plugin_installations').where({ plugin_id: pluginId }).update({ settings: JSON.stringify(result.settings), ...this.touched(actor, loaded) });
       return { action: 'update_settings', detail: { changed } };
     });
+  }
+
+  /**
+   * Refuse new or changed URL settings (named by `outboundHostsFromSettings`)
+   * whose host does not resolve to public addresses only. Runs before the write
+   * transaction, as it waits on DNS, and only for an administrator.
+   */
+  private async vetSettingHosts(actor: string, id: unknown, settings: unknown): Promise<void> {
+    const pluginId = PluginStore.pluginId(id);
+    const manifest = (await this.manifests()).find(m => m.id === pluginId);
+    if (!manifest?.outboundHostsFromSettings.length) return;
+    await this.authorize(actor);
+    const row = await this.database('plugin_installations').where({ plugin_id: pluginId }).first() as PluginInstallationRow | undefined;
+    const problems = await pluginSettingHostProblems(manifest, settings, row ? installationRecord(row).settings : {}, this.hostLookup);
+    if (problems.length) throw new PluginError(400, problems.join('; '));
   }
 
   /** Limit the plugin to repositories (`owner/repo`); `null` or an empty list means all repositories. */

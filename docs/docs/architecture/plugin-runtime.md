@@ -138,6 +138,16 @@ A failed attempt becomes `retrying` with `next_attempt_at` 1 minute, 5 minutes,
 30 minutes and 2 hours later (`PLUGIN_DELIVERY_RETRY_DELAYS_MS`); the fifth
 failure is final (`failed`). A manual retry gets one attempt.
 
+A handler can say more about a failure by throwing a `PluginDeliveryError`
+(`@propr/shared`). With `retryAfterMs` (for example a service's `Retry-After`,
+read with `parsePluginRetryAfter`), the next attempt is due after that delay
+instead of the scheduled one, bounded to between 1 second and 6 hours
+(`PLUGIN_RETRY_AFTER_LIMITS_MS`). The attempt still counts towards the five.
+With `permanent: true`, the delivery is `failed` at once. The runner reads both
+from the error (by its name, so a handler bundling its own SDK copy is
+understood) into `PluginHandlerRun.retryAfterMs` and `permanent`. Webhook and
+command deliveries apply them the same way.
+
 ### Lease
 
 Several daemons may run against one database. Only one delivers to a given
@@ -452,12 +462,12 @@ metadata.
 ## `ctx.http`: outbound HTTP
 
 `ctx.http(connection?)` returns a `fetch`-like function:
-`(url, { method?, headers?, body? | json? }) => Promise<{ status, ok, url, headers, text(), json() }>`.
+`(url, { method?, headers?, body? | json?, signature? }) => Promise<{ status, ok, url, headers, text(), json() }>`.
 
 | Check | Refusal |
 | --- | --- |
 | `https:` only, default port, no credentials in the URL | `insecure_url`, `host_not_allowed`, `invalid_input` |
-| The hostname must be exactly one of the manifest's `outboundHosts`; IP literals and local names (`localhost`, `*.local`, cloud metadata) never are | `host_not_allowed`, `private_address` |
+| The hostname must be exactly one of the manifest's `outboundHosts`, or the host of a URL setting the manifest names in `outboundHostsFromSettings`, as this run's settings have it; IP literals and local names (`localhost`, `*.local`, cloud metadata) never are | `host_not_allowed`, `private_address` |
 | Every resolved address must be public: the extension endpoint policy's address check (private, loopback, link-local, CGNAT, documentation and fake-IP ranges are refused) | `private_address` |
 | Methods `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`; headers ProPR sets (`Host`, `Content-Length`, hop-by-hop, `Proxy-*`) cannot be supplied | `invalid_input` |
 | Request bodies up to 256 KiB, responses up to 1 MiB, 10 seconds per request | `invalid_input`, `response_too_large`, `http_failed` |
@@ -467,11 +477,27 @@ original hostname for TLS and the `Host` header. Redirects are not followed, and
 no proxy environment, cookies or decompression apply. The handler gets the
 redirect response itself.
 
-**Credentials.** With a connection name, the connection must be a `token`
-connection of the plugin and must be set. Its sealed secret is opened only when
-the request is sent and is injected as `Authorization: Bearer <secret>`. An
-`oauth` connection authenticates the plugin's MCP servers, and a
-`signing_secret` verifies inbound webhooks. Neither can be injected
+**Hosts from settings.** A plugin whose endpoints are entered by an
+administrator (such as [outbound webhooks](../plugins/webhooks.md)) names its
+URL settings (string settings of `format: "https-url"`) in
+`outboundHostsFromSettings`. Saving a URL there requires `https://`, the default
+port, a host name (no IP address), no credentials or fragment and no local name.
+A new or changed URL's host must also resolve to public addresses only, which
+the plugin store checks before the settings are written. On each request
+`ctx.http` allows exactly those hosts, from the settings the run started with,
+and checks their addresses again.
+
+**Credentials.** With a connection name, the connection must be a `token` or
+`signing_secret` connection of the plugin and must be set. Its sealed secret is
+opened only when the request is sent. A `token` secret is injected as
+`Authorization: Bearer <secret>`. With a `signing_secret`, every request must
+carry `signature: { header, prefix?, timestampHeader? }`, and ProPR sets
+`header` to `prefix` and the lower-case hex HMAC-SHA256, keyed with the secret,
+of the body bytes as sent. With `timestampHeader` (a header the request sets),
+the signed bytes are that header's value, `.` and the body. A signature without
+a signing connection, a signing connection without a signature, or a signature
+header the handler set itself is `invalid_input`. An `oauth` connection
+authenticates the plugin's MCP servers and cannot be used by `ctx.http`
 (`connection_unavailable`). The handler never receives the secret: it is not
 part of `ctx`, and the secret (plain, JSON-escaped, base64, base64url, hex,
 URL-encoded and as the full header value) is replaced with `[REDACTED]` in the
@@ -605,7 +631,10 @@ kit.logs;     // captured log lines
 
 The fake applies the same permission, repository-limit, `https`, outbound-host
 and state-limit checks as the real context, so a handler test fails the way
-production would. That includes `getTask`, which refuses a task from a
+production would. `outboundHostsFromSettings` adds the hosts of those URL
+settings in `settings`, and `secrets` (signing secrets by connection name)
+makes a request with a `signature` signed as the real `ctx.http` signs it, with
+the signature header in `kit.requests[i].init.headers`. That includes `getTask`, which refuses a task from a
 repository outside the limit once the answer is read. `ctx.propr` calls nobody
 answered resolve with minimal placeholders. A placeholder task belongs to the
 first repository in the limit. An HTTP request with no scripted response throws `http_failed`.

@@ -96,6 +96,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Plugins',
+      items: [
+        'features/plugins',
+        'plugins/webhooks',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Reference',
       items: [
         'features/agents-and-models',
