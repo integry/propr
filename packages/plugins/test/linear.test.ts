@@ -237,6 +237,21 @@ test('a pull request opened by ProPR is linked to its ticket from its branch, wi
   assert.equal((await k.syncBack(pull('merged', {}, 78), k.ctx) as { skipped: string }).skipped, 'not_tracked');
 });
 
+test('an earlier pull request of a ticket still syncs back after a later one opened', async () => {
+  const k = await handedOver();
+  await k.syncBack(task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 55), k.ctx);
+  await k.syncBack(pull('opened', {}, 56), k.ctx);
+  const merged = await k.syncBack(pull('merged', {}, 55), k.ctx) as { ticket: string | null; moved: string | null };
+  assert.deepEqual([merged.ticket, merged.moved], ['ENG-123', 'Done'], '#55 is still linked to ENG-123');
+  const closed = await k.syncBack(pull('closed', {}, 56), k.ctx) as { ticket: string | null };
+  assert.equal(closed.ticket, 'ENG-123');
+  assert.deepEqual(k.comments().map(g => String(g.variables.body).split(' [')[0]), [
+    'ProPR opened a pull request for this ticket.', 'ProPR opened a pull request for this ticket.',
+    'The pull request for this ticket was merged.', 'The pull request for this ticket was closed without merging.',
+  ]);
+  assert.deepEqual(k.moves().map(g => g.variables.stateId), ['st-eng-review', 'st-eng-review', 'st-eng-done']);
+});
+
 test('a failed pull request lookup fails the delivery to be retried, and the retry links the ticket for the merge', async () => {
   let refusal: PluginSdkError | null = new PluginSdkError('unavailable', 'ProPR could not complete getPullRequest');
   const k = await handedOver(BASE_SETTINGS, { pullRequestLookup: () => { if (refusal) throw refusal; } });

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PLUGIN_PROPR_LIMITS } from '@propr/shared';
+import { PLUGIN_PROPR_LIMITS, PluginDeliveryError, type PluginJsonValue } from '@propr/shared';
 import { createTestPluginContext } from '../testing/index.js';
 import { ISSUE_BODY_BYTES, handOffTicket, inertQuote, ticketIssueBody, type TicketHandOff } from '../_shared/trackerIssue.js';
-import { progressKey, readProgress, readTicket, ticketKey, updateProgress } from '../_shared/trackerRecords.js';
+import { PULL_LIMIT, SHARD_BYTES, findTicketByPullRequest, progressKey, readProgress, readTicket, ticketKey, updateProgress, withPullRequest, type ProgressRecord, type TicketRecord } from '../_shared/trackerRecords.js';
 
 /**
  * The shared issue tracker helper (Linear, Jira) at its edges: deliveries
@@ -68,12 +68,81 @@ test('progress of tickets sharing a shard, written at the same time, is all kept
   const k = createTestPluginContext({ pluginId: 'linear' });
   // Each change yields first, as an event handler does between its reads and writes.
   const mark = async (id: string, marker: string) => { await new Promise(r => setTimeout(r, 1)); await updateProgress(k.ctx, id, p => (p.d.includes(marker) ? undefined : { ...p, d: [...p.d, marker] })); };
-  await Promise.all(ids.flatMap(id => [mark(id, 'opened:1:comment'), mark(id, 'opened:1:move'), updateProgress(k.ctx, id, p => ({ ...p, p: 7 }))]));
+  await Promise.all(ids.flatMap(id => [mark(id, 'opened:1:comment'), mark(id, 'opened:1:move'), updateProgress(k.ctx, id, p => ({ ...p, p: [7] }))]));
   for (const id of ids) {
     const progress = await readProgress(k.ctx, id);
     assert.deepEqual([...progress.d].sort(), ['opened:1:comment', 'opened:1:move'], id);
-    assert.equal(progress.p, 7, id);
+    assert.deepEqual(progress.p, [7], id);
   }
+});
+
+test('a shard filled by hand-offs under way at once still records every issue created', async () => {
+  // Far more tickets sharing a shard than it holds, all reserved before any GitHub request answers.
+  const ids = sameShard(ticketKey, 260);
+  let issues = 900_000;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const k = createTestPluginContext({
+    pluginId: 'linear',
+    propr: { createIssue: async repository => { await gate; issues += 1; return { repository, number: issues, url: `https://github.com/${repository}/issues/${issues}` }; } },
+  });
+  const created = () => k.calls.filter(c => c.operation === 'createIssue').length;
+  const running = Promise.allSettled(ids.map(id => handOffTicket(k.ctx, handOff(id))));
+  await new Promise(r => setTimeout(r, 10));
+  release();
+  const results = await running;
+  const refused = results.flatMap((r, i) => (r.status === 'rejected' ? [ids[i]] : []));
+  assert.ok(refused.length > 0, 'the shard filled');
+  for (const result of results) {
+    if (result.status === 'rejected') assert.ok(result.reason instanceof PluginDeliveryError && !result.reason.permanent && /retried later/.test(result.reason.message), String(result.reason));
+  }
+  // Every issue created was recorded with its number; a refused hand-off created nothing.
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, created());
+  const shard = k.state.get(ticketKey(ids[0])) as unknown as TicketRecord[];
+  assert.ok(Buffer.byteLength(JSON.stringify(shard)) <= SHARD_BYTES);
+  assert.equal(shard.filter(r => r.s === 'pending').length, 0, 'no created issue is left pending');
+  for (const [i, result] of results.entries()) {
+    if (result.status === 'fulfilled') assert.equal((await readTicket(k.ctx, ids[i]))?.n, result.value.issue, ids[i]);
+  }
+  // A refused hand-off retried later is created (the oldest finished records make room).
+  assert.equal((await handOffTicket(k.ctx, handOff(refused[0]))).outcome, 'created');
+});
+
+test('a ticket keeps every linked pull request, forgetting finished ones first past the limit', async () => {
+  const progress = (p: number[], d: string[] = []): ProgressRecord => ({ t: 'ticket-x', p, d, at: 0 });
+  assert.deepEqual(withPullRequest(progress([55]), 56), [55, 56]);
+  assert.equal(withPullRequest(progress([55, 56]), 55), undefined, 'already linked');
+  const full = Array.from({ length: PULL_LIMIT }, (_, i) => i + 1);
+  assert.deepEqual(withPullRequest(progress(full, ['closed:3:comment']), 99), [...full.filter(n => n !== 3), 99], 'a finished one goes first');
+  assert.deepEqual(withPullRequest(progress(full), 99), [...full.slice(1), 99], 'then the oldest');
+
+  // Through the shard: both pull requests find the ticket.
+  const k = createTestPluginContext({ pluginId: 'linear', propr: { createIssue: repository => ({ repository, number: 101, url: '' }) } });
+  await handOffTicket(k.ctx, handOff('ticket-pr'));
+  await updateProgress(k.ctx, 'ticket-pr', p => ({ ...p, p: withPullRequest(p, 55) }));
+  await updateProgress(k.ctx, 'ticket-pr', p => ({ ...p, p: withPullRequest(p, 56) }));
+  for (const pr of [55, 56]) assert.equal((await findTicketByPullRequest(k.ctx, 'acme/api', pr))?.t, 'ticket-pr', `#${pr}`);
+});
+
+test('a full progress shard keeps a ticket with a pull request still open over one whose pull requests all finished', async () => {
+  const [open, done, ...rest] = sameShard(progressKey, 400);
+  // The oldest ticket's first pull request closed but its second is open; the next one's only pull request merged.
+  const seeded: ProgressRecord[] = [
+    { t: open, p: [55, 56], d: ['closed:55:comment'], at: 1 },
+    { t: done, p: [57], d: ['merged:57:comment'], at: 2 },
+  ];
+  const filler = 'x'.repeat(40);
+  for (const [i, id] of rest.entries()) {
+    const list = [...seeded, { t: id, d: [filler], at: 3 + i }];
+    if (Buffer.byteLength(JSON.stringify(list)) > SHARD_BYTES - 60) break;
+    seeded.push(list[list.length - 1]);
+  }
+  assert.ok(seeded.length < rest.length + 2, 'the shard is full');
+  const k = createTestPluginContext({ pluginId: 'linear', state: { [progressKey(open)]: seeded as unknown as PluginJsonValue } });
+  await updateProgress(k.ctx, rest[rest.length - 1], p => ({ ...p, d: [filler, filler] }));
+  const kept = (k.state.get(progressKey(open)) as unknown as ProgressRecord[]).map(r => r.t);
+  assert.ok(kept.includes(open), 'the ticket whose pull request #56 is open is kept');
+  assert.equal(kept.includes(done), false, 'the finished ticket is forgotten first');
 });
 
 const KEY_ENTITY = /&(?:amp|lt|gt);/g;

@@ -1,5 +1,5 @@
 import { PluginDeliveryError, PluginSdkError, type PluginContext, type PluginEventInput, type PluginSettingValues, type RepositoryEvent } from '@propr/shared';
-import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, type TicketRecord } from './trackerRecords.js';
+import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, withPullRequest, type TicketRecord } from './trackerRecords.js';
 
 /**
  * Sync-back for issue tracker plugins (Linear, Jira): which ProPR events
@@ -88,8 +88,12 @@ function lookupFailure(error: unknown, pr: number): PluginDeliveryError {
   return new PluginDeliveryError(`ProPR could not read pull request #${pr} to find its ticket${permanent ? ` (${error.code}); it is not retried` : '; it is retried'}`, { permanent });
 }
 
+/** Link a pull request to its ticket, keeping the ticket's earlier ones: one still open syncs back when it merges or closes. */
 async function linkPullRequest(ctx: PluginContext, ticket: TicketRecord, pr: number): Promise<void> {
-  await updateProgress(ctx, ticket.t, progress => (progress.p === pr ? undefined : { t: ticket.t, p: pr, d: progress.d }));
+  await updateProgress(ctx, ticket.t, progress => {
+    const pulls = withPullRequest(progress, pr);
+    return pulls ? { t: ticket.t, p: pulls, d: progress.d } : undefined;
+  });
 }
 
 interface Step { event: TrackerSyncEvent; ticket: TicketRecord; marker: string; message: () => Promise<SyncMessage>; move: TrackerMove | null; supersededBy?: string }

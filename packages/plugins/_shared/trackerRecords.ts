@@ -12,15 +12,19 @@ import { PluginDeliveryError, type PluginContext, type PluginJsonValue } from '@
  *   across webhook retries and replays. `pending` while the issue is being
  *   created (a retry then cannot tell whether it was, and creates nothing).
  * - `sync:<0-5>`: per ticket, written only by the event handler: the pull
- *   request linked to it and which sync-back actions were done, so a
- *   redelivered event posts no second comment.
+ *   requests linked to it (every one, not just the latest, so an earlier
+ *   pull request that merges or closes after a later one opened still syncs
+ *   back) and which sync-back actions were done, so a redelivered event posts
+ *   no second comment.
  *
  * Shards are chosen by ticket id (FNV-1a) and hold at most `SHARD_BYTES`
  * each, within the state limits (`PLUGIN_STATE_LIMITS`). Ticket records are
  * kept `TICKET_KEEP_MS`; a full shard forgets its oldest finished record
- * first. Progress records are forgotten oldest first, those of tickets whose
- * pull request merged or closed before the others: losing one at worst
- * repeats a comment.
+ * first, and a pending record is admitted only with room for it to finish
+ * (its issue number), so recording a created issue never fails for want of
+ * space. Progress records are forgotten oldest first, those of tickets whose
+ * every linked pull request merged or closed before the others: losing one at
+ * worst repeats a comment.
  *
  * Every change of a shard is one `ctx.state.update`: deliveries handled at
  * the same time (in other processes too) for tickets sharing a shard never
@@ -30,7 +34,8 @@ import { PluginDeliveryError, type PluginContext, type PluginJsonValue } from '@
 
 export type TicketStatus = 'pending' | 'created';
 export interface TicketRecord { t: string; k: string; r: string; s: TicketStatus; n?: number; at: number }
-export interface ProgressRecord { t: string; p?: number; d: string[]; at: number }
+/** `p`: the ticket's linked pull requests, oldest first. */
+export interface ProgressRecord { t: string; p?: number[]; d: string[]; at: number }
 
 export const TICKET_SHARDS = 8;
 export const PROGRESS_SHARDS = 6;
@@ -39,8 +44,13 @@ export const SHARD_BYTES = 15 * 1024;
 export const TICKET_KEEP_MS = 365 * 24 * 60 * 60_000;
 /** Done markers kept per ticket; the oldest go first. */
 const DONE_LIMIT = 24;
-/** Done markers that end a ticket's sync: its pull request merged or closed. */
-export const FINISHED_MARKERS = /^(merged|closed):/;
+/** Pull requests linked per ticket; past this, finished ones are forgotten first, then the oldest. */
+export const PULL_LIMIT = 10;
+/**
+ * The largest issue number a pending record is given room for: JSON writes a
+ * safe integer in at most this many characters.
+ */
+const ISSUE_NUMBER_ROOM = Number.MAX_SAFE_INTEGER;
 
 function shardOf(id: string, shards: number): number {
   let hash = 0x811c9dc5;
@@ -62,22 +72,61 @@ async function updateList<T extends { t: string }>(ctx: PluginContext, key: stri
 
 const sameRepository = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+/** The pull requests a progress record links, whatever was stored. */
+export function linkedPulls(progress: { p?: unknown }): number[] {
+  const value = Array.isArray(progress.p) ? progress.p : [progress.p];
+  return value.filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0);
+}
+/** Whether a pull request's merge or close was synced. */
+const pullFinished = (done: string[], pr: number) => done.some(marker => marker.startsWith(`merged:${pr}:`) || marker.startsWith(`closed:${pr}:`));
+/** Whether every pull request a ticket linked merged or closed: its sync is over. */
+const progressFinished = (progress: ProgressRecord) => {
+  const pulls = linkedPulls(progress);
+  return pulls.length > 0 && pulls.every(pr => pullFinished(progress.d, pr));
+};
+
+/**
+ * The pull requests linked once `pr` is linked too, or undefined when it
+ * already is. Past `PULL_LIMIT`, finished pull requests are forgotten first,
+ * then the oldest.
+ */
+export function withPullRequest(progress: ProgressRecord, pr: number): number[] | undefined {
+  const pulls = linkedPulls(progress);
+  if (pulls.includes(pr)) return undefined;
+  const next = [...pulls, pr];
+  while (next.length > PULL_LIMIT) {
+    const finished = next.findIndex(n => n !== pr && pullFinished(progress.d, n));
+    next.splice(finished >= 0 ? finished : 0, 1);
+  }
+  return next;
+}
+
 export async function readTicket(ctx: PluginContext, id: string): Promise<TicketRecord | undefined> {
   return (await loadList<TicketRecord>(ctx, ticketKey(id))).find(entry => entry.t === id);
 }
+
+/**
+ * A shard's size once every pending record in it is created: each counted
+ * with the largest issue number it could get. Kept within `SHARD_BYTES` by
+ * every write, so finishing a pending record (which only replaces it with its
+ * created form) always fits, however many reservations are under way at once.
+ */
+const finishedBytes = (list: TicketRecord[]) => bytes(list.map(entry => (entry.s === 'pending' ? { ...entry, s: 'created', n: ISSUE_NUMBER_ROOM } : entry)));
 
 /**
  * A shard's list with `record` written (or replaced). Expired records are
  * dropped; when the shard is still full, the oldest created records go first.
  * A pending record is never dropped: with no room left the write fails the
  * delivery, to be retried later, rather than forget a ticket whose issue may
- * exist.
+ * exist. Room is measured with every pending record finished, so a new
+ * reservation is refused (before its issue is created) rather than leave a
+ * created issue unrecorded.
  */
 function withTicket(current: TicketRecord[], record: Omit<TicketRecord, 'at'>): TicketRecord[] {
   const now = Date.now();
   const next = { ...record, at: now } as TicketRecord;
   const list = [...oldestFirst(current.filter(entry => entry.t !== record.t && now - Number(entry.at || 0) < TICKET_KEEP_MS)), next];
-  while (bytes(list) > SHARD_BYTES) {
+  while (finishedBytes(list) > SHARD_BYTES) {
     const oldest = list.findIndex(entry => entry !== next && entry.s === 'created');
     if (oldest < 0) throw new PluginDeliveryError('Too many tickets are being handed to ProPR at once to remember another one; it is retried later', { retryAfterMs: 10 * 60_000 });
     list.splice(oldest, 1);
@@ -133,17 +182,17 @@ export async function updateProgress(ctx: PluginContext, id: string, change: (pr
     const next = { ...record, t: id, d: record.d.slice(-DONE_LIMIT), at: Date.now() } as ProgressRecord;
     const list = [...oldestFirst(current.filter(entry => entry.t !== id)), next];
     while (bytes(list) > SHARD_BYTES && list.length > 1) {
-      const finished = list.findIndex(entry => entry !== next && entry.d.some(done => FINISHED_MARKERS.test(done)));
+      const finished = list.findIndex(entry => entry !== next && progressFinished(entry));
       list.splice(finished >= 0 ? finished : 0, 1);
     }
     return list;
   });
 }
 
-/** The ticket whose linked pull request is `repository#number`, if any. */
+/** The ticket that linked the pull request `repository#number` (its latest or an earlier one), if any. */
 export async function findTicketByPullRequest(ctx: PluginContext, repository: string, number: number): Promise<TicketRecord | undefined> {
   for (let shard = 0; shard < PROGRESS_SHARDS; shard += 1) {
-    for (const entry of (await loadList<ProgressRecord>(ctx, `sync:${shard}`)).filter(p => p.p === number)) {
+    for (const entry of (await loadList<ProgressRecord>(ctx, `sync:${shard}`)).filter(p => linkedPulls(p).includes(number))) {
       const ticket = await readTicket(ctx, entry.t);
       if (ticket?.s === 'created' && sameRepository(ticket.r, repository)) return ticket;
     }
