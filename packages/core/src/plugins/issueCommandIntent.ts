@@ -19,7 +19,7 @@ import type { PluginCommandRun } from './pluginCommands.js';
  * interrupted before its add, or one that could not be put back, leaves it
  * behind, so a `queued` record is reconciled against the stored job before it
  * is taken as started, and is claimed again once its lease has run out
- * (`reconcileQueuedIssueCommand`).
+ * (`reconcileIssueCommand`).
  *
  * Whether an attempt's command runs or is reported as not started is decided
  * once, per attempt token, by its fate (`issueCommandFateKey`): `retired` when
@@ -41,6 +41,15 @@ import type { PluginCommandRun } from './pluginCommands.js';
  * before it starts the work, retrying the job while it cannot. So a record
  * still `pending` when a later label event reads it was never carried into
  * running work, and a queued job still carrying it holds the issue's job ID.
+ *
+ * A redelivery of the command reads the same evidence before it treats its
+ * own earlier record as abandoned (`reconcileIssueCommand`): a pending record
+ * whose job is stored, or whose token a dispatcher carried, stands for a
+ * started command. The job is read before the token's fate, since a job is
+ * removed only after its dispatcher has written that fate. A new attempt
+ * replaces the record it read only while that record is unchanged
+ * (`recordIssueCommandIntent`): one a label path claimed, or a dispatcher
+ * settled, since the read is reconciled again rather than overwritten.
  */
 export interface IssueCommandIntent {
   state: 'pending' | 'queued';
@@ -90,6 +99,8 @@ export const ISSUE_COMMAND_INTENT_SCRIPTS = {
   releaseIfUnchanged: "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
   /** Replaces the record's value with ARGV[2], keeping its expiry, only while it still holds ARGV[1]. */
   replaceIfUnchanged: "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') return 1 else return 0 end",
+  /** A new attempt's record: replaces ARGV[1] with ARGV[2] for ARGV[3] seconds, only while the record still holds ARGV[1]. */
+  recordIfUnchanged: "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3]) return 1 else return 0 end",
   /**
    * Gives up the command of the record ARGV[1]: while the record still holds
    * it and no dispatcher has started a job carrying its token, deletes it (or
@@ -172,9 +183,17 @@ function claimedIssueCommandIntent(intent: IssueCommandIntent, claimedAt: number
   return JSON.stringify({ ...intent, state: 'queued', claimedAt } satisfies IssueCommandIntent);
 }
 
-/** Records the pending command `raw` (see `pendingIssueCommandIntent`) for the issue, replacing any earlier record. */
-export async function recordIssueCommandIntent(redis: Pick<Redis, 'set'>, key: string, raw: string): Promise<void> {
-  await redis.set(key, raw, 'EX', ISSUE_COMMAND_INTENT_TTL_SECONDS);
+/**
+ * Records the pending command `raw` (see `pendingIssueCommandIntent`) for the
+ * issue, in place of the record the caller read (`replaced`, null when there
+ * was none), only while the issue's record is still that one. Resolves false
+ * when it changed since: a label path claimed it, a dispatcher settled it, or
+ * another attempt recorded its own, and what it now stands for must be read
+ * again before this command is recorded over it.
+ */
+export async function recordIssueCommandIntent(redis: Pick<Redis, 'set' | 'eval'>, key: string, raw: string, replaced: string | null): Promise<boolean> {
+  if (replaced === null) return await redis.set(key, raw, 'EX', ISSUE_COMMAND_INTENT_TTL_SECONDS, 'NX') === 'OK';
+  return await redis.eval(ISSUE_COMMAND_INTENT_SCRIPTS.recordIfUnchanged, 1, key, replaced, raw, String(ISSUE_COMMAND_INTENT_TTL_SECONDS)) === 1;
 }
 
 function isIntent(value: unknown): value is IssueCommandIntent {
@@ -252,26 +271,31 @@ export function issueJobCarriesToken(stored: unknown, token: string): boolean {
 }
 
 /**
- * What a `queued` record stands for. `started`: a job carries its command
- * (the token has a fate, or the stored issue job names it). `in_flight`: no
- * job is stored yet, but the claim's lease has not run out, so its label path
- * may still be adding one. `abandoned`: no job is stored and the lease has run
- * out (or the record has none): the claim was interrupted after it was
- * written, or could not be put back, and nothing carries the command.
+ * What a record stands for. `started`: a job carries its command (the stored
+ * issue job names its token, or the token has a fate). `in_flight`: no job is
+ * stored yet, but the record is a label-path claim whose lease has not run
+ * out, so that label path may still be adding one. `abandoned`: no job is
+ * stored and no lease is running: a claim was interrupted after it was
+ * written, or could not be put back, or the command's own attempt stopped
+ * between recording it and queueing its job, and nothing carries the command.
  */
-export type QueuedIssueCommandVerdict = 'started' | 'in_flight' | 'abandoned';
+export type IssueCommandVerdict = 'started' | 'in_flight' | 'abandoned';
 
 /**
- * Reconciles a `queued` record against the evidence that a job carries it,
- * before it is treated as started (see `QueuedIssueCommandVerdict`). The
- * record's state is a reservation: it was written before the add it stands
- * for, so on its own it is no evidence that a job exists.
+ * Reconciles a record against the evidence that a job carries it, before it
+ * is treated as started or abandoned (see `IssueCommandVerdict`). The record
+ * is a reservation, whether `pending` (written before the command's own add)
+ * or `queued` (written before the label path's add), so on its own it is no
+ * evidence that a job exists, nor that none does. The stored job is read
+ * before the token's fate: a dispatcher writes the fate before it starts the
+ * work, and the job is removed only once that work is dispatched, so a job
+ * that is gone without a fate was never dispatched with the command.
  */
-export async function reconcileQueuedIssueCommand(
+export async function reconcileIssueCommand(
   redis: Pick<Redis, 'get'>, key: string, intent: IssueCommandIntent, evidence: IssueCommandJobEvidence,
-): Promise<QueuedIssueCommandVerdict> {
-  if (await issueCommandTokenFate(redis, key, intent.token)) return 'started';
+): Promise<IssueCommandVerdict> {
   if (issueJobCarriesToken(await evidence.storedJobData(), intent.token)) return 'started';
+  if (await issueCommandTokenFate(redis, key, intent.token)) return 'started';
   return intent.claimedAt !== undefined && Date.now() - intent.claimedAt < ISSUE_COMMAND_CLAIM_LEASE_MS ? 'in_flight' : 'abandoned';
 }
 
@@ -308,7 +332,7 @@ export type IssueCommandClaim =
  * the job but failed) is not claimed again either.
  *
  * A record already `queued` is reconciled against the job evidence first
- * (`reconcileQueuedIssueCommand`): one no job carries whose lease has run out
+ * (`reconcileIssueCommand`): one no job carries whose lease has run out
  * was abandoned by an interrupted claim and is claimed again; one whose lease
  * is still running is `in_flight`, so this label queues nothing rather than
  * command-less work; one a job carries is `none`, like a released record.
@@ -321,7 +345,7 @@ export async function claimPendingIssueCommand(
     const stored = await readIssueCommandIntent(redis, key);
     if (!stored) return { status: 'none', claimed: null };
     if (stored.intent.state === 'queued') {
-      const verdict = await reconcileQueuedIssueCommand(redis, key, stored.intent, evidence);
+      const verdict = await reconcileIssueCommand(redis, key, stored.intent, evidence);
       if (verdict !== 'abandoned') return { status: verdict === 'started' ? 'none' : 'in_flight', claimed: null };
     }
     const claimedRaw = claimedIssueCommandIntent(stored.intent, Date.now());
@@ -378,19 +402,19 @@ export async function settleDispatchedIssueCommand(
  * token in the same step, so neither a label event that read the record
  * before nor a job that already holds the token runs a command ProPR refused.
  * Another comment's record is left as it is. Resolves `started` when the
- * record is that comment's `queued` one and a job carries it or a claim of it
- * is still in flight (`reconcileQueuedIssueCommand`), or its token was
- * already carried: a label event claimed the command, or a dispatcher started
- * it, since the caller last read it, so it must not be reported as not
- * started. A `queued` record whose claim was abandoned is retired like a
- * pending one. Rejects when the record cannot be read or deleted, before
- * anything is reported.
+ * record is that comment's and a job carries it or a claim of it is still in
+ * flight (`reconcileIssueCommand`), or its token was already carried: a label
+ * event claimed the command, a dispatcher started it, or the comment's own
+ * earlier add stored a job whose failure it reported, so it must not be
+ * reported as not started. A record nothing carries is retired, whether
+ * pending or an abandoned claim. Rejects when the record cannot be read or
+ * deleted, before anything is reported.
  */
 export async function retireIssueCommandIntent(redis: Pick<Redis, 'get' | 'eval'>, key: string, commentId: number, evidence: IssueCommandJobEvidence): Promise<'not_started' | 'started'> {
   for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt++) {
     const stored = await readIssueCommandIntent(redis, key);
     if (stored?.intent.commentId !== commentId) return 'not_started';
-    if (stored.intent.state === 'queued' && await reconcileQueuedIssueCommand(redis, key, stored.intent, evidence) !== 'abandoned') return 'started';
+    if (await reconcileIssueCommand(redis, key, stored.intent, evidence) !== 'abandoned') return 'started';
     const outcome = await retireRecord(redis, key, stored.raw, null);
     if (outcome !== 'changed') return outcome === 'retired' ? 'not_started' : 'started';
     // The record changed since it was read: read it again.

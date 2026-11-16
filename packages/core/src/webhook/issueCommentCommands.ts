@@ -8,8 +8,8 @@ import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js'
 import type { IssueJobData } from '../queue/taskQueue.types.js';
 import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
 import {
-  issueCommandIntentKey, issueCommandTokenFate, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
-  reconcileQueuedIssueCommand, releaseIssueCommandIntent, retireIssueCommandIntent, withdrawIssueCommandIntent, type StoredIssueCommandIntent,
+  issueCommandIntentKey, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
+  reconcileIssueCommand, releaseIssueCommandIntent, retireIssueCommandIntent, withdrawIssueCommandIntent, type StoredIssueCommandIntent,
 } from '../plugins/issueCommandIntent.js';
 
 /**
@@ -32,9 +32,19 @@ import {
  * already holds it runs without the command. Access follows the comment
  * trigger rules: the author filters (allowlist, blocklist, bots) and the
  * ignore keywords.
+ *
+ * The comment's claim is a lease while an attempt is processing it, and
+ * becomes evidence that the comment was handled only once the attempt's
+ * outcome is known: its job is queued, or its refusal is reported. A process
+ * that stops in between leaves a claim that runs out, so the relay's
+ * redelivery (which it makes because no ACK was sent) starts the command
+ * afresh; while the claim runs, a redelivery is left unacknowledged, so it is
+ * made again later. An attempt's own earlier record is reconciled against the
+ * job evidence before it is replaced, and replaced only while unchanged, so
+ * a command that was carried meanwhile is never started a second time.
  */
 export interface IssueCommandDependencies {
-  redis: Pick<Redis, 'get' | 'set' | 'del' | 'eval'>;
+  redis: Pick<Redis, 'get' | 'set' | 'eval'>;
   github?: () => Promise<{ request(route: string, parameters: Record<string, unknown>): Promise<unknown> }>;
   /**
    * Adds a job to the issue queue, then resolves to the data of the job stored
@@ -51,9 +61,29 @@ export interface IssueCommandDependencies {
 }
 
 const DEDUPE_TTL_SECONDS = 30;
+/** How long a handled comment's claim answers redeliveries, the window in which GitHub or the relay redelivers one. */
 const CLAIM_TTL_SECONDS = 86400;
+/**
+ * How long a comment's claim stands while its attempt is processing and no
+ * outcome is recorded yet. Longer than an attempt takes (its GitHub sign-in,
+ * label request and queue add with their retries take seconds), so a live
+ * attempt is not taken for a stopped one; a stopped attempt's command waits
+ * this long for the relay's redelivery to start it afresh.
+ */
+export const COMMENT_CLAIM_LEASE_SECONDS = 120;
+/** Bounds the re-reads when the issue's command record changes between a read and the conditional write that depends on it. */
+const RECORD_ATTEMPTS = 5;
 /** Deletes a key only while it still holds the caller's reservation token. */
 const RELEASE_OWNED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+/** Replaces a key's value with ARGV[2] for ARGV[3] seconds only while it still holds the caller's reservation token ARGV[1]. */
+const REPLACE_OWNED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3]) return 1 else return 0 end";
+
+/** The comment claim of an attempt still processing: it runs out with its lease. */
+const processingClaim = (token: string) => `processing:${token}`;
+/** The comment claim once the attempt's outcome is known: the redelivery evidence. */
+const handledClaim = (token: string) => `handled:${token}`;
+/** Whether a claim another delivery holds is still processing (a claim from before claims were leased counts as handled). */
+const claimStillProcessing = (held: string | null) => held === null || held.startsWith('processing:');
 
 /** The lifecycle labels of every configured processing label family. */
 function lifecycleLabels(primaryLabels: string[]): string[] {
@@ -126,13 +156,41 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   if (filterCommentByAuthor(author, comment.user.type ?? null, correlationId).shouldFilter) return { status: 'ignored', reason: 'filtered_author' };
   if (checkCommentIgnore(comment.body, await (deps.ignoreKeywords ?? defaultIgnoreKeywords)(), correlationId).shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
 
+  // This attempt's token: its comment claim, the issue's dedupe window and
+  // its command record are released or replaced only while they still hold it.
+  const token = `${correlationId}:${randomUUID()}`;
   const claimKey = `issue-comment-command:${owner}:${repo}:${issue.number}:${comment.id}`;
-  if (await deps.redis.set(claimKey, Date.now().toString(), 'EX', CLAIM_TTL_SECONDS, 'NX') !== 'OK') return { status: 'ignored', reason: 'duplicate_delivery' };
+  const claimValue = processingClaim(token);
+  if (await deps.redis.set(claimKey, claimValue, 'EX', COMMENT_CLAIM_LEASE_SECONDS, 'NX') !== 'OK') {
+    if (claimStillProcessing(await deps.redis.get(claimKey))) {
+      // Not acknowledged: the relay redelivers it later, when the earlier
+      // attempt has either recorded its outcome or stopped and its claim has run out.
+      log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command is still being processed by an earlier delivery; leaving the redelivery for later');
+      throw new Error(`The plugin command in comment ${comment.id} is still being processed by an earlier delivery`);
+    }
+    return { status: 'ignored', reason: 'duplicate_delivery' };
+  }
+  // Records the outcome of this attempt on its claim: from now on a redelivery
+  // of the comment is handled. A write that fails leaves the claim to run out
+  // like a stopped attempt's; the caller then keeps the evidence a redelivery
+  // reconciles instead.
+  const markHandled = async (): Promise<boolean> => {
+    try {
+      return await deps.redis.eval(REPLACE_OWNED_SCRIPT, 1, claimKey, claimValue, handledClaim(token), String(CLAIM_TTL_SECONDS)) === 1;
+    } catch (err) {
+      log.warn({ repository, issueNumber: issue.number, commentId: comment.id, err }, 'Could not record the plugin command\'s outcome on its comment claim');
+      return false;
+    }
+  };
+  const handled = async (disposition: DeliveryDisposition): Promise<DeliveryDisposition> => {
+    await markHandled();
+    return disposition;
+  };
   const dedupeKey = `issue:dedup:${owner}:${repo}:${issue.number}`;
   const intentKey = issueCommandIntentKey(owner, repo, issue.number);
   const jobId = `issue-${owner}-${repo}-${issue.number}`;
-  // Whether a job carries a record the label path marked `queued`: that mark
-  // alone is a reservation, left behind when the claim was interrupted.
+  // Whether a job carries a record: a record alone is a reservation, left
+  // behind when the attempt or claim that wrote it was interrupted.
   const evidence = { storedJobData: () => (deps.storedIssueJob ?? defaultStoredIssueJob)(jobId) };
   // The classification of pull request comment commands: a GitHub App, one of
   // ProPR's own logins or a `[bot]` login consumes no seat.
@@ -141,11 +199,11 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   // releases that window and an immediate redelivery can start the task.
   let dedupeToken: string | null = null;
   // The record this attempt wrote, while a failure must decide its fate, and
-  // the record it replaced. The record outlives a failure only while the label
-  // this attempt requested may be on the issue: only that label's webhook can
-  // still carry it into a job.
+  // the record a withdrawal puts back. The record outlives a failure only
+  // while the label this attempt requested may be on the issue: only that
+  // label's webhook can still carry it into a job.
   let recorded: string | null = null;
-  let earlier: StoredIssueCommandIntent | null = null;
+  let replaced: StoredIssueCommandIntent | null = null;
   let labelMayBePublished = false;
   const alreadyStarted = (): DeliveryDisposition => {
     log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command already started through its processing label');
@@ -160,42 +218,15 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     // event queued with it before the refusal. A command a label event
     // claimed, or a dispatcher started, meanwhile is not reported.
     const refuse = async (text: string, reason: string): Promise<DeliveryDisposition> => {
-      if (await retireIssueCommandIntent(deps.redis, intentKey, comment.id, evidence) === 'started') return alreadyStarted();
+      if (await retireIssueCommandIntent(deps.redis, intentKey, comment.id, evidence) === 'started') return await handled(alreadyStarted());
       await reply(text);
-      return { status: 'ignored', reason };
+      return await handled({ status: 'ignored', reason });
     };
     if (resolution.status === 'refused') {
       log.info({ repository, issueNumber: issue.number, plugin: resolution.pluginId, command: resolution.command }, 'Plugin command refused');
       return await refuse(resolution.message, 'plugin_command_refused');
     }
     const { run } = resolution;
-    // An earlier attempt for this comment published the label and failed to
-    // queue; the label's webhook then queued (or is queueing) the job carrying
-    // this command. Its record is reconciled whatever its state: the token of
-    // a record still `pending` may have been carried by a dispatcher (its claim
-    // was put back after an add that stored the job but reported a failure),
-    // and that command must not be started a second time. A claim left behind
-    // without a job is this attempt's to start afresh: the record is replaced
-    // below, and withdrawn like any other of this comment's if this attempt
-    // fails too. A pending record whose token has no fate is this comment's to
-    // replace (or refuse and retire, which a job holding the token honours).
-    earlier = await readIssueCommandIntent(deps.redis, intentKey);
-    if (earlier?.intent.commentId === comment.id) {
-      const verdict = earlier.intent.state === 'queued'
-        ? await reconcileQueuedIssueCommand(deps.redis, intentKey, earlier.intent, evidence)
-        : await issueCommandTokenFate(deps.redis, intentKey, earlier.intent.token) ? 'started' : 'abandoned';
-      if (verdict === 'started') return alreadyStarted();
-      if (verdict === 'in_flight') {
-        // The claim may still be queueing, or may have been interrupted: the
-        // comment stays open to a later redelivery, which reconciles it again.
-        await deps.redis.del(claimKey);
-        return alreadyStarted();
-      }
-      if (earlier.intent.state === 'queued') {
-        log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command claimed by an interrupted label path and never queued; starting it afresh');
-        earlier = null;
-      }
-    }
     const primaryLabels = await (deps.primaryLabels ?? defaultPrimaryLabels)();
     // New work starts with the first label; work started through any configured
     // label family makes the issue busy.
@@ -204,22 +235,55 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     const labels = issue.labels?.map(label => label.name) ?? [];
     const lifecycle = lifecycleLabels(primaryLabels);
     const busy = labels.find(label => lifecycle.includes(label));
-    const token = `${correlationId}:${randomUUID()}`;
-    if (busy || await (deps.hasQueuedIssueJob ?? defaultHasQueuedIssueJob)(owner, repo, issue.number)
-      || await deps.redis.set(dedupeKey, token, 'EX', DEDUPE_TTL_SECONDS, 'NX') !== 'OK') {
-      return await refuse(busy
-        ? `/${run.command} was not started: this issue already has the ${busy} label. Remove it to start a new task.`
-        : `/${run.command} was not started: a ProPR task for this issue is already starting or running. Run the command again when it has finished.`,
-      'job_already_queued');
-    }
-    dedupeToken = token;
-    // Recorded before the label is published and kept if this attempt fails
-    // once the label may be on the issue: that label may then start the
-    // issue's work without this attempt.
     const userId = String(payload.sender.id);
     const intentValue = pendingIssueCommandIntent({ commentId: comment.id, userId, seatConsumed, pluginCommand: run, token });
-    recorded = intentValue;
-    await recordIssueCommandIntent(deps.redis, intentKey, intentValue);
+    for (let attempt = 0; ; attempt++) {
+      // An earlier attempt for this comment recorded the command and stopped
+      // (before or after queueing its job), or published the label and failed
+      // to queue, and the label's webhook then queued (or is queueing) the job
+      // carrying the command. Its record is reconciled against the job
+      // evidence whatever its state: a job that names its token, or a token a
+      // dispatcher carried, is a started command, which must not be started a
+      // second time. A record nothing carries is this attempt's to start
+      // afresh: it is replaced below. A stale label-path claim is not put back
+      // if this attempt fails too; this comment's own pending record is, since
+      // the label it published may still carry it.
+      const earlier = await readIssueCommandIntent(deps.redis, intentKey);
+      replaced = earlier;
+      if (earlier?.intent.commentId === comment.id) {
+        const verdict = await reconcileIssueCommand(deps.redis, intentKey, earlier.intent, evidence);
+        if (verdict === 'started') return await handled(alreadyStarted());
+        if (verdict === 'in_flight') {
+          // The claim may still be queueing, or may have been interrupted: the
+          // comment stays open to a later redelivery, which reconciles it again.
+          await deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, claimKey, claimValue);
+          return alreadyStarted();
+        }
+        log.info({ repository, issueNumber: issue.number, commentId: comment.id, state: earlier.intent.state }, 'Plugin command recorded by an interrupted attempt and never queued; starting it afresh');
+        if (earlier.intent.state === 'queued') replaced = null;
+      }
+      if (busy || await (deps.hasQueuedIssueJob ?? defaultHasQueuedIssueJob)(owner, repo, issue.number)
+        || await deps.redis.set(dedupeKey, token, 'EX', DEDUPE_TTL_SECONDS, 'NX') !== 'OK') {
+        return await refuse(busy
+          ? `/${run.command} was not started: this issue already has the ${busy} label. Remove it to start a new task.`
+          : `/${run.command} was not started: a ProPR task for this issue is already starting or running. Run the command again when it has finished.`,
+        'job_already_queued');
+      }
+      dedupeToken = token;
+      // Recorded before the label is published and kept if this attempt fails
+      // once the label may be on the issue: that label may then start the
+      // issue's work without this attempt. Written only over the record read
+      // above: one that changed meanwhile (a label event claimed this comment's
+      // command, a dispatcher settled it, or another command recorded its own)
+      // is reconciled again, not overwritten.
+      recorded = intentValue;
+      if (await recordIssueCommandIntent(deps.redis, intentKey, intentValue, earlier?.raw ?? null)) break;
+      recorded = null;
+      await deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, token);
+      dedupeToken = null;
+      if (attempt + 1 >= RECORD_ATTEMPTS) throw new Error(`The plugin command intent ${intentKey} kept changing while the command was recorded`);
+      log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'The issue\'s plugin command record changed while the command was recorded; reconciling it again');
+    }
     if (!labels.includes(triggeringLabel)) {
       labelMayBePublished = true;
       await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', { owner, repo, issue_number: issue.number, labels: [triggeringLabel] })
@@ -240,33 +304,39 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       // another comment's; this comment's own earlier record is not, since the
       // command is now reported as not started.
       log.info({ repository, issueNumber: issue.number, commentId: comment.id, jobId }, 'Plugin command not started: the issue job ID is held by other work');
-      await withdrawIssueCommandIntent(deps.redis, intentKey, intentValue, earlier?.intent.commentId === comment.id ? null : earlier);
+      await withdrawIssueCommandIntent(deps.redis, intentKey, intentValue, replaced?.intent.commentId === comment.id ? null : replaced);
       recorded = null;
       await deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, token);
       dedupeToken = null;
       return await refuse(`/${run.command} was not started: a ProPR task for this issue is already starting or running. Run the command again when it has finished.`, 'job_already_queued');
     }
     recorded = null;
-    // The queued job carries the command; a later label event must not. When
-    // this release fails, the job's dispatcher settles the record it names.
-    await releaseIssueCommandIntent(deps.redis, intentKey, intentValue).catch((err: unknown) => {
-      log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task; the job\'s dispatcher settles it');
-    });
+    // The queued job carries the command: the comment is handled, and a later
+    // label event must not carry the command again. The record is released
+    // once the claim records that outcome; while either write fails, the job
+    // (which names the record) is the evidence, and its dispatcher settles the
+    // record before it starts any work.
+    if (await markHandled()) {
+      await releaseIssueCommandIntent(deps.redis, intentKey, intentValue).catch((err: unknown) => {
+        log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task; the job\'s dispatcher settles it');
+      });
+    }
     log.info({ repository, issueNumber: issue.number, commentId: comment.id, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} started an implementation task`);
     return { status: 'accepted', billing: { seatConsumed } };
   } catch (error) {
     // This attempt created no task: release what it reserved so a redelivery
-    // is handled afresh. The dedupe window is released only while it is still
-    // this attempt's, never one a later label event or command has taken. The
-    // command intent is kept while the label this attempt requested may be on
-    // the issue: that label makes label-triggered intake queue the command,
-    // not command-less work. Without such a label (GitHub refused it, it was
-    // never requested, or the failure came first) no label event is this
-    // command's, so the record is withdrawn, putting back the one it replaced.
+    // is handled afresh. The dedupe window and the comment claim are released
+    // only while they are still this attempt's, never ones a later label
+    // event, command or redelivery has taken. The command intent is kept while
+    // the label this attempt requested may be on the issue: that label makes
+    // label-triggered intake queue the command, not command-less work. Without
+    // such a label (GitHub refused it, it was never requested, or the failure
+    // came first) no label event is this command's, so the record is
+    // withdrawn, putting back the one it replaced.
     const releases = await Promise.allSettled([
       ...(dedupeToken ? [deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, dedupeToken)] : []),
-      ...(recorded && !labelMayBePublished ? [withdrawIssueCommandIntent(deps.redis, intentKey, recorded, earlier)] : []),
-      deps.redis.del(claimKey),
+      ...(recorded && !labelMayBePublished ? [withdrawIssueCommandIntent(deps.redis, intentKey, recorded, replaced)] : []),
+      deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, claimKey, claimValue),
     ]);
     for (const release of releases) {
       if (release.status === 'rejected') log.warn({ repository, issueNumber: issue.number, err: release.reason }, 'Could not release a plugin command reservation');
