@@ -71,6 +71,29 @@ export async function releaseIssueCommandIntent(redis: Pick<Redis, 'eval'>, key:
   await redis.eval(RELEASE_IF_UNCHANGED_SCRIPT, 1, key, raw);
 }
 
+/**
+ * Withdraws the caller's record of a command that was not started, putting
+ * back the record it replaced (if any), only while the caller's is unchanged:
+ * the replaced record may be another command's, still pending or already
+ * queued, and stays that command's evidence.
+ */
+export async function withdrawIssueCommandIntent(redis: Pick<Redis, 'eval'>, key: string, raw: string, replaced: StoredIssueCommandIntent | null): Promise<void> {
+  if (replaced) await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, raw, replaced.raw);
+  else await releaseIssueCommandIntent(redis, key, raw);
+}
+
+/**
+ * Whether the job stored under the issue's deterministic ID is the one the
+ * caller queued, carrying its command. Adding a job whose ID is taken keeps
+ * the existing job and its data (for example a delayed retry of the issue's
+ * ordinary task), so a successful add is no evidence on its own.
+ */
+export function issueJobCarriesCommand(stored: unknown, queued: { correlationId?: string; pluginCommand?: PluginCommandRun }): boolean {
+  const data = stored as { correlationId?: unknown; pluginCommand?: unknown } | null | undefined;
+  return !!data && !!queued.pluginCommand && !!queued.correlationId && data.correlationId === queued.correlationId
+    && JSON.stringify(data.pluginCommand) === JSON.stringify(queued.pluginCommand);
+}
+
 /** Marks a pending record as carried by a queued job, only while it is unchanged. */
 export async function markIssueCommandIntentQueued(redis: Pick<Redis, 'eval'>, key: string, stored: StoredIssueCommandIntent): Promise<void> {
   await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw, JSON.stringify({ ...stored.intent, state: 'queued' } satisfies IssueCommandIntent));
@@ -92,9 +115,23 @@ export function issueCommandJobFields(pending: PendingIssueCommand | null): { us
   return pending ? { userId: pending.intent.userId, pluginCommand: pending.intent.pluginCommand } : {};
 }
 
-/** After the job carrying the pending command is queued: marks the command started. */
-export async function settlePendingIssueCommand(redis: Pick<Redis, 'eval'>, pending: PendingIssueCommand | null, log: Pick<Logger, 'info' | 'warn'>): Promise<void> {
+/**
+ * After adding the job meant to carry the pending command: marks the command
+ * started, but only once the job stored under the ID (read by
+ * `job.storedJobData`) is the one queued. An add whose ID is taken keeps the
+ * existing job, which then runs without the command, so the command stays
+ * pending.
+ */
+export async function settlePendingIssueCommand(
+  redis: Pick<Redis, 'eval'>, pending: PendingIssueCommand | null,
+  job: { queued: { correlationId?: string; pluginCommand?: PluginCommandRun }; storedJobData: () => Promise<unknown> },
+  log: Pick<Logger, 'info' | 'warn'>,
+): Promise<void> {
   if (!pending) return;
+  if (!issueJobCarriesCommand(await job.storedJobData(), job.queued)) {
+    log.warn({ key: pending.key, commentId: pending.intent.commentId }, 'The issue job ID is held by other work; the plugin command stays pending');
+    return;
+  }
   log.info({ key: pending.key, commentId: pending.intent.commentId, command: pending.intent.pluginCommand.command }, 'Queued the plugin command whose own enqueue failed');
   await markIssueCommandIntentQueued(redis, pending.key, pending).catch((error: unknown) => {
     log.warn({ key: pending.key, error: (error as Error).message }, 'Could not mark the plugin command intent as queued');

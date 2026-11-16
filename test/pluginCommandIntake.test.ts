@@ -37,8 +37,12 @@ await mock.module('ioredis', {
     },
 });
 
-// Mock bullmq — allow tests to inject active/waiting/delayed jobs
-const mockQueueAdd = mock.fn(async () => {});
+// Mock bullmq — allow tests to inject active/waiting/delayed jobs. Like
+// BullMQ, an add whose ID is taken keeps the existing job and its data.
+const mockStoredJobs = new Map<string, { name: string; data: unknown }>();
+const mockQueueAdd = mock.fn(async (name: string, data: unknown, options?: { jobId?: string }) => {
+    if (options?.jobId && !mockStoredJobs.has(options.jobId)) mockStoredJobs.set(options.jobId, { name, data });
+});
 let mockActiveJobs: unknown[] = [];
 let mockWaitingJobs: unknown[] = [];
 let mockDelayedJobs: unknown[] = [];
@@ -53,6 +57,7 @@ await mock.module('bullmq', {
                 getActive: mock.fn(async () => mockActiveJobs),
                 getWaiting: mock.fn(async () => mockWaitingJobs),
                 getDelayed: mock.fn(async () => mockDelayedJobs),
+                getJob: mock.fn(async (id: string) => mockStoredJobs.get(id)),
             };
         },
         QueueEvents: function QueueEvents() {
@@ -241,6 +246,7 @@ beforeEach(() => {
     installation = { enabled: true, repositories: ['testowner/testrepo'] };
     mockQueueAdd.mock.resetCalls();
     mockActiveJobs = []; mockWaitingJobs = []; mockDelayedJobs = [];
+    mockStoredJobs.clear();
     mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: false }));
     mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
     mockOctokit.request.mock.resetCalls();
@@ -377,7 +383,7 @@ describe('plugin prompt command on an issue', () => {
             deps: {
                 redis: createMockRedis(),
                 github: async () => ({ request: async (route: string, parameters: Record<string, unknown>) => { requests.push({ route, parameters }); return {}; } }),
-                enqueue: async (data: Record<string, unknown>, jobId: string) => { enqueued.push({ data, jobId }); },
+                enqueue: async (data: Record<string, unknown>, jobId: string) => { enqueued.push({ data, jobId }); return data; },
                 hasQueuedIssueJob: async () => false,
                 primaryLabels: async () => ['AI'],
                 ignoreKeywords: async () => [],
@@ -458,6 +464,7 @@ describe('plugin prompt command on an issue', () => {
                 enqueue: async (data: Record<string, unknown>, jobId: string) => {
                     if (step === 'queueing the job') fail();
                     f.enqueued.push({ data, jobId });
+                    return data;
                 },
             };
             await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-first', failing as never), new RegExp(`${step} failed`));
@@ -534,5 +541,71 @@ describe('plugin prompt command on an issue', () => {
         } };
         await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-x', failing as never), /queue down/);
         assert.strictEqual(redis._store.get('issue:dedup:testowner:testrepo:7'), 'label-event');
+    });
+    // ---- An ordinary parent that still owns the issue's job ID (F4) ----
+
+    const JOB_ID = 'issue-testowner-testrepo-7';
+    const DEDUPE_KEY = 'issue:dedup:testowner:testrepo:7';
+    const ordinaryParent = { name: 'processGitHubIssue', data: { repoOwner: 'testowner', repoName: 'testrepo', number: 7, triggeringLabel: 'AI', correlationId: 'ordinary-correlation' } };
+    // Another command's record, already carried by a job the label path queued.
+    const acceptedIntent = JSON.stringify({ commentId: 555, userId: '9', pluginCommand: { pluginId: 'example-pack', command: 'example-notes', instruction: 'earlier', extensions: EXPECTED_EXTENSIONS }, token: 'earlier', state: 'queued' });
+    // The real queue path: no enqueue or existing-work override.
+    const queueDeps = (f: ReturnType<typeof deps>) => {
+        const { enqueue: _enqueue, hasQueuedIssueJob: _has, ...rest } = f.deps;
+        return rest;
+    };
+
+    test('a parent delayed for a retry makes the issue busy: the command is refused and an accepted intent is kept', async () => {
+        mockDelayedJobs = [ordinaryParent];
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        const f = deps();
+        f.deps.redis._store.set(INTENT_KEY, acceptedIntent);
+        const disposition = await processIssueCommentCommand(issueComment('/example-notes', ['AI']), 'corr-delayed', queueDeps(f) as never);
+        assert.strictEqual(disposition.reason, 'job_already_queued');
+        assert.match(String(f.requests.at(-1)?.parameters.body), /already starting or running/);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(f.deps.redis._store.get(INTENT_KEY), acceptedIntent);
+    });
+
+    test('a job ID taken after the busy check by work without this command is refused, not reported started', async () => {
+        // The existing-work check misses the parent (it moved state in between); the add keeps it.
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        const f = deps();
+        f.deps.redis._store.set(INTENT_KEY, acceptedIntent);
+        const disposition = await processIssueCommentCommand(issueComment('/example-notes', ['AI']), 'corr-taken', { ...queueDeps(f), hasQueuedIssueJob: async () => false } as never);
+        assert.strictEqual(disposition.reason, 'job_already_queued');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1, 'the add was attempted');
+        assert.strictEqual(mockStoredJobs.get(JOB_ID), ordinaryParent, 'the stored job is still the ordinary one');
+        assert.match(String(f.requests.at(-1)?.parameters.body), /already starting or running/);
+        assert.strictEqual(f.deps.redis._store.get(INTENT_KEY), acceptedIntent, 'the replaced intent is put back');
+        assert.ok(!f.deps.redis._store.has(DEDUPE_KEY), 'the dedupe window of the refused command is released');
+        // Without any earlier record, the refused command leaves none behind for a label event to run.
+        const g = deps();
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes', ['AI']), 'corr-taken-2', { ...queueDeps(g), hasQueuedIssueJob: async () => false } as never)).reason, 'job_already_queued');
+        assert.ok(!g.deps.redis._store.has(INTENT_KEY));
+    });
+
+    test('through the real queue path, a free job ID starts the job carrying the command and releases its intent', async () => {
+        const f = deps();
+        const disposition = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-free', queueDeps(f) as never);
+        assert.strictEqual(disposition.status, 'accepted');
+        const stored = mockStoredJobs.get(JOB_ID)!.data as QueuedJob;
+        assert.match(stored.pluginCommand?.instruction ?? '', /"cover the CLI"/);
+        assert.ok(!f.deps.redis._store.has(INTENT_KEY));
+    });
+
+    test('a label event whose add finds a delayed ordinary parent leaves the pending command pending', async () => {
+        const f = deps();
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-first', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
+        // The ordinary parent is in its retry backoff: not active or waiting, but it holds the ID.
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'pending', 'not marked queued: no job carries it');
+        // So a redelivery of the command is told the issue is busy instead of being dropped as handled.
+        mockDelayedJobs = [ordinaryParent];
+        const redelivery = await processIssueCommentCommand(issueComment('/example-notes', ['AI']), 'corr-retry', queueDeps(f) as never);
+        assert.strictEqual(redelivery.reason, 'job_already_queued');
+        assert.match(String(f.requests.at(-1)?.parameters.body), /already starting or running/);
     });
 });

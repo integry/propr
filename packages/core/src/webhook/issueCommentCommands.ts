@@ -6,7 +6,7 @@ import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilte
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
 import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
-import { issueCommandIntentKey, readIssueCommandIntent, recordIssueCommandIntent, releaseIssueCommandIntent } from '../plugins/issueCommandIntent.js';
+import { issueCommandIntentKey, issueJobCarriesCommand, readIssueCommandIntent, recordIssueCommandIntent, releaseIssueCommandIntent, withdrawIssueCommandIntent } from '../plugins/issueCommandIntent.js';
 
 /**
  * Plugin commands in issue comments. ProPR has no built-in issue command, so
@@ -28,9 +28,13 @@ import { issueCommandIntentKey, readIssueCommandIntent, recordIssueCommandIntent
 export interface IssueCommandDependencies {
   redis: Pick<Redis, 'get' | 'set' | 'del' | 'eval'>;
   github?: () => Promise<{ request(route: string, parameters: Record<string, unknown>): Promise<unknown> }>;
-  /** Adds a job to the issue queue. */
-  enqueue?: (data: IssueJobData, jobId: string) => Promise<void>;
-  /** Whether a parent job for the issue is already active or waiting. */
+  /**
+   * Adds a job to the issue queue, then resolves to the data of the job stored
+   * under `jobId` (null when there is none): an add whose ID is taken keeps
+   * the existing job.
+   */
+  enqueue?: (data: IssueJobData, jobId: string) => Promise<Partial<IssueJobData> | null>;
+  /** Whether a parent job for the issue is already active, waiting or delayed for a retry. */
   hasQueuedIssueJob?: (repoOwner: string, repoName: string, number: number) => Promise<boolean>;
   primaryLabels?: () => Promise<string[]>;
   ignoreKeywords?: () => Promise<string[]>;
@@ -50,14 +54,19 @@ async function defaultGitHub() {
   const { getAuthenticatedOctokit } = await import('../auth/githubAuth.js');
   return await getAuthenticatedOctokit() as unknown as { request(route: string, parameters: Record<string, unknown>): Promise<unknown> };
 }
-async function defaultEnqueue(data: IssueJobData, jobId: string): Promise<void> {
+async function defaultEnqueue(data: IssueJobData, jobId: string): Promise<Partial<IssueJobData> | null> {
   const { getIssueQueue } = await import('../queue/taskQueue.js');
-  await (await getIssueQueue()).add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
+  const queue = await getIssueQueue();
+  await queue.add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
+  // The returned job holds the data passed in even when the ID was taken; the stored job is read back.
+  const job = await queue.getJob(jobId);
+  return (job?.data as Partial<IssueJobData> | undefined) ?? null;
 }
 async function defaultHasQueuedIssueJob(repoOwner: string, repoName: string, number: number): Promise<boolean> {
   const { getIssueQueue } = await import('../queue/taskQueue.js');
   const queue = await getIssueQueue();
-  const jobs = [...await queue.getActive(), ...await queue.getWaiting()];
+  // A parent waiting out a retry backoff still owns the issue's deterministic job ID.
+  const jobs = [...await queue.getActive(), ...await queue.getWaiting(), ...await queue.getDelayed()];
   return jobs.some(job => {
     const data = job.data as Partial<IssueJobData>;
     return job.name === 'processGitHubIssue' && data.repoOwner === repoOwner && data.repoName === repoName && data.number === number && !data.isChildJob;
@@ -143,7 +152,19 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       repoOwner: owner, repoName: repo, number: issue.number, userId, triggeringLabel,
       correlationId: generateCorrelationId(), pluginCommand: run,
     };
-    await (deps.enqueue ?? defaultEnqueue)(data, `issue-${owner}-${repo}-${issue.number}`);
+    const jobId = `issue-${owner}-${repo}-${issue.number}`;
+    const stored = await (deps.enqueue ?? defaultEnqueue)(data, jobId);
+    if (!stored) throw new Error(`The issue job ${jobId} was not found after queueing it`);
+    if (!issueJobCarriesCommand(stored, data)) {
+      // The ID belongs to work queued since the busy check, which runs without
+      // this command: refuse it, and leave the issue's records as they were.
+      log.info({ repository, issueNumber: issue.number, commentId: comment.id, jobId }, 'Plugin command not started: the issue job ID is held by other work');
+      await withdrawIssueCommandIntent(deps.redis, intentKey, intentValue, earlier);
+      await deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, token);
+      dedupeToken = null;
+      await reply(`/${run.command} was not started: a ProPR task for this issue is already starting or running. Run the command again when it has finished.`);
+      return { status: 'ignored', reason: 'job_already_queued' };
+    }
     // The queued job carries the command; a later label event must not.
     await releaseIssueCommandIntent(deps.redis, intentKey, intentValue).catch((err: unknown) => {
       log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task');

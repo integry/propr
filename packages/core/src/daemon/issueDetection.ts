@@ -321,7 +321,12 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
         await addToQueueWithRetry();
 
-        await settlePendingIssueCommand(redisClient, pendingCommand, correlatedLogger);
+        // An add whose ID is taken keeps the existing job (e.g. one delayed for a
+        // retry), so the command is settled only once the stored job carries it.
+        await settlePendingIssueCommand(redisClient, pendingCommand, {
+            queued: issueJob,
+            storedJobData: async () => (await (await getIssueQueue()).getJob(jobId))?.data,
+        }, correlatedLogger);
 
         try {
             const activity = {
