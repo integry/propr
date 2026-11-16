@@ -25,7 +25,6 @@ import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, ROUTING_HUB_PROTOCOL_VERSION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
-import { processIssueCommentCommand } from './issueCommentCommands.js';
 export { SUPPORTED_WEBHOOK_EVENTS } from '@propr/shared';
 
 // Share the merged-PR canceller's delivery budget. The cancellation promise
@@ -247,6 +246,8 @@ async function handleIssueCommentEvent(
         return ACCEPTED_NO_SEAT_DISPOSITION;
     } else if (isIssueCommentCreatedEvent(payload) && !hasPullRequest) {
         // Issue comments start work only as a plugin command; anything else stays ignored.
+        // Loaded lazily: its assignment-gate/config graph is only needed for plain-issue comments.
+        const { processIssueCommentCommand } = await import('./issueCommentCommands.js');
         return processIssueCommentCommand(payload, correlationId, { redis: webhookRedisClient ?? getUltrafixStateRedis() });
     }
 
