@@ -214,6 +214,25 @@ const OPEN_LABELS: Record<SearchItem['kind'], string> = {
   task: 'Open task',
 };
 
+/**
+ * The preview pane, and so its Tasks button, is hidden below `md`. This footer action keeps a
+ * repository's task list reachable there as an explicit choice; at `md` and up it hides itself.
+ */
+export const NarrowRepositoryTasksAction: React.FC<{ item: SearchItem | undefined; onOpenTasks: (item: SearchItem) => void }> = ({ item, onOpenTasks }) => {
+  if (item?.kind !== 'repository') return null;
+  return (
+    <button
+      type="button"
+      data-testid="global-search-narrow-tasks"
+      onMouseDown={e => e.preventDefault()}
+      onClick={() => onOpenTasks(item)}
+      className="min-w-0 truncate text-primary-600 hover:text-primary-700 md:hidden"
+    >
+      Tasks for {getRepoName(item.repo.name)} →
+    </button>
+  );
+};
+
 interface PreviewProps {
   item: SearchItem;
   onOpen: (item: SearchItem) => void;

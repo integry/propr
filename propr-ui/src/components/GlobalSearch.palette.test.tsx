@@ -97,6 +97,22 @@ describe('GlobalSearch palette', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks?repository=integry%2Fmcptest');
   });
 
+  it('keeps the explicit Tasks action outside the preview, which narrow screens hide', async () => {
+    await renderWithResults();
+    const narrowTasks = screen.getByTestId('global-search-narrow-tasks');
+    expect(screen.getByTestId('global-search-preview').contains(narrowTasks)).toBe(false);
+    expect(narrowTasks).toHaveClass('md:hidden');
+    expect(narrowTasks).toHaveTextContent('Tasks for mcptest');
+    fireEvent.click(narrowTasks);
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?repository=integry%2Fmcptest');
+  });
+
+  it('offers the narrow Tasks action only while a repository is highlighted', async () => {
+    const input = await renderWithResults();
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(screen.queryByTestId('global-search-narrow-tasks')).not.toBeInTheDocument();
+  });
+
   it('offers the Tasks button only for repositories', async () => {
     const input = await renderWithResults();
     fireEvent.keyDown(input, { key: 'ArrowDown' });

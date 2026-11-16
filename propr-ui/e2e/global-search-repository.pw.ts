@@ -1,9 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
+import { openSearchFromMenu } from './mobile-menu-search.fixture';
 
 const repos = [
   { id: 'mcptest-main', name: 'integry/mcptest', baseBranch: 'main', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
   { id: 'mcptest-release', name: 'integry/mcptest', baseBranch: 'release', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+  // No explicit branch: must stay distinguishable from the release entry listed before it.
+  { id: 'mcptest-default', name: 'integry/mcptest', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
   { id: 'propr', name: 'integry/propr', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
 ];
 
@@ -13,8 +16,8 @@ async function capturePreview(page: Page, name: string) {
   await page.screenshot({ animations: 'disabled', path: `../.propr/previews/${name}.png` });
 }
 
-async function stubApis(page: Page) {
-  await page.setViewportSize({ width: 1440, height: 900 });
+async function stubApis(page: Page, viewport = { width: 1440, height: 900 }) {
+  await page.setViewportSize(viewport);
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
@@ -42,7 +45,7 @@ async function searchFor(page: Page, term: string) {
   const input = page.getByRole('combobox', { name: 'Search' });
   await input.fill(term);
   const palette = page.getByTestId('global-search-palette');
-  await expect(palette.getByRole('option')).toHaveCount(2);
+  await expect(palette.getByRole('option')).toHaveCount(3);
   return { input, palette, preview: palette.getByTestId('global-search-preview') };
 }
 
@@ -69,4 +72,37 @@ test('a repository\'s tasks open only through the explicit Tasks button', async 
   const { preview } = await searchFor(page, 'mcptest');
   await preview.getByRole('button', { name: 'Tasks', exact: true }).click();
   await expect(page).toHaveURL(/\/tasks\?repository=integry%2Fmcptest$/);
+});
+
+test('a repository without an explicit branch opens its own entry, not a same-name branch entry', async ({ page }) => {
+  await stubApis(page);
+  await page.goto('/');
+  const { input, preview } = await searchFor(page, 'mcptest');
+  await input.press('ArrowDown');
+  await input.press('ArrowDown');
+  await expect(preview.getByText('default', { exact: true })).toBeVisible();
+  await input.press('Enter');
+  await expect(page).toHaveURL(/\/repositories$/);
+  const entries = page.getByRole('button', { name: 'Select integry/mcptest', exact: true });
+  await expect(entries.nth(2)).toHaveAttribute('aria-pressed', 'true');
+  await expect(entries.nth(1)).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('narrow screens keep an explicit Tasks action while the preview pane is hidden', async ({ browser }) => {
+  // Below `md` the toolbar is hidden; search opens from the ProPR menu and the preview pane is not shown.
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+  const page = await context.newPage();
+  await stubApis(page, { width: 390, height: 844 });
+  await page.goto('/');
+  const { input } = await openSearchFromMenu(page);
+  await input.fill('mcptest');
+  const palette = page.getByTestId('global-search-palette');
+  await expect(palette.getByRole('option')).toHaveCount(3);
+  await expect(palette.getByTestId('global-search-preview')).toBeHidden();
+  const tasks = palette.getByRole('button', { name: 'Tasks for mcptest →' });
+  await expect(tasks).toBeInViewport({ ratio: 1 });
+  await capturePreview(page, 'global-search-repository-narrow-tasks');
+  await tasks.tap();
+  await expect(page).toHaveURL(/\/tasks\?repository=integry%2Fmcptest$/);
+  await context.close();
 });

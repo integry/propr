@@ -87,16 +87,34 @@ export function getItemPath(item: SearchItem): string {
   }
 }
 
-/** Navigation state that selects a repository on the Repositories page. */
+/**
+ * Navigation state that selects a repository on the Repositories page. `selectBranch` is always
+ * present so the entry's branch identity survives: `null` means the entry has no explicit branch
+ * (it tracks the default), which must not match an entry of the same name pinned to a branch.
+ */
 export interface RepositorySelectionState {
   selectRepo: string;
-  selectBranch?: string;
+  selectBranch: string | null;
 }
 
 /** Router state that accompanies {@link getItemPath}; only repositories need one. */
 export function getItemState(item: SearchItem): RepositorySelectionState | undefined {
   if (item.kind !== 'repository') return undefined;
-  return { selectRepo: item.repo.name, ...(item.repo.baseBranch ? { selectBranch: item.repo.baseBranch } : {}) };
+  return { selectRepo: item.repo.name, selectBranch: item.repo.baseBranch || null };
+}
+
+/**
+ * The monitored entry a Repositories-page selection state names. With `selectBranch` (including
+ * `null` for "no explicit branch") the branch must match exactly; callers that send only a name,
+ * such as QuickAddTodo, get the first entry with that name.
+ */
+export function findSelectedRepository<R extends Pick<MonitoredRepo, 'name' | 'baseBranch'>>(
+  repos: R[],
+  state: { selectRepo: string; selectBranch?: string | null },
+): R | undefined {
+  const named = repos.filter(r => r.name === state.selectRepo);
+  if (state.selectBranch === undefined) return named[0];
+  return named.find(r => (r.baseBranch || null) === state.selectBranch) ?? named[0];
 }
 
 /** The repository's task list: a secondary action the user picks explicitly. */

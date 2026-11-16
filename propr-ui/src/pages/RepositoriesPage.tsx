@@ -10,6 +10,7 @@ import { RepoActionContainer } from '../components/Repositories';
 import { RepositorySaveStatusFooter } from '../components/RepositorySaveStatusFooter';
 import { RepositoriesPageHeader } from '../components/RepositoriesPageHeader';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
+import { findSelectedRepository } from '../components/globalSearchModel';
 import { RepositorySettingsBar } from '../components/RepositorySettingsBar';
 import { RepositoryListContent } from '../components/RepositoryListContent';
 import { useDemoMode } from '../contexts/DemoModeContext';
@@ -43,10 +44,9 @@ const RepositoriesPage: React.FC = () => {
 
   // Handle navigation state from QuickAddTodo "View Todos" link and global search results
   useEffect(() => {
-    const state = location.state as { selectRepo?: string; selectBranch?: string; activeTab?: string } | null;
+    const state = location.state as { selectRepo?: string; selectBranch?: string | null; activeTab?: string } | null;
     if (state?.selectRepo && repos.length > 0) {
-      const match = (state.selectBranch && repos.find(r => r.name === state.selectRepo && r.baseBranch === state.selectBranch))
-        || repos.find(r => r.name === state.selectRepo);
+      const match = findSelectedRepository(repos, { selectRepo: state.selectRepo, selectBranch: state.selectBranch });
       if (match) {
         setSelectedRepoId(match.id);
         if (state.activeTab === 'todos') {

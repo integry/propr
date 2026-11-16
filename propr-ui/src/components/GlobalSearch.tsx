@@ -20,7 +20,7 @@ import {
   searchListboxId,
   searchOptionId,
 } from './globalSearchModel';
-import { SearchPreview, SearchResultList } from './GlobalSearchResults';
+import { NarrowRepositoryTasksAction, SearchPreview, SearchResultList } from './GlobalSearchResults';
 
 interface GlobalSearchProps {
   inputRef?: React.RefObject<HTMLInputElement | null>;
@@ -431,6 +431,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
               <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] text-slate-500">
                 <KeyHints modifierKey={modifierKey} compact={anchor.compact} />
                 <span className="ml-auto flex min-w-0 items-center gap-3">
+                  <NarrowRepositoryTasksAction item={activeItem} onOpenTasks={openRepositoryTasks} />
                   {plansAction && (
                     <button
                       type="button"
