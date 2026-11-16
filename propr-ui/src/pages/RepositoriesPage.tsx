@@ -10,6 +10,7 @@ import { RepoActionContainer } from '../components/Repositories';
 import { RepositorySaveStatusFooter } from '../components/RepositorySaveStatusFooter';
 import { RepositoriesPageHeader } from '../components/RepositoriesPageHeader';
 import { getRepoStatusKey } from '../api/repoIndexingApi';
+import { findSelectedRepository } from '../components/globalSearchModel';
 import { RepositorySettingsBar } from '../components/RepositorySettingsBar';
 import { RepositoryListContent } from '../components/RepositoryListContent';
 import { useDemoMode } from '../contexts/DemoModeContext';
@@ -41,11 +42,11 @@ const RepositoriesPage: React.FC = () => {
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [navActiveTab, setNavActiveTab] = useState<'chat' | 'improve' | 'browse' | 'todos' | undefined>(undefined);
 
-  // Handle navigation state from QuickAddTodo "View Todos" link
+  // Handle navigation state from QuickAddTodo "View Todos" link and global search results
   useEffect(() => {
-    const state = location.state as { selectRepo?: string; activeTab?: string } | null;
+    const state = location.state as { selectRepo?: string; selectBranch?: string | null; activeTab?: string } | null;
     if (state?.selectRepo && repos.length > 0) {
-      const match = repos.find(r => r.name === state.selectRepo);
+      const match = findSelectedRepository(repos, { selectRepo: state.selectRepo, selectBranch: state.selectBranch });
       if (match) {
         setSelectedRepoId(match.id);
         if (state.activeTab === 'todos') {

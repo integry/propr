@@ -11,6 +11,8 @@ import {
   getCategoryCounts,
   getItemGithubUrl,
   getItemPath,
+  getItemState,
+  getRepositoryTasksPath,
   getPlansAction,
   getScopeAction,
   getShortcutModifierLabel,
@@ -18,7 +20,7 @@ import {
   searchListboxId,
   searchOptionId,
 } from './globalSearchModel';
-import { SearchPreview, SearchResultList } from './GlobalSearchResults';
+import { NarrowRepositoryTasksAction, SearchPreview, SearchResultList } from './GlobalSearchResults';
 
 interface GlobalSearchProps {
   inputRef?: React.RefObject<HTMLInputElement | null>;
@@ -234,7 +236,13 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
   }, [isOpen, setIsOpen]);
 
   const openItem = useCallback((item: SearchItem) => {
-    navigate(getItemPath(item));
+    navigate(getItemPath(item), { state: getItemState(item) });
+    clearSearch();
+  }, [navigate, clearSearch]);
+
+  const openRepositoryTasks = useCallback((item: SearchItem) => {
+    if (item.kind !== 'repository') return;
+    navigate(getRepositoryTasksPath(item.repo));
     clearSearch();
   }, [navigate, clearSearch]);
 
@@ -415,7 +423,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
                 </div>
                 {activeItem && (
                   <div className="hidden min-w-0 basis-2/5 border-l border-slate-200 bg-slate-50 md:block">
-                    <SearchPreview item={activeItem} onOpen={openItem} shortcutKey={modifierKey} />
+                    <SearchPreview item={activeItem} onOpen={openItem} onOpenTasks={openRepositoryTasks} shortcutKey={modifierKey} />
                   </div>
                 )}
               </div>
@@ -423,6 +431,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
               <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] text-slate-500">
                 <KeyHints modifierKey={modifierKey} compact={anchor.compact} />
                 <span className="ml-auto flex min-w-0 items-center gap-3">
+                  <NarrowRepositoryTasksAction item={activeItem} onOpenTasks={openRepositoryTasks} />
                   {plansAction && (
                     <button
                       type="button"

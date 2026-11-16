@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DraftListItem } from '../api/plannerApi';
 import type { TaskSearchResult } from '../hooks/useGlobalSearch';
-import { formatTimeAgoPhrase, getItemDescription, getPlansAction, getScopeAction, getSearchStatus, getShortcutModifierLabel, splitFailureReason } from './globalSearchModel';
+import { findSelectedRepository, formatTimeAgoPhrase, getItemState, getItemDescription, getPlansAction, getScopeAction, getSearchStatus, getShortcutModifierLabel, splitFailureReason } from './globalSearchModel';
 
 const plan = (name: string, initial_prompt: string) =>
   ({ kind: 'plan' as const, key: 'plan:1', plan: { draft_id: '1', repository: 'a/b', name, initial_prompt } as DraftListItem });
@@ -66,5 +66,35 @@ describe('globalSearchModel', () => {
     expect(getSearchStatus('review')).toEqual({ label: 'Review', tone: 'review' });
     expect(getSearchStatus('pr_created')).toEqual({ label: 'PR created', tone: 'review' });
     expect(getSearchStatus('post_processing')).toEqual({ label: 'Post processing', tone: 'active' });
+  });
+
+  describe('repository selection state', () => {
+    const release = { id: 'release', name: 'owner/repo', baseBranch: 'release' };
+    const implicit = { id: 'implicit', name: 'owner/repo' };
+    const main = { id: 'main', name: 'owner/repo', baseBranch: 'main' };
+    const repos = [release, implicit, main];
+
+    it('records an entry without an explicit branch as null, not as an absent branch', () => {
+      expect(getItemState({ kind: 'repository', key: 'r', repo: { name: 'owner/repo', enabled: true } as never }))
+        .toEqual({ selectRepo: 'owner/repo', selectBranch: null });
+      expect(getItemState({ kind: 'repository', key: 'r', repo: { name: 'owner/repo', enabled: true, baseBranch: '' } as never }))
+        .toEqual({ selectRepo: 'owner/repo', selectBranch: null });
+    });
+
+    it('selects the implicit-branch entry even when an explicit-branch entry of the same name comes first', () => {
+      const state = getItemState({ kind: 'repository', key: 'r', repo: implicit as never })!;
+      expect(findSelectedRepository(repos, state)).toBe(implicit);
+    });
+
+    it('selects an explicit branch exactly', () => {
+      expect(findSelectedRepository(repos, { selectRepo: 'owner/repo', selectBranch: 'main' })).toBe(main);
+      expect(findSelectedRepository([implicit, release], { selectRepo: 'owner/repo', selectBranch: 'release' })).toBe(release);
+    });
+
+    it('falls back to the name for legacy name-only state and for a branch that no longer exists', () => {
+      expect(findSelectedRepository(repos, { selectRepo: 'owner/repo' })).toBe(release);
+      expect(findSelectedRepository(repos, { selectRepo: 'owner/repo', selectBranch: 'gone' })).toBe(release);
+      expect(findSelectedRepository(repos, { selectRepo: 'other/repo', selectBranch: null })).toBeUndefined();
+    });
   });
 });
