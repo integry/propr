@@ -8,7 +8,9 @@ import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgres
  * when their state setting is set. Every action is done at most once per
  * ticket: its marker is recorded in the ticket's progress once it succeeded,
  * so a redelivered event does nothing again, and an action that failed is
- * tried again with the redelivery while the others are not repeated.
+ * tried again with the redelivery while the others are not repeated. A move
+ * a later move has overtaken (the opening move of a pull request already
+ * merged, retried by hand) is never made: it would undo the later state.
  *
  * Messages are built here from identifiers, numbers and coded values only:
  * never code, logs, prompt text, tool output or free-text reasons.
@@ -20,7 +22,8 @@ export type TrackerMove = 'opened' | 'merged';
 
 /** One sentence, optionally followed by a link (a GitHub issue or pull request). */
 export interface SyncMessage { sentence: string; link: { label: string; url: string } | null }
-export type SyncAction = { kind: 'comment'; marker: string; message: SyncMessage } | { kind: 'move'; marker: string; move: TrackerMove };
+/** `supersededBy`: the marker of the later move that makes this one obsolete once done. */
+export type SyncAction = { kind: 'comment'; marker: string; message: SyncMessage } | { kind: 'move'; marker: string; move: TrackerMove; supersededBy: string | null };
 export interface SyncPlan { ticket: TicketRecord; event: TrackerSyncEvent; actions: SyncAction[] }
 export type SyncOutcome = { plan: SyncPlan; skipped: null } | { plan: null; skipped: 'not_tracked' | 'not_a_sync_event' | 'switched_off' | 'done' };
 
@@ -89,7 +92,7 @@ async function linkPullRequest(ctx: PluginContext, ticket: TicketRecord, pr: num
   await updateProgress(ctx, ticket.t, progress => (progress.p === pr ? undefined : { t: ticket.t, p: pr, d: progress.d }));
 }
 
-interface Step { event: TrackerSyncEvent; ticket: TicketRecord; marker: string; message: () => Promise<SyncMessage>; move: TrackerMove | null }
+interface Step { event: TrackerSyncEvent; ticket: TicketRecord; marker: string; message: () => Promise<SyncMessage>; move: TrackerMove | null; supersededBy?: string }
 
 /** The step of a task event: started, failed, or completed having opened the ticket's pull request. */
 async function taskStep(ctx: PluginContext, event: RepositoryEvent): Promise<Step | null> {
@@ -116,6 +119,8 @@ async function taskStep(ctx: PluginContext, event: RepositoryEvent): Promise<Ste
 
 const openedStep = (ctx: PluginContext, ticket: TicketRecord, repository: string, pr: number): Step => ({
   event: 'pull_request.opened', ticket, marker: `opened:${pr}`, move: 'opened',
+  // Once the merge moved the ticket, the opening move (a failed delivery retried by hand) would move it back.
+  supersededBy: `merged:${pr}:move`,
   message: async () => ({ sentence: 'ProPR opened a pull request for this ticket.', link: await pullLink(ctx, repository, pr) }),
 });
 
@@ -155,9 +160,20 @@ export async function planSync(ctx: PluginContext, input: PluginEventInput, sett
   const comment = `${step.marker}:comment`;
   if (settings.events.includes(step.event) && !done.includes(comment)) actions.push({ kind: 'comment', marker: comment, message: await step.message() });
   const move = `${step.marker}:move`;
-  if (step.move && settings.moves[step.move] && !done.includes(move)) actions.push({ kind: 'move', marker: move, move: step.move });
+  const superseded = !!step.supersededBy && done.includes(step.supersededBy);
+  if (step.move && settings.moves[step.move] && !done.includes(move) && !superseded) actions.push({ kind: 'move', marker: move, move: step.move, supersededBy: step.supersededBy ?? null });
   if (!actions.length) return { plan: null, skipped: settings.events.includes(step.event) || (step.move && settings.moves[step.move]) ? 'done' : 'switched_off' };
   return { plan: { ticket: step.ticket, event: step.event, actions }, skipped: null };
+}
+
+/**
+ * Whether a planned move has been overtaken since it was planned: read again
+ * just before the tracker is changed, so a merge synced while this delivery
+ * posted its comment or read the ticket is not undone. (A merge landing
+ * between this read and the tracker's own update is not prevented.)
+ */
+export async function moveSuperseded(ctx: PluginContext, ticket: TicketRecord, action: Extract<SyncAction, { kind: 'move' }>): Promise<boolean> {
+  return !!action.supersededBy && (await readProgress(ctx, ticket.t)).d.includes(action.supersededBy);
 }
 
 /** Record that an action was done, so a redelivery does not repeat it. */

@@ -283,6 +283,55 @@ test('a failed comment is retried with the delivery while a done move is not rep
     && error.message === 'Linear refused the comment on ENG-123 with AUTHENTICATION_ERROR; it is not retried. Check the Linear API key under Connections');
 });
 
+test('an opening delivery retried by hand after the merge was synced does not move the ticket back; its failed comment is still posted', async () => {
+  // Linear refuses the opening move (and, in the second run, the opening comment) until `refusing` is cleared.
+  for (const commentFails of [false, true]) {
+    let refusing = true;
+    const k = await handedOver(BASE_SETTINGS, { graphql: gql => {
+      if (!refusing) return undefined;
+      if (gql.query.includes('issueUpdate') && gql.variables.stateId === 'st-eng-review') return GQL.rateLimited;
+      return commentFails && gql.query.includes('commentCreate') && String(gql.variables.body).startsWith('ProPR opened') ? GQL.rateLimited : undefined;
+    } });
+    const opened = task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 55);
+    for (const attempt of [1, 2, 3]) await assert.rejects(k.syncBack({ ...opened, attempt }, k.ctx), PluginDeliveryError, 'the opening delivery exhausts its retries');
+    const merged = await k.syncBack(pull('merged'), k.ctx) as { moved: string | null };
+    assert.equal(merged.moved, 'Done');
+    refusing = false;
+    const [commentsBefore, movesBefore] = [k.comments().length, k.moves().length];
+    const retried = await k.syncBack({ ...opened, attempt: 4 }, k.ctx) as { skipped: string | null; commented: boolean; moved: string | null };
+    assert.deepEqual(k.moves().slice(movesBefore), [], 'no move back to the opening state');
+    assert.equal(retried.moved, null);
+    const posted = k.comments().slice(commentsBefore).map(g => String(g.variables.body).split('.')[0]);
+    // The failed comment is posted on the retry; a posted one is not repeated.
+    assert.deepEqual(posted, commentFails ? ['ProPR opened a pull request for this ticket'] : []);
+    if (!commentFails) assert.equal(retried.skipped, 'done');
+  }
+  // Another pull request of the same ticket opened after the merge still moves it.
+  const k = await handedOver();
+  await k.syncBack(task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 55), k.ctx);
+  await k.syncBack(pull('merged'), k.ctx);
+  await k.syncBack(task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 56), k.ctx);
+  assert.deepEqual(k.moves().map(g => g.variables.stateId), ['st-eng-review', 'st-eng-done', 'st-eng-review']);
+});
+
+test('a merge synced while an opening delivery is under way is not undone by its move', async () => {
+  let k: Awaited<ReturnType<typeof handedOver>> | undefined;
+  k = await handedOver(BASE_SETTINGS, { graphql: gql => {
+    // While the opening delivery reads the ticket's states, the merge delivery records its move.
+    if (gql.query.includes('ProprTicketStates') && k) {
+      for (const [key, value] of k.state) {
+        if (!key.startsWith('sync:') || !Array.isArray(value)) continue;
+        for (const entry of value as { t: string; d: string[] }[]) if (entry.t === HOOKS.ids.tickets.mapped) entry.d.push('merged:55:move');
+      }
+    }
+    return undefined;
+  } });
+  const result = await k.syncBack(task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 55), k.ctx) as { commented: boolean; moved: string | null };
+  assert.deepEqual([result.commented, result.moved], [true, null]);
+  assert.deepEqual(k.moves(), [], 'the opening move is not sent');
+  assert.ok(k.logs.some(line => line.level === 'info' && line.message === 'Did not move ENG-123 back: its pull request was merged already'));
+});
+
 test('the configure form\'s choices: teams, projects and workflow states from Linear, and a clear error before the API key is set', async () => {
   const k = await kit();
   const input = (setting: string): PluginSettingOptionsInput => ({ kind: 'setting_options', setting });

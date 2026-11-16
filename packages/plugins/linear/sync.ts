@@ -1,6 +1,6 @@
 import { PluginDeliveryError, type PluginContext, type PluginEventInput, type PluginJsonValue } from '@propr/shared';
 import { eventName } from '../_shared/eventSelection.js';
-import { markSyncDone, planSync, syncEventsSetting, type SyncAction, type SyncMessage, type TrackerMove } from '../_shared/trackerSync.js';
+import { markSyncDone, moveSuperseded, planSync, syncEventsSetting, type SyncAction, type SyncMessage, type TrackerMove } from '../_shared/trackerSync.js';
 import type { TicketRecord } from '../_shared/trackerRecords.js';
 import { commentOnTicket, deliveryFailure, moveTicket, ticketTeamStates } from './api.js';
 import { LINEAR_SETTINGS } from './settings.js';
@@ -41,6 +41,10 @@ async function run(ctx: PluginContext, ticket: TicketRecord, action: SyncAction)
   }
   const name = stateName(ctx, action.move);
   const { team, states } = await ticketTeamStates(ctx, ticket.t);
+  if (await moveSuperseded(ctx, ticket, action)) {
+    ctx.log.info(`Did not move ${ticket.k} back: its pull request was merged already`, { ticket: ticket.k });
+    return {};
+  }
   const state = states.find(s => typeof s.name === 'string' && s.name.trim().toLowerCase() === name.toLowerCase());
   if (!state) {
     // Reported, not retried: the name stays missing until the settings change. Other events go ahead.

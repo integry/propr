@@ -73,8 +73,10 @@ token, which that server accepts. The handlers never see it.
 - **Outbound**: subscriptions to `task.started`, `task.completed`,
   `task.failed`, `pull_request.opened`, `pull_request.review_scored`,
   `pull_request.merged` and `pull_request.closed`. Each comment and move is
-  done once per ticket (`sync:<n>` shards). A missing state name is a warning in
-  Activity and the rest goes ahead.
+  done once per ticket (`sync:<n>` shards). The opening move of a pull request
+  whose merge move is done is never made, so a retried opening delivery cannot
+  move a merged ticket back. A missing state name is a warning in Activity and
+  the rest goes ahead.
 - **MCP server**: Linear offers a remote MCP server that accepts an API key as
   a Bearer token, so the plugin contributes it, at the read-only endpoint
   `https://mcp.linear.app/mcp/readonly`, as a `read` server. Linear does not

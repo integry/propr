@@ -123,7 +123,9 @@ never code, logs, prompt text, tool output or the ticket's text.
 Each comment and each move is done once per ticket: a redelivered event does
 nothing again. When one action fails (Linear is rate limiting, say), the other
 actions of the event still run, and the failed one is retried with the
-delivery.
+delivery. A pull request's opening move is not made once its merge move is
+done: retrying a failed opening delivery from Activity after the merge posts
+any comment still missing but leaves the ticket in the merged state.
 
 **A missing state name** (the ticket's team has no state of that name) is
 reported in Activity as a warning, for example `Linear team ENG has no workflow
