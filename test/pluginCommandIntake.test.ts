@@ -198,7 +198,7 @@ const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('.
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { processDetectedIssue } = await import('../packages/core/src/daemon/issueDetection.js');
-const { settleDispatchedIssueCommand, retireIssueCommandIntent, ISSUE_COMMAND_INTENT_SCRIPTS: INTENT_SCRIPTS } = await import('../packages/core/src/plugins/issueCommandIntent.js');
+const { settleDispatchedIssueCommand, retireIssueCommandIntent, ISSUE_COMMAND_INTENT_SCRIPTS: INTENT_SCRIPTS, ISSUE_COMMAND_CLAIM_LEASE_MS } = await import('../packages/core/src/plugins/issueCommandIntent.js');
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -809,12 +809,12 @@ describe('plugin prompt command on an issue', () => {
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'corr-other', other.deps as never)).reason, 'job_already_queued');
         assert.strictEqual(other.deps.redis._store.get(INTENT_KEY), pendingRecordOf(555), 'another comment\'s record is not this command\'s to retire');
 
-        // The label event queues this comment's command and marks it queued while the redelivery checks the queue.
+        // The label event claims this comment's command (a leased `queued` mark) while the redelivery checks the queue.
         const f = deps();
         await failAfterPublishing(f);
         const settledMeanwhile = { ...f.deps, hasQueuedIssueJob: async () => {
             const intent = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
-            f.deps.redis._store.set(INTENT_KEY, JSON.stringify({ ...intent, state: 'queued' }));
+            f.deps.redis._store.set(INTENT_KEY, JSON.stringify({ ...intent, state: 'queued', claimedAt: Date.now() }));
             return true;
         } };
         const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-retry', settledMeanwhile as never);
@@ -952,7 +952,7 @@ describe('plugin prompt command on an issue', () => {
         const started = await redeliver(g, { hasQueuedIssueJob: async () => true });
         assert.strictEqual(started.reason, 'duplicate_delivery', 'a carried command is not reported as not started');
         assert.strictEqual(notStartedReplies(g), 0);
-        assert.strictEqual(await retireIssueCommandIntent(g.deps.redis, INTENT_KEY, 601), 'started');
+        assert.strictEqual(await retireIssueCommandIntent(g.deps.redis, INTENT_KEY, 601, { storedJobData: async () => storedIssueJob() }), 'started');
         assert.ok(g.deps.redis._store.has(INTENT_KEY));
         // Once that job has finished, a later label event does not run the started command a second time.
         assertOrdinary(await laterOrdinaryTrigger(g.deps.redis));
@@ -974,5 +974,176 @@ describe('plugin prompt command on an issue', () => {
         assert.strictEqual(redelivery.reason, 'job_already_queued');
         assert.strictEqual(notStartedReplies(f), 1);
         assert.strictEqual(await runsCommand(f.deps.redis, job), false);
+    });
+    // ---- A claim interrupted between its mark and its add (F8) ----
+
+    /** The label path claims the command, then its process stops before the add: the record is left `queued` without a job. */
+    const interruptedClaim = async (f: ReturnType<typeof deps>) => {
+        await failAfterPublishing(f);
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('process stopped'); });
+        // The put-back never runs either (a stopped process has no `finally`): the record stays claimed.
+        f.deps.redis.eval.mock.mockImplementation(async (script: string, _keys: number, ...args: string[]) => {
+            if (script === INTENT_SCRIPTS.replaceIfUnchanged && args[0] === INTENT_KEY) throw new Error('process stopped');
+            return runScript(f.deps.redis._store, script, args);
+        });
+        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-claim', f.deps.redis as never), /process stopped/);
+        f.deps.redis.eval.mock.mockImplementation(async (script: string, _keys: number, ...args: string[]) => runScript(f.deps.redis._store, script, args));
+        const stranded = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+        assert.strictEqual(stranded.state, 'queued', 'the claim is stranded');
+        assert.strictEqual(typeof stranded.claimedAt, 'number', 'the claim is leased');
+        assert.strictEqual(storedIssueJob(), undefined, 'no job carries it');
+        assert.deepStrictEqual(fates(f.deps.redis), []);
+        f.deps.redis._store.delete(DEDUPE_KEY);
+        return stranded as { token: string; claimedAt: number };
+    };
+    /** Time passes: the stranded claim's lease runs out. */
+    const leaseRunsOut = (f: ReturnType<typeof deps>) => {
+        const intent = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+        f.deps.redis._store.set(INTENT_KEY, JSON.stringify({ ...intent, claimedAt: intent.claimedAt - ISSUE_COMMAND_CLAIM_LEASE_MS - 1 }));
+    };
+
+    test('a claim interrupted before its add is reclaimed by the next label event once its lease has run out; within the lease that event queues nothing', async () => {
+        const f = deps();
+        const stranded = await interruptedClaim(f);
+        // Within the lease the claim may still be in flight: ordinary work would take the command's job ID.
+        assert.deepStrictEqual(await processDetectedIssue(labelEvent(), 'corr-label-early', f.deps.redis as never), { status: 'ignored', reason: 'job_already_queued' });
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1, 'nothing more was queued');
+        assert.strictEqual(storedIssueJob(), undefined);
+        f.deps.redis._store.delete(DEDUPE_KEY);
+
+        leaseRunsOut(f);
+        const recovered = await processDetectedIssue(labelEvent(), 'corr-label-late', f.deps.redis as never);
+        assert.strictEqual(recovered.status, 'accepted');
+        const job = storedIssueJob();
+        assert.strictEqual(job?.pluginCommand?.command, 'example-notes', 'the command reaches its task');
+        assert.match(job?.pluginCommand?.instruction ?? '', /"cover the CLI"/);
+        assert.strictEqual(job?.pluginCommandIntent, stranded.token, 'the job names the same attempt');
+        assert.notStrictEqual(job?.userId, '999', 'the task belongs to the command author');
+        const reclaimed = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+        assert.strictEqual(reclaimed.state, 'queued');
+        assert.ok(reclaimed.claimedAt > stranded.claimedAt - ISSUE_COMMAND_CLAIM_LEASE_MS, 'the lease was renewed by the new claim');
+        assert.strictEqual(await runsCommand(f.deps.redis, job), true);
+        // The command's redelivery now finds the job that carries it.
+        mockWaitingJobs = [{ name: 'processGitHubIssue', data: job }];
+        try {
+            assert.strictEqual((await redeliver(f, { hasQueuedIssueJob: async () => true })).reason, 'duplicate_delivery');
+        } finally {
+            mockWaitingJobs = [];
+        }
+        assert.strictEqual(notStartedReplies(f), 0);
+        // Once it has run, a later label event is ordinary work: the carried command is not replayed.
+        assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+    });
+
+    test('a redelivery after an interrupted claim starts the command itself once the lease has run out, and is told it started while the lease runs', async () => {
+        const f = deps();
+        await interruptedClaim(f);
+        assert.strictEqual((await redeliver(f)).reason, 'duplicate_delivery', 'within the lease the claim may still be queueing');
+        assert.strictEqual(f.enqueued.length, 0);
+        assert.ok(!f.deps.redis._store.has('issue-comment-command:testowner:testrepo:7:601'), 'the comment is not marked handled while the claim is only in flight');
+
+        leaseRunsOut(f);
+        const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-redelivery-late', f.deps as never);
+        assert.deepStrictEqual(redelivery, { status: 'accepted', billing: { seatConsumed: true } });
+        assert.strictEqual(f.enqueued.length, 1, 'the redelivery queues the task');
+        assert.match(String(f.enqueued[0].data.pluginCommand && (f.enqueued[0].data.pluginCommand as { instruction: string }).instruction), /"cover the CLI"/);
+        assert.ok(!f.requests.some(r => r.route.endsWith('/labels') && r.parameters.issue_number === 7 && f.requests.indexOf(r) > 0), 'the label already on the issue is not published again');
+        assert.ok(!f.deps.redis._store.has(INTENT_KEY), 'the stranded claim is replaced and released');
+        assert.strictEqual(notStartedReplies(f), 0);
+    });
+
+    test('a redelivery refused after an interrupted claim reports the command as not started and retires it, instead of taking the stranded mark for a started task', async () => {
+        const f = deps();
+        await interruptedClaim(f);
+        leaseRunsOut(f);
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        const refused = await redeliver(f, { hasQueuedIssueJob: async () => true });
+        assert.strictEqual(refused.reason, 'job_already_queued');
+        assert.strictEqual(notStartedReplies(f), 1, 'the user is told');
+        assert.ok(!f.deps.redis._store.has(INTENT_KEY), 'the stranded claim is retired');
+        assert.deepStrictEqual(fates(f.deps.redis), ['retired']);
+        // Nothing runs the refused command: a later label event is ordinary work.
+        assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+    });
+
+    test('a claim put back after a failed add whose put-back also failed is reclaimed the same way', async () => {
+        const f = deps();
+        await failAfterPublishing(f);
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('connection reset'); });
+        f.deps.redis.eval.mock.mockImplementation(async (script: string, _keys: number, ...args: string[]) => {
+            if (script === INTENT_SCRIPTS.replaceIfUnchanged && args[0] === INTENT_KEY) throw new Error('redis eval failed');
+            return runScript(f.deps.redis._store, script, args);
+        });
+        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never), /connection reset/);
+        f.deps.redis.eval.mock.mockImplementation(async (script: string, _keys: number, ...args: string[]) => runScript(f.deps.redis._store, script, args));
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'queued', 'the put-back failed');
+        assert.ok(mockLoggerInstance.warn.mock.calls.some(call => /reclaimed once its lease runs out/.test(String(call.arguments[1]))));
+        f.deps.redis._store.delete(DEDUPE_KEY);
+        leaseRunsOut(f);
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label-2', f.deps.redis as never)).status, 'accepted');
+        assert.strictEqual(storedIssueJob()?.pluginCommand?.command, 'example-notes');
+    });
+
+    test('a queued record a job carries, or whose token a dispatcher carried, is never reclaimed, even without a lease', async () => {
+        // The job is in its retry backoff: not active or waiting, but stored, and it names the record.
+        const f = deps();
+        await failAfterPublishing(f);
+        const { token } = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+        const carrying = { name: 'processGitHubIssue', data: { ...ordinaryParent.data, userId: '9', pluginCommand: { pluginId: 'example-pack', command: 'example-notes', instruction: 'x', extensions: EXPECTED_EXTENSIONS }, pluginCommandIntent: token, correlationId: 'carrying' } };
+        mockStoredJobs.set(JOB_ID, carrying);
+        f.deps.redis._store.set(INTENT_KEY, JSON.stringify({ ...JSON.parse(f.deps.redis._store.get(INTENT_KEY)!), state: 'queued' }));
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
+        assert.strictEqual(mockStoredJobs.get(JOB_ID), carrying, 'the add kept the carrying job');
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).claimedAt, undefined, 'not claimed again');
+        assert.strictEqual((await redeliver(f, { hasQueuedIssueJob: async () => true })).reason, 'duplicate_delivery');
+        assert.strictEqual(notStartedReplies(f), 0);
+
+        // A dispatcher settled the record: the token is carried, so the record is consumed.
+        mockStoredJobs.clear();
+        f.deps.redis._store.delete(DEDUPE_KEY);
+        mockQueueAdd.mock.resetCalls();
+        await settleDispatchedIssueCommand(f.deps.redis, { repoOwner: 'testowner', repoName: 'testrepo', number: 7, pluginCommandIntent: token });
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label-2', f.deps.redis as never)).status, 'accepted');
+        assertOrdinary(queued()[0].data as StoredIssueJob & { userId?: string });
+    });
+
+    // ---- The seat a recovered command consumes (F9) ----
+
+    test('a human command recovered through the bot-applied label consumes a seat, like its own intake; ordinary work by the bot does not', async () => {
+        const f = deps();
+        const direct = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-direct', f.deps as never);
+        assert.deepStrictEqual(direct, { status: 'accepted', billing: { seatConsumed: true } });
+
+        const g = deps();
+        await failAfterPublishing(g);
+        assert.strictEqual(JSON.parse(g.deps.redis._store.get(INTENT_KEY)!).seatConsumed, true, 'the classification is recorded with the command');
+        const recovered = await processDetectedIssue(labelEvent(), 'corr-label', g.deps.redis as never);
+        assert.deepStrictEqual(recovered, { status: 'accepted', billing: { seatConsumed: true } }, 'the bot applied the label, but the request is the human\'s');
+        assert.strictEqual(storedIssueJob()?.pluginCommand?.command, 'example-notes');
+        assert.strictEqual(await runsCommand(g.deps.redis, storedIssueJob()), true);
+
+        // Ordinary work started by the bot's label, and a recovered command whose job was not stored, stay the label actor's.
+        assertOrdinary(await laterOrdinaryTrigger(g.deps.redis));
+        const h = deps();
+        await failAfterPublishing(h);
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        assert.deepStrictEqual(await processDetectedIssue(labelEvent(), 'corr-label-held', h.deps.redis as never), { status: 'accepted', billing: { seatConsumed: false } });
+        assert.strictEqual(JSON.parse(h.deps.redis._store.get(INTENT_KEY)!).state, 'pending');
+    });
+
+    test('a bot-authored command recovered through the label consumes no seat, and a record without the classification falls back to the label actor', async () => {
+        const f = deps();
+        const event = issueComment('/example-notes cover the CLI');
+        event.comment.user.login = 'helper[bot]';
+        await assert.rejects(processIssueCommentCommand(event, 'corr-bot', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).seatConsumed, false);
+        assert.deepStrictEqual(await processDetectedIssue({ ...labelEvent(), triggeredBy: 'octocat', triggeredById: '42' }, 'corr-label', f.deps.redis as never), { status: 'accepted', billing: { seatConsumed: false } });
+
+        const g = deps();
+        await failAfterPublishing(g);
+        const { seatConsumed: _recorded, ...legacy } = JSON.parse(g.deps.redis._store.get(INTENT_KEY)!);
+        g.deps.redis._store.set(INTENT_KEY, JSON.stringify(legacy));
+        assert.deepStrictEqual(await processDetectedIssue({ ...labelEvent(), triggeredBy: 'octocat', triggeredById: '42' }, 'corr-label-2', g.deps.redis as never), { status: 'accepted', billing: { seatConsumed: true } });
+        assert.strictEqual(storedIssueJob()?.pluginCommand?.command, 'example-notes');
     });
 });

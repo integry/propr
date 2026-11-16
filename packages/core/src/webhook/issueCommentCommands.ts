@@ -8,7 +8,7 @@ import type { IssueJobData } from '../queue/taskQueue.types.js';
 import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
 import {
   issueCommandIntentKey, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
-  releaseIssueCommandIntent, retireIssueCommandIntent, withdrawIssueCommandIntent, type StoredIssueCommandIntent,
+  reconcileQueuedIssueCommand, releaseIssueCommandIntent, retireIssueCommandIntent, withdrawIssueCommandIntent, type StoredIssueCommandIntent,
 } from '../plugins/issueCommandIntent.js';
 
 /**
@@ -43,6 +43,8 @@ export interface IssueCommandDependencies {
   enqueue?: (data: IssueJobData, jobId: string) => Promise<Partial<IssueJobData> | null>;
   /** Whether a parent job for the issue is already active, waiting or delayed for a retry. */
   hasQueuedIssueJob?: (repoOwner: string, repoName: string, number: number) => Promise<boolean>;
+  /** The data of the job stored under the issue's deterministic job ID, or null when there is none. */
+  storedIssueJob?: (jobId: string) => Promise<Partial<IssueJobData> | null>;
   primaryLabels?: () => Promise<string[]>;
   ignoreKeywords?: () => Promise<string[]>;
 }
@@ -77,6 +79,11 @@ async function defaultEnqueue(data: IssueJobData, jobId: string): Promise<Partia
   await queue.add('processGitHubIssue', data, { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: true });
   // The returned job holds the data passed in even when the ID was taken; the stored job is read back.
   const job = await queue.getJob(jobId);
+  return (job?.data as Partial<IssueJobData> | undefined) ?? null;
+}
+async function defaultStoredIssueJob(jobId: string): Promise<Partial<IssueJobData> | null> {
+  const { getIssueQueue } = await import('../queue/taskQueue.js');
+  const job = await (await getIssueQueue()).getJob(jobId);
   return (job?.data as Partial<IssueJobData> | undefined) ?? null;
 }
 async function defaultHasQueuedIssueJob(repoOwner: string, repoName: string, number: number): Promise<boolean> {
@@ -122,6 +129,11 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   if (await deps.redis.set(claimKey, Date.now().toString(), 'EX', CLAIM_TTL_SECONDS, 'NX') !== 'OK') return { status: 'ignored', reason: 'duplicate_delivery' };
   const dedupeKey = `issue:dedup:${owner}:${repo}:${issue.number}`;
   const intentKey = issueCommandIntentKey(owner, repo, issue.number);
+  const jobId = `issue-${owner}-${repo}-${issue.number}`;
+  // Whether a job carries a record the label path marked `queued`: that mark
+  // alone is a reservation, left behind when the claim was interrupted.
+  const evidence = { storedJobData: () => (deps.storedIssueJob ?? defaultStoredIssueJob)(jobId) };
+  const seatConsumed = !/\[bot\]$/i.test(author);
   // Set only once this attempt holds the issue's dedupe window, so a failure
   // releases that window and an immediate redelivery can start the task.
   let dedupeToken: string | null = null;
@@ -145,7 +157,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     // event queued with it before the refusal. A command a label event
     // claimed, or a dispatcher started, meanwhile is not reported.
     const refuse = async (text: string, reason: string): Promise<DeliveryDisposition> => {
-      if (await retireIssueCommandIntent(deps.redis, intentKey, comment.id) === 'started') return alreadyStarted();
+      if (await retireIssueCommandIntent(deps.redis, intentKey, comment.id, evidence) === 'started') return alreadyStarted();
       await reply(text);
       return { status: 'ignored', reason };
     };
@@ -155,9 +167,23 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     }
     const { run } = resolution;
     // An earlier attempt for this comment published the label and failed to
-    // queue; the label's webhook then queued the job carrying this command.
+    // queue; the label's webhook then queued (or is queueing) the job carrying
+    // this command. A claim it left behind without a job is this attempt's to
+    // start afresh: the record is replaced below, and withdrawn like any other
+    // of this comment's if this attempt fails too.
     earlier = await readIssueCommandIntent(deps.redis, intentKey);
-    if (earlier?.intent.state === 'queued' && earlier.intent.commentId === comment.id) return alreadyStarted();
+    if (earlier?.intent.state === 'queued' && earlier.intent.commentId === comment.id) {
+      const verdict = await reconcileQueuedIssueCommand(deps.redis, intentKey, earlier.intent, evidence);
+      if (verdict === 'started') return alreadyStarted();
+      if (verdict === 'in_flight') {
+        // The claim may still be queueing, or may have been interrupted: the
+        // comment stays open to a later redelivery, which reconciles it again.
+        await deps.redis.del(claimKey);
+        return alreadyStarted();
+      }
+      log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command claimed by an interrupted label path and never queued; starting it afresh');
+      earlier = null;
+    }
     const primaryLabels = await (deps.primaryLabels ?? defaultPrimaryLabels)();
     // New work starts with the first label; work started through any configured
     // label family makes the issue busy.
@@ -179,7 +205,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     // once the label may be on the issue: that label may then start the
     // issue's work without this attempt.
     const userId = String(payload.sender.id);
-    const intentValue = pendingIssueCommandIntent({ commentId: comment.id, userId, pluginCommand: run, token });
+    const intentValue = pendingIssueCommandIntent({ commentId: comment.id, userId, seatConsumed, pluginCommand: run, token });
     recorded = intentValue;
     await recordIssueCommandIntent(deps.redis, intentKey, intentValue);
     if (!labels.includes(triggeringLabel)) {
@@ -194,7 +220,6 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       repoOwner: owner, repoName: repo, number: issue.number, userId, triggeringLabel,
       correlationId: generateCorrelationId(), pluginCommand: run, pluginCommandIntent: token,
     };
-    const jobId = `issue-${owner}-${repo}-${issue.number}`;
     const stored = await (deps.enqueue ?? defaultEnqueue)(data, jobId);
     if (!stored) throw new Error(`The issue job ${jobId} was not found after queueing it`);
     if (!issueJobCarriesCommand(stored, data)) {
@@ -216,7 +241,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task; the job\'s dispatcher settles it');
     });
     log.info({ repository, issueNumber: issue.number, commentId: comment.id, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} started an implementation task`);
-    return { status: 'accepted', billing: { seatConsumed: !/\[bot\]$/i.test(author) } };
+    return { status: 'accepted', billing: { seatConsumed } };
   } catch (error) {
     // This attempt created no task: release what it reserved so a redelivery
     // is handled afresh. The dedupe window is released only while it is still

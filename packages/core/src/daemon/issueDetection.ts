@@ -14,7 +14,7 @@ import { restoreIssueTrigger, settleWithdrawalCleanups } from '../services/taskI
 import type { CleanupVerdict } from '../services/withdrawalCleanup.js';
 import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
-import { claimPendingIssueCommand, issueCommandJobFields, carryClaimedIssueCommand } from '../plugins/issueCommandIntent.js';
+import { claimPendingIssueCommand, issueCommandJobFields, carryClaimedIssueCommand, type ClaimedIssueCommand } from '../plugins/issueCommandIntent.js';
 
 export type { DetectedIssue };
 
@@ -103,6 +103,15 @@ const BOT_LOGIN_PATTERN = /\[bot\]$/i;
 function issueSeatConsumed(issue: DetectedIssue): boolean {
     const actor = issue.triggeredBy?.trim();
     return Boolean(actor && !BOT_LOGIN_PATTERN.test(actor));
+}
+
+/**
+ * The seat the queued work consumes. A recovered plugin command is the command
+ * author's request, classified as its own intake would have (its label was
+ * applied by ProPR's bot); ordinary work is the label applier's.
+ */
+function queuedSeatConsumed(issue: DetectedIssue, command: ClaimedIssueCommand | null, carried: boolean): boolean {
+    return carried && command?.intent.seatConsumed !== undefined ? command.intent.seatConsumed : issueSeatConsumed(issue);
 }
 
 function excludeLabelsFor(triggers: string[]): string[] {
@@ -289,16 +298,24 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         triggeringLabel: triggeringLabel
     }, 'Enqueueing parent job for matrix dispatch');
 
+    // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
+    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
+    const storedJobData = async (): Promise<unknown> => (await (await getIssueQueue()).getJob(jobId))?.data;
+
     // A plugin command that published this issue's label but failed to queue
     // its job: the label starts the job carrying that command, not ordinary work.
     // It is claimed before the add, so a refusal of the command either retires
-    // it first (this label then queues ordinary work) or finds it started.
-    const pendingCommand = await claimPendingIssueCommand(redisClient, issue.repoOwner, issue.repoName, issue.number);
+    // it first (this label then queues ordinary work) or finds it started. A
+    // claim another label path is still carrying into its job leaves this
+    // label nothing to queue: ordinary work would take the command's job ID.
+    const { status: claimStatus, claimed: pendingCommand } = await claimPendingIssueCommand(redisClient, issue, { storedJobData });
+    if (claimStatus === 'in_flight') {
+        correlatedLogger.info({ issueNumber: issue.number, repository: repoFullName }, 'A plugin command claimed for this issue is still being queued, skipping');
+        return { status: 'ignored', reason: 'job_already_queued' };
+    }
 
     try {
         const timestamp = Date.now();
-        // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
-        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
         const issueJob = {
             repoOwner: issue.repoOwner,
             repoName: issue.repoName,
@@ -323,11 +340,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
         // An add whose ID is taken keeps the existing job (e.g. one delayed for a
         // retry), so the claim is kept only once the stored job carries the command.
-        await carryClaimedIssueCommand(redisClient, pendingCommand, {
-            add: addToQueueWithRetry,
-            queued: issueJob,
-            storedJobData: async () => (await (await getIssueQueue()).getJob(jobId))?.data,
-        }, correlatedLogger);
+        const carried = await carryClaimedIssueCommand(redisClient, pendingCommand, { add: addToQueueWithRetry, queued: issueJob, storedJobData }, correlatedLogger);
 
         try {
             const activity = {
@@ -352,7 +365,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             repository: repoFullName,
             issueCorrelationId: issueJob.correlationId
         }, 'Successfully added parent job to processing queue');
-        return { status: 'accepted', billing: { seatConsumed: issueSeatConsumed(issue) } };
+        return { status: 'accepted', billing: { seatConsumed: queuedSeatConsumed(issue, pendingCommand, carried) } };
 
     } catch (error) {
         handleError(error, `Failed to add issue ${issue.number} to queue`, { correlationId });
