@@ -4,17 +4,17 @@ import type { PluginCommandRun } from './pluginCommands.js';
 
 /**
  * A plugin command accepted on an issue, kept until a job carrying it is
- * queued.
+ * queued or the command is given up.
  *
  * The command publishes the issue's processing label before it queues its
  * job, and that label's webhook can start the issue's work on its own. If the
  * command's own enqueue fails after the label is on the issue, the label
  * webhook (or a redelivery of it) is what starts the task, so label-triggered
  * intake reads this record and queues the command-bearing job instead of an
- * ordinary one. The record is only released on evidence that such a job was
- * queued: the command's own enqueue deletes it, and the label path marks it
- * `queued` so a redelivery of the same comment does not reply that a task is
- * already running.
+ * ordinary one. The record is only released as carried on evidence that such
+ * a job was queued: the command's own enqueue deletes it, and the label path
+ * marks it `queued` so a redelivery of the same comment does not reply that a
+ * task is already running.
  *
  * Either release can fail after the job is queued. The job itself is then the
  * durable evidence: it names the record's token (`pluginCommandIntent`), and
@@ -22,6 +22,13 @@ import type { PluginCommandRun } from './pluginCommands.js';
  * the job while it cannot (`settleDispatchedIssueCommand`). So a record still
  * `pending` when a later label event reads it was never carried into running
  * work, and a queued job still carrying it holds the issue's job ID.
+ *
+ * A command that no label of its own can start is given up instead, so no
+ * later, independent label event runs it: ProPR retires a comment's pending
+ * record before it replies that the command was not started
+ * (`retireIssueCommandIntent`), and an attempt whose label GitHub refused, or
+ * that requested none, withdraws the record it wrote. Only a label the command
+ * may have published keeps its record pending past a failed attempt.
  */
 export interface IssueCommandIntent {
   state: 'pending' | 'queued';
@@ -51,11 +58,14 @@ export function issueCommandIntentKey(owner: string, repo: string, number: numbe
   return `issue:plugin-command-intent:${owner}:${repo}:${number}`;
 }
 
-/** Records a pending command for the issue, replacing any earlier record. Returns the stored value. */
-export async function recordIssueCommandIntent(redis: Pick<Redis, 'set'>, key: string, intent: Omit<IssueCommandIntent, 'state'>): Promise<string> {
-  const raw = JSON.stringify({ ...intent, state: 'pending' } satisfies IssueCommandIntent);
+/** The stored value of a pending record, known before it is written so a failed write can still be withdrawn. */
+export function pendingIssueCommandIntent(intent: Omit<IssueCommandIntent, 'state'>): string {
+  return JSON.stringify({ ...intent, state: 'pending' } satisfies IssueCommandIntent);
+}
+
+/** Records the pending command `raw` (see `pendingIssueCommandIntent`) for the issue, replacing any earlier record. */
+export async function recordIssueCommandIntent(redis: Pick<Redis, 'set'>, key: string, raw: string): Promise<void> {
   await redis.set(key, raw, 'EX', ISSUE_COMMAND_INTENT_TTL_SECONDS);
-  return raw;
 }
 
 function isIntent(value: unknown): value is IssueCommandIntent {
@@ -147,6 +157,26 @@ export async function settleDispatchedIssueCommand(
     if (await markIssueCommandIntentQueued(redis, key, stored)) return;
   }
   throw new Error(`The plugin command intent ${key} kept changing while it was settled`);
+}
+
+/**
+ * Called before ProPR reports a comment's command as not started: deletes the
+ * issue's record while it is still that comment's pending one, so no later
+ * label event attaches a command ProPR refused to other work. Another
+ * comment's record is left as it is. Resolves `started` when the record is
+ * that comment's `queued` one: a label event queued the command since the
+ * caller last read it, so it must not be reported as not started. Rejects
+ * when the record cannot be read or deleted, before anything is reported.
+ */
+export async function retireIssueCommandIntent(redis: Pick<Redis, 'get' | 'eval'>, key: string, commentId: number): Promise<'not_started' | 'started'> {
+  for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt++) {
+    const stored = await readIssueCommandIntent(redis, key);
+    if (stored?.intent.commentId !== commentId) return 'not_started';
+    if (stored.intent.state === 'queued') return 'started';
+    // The record changed since it was read: read it again.
+    if (1 === await redis.eval(RELEASE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw)) return 'not_started';
+  }
+  throw new Error(`The plugin command intent ${key} kept changing while it was retired`);
 }
 
 /**

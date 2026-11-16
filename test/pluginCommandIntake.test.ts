@@ -702,4 +702,127 @@ describe('plugin prompt command on an issue', () => {
         await settleDispatchedIssueCommand(redis, job);
         assert.strictEqual(JSON.parse(redis._store.get(INTENT_KEY)!).state, 'queued', 'the retry settles it');
     });
+
+    // ---- A command reported as not started, or whose label GitHub refused (F6) ----
+
+    const NOT_STARTED = /was not started/;
+    /** The command's first attempt published its label, then failed to queue its job. */
+    const failAfterPublishing = async (f: ReturnType<typeof deps>) => {
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-first', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'pending');
+    };
+    /** The later label event queues ordinary work, owned by whoever applied the label. */
+    const assertOrdinary = (later: StoredIssueJob & { userId?: string }) => {
+        assert.strictEqual(later.pluginCommand, undefined, 'the abandoned command is not run');
+        assert.strictEqual(later.pluginCommandIntent, undefined);
+        assert.strictEqual(later.userId, '999', 'the task belongs to the label applier, not the command author');
+    };
+    const pendingRecordOf = (commentId: number) => JSON.stringify({ commentId, userId: '9', pluginCommand: { pluginId: 'example-pack', command: 'example-notes', instruction: 'other comment', extensions: EXPECTED_EXTENSIONS }, token: `token-${commentId}`, state: 'pending' });
+
+    test('a redelivery refused while an ordinary parent holds the job ID retires the command: a later label event queues ordinary work', async () => {
+        const f = deps();
+        await failAfterPublishing(f);
+        // The label webhook finds the ordinary parent in its retry backoff; its add keeps that job.
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'pending');
+        // The redelivered command is told it was not started...
+        mockDelayedJobs = [ordinaryParent];
+        const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-retry', queueDeps(f) as never);
+        assert.strictEqual(redelivery.reason, 'job_already_queued');
+        assert.match(String(f.requests.at(-1)?.parameters.body), NOT_STARTED);
+        assert.ok(!f.deps.redis._store.has(INTENT_KEY), 'a command reported as not started is not left pending');
+        // ...so once the ordinary work has finished, a later label application runs ordinary work.
+        mockDelayedJobs = [];
+        assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+    });
+
+    test('every not-started reply retires the comment\'s pending command: a busy label, a held dedupe window and a refused command', async () => {
+        for (const refusal of ['busy label', 'dedupe window', 'refused command'] as const) {
+            const f = deps();
+            await failAfterPublishing(f);
+            if (refusal === 'dedupe window') f.deps.redis._store.set(DEDUPE_KEY, 'another-event');
+            // The plugin now refuses the command (its manifest marks it as needing write access).
+            if (refusal === 'refused command') setPluginCommandResolver(async () => ({ status: 'refused', pluginId: 'example-pack', pluginName: 'Example', command: 'example-notes', message: '/example-notes needs write access. Nothing was started.' }));
+            try {
+                const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI', refusal === 'busy label' ? ['AI-processing'] : []), `corr-${refusal}`, f.deps as never);
+                assert.strictEqual(redelivery.reason, refusal === 'refused command' ? 'plugin_command_refused' : 'job_already_queued');
+                assert.match(String(f.requests.at(-1)?.parameters.body), /not started|Nothing was started/);
+            } finally {
+                setPluginCommandResolver(request => resolvePluginCommand(request, { database: fakeDatabase, catalog: async () => [example], library: async () => LIBRARY as never }));
+            }
+            assert.ok(!f.deps.redis._store.has(INTENT_KEY), `${refusal}: the command is not left pending`);
+            assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+        }
+    });
+
+    test('a job ID taken after the busy check does not put back the comment\'s own earlier pending command', async () => {
+        const f = deps();
+        await failAfterPublishing(f);
+        // The ordinary parent takes the ID after the redelivery's busy check.
+        mockStoredJobs.set(JOB_ID, ordinaryParent);
+        const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-retry', { ...queueDeps(f), hasQueuedIssueJob: async () => false } as never);
+        assert.strictEqual(redelivery.reason, 'job_already_queued');
+        assert.match(String(f.requests.at(-1)?.parameters.body), NOT_STARTED);
+        assert.ok(!f.deps.redis._store.has(INTENT_KEY));
+        assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+    });
+
+    test('a refusal keeps another comment\'s pending command, and a command a label event queued meanwhile is not reported as not started', async () => {
+        const other = deps({ hasQueuedIssueJob: async () => true });
+        other.deps.redis._store.set(INTENT_KEY, pendingRecordOf(555));
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'corr-other', other.deps as never)).reason, 'job_already_queued');
+        assert.strictEqual(other.deps.redis._store.get(INTENT_KEY), pendingRecordOf(555), 'another comment\'s record is not this command\'s to retire');
+
+        // The label event queues this comment's command and marks it queued while the redelivery checks the queue.
+        const f = deps();
+        await failAfterPublishing(f);
+        const settledMeanwhile = { ...f.deps, hasQueuedIssueJob: async () => {
+            const intent = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+            f.deps.redis._store.set(INTENT_KEY, JSON.stringify({ ...intent, state: 'queued' }));
+            return true;
+        } };
+        const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-retry', settledMeanwhile as never);
+        assert.strictEqual(redelivery.reason, 'duplicate_delivery');
+        assert.ok(!f.requests.some(r => NOT_STARTED.test(String(r.parameters.body))), 'no false "not started" reply');
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'queued', 'the queued evidence is kept');
+    });
+
+    test('a label GitHub refused withdraws the command, putting back the record it replaced; an unknown label outcome keeps it', async () => {
+        for (const [status, kept] of [[403, false], [422, false], [502, true], [500, true]] as const) {
+            const f = deps();
+            f.deps.redis._store.set(INTENT_KEY, pendingRecordOf(555));
+            const github = async () => ({ request: async (route: string, parameters: Record<string, unknown>) => {
+                if (route.endsWith('/labels')) throw Object.assign(new Error(`label request failed with ${status}`), { status });
+                f.requests.push({ route, parameters });
+                return {};
+            } });
+            await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), `corr-${status}`, { ...f.deps, github } as never), new RegExp(String(status)));
+            const record = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+            assert.strictEqual(record.commentId, kept ? 601 : 555, `${status}: ${kept ? 'the label may be on the issue; its webhook can still queue the command' : 'the replaced record is put back'}`);
+            assert.ok(!f.deps.redis._store.has(DEDUPE_KEY) && !f.deps.redis._store.has('issue-comment-command:testowner:testrepo:7:601'), 'the redelivery is handled afresh');
+        }
+        // Without an earlier record nothing is left for an independent label application to run.
+        const f = deps();
+        const github = async () => ({ request: async (route: string) => {
+            if (route.endsWith('/labels')) throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+            return {};
+        } });
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-403', { ...f.deps, github } as never), /not accessible/);
+        assert.deepStrictEqual([...f.deps.redis._store.keys()], []);
+        assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+    });
+
+    test('a command whose label was already on the issue withdraws its record when its enqueue fails', async () => {
+        const f = deps();
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-first', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
+        assert.ok(!f.requests.some(r => r.route.endsWith('/labels')), 'no label was requested');
+        assert.deepStrictEqual([...f.deps.redis._store.keys()], [], 'no label of this attempt can carry the command');
+        assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
+        // The redelivery is handled afresh and starts the command.
+        mockStoredJobs.delete(JOB_ID);
+        f.deps.redis._store.delete(DEDUPE_KEY);
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-retry', f.deps as never)).status, 'accepted');
+        assert.strictEqual(f.enqueued.length, 1);
+    });
 });
