@@ -128,7 +128,10 @@ scope. Token rotation must stay off: the plugin stores one long-lived bot token.
   are made inert.
 - Retries of the same Slack event (Slack retries up to three times when it gets
   no answer in three seconds) and ProPR's own retries create no second issue:
-  each handled message is remembered (`channel:ts`) in the plugin's state. When
+  each handled message is remembered (`channel:ts`) in the plugin's state for
+  longer than any delivery of it can be retried, and a mention more than an
+  hour old is ignored. A record of an issue is never dropped to make room: a
+  new mention waits for a later attempt instead. When
   the issue creation failed in a way that may still have created it, the
   delivery is marked failed and is not retried.
 

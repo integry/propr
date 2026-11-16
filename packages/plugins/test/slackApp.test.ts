@@ -309,7 +309,7 @@ test('thread mappings stay within the state limits: the oldest are forgotten', a
   assert.equal(await findThread(k.ctx, 'acme/api', 1, null), null);
   assert.ok(await findThread(k.ctx, 'acme/api', MAX_THREADS + 5, null));
   for (let n = 0; n < 80; n += 1) await k.onSlackEvent({ ...webhookInput('notAllowed'), body: EVENTS.requests.notAllowed.body.replace('1763301800.000400', `1763301800.${String(n).padStart(6, '0')}`) }, k.ctx);
-  assert.ok(Buffer.byteLength(JSON.stringify(k.state.get('mentions'))) <= 16 * 1024);
+  for (const key of [...k.state.keys()].filter(name => name.startsWith('mentions:'))) assert.ok(Buffer.byteLength(JSON.stringify(k.state.get(key))) <= 16 * 1024, key);
 });
 
 test('no message contains code, logs, prompt text, tool output or credentials (sentinel)', async () => {

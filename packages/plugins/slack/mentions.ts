@@ -4,7 +4,8 @@ import {
 } from '@propr/shared';
 import { SlackApiError, deliveryFailure, permalink, postMessage, userGroupMembers } from './api.js';
 import { slackEscape } from './format.js';
-import { deleteMention, readMention, rememberThread, writeMention } from './threads.js';
+import { deleteMention, mentionExpired, readMention, writeMention } from './mentionRecords.js';
+import { rememberThread } from './threads.js';
 
 /**
  * Slack app mode, inbound: the Events API request URL is the plugin's
@@ -204,6 +205,11 @@ export async function handleSlackEvent(input: PluginWebhookInput, ctx: PluginCon
   if (!CHANNEL_ID.test(channel) || !MESSAGE_TS.test(ts)) return result('ignored', 'not_a_message');
   const threadTs = typeof event.thread_ts === 'string' && MESSAGE_TS.test(event.thread_ts) ? event.thread_ts : ts;
   const message = `${channel}:${ts}`;
+  // Too old for a retry of a mention ProPR could have handled: its record may be gone, so it must not reach creation. Nothing is replied.
+  if (mentionExpired(ts, input.receivedAt)) {
+    ctx.log.info('Ignored a Slack mention older than the retry window');
+    return result('ignored', 'expired');
+  }
 
   const seen = await readMention(ctx, message);
   if (seen) {
@@ -238,7 +244,11 @@ export async function handleSlackEvent(input: PluginWebhookInput, ctx: PluginCon
   const label = triggerLabel(ctx.settings);
   const link = await permalink(ctx, channel, ts);
 
-  await writeMention(ctx, { m: message, s: 'pending', r: repository });
+  if (!(await writeMention(ctx, { m: message, s: 'pending', r: repository }))) {
+    // No room to remember this mention without forgetting one that still stands for an issue: it is taken in later instead.
+    ctx.log.warn('Too many recent Slack mentions are remembered to take in another one now; it is retried later');
+    throw new PluginDeliveryError('Too many recent Slack mentions to take in another one now; it is retried later', { retryAfterMs: 10 * 60_000 });
+  }
   let created: { number: number; url: string };
   try {
     created = await ctx.propr.createIssue(repository, { title, body: issueBody(plain, link), labels: [label] });

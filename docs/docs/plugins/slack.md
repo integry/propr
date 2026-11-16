@@ -189,6 +189,11 @@ nobody on GitHub is notified. Words such as `labels: llm-…`, `/model …` or
 (`X-Slack-Retry-Num`), and ProPR retries a failed delivery. Each handled
 message is remembered by `channel:ts`, so neither creates a second issue; a
 reply that failed after the issue was created is posted on the next attempt.
+A mention is only taken in within an hour of being posted, and a message that
+created (or may have created) an issue is remembered for longer than any
+delivery of it can still be retried, so a late retry cannot create a second
+issue either. If too many recent mentions are remembered to take in another,
+the new mention waits for a later attempt rather than forget one of them.
 If creating the issue failed in a way that may still have created it (a lost
 answer), the delivery is marked failed and not retried, so a request creates
 at most one issue.

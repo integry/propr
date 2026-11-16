@@ -8,9 +8,9 @@ import type { PluginContext, PluginJsonValue } from '@propr/shared';
  *   about it go to. An issue created from a mention maps to the mention's
  *   thread; its pull request then maps to the same thread. At most
  *   `MAX_THREADS` are kept; the oldest are forgotten first.
- * - `mentions`: the recent mentions handled, by `<channel>:<ts>` of the Slack
+ * - `mentions:<0-3>`: the mentions handled, by `<channel>:<ts>` of the Slack
  *   message, so a retry of the same Slack event (or a second event for the same
- *   message) creates no second issue.
+ *   message) creates no second issue; see `mentionRecords.ts`.
  */
 
 export interface ThreadRef { [key: string]: PluginJsonValue; c: string; t: string; at: number }
@@ -52,35 +52,4 @@ export async function rememberThread(ctx: PluginContext, repository: string, num
 export async function forgetThread(ctx: PluginContext, repository: string, number: number, kind: 'pull_request' | 'issue'): Promise<void> {
   const key = threadKey(repository, number, kind);
   if (key.length <= KEY_LIMIT) await ctx.state.delete(key);
-}
-
-/**
- * A handled mention. `s`: `pending` while the issue is being created (a retry
- * then cannot tell whether it was, and creates nothing), `created` once it was,
- * `replied` once the thread reply was posted, `refused` or `ignored` when no
- * issue was to be created and the reply (if any) was posted.
- */
-export type MentionStatus = 'pending' | 'created' | 'replied' | 'refused' | 'ignored';
-export interface MentionRecord { m: string; s: MentionStatus; at: number; r?: string; n?: number; u?: string }
-const MENTIONS = 'mentions';
-const MAX_MENTIONS = 50;
-const MENTION_BYTES = 12 * 1024;
-
-export async function readMention(ctx: PluginContext, message: string): Promise<MentionRecord | undefined> {
-  const list = ((await ctx.state.get(MENTIONS)) ?? []) as unknown as MentionRecord[];
-  return Array.isArray(list) ? list.find(entry => entry?.m === message) : undefined;
-}
-
-/** Write (or replace) the record of one mention; the oldest records are dropped to stay within the limits. */
-export async function writeMention(ctx: PluginContext, record: Omit<MentionRecord, 'at'>): Promise<void> {
-  const current = ((await ctx.state.get(MENTIONS)) ?? []) as unknown as MentionRecord[];
-  const list = (Array.isArray(current) ? current : []).filter(entry => entry?.m !== record.m);
-  list.push({ ...record, at: Date.now() } as MentionRecord);
-  while (list.length > MAX_MENTIONS || (list.length > 1 && Buffer.byteLength(JSON.stringify(list)) > MENTION_BYTES)) list.shift();
-  await ctx.state.set(MENTIONS, list as unknown as PluginJsonValue);
-}
-
-export async function deleteMention(ctx: PluginContext, message: string): Promise<void> {
-  const current = ((await ctx.state.get(MENTIONS)) ?? []) as unknown as MentionRecord[];
-  if (Array.isArray(current)) await ctx.state.set(MENTIONS, current.filter(entry => entry?.m !== message) as unknown as PluginJsonValue);
 }
