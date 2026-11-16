@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  PluginDeliveryError, validatePluginSettings,
+  PluginDeliveryError, PluginSdkError, validatePluginSettings,
   type PluginEventInput, type PluginHandler, type PluginHttpRequestInit, type PluginJsonValue, type PluginSettingOptions, type PluginSettingOptionsInput,
   type PluginSettingValues, type PluginWebhookInput, type RepositoryEvent,
 } from '@propr/shared';
@@ -44,7 +44,7 @@ function settings(values: PluginSettingValues): PluginSettingValues {
 type Gql = { query: string; variables: Record<string, PluginJsonValue> };
 const gqlOf = (init: PluginHttpRequestInit) => init.json as unknown as Gql;
 
-async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; state?: Record<string, PluginJsonValue>; graphql?: (gql: Gql) => Answer | undefined } = {}) {
+async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; state?: Record<string, PluginJsonValue>; graphql?: (gql: Gql) => Answer | undefined; pullRequestLookup?: () => void } = {}) {
   const { manifest } = plugin();
   let issues = 100;
   const k = createTestPluginContext({
@@ -53,7 +53,7 @@ async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { conne
     propr: {
       createIssue: repository => { issues += 1; return { repository, number: issues, url: `https://github.com/${repository}/issues/${issues}` }; },
       getIssue: (repository, number) => ({ repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/issues/${number}`, labels: [], author: null, createdAt: '', updatedAt: '' }),
-      getPullRequest: (repository, number) => ({ repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/pull/${number}`, labels: [], author: null, createdAt: '', updatedAt: '', draft: false, merged: false, headRef: `101/claude-fix-${number}`, baseRef: 'main', headSha: 'abc' }),
+      getPullRequest: (repository, number) => (options.pullRequestLookup?.(), { repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/pull/${number}`, labels: [], author: null, createdAt: '', updatedAt: '', draft: false, merged: false, headRef: `101/claude-fix-${number}`, baseRef: 'main', headSha: 'abc' }),
     },
   });
   const byId = Object.fromEntries(Object.entries(HOOKS.ids.tickets).map(([name, id]) => [id, name]));
@@ -235,6 +235,25 @@ test('a pull request opened by ProPR is linked to its ticket from its branch, wi
   assert.equal(k.comments().length, 2);
   // A pull request of an issue no ticket created is not about a ticket.
   assert.equal((await k.syncBack(pull('merged', {}, 78), k.ctx) as { skipped: string }).skipped, 'not_tracked');
+});
+
+test('a failed pull request lookup fails the delivery to be retried, and the retry links the ticket for the merge', async () => {
+  let refusal: PluginSdkError | null = new PluginSdkError('unavailable', 'ProPR could not complete getPullRequest');
+  const k = await handedOver(BASE_SETTINGS, { pullRequestLookup: () => { if (refusal) throw refusal; } });
+  const opened = pull('opened', {}, 77);
+  await assert.rejects(k.syncBack(opened, k.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent && /pull request #77/.test(error.message));
+  assert.equal(k.comments().length, 0);
+  refusal = null;
+  await k.syncBack({ ...opened, attempt: 2 }, k.ctx);
+  assert.equal(k.comments().length, 1, 'the retry posts the opening comment');
+  // The merge needs no lookup: with ProPR unavailable again it still reaches the linked ticket (its link is just left out).
+  refusal = new PluginSdkError('unavailable', 'ProPR could not complete getPullRequest');
+  const merged = await k.syncBack(pull('merged', {}, 77), k.ctx) as { ticket: string | null; commented: boolean; moved: string | null };
+  assert.deepEqual([merged.ticket, merged.commented, merged.moved], ['ENG-123', true, 'Done']);
+  assert.equal(k.comments()[1]?.variables.body, 'The pull request for this ticket was merged.\n\n_Posted by ProPR._');
+  // A refusal is not retried.
+  refusal = new PluginSdkError('permission_denied', 'getPullRequest needs the pull_requests:read permission');
+  await assert.rejects(k.syncBack(pull('opened', {}, 79), k.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent);
 });
 
 test('a state name the ticket\'s team lacks is reported in Activity and does not block the comment or later events', async () => {

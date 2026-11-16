@@ -1,4 +1,4 @@
-import type { PluginContext, PluginEventInput, PluginSettingValues, RepositoryEvent } from '@propr/shared';
+import { PluginDeliveryError, PluginSdkError, type PluginContext, type PluginEventInput, type PluginSettingValues, type RepositoryEvent } from '@propr/shared';
 import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, type TicketRecord } from './trackerRecords.js';
 
 /**
@@ -67,11 +67,22 @@ async function ticketOfPullRequest(ctx: PluginContext, event: RepositoryEvent): 
   const linked = await findTicketByPullRequest(ctx, event.repository, pr);
   if (linked || event.type !== 'opened') return linked;
   let head = '';
-  try { head = (await ctx.propr.getPullRequest(event.repository, pr)).headRef; } catch { return undefined; }
+  try { head = (await ctx.propr.getPullRequest(event.repository, pr)).headRef; } catch (error) { throw lookupFailure(error, pr); }
   const issue = positive(Number(/^(\d{1,9})\//.exec(head)?.[1]));
   const ticket = issue ? await findTicketByIssue(ctx, event.repository, issue) : undefined;
   if (ticket) await linkPullRequest(ctx, ticket, pr);
   return ticket;
+}
+
+/**
+ * A failed read of the pull request is not "no ticket": the delivery fails so
+ * it is retried, otherwise the link is never written and the ticket misses
+ * this and every later update. A refusal (permission, repository) is not
+ * retried; anything else (ProPR or GitHub unavailable) is.
+ */
+function lookupFailure(error: unknown, pr: number): PluginDeliveryError {
+  const permanent = error instanceof PluginSdkError && error.code !== 'unavailable';
+  return new PluginDeliveryError(`ProPR could not read pull request #${pr} to find its ticket${permanent ? ` (${error.code}); it is not retried` : '; it is retried'}`, { permanent });
 }
 
 async function linkPullRequest(ctx: PluginContext, ticket: TicketRecord, pr: number): Promise<void> {
