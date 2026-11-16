@@ -1,0 +1,158 @@
+{
+  "_comment": "Linear GraphQL answers (https://linear.app/developers/graphql) the Linear plugin tests replay: queries and mutations by operation name, a rate limit and an authentication error.",
+  "teams": {
+    "json": {
+      "data": {
+        "teams": {
+          "nodes": [
+            {
+              "id": "a1b2c3d4-0000-4000-8000-00000000e0e0",
+              "key": "ENG",
+              "name": "Engineering"
+            },
+            {
+              "id": "a1b2c3d4-0000-4000-8000-00000000f0f0",
+              "key": "OPS",
+              "name": "Ops"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "projects": {
+    "json": {
+      "data": {
+        "projects": {
+          "nodes": [
+            {
+              "id": "b1b2c3d4-0000-4000-8000-0000000000aa",
+              "name": "Login revamp"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "workflowStates": {
+    "json": {
+      "data": {
+        "workflowStates": {
+          "nodes": [
+            {
+              "id": "e0e0e0e0-0000-4000-8000-0000000000b1",
+              "name": "Todo",
+              "team": {
+                "id": "a1b2c3d4-0000-4000-8000-00000000e0e0",
+                "key": "ENG"
+              }
+            },
+            {
+              "id": "e0e0e0e0-0000-4000-8000-0000000000b2",
+              "name": "In Review",
+              "team": {
+                "id": "a1b2c3d4-0000-4000-8000-00000000e0e0",
+                "key": "ENG"
+              }
+            },
+            {
+              "id": "e0e0e0e0-0000-4000-8000-0000000000b3",
+              "name": "Done",
+              "team": {
+                "id": "a1b2c3d4-0000-4000-8000-00000000e0e0",
+                "key": "ENG"
+              }
+            },
+            {
+              "id": "e0e0e0e0-0000-4000-8000-0000000000c1",
+              "name": "Todo",
+              "team": {
+                "id": "a1b2c3d4-0000-4000-8000-00000000f0f0",
+                "key": "OPS"
+              }
+            },
+            {
+              "id": "e0e0e0e0-0000-4000-8000-0000000000c3",
+              "name": "Done",
+              "team": {
+                "id": "a1b2c3d4-0000-4000-8000-00000000f0f0",
+                "key": "OPS"
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "teamStates": {
+    "json": {
+      "data": {
+        "team": {
+          "states": {
+            "nodes": [
+              {
+                "id": "e0e0e0e0-0000-4000-8000-0000000000b1",
+                "name": "Todo"
+              },
+              {
+                "id": "e0e0e0e0-0000-4000-8000-0000000000b2",
+                "name": "In Review"
+              },
+              {
+                "id": "e0e0e0e0-0000-4000-8000-0000000000b3",
+                "name": "Done"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "commentCreated": {
+    "json": {
+      "data": {
+        "commentCreate": {
+          "success": true
+        }
+      }
+    }
+  },
+  "issueUpdated": {
+    "json": {
+      "data": {
+        "issueUpdate": {
+          "success": true
+        }
+      }
+    }
+  },
+  "rateLimited": {
+    "status": 400,
+    "headers": {
+      "retry-after": "30"
+    },
+    "json": {
+      "errors": [
+        {
+          "message": "Rate limit exceeded",
+          "extensions": {
+            "code": "RATELIMITED"
+          }
+        }
+      ]
+    }
+  },
+  "authenticationError": {
+    "status": 400,
+    "json": {
+      "errors": [
+        {
+          "message": "Authentication required, not authenticated",
+          "extensions": {
+            "code": "AUTHENTICATION_ERROR"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -54,6 +54,7 @@ own tests and as a reference for plugin authors.
 | [Slack](../plugins/slack.md) (`slack`) | Posts short notifications to Slack channels through incoming webhooks, or with your own Slack app in one thread per pull request; in app mode, mentioning the bot creates an issue that starts a task. |
 | [Discord](../plugins/discord.md) (`discord`) | Posts short notifications to Discord channels as embeds through channel webhooks. |
 | [Microsoft Teams](../plugins/teams.md) (`teams`) | Posts short notifications to Teams channels or chats as Adaptive Cards through a Workflows webhook. |
+| [Linear](../plugins/linear.md) (`linear`) | Starts work from a Linear ticket: adding a label creates one GitHub issue that starts a task. Posts progress back to the ticket and can move it to chosen workflow states. |
 
 ## The manifest
 
@@ -95,7 +96,7 @@ pointing to where the credential is obtained.
 | Type | What the administrator provides |
 | --- | --- |
 | `oauth` | A sign-in, using the same flow as [OAuth library servers](./agent-extensions.md#oauth-servers). `registrations` limits the client registration methods (`metadata_document`, `dynamic`, `preregistered`; all three by default) and `scopes` lists the scopes to request. |
-| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). |
+| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). `ctx.http` sends it as `Authorization: Bearer <token>`, or, with `"authorization": "plain"`, as `Authorization: <token>` for services whose API keys take no scheme (Linear's personal API keys). |
 | `signing_secret` | A shared secret: it verifies inbound webhooks, and `ctx.http` signs outbound requests with it. |
 
 #### Webhook URL connections
@@ -143,6 +144,23 @@ one of:
 
 Defaults must satisfy their own constraints, and every `required` key must be
 defined.
+
+A `string` setting (without `enum` or `format`) or a `repository-map` setting
+may name an `optionsFrom` handler: an exported function of `handlers.ts` that
+lists the choices from the service, such as Linear's teams. The settings form
+then shows a list to pick from (for a repository map, one per repository)
+instead of a text box. The handler receives `{ kind: 'setting_options', setting }`
+and returns `{ options: [{ value, label }] }`, or `{ notConnected: '<what to set first>' }`
+when its connection is not made yet or the service refuses it. It runs like any
+other handler, reading the service through `ctx.http` with the saved
+connections and settings, even while the plugin is installed but not yet
+enabled; `ctx.propr` stays unavailable until it is enabled. Up to 500 choices
+are shown, each value once. The saved value is still any string up to
+`maxLength`: the choices help pick it, they do not restrict it.
+
+```json
+"stateOnMerged": { "type": "string", "maxLength": 100, "optionsFrom": "stateOptions", "label": "Move to state when the pull request merges" }
+```
 
 An `https-url` value must be `https://`, on the default port, without a user
 name, password or `#fragment`, and name a host: never an IP address, and not a
@@ -391,6 +409,7 @@ Each setting becomes one field, labelled with its `label` and described by its
 | `boolean` | A list with **Not set**, **Yes** and **No**, so an explicit **No** (`false`) is saved and kept apart from an unset setting. |
 | `array` of `string` | One box per entry, with **Add entry** and **Remove**. Each entry is saved exactly as typed, including spaces, empty entries and line breaks. |
 | `object` with `format: repository-map` | One row per repository: the repository (`owner/name`, with this instance's repositories suggested) and its value, with **Add repository** and **Remove**. |
+| `string` or repository map with `optionsFrom` | The choices the plugin loads from the service when the form opens (`GET /api/instance/plugins/v1/<id>/settings/<key>/options`, administrators only), with **Not set**, and a saved value the service no longer lists kept as its own entry. When the choices cannot be loaded, for example because the connection is not made yet, the field says why (*Could not load the choices: Set the Linear API key under Connections…*); **Reload choices** loads them again after you fix it. |
 
 The form starts from the saved settings; a fresh installation starts from the
 manifest's defaults. **Save settings** sends every setting at once
@@ -760,7 +779,8 @@ redirects are not followed. Requests are limited to 256 KiB and 10 seconds, and
 responses to 1 MiB.
 
 Handlers never receive raw secrets. `ctx.http('my-token')` opens the stored
-`token` connection only to send the request, as `Authorization: Bearer …`, and
+`token` connection only to send the request, as `Authorization: Bearer …` (or
+the bare token, for a connection with `"authorization": "plain"`), and
 removes the credential from the response before the handler reads it. Log lines,
 error messages and results pass the secret redaction.
 

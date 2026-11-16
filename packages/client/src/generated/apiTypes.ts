@@ -1240,6 +1240,17 @@ export interface PluginResponse {
   plugin: PluginView;
 }
 
+/** The choices of an `optionsFrom` select setting, read from the service by the plugin. */
+export interface PluginSettingOptionsResponse {
+  /** The choices, in the order the plugin listed them; each value once. */
+  options: {
+    /** The value saved when this choice is picked. */
+    value: string;
+    /** The text shown for it. */
+    label: string;
+  }[];
+}
+
 export interface PluginSettingsRequest {
   /** The complete settings; validated against the manifest's settings schema. Null values are removed. */
   settings: {

@@ -31,9 +31,10 @@ export interface PluginHttpOptions {
    * each request as its `signature` says, and every request must have one;
    * `url` (a `token` connection with `secretUrl`) sends each request to the
    * stored URL: the handler passes `PLUGIN_CONNECTION_URL`, and no header is
-   * added.
+   * added; `plain` (a `token` connection with `authorization: plain`)
+   * injects it as `Authorization: <token>`, without a scheme.
    */
-  credentialUse?: 'bearer' | 'signature' | 'url';
+  credentialUse?: 'bearer' | 'plain' | 'signature' | 'url';
   /** With `credentialUse: 'url'`: the hosts and paths the stored URL must be on, checked on every request. */
   secretUrl?: PluginSecretUrl;
   /**
@@ -422,9 +423,11 @@ function requestSignature(options: Pick<PluginHttpOptions, 'credentialUse'>, ini
   return signing ? signatureSpec(init.signature, headers) : undefined;
 }
 
-/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer`. */
-function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | undefined): void {
-  if (spec) {
+/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer` (or the bare token, `plain`). */
+function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | 'plain' | undefined): void {
+  if (spec === 'plain') {
+    if (secret) headers.authorization = secret;
+  } else if (spec) {
     if (!secret) throw new PluginSdkError('connection_unavailable', 'The signing secret is not set');
     headers[spec.header] = pluginRequestSignature(secret, body, spec);
   } else if (secret) headers.authorization = `Bearer ${secret}`;
@@ -532,7 +535,7 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       checkLive(signal);
       const { address, family } = await untilEnded(resolvePublic(host, lookup), signal);
       const secret = await untilEnded(readCredential(), signal);
-      if (!secretUrl) applyCredential(headers, body, secret, spec);
+      if (!secretUrl) applyCredential(headers, body, secret, options.credentialUse === 'plain' ? 'plain' : spec);
       if (options.authorize) await untilEnded(options.authorize(), signal);
       // The run may have ended during the lookups: nothing is sent for an ended handler.
       checkLive(signal);

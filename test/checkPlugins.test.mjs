@@ -37,7 +37,7 @@ test('the official registry passes', () => {
   const { errors, plugins } = checkPlugins();
   assert.deepEqual(errors, []);
   assert.ok(plugins.some(plugin => plugin.id === 'example-pack' && plugin.development));
-  for (const id of ['webhooks', 'slack', 'discord', 'teams']) assert.ok(plugins.some(plugin => plugin.id === id && !plugin.development), id);
+  for (const id of ['webhooks', 'slack', 'discord', 'teams', 'linear']) assert.ok(plugins.some(plugin => plugin.id === id && !plugin.development), id);
 });
 
 test('the _shared folder of code several plugins import is not a plugin folder', async () => {

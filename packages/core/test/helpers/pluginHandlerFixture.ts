@@ -79,7 +79,7 @@ export function recordingBackend() {
  * An in-memory instance with the fixture plugin installed through the real
  * plugin store: `api-token` set (sealed), limited to `owner/allowed`, enabled.
  */
-export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string; official?: boolean } = {}) {
+export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string; official?: boolean; connections?: Record<string, string> } = {}) {
   const database = extensionTestResources(t).database();
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
@@ -92,6 +92,8 @@ export async function pluginHandlerFixture(t: TestContext, options: { secret?: s
   const store = new PluginStore(database, ENVIRONMENT, catalog);
   await store.install('1', pluginId);
   if (options.secret) await store.setConnection('1', pluginId, 'api-token', options.secret);
+  // Connections a plugin needs set before it can be enabled (its required token connections).
+  for (const [name, value] of Object.entries(options.connections ?? {})) await store.setConnection('1', pluginId, name, value);
   await store.setRepositories('1', pluginId, options.repositories === undefined ? ['owner/allowed'] : options.repositories);
   await store.setEnabled('1', pluginId, true);
   const { backend, calls } = recordingBackend();

@@ -25,6 +25,13 @@ export interface PluginContextDeps {
   lookup?: ExtensionLookup;
   transport?: PluginHttpTransport;
   now?: () => number;
+  /**
+   * The run may use `ctx.http` (its connections included) while the plugin is
+   * installed but disabled: for the configure form's `optionsFrom` choices,
+   * which are loaded before the plugin is enabled. `ctx.propr` still requires
+   * the plugin to be enabled.
+   */
+  allowDisabled?: boolean;
 }
 
 /** What building a context returns besides `ctx`: the captured log and redaction of anything returned to the caller. */
@@ -80,9 +87,9 @@ export function effectivePluginPermissions(manifest: PluginManifest, record: Pic
 }
 
 /** The installation as it is now, required to be the one the run started with (not a reinstall) and enabled. */
-async function currentInstallation(database: Knex, pluginId: string, installation: PluginStateWriteGuard): Promise<PluginInstallationAuthority> {
+async function currentInstallation(database: Knex, pluginId: string, installation: PluginStateWriteGuard, allowDisabled = false): Promise<PluginInstallationAuthority> {
   const authority = await database.transaction(trx => requireInstallation(trx, pluginId, installation));
-  if (!authority.enabled) throw new PluginSdkError('unavailable', 'The plugin is disabled');
+  if (!authority.enabled && !allowDisabled) throw new PluginSdkError('unavailable', 'The plugin is disabled');
   return authority;
 }
 
@@ -96,9 +103,9 @@ async function currentInstallation(database: Knex, pluginId: string, installatio
  * permission (through the run's manifest) and, when the call names a
  * repository, still allow it.
  */
-export function installationAuthorizer(database: Knex, pluginId: string, manifest: PluginManifest, installation: PluginStateWriteGuard) {
+export function installationAuthorizer(database: Knex, pluginId: string, manifest: PluginManifest, installation: PluginStateWriteGuard & { allowDisabled?: boolean }) {
   return {
-    request: async (): Promise<void> => { await currentInstallation(database, pluginId, installation); },
+    request: async (): Promise<void> => { await currentInstallation(database, pluginId, installation, installation.allowDisabled === true); },
     call: async ({ permission, repository }: PluginProprCallScope): Promise<void> => {
       const authority = await currentInstallation(database, pluginId, installation);
       if (!effectivePluginPermissions(manifest, authority).includes(permission)) throw new PluginSdkError('permission_denied', `The ${permission} permission is no longer granted to this plugin`);
@@ -128,12 +135,12 @@ function logFields(fields: Record<string, unknown> | undefined): Record<string, 
 }
 
 /** The connection secret of the installation `guard` names, read in one transaction with that installation; refused once it was removed, replaced or disabled. */
-async function defaultConnectionSecret({ database, environment }: { database: Knex; environment: NodeJS.ProcessEnv }, pluginId: string, connection: string, guard: PluginStateWriteGuard): Promise<string | null> {
+async function defaultConnectionSecret({ database, environment, allowDisabled }: { database: Knex; environment: NodeJS.ProcessEnv; allowDisabled?: boolean }, pluginId: string, connection: string, guard: PluginStateWriteGuard): Promise<string | null> {
   const { PluginStore } = await import('./pluginStore.js');
   const store = new PluginStore(database, environment);
   return database.transaction(async trx => {
     const authority = await requireInstallation(trx, pluginId, guard);
-    if (!authority.enabled) throw new PluginSdkError('unavailable', 'The plugin is disabled');
+    if (!authority.enabled && !allowDisabled) throw new PluginSdkError('unavailable', 'The plugin is disabled');
     return store.connectionSecret(pluginId, connection, trx);
   });
 }
@@ -189,13 +196,13 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   // The installation this run belongs to: a credential is read from it only, and a request is sent only while it is still installed and enabled.
   const installation: PluginStateWriteGuard = { installedAt: record.installedAt, signal };
   /** Refuses once this run's installation was uninstalled (or replaced by a reinstall), disabled or restricted, or the run ended. */
-  const authorize = installationAuthorizer(deps.database, pluginId, manifest, installation);
+  const authorize = installationAuthorizer(deps.database, pluginId, manifest, { ...installation, allowDisabled: deps.allowDisabled === true });
   const settings = Object.freeze(structuredClone(handlerSettings(manifest, record)));
   // The manifest's hosts and those of the URL settings it names, as this run's settings have them.
   const outboundHosts = pluginOutboundHosts(manifest, settings);
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
-    let credentialUse: 'bearer' | 'signature' | 'url' = 'bearer';
+    let credentialUse: 'bearer' | 'plain' | 'signature' | 'url' = 'bearer';
     let secretUrl: PluginSecretUrl | undefined;
     if (connection !== undefined) {
       const declared = manifest.connections.find(c => c.name === connection);
@@ -203,8 +210,9 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       if (declared.type === 'oauth') throw new PluginSdkError('connection_unavailable', `Connection ${connection} is oauth; ctx.http uses token and signing_secret connections only`);
       if (declared.type === 'signing_secret') credentialUse = 'signature';
       if (declared.type === 'token' && declared.secretUrl) { credentialUse = 'url'; secretUrl = declared.secretUrl; }
+      else if (declared.type === 'token' && declared.authorization === 'plain') credentialUse = 'plain';
       credential = async () => {
-        const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret({ database: deps.database, environment }, id, name, installation)))(pluginId, connection);
+        const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret({ database: deps.database, environment, allowDisabled: deps.allowDisabled }, id, name, installation)))(pluginId, connection);
         if (!secret) throw new PluginSdkError('connection_unavailable', `Connection ${connection} is not set`);
         // A secret URL is redacted whole and by its path and query, which carry its credential.
         credentials.push(...(credentialUse === 'url' ? secretUrlCredentials(secret) : [secret]));

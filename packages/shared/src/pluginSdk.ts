@@ -226,7 +226,49 @@ export interface PluginCommandInput {
   actor: string; commentId: number; deliveryId: string; attempt: number;
 }
 export interface PluginInvokeInput { kind: 'invoke'; payload: PluginJsonValue }
-export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput;
+/**
+ * The choices of a select setting whose manifest names this handler in
+ * `optionsFrom`, asked for by the configure form (an administrator) through
+ * the settings-options route. `setting` is the setting's key. The handler
+ * reads the service through `ctx.http` with the saved connections and
+ * settings and returns a `PluginSettingOptionsResult`.
+ */
+export interface PluginSettingOptionsInput { kind: 'setting_options'; setting: string }
+export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput | PluginSettingOptionsInput;
+
+/** One choice of an `optionsFrom` select: the value saved and the text shown. */
+export interface PluginSettingOption { [key: string]: PluginJsonValue; value: string; label: string }
+/**
+ * What an `optionsFrom` handler returns: the choices, or `notConnected` with
+ * a short message saying what to set first (the connection is not made yet,
+ * or the service refused its credential). The form shows that message.
+ */
+export type PluginSettingOptionsResult = { options: PluginSettingOption[] } | { notConnected: string };
+/** Limits of an `optionsFrom` answer: choices, characters of a value, of a label and of a `notConnected` message. */
+export const PLUGIN_SETTING_OPTIONS_LIMITS = { options: 500, valueChars: 500, labelChars: 200, messageChars: 300 } as const;
+
+/**
+ * Read an `optionsFrom` handler's result: the choices (each value once,
+ * labels cut to the limit), the `notConnected` message, or null when the
+ * result is neither.
+ */
+export function readPluginSettingOptions(value: unknown): { options: PluginSettingOption[] } | { notConnected: string } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result = value as { options?: unknown; notConnected?: unknown };
+  if (typeof result.notConnected === 'string' && result.notConnected.trim()) return { notConnected: result.notConnected.trim().slice(0, PLUGIN_SETTING_OPTIONS_LIMITS.messageChars) };
+  if (!Array.isArray(result.options) || result.options.length > PLUGIN_SETTING_OPTIONS_LIMITS.options) return null;
+  const seen = new Set<string>();
+  const options: PluginSettingOption[] = [];
+  for (const entry of result.options as unknown[]) {
+    const option = entry as { value?: unknown; label?: unknown } | null;
+    if (!option || typeof option !== 'object' || typeof option.value !== 'string' || !option.value || option.value.length > PLUGIN_SETTING_OPTIONS_LIMITS.valueChars) return null;
+    if (seen.has(option.value)) continue;
+    seen.add(option.value);
+    const label = typeof option.label === 'string' && option.label.trim() ? option.label.trim() : option.value;
+    options.push({ value: option.value, label: label.slice(0, PLUGIN_SETTING_OPTIONS_LIMITS.labelChars) });
+  }
+  return { options };
+}
 
 /** A handler returns nothing or a small JSON result. */
 export type PluginHandlerResultValue = PluginJsonValue | void;

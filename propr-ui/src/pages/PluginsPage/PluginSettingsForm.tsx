@@ -66,7 +66,7 @@ export function PluginSettingsForm({ view, busy, apiError, repositories, onSave 
         {keys.map(key => (
           <div key={key} data-testid="plugin-setting" data-setting={key}>
             <PluginSettingField name={key} setting={settings.properties[key]} draft={drafts[key]} required={settings.required.includes(key)}
-              error={errorOf(key)} disabled={busy} repositories={repositories} onChange={draft => change(key, draft)} />
+              error={errorOf(key)} disabled={busy} repositories={repositories} pluginId={view.id} onChange={draft => change(key, draft)} />
           </div>
         ))}
       </fieldset>

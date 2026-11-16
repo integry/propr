@@ -1,0 +1,165 @@
+{
+  "manifestVersion": 1,
+  "id": "linear",
+  "name": "Linear",
+  "description": "Start work from a Linear ticket and keep the ticket in sync. Adding the trigger label (propr by default) to a ticket in a mapped team or project creates one GitHub issue with the ticket's title, description and link, so ProPR starts a task. Progress is posted back to the ticket as short comments, and the ticket can move to chosen workflow states when its pull request opens or merges. Comments never contain code, logs or prompt text.",
+  "version": "1.0.0",
+  "category": "issue-tracking",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/linear",
+  "icon": "icon.svg",
+  "permissions": [
+    "events.read",
+    "issues.create",
+    "pull_requests.read"
+  ],
+  "connections": [
+    {
+      "type": "token",
+      "name": "api-key",
+      "label": "Linear API key",
+      "help": "A Linear personal API key (lin_api_…) from Settings, Account, Security & access, with Read and Write access, created by a member of the teams you map. ProPR sends it only to api.linear.app (as Authorization: <key>) and to Linear's read-only MCP server; the handlers never see it.",
+      "helpUrl": "https://linear.app/developers/graphql",
+      "authorization": "plain"
+    },
+    {
+      "type": "signing_secret",
+      "name": "webhook-secret",
+      "label": "Webhook signing secret",
+      "help": "The signing secret Linear shows for the webhook you create with this plugin's webhook URL (Settings, API, Webhooks). ProPR checks the Linear-Signature header of every request with it before the plugin sees the request.",
+      "helpUrl": "https://linear.app/developers/webhooks"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "repositoryMapping": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "optionsFrom": "teamOptions",
+        "label": "Repository mapping",
+        "help": "Map a GitHub repository (owner/repo) to the Linear team or project whose tickets start work in it. A ticket's project mapping is used first, then its team's. A team or project mapped to several repositories starts nothing; tickets outside the mapping are ignored."
+      },
+      "triggerLabel": {
+        "type": "string",
+        "default": "propr",
+        "maxLength": 50,
+        "label": "Linear trigger label",
+        "help": "Adding this Linear label to a ticket (or creating a ticket with it) hands the ticket to ProPR. Compared without letter case. Removing it later does not stop the work."
+      },
+      "issueLabel": {
+        "type": "string",
+        "default": "AI",
+        "maxLength": 50,
+        "label": "GitHub trigger label",
+        "help": "The only label put on the GitHub issue created for a ticket: ProPR's trigger label for the repository (AI unless your instance uses another), so ProPR starts a task for it."
+      },
+      "comments": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "issue_created",
+            "task_started",
+            "pull_request_opened",
+            "review_goal_reached",
+            "pull_request_merged",
+            "pull_request_closed",
+            "task_failed"
+          ]
+        },
+        "maxItems": 7,
+        "default": [
+          "issue_created",
+          "task_started",
+          "pull_request_opened",
+          "review_goal_reached",
+          "pull_request_merged",
+          "pull_request_closed",
+          "task_failed"
+        ],
+        "label": "Comment on the ticket",
+        "help": "The updates posted to the ticket as comments: the GitHub issue created, the task started, the pull request opened (with its link), the review reaching its goal, the pull request merged or closed, and a task failed. Unselected updates are not posted."
+      },
+      "stateOnPullRequestOpened": {
+        "type": "string",
+        "maxLength": 100,
+        "optionsFrom": "stateOptions",
+        "label": "Move to state when the pull request opens",
+        "help": "A Linear workflow state, such as In Review. The ticket moves to the state of this name in its own team. Leave empty to leave the state alone."
+      },
+      "stateOnMerged": {
+        "type": "string",
+        "maxLength": 100,
+        "optionsFrom": "stateOptions",
+        "label": "Move to state when the pull request merges",
+        "help": "A Linear workflow state, such as Done. The ticket moves to the state of this name in its own team. Leave empty to leave the state alone."
+      }
+    },
+    "required": []
+  },
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "linear",
+        "url": "https://mcp.linear.app/mcp/readonly",
+        "tools": [
+          "get_issue",
+          "list_issues",
+          "list_comments",
+          "list_issue_statuses",
+          "get_issue_status",
+          "list_issue_labels",
+          "list_projects",
+          "get_project",
+          "list_project_labels",
+          "list_teams",
+          "get_team",
+          "list_users",
+          "get_user",
+          "list_cycles",
+          "list_documents",
+          "get_document",
+          "search_documentation"
+        ],
+        "capability": "read",
+        "authentication": "bearer",
+        "connection": "api-key"
+      }
+    ],
+    "skills": [
+      {
+        "name": "linear-ticket",
+        "path": "skills/linear-ticket"
+      }
+    ],
+    "subscriptions": [
+      { "on": "task.started", "handler": "sync" },
+      { "on": "task.failed", "handler": "sync" },
+      { "on": "pull_request.opened", "handler": "sync" },
+      { "on": "pull_request.review_scored", "handler": "sync" },
+      { "on": "pull_request.merged", "handler": "sync" },
+      { "on": "pull_request.closed", "handler": "sync" }
+    ],
+    "webhooks": [
+      {
+        "name": "linear",
+        "description": "Linear data change webhooks for issues: adding the trigger label to a mapped ticket creates its GitHub issue",
+        "handler": "onLinearWebhook",
+        "verification": {
+          "scheme": "hmac-sha256",
+          "header": "linear-signature",
+          "encoding": "hex",
+          "connection": "webhook-secret"
+        },
+        "deliveryIdHeader": "linear-delivery"
+      }
+    ]
+  },
+  "outboundHosts": [
+    "api.linear.app"
+  ]
+}

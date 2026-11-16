@@ -90,3 +90,8 @@ export const getPluginWebhooks = (id: string) => request<ProprApi.PluginWebhooks
 /** Replace the installation key: every webhook URL changes and the old ones stop working at once. */
 export const regeneratePluginWebhookKey = (id: string) =>
   request<ProprApi.PluginWebhooksResponse>(plugin(id, '/webhooks/regenerate'), { method: 'POST', body: {} });
+
+export type PluginSettingOptionView = ProprApi.PluginSettingOptionsResponse['options'][number];
+/** The choices of an `optionsFrom` select setting, read from the service by the plugin; refused (409) with what to set when it is not connected. */
+export const getPluginSettingOptions = (id: string, setting: string) =>
+  request<ProprApi.PluginSettingOptionsResponse>(plugin(id, `/settings${segment(setting)}/options`));

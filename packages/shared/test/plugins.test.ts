@@ -326,3 +326,30 @@ test('a token connection may be a secret URL on declared host patterns; it is ne
   assert.equal(pluginSecretUrlHostAllowed(['*.acme.example'], 'a.b.acme.example'), true);
   assert.equal(pluginSecretUrlHostAllowed(['*.acme.example'], 'acme.example'), false);
 });
+
+test('a select setting may load its choices from a handler (optionsFrom), but not with an enum or a format; a token may be sent plain', async () => {
+  const { readPluginSettingOptions, PLUGIN_SETTING_OPTIONS_LIMITS } = await import('../src/pluginSdk.js');
+  const withSetting = (setting: Record<string, unknown>) => {
+    const manifest = valid() as { settings: { properties: Record<string, unknown> } };
+    manifest.settings.properties.picked = setting;
+    return parsePluginManifest(manifest);
+  };
+  assert.equal(withSetting({ type: 'string', label: 'Team', optionsFrom: 'teamOptions' }).ok, true);
+  assert.equal(withSetting({ type: 'object', format: 'repository-map', additionalProperties: { type: 'string' }, label: 'Teams', optionsFrom: 'teamOptions' }).ok, true);
+  assert.deepEqual(withSetting({ type: 'string', label: 'Team', enum: ['a'], optionsFrom: 'teamOptions' }), { ok: false, errors: ['settings.properties.picked.optionsFrom: Setting picked has optionsFrom and an enum; use one'] });
+  assert.equal(withSetting({ type: 'string', label: 'Team', format: 'https-url', optionsFrom: 'teamOptions' }).ok, false);
+  assert.equal(withSetting({ type: 'string', label: 'Team', optionsFrom: 'not a handler' }).ok, false);
+  assert.equal(withSetting({ type: 'number', label: 'Team', optionsFrom: 'teamOptions' }).ok, false, 'only string and repository map settings');
+
+  const manifest = valid() as { connections: Record<string, unknown>[] };
+  manifest.connections[1] = { ...manifest.connections[1], authorization: 'plain' };
+  assert.equal(parsePluginManifest(manifest).ok, true);
+  manifest.connections[1] = { ...manifest.connections[1], authorization: 'basic' };
+  assert.equal(parsePluginManifest(manifest).ok, false);
+
+  assert.deepEqual(readPluginSettingOptions({ options: [{ value: 'a', label: ' A ' }, { value: 'a', label: 'again' }, { value: 'b' }] }), { options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'b' }] });
+  assert.deepEqual(readPluginSettingOptions({ notConnected: ' Set the key first. ' }), { notConnected: 'Set the key first.' });
+  for (const bad of [null, [], { options: 'x' }, { options: [{ value: '' }] }, { options: [{ value: 1 }] }, { options: Array.from({ length: PLUGIN_SETTING_OPTIONS_LIMITS.options + 1 }, (_, i) => ({ value: String(i) })) }]) {
+    assert.equal(readPluginSettingOptions(bad), null, JSON.stringify(bad).slice(0, 40));
+  }
+});

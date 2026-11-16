@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 347
-    documented: 109
+    total: 348
+    documented: 110
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -5644,6 +5644,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/settings/{settingKey}/options:
+    get:
+      operationId: getPluginSettingOptions
+      summary: "List the choices of a select setting whose manifest names an `optionsFrom` handler: the plugin's handler reads them from the service through ctx.http, with the saved connections and settings. The plugin must be installed, not necessarily enabled. 404 for a setting without `optionsFrom`; 409 when the plugin is not installed or its connection is not made yet (the message says what to set); 502 when the handler failed."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: settingKey
+          in: path
+          required: true
+          description: A setting key from the manifest.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The choices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginSettingOptionsResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -14361,6 +14403,29 @@ components:
       required:
         - plugin
       additionalProperties: false
+    PluginSettingOptionsResponse:
+      type: object
+      properties:
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                description: The value saved when this choice is picked.
+              label:
+                type: string
+                description: The text shown for it.
+            required:
+              - value
+              - label
+            additionalProperties: false
+          description: The choices, in the order the plugin listed them; each value once.
+      required:
+        - options
+      additionalProperties: false
+      description: The choices of an `optionsFrom` select setting, read from the service by the plugin.
     PluginSettingsRequest:
       type: object
       properties:

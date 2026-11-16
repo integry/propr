@@ -1,6 +1,7 @@
 import type { Request, RequestHandler } from 'express';
 import { db } from '@propr/core';
 import { PluginError, PluginStore } from '../../core/src/plugins/pluginStore.js';
+import { loadPluginSettingOptions, type PluginSettingOptionsDeps } from '../../core/src/plugins/pluginSettingOptions.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
 import { extensionOAuthUrls } from './extensionOAuthRoutes.js';
@@ -36,8 +37,11 @@ export function pluginRouteHandler(store: PluginStore) {
  * secrets are write-only: no response carries them. `oauth` connections are
  * signed in through the extension OAuth module: the provider redirects to the
  * extension callback, which completes the sign-in as `oauth/complete` does.
+ * `settings/:settingKey/options` lists the choices of an `optionsFrom`
+ * select by running the plugin's handler, which reads the service through
+ * `ctx.http` (`optionDeps` replaces its transport and handlers in tests).
  */
-export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env) {
+export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env, optionDeps: Partial<PluginSettingOptionsDeps> = {}) {
   const handle = pluginRouteHandler(store);
   const body = (req: Request, keys: string[], required: string[] = keys): Record<string, unknown> => {
     const value = req.body as unknown;
@@ -52,6 +56,8 @@ export function createPluginRoutes(store = new PluginStore(db), environment: Nod
     get: handle(async (req, actor) => ({ plugin: await store.get(actor, id(req)) })),
     /** `acknowledgements` names the package servers whose secret variables the administrator confirmed are readable in the task container. */
     install: handle(async (req, actor) => ({ plugin: await store.install(actor, id(req), body(req, ['acknowledgements'], []).acknowledgements) })),
+    /** The choices of an `optionsFrom` select setting, read from the service by the plugin's handler; 409 with what to set first when it is not connected. */
+    settingOptions: handle(async req => loadPluginSettingOptions({ database: store.database, environment, catalog: store.catalog, ...optionDeps }, id(req), String(req.params.settingKey))),
     updateSettings: handle(async (req, actor) => ({ plugin: await store.updateSettings(actor, id(req), body(req, ['settings']).settings) })),
     setRepositories: handle(async (req, actor) => ({ plugin: await store.setRepositories(actor, id(req), body(req, ['repositories']).repositories) })),
     /** `value` sets the secret; `null` clears it. */

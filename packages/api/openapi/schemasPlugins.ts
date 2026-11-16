@@ -147,3 +147,7 @@ export const PluginWebhooksResponse = component('PluginWebhooksResponse', z.obje
   rejected: z.object({ count: z.number().int(), lastAt: z.number().nullable(), lastReason: z.string().nullable() }).describe('Requests refused because they failed verification. Their bodies and headers are never stored.'),
   keyCreatedAt: z.number().nullable(), keyCreatedBy: z.string().nullable().describe('The administrator who last regenerated the key, or `system`.'),
 }), 'The inbound webhook URLs of an installed plugin.');
+
+export const PluginSettingOptionsResponse = component('PluginSettingOptionsResponse', z.object({
+  options: z.array(z.object({ value: z.string().describe('The value saved when this choice is picked.'), label: z.string().describe('The text shown for it.') })).describe('The choices, in the order the plugin listed them; each value once.'),
+}), 'The choices of an `optionsFrom` select setting, read from the service by the plugin.');
