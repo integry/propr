@@ -75,16 +75,33 @@ export function cycleCategory(
   return current;
 }
 
-/** In-app route an item opens. */
+/** In-app route an item opens. A repository opens on the Repositories page, selected via {@link getItemState}. */
 export function getItemPath(item: SearchItem): string {
   switch (item.kind) {
     case 'repository':
-      return `/tasks?repository=${encodeURIComponent(item.repo.name)}`;
+      return '/repositories';
     case 'plan':
       return `/studio/${item.plan.draft_id}`;
     case 'task':
       return `/tasks/${item.task.id}`;
   }
+}
+
+/** Navigation state that selects a repository on the Repositories page. */
+export interface RepositorySelectionState {
+  selectRepo: string;
+  selectBranch?: string;
+}
+
+/** Router state that accompanies {@link getItemPath}; only repositories need one. */
+export function getItemState(item: SearchItem): RepositorySelectionState | undefined {
+  if (item.kind !== 'repository') return undefined;
+  return { selectRepo: item.repo.name, ...(item.repo.baseBranch ? { selectBranch: item.repo.baseBranch } : {}) };
+}
+
+/** The repository's task list: a secondary action the user picks explicitly. */
+export function getRepositoryTasksPath(repo: MonitoredRepo): string {
+  return `/tasks?repository=${encodeURIComponent(repo.name)}`;
 }
 
 /**

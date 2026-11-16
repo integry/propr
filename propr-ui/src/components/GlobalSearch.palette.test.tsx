@@ -11,8 +11,8 @@ vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn(), getTasks: vi.fn
 const LONG_PLAN_TITLE = 'Sequential MCP Epic Execution and Observability across every connected client';
 
 const Location = () => {
-  const { pathname, search } = useLocation();
-  return <div data-testid="location">{pathname}{search}</div>;
+  const { pathname, search, state } = useLocation();
+  return <div data-testid="location" data-state={JSON.stringify(state ?? null)}>{pathname}{search}</div>;
 };
 
 async function renderWithResults() {
@@ -78,6 +78,29 @@ describe('GlobalSearch palette', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks/task-1');
+  });
+
+  it('opens the highlighted repository itself on Enter, not its tasks', async () => {
+    const input = await renderWithResults();
+    const preview = screen.getByTestId('global-search-preview');
+    expect(within(preview).getByRole('button', { name: 'Open repository' })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    const location = screen.getByTestId('location');
+    expect(location).toHaveTextContent(/^\/repositories$/);
+    expect(JSON.parse(location.dataset.state!)).toEqual({ selectRepo: 'integry/mcptest', selectBranch: 'main' });
+  });
+
+  it('opens a repository\'s tasks only through the explicit Tasks button', async () => {
+    await renderWithResults();
+    const preview = screen.getByTestId('global-search-preview');
+    fireEvent.click(within(preview).getByRole('button', { name: 'Tasks' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?repository=integry%2Fmcptest');
+  });
+
+  it('offers the Tasks button only for repositories', async () => {
+    const input = await renderWithResults();
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(within(screen.getByTestId('global-search-preview')).queryByRole('button', { name: 'Tasks' })).not.toBeInTheDocument();
   });
 
   it('shows fresh plan and task timestamps as "just now", never "just now ago"', async () => {

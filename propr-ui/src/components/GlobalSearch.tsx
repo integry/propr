@@ -11,6 +11,8 @@ import {
   getCategoryCounts,
   getItemGithubUrl,
   getItemPath,
+  getItemState,
+  getRepositoryTasksPath,
   getPlansAction,
   getScopeAction,
   getShortcutModifierLabel,
@@ -234,7 +236,13 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
   }, [isOpen, setIsOpen]);
 
   const openItem = useCallback((item: SearchItem) => {
-    navigate(getItemPath(item));
+    navigate(getItemPath(item), { state: getItemState(item) });
+    clearSearch();
+  }, [navigate, clearSearch]);
+
+  const openRepositoryTasks = useCallback((item: SearchItem) => {
+    if (item.kind !== 'repository') return;
+    navigate(getRepositoryTasksPath(item.repo));
     clearSearch();
   }, [navigate, clearSearch]);
 
@@ -415,7 +423,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
                 </div>
                 {activeItem && (
                   <div className="hidden min-w-0 basis-2/5 border-l border-slate-200 bg-slate-50 md:block">
-                    <SearchPreview item={activeItem} onOpen={openItem} shortcutKey={modifierKey} />
+                    <SearchPreview item={activeItem} onOpen={openItem} onOpenTasks={openRepositoryTasks} shortcutKey={modifierKey} />
                   </div>
                 )}
               </div>

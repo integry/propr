@@ -41,11 +41,12 @@ const RepositoriesPage: React.FC = () => {
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [navActiveTab, setNavActiveTab] = useState<'chat' | 'improve' | 'browse' | 'todos' | undefined>(undefined);
 
-  // Handle navigation state from QuickAddTodo "View Todos" link
+  // Handle navigation state from QuickAddTodo "View Todos" link and global search results
   useEffect(() => {
-    const state = location.state as { selectRepo?: string; activeTab?: string } | null;
+    const state = location.state as { selectRepo?: string; selectBranch?: string; activeTab?: string } | null;
     if (state?.selectRepo && repos.length > 0) {
-      const match = repos.find(r => r.name === state.selectRepo);
+      const match = (state.selectBranch && repos.find(r => r.name === state.selectRepo && r.baseBranch === state.selectBranch))
+        || repos.find(r => r.name === state.selectRepo);
       if (match) {
         setSelectedRepoId(match.id);
         if (state.activeTab === 'todos') {

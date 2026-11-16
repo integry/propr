@@ -209,7 +209,7 @@ const PreviewDetails: React.FC<{ item: SearchItem }> = ({ item }) => {
 };
 
 const OPEN_LABELS: Record<SearchItem['kind'], string> = {
-  repository: 'Open tasks',
+  repository: 'Open repository',
   plan: 'Open plan',
   task: 'Open task',
 };
@@ -217,10 +217,12 @@ const OPEN_LABELS: Record<SearchItem['kind'], string> = {
 interface PreviewProps {
   item: SearchItem;
   onOpen: (item: SearchItem) => void;
+  /** Opens a repository's task list; only offered for repositories, never the default action. */
+  onOpenTasks?: (item: SearchItem) => void;
   shortcutKey: string;
 }
 
-export const SearchPreview: React.FC<PreviewProps> = ({ item, onOpen, shortcutKey }) => {
+export const SearchPreview: React.FC<PreviewProps> = ({ item, onOpen, onOpenTasks, shortcutKey }) => {
   const Icon = SECTION_ICONS[item.kind];
   const githubUrl = getItemGithubUrl(item);
   return (
@@ -248,6 +250,17 @@ export const SearchPreview: React.FC<PreviewProps> = ({ item, onOpen, shortcutKe
           <CornerDownLeft className="h-3 w-3" aria-hidden="true" />
           {OPEN_LABELS[item.kind]}
         </button>
+        {item.kind === 'repository' && onOpenTasks && (
+          <button
+            type="button"
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => onOpenTasks(item)}
+            className="inline-flex items-center gap-1.5 rounded-sm border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-500"
+          >
+            <ListTodo className="h-3 w-3" aria-hidden="true" />
+            Tasks
+          </button>
+        )}
         {githubUrl && (
           <a
             href={githubUrl}
