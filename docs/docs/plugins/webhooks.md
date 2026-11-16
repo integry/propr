@@ -236,8 +236,10 @@ target refused the delivery for good, the delivery is marked failed with that
 target's message once the others have it; automatic retries do not ask that
 target again. **Retry** in Activity (after you fix the target) sends it again
 to every target that does not have it, including one that refused it, and
-skips the targets that already have it. Which targets have it is kept for
-14 days, as long as Activity offers **Retry**.
+skips the targets that already have it. Which targets have it is kept as
+each target answers, so an attempt cut off by the handler's time limit is not
+sent again to the targets that accepted before it. It is kept for 14 days, as
+long as Activity offers **Retry**.
 
 ## Limits
 

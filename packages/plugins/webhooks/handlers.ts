@@ -131,22 +131,26 @@ export const deliver = definePluginHandler<PluginEventInput, WebhookDeliveryResu
   const saved = await ctx.state.get<Progress & Json>(key);
   const progress: Progress = { at: now, sent: saved ? [...saved.sent] : [], refused: saved && !input.manual ? { ...saved.refused } : {} };
   const transient: SendFailure[] = [];
-  for (const target of targets) {
-    if (progress.sent.includes(target.name) || Object.hasOwn(progress.refused, target.name)) continue;
+  const pending = targets.filter(t => !progress.sent.includes(t.name) && !Object.hasOwn(progress.refused, t.name));
+  let stored = Boolean(saved);
+  for (const [index, target] of pending.entries()) {
     const failure = await send(ctx, target, event, webhookDeliveryId(input.deliveryId, target));
     if (!failure) progress.sent.push(target.name);
     else if (failure.permanent) progress.refused[target.name] = failure.message;
-    else transient.push(failure);
+    else { transient.push(failure); continue; }
+    // Kept before the next send: the run may reach its time limit during a later target, and the
+    // next attempt must then skip this one. The last target's outcome is kept below.
+    if (index < pending.length - 1) { await saveProgress(ctx, key, progress); stored = true; }
   }
   const delivered = targets.filter(t => progress.sent.includes(t.name)).map(t => t.name);
   const refused = targets.flatMap(t => (Object.hasOwn(progress.refused, t.name) ? [progress.refused[t.name]] : []));
   if (!transient.length && !refused.length) {
-    if (saved) await ctx.state.delete(key);
+    if (stored) await ctx.state.delete(key);
     return { event: name, delivered };
   }
   // Not every target has it: an automatic retry, or a manual Retry of the failed delivery, needs what was sent (and refused).
   if (transient.length || delivered.length) await saveProgress(ctx, key, progress);
-  else if (saved) await ctx.state.delete(key);
+  else if (stored) await ctx.state.delete(key);
   if (transient.length) {
     const delays = transient.map(f => f.retryAfterMs).filter((ms): ms is number => ms !== null);
     throw new PluginDeliveryError([...transient.map(f => f.message), ...refused].join('; '), { retryAfterMs: delays.length ? Math.max(...delays) : null });

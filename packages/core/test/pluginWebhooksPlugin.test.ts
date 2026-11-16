@@ -31,8 +31,8 @@ const ENVIRONMENT = { SYSTEM_TASK_SECRET: 'plugin-webhooks-test-root' };
 const manifest = getOfficialPlugin(ID, { includeDevelopment: false })!.manifest;
 const catalog = async () => [manifest];
 
-/** Hosts the fake resolver knows: two public, one private. */
-const ADDRESSES: Record<string, string> = { 'hooks.public.example': '93.184.216.34', 'hooks.second.example': '93.184.216.35', 'hooks.private.example': '10.0.0.5' };
+/** Hosts the fake resolver knows: three public, one private. */
+const ADDRESSES: Record<string, string> = { 'hooks.public.example': '93.184.216.34', 'hooks.second.example': '93.184.216.35', 'hooks.third.example': '93.184.216.36', 'hooks.private.example': '10.0.0.5' };
 
 interface Sent { host: string; address: string; headers: Record<string, string>; body: string }
 
@@ -55,17 +55,21 @@ async function setup(t: TestContext) {
   let answer: { status: number; headers?: Record<string, string> } = { status: 204 };
   /** Answers of particular hosts, ahead of `answer`. */
   const hostAnswers: Record<string, { status: number; headers?: Record<string, string> }> = {};
+  /** How long particular hosts take to answer (cut short when the run ends). */
+  const hostDelays: Record<string, number> = {};
   const options = {
     database, environment: ENVIRONMENT, catalog, lookup,
     handlers: (id: string) => loadPluginHandlers(id, { includeDevelopment: false }),
     transport: async (request: { url: URL; address: string; headers: Record<string, string>; body?: Buffer }) => {
       sent.push({ host: request.url.hostname, address: request.address, headers: { ...request.headers }, body: request.body?.toString('utf8') ?? '' });
       const reply = hostAnswers[request.url.hostname] ?? answer;
+      const delay = hostDelays[request.url.hostname];
+      if (delay) await new Promise<void>(resolve => { const timer = setTimeout(resolve, delay); request.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
       return { status: reply.status, headers: reply.headers ?? {}, body: Buffer.from('ok') };
     },
   };
   const answerWith = (next: typeof answer) => { answer = next; };
-  return { database, store, lookups, addresses, sent, options, answerWith, hostAnswers };
+  return { database, store, lookups, addresses, sent, options, answerWith, hostAnswers, hostDelays };
 }
 
 const refused = (status: number, pattern: RegExp) => (error: unknown) => {
@@ -216,4 +220,25 @@ test('through the dispatcher, a manual Retry asks again the target that refused 
   assert.equal(done.status, 'succeeded'); assert.equal(done.attempt, 2);
   assert.deepEqual(s.sent.map(r => r.host), ['hooks.public.example', 'hooks.second.example', 'hooks.second.example'], 'target 1 already had it');
   await dispatcher.stop();
+});
+
+test('targets that accepted before the run reached its time limit are skipped by the next attempt', async t => {
+  const s = await setup(t);
+  await enabled(s, { target1Url: 'https://hooks.public.example/propr', target2Url: 'https://hooks.second.example/in', target3Url: 'https://hooks.third.example/x' });
+  await s.store.setConnection('1', ID, 'target-2-secret', SECRET);
+  await s.store.setConnection('1', ID, 'target-3-secret', SECRET);
+  // Each target answers within the per-request limit, but together they take longer than the handler may run.
+  s.hostDelays['hooks.public.example'] = 150; s.hostDelays['hooks.second.example'] = 150; s.hostDelays['hooks.third.example'] = 150;
+  const input = merged(21);
+  const options = { ...s.options, timeoutMs: 400 };
+  const first = await runPluginHandler(ID, 'deliver', input, options);
+  assert.equal(first.outcome, 'failed'); assert.equal(first.timedOut, true, first.error ?? '');
+  assert.deepEqual(s.sent.map(r => r.host), ['hooks.public.example', 'hooks.second.example', 'hooks.third.example']);
+
+  // The next attempt sends only to target 3, which was still answering when the run was cut off.
+  const second = await runPluginHandler(ID, 'deliver', { ...input, attempt: 2 }, options);
+  assert.equal(second.outcome, 'succeeded', second.error ?? '');
+  assert.deepEqual(second.result, { event: 'pull_request.merged', delivered: ['target-1', 'target-2', 'target-3'] });
+  assert.deepEqual(s.sent.map(r => r.host), ['hooks.public.example', 'hooks.second.example', 'hooks.third.example', 'hooks.third.example']);
+  assert.equal(await s.database('plugin_state').where({ plugin_id: ID }).count({ n: '*' }).first().then(r => Number(r?.n)), 0, 'nothing is kept once every target has it');
 });
