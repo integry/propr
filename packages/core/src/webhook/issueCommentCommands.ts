@@ -41,7 +41,12 @@ import {
  * afresh; while the claim runs, a redelivery is left unacknowledged, so it is
  * made again later. An attempt's own earlier record is reconciled against the
  * job evidence before it is replaced, and replaced only while unchanged, so
- * a command that was carried meanwhile is never started a second time.
+ * a command that was carried meanwhile is never started a second time. A
+ * record the label path has claimed but no job carries yet is a reservation,
+ * not a started command: while its lease runs, the delivery (whether it would
+ * start or refuse the command) is left unacknowledged too, so it comes back
+ * once the claim has either queued its job or run out, and a claim whose
+ * process stopped is recovered without any new event.
  */
 export interface IssueCommandDependencies {
   redis: Pick<Redis, 'get' | 'set' | 'eval'>;
@@ -209,6 +214,16 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command already started through its processing label');
     return { status: 'ignored', reason: 'duplicate_delivery' };
   };
+  // The label path's claim of this comment's command is still within its
+  // lease and no job carries it: it may be queueing, or its process stopped.
+  // Neither is known yet, so this delivery is not acknowledged: the relay
+  // makes it again, and that attempt finds the job, or the claim run out and
+  // the command its own to start or refuse. The claim this attempt holds is
+  // released on the way out, so that redelivery is not blocked by it.
+  const claimInFlight = (): Error => {
+    log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command is being queued by its processing label; leaving the delivery for later');
+    return new Error(`The plugin command in comment ${comment.id} is being queued by the issue's processing label; it is settled by a later delivery`);
+  };
   try {
     const github = await (deps.github ?? defaultGitHub)();
     const reply = (text: string) => github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issue.number, body: `@${author} ${text}` });
@@ -216,9 +231,13 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     // earlier attempt whose label could still start it, is retired first, so
     // no later label event runs a command ProPR refused, nor a job a label
     // event queued with it before the refusal. A command a label event
-    // claimed, or a dispatcher started, meanwhile is not reported.
+    // carried into a job, or a dispatcher started, meanwhile is not reported.
+    // One a label event has claimed but not yet queued is neither reported
+    // nor retired: the refusal waits for a later delivery, like the start.
     const refuse = async (text: string, reason: string): Promise<DeliveryDisposition> => {
-      if (await retireIssueCommandIntent(deps.redis, intentKey, comment.id, evidence) === 'started') return await handled(alreadyStarted());
+      const fate = await retireIssueCommandIntent(deps.redis, intentKey, comment.id, evidence);
+      if (fate === 'started') return await handled(alreadyStarted());
+      if (fate === 'in_flight') throw claimInFlight();
       await reply(text);
       return await handled({ status: 'ignored', reason });
     };
@@ -253,12 +272,9 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       if (earlier?.intent.commentId === comment.id) {
         const verdict = await reconcileIssueCommand(deps.redis, intentKey, earlier.intent, evidence);
         if (verdict === 'started') return await handled(alreadyStarted());
-        if (verdict === 'in_flight') {
-          // The claim may still be queueing, or may have been interrupted: the
-          // comment stays open to a later redelivery, which reconciles it again.
-          await deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, claimKey, claimValue);
-          return alreadyStarted();
-        }
+        // Nothing this attempt reserved yet needs releasing beyond its comment
+        // claim, which the failure path releases.
+        if (verdict === 'in_flight') throw claimInFlight();
         log.info({ repository, issueNumber: issue.number, commentId: comment.id, state: earlier.intent.state }, 'Plugin command recorded by an interrupted attempt and never queued; starting it afresh');
         if (earlier.intent.state === 'queued') replaced = null;
       }
@@ -324,10 +340,11 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     log.info({ repository, issueNumber: issue.number, commentId: comment.id, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} started an implementation task`);
     return { status: 'accepted', billing: { seatConsumed } };
   } catch (error) {
-    // This attempt created no task: release what it reserved so a redelivery
-    // is handled afresh. The dedupe window and the comment claim are released
-    // only while they are still this attempt's, never ones a later label
-    // event, command or redelivery has taken. The command intent is kept while
+    // This attempt created no task, or must leave the command to a later
+    // delivery: release what it reserved so a redelivery is handled afresh.
+    // The dedupe window and the comment claim are released only while they
+    // are still this attempt's, never ones a later label event, command or
+    // redelivery has taken. The command intent is kept while
     // the label this attempt requested may be on the issue: that label makes
     // label-triggered intake queue the command, not command-less work. Without
     // such a label (GitHub refused it, it was never requested, or the failure

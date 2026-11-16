@@ -402,19 +402,26 @@ export async function settleDispatchedIssueCommand(
  * token in the same step, so neither a label event that read the record
  * before nor a job that already holds the token runs a command ProPR refused.
  * Another comment's record is left as it is. Resolves `started` when the
- * record is that comment's and a job carries it or a claim of it is still in
- * flight (`reconcileIssueCommand`), or its token was already carried: a label
- * event claimed the command, a dispatcher started it, or the comment's own
- * earlier add stored a job whose failure it reported, so it must not be
- * reported as not started. A record nothing carries is retired, whether
+ * record is that comment's and a job carries it (`reconcileIssueCommand`), or
+ * its token was already carried: a label event claimed the command, a
+ * dispatcher started it, or the comment's own earlier add stored a job whose
+ * failure it reported, so it must not be reported as not started. Resolves
+ * `in_flight` when the record is a label-path claim of that comment's command
+ * whose lease is still running and no job carries it yet: that claim is a
+ * reservation, not a started command, so nothing may be reported or retired
+ * until it either queues its job or runs out, and the caller must leave the
+ * decision to a later attempt. A record nothing carries is retired, whether
  * pending or an abandoned claim. Rejects when the record cannot be read or
  * deleted, before anything is reported.
  */
-export async function retireIssueCommandIntent(redis: Pick<Redis, 'get' | 'eval'>, key: string, commentId: number, evidence: IssueCommandJobEvidence): Promise<'not_started' | 'started'> {
+export async function retireIssueCommandIntent(
+  redis: Pick<Redis, 'get' | 'eval'>, key: string, commentId: number, evidence: IssueCommandJobEvidence,
+): Promise<'not_started' | 'started' | 'in_flight'> {
   for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt++) {
     const stored = await readIssueCommandIntent(redis, key);
     if (stored?.intent.commentId !== commentId) return 'not_started';
-    if (await reconcileIssueCommand(redis, key, stored.intent, evidence) !== 'abandoned') return 'started';
+    const verdict = await reconcileIssueCommand(redis, key, stored.intent, evidence);
+    if (verdict !== 'abandoned') return verdict;
     const outcome = await retireRecord(redis, key, stored.raw, null);
     if (outcome !== 'changed') return outcome === 'retired' ? 'not_started' : 'started';
     // The record changed since it was read: read it again.
