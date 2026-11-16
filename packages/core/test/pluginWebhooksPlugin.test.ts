@@ -17,7 +17,7 @@ const { drain } = await import('./helpers/pluginDispatcherFixture.js');
 const { PluginError, PluginStore } = await import('../src/plugins/pluginStore.js');
 const { PluginDispatcher } = await import('../src/plugins/pluginDispatcher.js');
 const { runPluginHandler } = await import('../src/plugins/pluginHandlerRunner.js');
-const { listPluginActivity } = await import('../src/plugins/pluginDeliveries.js');
+const { listPluginActivity, retryPluginDelivery } = await import('../src/plugins/pluginDeliveries.js');
 const { appendRepositoryEvent } = await import('../src/services/repositoryEventJournal.js');
 const migrations = await Promise.all([
   '20261013210000_extension_profiles', '20261013220000_extension_grant_network', '20261113000000_extension_library', '20261113120000_extension_oauth',
@@ -53,16 +53,19 @@ async function setup(t: TestContext) {
   store.hostLookup = lookup;
   const sent: Sent[] = [];
   let answer: { status: number; headers?: Record<string, string> } = { status: 204 };
+  /** Answers of particular hosts, ahead of `answer`. */
+  const hostAnswers: Record<string, { status: number; headers?: Record<string, string> }> = {};
   const options = {
     database, environment: ENVIRONMENT, catalog, lookup,
     handlers: (id: string) => loadPluginHandlers(id, { includeDevelopment: false }),
     transport: async (request: { url: URL; address: string; headers: Record<string, string>; body?: Buffer }) => {
       sent.push({ host: request.url.hostname, address: request.address, headers: { ...request.headers }, body: request.body?.toString('utf8') ?? '' });
-      return { status: answer.status, headers: answer.headers ?? {}, body: Buffer.from('ok') };
+      const reply = hostAnswers[request.url.hostname] ?? answer;
+      return { status: reply.status, headers: reply.headers ?? {}, body: Buffer.from('ok') };
     },
   };
   const answerWith = (next: typeof answer) => { answer = next; };
-  return { database, store, lookups, addresses, sent, options, answerWith };
+  return { database, store, lookups, addresses, sent, options, answerWith, hostAnswers };
 }
 
 const refused = (status: number, pattern: RegExp) => (error: unknown) => {
@@ -189,5 +192,28 @@ test('through the dispatcher, a 429 with Retry-After is retried after the delay 
   assert.equal(failed.status, 'failed'); assert.equal(failed.attempt, 1); assert.equal(failed.nextAttemptAt, null);
   assert.equal(failed.error, 'Target 1 (hooks.public.example) refused the delivery with HTTP 410; it is not retried. Check the target URL and the endpoint\'s configuration');
   assert.equal(await drain(dispatcher), 0, 'a permanent failure is not retried');
+  await dispatcher.stop();
+});
+
+test('through the dispatcher, a manual Retry asks again the target that refused and skips the one that has the event', async t => {
+  const s = await setup(t);
+  await enabled(s, { target1Url: 'https://hooks.public.example/propr', target2Url: 'https://hooks.second.example/in' });
+  await s.store.setConnection('1', ID, 'target-2-secret', SECRET);
+  const clock = { now: 1_800_000_000_000 };
+  const dispatcher = new PluginDispatcher({ ...s.options, now: () => clock.now, timeoutMs: 5_000, pauseAfterFailures: 100, notify: async () => undefined });
+  await appendRepositoryEvent(s.database, { repository: 'acme/api', domain: 'pull_request', type: 'merged', entityId: 12, prNumber: 12, payload: {} }, { publish: false });
+  s.hostAnswers['hooks.second.example'] = { status: 410 };
+  assert.equal(await drain(dispatcher), 1);
+  const [failed] = (await listPluginActivity(s.database, ID)).deliveries;
+  assert.equal(failed.status, 'failed'); assert.match(failed.error!, /^Target 2 \(hooks\.second\.example\) refused the delivery with HTTP 410/);
+  assert.deepEqual(s.sent.map(r => r.host), ['hooks.public.example', 'hooks.second.example']);
+
+  // The administrator fixes target 2 and selects Retry.
+  s.hostAnswers['hooks.second.example'] = { status: 200 };
+  await retryPluginDelivery(s.database, ID, String(failed.id), '1', clock.now);
+  assert.equal(await drain(dispatcher), 1);
+  const [done] = (await listPluginActivity(s.database, ID)).deliveries;
+  assert.equal(done.status, 'succeeded'); assert.equal(done.attempt, 2);
+  assert.deepEqual(s.sent.map(r => r.host), ['hooks.public.example', 'hooks.second.example', 'hooks.second.example'], 'target 1 already had it');
   await dispatcher.stop();
 });

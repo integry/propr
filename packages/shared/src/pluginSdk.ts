@@ -197,9 +197,11 @@ export interface PluginContext {
  * A journal event delivered to a subscribed handler. Delivery is at least
  * once: `deliveryId` is the same on every attempt (and after a worker
  * restart), so a handler with side effects can de-duplicate on it. `attempt`
- * counts from 1.
+ * counts from 1. `manual` is true on the attempt an administrator's Retry of
+ * the failed delivery gives (after they fixed what failed it), and absent on
+ * the dispatcher's own attempts.
  */
-export interface PluginEventInput { kind: 'event'; event: RepositoryEvent; deliveryId: string; attempt: number }
+export interface PluginEventInput { kind: 'event'; event: RepositoryEvent; deliveryId: string; attempt: number; manual?: boolean }
 /**
  * A verified inbound webhook request delivered to its handler. `headers` are
  * the request's headers (lower-case names) without the verification headers,

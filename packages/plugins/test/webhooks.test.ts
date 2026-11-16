@@ -179,6 +179,59 @@ test('a permanent error marks the delivery failed with a readable message', asyn
   assert.deepEqual(mixed.requests.map(r => r.url), ['https://hooks.one.example/propr', 'https://hooks.two.example/in', 'https://hooks.two.example/in'], 'the refusing target is not asked again');
 });
 
+test('a manual Retry skips the targets that have the event and asks again a target that refused it', async () => {
+  // Target 1 accepts; target 2 refuses for good: the delivery fails at once, but which target has it is kept.
+  const k = kit({ target1Url: 'https://hooks.one.example/propr', target2Url: 'https://hooks.two.example/in' });
+  k.respond('https://hooks.two.example/', { status: 410 });
+  const input = event('pull_request.merged');
+  await assert.rejects(deliver(input, k.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent && /^Target 2 .*HTTP 410/.test(error.message));
+  assert.deepEqual([...k.state.keys()], [`progress:${input.deliveryId}`]);
+  // The administrator fixes target 2 and selects Retry: only target 2 is sent the event.
+  k.respond('https://hooks.two.example/', { status: 202 });
+  const result = await deliver({ ...input, attempt: 2, manual: true }, k.ctx);
+  assert.deepEqual(result.delivered, ['target-1', 'target-2']);
+  assert.deepEqual(k.requests.map(r => r.url), ['https://hooks.one.example/propr', 'https://hooks.two.example/in', 'https://hooks.two.example/in']);
+  assert.deepEqual([...k.state.keys()], [], 'nothing is kept once every target has it');
+
+  // Target 1 refuses for good, target 2 stays busy until the retries run out: progress holds target 1's refusal.
+  const busy = kit({ target1Url: 'https://hooks.one.example/propr', target2Url: 'https://hooks.two.example/in' });
+  busy.respond('https://hooks.one.example/', { status: 404 });
+  busy.respond('https://hooks.two.example/', { status: 503 });
+  const other = event('task.completed');
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await assert.rejects(deliver({ ...other, attempt }, busy.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent);
+  }
+  assert.equal(busy.requests.filter(r => r.url.startsWith('https://hooks.one.example/')).length, 1, 'automatic retries do not ask the refusing target again');
+  // Both are fixed; the manual Retry contacts target 1 again instead of failing on its old refusal.
+  busy.respond(() => true, { status: 200 });
+  const retried = await deliver({ ...other, attempt: 6, manual: true }, busy.ctx);
+  assert.deepEqual(retried.delivered, ['target-1', 'target-2']);
+  assert.equal(busy.requests.filter(r => r.url.startsWith('https://hooks.one.example/')).length, 2);
+  assert.deepEqual([...busy.state.keys()], []);
+
+  // A target still refusing on the manual Retry fails it again with the new reason; the one that has it is still skipped.
+  const again = kit({ target1Url: 'https://hooks.one.example/propr', target2Url: 'https://hooks.two.example/in' });
+  again.respond('https://hooks.two.example/', { status: 410 });
+  const third = event('task.failed');
+  await assert.rejects(deliver(third, again.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent);
+  again.respond('https://hooks.two.example/', { status: 403 });
+  await assert.rejects(deliver({ ...third, attempt: 2, manual: true }, again.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent && /^Target 2 .*HTTP 403/.test(error.message));
+  again.respond('https://hooks.two.example/', { status: 200 });
+  await deliver({ ...third, attempt: 3, manual: true }, again.ctx);
+  assert.deepEqual(again.requests.map(r => r.url), ['https://hooks.one.example/propr', 'https://hooks.two.example/in', 'https://hooks.two.example/in', 'https://hooks.two.example/in']);
+});
+
+test('progress makes room in full plugin state by dropping the oldest other progress record', async () => {
+  const k = kit({ target1Url: 'https://hooks.one.example/propr', target2Url: 'https://hooks.two.example/in' });
+  for (let i = 0; i < 256; i++) await k.ctx.state.set(i < 2 ? `progress:old-${i}` : `other:${i}`, i < 2 ? { at: Date.now() - (2 - i) * 1000, sent: ['target-1'], refused: {} } : 1);
+  k.respond('https://hooks.two.example/', { status: 410 });
+  const input = event('pull_request.closed');
+  await assert.rejects(deliver({ ...input, attempt: 2 }, k.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent);
+  const keys = [...k.state.keys()];
+  assert.ok(keys.includes(`progress:${input.deliveryId}`));
+  assert.ok(!keys.includes('progress:old-0') && keys.includes('progress:old-1'), 'the oldest record made room');
+});
+
 test('a host not derived from the settings is refused at call time; plain HTTP and private targets are refused at save time', async () => {
   const k = kit({ target1Url: 'https://hooks.one.example/propr' });
   const fetch = k.ctx.http('target-1-secret');

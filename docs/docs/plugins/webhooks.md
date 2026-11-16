@@ -233,8 +233,11 @@ has 10 seconds).
 When an event goes to several targets and only some fail, a retry sends it only
 to the targets that do not have it yet, with the same delivery id. If one
 target refused the delivery for good, the delivery is marked failed with that
-target's message once the others have it. **Retry** in Activity sends it again
-to the targets that do not have it.
+target's message once the others have it; automatic retries do not ask that
+target again. **Retry** in Activity (after you fix the target) sends it again
+to every target that does not have it, including one that refused it, and
+skips the targets that already have it. Which targets have it is kept for
+14 days, as long as Activity offers **Retry**.
 
 ## Limits
 

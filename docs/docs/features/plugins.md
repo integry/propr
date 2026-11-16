@@ -675,8 +675,8 @@ The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
 `{ kind: 'webhook', webhook, headers, body, receivedAt }`,
 `{ kind: 'command', command, args, repository, number, target, actor, commentId }` or
 `{ kind: 'invoke', payload }`. Events are delivered by
-[event subscriptions](#event-subscriptions), with a stable `deliveryId` and the
-`attempt` number. Webhook requests are delivered by
+[event subscriptions](#event-subscriptions), with a stable `deliveryId`, the
+`attempt` number and, on the attempt of a manual **Retry**, `manual: true`. Webhook requests are delivered by
 [inbound webhooks](#inbound-webhooks), also with a `deliveryId` and `attempt`.
 `handler` commands are delivered as [command deliveries](#command-deliveries);
 `prompt` commands need no handler (see [Commands](#commands)).
@@ -892,7 +892,10 @@ Records are kept for 14 days (longer while their event still waits on another
 handler or on Resume) and are deleted when the plugin is uninstalled.
 
 **Retry** on a failed delivery gives it one more attempt, with the same
-`deliveryId`, outside the repository's order. While deliveries are paused, the
+`deliveryId`, outside the repository's order, and with `manual: true` in the
+event input, so a handler can try again what it gave up on (for example a
+destination that refused it) while skipping what already succeeded. While
+deliveries are paused, the
 retry waits for Resume. A retried delivery of a repository now outside the
 plugin's limit is not delivered; it is marked failed again.
 

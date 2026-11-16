@@ -1,5 +1,5 @@
 import {
-  PluginDeliveryError, PluginSdkError, definePluginHandler, parsePluginRetryAfter,
+  PLUGIN_DELIVERY_RETENTION_DAYS, PluginDeliveryError, PluginSdkError, definePluginHandler, parsePluginRetryAfter,
   type PluginContext, type PluginEventInput, type RepositoryEvent,
 } from '@propr/shared';
 import { eventName, matchingDestinations } from '../_shared/eventSelection.js';
@@ -15,10 +15,14 @@ import {
  */
 
 const USER_AGENT = 'ProPR-Webhooks/1';
-/** Progress of a delivery whose targets did not all succeed, kept across attempts so a retry sends only to the targets still owed. */
+/**
+ * Progress of a delivery whose targets did not all succeed, kept across
+ * attempts (automatic retries and a manual Retry of the failed delivery) so a
+ * retry sends only to the targets still owed.
+ */
 const PROGRESS_PREFIX = 'progress:';
-/** Progress older than this is dropped: the delivery has long been finished or failed. */
-const PROGRESS_TTL_MS = 2 * 24 * 60 * 60_000;
+/** Progress not updated for this long is dropped: Activity no longer offers Retry for its delivery. */
+const PROGRESS_TTL_MS = PLUGIN_DELIVERY_RETENTION_DAYS * 24 * 60 * 60_000;
 
 /** A failed send: `permanent` when retrying cannot help, with the target's `Retry-After` when it gave one. */
 interface SendFailure { message: string; permanent: boolean; retryAfterMs: number | null }
@@ -65,11 +69,42 @@ async function send(ctx: PluginContext, target: WebhookTarget, event: Repository
 
 interface Progress { at: number; sent: string[]; refused: Record<string, string> }
 
+const progressKeys = async (ctx: PluginContext) => ctx.state.keys(PROGRESS_PREFIX);
+
 /** Drop progress records of deliveries long finished (a delivery that finally failed while a target still owed it). */
 async function pruneProgress(ctx: PluginContext, now: number): Promise<void> {
-  for (const key of await ctx.state.keys(PROGRESS_PREFIX)) {
+  for (const key of await progressKeys(ctx)) {
     const progress = await ctx.state.get<Progress & Json>(key);
     if (!progress || typeof progress.at !== 'number' || now - progress.at > PROGRESS_TTL_MS) await ctx.state.delete(key);
+  }
+}
+
+/**
+ * Keep a delivery's progress. When the plugin's state is full, the oldest
+ * other progress record makes room; if it still cannot be kept, a retry may
+ * send the event again to a target that has it (with the same delivery id,
+ * which receivers de-duplicate on), so the delivery's own outcome stands.
+ */
+async function saveProgress(ctx: PluginContext, key: string, progress: Progress): Promise<void> {
+  try {
+    await ctx.state.set(key, progress as unknown as Json);
+    return;
+  } catch (error) {
+    if (!(error instanceof PluginSdkError) || error.code !== 'state_limit') throw error;
+  }
+  let oldest: { key: string; at: number } | null = null;
+  for (const other of await progressKeys(ctx)) {
+    if (other === key) continue;
+    const at = (await ctx.state.get<Progress & Json>(other))?.at;
+    const time = typeof at === 'number' ? at : 0;
+    if (!oldest || time < oldest.at) oldest = { key: other, at: time };
+  }
+  try {
+    if (!oldest) throw new PluginSdkError('state_limit', 'No progress record to replace');
+    await ctx.state.delete(oldest.key);
+    await ctx.state.set(key, progress as unknown as Json);
+  } catch {
+    ctx.log.warn('Could not keep which targets have the delivery; a retry sends it to every target still matching', { delivery: key.slice(PROGRESS_PREFIX.length) });
   }
 }
 
@@ -80,7 +115,10 @@ export interface WebhookDeliveryResult extends Json { event: string; delivered: 
  * selection takes the event. A retry sends only to the targets that did not
  * succeed yet. A rate limit or server error is retried (after the target's
  * `Retry-After` when it gave one); a refusal (another 4xx, or a target the
- * settings no longer allow) marks the delivery failed with its reason.
+ * settings no longer allow) marks the delivery failed with its reason once
+ * the other targets are done. An automatic retry does not ask a refusing
+ * target again; a manual Retry (`input.manual`, after an administrator fixed
+ * the target) does, and still skips the targets that have the event.
  */
 export const deliver = definePluginHandler<PluginEventInput, WebhookDeliveryResult>(async (input, ctx) => {
   const { event } = input;
@@ -91,7 +129,7 @@ export const deliver = definePluginHandler<PluginEventInput, WebhookDeliveryResu
   const now = Date.now();
   if (input.attempt === 1) await pruneProgress(ctx, now);
   const saved = await ctx.state.get<Progress & Json>(key);
-  const progress: Progress = saved ? { at: saved.at, sent: [...saved.sent], refused: { ...saved.refused } } : { at: now, sent: [], refused: {} };
+  const progress: Progress = { at: now, sent: saved ? [...saved.sent] : [], refused: saved && !input.manual ? { ...saved.refused } : {} };
   const transient: SendFailure[] = [];
   for (const target of targets) {
     if (progress.sent.includes(target.name) || Object.hasOwn(progress.refused, target.name)) continue;
@@ -101,13 +139,17 @@ export const deliver = definePluginHandler<PluginEventInput, WebhookDeliveryResu
     else transient.push(failure);
   }
   const delivered = targets.filter(t => progress.sent.includes(t.name)).map(t => t.name);
-  const refused = Object.values(progress.refused);
+  const refused = targets.flatMap(t => (Object.hasOwn(progress.refused, t.name) ? [progress.refused[t.name]] : []));
+  if (!transient.length && !refused.length) {
+    if (saved) await ctx.state.delete(key);
+    return { event: name, delivered };
+  }
+  // Not every target has it: an automatic retry, or a manual Retry of the failed delivery, needs what was sent (and refused).
+  if (transient.length || delivered.length) await saveProgress(ctx, key, progress);
+  else if (saved) await ctx.state.delete(key);
   if (transient.length) {
-    await ctx.state.set(key, progress as unknown as Json);
     const delays = transient.map(f => f.retryAfterMs).filter((ms): ms is number => ms !== null);
     throw new PluginDeliveryError([...transient.map(f => f.message), ...refused].join('; '), { retryAfterMs: delays.length ? Math.max(...delays) : null });
   }
-  if (saved) await ctx.state.delete(key);
-  if (refused.length) throw new PluginDeliveryError(refused.join('; '), { permanent: true });
-  return { event: name, delivered };
+  throw new PluginDeliveryError(refused.join('; '), { permanent: true });
 });

@@ -434,7 +434,7 @@ export class PluginDispatcher {
     installation.attempts++;
     let run: PluginHandlerRun;
     try {
-      run = await (this.options.run ?? runPluginHandler)(installation.target, row.handler!, { kind: 'event', event, deliveryId: row.delivery_id, attempt }, { ...this.options, database: this.database });
+      run = await (this.options.run ?? runPluginHandler)(installation.target, row.handler!, { kind: 'event', event, deliveryId: row.delivery_id, attempt, ...(manual ? { manual: true } : {}) }, { ...this.options, database: this.database });
     } catch (error) {
       // The runner never throws; a replacement that does still only fails this attempt.
       run = { outcome: 'failed', timedOut: false, durationMs: 0, error: error instanceof Error ? error.message : 'The handler failed', logs: [] };

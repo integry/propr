@@ -121,7 +121,8 @@ subscriptions and that holds `events.read`. For each one:
 Before the events, failed deliveries an administrator retried get their one
 extra attempt. A retry is marked `manual` until that attempt is final, so one
 a crashed worker left `running` gets its attempt again from the next lease
-holder, with the same delivery id.
+holder, with the same delivery id. The handler's input of that attempt has
+`manual: true`.
 
 ### Attempts and retries
 
