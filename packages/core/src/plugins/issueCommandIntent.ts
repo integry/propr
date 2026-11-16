@@ -10,25 +10,32 @@ import type { PluginCommandRun } from './pluginCommands.js';
  * job, and that label's webhook can start the issue's work on its own. If the
  * command's own enqueue fails after the label is on the issue, the label
  * webhook (or a redelivery of it) is what starts the task, so label-triggered
- * intake reads this record and queues the command-bearing job instead of an
- * ordinary one. The record is only released as carried on evidence that such
- * a job was queued: the command's own enqueue deletes it, and the label path
- * marks it `queued` so a redelivery of the same comment does not reply that a
- * task is already running.
+ * intake carries this record into the job it queues instead of ordinary work.
+ * It claims the record first, marking it `queued` before its add
+ * (`claimPendingIssueCommand`), and puts it back to `pending` when no job
+ * carrying the command is stored after all (`carryClaimedIssueCommand`). The
+ * command's own enqueue deletes the record once its job is stored.
  *
- * Either release can fail after the job is queued. The job itself is then the
- * durable evidence: it names the record's token (`pluginCommandIntent`), and
- * its dispatcher marks the record `queued` before it starts the work, retrying
- * the job while it cannot (`settleDispatchedIssueCommand`). So a record still
- * `pending` when a later label event reads it was never carried into running
- * work, and a queued job still carrying it holds the issue's job ID.
+ * Whether an attempt's command runs or is reported as not started is decided
+ * once, per attempt token, by its fate (`issueCommandFateKey`): `retired` when
+ * ProPR gives the command up, `carried` when a dispatcher starts a job
+ * carrying it. Each is written atomically with the record checks and change it
+ * depends on, and neither is written over the other. A refusal deletes the
+ * comment's pending record and retires its token (`retireIssueCommandIntent`),
+ * so a label path that read the record before that cannot claim it, and a job
+ * that already holds the token (an add whose outcome was unknown, a claim put
+ * back) runs without the command: its dispatcher reads the fate before it
+ * starts the work (`settleDispatchedIssueCommand`) and marks the token
+ * `carried`, after which no refusal reports that command as not started and
+ * no label event claims it again. An attempt that withdraws its own record
+ * retires its token the same way (`withdrawIssueCommandIntent`).
  *
- * A command that no label of its own can start is given up instead, so no
- * later, independent label event runs it: ProPR retires a comment's pending
- * record before it replies that the command was not started
- * (`retireIssueCommandIntent`), and an attempt whose label GitHub refused, or
- * that requested none, withdraws the record it wrote. Only a label the command
- * may have published keeps its record pending past a failed attempt.
+ * The command's own release can fail after its job is queued. The job itself
+ * is then the durable evidence: it names the record's token
+ * (`pluginCommandIntent`), and its dispatcher marks the record `queued`
+ * before it starts the work, retrying the job while it cannot. So a record
+ * still `pending` when a later label event reads it was never carried into
+ * running work, and a queued job still carrying it holds the issue's job ID.
  */
 export interface IssueCommandIntent {
   state: 'pending' | 'queued';
@@ -42,11 +49,52 @@ export interface IssueCommandIntent {
 
 /** Lives as long as the comment claim, the window in which a redelivery is handled. */
 export const ISSUE_COMMAND_INTENT_TTL_SECONDS = 86400;
+/**
+ * Far longer than the record: a job holding the token reads its fate when it
+ * is dispatched, which only a queue stalled for days would put off this long.
+ */
+export const ISSUE_COMMAND_FATE_TTL_SECONDS = 7 * 86400;
 
-/** Deletes a key only while it still holds the caller's value. */
-const RELEASE_IF_UNCHANGED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
-/** Replaces a key's value, keeping its expiry, only while it still holds the caller's value. */
-const REPLACE_IF_UNCHANGED_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') return 1 else return 0 end";
+/**
+ * The intent record scripts, exported for test doubles. Each runs atomically.
+ * KEYS[1] is the issue's record; KEYS[2], where used, the attempt token's fate.
+ */
+export const ISSUE_COMMAND_INTENT_SCRIPTS = {
+  /** Deletes the record only while it still holds ARGV[1]. */
+  releaseIfUnchanged: "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+  /** Replaces the record's value with ARGV[2], keeping its expiry, only while it still holds ARGV[1]. */
+  replaceIfUnchanged: "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') return 1 else return 0 end",
+  /**
+   * Gives up the command of the record ARGV[1]: while the record still holds
+   * it and no dispatcher has started a job carrying its token, deletes it (or
+   * puts back ARGV[2] when given) and retires the token for ARGV[3] seconds.
+   * Resolves 1 when retired, -1 when the token was carried, 0 when the record
+   * changed.
+   */
+  retire: "if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end "
+    + "if redis.call('get', KEYS[2]) == 'carried' then return -1 end "
+    + "if ARGV[2] == '' then redis.call('del', KEYS[1]) else redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') end "
+    + "redis.call('set', KEYS[2], 'retired', 'EX', ARGV[3]) return 1",
+  /**
+   * Label-path claim: marks the pending record ARGV[1] as ARGV[2] (its
+   * `queued` form), keeping its expiry, while it is unchanged and its token
+   * has no fate yet: a retired token was given up, and a carried one has
+   * already started. Resolves 1 when claimed, -1 when the token has a fate, 0
+   * when the record changed.
+   */
+  claim: "if redis.call('exists', KEYS[2]) == 1 then return -1 end "
+    + "if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end "
+    + "redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') return 1",
+  /**
+   * Dispatcher settlement: unless the token is retired, marks it `carried` for
+   * ARGV[3] seconds, first marking the pending record ARGV[1] (when given) as
+   * ARGV[2] while it is unchanged. Resolves 1 when carried, -1 when retired, 0
+   * when the record changed.
+   */
+  settle: "if redis.call('get', KEYS[2]) == 'retired' then return -1 end "
+    + "if ARGV[1] ~= '' then if redis.call('get', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL') end "
+    + "redis.call('set', KEYS[2], 'carried', 'EX', ARGV[3]) return 1",
+} as const;
 
 export interface StoredIssueCommandIntent {
   intent: IssueCommandIntent;
@@ -58,9 +106,18 @@ export function issueCommandIntentKey(owner: string, repo: string, number: numbe
   return `issue:plugin-command-intent:${owner}:${repo}:${number}`;
 }
 
+/** Whether the attempt token of the issue's record `key` was given up (`retired`) or started (`carried`). */
+export function issueCommandFateKey(key: string, token: string): string {
+  return `${key}:fate:${token}`;
+}
+
 /** The stored value of a pending record, known before it is written so a failed write can still be withdrawn. */
 export function pendingIssueCommandIntent(intent: Omit<IssueCommandIntent, 'state'>): string {
   return JSON.stringify({ ...intent, state: 'pending' } satisfies IssueCommandIntent);
+}
+
+function queuedIssueCommandIntent(intent: IssueCommandIntent): string {
+  return JSON.stringify({ ...intent, state: 'queued' } satisfies IssueCommandIntent);
 }
 
 /** Records the pending command `raw` (see `pendingIssueCommandIntent`) for the issue, replacing any earlier record. */
@@ -75,28 +132,42 @@ function isIntent(value: unknown): value is IssueCommandIntent {
     && !!intent.pluginCommand && typeof intent.pluginCommand.instruction === 'string';
 }
 
-export async function readIssueCommandIntent(redis: Pick<Redis, 'get'>, key: string): Promise<StoredIssueCommandIntent | null> {
-  const raw = await redis.get(key);
-  if (!raw) return null;
+function parseIntent(raw: string): IssueCommandIntent | null {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return null; }
-  return isIntent(parsed) ? { intent: parsed, raw } : null;
+  return isIntent(parsed) ? parsed : null;
+}
+
+export async function readIssueCommandIntent(redis: Pick<Redis, 'get'>, key: string): Promise<StoredIssueCommandIntent | null> {
+  const raw = await redis.get(key);
+  const intent = raw ? parseIntent(raw) : null;
+  return intent && raw ? { intent, raw } : null;
 }
 
 /** Deletes the record only while it is still the one the caller read or wrote. */
 export async function releaseIssueCommandIntent(redis: Pick<Redis, 'eval'>, key: string, raw: string): Promise<void> {
-  await redis.eval(RELEASE_IF_UNCHANGED_SCRIPT, 1, key, raw);
+  await redis.eval(ISSUE_COMMAND_INTENT_SCRIPTS.releaseIfUnchanged, 1, key, raw);
+}
+
+/** Runs the `retire` script; see there. */
+async function retireRecord(redis: Pick<Redis, 'eval'>, key: string, raw: string, replacement: string | null): Promise<'retired' | 'carried' | 'changed'> {
+  const token = parseIntent(raw)?.token;
+  if (!token) throw new Error(`The plugin command intent ${key} holds no attempt token`);
+  const result = await redis.eval(ISSUE_COMMAND_INTENT_SCRIPTS.retire, 2, key, issueCommandFateKey(key, token), raw, replacement ?? '', String(ISSUE_COMMAND_FATE_TTL_SECONDS));
+  return result === 1 ? 'retired' : result === -1 ? 'carried' : 'changed';
 }
 
 /**
  * Withdraws the caller's record of a command that was not started, putting
  * back the record it replaced (if any), only while the caller's is unchanged:
  * the replaced record may be another command's, still pending or already
- * queued, and stays that command's evidence.
+ * queued, and stays that command's evidence. The caller's token is retired in
+ * the same step, so a job a label path or an add with an unknown outcome
+ * queued with it runs without the command. A token a dispatcher has already
+ * carried keeps its record.
  */
 export async function withdrawIssueCommandIntent(redis: Pick<Redis, 'eval'>, key: string, raw: string, replaced: StoredIssueCommandIntent | null): Promise<void> {
-  if (replaced) await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, raw, replaced.raw);
-  else await releaseIssueCommandIntent(redis, key, raw);
+  await retireRecord(redis, key, raw, replaced?.raw ?? null);
 }
 
 /**
@@ -111,60 +182,90 @@ export function issueJobCarriesCommand(stored: unknown, queued: { correlationId?
     && JSON.stringify(data.pluginCommand) === JSON.stringify(queued.pluginCommand);
 }
 
-/** Marks a pending record as carried by a queued job, only while it is unchanged. Resolves whether it did. */
-export async function markIssueCommandIntentQueued(redis: Pick<Redis, 'eval'>, key: string, stored: StoredIssueCommandIntent): Promise<boolean> {
-  return 1 === await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw, JSON.stringify({ ...stored.intent, state: 'queued' } satisfies IssueCommandIntent));
-}
-
-export interface PendingIssueCommand extends StoredIssueCommandIntent {
+/** A pending command label-triggered intake has claimed for the job it queues. */
+export interface ClaimedIssueCommand {
   key: string;
-}
-
-/** The issue's pending command, for label-triggered intake to queue in place of ordinary work. */
-export async function readPendingIssueCommand(redis: Pick<Redis, 'get'>, owner: string, repo: string, number: number): Promise<PendingIssueCommand | null> {
-  const key = issueCommandIntentKey(owner, repo, number);
-  const stored = await readIssueCommandIntent(redis, key);
-  return stored?.intent.state === 'pending' ? { ...stored, key } : null;
-}
-
-/** The job fields that make a label-triggered issue job carry the pending command. */
-export function issueCommandJobFields(pending: PendingIssueCommand | null): { userId?: string; pluginCommand?: PluginCommandRun; pluginCommandIntent?: string } {
-  return pending ? { userId: pending.intent.userId, pluginCommand: pending.intent.pluginCommand, pluginCommandIntent: pending.intent.token } : {};
+  /** The record as it was pending, put back when no job carrying it is stored. */
+  intent: IssueCommandIntent;
+  pendingRaw: string;
+  /** The claimed (`queued`) record. */
+  claimedRaw: string;
 }
 
 /** Bounds the re-reads when the record changes between a read and its conditional update. */
 const SETTLE_ATTEMPTS = 5;
 
 /**
- * Called by the issue dispatcher before it starts a job carrying a command:
- * marks the issue's record `queued` while it is still the pending record the
- * job names, so no later label event attaches that command to other work. A
- * record that is gone, already `queued`, or now another command's is left as
- * it is. Rejects when the record cannot be read or updated; the dispatcher
- * then fails this attempt before starting anything, and its retry settles.
+ * The issue's pending command, claimed for label-triggered intake to queue in
+ * place of ordinary work. The record is marked `queued` before the job is
+ * added, in one step with the check that its token has no fate: a refusal
+ * that retired it first leaves nothing to claim, so the label queues ordinary
+ * work, and a refusal after the claim finds the command started. A token a
+ * dispatcher has carried (its claim was put back after an add that stored
+ * the job but failed) is not claimed again either. Resolves null when no
+ * pending command without a fate is recorded.
+ */
+export async function claimPendingIssueCommand(redis: Pick<Redis, 'get' | 'eval'>, owner: string, repo: string, number: number): Promise<ClaimedIssueCommand | null> {
+  const key = issueCommandIntentKey(owner, repo, number);
+  for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt++) {
+    const stored = await readIssueCommandIntent(redis, key);
+    if (stored?.intent.state !== 'pending') return null;
+    const claimedRaw = queuedIssueCommandIntent(stored.intent);
+    const result = await redis.eval(ISSUE_COMMAND_INTENT_SCRIPTS.claim, 2, key, issueCommandFateKey(key, stored.intent.token), stored.raw, claimedRaw);
+    if (result === 1) return { key, intent: stored.intent, pendingRaw: stored.raw, claimedRaw };
+    if (result === -1) return null;
+    // The record changed since it was read: read it again.
+  }
+  throw new Error(`The plugin command intent ${key} kept changing while it was claimed`);
+}
+
+/** The job fields that make a label-triggered issue job carry the claimed command. */
+export function issueCommandJobFields(claimed: ClaimedIssueCommand | null): { userId?: string; pluginCommand?: PluginCommandRun; pluginCommandIntent?: string } {
+  return claimed ? { userId: claimed.intent.userId, pluginCommand: claimed.intent.pluginCommand, pluginCommandIntent: claimed.intent.token } : {};
+}
+
+/** The dispatcher's verdict on the command its job carries. */
+export type IssueCommandSettlement = 'carried' | 'retired';
+
+/**
+ * Called by the issue dispatcher before it starts a job carrying a command.
+ * Resolves `retired` when ProPR gave the command up (it was reported as not
+ * started, or its attempt withdrew it): the job must then run without it.
+ * Otherwise marks the token `carried`, so no refusal reports the command as
+ * not started from now on, and marks the issue's record `queued` while it is
+ * still the pending record the job names, so no later label event attaches
+ * that command to other work; a record that is gone, already `queued`, or now
+ * another command's is left as it is. Rejects when the fate or record cannot
+ * be read or updated; the dispatcher then fails this attempt before starting
+ * anything, and its retry settles.
  */
 export async function settleDispatchedIssueCommand(
   redis: Pick<Redis, 'get' | 'eval'>,
   job: { repoOwner: string; repoName: string; number: number; pluginCommandIntent?: string },
-): Promise<void> {
+): Promise<IssueCommandSettlement> {
   const token = job.pluginCommandIntent;
-  if (!token) return;
+  if (!token) return 'carried';
   const key = issueCommandIntentKey(job.repoOwner, job.repoName, job.number);
   for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt++) {
     const stored = await readIssueCommandIntent(redis, key);
-    if (!stored || stored.intent.token !== token || stored.intent.state !== 'pending') return;
+    const pending = stored?.intent.token === token && stored.intent.state === 'pending' ? stored : null;
+    const result = await redis.eval(ISSUE_COMMAND_INTENT_SCRIPTS.settle, 2, key, issueCommandFateKey(key, token),
+      pending?.raw ?? '', pending ? queuedIssueCommandIntent(pending.intent) : '', String(ISSUE_COMMAND_FATE_TTL_SECONDS));
+    if (result === -1) return 'retired';
+    if (result === 1) return 'carried';
     // The record changed since it was read: read it again.
-    if (await markIssueCommandIntentQueued(redis, key, stored)) return;
   }
   throw new Error(`The plugin command intent ${key} kept changing while it was settled`);
 }
 
 /**
  * Called before ProPR reports a comment's command as not started: deletes the
- * issue's record while it is still that comment's pending one, so no later
- * label event attaches a command ProPR refused to other work. Another
- * comment's record is left as it is. Resolves `started` when the record is
- * that comment's `queued` one: a label event queued the command since the
+ * issue's record while it is still that comment's pending one and retires its
+ * token in the same step, so neither a label event that read the record
+ * before nor a job that already holds the token runs a command ProPR refused.
+ * Another comment's record is left as it is. Resolves `started` when the
+ * record is that comment's `queued` one, or its token was already carried: a
+ * label event claimed the command, or a dispatcher started it, since the
  * caller last read it, so it must not be reported as not started. Rejects
  * when the record cannot be read or deleted, before anything is reported.
  */
@@ -173,32 +274,44 @@ export async function retireIssueCommandIntent(redis: Pick<Redis, 'get' | 'eval'
     const stored = await readIssueCommandIntent(redis, key);
     if (stored?.intent.commentId !== commentId) return 'not_started';
     if (stored.intent.state === 'queued') return 'started';
+    const outcome = await retireRecord(redis, key, stored.raw, null);
+    if (outcome !== 'changed') return outcome === 'retired' ? 'not_started' : 'started';
     // The record changed since it was read: read it again.
-    if (1 === await redis.eval(RELEASE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw)) return 'not_started';
   }
   throw new Error(`The plugin command intent ${key} kept changing while it was retired`);
 }
 
 /**
- * After adding the job meant to carry the pending command: marks the command
- * started, but only once the job stored under the ID (read by
- * `job.storedJobData`) is the one queued. An add whose ID is taken keeps the
- * existing job, which then runs without the command, so the command stays
- * pending.
+ * Adds the label-triggered job (`job.add`) meant to carry the claimed
+ * command, then keeps the claim only once the job stored under the ID (read
+ * by `job.storedJobData`) is the one queued. An add whose ID is taken keeps
+ * the existing job, which then runs without the command, and an add or read
+ * that fails leaves it unknown: the record is then put back to `pending`
+ * while it is still the claim, so a later label event can carry it. A job
+ * that holds it nonetheless (an add whose outcome was unknown) runs it only
+ * if no refusal retires it first.
  */
-export async function settlePendingIssueCommand(
-  redis: Pick<Redis, 'eval'>, pending: PendingIssueCommand | null,
-  job: { queued: { correlationId?: string; pluginCommand?: PluginCommandRun }; storedJobData: () => Promise<unknown> },
+export async function carryClaimedIssueCommand(
+  redis: Pick<Redis, 'eval'>, claimed: ClaimedIssueCommand | null,
+  job: { add: () => Promise<unknown>; queued: { correlationId?: string; pluginCommand?: PluginCommandRun }; storedJobData: () => Promise<unknown> },
   log: Pick<Logger, 'info' | 'warn'>,
 ): Promise<void> {
-  if (!pending) return;
-  if (!issueJobCarriesCommand(await job.storedJobData(), job.queued)) {
-    log.warn({ key: pending.key, commentId: pending.intent.commentId }, 'The issue job ID is held by other work; the plugin command stays pending');
+  if (!claimed) {
+    await job.add();
     return;
   }
-  log.info({ key: pending.key, commentId: pending.intent.commentId, command: pending.intent.pluginCommand.command }, 'Queued the plugin command whose own enqueue failed');
-  // A failure here is recovered by the job's dispatcher, which settles the record it names.
-  await markIssueCommandIntentQueued(redis, pending.key, pending).catch((error: unknown) => {
-    log.warn({ key: pending.key, error: (error as Error).message }, 'Could not mark the plugin command intent as queued; the job\'s dispatcher settles it');
-  });
+  const context = { key: claimed.key, commentId: claimed.intent.commentId };
+  let carried = false;
+  try {
+    await job.add();
+    carried = issueJobCarriesCommand(await job.storedJobData(), job.queued);
+    if (carried) log.info({ ...context, command: claimed.intent.pluginCommand.command }, 'Queued the plugin command whose own enqueue failed');
+    else log.warn(context, 'The issue job ID is held by other work; the plugin command stays pending');
+  } finally {
+    if (!carried) {
+      await redis.eval(ISSUE_COMMAND_INTENT_SCRIPTS.replaceIfUnchanged, 1, claimed.key, claimed.claimedRaw, claimed.pendingRaw).catch((error: unknown) => {
+        log.warn({ ...context, error: (error as Error).message }, 'Could not put the claimed plugin command back to pending');
+      });
+    }
+  }
 }

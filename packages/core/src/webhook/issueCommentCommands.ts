@@ -27,8 +27,10 @@ import {
  * the published label's webhook queues the job carrying the command instead
  * of ordinary work (see `issueCommandIntent.ts`). A command ProPR reports as
  * not started, or whose label GitHub refused, leaves no pending record for a
- * later label event to run. Access follows the comment trigger rules: the
- * author filters (allowlist, blocklist, bots) and the ignore keywords.
+ * later label event to run, and its attempt token is retired, so a job that
+ * already holds it runs without the command. Access follows the comment
+ * trigger rules: the author filters (allowlist, blocklist, bots) and the
+ * ignore keywords.
  */
 export interface IssueCommandDependencies {
   redis: Pick<Redis, 'get' | 'set' | 'del' | 'eval'>;
@@ -139,7 +141,9 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     const reply = (text: string) => github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issue.number, body: `@${author} ${text}` });
     // Reports the command as not started. Its own pending record, left by an
     // earlier attempt whose label could still start it, is retired first, so
-    // no later label event runs a command ProPR refused.
+    // no later label event runs a command ProPR refused, nor a job a label
+    // event queued with it before the refusal. A command a label event
+    // claimed, or a dispatcher started, meanwhile is not reported.
     const refuse = async (text: string, reason: string): Promise<DeliveryDisposition> => {
       if (await retireIssueCommandIntent(deps.redis, intentKey, comment.id) === 'started') return alreadyStarted();
       await reply(text);

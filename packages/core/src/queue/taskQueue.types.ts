@@ -50,7 +50,8 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
      * The token of the issue's command intent this job carries `pluginCommand`
      * for. The dispatcher settles that intent before it starts the work, so a
      * settlement the intake could not record does not leave the consumed
-     * command pending for a later label event.
+     * command pending for a later label event, and drops the command when
+     * ProPR reported it as not started after this job was queued with it.
      */
     pluginCommandIntent?: string;
     /** Authenticated user retrying failed submission-backed work; owns that retry instead of the submitter. */

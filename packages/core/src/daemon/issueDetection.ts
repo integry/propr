@@ -14,7 +14,7 @@ import { restoreIssueTrigger, settleWithdrawalCleanups } from '../services/taskI
 import type { CleanupVerdict } from '../services/withdrawalCleanup.js';
 import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
-import { readPendingIssueCommand, issueCommandJobFields, settlePendingIssueCommand } from '../plugins/issueCommandIntent.js';
+import { claimPendingIssueCommand, issueCommandJobFields, carryClaimedIssueCommand } from '../plugins/issueCommandIntent.js';
 
 export type { DetectedIssue };
 
@@ -291,7 +291,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     // A plugin command that published this issue's label but failed to queue
     // its job: the label starts the job carrying that command, not ordinary work.
-    const pendingCommand = await readPendingIssueCommand(redisClient, issue.repoOwner, issue.repoName, issue.number);
+    // It is claimed before the add, so a refusal of the command either retires
+    // it first (this label then queues ordinary work) or finds it started.
+    const pendingCommand = await claimPendingIssueCommand(redisClient, issue.repoOwner, issue.repoName, issue.number);
 
     try {
         const timestamp = Date.now();
@@ -319,11 +321,10 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             `add_issue_to_queue_${issue.number}`
         );
 
-        await addToQueueWithRetry();
-
         // An add whose ID is taken keeps the existing job (e.g. one delayed for a
-        // retry), so the command is settled only once the stored job carries it.
-        await settlePendingIssueCommand(redisClient, pendingCommand, {
+        // retry), so the claim is kept only once the stored job carries the command.
+        await carryClaimedIssueCommand(redisClient, pendingCommand, {
+            add: addToQueueWithRetry,
             queued: issueJob,
             storedJobData: async () => (await (await getIssueQueue()).getJob(jobId))?.data,
         }, correlatedLogger);

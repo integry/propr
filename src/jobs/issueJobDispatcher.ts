@@ -5,7 +5,7 @@ import {
     confirmIssueRetryPublication, redisRetryOutcomeEvidence, queueRetryRunEvidence, enqueueIssueRetryRun, recordIssueRetryRunReceipt,
     submissionTriggerEvents, settleDispatchedIssueCommand,
     type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type RetryRunReceipt, type SubmissionRetry,
-    type RunReceiptFence, type TriggerLabelEvent,
+    type RunReceiptFence, type TriggerLabelEvent, type IssueCommandSettlement,
 } from '@propr/core';
 import { generateCorrelationId, parentScopeFromIssueBody } from '@propr/core';
 import { resolveCurrentRun, receiptFence, recordAcceptedRun } from './issueRetryRunSelection.js';
@@ -93,10 +93,12 @@ export interface DispatcherDeps {
     /**
      * Marks the issue's plugin command intent this job names (`pluginCommandIntent`)
      * as carried, before any child is added: the intake's own settlement of it may
-     * have failed after queueing this job. Rejects when the intent cannot be
+     * have failed after queueing this job. Resolves `retired` when ProPR gave the
+     * command up (it was reported as not started) after this job was queued with
+     * it; the job then runs without the command. Rejects when the intent cannot be
      * settled, failing this attempt so its retry settles it before starting work.
      */
-    settleIssueCommand?: (issueRef: IssueJobData) => Promise<void>;
+    settleIssueCommand?: (issueRef: IssueJobData) => Promise<IssueCommandSettlement>;
 }
 
 async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promise<{ agentAlias: string; modelToUse: string | undefined }> {
@@ -151,7 +153,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         // Loaded on use, like registerRequest: the worker's Redis connection holds the intake's records.
         settleIssueCommand: async issue => {
             const { redisClient } = await import('./issueJob/config.js');
-            await settleDispatchedIssueCommand(redisClient, issue);
+            return settleDispatchedIssueCommand(redisClient, issue);
         },
         // Loaded on use: the obligation module opens the worker's Redis connection.
         registerRequest: async issue => {
@@ -427,10 +429,18 @@ function admissionParentLink(issue: CurrentIssueData, target: IssueJobData): Pic
 
 /**
  * No child carries a plugin command until the intent the job names is settled,
- * so a later label event cannot attach the same command to other work.
+ * so a later label event cannot attach the same command to other work. A
+ * command ProPR reported as not started is dropped from the job, and from the
+ * data it saves for its retries, before any child copies it.
  */
-async function settleCarriedCommand(issueRef: IssueJobData, deps: DispatcherDeps): Promise<void> {
-    if (issueRef.pluginCommandIntent && deps.settleIssueCommand) await deps.settleIssueCommand(issueRef);
+async function settleCarriedCommand(issueRef: IssueJobData, storedData: IssueJobData, deps: DispatcherDeps, log: Logger): Promise<void> {
+    if (!issueRef.pluginCommandIntent || !deps.settleIssueCommand) return;
+    if (await deps.settleIssueCommand(issueRef) !== 'retired') return;
+    log.info({ issue: issueRef.number, command: issueRef.pluginCommand?.command }, 'The plugin command this job carries was reported as not started; dispatching the issue without it');
+    for (const data of [issueRef, storedData]) {
+        delete data.pluginCommand;
+        delete data.pluginCommandIntent;
+    }
 }
 
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
@@ -453,7 +463,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
     let repoValidation: RepoValidation;
 
     try {
-        await settleCarriedCommand(issueRef, deps);
+        await settleCarriedCommand(issueRef, storedData, deps, correlatedLogger);
         octokit = await deps.withRetry(
             () => deps.getAuthenticatedOctokit(),
             { ...deps.retryConfigs.githubApi, correlationId },

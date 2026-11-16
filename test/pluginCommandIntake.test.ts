@@ -198,7 +198,7 @@ const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('.
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { processDetectedIssue } = await import('../packages/core/src/daemon/issueDetection.js');
-const { settleDispatchedIssueCommand } = await import('../packages/core/src/plugins/issueCommandIntent.js');
+const { settleDispatchedIssueCommand, retireIssueCommandIntent, ISSUE_COMMAND_INTENT_SCRIPTS: INTENT_SCRIPTS } = await import('../packages/core/src/plugins/issueCommandIntent.js');
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -260,6 +260,45 @@ after(async () => {
     await closeConnection();
 });
 
+/**
+ * Runs an EVAL against the fake's store synchronously, i.e. atomically, like
+ * Redis: the intent record's two-key scripts by identity, and otherwise the
+ * one-key compare-and-delete (or compare-and-replace when a new value is given).
+ */
+function runScript(store: Map<string, string>, script: string, args: string[]): number {
+    if (script === INTENT_SCRIPTS.retire) {
+        const [key, fate, raw, replacement] = args;
+        if (store.get(key) !== raw) return 0;
+        if (store.get(fate) === 'carried') return -1;
+        if (replacement === '') store.delete(key);
+        else store.set(key, replacement);
+        store.set(fate, 'retired');
+        return 1;
+    }
+    if (script === INTENT_SCRIPTS.claim) {
+        const [key, fate, raw, claimed] = args;
+        if (store.has(fate)) return -1;
+        if (store.get(key) !== raw) return 0;
+        store.set(key, claimed);
+        return 1;
+    }
+    if (script === INTENT_SCRIPTS.settle) {
+        const [key, fate, raw, settled] = args;
+        if (store.get(fate) === 'retired') return -1;
+        if (raw !== '') {
+            if (store.get(key) !== raw) return 0;
+            store.set(key, settled);
+        }
+        store.set(fate, 'carried');
+        return 1;
+    }
+    const [key, token, replacement] = args;
+    if (store.get(key) !== token) return 0;
+    if (replacement === undefined) store.delete(key);
+    else store.set(key, replacement);
+    return 1;
+}
+
 function createMockRedis() {
     const store = new Map<string, string>();
     return {
@@ -271,13 +310,7 @@ function createMockRedis() {
             return 'OK';
         }),
         del: mock.fn(async (key: string) => { store.delete(key); }),
-        // Compare-and-delete, or compare-and-replace when a new value is given.
-        eval: mock.fn(async (_script: string, _keys: number, key: string, token: string, replacement?: string) => {
-            if (store.get(key) !== token) return 0;
-            if (replacement === undefined) store.delete(key);
-            else store.set(key, replacement);
-            return 1;
-        }),
+        eval: mock.fn(async (script: string, _keys: number, ...args: string[]) => runScript(store, script, args)),
         smembers: mock.fn(async () => []),
         lpush: mock.fn(async () => 1),
         ltrim: mock.fn(async () => 'OK'),
@@ -616,13 +649,9 @@ describe('plugin prompt command on an issue', () => {
     /** Makes the next conditional update of the intent record fail, as a transient Redis error does. */
     const failNextIntentUpdate = (redis: ReturnType<typeof createMockRedis>) => {
         let failed = false;
-        redis.eval.mock.mockImplementation(async (_script: string, _keys: number, key: string, token: string, replacement?: string) => {
-            if (key === INTENT_KEY && !failed) { failed = true; throw new Error('redis eval failed'); }
-            // The fake's compare-and-delete or compare-and-replace.
-            if (redis._store.get(key) !== token) return 0;
-            if (replacement === undefined) redis._store.delete(key);
-            else redis._store.set(key, replacement);
-            return 1;
+        redis.eval.mock.mockImplementation(async (script: string, _keys: number, ...args: string[]) => {
+            if (args[0] === INTENT_KEY && !failed) { failed = true; throw new Error('redis eval failed'); }
+            return runScript(redis._store, script, args);
         });
         return () => failed;
     };
@@ -657,20 +686,23 @@ describe('plugin prompt command on an issue', () => {
         assert.notStrictEqual(later.userId, intent.userId, 'the ordinary task belongs to whoever applied the label');
     });
 
-    test('a failed settlement after the label path queued the command: its dispatcher settles the intent, and a later label event queues ordinary work', async () => {
+    test('a claim the label path cannot record fails its delivery before anything is queued; the next label event carries the command, and its dispatcher starts it', async () => {
         const f = deps();
         await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-cmd', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
         const token = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).token as string;
         const failed = failNextIntentUpdate(f.deps.redis);
-        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
-        assert.ok(failed(), 'marking the intent queued failed');
+        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never), /redis eval failed/);
+        assert.ok(failed(), 'claiming the intent failed');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0, 'nothing is queued without the claim');
         assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'pending');
+
+        f.deps.redis._store.delete(DEDUPE_KEY);
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label-2', f.deps.redis as never)).status, 'accepted');
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'queued', 'claimed before the add');
         const stored = mockStoredJobs.get(JOB_ID)!.data as StoredIssueJob & { repoOwner: string; repoName: string; number: number };
         assert.strictEqual(stored.pluginCommand?.command, 'example-notes');
         assert.strictEqual(stored.pluginCommandIntent, token);
-
-        await settleDispatchedIssueCommand(f.deps.redis, stored);
-        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'queued');
+        assert.strictEqual(await settleDispatchedIssueCommand(f.deps.redis, stored), 'carried');
 
         const later = await laterOrdinaryTrigger(f.deps.redis);
         assert.strictEqual(later.pluginCommand, undefined, 'the consumed command is not replayed');
@@ -717,6 +749,9 @@ describe('plugin prompt command on an issue', () => {
         assert.strictEqual(later.pluginCommandIntent, undefined);
         assert.strictEqual(later.userId, '999', 'the task belongs to the label applier, not the command author');
     };
+    /** The fake's keys other than attempt-token fates, and those fates. */
+    const recordKeys = (redis: ReturnType<typeof createMockRedis>) => [...redis._store.keys()].filter(key => !key.startsWith(`${INTENT_KEY}:fate:`));
+    const fates = (redis: ReturnType<typeof createMockRedis>) => [...redis._store].filter(([key]) => key.startsWith(`${INTENT_KEY}:fate:`)).map(([, fate]) => fate);
     const pendingRecordOf = (commentId: number) => JSON.stringify({ commentId, userId: '9', pluginCommand: { pluginId: 'example-pack', command: 'example-notes', instruction: 'other comment', extensions: EXPECTED_EXTENSIONS }, token: `token-${commentId}`, state: 'pending' });
 
     test('a redelivery refused while an ordinary parent holds the job ID retires the command: a later label event queues ordinary work', async () => {
@@ -809,7 +844,8 @@ describe('plugin prompt command on an issue', () => {
             return {};
         } });
         await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-403', { ...f.deps, github } as never), /not accessible/);
-        assert.deepStrictEqual([...f.deps.redis._store.keys()], []);
+        assert.deepStrictEqual(recordKeys(f.deps.redis), []);
+        assert.deepStrictEqual(fates(f.deps.redis), ['retired'], 'the withdrawn attempt\'s token is retired');
         assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
     });
 
@@ -817,12 +853,126 @@ describe('plugin prompt command on an issue', () => {
         const f = deps();
         await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-first', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
         assert.ok(!f.requests.some(r => r.route.endsWith('/labels')), 'no label was requested');
-        assert.deepStrictEqual([...f.deps.redis._store.keys()], [], 'no label of this attempt can carry the command');
+        assert.deepStrictEqual(recordKeys(f.deps.redis), [], 'no label of this attempt can carry the command');
+        assert.deepStrictEqual(fates(f.deps.redis), ['retired'], 'the withdrawn attempt\'s token is retired');
         assertOrdinary(await laterOrdinaryTrigger(f.deps.redis));
         // The redelivery is handled afresh and starts the command.
         mockStoredJobs.delete(JOB_ID);
         f.deps.redis._store.delete(DEDUPE_KEY);
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-retry', f.deps as never)).status, 'accepted');
         assert.strictEqual(f.enqueued.length, 1);
+    });
+
+    // ---- A refusal racing label-path recovery of the same command (F7) ----
+
+    type DispatchableJob = StoredIssueJob & { repoOwner: string; repoName: string; number: number };
+    const storedIssueJob = () => mockStoredJobs.get(JOB_ID)?.data as DispatchableJob | undefined;
+    /** Whether dispatching the job runs its command: the dispatcher drops a command whose settlement is `retired`. */
+    const runsCommand = async (redis: ReturnType<typeof createMockRedis>, job: DispatchableJob | undefined) =>
+        !!job?.pluginCommand && await settleDispatchedIssueCommand(redis, job) !== 'retired';
+    const notStartedReplies = (f: ReturnType<typeof deps>) => f.requests.filter(r => NOT_STARTED.test(String(r.parameters.body))).length;
+    /** Like BullMQ, the add keeps an existing job under the ID. */
+    const storeJob = (name: string, data: unknown, options?: { jobId?: string }) => {
+        if (options?.jobId && !mockStoredJobs.has(options.jobId)) mockStoredJobs.set(options.jobId, { name, data });
+    };
+    const redeliver = (f: ReturnType<typeof deps>, overrides: Record<string, unknown> = {}) =>
+        processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-redelivery', { ...f.deps, ...overrides } as never);
+
+    test('a redelivery refused after label recovery read the pending command, before it claimed it: the label queues ordinary work, and nothing runs the refused command', async () => {
+        const f = deps();
+        await failAfterPublishing(f);
+        // The label path reads the pending record; the redelivery runs to completion before it acts on what it read.
+        let redelivery: Awaited<ReturnType<typeof redeliver>> | undefined;
+        let paused = false;
+        f.deps.redis.get.mock.mockImplementation(async (key: string) => {
+            const value = f.deps.redis._store.get(key) ?? null;
+            if (key === INTENT_KEY && !paused) {
+                paused = true;
+                redelivery = await redeliver(f);
+            }
+            return value;
+        });
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
+        assert.ok(paused, 'the redelivery ran between the label path\'s read and its use of it');
+        // The label path's dedupe window makes the redelivery busy: it reports the command as not started...
+        assert.strictEqual(redelivery?.reason, 'job_already_queued');
+        assert.strictEqual(notStartedReplies(f), 1);
+        // ...so the job the label queued must not run it.
+        const job = storedIssueJob();
+        assert.strictEqual(job?.pluginCommand, undefined, 'recovery does not queue a command whose retirement won');
+        assert.strictEqual(await runsCommand(f.deps.redis, job), false);
+        assertOrdinary(job!);
+    });
+
+    test('a redelivery while label recovery\'s add is in flight finds the command started, and the queued job runs it', async () => {
+        const f = deps();
+        await failAfterPublishing(f);
+        let redelivery: Awaited<ReturnType<typeof redeliver>> | undefined;
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
+            redelivery = await redeliver(f);
+            storeJob(name, data, options);
+        });
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
+        assert.strictEqual(redelivery?.reason, 'duplicate_delivery', 'the claimed command is already started');
+        assert.strictEqual(notStartedReplies(f), 0, 'no "not started" reply for the command the job carries');
+        assert.strictEqual(storedIssueJob()?.pluginCommand?.command, 'example-notes');
+        assert.strictEqual(await runsCommand(f.deps.redis, storedIssueJob()), true);
+    });
+
+    test('a label add whose job was stored but reported failed puts the claim back: a refusal then retires it and the job runs without it; a job dispatched first keeps it and nothing is reported', async () => {
+        // Refusal first.
+        const f = deps();
+        await failAfterPublishing(f);
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
+            storeJob(name, data, options);
+            throw new Error('connection reset');
+        });
+        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never), /connection reset/);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'pending', 'the claim is put back: the add\'s outcome is unknown');
+        assert.strictEqual(storedIssueJob()?.pluginCommand?.command, 'example-notes', 'yet the job holds the command');
+        const refused = await redeliver(f, { hasQueuedIssueJob: async () => true });
+        assert.strictEqual(refused.reason, 'job_already_queued');
+        assert.strictEqual(notStartedReplies(f), 1);
+        assert.strictEqual(await runsCommand(f.deps.redis, storedIssueJob()), false, 'a command reported as not started does not run');
+        assert.deepStrictEqual(fates(f.deps.redis), ['retired']);
+
+        // Dispatch first: the dispatcher starts the job while the failing add is still reporting.
+        mockStoredJobs.clear();
+        const g = deps();
+        await failAfterPublishing(g);
+        let dispatched: boolean | undefined;
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
+            storeJob(name, data, options);
+            dispatched = await runsCommand(g.deps.redis, storedIssueJob());
+            throw new Error('connection reset');
+        });
+        await assert.rejects(processDetectedIssue(labelEvent(), 'corr-label', g.deps.redis as never), /connection reset/);
+        assert.strictEqual(dispatched, true);
+        assert.strictEqual(JSON.parse(g.deps.redis._store.get(INTENT_KEY)!).state, 'pending', 'the claim is put back after the job started');
+        const started = await redeliver(g, { hasQueuedIssueJob: async () => true });
+        assert.strictEqual(started.reason, 'duplicate_delivery', 'a carried command is not reported as not started');
+        assert.strictEqual(notStartedReplies(g), 0);
+        assert.strictEqual(await retireIssueCommandIntent(g.deps.redis, INTENT_KEY, 601), 'started');
+        assert.ok(g.deps.redis._store.has(INTENT_KEY));
+        // Once that job has finished, a later label event does not run the started command a second time.
+        assertOrdinary(await laterOrdinaryTrigger(g.deps.redis));
+    });
+
+    test('a command\'s own add whose job was stored but reported failed retires the withdrawn token: the refused redelivery\'s reply and the command never both happen', async () => {
+        const f = deps();
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
+            storeJob(name, data, options);
+            throw new Error('connection reset');
+        });
+        // The label is already on the issue, so the failed attempt withdraws its record.
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-first', queueDeps(f) as never), /connection reset/);
+        assert.deepStrictEqual(recordKeys(f.deps.redis), []);
+        const job = storedIssueJob();
+        assert.strictEqual(job?.pluginCommand?.command, 'example-notes');
+        mockWaitingJobs = [{ name: 'processGitHubIssue', data: job }];
+        const redelivery = await processIssueCommentCommand(issueComment('/example-notes cover the CLI', ['AI']), 'corr-redelivery', queueDeps(f) as never);
+        assert.strictEqual(redelivery.reason, 'job_already_queued');
+        assert.strictEqual(notStartedReplies(f), 1);
+        assert.strictEqual(await runsCommand(f.deps.redis, job), false);
     });
 });

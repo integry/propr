@@ -688,7 +688,7 @@ export {
     type PluginCommandHelp, type PluginCommandRun, type PluginCommandResolution, type PluginCommandRequest, type PluginCommandResolver,
 } from './plugins/pluginCommands.js';
 export { processIssueCommentCommand } from './webhook/issueCommentCommands.js';
-export { settleDispatchedIssueCommand } from './plugins/issueCommandIntent.js';
+export { settleDispatchedIssueCommand, type IssueCommandSettlement } from './plugins/issueCommandIntent.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.
