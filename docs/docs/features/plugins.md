@@ -51,7 +51,7 @@ own tests and as a reference for plugin authors.
 | Plugin | What it does |
 | --- | --- |
 | [Outbound webhooks](../plugins/webhooks.md) (`webhooks`) | Sends ProPR events as signed JSON to any HTTPS endpoint, with a documented, versioned envelope. |
-| [Slack](../plugins/slack.md) (`slack`) | Posts short notifications to Slack channels through incoming webhooks. |
+| [Slack](../plugins/slack.md) (`slack`) | Posts short notifications to Slack channels through incoming webhooks, or with your own Slack app in one thread per pull request; in app mode, mentioning the bot creates an issue that starts a task. |
 | [Discord](../plugins/discord.md) (`discord`) | Posts short notifications to Discord channels as embeds through channel webhooks. |
 | [Microsoft Teams](../plugins/teams.md) (`teams`) | Posts short notifications to Teams channels or chats as Adaptive Cards through a Workflows webhook. |
 

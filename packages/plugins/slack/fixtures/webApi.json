@@ -1,0 +1,15 @@
+{
+  "_comment": "Slack Web API answers, as documented: https://docs.slack.dev/reference/methods/chat.postMessage, https://docs.slack.dev/reference/methods/chat.getPermalink, https://docs.slack.dev/reference/methods/usergroups.users.list and https://docs.slack.dev/apis/web-api/rate-limits. Most errors are HTTP 200 with ok: false.",
+  "postMessage": { "status": 200, "json": { "ok": true, "channel": "C0APICHAN", "ts": "1763302400.001000", "message": { "type": "message", "subtype": "bot_message", "ts": "1763302400.001000" } } },
+  "permalink": { "status": 200, "json": { "ok": true, "channel": "C0APICHAN", "permalink": "https://acme.slack.com/archives/C0APICHAN/p1763301599000100" } },
+  "userGroup": { "status": 200, "json": { "ok": true, "users": ["U0GROUPMEM", "W0GROUPMEM"] } },
+  "rateLimited": { "status": 429, "headers": { "retry-after": "30" }, "body": "" },
+  "threadNotFound": { "status": 200, "json": { "ok": false, "error": "thread_not_found" } },
+  "permanent": [
+    { "status": 200, "json": { "ok": false, "error": "not_in_channel" } },
+    { "status": 200, "json": { "ok": false, "error": "channel_not_found" } },
+    { "status": 200, "json": { "ok": false, "error": "invalid_auth" } },
+    { "status": 200, "json": { "ok": false, "error": "missing_scope", "needed": "chat:write", "provided": "app_mentions:read" } }
+  ],
+  "transient": { "status": 200, "json": { "ok": false, "error": "internal_error" } }
+}

@@ -79,14 +79,15 @@ export function recordingBackend() {
  * An in-memory instance with the fixture plugin installed through the real
  * plugin store: `api-token` set (sealed), limited to `owner/allowed`, enabled.
  */
-export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string } = {}) {
+export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string; official?: boolean } = {}) {
   const database = extensionTestResources(t).database();
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
   for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, stateMigration, journalMigration, taskDomainMigration, deliveriesMigration, webhookKeysMigration, commandSettingsMigration]) await migrate(database);
   const pluginId = options.pluginId ?? FIXTURE_ID;
-  const manifest = fixtureManifest(pluginId);
+  // `official`: a plugin of the real registry (packages/plugins) instead of the test fixtures.
+  const manifest = options.official ? getOfficialPlugin(pluginId, { includeDevelopment: false })!.manifest : fixtureManifest(pluginId);
   const catalog = async () => [manifest];
   const store = new PluginStore(database, ENVIRONMENT, catalog);
   await store.install('1', pluginId);
@@ -97,7 +98,7 @@ export async function pluginHandlerFixture(t: TestContext, options: { secret?: s
   const http = echoTransport();
   const runOptions: RunPluginHandlerOptions = {
     database, environment: ENVIRONMENT, catalog, backend, lookup, transport: http.transport,
-    handlers: id => loadPluginHandlers(id, { root: FIXTURE_REGISTRY, includeDevelopment: true }),
+    handlers: id => (options.official ? loadPluginHandlers(id, { includeDevelopment: false }) : loadPluginHandlers(id, { root: FIXTURE_REGISTRY, includeDevelopment: true })),
   };
   return { database, store, manifest, backend, calls, http, options: runOptions };
 }
