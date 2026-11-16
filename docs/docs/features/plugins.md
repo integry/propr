@@ -108,7 +108,7 @@ defined.
 | `mcpServers` | MCP servers, in the [extension library](./agent-extensions.md)'s item shapes (below). |
 | `skills` | `{ "name", "path" }`: a skill bundle folder inside the plugin folder. Its `SKILL.md` front matter must use the same `name`. |
 | `automationTemplates` | `{ "id", "path" }`: a template folder in the automation template format. It must pass the same checks as the shipped templates. |
-| `commands` | `{ "name", "description", "where", "kind", "prompt"?, "handler"?, "skills"?, "servers"?, "needsWrite"?, "shared"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
+| `commands` | `{ "name", "description", "where", "kind", "prompt"?, "handler"?, "skills"?, "servers"?, "needsWrite"?, "shared"?, "specific"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
 | `subscriptions` | `{ "on", "handler", "filter"? }`: deliver a repository event (`<domain>.<type>`, such as `pull_request.merged`) to an exported handler. See [Event subscriptions](#event-subscriptions). Needs the `events.read` permission. |
 | `webhooks` | `{ "name", "description", "handler", "verification", "deliveryIdHeader"?, "respond"? }`: an inbound webhook URL whose verified requests run `handler`. `verification` is a built-in scheme with a `signing_secret` connection. See [Inbound webhooks](#inbound-webhooks). |
 
@@ -170,15 +170,18 @@ handler receives the comment context as a delivery of kind `command` (see
 [Command deliveries](#command-deliveries)).
 
 ```json
-{ "name": "deploy", "description": "Deploy this branch", "where": ["pull_request"], "kind": "handler", "handler": "deploy", "shared": true },
+{ "name": "deploy", "description": "Deploy this branch", "where": ["pull_request"], "kind": "handler", "handler": "deploy", "shared": true, "specific": ["vercel-deploy"] },
 { "name": "vercel-deploy", "description": "Deploy this branch to Vercel", "where": ["pull_request"], "kind": "handler", "handler": "deploy" }
 ```
 
 A `shared` command is a name several plugins may offer, such as `/deploy`
 offered by several deployment plugins. Each plugin that marks a command shared
-must also declare a specific command: one that is not shared, of the same
-kind, usable wherever the shared one is (`npm run plugins:check` and the
-manifest schema refuse a shared command without one). When more than one
+must also name, in `specific`, its own commands that perform the same
+operation under a name of their own: each one not shared, of the same kind,
+usable wherever the shared one is and, for a handler command, calling the same
+handler. Another command of the plugin is never taken as an alternative unless
+the shared command names it (`npm run plugins:check` and the manifest schema
+refuse a shared command without a valid specific command). When more than one
 enabled plugin offers the shared name for a repository, the plain name runs
 the plugin chosen in the instance setting on the Plugins page; without a
 choice, the only enabled one runs it, and with several the command replies

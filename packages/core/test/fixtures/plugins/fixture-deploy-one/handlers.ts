@@ -19,3 +19,9 @@ export async function deploy(input: PluginCommandInput, ctx: PluginContext) {
   ctx.log.info(`/${input.command} on ${input.repository}#${input.number}`);
   return { deployed: true };
 }
+
+/** `/deploy-one-status`: a handler command of the same kind as /deploy that is not one of its specific commands. */
+export async function status(input: PluginCommandInput, ctx: PluginContext) {
+  ctx.log.info(`/${input.command} status on ${input.repository}#${input.number}`);
+  return { status: 'idle' };
+}

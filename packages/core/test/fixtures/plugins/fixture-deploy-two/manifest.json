@@ -14,7 +14,7 @@
       { "kind": "https", "name": "deploy-two-docs", "url": "https://docs.deploy-two.example.com/mcp", "tools": ["search"], "capability": "read", "authentication": "none" }
     ],
     "commands": [
-      { "name": "deploy", "description": "Deploy this branch", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy", "shared": true },
+      { "name": "deploy", "description": "Deploy this branch", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy", "shared": true, "specific": ["deploy-two"] },
       { "name": "deploy-two", "description": "Deploy this branch with Deploy two", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy" },
       { "name": "deploy-two-release", "description": "Cut a release with Deploy two", "where": ["pull_request", "issue"], "kind": "prompt", "prompt": "Cut a release of the current branch with the deploy-two-api server.", "servers": ["deploy-two-api", "deploy-two-docs"], "needsWrite": true }
     ]

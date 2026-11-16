@@ -178,8 +178,10 @@ export type PluginCommandKind = typeof PLUGIN_COMMAND_KINDS[number];
  * `handlers.ts`, with the comment context as a delivery of kind `command`.
  *
  * A `shared` command name (for example `/deploy`) may be offered by several
- * plugins; each such plugin also declares a specific command of the same kind
- * for the same comments. When several enabled plugins offer it for one
+ * plugins; each such plugin names in `specific` its own commands that perform
+ * the same operation under a name of their own (not shared, of the same kind,
+ * usable wherever the shared name is, and for a handler command calling the
+ * same handler). When several enabled plugins offer it for one
  * repository, an instance setting chooses which one the plain name runs.
  */
 export const pluginCommandSchema = z.strictObject({
@@ -195,6 +197,8 @@ export const pluginCommandSchema = z.strictObject({
   servers: z.array(extensionServerNameSchema).max(PLUGIN_LIMITS.mcpServers).default([]),
   needsWrite: z.boolean().default(false),
   shared: z.boolean().default(false),
+  /** Of a `shared` command: this plugin's commands that perform the same operation under their own name. */
+  specific: z.array(pluginCommandNameSchema).max(PLUGIN_LIMITS.commands).default([]),
   permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_LIMITS.permissions).default([]),
 });
 export type PluginCommand = z.infer<typeof pluginCommandSchema>;
@@ -333,10 +337,40 @@ function checkCommands(manifest: z.infer<typeof pluginManifestObjectSchema>, iss
       else if (server.capability === 'write' && !command.needsWrite) issue(`Command ${command.name} adds the write server ${name}; set needsWrite`, [...at, 'servers']);
     }
     checkCommandKind(command, issue, at);
-    if (command.shared && !pluginSharedCommandSiblings(contributes.commands, command).length) {
-      issue(`Shared command ${command.name} needs a specific command of this plugin: one that is not shared, of kind ${command.kind}, usable wherever /${command.name} is`, [...at, 'shared']);
-    }
+    checkSharedCommand(command, contributes.commands, issue, at);
   });
+}
+
+/**
+ * A `shared` command names at least one specific command of its plugin, and
+ * each one it names performs the same operation: not shared, of the same kind,
+ * usable wherever the shared name is, and calling the same handler. Only a
+ * shared command names specific commands.
+ */
+function checkSharedCommand(command: PluginCommand, commands: readonly PluginCommand[], issue: Issue, at: (string | number)[]) {
+  if (!command.shared) {
+    if (command.specific.length) issue(`Command ${command.name} is not shared; only a shared command names specific commands`, [...at, 'specific']);
+    return;
+  }
+  if (!command.specific.length) {
+    issue(`Shared command ${command.name} needs a specific command of this plugin, named in specific: one that is not shared, of kind ${command.kind}, usable wherever /${command.name} is`, [...at, 'specific']);
+    return;
+  }
+  for (const name of duplicates(command.specific)) issue(`Shared command ${command.name} lists specific command ${name} more than once`, [...at, 'specific']);
+  for (const name of new Set(command.specific)) {
+    const other = commands.find(c => c.name === name);
+    const problem = !other ? 'which the plugin does not contribute' : specificCommandProblem(command, other);
+    if (problem) issue(`Shared command ${command.name} names specific command ${name}, ${problem}`, [...at, 'specific']);
+  }
+}
+
+/** Why `other` cannot stand in for the shared `command`, or null when it performs the same operation. */
+function specificCommandProblem(command: PluginCommand, other: PluginCommand): string | null {
+  if (other.name === command.name || other.shared) return 'which is shared itself';
+  if (other.kind !== command.kind) return `which is not of kind ${command.kind}`;
+  if (!command.where.every(target => other.where.includes(target))) return `which is not usable wherever /${command.name} is`;
+  if (command.kind === 'handler' && other.handler !== command.handler) return `which calls a different handler than ${command.handler}`;
+  return null;
 }
 
 /** A `prompt` command has a prompt and no handler; a `handler` command has a handler and adds no skills or servers. */
@@ -354,12 +388,15 @@ function checkCommandKind(command: PluginCommand, issue: Issue, at: (string | nu
 
 /**
  * The specific commands that stand in for a `shared` command of the same
- * plugin: commands that are not shared, of the same kind, usable wherever the
- * shared command is. Empty for a command that is not shared.
+ * plugin: the ones it names in `specific`, in that order, that perform the
+ * same operation. Empty for a command that is not shared.
  */
 export function pluginSharedCommandSiblings(commands: readonly PluginCommand[], command: PluginCommand): PluginCommand[] {
   if (!command.shared) return [];
-  return commands.filter(other => !other.shared && other.name !== command.name && other.kind === command.kind && command.where.every(target => other.where.includes(target)));
+  return [...new Set(command.specific)].flatMap(name => {
+    const other = commands.find(c => c.name === name);
+    return other && !specificCommandProblem(command, other) ? [other] : [];
+  });
 }
 
 type SettingProblem = { message: string; field?: string };

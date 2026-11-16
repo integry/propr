@@ -10,7 +10,7 @@
  *     offering one marks it `shared`, and none is a built-in ProPR command
  *     (the manifest schema refuses those, with the built-in list of
  *     @propr/shared's commands module); the schema also checks that each
- *     shared command has a specific sibling command in its plugin;
+ *     shared command names, in `specific`, a command of its plugin that performs the same operation;
  *   - the README, the icon, every skill folder (with a SKILL.md naming the
  *     skill) and every automation template folder exist, and the templates
  *     pass the automation template contract.

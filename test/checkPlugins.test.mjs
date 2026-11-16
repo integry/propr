@@ -99,17 +99,20 @@ test('command names must be unique across plugins', async () => {
   expectError(root, /^second-pack: command status is also contributed by fixture-pack$/);
 });
 
-test('a shared command name may be offered by several plugins when each marks it shared and has a specific sibling', async () => {
+test('a shared command name may be offered by several plugins when each marks it shared and names a specific command', async () => {
   const deploy = { name: 'deploy', description: 'Deploy', where: ['pull_request'], kind: 'prompt', prompt: 'Deploy the branch.', shared: true };
-  const twoPlugins = (second = m => { m.contributes.commands = [deploy, { ...deploy, name: 'second-deploy', shared: false }]; }) => fixtureRoot(async root => {
+  const own = name => [{ ...deploy, specific: [name] }, { ...deploy, name, shared: false }];
+  const twoPlugins = (second = m => { m.contributes.commands = own('second-deploy'); }) => fixtureRoot(async root => {
     await cp(join(root, 'fixture-pack'), join(root, 'second-pack'), { recursive: true });
-    await editManifest(join(root, 'fixture-pack'), m => { m.contributes.commands.push(deploy); });
+    await editManifest(join(root, 'fixture-pack'), m => { m.contributes.commands.push(...own('fixture-deploy')); });
     await editManifest(join(root, 'second-pack'), m => { m.id = 'second-pack'; second(m); });
     await writeFile(join(root, 'registry.json'), JSON.stringify({ version: 1, plugins: [{ id: 'fixture-pack' }, { id: 'second-pack' }] }));
   });
   assert.deepEqual(checkPlugins({ root: await twoPlugins() }).errors, []);
   expectError(await twoPlugins(m => { m.contributes.commands = [{ ...deploy, shared: false }]; }), /^second-pack: command deploy is also contributed by fixture-pack \(a shared name must be marked shared by every plugin offering it\)$/);
-  expectError(await twoPlugins(m => { m.contributes.commands = [deploy]; }), /^second-pack\/manifest\.json: contributes\.commands\.0\.shared: Shared command deploy needs a specific command of this plugin/);
+  expectError(await twoPlugins(m => { m.contributes.commands = [deploy]; }), /^second-pack\/manifest\.json: contributes\.commands\.0\.specific: Shared command deploy needs a specific command of this plugin/);
+  // A command of the same kind and targets that deploy does not name is no specific command for it.
+  expectError(await twoPlugins(m => { m.contributes.commands = [deploy, { ...deploy, name: 'second-status', prompt: 'Report the status.', shared: false }]; }), /^second-pack\/manifest\.json: contributes\.commands\.0\.specific: Shared command deploy needs a specific command of this plugin/);
 });
 
 test('a command named like a built-in command is refused with the built-in list', async () => {

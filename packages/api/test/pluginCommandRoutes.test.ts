@@ -84,7 +84,7 @@ test('the command write switch and the shared command owner: administrators only
   const detail = await call('GET', `/${ONE}`, undefined, { 'x-test-actor': '1' });
   assertConforms(schemas.PluginDetailResponse, detail.body, 'GET plugin');
   assert.deepEqual(detail.body.plugin.commands.map((c: { name: string; needsWrite: boolean; writeAllowed: boolean }) => [c.name, c.needsWrite, c.writeAllowed]), [
-    ['deploy', false, false], ['deploy-one', false, false], ['deploy-one-release', true, false],
+    ['deploy', false, false], ['deploy-one', false, false], ['deploy-one-status', false, false], ['deploy-one-release', true, false],
   ]);
 
   // Members, sessions without the durable role and calls without the JSON contract are refused; nothing changes.

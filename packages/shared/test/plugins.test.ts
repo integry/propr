@@ -229,20 +229,36 @@ test('a handler command names an exported handler instead of a prompt and adds n
   rejects(variant(m => { m.contributes.commands[0].handler = 'notify'; }), /Command notify is a prompt command; only handler commands name a handler/);
 });
 
-test('a shared command needs a specific sibling command of the same kind wherever it is used', () => {
-  const shared = { name: 'deploy', description: 'Deploy', where: ['pull_request'], kind: 'prompt', prompt: 'Deploy the branch.', shared: true };
+test('a shared command names the specific commands of its plugin that perform the same operation', () => {
+  const shared = { name: 'deploy', description: 'Deploy', where: ['pull_request'], kind: 'prompt', prompt: 'Deploy the branch.', shared: true, specific: ['acme-deploy'] };
   const specific = { name: 'acme-deploy', description: 'Deploy with Acme', where: ['pull_request', 'issue'], kind: 'prompt', prompt: 'Deploy the branch with Acme.' };
   const parsed = parsePluginManifest(variant(m => { m.contributes.commands.push(shared, specific); }));
   assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('; '));
   if (!parsed.ok) return;
-  assert.deepEqual(pluginSharedCommandSiblings(parsed.manifest.contributes.commands, parsed.manifest.contributes.commands[1]).map(c => c.name), ['notify', 'acme-deploy']);
+  // notify is a prompt command for pull requests too, but deploy does not name it: it is not an alternative.
+  assert.deepEqual(pluginSharedCommandSiblings(parsed.manifest.contributes.commands, parsed.manifest.contributes.commands[1]).map(c => c.name), ['acme-deploy']);
   const deploy = publicPluginManifest(parsed.manifest).contributes.commands.find(c => c.name === 'deploy')!;
   assert.equal(deploy.shared, true);
-  assert.deepEqual(deploy.specific, ['notify', 'acme-deploy']);
-  // Only shared, or siblings of another kind or not covering every target: refused.
-  const alone = (m: Parameters<Parameters<typeof variant>[0]>[0]) => { m.contributes.commands = [shared]; };
-  rejects(variant(alone), /Shared command deploy needs a specific command of this plugin/);
-  rejects(variant(m => { m.contributes.commands = [{ ...shared, where: ['pull_request', 'issue'] }, { ...specific, where: ['pull_request'] }]; }), /Shared command deploy needs a specific command/);
-  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, kind: 'handler', prompt: undefined, handler: 'deploy' }]; }), /Shared command deploy needs a specific command/);
-  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, shared: true }]; }), /Shared command (deploy|acme-deploy) needs a specific command/);
+  assert.deepEqual(deploy.specific, ['acme-deploy']);
+  assert.deepEqual(publicPluginManifest(parsed.manifest).contributes.commands.find(c => c.name === 'acme-deploy')!.specific, []);
+  // Naming no specific command, or one that is missing, shared, of another kind or not covering every target: refused.
+  rejects(variant(m => { m.contributes.commands = [shared]; }), /Shared command deploy names specific command acme-deploy, which the plugin does not contribute/);
+  rejects(variant(m => { m.contributes.commands = [{ ...shared, specific: [] }, specific]; }), /Shared command deploy needs a specific command of this plugin, named in specific/);
+  rejects(variant(m => { m.contributes.commands = [{ ...shared, where: ['pull_request', 'issue'] }, { ...specific, where: ['pull_request'] }]; }), /names specific command acme-deploy, which is not usable wherever \/deploy is/);
+  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, kind: 'handler', prompt: undefined, handler: 'deploy' }]; }), /names specific command acme-deploy, which is not of kind prompt/);
+  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, shared: true, specific: ['deploy'] }]; }), /names specific command acme-deploy, which is shared itself/);
+  rejects(variant(m => { m.contributes.commands = [{ ...shared, specific: ['acme-deploy', 'acme-deploy'] }, specific]; }), /lists specific command acme-deploy more than once/);
+  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, specific: ['deploy'] }]; }), /Command acme-deploy is not shared; only a shared command names specific commands/);
+});
+
+test('an unrelated command of the same kind cannot stand in for a shared handler command', () => {
+  const deploy = { name: 'deploy', description: 'Deploy', where: ['pull_request'], kind: 'handler', handler: 'deploy', shared: true };
+  const status = { name: 'status', description: 'Report the status', where: ['pull_request'], kind: 'handler', handler: 'reportStatus' };
+  // Same kind and targets, but deploy does not name it: refused, so a plugin cannot ship /deploy without a specific deployment command.
+  rejects(variant(m => { m.contributes.commands = [deploy, status]; }), /Shared command deploy needs a specific command of this plugin/);
+  // Naming it anyway is refused too: it calls another handler, so it is not the same operation.
+  rejects(variant(m => { m.contributes.commands = [{ ...deploy, specific: ['status'] }, status]; }), /names specific command status, which calls a different handler than deploy/);
+  const parsed = parsePluginManifest(variant(m => { m.contributes.commands = [{ ...deploy, specific: ['acme-deploy'] }, status, { ...deploy, name: 'acme-deploy', shared: false }]; }));
+  assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('; '));
+  if (parsed.ok) assert.deepEqual(pluginSharedCommandSiblings(parsed.manifest.contributes.commands, parsed.manifest.contributes.commands[0]).map(c => c.name), ['acme-deploy']);
 });

@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "fixture-deploy-one",
   "name": "Deploy one",
-  "description": "Test fixture for plugin commands: a shared /deploy handler command with its specific /deploy-one, and a needsWrite prompt command that adds the plugin's write server.",
+  "description": "Test fixture for plugin commands: a shared /deploy handler command with its specific /deploy-one, an unrelated handler command /deploy-one-status that is no alternative to /deploy, and a needsWrite prompt command that adds the plugin's write server.",
   "version": "1.0.0",
   "category": "deployment",
   "homepage": "https://example.com/fixture-deploy-one",
@@ -14,8 +14,9 @@
       { "kind": "https", "name": "deploy-one-docs", "url": "https://docs.deploy-one.example.com/mcp", "tools": ["search"], "capability": "read", "authentication": "none" }
     ],
     "commands": [
-      { "name": "deploy", "description": "Deploy this branch", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy", "shared": true },
+      { "name": "deploy", "description": "Deploy this branch", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy", "shared": true, "specific": ["deploy-one"] },
       { "name": "deploy-one", "description": "Deploy this branch with Deploy one", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy" },
+      { "name": "deploy-one-status", "description": "Report the Deploy one status", "where": ["pull_request", "issue"], "kind": "handler", "handler": "status" },
       { "name": "deploy-one-release", "description": "Cut a release with Deploy one", "where": ["pull_request", "issue"], "kind": "prompt", "prompt": "Cut a release of the current branch with the deploy-one-api server.", "servers": ["deploy-one-api", "deploy-one-docs"], "needsWrite": true }
     ]
   }
