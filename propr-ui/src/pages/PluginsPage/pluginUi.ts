@@ -53,6 +53,18 @@ export type PluginPackageSecretServer = Extract<PublicPluginMcpServer, { kind: '
 export const packageSecretServers = (manifest: PluginManifestView): PluginPackageSecretServer[] =>
   mcpServersOf(manifest).flatMap(server => (server.kind === 'package' && server.secretEnv.length ? [server] : []));
 
+type PluginCommandView = PluginManifestView['contributes']['commands'][number];
+/** One command in plain words: what it does, and that write access stays off until an administrator allows it. */
+function commandLine(command: PluginCommandView): string {
+  const parts = [`Adds the /${command.name} command`];
+  if (command.kind === 'handler') parts.push('which calls the plugin\'s handler and starts no task');
+  if (command.shared) parts.push(`a name other plugins may offer too (its specific command: ${command.specific.map(name => `/${name}`).join(', ')})`);
+  const line = parts.join(', ');
+  return command.needsWrite
+    ? `${line}. It can use write access: off until an administrator switches on "Allow this command to use write access" after installing, and then only for commenters with write permission on the repository`
+    : line;
+}
+
 /** What a plugin adds, in plain words, generated from its manifest. */
 export function describePluginContributions(manifest: PluginManifestView): string[] {
   const servers = mcpServersOf(manifest);
@@ -67,7 +79,7 @@ export function describePluginContributions(manifest: PluginManifestView): strin
   if (local) lines.push(`Runs ${count(local, 'local server', 'local servers')} inside the task container`);
   if (skills.length) lines.push(`Adds ${count(skills.length, 'skill', 'skills')} the agent reads when relevant: ${skills.join(', ')}`);
   if (automationTemplates.length) lines.push(`Adds ${count(automationTemplates.length, 'automation template', 'automation templates')}: ${automationTemplates.join(', ')}`);
-  for (const command of commands) lines.push(`Adds the /${command.name} command`);
+  for (const command of commands) lines.push(commandLine(command));
   if (subscriptions.length) lines.push(`Receives ProPR events: ${subscriptions.join(', ')}`);
   if (webhooks.length) lines.push(`Receives ${count(webhooks.length, 'webhook', 'webhooks')} from a service`);
   if (manifest.outboundHosts.length) lines.push(`Sends requests to ${manifest.outboundHosts.join(', ')}`);

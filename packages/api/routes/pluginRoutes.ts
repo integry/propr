@@ -46,6 +46,7 @@ export function createPluginRoutes(store = new PluginStore(db), environment: Nod
   };
   const id = (req: Request) => String(req.params.pluginId);
   const connection = (req: Request) => String(req.params.connectionName);
+  const command = (req: Request) => String(req.params.commandName);
   return {
     list: handle(async (_req, actor) => ({ plugins: await store.list(actor) })),
     get: handle(async (req, actor) => ({ plugin: await store.get(actor, id(req)) })),
@@ -68,5 +69,9 @@ export function createPluginRoutes(store = new PluginStore(db), environment: Nod
     /** Configure (`{ clientId, clientSecret? }`) or clear (`null`) the pre-registered client of an `oauth` connection; the secret is write-only. */
     setOAuthClient: handle(async (req, actor) => ({ plugin: await store.setOAuthClient(actor, id(req), connection(req), body(req, ['client']).client) })),
     disconnectOAuth: handle(async (req, actor) => { body(req, [], []); return { plugin: await store.disconnectOAuth(actor, id(req), connection(req)) }; }),
+    /** Switch "Allow this command to use write access" of a `needsWrite` command on (`true`) or off. */
+    setCommandWrite: handle(async (req, actor) => ({ plugin: await store.setCommandWrite(actor, id(req), command(req), body(req, ['allowed']).allowed) })),
+    /** Choose (a plugin id) or clear (`null`) which plugin a shared command name runs when several enabled plugins offer it. */
+    setSharedCommandOwner: handle(async (req, actor) => ({ plugin: await store.setSharedCommandOwner(actor, id(req), command(req), body(req, ['owner']).owner) })),
   };
 }

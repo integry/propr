@@ -154,7 +154,17 @@ export interface PluginEventInput { kind: 'event'; event: RepositoryEvent; deliv
  * assigns. `attempt` counts from 1.
  */
 export interface PluginWebhookInput { kind: 'webhook'; webhook: string; headers: Record<string, string>; body: string; receivedAt: number; deliveryId: string; attempt: number }
-export interface PluginCommandInput { kind: 'command'; command: string; args: string; repository: string | null; actor: string }
+/**
+ * A `handler` slash command: the comment's repository (`owner/repo`), the
+ * issue or pull request `number` it was posted on (`target`), the commenter's
+ * login (`actor`) and the rest of the command line (`args`), which is
+ * untrusted text. `deliveryId` (`cmd-<target>-<comment id>`) is the same on
+ * every attempt; `attempt` counts from 1.
+ */
+export interface PluginCommandInput {
+  kind: 'command'; command: string; args: string; repository: string; number: number; target: 'issue' | 'pull_request';
+  actor: string; commentId: number; deliveryId: string; attempt: number;
+}
 export interface PluginInvokeInput { kind: 'invoke'; payload: PluginJsonValue }
 export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput;
 

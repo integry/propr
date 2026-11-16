@@ -15,7 +15,7 @@ import { createSessionIdCallback, createContainerIdCallback } from '../issueJobC
 import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { markAgentExecutionFailure } from '../providerReplacement.js';
 import { redisClient } from './config.js';
-import { pluginCommandExtensionBase, pluginCommandIssuePrompt } from '../pluginCommandTask.js';
+import { pluginCommandIssuePrompt, pluginCommandRunExtensionBase } from '../pluginCommandTask.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
   return {
@@ -146,7 +146,9 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     // Library items that apply automatically, resolved at launch; the issue's labels
     // (already loaded for the prompt) can only remove them.
     // A plugin command adds its manifest's own skills and servers explicitly.
-    const extensions = { extensions: taskRunExtensionRequest({ kind: 'issue', repository, labels: currentIssueData.data.labels, base: pluginCommandExtensionBase(issueRef.pluginCommand, submitted.extensions) }) };
+    // An allowed `needsWrite` command's single-use write grant is consumed by this run only.
+    const base = await pluginCommandRunExtensionBase(issueRef.pluginCommand, submitted.extensions, taskId);
+    const extensions = { extensions: taskRunExtensionRequest({ kind: 'issue', repository, labels: currentIssueData.data.labels, base }) };
     agentResult = await runRepositoryWorkflow({
       workflow: repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
       redisClient, taskId, stateManager, correlatedLogger,

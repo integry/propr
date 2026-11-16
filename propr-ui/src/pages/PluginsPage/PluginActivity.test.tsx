@@ -40,6 +40,19 @@ describe('Plugin activity', () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
+  it('shows a handler command delivery with its command, repository and issue or pull request, without Retry', async () => {
+    const command = delivery({ id: 5, deliveryId: 'cmd-pull_request-9001', kind: 'command', eventSeq: 42, eventType: 'command.deploy', handler: 'deploy', status: 'failed', attempt: 5, error: 'deploy API answered 500', logs: [] });
+    await open({ health: healthy, deliveries: [command] });
+    const [item] = items();
+    expect(item).toHaveTextContent('command.deploy');
+    expect(item).toHaveTextContent('deploy');
+    expect(item).toHaveTextContent('acme/web');
+    expect(item).toHaveTextContent('Comment on #42');
+    expect(item).not.toHaveTextContent('Event #42');
+    expect(item).toHaveTextContent('deploy API answered 500');
+    expect(within(item).queryByRole('button', { name: /Retry/ })).toBeNull();
+  });
+
   it('lists each delivery with its time, kind, handler, outcome, duration, attempt, error and log lines', async () => {
     await open({ health: healthy, deliveries: [gap, failed, retrying, delivery({})] });
     expect(getPluginActivity).toHaveBeenCalledWith('example-pack');

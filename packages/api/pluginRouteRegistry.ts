@@ -22,6 +22,8 @@ export function createPluginRouteEntries(plugins: ReturnType<typeof createPlugin
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/start`, requireManageSettings, plugins.startOAuth],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/complete`, requireManageSettings, plugins.completeOAuth],
     ['post', `${base}/:pluginId/connections/:connectionName/oauth/disconnect`, requireManageSettings, plugins.disconnectOAuth],
+    ['put', `${base}/:pluginId/commands/:commandName/write`, requireManageSettings, plugins.setCommandWrite],
+    ['put', `${base}/:pluginId/commands/:commandName/owner`, requireManageSettings, plugins.setSharedCommandOwner],
     ['get', `${base}/:pluginId/activity`, requireManageSettings, activity.list],
     ['post', `${base}/:pluginId/activity/:deliveryId/retry`, requireManageSettings, activity.retry],
     ['post', `${base}/:pluginId/resume`, requireManageSettings, activity.resume],

@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture-deploy-two",
+  "name": "Deploy two",
+  "description": "Test fixture for plugin commands: a shared /deploy handler command with its specific /deploy-two, and a needsWrite prompt command that adds the plugin's write server.",
+  "version": "1.0.0",
+  "category": "deployment",
+  "homepage": "https://example.com/fixture-deploy-two",
+  "icon": "icon.svg",
+  "permissions": ["pull_requests.comment", "issues.comment"],
+  "contributes": {
+    "mcpServers": [
+      { "kind": "https", "name": "deploy-two-api", "url": "https://mcp.deploy-two.example.com/mcp", "tools": ["deploy"], "capability": "write", "authentication": "none" },
+      { "kind": "https", "name": "deploy-two-docs", "url": "https://docs.deploy-two.example.com/mcp", "tools": ["search"], "capability": "read", "authentication": "none" }
+    ],
+    "commands": [
+      { "name": "deploy", "description": "Deploy this branch", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy", "shared": true },
+      { "name": "deploy-two", "description": "Deploy this branch with Deploy two", "where": ["pull_request", "issue"], "kind": "handler", "handler": "deploy" },
+      { "name": "deploy-two-release", "description": "Cut a release with Deploy two", "where": ["pull_request", "issue"], "kind": "prompt", "prompt": "Cut a release of the current branch with the deploy-two-api server.", "servers": ["deploy-two-api", "deploy-two-docs"], "needsWrite": true }
+    ]
+  }
+}

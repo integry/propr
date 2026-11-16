@@ -160,26 +160,41 @@ export const pluginAutomationTemplateSchema = z.strictObject({ id: keySchema, pa
 /** A plugin command name: lower-case, and never one of ProPR's built-in commands. */
 export const pluginCommandNameSchema = z.string().regex(COMMAND_NAME_PATTERN, 'Command names are lower-case letters, digits and -, starting with a letter (at most 32)')
   .refine(name => !isBuiltInCommandName(name), { error: issue => `/${String(issue.input)} is a built-in ProPR command; built-in commands are ${BUILT_IN_COMMAND_NAMES.map(n => `/${n}`).join(', ')}` });
-export const PLUGIN_COMMAND_KINDS = ['prompt'] as const;
+export const PLUGIN_COMMAND_KINDS = ['prompt', 'handler'] as const;
 export type PluginCommandKind = typeof PLUGIN_COMMAND_KINDS[number];
 /**
- * A slash command used in issue or pull request comments (`where`). A `prompt`
- * command queues an ordinary one-shot task: a follow-up on a pull request, an
- * implementation task on an issue. Its instruction is `prompt`, with the rest
- * of the command line appended as the person's (untrusted) argument; `skills`
- * and `servers` name this plugin's own contributions to add to that run.
- * Commands with `needsWrite` are refused until write authorization for
- * commands exists.
+ * A slash command used in issue or pull request comments (`where`).
+ *
+ * A `prompt` command queues an ordinary one-shot task: a follow-up on a pull
+ * request, an implementation task on an issue. Its instruction is `prompt`,
+ * with the rest of the command line appended as the person's (untrusted)
+ * argument; `skills` and `servers` name this plugin's own contributions to add
+ * to that run. A command with `needsWrite` may add the plugin's write servers:
+ * it runs only when an administrator allowed it write access on the Plugins
+ * page and the commenter has write permission on the repository, and the
+ * write servers reach that one run only.
+ *
+ * A `handler` command calls `handler`, an exported function of the plugin's
+ * `handlers.ts`, with the comment context as a delivery of kind `command`.
+ *
+ * A `shared` command name (for example `/deploy`) may be offered by several
+ * plugins; each such plugin also declares a specific command of the same kind
+ * for the same comments. When several enabled plugins offer it for one
+ * repository, an instance setting chooses which one the plain name runs.
  */
 export const pluginCommandSchema = z.strictObject({
   name: pluginCommandNameSchema,
   description: textSchema(200),
   where: z.array(z.enum(COMMAND_TARGETS)).min(1).max(COMMAND_TARGETS.length),
   kind: z.enum(PLUGIN_COMMAND_KINDS),
-  prompt: textSchema(4000),
+  /** The instruction of a `prompt` command. */
+  prompt: textSchema(4000).optional(),
+  /** The handler a `handler` command calls. */
+  handler: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/, 'Use the name of an exported handler function').optional(),
   skills: z.array(keySchema).max(PLUGIN_LIMITS.skills).default([]),
   servers: z.array(extensionServerNameSchema).max(PLUGIN_LIMITS.mcpServers).default([]),
   needsWrite: z.boolean().default(false),
+  shared: z.boolean().default(false),
   permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_LIMITS.permissions).default([]),
 });
 export type PluginCommand = z.infer<typeof pluginCommandSchema>;
@@ -317,7 +332,34 @@ function checkCommands(manifest: z.infer<typeof pluginManifestObjectSchema>, iss
       if (!server) issue(`Command ${command.name} adds server ${name}, which the plugin does not contribute`, [...at, 'servers']);
       else if (server.capability === 'write' && !command.needsWrite) issue(`Command ${command.name} adds the write server ${name}; set needsWrite`, [...at, 'servers']);
     }
+    checkCommandKind(command, issue, at);
+    if (command.shared && !pluginSharedCommandSiblings(contributes.commands, command).length) {
+      issue(`Shared command ${command.name} needs a specific command of this plugin: one that is not shared, of kind ${command.kind}, usable wherever /${command.name} is`, [...at, 'shared']);
+    }
   });
+}
+
+/** A `prompt` command has a prompt and no handler; a `handler` command has a handler and adds no skills or servers. */
+function checkCommandKind(command: PluginCommand, issue: Issue, at: (string | number)[]) {
+  if (command.kind === 'prompt') {
+    if (command.prompt === undefined) issue(`Command ${command.name} is a prompt command and needs a prompt`, [...at, 'prompt']);
+    if (command.handler !== undefined) issue(`Command ${command.name} is a prompt command; only handler commands name a handler`, [...at, 'handler']);
+    return;
+  }
+  if (command.handler === undefined) issue(`Command ${command.name} is a handler command and needs a handler`, [...at, 'handler']);
+  if (command.prompt !== undefined) issue(`Command ${command.name} is a handler command; only prompt commands have a prompt`, [...at, 'prompt']);
+  if (command.skills.length || command.servers.length) issue(`Command ${command.name} is a handler command; it adds no skills or servers to a run`, [...at, command.skills.length ? 'skills' : 'servers']);
+  if (command.needsWrite) issue(`Command ${command.name} is a handler command; needsWrite applies to prompt commands`, [...at, 'needsWrite']);
+}
+
+/**
+ * The specific commands that stand in for a `shared` command of the same
+ * plugin: commands that are not shared, of the same kind, usable wherever the
+ * shared command is. Empty for a command that is not shared.
+ */
+export function pluginSharedCommandSiblings(commands: readonly PluginCommand[], command: PluginCommand): PluginCommand[] {
+  if (!command.shared) return [];
+  return commands.filter(other => !other.shared && other.name !== command.name && other.kind === command.kind && command.where.every(target => other.where.includes(target)));
 }
 
 type SettingProblem = { message: string; field?: string };
@@ -415,7 +457,11 @@ export type PublicPluginMcpServer =
   | { kind: 'https'; name: string; url: string; tools: string[]; capability: 'read' | 'write'; authentication: 'none' | 'bearer' | 'oauth'; connection?: string }
   | { kind: 'package'; name: string; ecosystem: string; package: string; version: string; tools: string[]; capability: 'read' | 'write'; secretEnv: { name: string; connection: string }[] };
 /** What the plugin page and API show about a contributed command: never its prompt text. */
-export interface PublicPluginCommand { name: string; description: string; where: CommandTarget[]; kind: PluginCommandKind; skills: string[]; servers: string[]; needsWrite: boolean }
+export interface PublicPluginCommand {
+  name: string; description: string; where: CommandTarget[]; kind: PluginCommandKind; skills: string[]; servers: string[]; needsWrite: boolean;
+  /** Several plugins may offer this name; `specific` names this plugin's own commands that stand in for it. */
+  shared: boolean; specific: string[];
+}
 export interface PublicPluginManifest {
   id: string; name: string; description: string; version: string; category: PluginCategory; homepage: string;
   permissions: { name: PluginPermission; description: string }[];
@@ -447,7 +493,10 @@ export function publicPluginManifest(manifest: PluginManifest): PublicPluginMani
         : { kind: 'package', name: server.name, ecosystem: server.ecosystem, package: server.package, version: server.version, tools: [...server.tools], capability: server.capability, secretEnv: server.secretEnv.map(s => ({ ...s })) })),
       skills: contributes.skills.map(s => s.name),
       automationTemplates: contributes.automationTemplates.map(t => t.id),
-      commands: contributes.commands.map(c => ({ name: c.name, description: c.description, where: [...c.where], kind: c.kind, skills: [...c.skills], servers: [...c.servers], needsWrite: c.needsWrite })),
+      commands: contributes.commands.map(c => ({
+        name: c.name, description: c.description, where: [...c.where], kind: c.kind, skills: [...c.skills], servers: [...c.servers], needsWrite: c.needsWrite,
+        shared: c.shared, specific: pluginSharedCommandSiblings(contributes.commands, c).map(s => s.name),
+      })),
       subscriptions: contributes.subscriptions.map(s => s.on),
       webhooks: contributes.webhooks.map(w => ({ name: w.name, description: w.description, scheme: w.verification.scheme })),
     },

@@ -17,6 +17,7 @@ import { up as pluginStateMigration } from '../../core/src/db/migrations/2026111
 import { up as journalMigration } from '../../core/src/db/migrations/20261112160000_create_repository_events.js';
 import { up as deliveriesMigration } from '../../core/src/db/migrations/20261115000000_plugin_event_deliveries.js';
 import { up as webhookKeysMigration } from '../../core/src/db/migrations/20261116000000_plugin_webhook_keys.js';
+import { up as commandSettingsMigration } from '../../core/src/db/migrations/20261116120000_plugin_command_settings.js';
 import { up as grantMigration } from '../../core/src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../../core/src/db/migrations/20261113000000_extension_library.js';
 import { up as oauthMigration } from '../../core/src/db/migrations/20261113120000_extension_oauth.js';
@@ -46,7 +47,7 @@ test('plugin REST API and MCP read tools: administrators only, audited, secret-f
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database); await pluginStateMigration(database); await journalMigration(database); await deliveriesMigration(database); await webhookKeysMigration(database);
+  await identityMigration(database); await grantMigration(database); await libraryMigration(database); await oauthMigration(database); await pluginMigration(database); await pluginStateMigration(database); await journalMigration(database); await deliveriesMigration(database); await webhookKeysMigration(database); await commandSettingsMigration(database);
   // 3 holds the admin role in the session but is no longer a durable administrator.
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }, { github_user_id: '3', role: 'member' }]);
   // The remote server at the synthetic OAuth provider's address literal: no DNS in tests.

@@ -924,6 +924,11 @@ export interface PluginActivityResponse {
   deliveries: PluginDelivery[];
 }
 
+export interface PluginCommandWriteRequest {
+  /** Allow this command to use write access. */
+  allowed: boolean;
+}
+
 export interface PluginConnectionRequest {
   /** The secret to store (write-only), or null to clear it. */
   value: string | null;
@@ -933,15 +938,15 @@ export interface PluginConnectionRequest {
 export interface PluginDelivery {
   /** The activity record id, used by the retry route. */
   id: number;
-  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook); the same on every attempt. */
+  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-<target>-<comment id>` for a command); the same on every attempt. */
   deliveryId: string;
-  /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. */
-  kind: "event" | "gap" | "webhook";
-  /** The event's repository; empty for a webhook delivery. */
+  /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. `command`: one handler slash command to its handler. */
+  kind: "event" | "gap" | "webhook" | "command";
+  /** The event's or command's repository; empty for a webhook delivery. */
   repository: string;
-  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery. */
+  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery; the issue or pull request number for a command. */
   eventSeq: number;
-  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap. */
+  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; `command.<name>` for a command; null for a gap. */
   eventType: string | null;
   handler: string | null;
   status: "pending" | "running" | "retrying" | "succeeded" | "failed" | "skipped";
@@ -1020,14 +1025,18 @@ export interface PluginDetailResponse {
           description: string;
           /** Where the command can be used: pull request comments, issue comments or both. */
           where: Array<"pull_request" | "issue">;
-          /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). */
-          kind: "prompt";
+          /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command. */
+          kind: "prompt" | "handler";
           /** Skills of this plugin the command adds to its run. */
           skills: string[];
           /** MCP servers of this plugin the command adds to its run. */
           servers: string[];
-          /** The command needs write access; such commands are refused for now. */
+          /** The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository. */
           needsWrite: boolean;
+          /** Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs. */
+          shared: boolean;
+          /** This plugin's own commands that stand in for a shared name. */
+          specific: string[];
         }>;
         subscriptions: string[];
         webhooks: Array<{
@@ -1129,9 +1138,32 @@ export interface PluginDetailResponse {
         href: string;
       }[];
     };
+    /** Instance settings of the plugin's commands. */
+    commands?: Array<{
+      name: string;
+      needsWrite: boolean;
+      /** "Allow this command to use write access" is on. Off until an administrator switches it on. */
+      writeAllowed: boolean;
+      writeChangedBy?: string;
+      writeChangedAt?: number;
+      /** Present for a shared command. */
+      sharedOwner?: {
+        /** The plugin the shared name runs when several enabled plugins offer it; null when none was chosen. */
+        owner: string | null;
+        setBy?: string;
+        setAt?: number;
+        /** Every installed plugin offering the name. */
+        candidates: {
+          pluginId: string;
+          pluginName: string;
+          specific: string[];
+          enabled: boolean;
+        }[];
+      };
+    }>;
     /** The newest 50 management actions, newest first. */
     audit: Array<{
-      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused" | "retry_delivery" | "resume_deliveries" | "regenerate_webhook_key";
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused" | "retry_delivery" | "resume_deliveries" | "regenerate_webhook_key" | "set_command_write" | "set_shared_command_owner";
       actor: string;
       at: number;
       detail: {
@@ -1210,6 +1242,11 @@ export interface PluginSettingsRequest {
   };
 }
 
+export interface PluginSharedCommandOwnerRequest {
+  /** An installed plugin that offers the shared name, or null to clear the choice. */
+  owner: string | null;
+}
+
 export interface PluginUninstallRequest {
   /** Must repeat the plugin id. */
   confirm: string;
@@ -1264,14 +1301,18 @@ export interface PluginView {
         description: string;
         /** Where the command can be used: pull request comments, issue comments or both. */
         where: Array<"pull_request" | "issue">;
-        /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). */
-        kind: "prompt";
+        /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command. */
+        kind: "prompt" | "handler";
         /** Skills of this plugin the command adds to its run. */
         skills: string[];
         /** MCP servers of this plugin the command adds to its run. */
         servers: string[];
-        /** The command needs write access; such commands are refused for now. */
+        /** The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository. */
         needsWrite: boolean;
+        /** Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs. */
+        shared: boolean;
+        /** This plugin's own commands that stand in for a shared name. */
+        specific: string[];
       }>;
       subscriptions: string[];
       webhooks: Array<{
@@ -1373,6 +1414,29 @@ export interface PluginView {
       href: string;
     }[];
   };
+  /** Instance settings of the plugin's commands. */
+  commands?: Array<{
+    name: string;
+    needsWrite: boolean;
+    /** "Allow this command to use write access" is on. Off until an administrator switches it on. */
+    writeAllowed: boolean;
+    writeChangedBy?: string;
+    writeChangedAt?: number;
+    /** Present for a shared command. */
+    sharedOwner?: {
+      /** The plugin the shared name runs when several enabled plugins offer it; null when none was chosen. */
+      owner: string | null;
+      setBy?: string;
+      setAt?: number;
+      /** Every installed plugin offering the name. */
+      candidates: {
+        pluginId: string;
+        pluginName: string;
+        specific: string[];
+        enabled: boolean;
+      }[];
+    };
+  }>;
 }
 
 /** The inbound webhook URLs of an installed plugin. */

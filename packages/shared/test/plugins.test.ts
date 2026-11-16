@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
-  PLUGIN_PERMISSIONS, parsePluginManifest, pluginManifestSchema, publicPluginManifest,
+  PLUGIN_PERMISSIONS, parsePluginManifest, pluginManifestSchema, pluginSharedCommandSiblings, publicPluginManifest,
   type PluginManifestInput,
 } from '../src/plugins.js';
 
@@ -181,7 +181,7 @@ test('the public projection leaves out package launch details', () => {
   assert.equal(JSON.stringify(projection).includes(INTEGRITY), false);
   assert.equal(JSON.stringify(projection).includes('ACME_REGION'), false);
   assert.deepEqual(projection.contributes.skills, ['acme-style']);
-  assert.deepEqual(projection.contributes.commands, [{ name: 'notify', description: 'Post a message', where: ['pull_request'], kind: 'prompt', skills: ['acme-style'], servers: ['acme'], needsWrite: false }]);
+  assert.deepEqual(projection.contributes.commands, [{ name: 'notify', description: 'Post a message', where: ['pull_request'], kind: 'prompt', skills: ['acme-style'], servers: ['acme'], needsWrite: false, shared: false, specific: [] }]);
   assert.equal(JSON.stringify(projection).includes('Summarise the pull request'), false, 'the prompt text is not public');
 });
 
@@ -196,7 +196,7 @@ test('commands are lower-case, never shadow a built-in command and add only thei
   rejects(variant(m => { m.contributes.commands[0].where = []; }), /contributes\.commands\.0\.where/);
   rejects(variant(m => { m.contributes.commands[0].where = ['discussion']; }), /contributes\.commands\.0\.where\.0/);
   rejects(variant(m => { m.contributes.commands[0].where = ['issue', 'issue']; }), /Command notify lists issue more than once/);
-  rejects(variant(m => { m.contributes.commands[0].kind = 'handler'; }), /contributes\.commands\.0\.kind/);
+  rejects(variant(m => { m.contributes.commands[0].kind = 'script'; }), /contributes\.commands\.0\.kind/);
   rejects(variant(m => { delete m.contributes.commands[0].prompt; }), /contributes\.commands\.0\.prompt/);
   rejects(variant(m => { m.contributes.commands[0].skills = ['other-skill']; }), /Command notify adds skill other-skill, which the plugin does not contribute/);
   rejects(variant(m => { m.contributes.commands[0].servers = ['elsewhere']; }), /Command notify adds server elsewhere, which the plugin does not contribute/);
@@ -214,4 +214,35 @@ test('subscriptions name a journal event, a handler and an optional equality fil
   rejects(variant(m => { m.contributes.subscriptions = [{ on: 'task.completed', handler: 'onTask', filter: { body: 'x' } }]; }), /Filter keys/);
   rejects(variant(m => { m.contributes.subscriptions = [{ on: 'task.completed', handler: 'onTask', filter: { 'payload.kind': { nested: true } } }]; }), /filter/);
   rejects(variant(m => { m.contributes.subscriptions = [{ event: 'task.completed' }]; }), /subscriptions/);
+});
+
+test('a handler command names an exported handler instead of a prompt and adds no skills or servers', () => {
+  const handler = { name: 'status', description: 'Report the status', where: ['pull_request', 'issue'], kind: 'handler', handler: 'reportStatus' };
+  const parsed = parsePluginManifest(variant(m => { m.contributes.commands.push(handler); }));
+  assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('; '));
+  if (parsed.ok) assert.equal(parsed.manifest.contributes.commands[1].handler, 'reportStatus');
+  rejects(variant(m => { m.contributes.commands.push({ ...handler, handler: undefined }); }), /Command status is a handler command and needs a handler/);
+  rejects(variant(m => { m.contributes.commands.push({ ...handler, handler: 'not-an-identifier' }); }), /contributes\.commands\.1\.handler: Use the name of an exported handler function/);
+  rejects(variant(m => { m.contributes.commands.push({ ...handler, prompt: 'Do it.' }); }), /Command status is a handler command; only prompt commands have a prompt/);
+  rejects(variant(m => { m.contributes.commands.push({ ...handler, skills: ['acme-style'] }); }), /Command status is a handler command; it adds no skills or servers to a run/);
+  rejects(variant(m => { m.contributes.commands.push({ ...handler, needsWrite: true }); }), /needsWrite applies to prompt commands/);
+  rejects(variant(m => { m.contributes.commands[0].handler = 'notify'; }), /Command notify is a prompt command; only handler commands name a handler/);
+});
+
+test('a shared command needs a specific sibling command of the same kind wherever it is used', () => {
+  const shared = { name: 'deploy', description: 'Deploy', where: ['pull_request'], kind: 'prompt', prompt: 'Deploy the branch.', shared: true };
+  const specific = { name: 'acme-deploy', description: 'Deploy with Acme', where: ['pull_request', 'issue'], kind: 'prompt', prompt: 'Deploy the branch with Acme.' };
+  const parsed = parsePluginManifest(variant(m => { m.contributes.commands.push(shared, specific); }));
+  assert.ok(parsed.ok, parsed.ok ? '' : parsed.errors.join('; '));
+  if (!parsed.ok) return;
+  assert.deepEqual(pluginSharedCommandSiblings(parsed.manifest.contributes.commands, parsed.manifest.contributes.commands[1]).map(c => c.name), ['notify', 'acme-deploy']);
+  const deploy = publicPluginManifest(parsed.manifest).contributes.commands.find(c => c.name === 'deploy')!;
+  assert.equal(deploy.shared, true);
+  assert.deepEqual(deploy.specific, ['notify', 'acme-deploy']);
+  // Only shared, or siblings of another kind or not covering every target: refused.
+  const alone = (m: Parameters<Parameters<typeof variant>[0]>[0]) => { m.contributes.commands = [shared]; };
+  rejects(variant(alone), /Shared command deploy needs a specific command of this plugin/);
+  rejects(variant(m => { m.contributes.commands = [{ ...shared, where: ['pull_request', 'issue'] }, { ...specific, where: ['pull_request'] }]; }), /Shared command deploy needs a specific command/);
+  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, kind: 'handler', prompt: undefined, handler: 'deploy' }]; }), /Shared command deploy needs a specific command/);
+  rejects(variant(m => { m.contributes.commands = [shared, { ...specific, shared: true }]; }), /Shared command (deploy|acme-deploy) needs a specific command/);
 });

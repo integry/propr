@@ -15,8 +15,8 @@ integrity check as the [extension library's local package servers](./agent-exten
 :::note Work in progress
 This page describes the plugin **manifest**, the official plugin registry, the
 [Plugins page](#the-plugins-page), the installation API and the
-[handler interface](#handlers), [event subscriptions](#event-subscriptions)
-and [inbound webhooks](#inbound-webhooks). Commands are added by a later release.
+[handler interface](#handlers), [event subscriptions](#event-subscriptions),
+[inbound webhooks](#inbound-webhooks) and [commands](#commands).
 :::
 
 ## Where plugins live
@@ -108,12 +108,12 @@ defined.
 | `mcpServers` | MCP servers, in the [extension library](./agent-extensions.md)'s item shapes (below). |
 | `skills` | `{ "name", "path" }`: a skill bundle folder inside the plugin folder. Its `SKILL.md` front matter must use the same `name`. |
 | `automationTemplates` | `{ "id", "path" }`: a template folder in the automation template format. It must pass the same checks as the shipped templates. |
-| `commands` | `{ "name", "description", "where", "kind", "prompt", "skills"?, "servers"?, "needsWrite"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
+| `commands` | `{ "name", "description", "where", "kind", "prompt"?, "handler"?, "skills"?, "servers"?, "needsWrite"?, "shared"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
 | `subscriptions` | `{ "on", "handler", "filter"? }`: deliver a repository event (`<domain>.<type>`, such as `pull_request.merged`) to an exported handler. See [Event subscriptions](#event-subscriptions). Needs the `events.read` permission. |
 | `webhooks` | `{ "name", "description", "handler", "verification", "deliveryIdHeader"?, "respond"? }`: an inbound webhook URL whose verified requests run `handler`. `verification` is a built-in scheme with a `signing_secret` connection. See [Inbound webhooks](#inbound-webhooks). |
 
 Names are unique within each list, and command names are unique across all
-plugins.
+plugins, except a name every plugin offering it marks `shared`.
 
 #### Commands
 
@@ -142,14 +142,53 @@ rest of the comment's command line is appended as the person's argument,
 delimited and marked as untrusted text, so it can never become part of the
 instruction. `skills` and `servers` name this plugin's own skill and server
 contributions to add to that run explicitly; they must be contributed by the
-same manifest, and a server with `capability: "write"` needs `needsWrite`. A
-command with `needsWrite: true` is accepted by the manifest check but refused
-when used, until write authorization for commands is available.
+same manifest, and a server with `capability: "write"` needs `needsWrite`.
+
+A command with `needsWrite: true` runs only when an administrator switched on
+**Allow this command to use write access** for it on the Plugins page (off at
+install) and the commenter has write permission on the repository; otherwise
+it is refused with a reply that says what is missing. When it runs, ProPR
+records an explicit write authorization for that one run, through the
+extension library's write-authorization path: the run may use the plugin's
+write servers that the command names, and no other write server. The
+authorization is single use, so a retry of the run and later follow-ups get
+read servers only.
+
+```json
+{
+  "name": "example-status",
+  "description": "Log who asked for the status, and where",
+  "where": ["pull_request", "issue"],
+  "kind": "handler",
+  "handler": "reportCommand"
+}
+```
+
+A `handler` command names an exported function of the plugin's `handlers.ts`
+instead of a prompt, and adds no skills or servers. It starts no task: the
+handler receives the comment context as a delivery of kind `command` (see
+[Command deliveries](#command-deliveries)).
+
+```json
+{ "name": "deploy", "description": "Deploy this branch", "where": ["pull_request"], "kind": "handler", "handler": "deploy", "shared": true },
+{ "name": "vercel-deploy", "description": "Deploy this branch to Vercel", "where": ["pull_request"], "kind": "handler", "handler": "deploy" }
+```
+
+A `shared` command is a name several plugins may offer, such as `/deploy`
+offered by several deployment plugins. Each plugin that marks a command shared
+must also declare a specific command: one that is not shared, of the same
+kind, usable wherever the shared one is (`npm run plugins:check` and the
+manifest schema refuse a shared command without one). When more than one
+enabled plugin offers the shared name for a repository, the plain name runs
+the plugin chosen in the instance setting on the Plugins page; without a
+choice, the only enabled one runs it, and with several the command replies
+naming their specific commands.
 
 Commands apply only while the plugin is enabled and inside its repository limit,
 and follow the same author rules as the built-in commands. Enabling a plugin is
-refused while another enabled plugin contributes a command of the same name;
-the refusal names that plugin, and the Enable step shows it beforehand. See
+refused while another enabled plugin contributes a command of the same name
+that is not shared by both; the refusal names that plugin, and the Enable step
+shows it beforehand. See
 [Plugin Commands](./pr-commands.md#plugin-commands) for how they behave in a
 comment.
 
@@ -532,9 +571,30 @@ inactive and is never installed or launched.
 An enabled plugin's commands work in the comments of the repositories inside
 its repository limit; the plugin page lists each under **What it added** with
 its description, where it can be used (pull request comments, issue comments
-or both) and whether it is active. A command of a disabled or uninstalled
-plugin is an unknown command again. See
+or both), whether it calls a handler and whether it is active. A command of a
+disabled or uninstalled plugin is an unknown command again. See
 [Plugin Commands](./pr-commands.md#plugin-commands).
+
+Once the plugin is installed, the **Commands** section of its page holds the
+instance settings of its commands, editable by administrators only (like the
+whole page) and recorded in the plugin's audit trail:
+
+- **Allow this command to use write access**, for each command with
+  `needsWrite`: off until switched on (audit action `set_command_write`). The
+  Install step already says which commands can use write access and that they
+  stay off until allowed.
+- **Plugin that /&lt;name&gt; runs when several plugins offer it**, for each
+  `shared` command: one of the installed plugins that offer the name, or none
+  (audit action `set_shared_command_owner`, recorded on this plugin and on the
+  previous and new owners). The setting belongs to the instance, so every
+  plugin offering the name shows the same choice.
+
+The routes are `PUT /api/instance/plugins/v1/<id>/commands/<name>/write` with
+`{ "allowed": true | false }` and
+`PUT /api/instance/plugins/v1/<id>/commands/<name>/owner` with
+`{ "owner": "<plugin id>" | null }`. The plugin read lists the settings in
+`commands`. Uninstalling deletes the plugin's command settings and clears the
+shared names it owned.
 
 ### Skills and automation templates
 
@@ -592,13 +652,13 @@ export const onTaskEvent = definePluginHandler<PluginEventInput>(async (input, c
 The input is one of the envelopes in `@propr/shared`: `{ kind: 'event', event }`
 (a [repository journal event](../architecture/repository-event-journal.md)),
 `{ kind: 'webhook', webhook, headers, body, receivedAt }`,
-`{ kind: 'command', command, args, repository, actor }` or
+`{ kind: 'command', command, args, repository, number, target, actor, commentId }` or
 `{ kind: 'invoke', payload }`. Events are delivered by
 [event subscriptions](#event-subscriptions), with a stable `deliveryId` and the
 `attempt` number. Webhook requests are delivered by
 [inbound webhooks](#inbound-webhooks), also with a `deliveryId` and `attempt`.
-Delivering commands to handlers is added by a later release; `prompt` commands
-need no handler (see [Commands](#commands)).
+`handler` commands are delivered as [command deliveries](#command-deliveries);
+`prompt` commands need no handler (see [Commands](#commands)).
 
 A call `ctx` refuses throws a `PluginSdkError` with a `code` such as
 `permission_denied`, `repository_not_allowed`, `host_not_allowed`,
@@ -972,3 +1032,41 @@ response, ProPR answers **500** and runs nothing.
 
 The first two need a durable instance administrator, like the other plugin
 routes, and Regenerate needs the `X-ProPR-Plugins: 1` JSON contract.
+
+## Command deliveries
+
+A `handler` [command](#commands) calls its handler with the comment that ran
+it, as a delivery of kind `command`:
+
+```ts
+import { definePluginHandler, type PluginCommandInput } from '@propr/shared';
+
+export const deploy = definePluginHandler<PluginCommandInput>(async (input, ctx) => {
+  // input.repository: 'acme/app', input.number: 42, input.target: 'pull_request',
+  // input.actor: the commenter's login, input.args: the rest of the command line (untrusted).
+  await ctx.propr.commentOnPullRequest(input.repository, input.number, `Deploying for @${input.actor}…`);
+  const response = await ctx.http('deploy-token')('https://api.example.com/deploy', { method: 'POST' });
+  ctx.log.info('deploy requested', { status: response.status });
+});
+```
+
+- **When:** the comment intake records the delivery as soon as the command is
+  accepted, after the same author rules and assignment gate as the built-in
+  commands. A daemon attempts it within a few seconds. Nothing waits for the
+  handler; it posts its own replies.
+- **Input:** `{ kind: 'command', command, args, repository, number, target, actor, commentId, deliveryId, attempt }`.
+  `args` is untrusted text: treat it as data. The record keeps this comment
+  context (so a delivery can be attempted again after a restart), never a
+  credential or the handler's result.
+- **Delivery id:** `cmd-<target>-<comment id>`, the same on every attempt. A
+  redelivered comment is recorded once.
+- **`ctx`:** the plugin's full handler context: `ctx.propr` with the granted
+  permissions (`pull_requests.comment` or `issues.comment` to comment back),
+  `ctx.http`, `ctx.state` and `ctx.log`.
+- **Retries:** a failed attempt is tried again after 1 min, 5 min, 30 min and
+  2 h, then marked failed. While the plugin's deliveries are paused the
+  command waits for Resume; disabling the plugin fails its unfinished command
+  deliveries.
+- **Activity:** each delivery appears under **Activity** with the type
+  `command.<name>`, the repository and the issue or pull request number, the
+  handler, outcome, duration, attempt, redacted error and log lines.

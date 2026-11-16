@@ -1,16 +1,20 @@
-import { db, logger, PluginDispatcher, prunePluginDeliveries } from '@propr/core';
+import { db, logger, PluginCommandRunner, PluginDispatcher, prunePluginDeliveries } from '@propr/core';
 
 /**
  * Deliver repository journal events to the plugin handlers subscribed to
- * them. Only the daemon process holding an installation's lease delivers to
- * it, so several daemons can run. Nothing that appends an event waits for a
- * delivery. Returns the stop function for shutdown.
+ * them, and `handler` slash commands to their plugin's handler. Only the
+ * daemon process holding an installation's lease delivers its events, and
+ * each command attempt is claimed by one runner, so several daemons can run.
+ * Nothing that appends an event waits for a delivery. Returns the stop
+ * function for shutdown.
  */
 export function startPluginEventDispatch(): () => Promise<void> {
     const dispatcher = new PluginDispatcher({ database: db });
+    const commands = new PluginCommandRunner({ database: db });
     dispatcher.start();
-    logger.info({ owner: dispatcher.owner }, 'Started plugin event dispatcher');
-    return () => dispatcher.stop();
+    commands.start();
+    logger.info({ owner: dispatcher.owner, commands: commands.owner }, 'Started plugin event dispatcher and command runner');
+    return async () => { await Promise.all([dispatcher.stop(), commands.stop()]); };
 }
 
 /** Delete plugin delivery records past their retention. Runs with the hourly journal retention sweep; never throws. */

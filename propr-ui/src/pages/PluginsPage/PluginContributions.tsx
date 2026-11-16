@@ -13,10 +13,14 @@ const commandTargets = (where: PluginCommandView['where']) => {
   const onPulls = where.includes('pull_request'); const onIssues = where.includes('issue');
   return onPulls && onIssues ? 'in pull request and issue comments' : onIssues ? 'in issue comments' : 'in pull request comments';
 };
-const commandState = (view: PluginView, needsWrite: boolean) => {
-  if (needsWrite) return 'Refused for now: it needs write access';
-  return view.state === 'enabled' ? 'Active' : 'Works once the plugin is enabled';
+const commandState = (view: PluginView, command: PluginCommandView) => {
+  const active = view.state === 'enabled' ? 'Active' : 'Works once the plugin is enabled';
+  if (!command.needsWrite) return active;
+  const allowed = view.commands?.find(item => item.name === command.name)?.writeAllowed;
+  return allowed ? `${active} · write access allowed for commenters with write permission` : 'Refused until an administrator allows it write access below';
 };
+const commandKind = (command: PluginCommandView) => (command.kind === 'handler' ? ' · calls the plugin\'s handler' : '');
+const sharedNote = (command: PluginCommandView) => (command.shared ? ` · shared name, also ${command.specific.map(name => `/${name}`).join(', ')}` : '');
 
 /** What it added: a read-only list of the plugin's managed items and templates, with links. */
 export function PluginContributions({ view }: { view: PluginView }) {
@@ -43,7 +47,7 @@ export function PluginContributions({ view }: { view: PluginView }) {
         ))}
         {commands.map(command => (
           <li key={`command:${command.name}`} data-testid={`plugin-command-${command.name}`} className="break-words">
-            Command <code className="font-mono font-semibold text-slate-900">/{command.name}</code> · {command.description} · {commandTargets(command.where)} · {commandState(view, command.needsWrite)}
+            Command <code className="font-mono font-semibold text-slate-900">/{command.name}</code> · {command.description} · {commandTargets(command.where)}{commandKind(command)}{sharedNote(command)} · {commandState(view, command)}
           </li>
         ))}
         {automationTemplates.map(template => (

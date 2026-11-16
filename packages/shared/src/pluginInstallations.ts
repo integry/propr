@@ -80,6 +80,36 @@ export interface PluginView {
   enableBlockers: string[];
   /** Managed library items and templates; items are null until the plugin is installed. */
   contributions?: PluginContributionViews;
+  /** Instance settings of the plugin's commands: write access and shared command owners. Absent for a plugin not in the registry. */
+  commands?: PluginCommandSettingView[];
+}
+
+/** A plugin that offers a shared command name, as the owner choice lists it. */
+export interface PluginSharedCommandCandidate {
+  pluginId: string; pluginName: string;
+  /** Its specific commands that stand in for the shared name. */
+  specific: string[];
+  enabled: boolean;
+}
+/**
+ * The instance settings of one command of a plugin. `writeAllowed` is the
+ * administrator switch "Allow this command to use write access" of a
+ * `needsWrite` command: off until switched on. `sharedOwner` is set for a
+ * `shared` command: which plugin the plain name runs when several enabled
+ * plugins offer it.
+ */
+export interface PluginCommandSettingView {
+  name: string;
+  needsWrite: boolean;
+  writeAllowed: boolean;
+  writeChangedBy?: string; writeChangedAt?: number;
+  sharedOwner?: {
+    /** The plugin an administrator chose, or null when none was chosen. */
+    owner: string | null;
+    setBy?: string; setAt?: number;
+    /** Every installed plugin offering the name, this one included. */
+    candidates: PluginSharedCommandCandidate[];
+  };
 }
 /**
  * One audit trail entry. Management actions name the administrator; `handler_attempt`
@@ -87,7 +117,7 @@ export interface PluginView {
  * (refused or failed) record a handler's `ctx.propr` calls with `plugin:<id>` as the actor.
  */
 export interface PluginAuditEvent { action: PluginAuditAction; actor: string; at: number; detail: Record<string, unknown> }
-export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'handler_attempt', 'handler_call', 'handler_refused', 'retry_delivery', 'resume_deliveries', 'regenerate_webhook_key'] as const;
+export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'handler_attempt', 'handler_call', 'handler_refused', 'retry_delivery', 'resume_deliveries', 'regenerate_webhook_key', 'set_command_write', 'set_shared_command_owner'] as const;
 export type PluginAuditAction = typeof PLUGIN_AUDIT_ACTIONS[number];
 export interface PluginDetail extends PluginView { audit: PluginAuditEvent[] }
 
