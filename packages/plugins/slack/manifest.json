@@ -2,20 +2,21 @@
   "manifestVersion": 1,
   "id": "slack",
   "name": "Slack",
-  "description": "Posts short ProPR notifications (pull requests opened, merged or closed, review scores, Ultrafix outcomes, failed tasks, epic queues blocked or completed) to Slack channels through incoming webhooks. Messages link to the pull request, the issue and the task; they never contain code, logs or prompt text.",
-  "version": "1.0.0",
+  "description": "Posts short ProPR notifications (pull requests opened, merged or closed, review scores, Ultrafix outcomes, failed tasks, epic queues blocked or completed) to Slack, through incoming webhooks or, with your own Slack app, in one thread per pull request. In app mode, mentioning the bot in a channel mapped to a repository creates a GitHub issue with the trigger label, so ProPR starts a task. Messages never contain code, logs or prompt text.",
+  "version": "1.1.0",
   "category": "messaging",
   "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/slack",
   "icon": "icon.svg",
   "permissions": [
-    "events.read"
+    "events.read",
+    "issues.create"
   ],
   "connections": [
     {
       "type": "token",
       "name": "default-webhook",
       "label": "Default webhook URL",
-      "help": "Paste a Slack incoming webhook URL, such as https://hooks.slack.com/services/T…/B…/…. Every event goes here unless Repository destinations sends its repository elsewhere. The URL is a secret: ProPR stores it sealed and never shows it again.",
+      "help": "Paste a Slack incoming webhook URL, such as https://hooks.slack.com/services/T\u2026/B\u2026/\u2026. Every event goes here unless Repository destinations sends its repository elsewhere. The URL is a secret: ProPR stores it sealed and never shows it again.",
       "helpUrl": "https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks",
       "secretUrl": {
         "hosts": [
@@ -74,11 +75,35 @@
           "/services/"
         ]
       }
+    },
+    {
+      "type": "token",
+      "name": "bot-token",
+      "label": "Bot token (app mode)",
+      "help": "For Slack app mode: the Bot User OAuth Token (xoxb-\u2026) of your own Slack app, from OAuth & Permissions after installing it to the workspace. ProPR sends it only to slack.com as Authorization: Bearer; the handler never sees it.",
+      "helpUrl": "https://docs.slack.dev/authentication/tokens"
+    },
+    {
+      "type": "signing_secret",
+      "name": "signing-secret",
+      "label": "Signing secret (app mode)",
+      "help": "For Slack app mode: the Signing Secret from your Slack app's Basic Information page. ProPR verifies every Events API request with it (v0 signature, timestamp within 5 minutes) before the plugin sees the request.",
+      "helpUrl": "https://docs.slack.dev/authentication/verifying-requests-from-slack"
     }
   ],
   "settings": {
     "type": "object",
     "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "incoming-webhook",
+          "app"
+        ],
+        "default": "incoming-webhook",
+        "label": "Delivery mode",
+        "help": "incoming-webhook: post to the webhook URLs. app: post with the bot token to the channels of Repository channels, one thread per pull request. Mentions of the bot start tasks in either mode once the signing secret and bot token are set."
+      },
       "events": {
         "type": "array",
         "items": {
@@ -130,7 +155,44 @@
           "type": "string"
         },
         "label": "Repository destinations",
-        "help": "Send a repository (owner/repo) somewhere other than the default webhook: webhook-2, webhook-3, webhook-4, or none to post nothing for it. Repositories not listed use the default webhook URL."
+        "help": "Incoming-webhook mode: send a repository (owner/repo) somewhere other than the default webhook: webhook-2, webhook-3, webhook-4, or none to post nothing for it. Repositories not listed use the default webhook URL. In app mode only none is used: it posts nothing for the repository."
+      },
+      "repositoryChannels": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "label": "Repository channels (app mode)",
+        "help": "Map a repository (owner/repo) to a Slack channel ID such as C0123ABCDEF (in Slack: channel details, at the bottom). App mode posts the repository's updates there, and a mention of the bot in that channel creates an issue in that repository. A channel mapped to several repositories starts nothing."
+      },
+      "defaultChannel": {
+        "type": "string",
+        "maxLength": 20,
+        "label": "Default channel (app mode)",
+        "help": "A Slack channel ID for the updates of repositories Repository channels does not list. Mentions in it start nothing unless it is also mapped to a repository. Leave empty to post nothing for unlisted repositories."
+      },
+      "allowedUsers": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 200,
+        "label": "Who may start tasks: Slack user IDs",
+        "help": "Slack member IDs (U0123ABCDEF or W0123ABCDEF; in Slack: profile, More, Copy member ID) of the people whose mentions create issues. Everyone else gets a polite refusal. With neither this nor a user group, nobody can start tasks."
+      },
+      "allowedUserGroup": {
+        "type": "string",
+        "maxLength": 20,
+        "label": "Who may start tasks: Slack user group ID",
+        "help": "Optional: the ID of a Slack user group (S0123ABCDEF) whose members may also start tasks. Needs the usergroups:read scope."
+      },
+      "triggerLabel": {
+        "type": "string",
+        "default": "AI",
+        "maxLength": 50,
+        "label": "Trigger label",
+        "help": "The label put on issues created from Slack: ProPR's trigger label for the repository (AI unless your instance uses another). It is the only label they get."
       }
     },
     "required": []
@@ -169,6 +231,21 @@
         "on": "epic_queue.completed",
         "handler": "notify"
       }
+    ],
+    "webhooks": [
+      {
+        "name": "events",
+        "description": "Slack Events API request URL: bot mentions (app_mention) and the URL verification challenge",
+        "handler": "onSlackEvent",
+        "respond": "slackChallenge",
+        "verification": {
+          "scheme": "slack-v0",
+          "connection": "signing-secret"
+        }
+      }
     ]
-  }
+  },
+  "outboundHosts": [
+    "slack.com"
+  ]
 }

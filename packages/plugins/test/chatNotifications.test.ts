@@ -89,10 +89,12 @@ for (const id of IDS) {
     const { manifest, development } = plugin(id);
     assert.equal(development, false);
     assert.equal(manifest.category, 'messaging');
-    assert.deepEqual(manifest.permissions, ['events.read']);
-    assert.deepEqual(manifest.outboundHosts, [], 'the only hosts are those of the webhook URLs');
-    assert.deepEqual(manifest.connections.map(c => [c.name, c.type]), DESTINATIONS.map(name => [name, 'token']));
-    for (const connection of manifest.connections) assert.ok(connection.type === 'token' && connection.secretUrl, `${connection.name} is a secret URL connection`);
+    // Slack also has an app mode (test/slackApp.test.ts): a bot token for slack.com, a signing secret and issue creation.
+    const app = id === 'slack';
+    assert.deepEqual(manifest.permissions, app ? ['events.read', 'issues.create'] : ['events.read']);
+    assert.deepEqual(manifest.outboundHosts, app ? ['slack.com'] : [], 'the only hosts are those of the webhook URLs (and the Slack Web API)');
+    assert.deepEqual(manifest.connections.map(c => [c.name, c.type]), [...DESTINATIONS.map(name => [name, 'token']), ...(app ? [['bot-token', 'token'], ['signing-secret', 'signing_secret']] : [])]);
+    for (const connection of manifest.connections.filter(c => (DESTINATIONS as readonly string[]).includes(c.name))) assert.ok(connection.type === 'token' && connection.secretUrl, `${connection.name} is a secret URL connection`);
     assert.deepEqual(manifest.contributes.subscriptions.map(s => s.on), [...NOTIFICATION_SUBSCRIPTIONS]);
     assert.ok(manifest.contributes.subscriptions.every(s => s.handler === 'notify'));
     const events = manifest.settings.properties.events;
