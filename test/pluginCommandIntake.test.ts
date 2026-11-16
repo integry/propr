@@ -198,6 +198,7 @@ const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('.
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { processDetectedIssue } = await import('../packages/core/src/daemon/issueDetection.js');
+const { settleDispatchedIssueCommand } = await import('../packages/core/src/plugins/issueCommandIntent.js');
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -607,5 +608,98 @@ describe('plugin prompt command on an issue', () => {
         const redelivery = await processIssueCommentCommand(issueComment('/example-notes', ['AI']), 'corr-retry', queueDeps(f) as never);
         assert.strictEqual(redelivery.reason, 'job_already_queued');
         assert.match(String(f.requests.at(-1)?.parameters.body), /already starting or running/);
+    });
+
+    // ---- A settlement the intake could not record (F5) ----
+
+    type StoredIssueJob = QueuedJob & { pluginCommandIntent?: string; correlationId?: string };
+    /** Makes the next conditional update of the intent record fail, as a transient Redis error does. */
+    const failNextIntentUpdate = (redis: ReturnType<typeof createMockRedis>) => {
+        let failed = false;
+        redis.eval.mock.mockImplementation(async (_script: string, _keys: number, key: string, token: string, replacement?: string) => {
+            if (key === INTENT_KEY && !failed) { failed = true; throw new Error('redis eval failed'); }
+            // The fake's compare-and-delete or compare-and-replace.
+            if (redis._store.get(key) !== token) return 0;
+            if (replacement === undefined) redis._store.delete(key);
+            else redis._store.set(key, replacement);
+            return 1;
+        });
+        return () => failed;
+    };
+    /** The task finished (its job is removed) and the user later reapplies the processing label. */
+    const laterOrdinaryTrigger = async (redis: ReturnType<typeof createMockRedis>) => {
+        mockStoredJobs.delete(JOB_ID);
+        redis._store.delete(DEDUPE_KEY);
+        mockQueueAdd.mock.resetCalls();
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-later', redis as never)).status, 'accepted');
+        assert.strictEqual(queued().length, 1);
+        return queued()[0].data as StoredIssueJob;
+    };
+
+    test('a failed release after the command\'s own enqueue: its dispatcher settles the intent, and a later label event queues ordinary work', async () => {
+        const f = deps();
+        const failed = failNextIntentUpdate(f.deps.redis);
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-cmd', queueDeps(f) as never)).status, 'accepted');
+        assert.ok(failed(), 'the release failed');
+        const intent = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!);
+        assert.strictEqual(intent.state, 'pending', 'the intake could not release it');
+        // The queued job is the durable evidence: it names the record it carries.
+        const stored = mockStoredJobs.get(JOB_ID)!.data as StoredIssueJob & { repoOwner: string; repoName: string; number: number };
+        assert.strictEqual(stored.pluginCommandIntent, intent.token);
+
+        // Its dispatcher settles the record before starting the work.
+        await settleDispatchedIssueCommand(f.deps.redis, stored);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'queued');
+
+        const later = await laterOrdinaryTrigger(f.deps.redis);
+        assert.strictEqual(later.pluginCommand, undefined, 'the consumed command is not replayed');
+        assert.strictEqual(later.pluginCommandIntent, undefined);
+        assert.notStrictEqual(later.userId, intent.userId, 'the ordinary task belongs to whoever applied the label');
+    });
+
+    test('a failed settlement after the label path queued the command: its dispatcher settles the intent, and a later label event queues ordinary work', async () => {
+        const f = deps();
+        await assert.rejects(processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-cmd', { ...f.deps, enqueue: async () => { throw new Error('queue down'); } } as never), /queue down/);
+        const token = JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).token as string;
+        const failed = failNextIntentUpdate(f.deps.redis);
+        assert.strictEqual((await processDetectedIssue(labelEvent(), 'corr-label', f.deps.redis as never)).status, 'accepted');
+        assert.ok(failed(), 'marking the intent queued failed');
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'pending');
+        const stored = mockStoredJobs.get(JOB_ID)!.data as StoredIssueJob & { repoOwner: string; repoName: string; number: number };
+        assert.strictEqual(stored.pluginCommand?.command, 'example-notes');
+        assert.strictEqual(stored.pluginCommandIntent, token);
+
+        await settleDispatchedIssueCommand(f.deps.redis, stored);
+        assert.strictEqual(JSON.parse(f.deps.redis._store.get(INTENT_KEY)!).state, 'queued');
+
+        const later = await laterOrdinaryTrigger(f.deps.redis);
+        assert.strictEqual(later.pluginCommand, undefined, 'the consumed command is not replayed');
+    });
+
+    test('a dispatcher settles only the pending record its job names, and fails while it cannot', async () => {
+        const job = { repoOwner: 'testowner', repoName: 'testrepo', number: 7, pluginCommandIntent: 'mine' };
+        const record = (token: string, state: 'pending' | 'queued') => JSON.stringify({ commentId: 1, userId: '9', pluginCommand: { pluginId: 'example-pack', command: 'example-notes', instruction: 'x', extensions: EXPECTED_EXTENSIONS }, token, state });
+        const redis = createMockRedis();
+        // A newer command's pending record is that command's, not this job's.
+        redis._store.set(INTENT_KEY, record('newer', 'pending'));
+        await settleDispatchedIssueCommand(redis, job);
+        assert.strictEqual(redis._store.get(INTENT_KEY), record('newer', 'pending'));
+        redis._store.set(INTENT_KEY, record('mine', 'queued'));
+        await settleDispatchedIssueCommand(redis, job);
+        assert.strictEqual(redis._store.get(INTENT_KEY), record('mine', 'queued'));
+        redis._store.delete(INTENT_KEY);
+        await settleDispatchedIssueCommand(redis, job);
+        assert.ok(!redis._store.has(INTENT_KEY), 'a released record is not recreated');
+        // A job without a command intent reads nothing.
+        redis.get.mock.resetCalls();
+        await settleDispatchedIssueCommand(redis, { ...job, pluginCommandIntent: undefined });
+        assert.strictEqual(redis.get.mock.callCount(), 0);
+        // A record that cannot be settled rejects, so the dispatcher's attempt fails before starting work.
+        redis._store.set(INTENT_KEY, record('mine', 'pending'));
+        failNextIntentUpdate(redis);
+        await assert.rejects(settleDispatchedIssueCommand(redis, job), /redis eval failed/);
+        assert.strictEqual(JSON.parse(redis._store.get(INTENT_KEY)!).state, 'pending');
+        await settleDispatchedIssueCommand(redis, job);
+        assert.strictEqual(JSON.parse(redis._store.get(INTENT_KEY)!).state, 'queued', 'the retry settles it');
     });
 });

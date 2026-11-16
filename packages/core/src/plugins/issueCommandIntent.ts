@@ -15,6 +15,13 @@ import type { PluginCommandRun } from './pluginCommands.js';
  * queued: the command's own enqueue deletes it, and the label path marks it
  * `queued` so a redelivery of the same comment does not reply that a task is
  * already running.
+ *
+ * Either release can fail after the job is queued. The job itself is then the
+ * durable evidence: it names the record's token (`pluginCommandIntent`), and
+ * its dispatcher marks the record `queued` before it starts the work, retrying
+ * the job while it cannot (`settleDispatchedIssueCommand`). So a record still
+ * `pending` when a later label event reads it was never carried into running
+ * work, and a queued job still carrying it holds the issue's job ID.
  */
 export interface IssueCommandIntent {
   state: 'pending' | 'queued';
@@ -94,9 +101,9 @@ export function issueJobCarriesCommand(stored: unknown, queued: { correlationId?
     && JSON.stringify(data.pluginCommand) === JSON.stringify(queued.pluginCommand);
 }
 
-/** Marks a pending record as carried by a queued job, only while it is unchanged. */
-export async function markIssueCommandIntentQueued(redis: Pick<Redis, 'eval'>, key: string, stored: StoredIssueCommandIntent): Promise<void> {
-  await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw, JSON.stringify({ ...stored.intent, state: 'queued' } satisfies IssueCommandIntent));
+/** Marks a pending record as carried by a queued job, only while it is unchanged. Resolves whether it did. */
+export async function markIssueCommandIntentQueued(redis: Pick<Redis, 'eval'>, key: string, stored: StoredIssueCommandIntent): Promise<boolean> {
+  return 1 === await redis.eval(REPLACE_IF_UNCHANGED_SCRIPT, 1, key, stored.raw, JSON.stringify({ ...stored.intent, state: 'queued' } satisfies IssueCommandIntent));
 }
 
 export interface PendingIssueCommand extends StoredIssueCommandIntent {
@@ -111,8 +118,35 @@ export async function readPendingIssueCommand(redis: Pick<Redis, 'get'>, owner: 
 }
 
 /** The job fields that make a label-triggered issue job carry the pending command. */
-export function issueCommandJobFields(pending: PendingIssueCommand | null): { userId?: string; pluginCommand?: PluginCommandRun } {
-  return pending ? { userId: pending.intent.userId, pluginCommand: pending.intent.pluginCommand } : {};
+export function issueCommandJobFields(pending: PendingIssueCommand | null): { userId?: string; pluginCommand?: PluginCommandRun; pluginCommandIntent?: string } {
+  return pending ? { userId: pending.intent.userId, pluginCommand: pending.intent.pluginCommand, pluginCommandIntent: pending.intent.token } : {};
+}
+
+/** Bounds the re-reads when the record changes between a read and its conditional update. */
+const SETTLE_ATTEMPTS = 5;
+
+/**
+ * Called by the issue dispatcher before it starts a job carrying a command:
+ * marks the issue's record `queued` while it is still the pending record the
+ * job names, so no later label event attaches that command to other work. A
+ * record that is gone, already `queued`, or now another command's is left as
+ * it is. Rejects when the record cannot be read or updated; the dispatcher
+ * then fails this attempt before starting anything, and its retry settles.
+ */
+export async function settleDispatchedIssueCommand(
+  redis: Pick<Redis, 'get' | 'eval'>,
+  job: { repoOwner: string; repoName: string; number: number; pluginCommandIntent?: string },
+): Promise<void> {
+  const token = job.pluginCommandIntent;
+  if (!token) return;
+  const key = issueCommandIntentKey(job.repoOwner, job.repoName, job.number);
+  for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt++) {
+    const stored = await readIssueCommandIntent(redis, key);
+    if (!stored || stored.intent.token !== token || stored.intent.state !== 'pending') return;
+    // The record changed since it was read: read it again.
+    if (await markIssueCommandIntentQueued(redis, key, stored)) return;
+  }
+  throw new Error(`The plugin command intent ${key} kept changing while it was settled`);
 }
 
 /**
@@ -133,7 +167,8 @@ export async function settlePendingIssueCommand(
     return;
   }
   log.info({ key: pending.key, commentId: pending.intent.commentId, command: pending.intent.pluginCommand.command }, 'Queued the plugin command whose own enqueue failed');
+  // A failure here is recovered by the job's dispatcher, which settles the record it names.
   await markIssueCommandIntentQueued(redis, pending.key, pending).catch((error: unknown) => {
-    log.warn({ key: pending.key, error: (error as Error).message }, 'Could not mark the plugin command intent as queued');
+    log.warn({ key: pending.key, error: (error as Error).message }, 'Could not mark the plugin command intent as queued; the job\'s dispatcher settles it');
   });
 }

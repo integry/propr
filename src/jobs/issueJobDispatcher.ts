@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 import {
     db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, selectRetryRun, consumeIssueRetryRequest,
     confirmIssueRetryPublication, redisRetryOutcomeEvidence, queueRetryRunEvidence, enqueueIssueRetryRun, recordIssueRetryRunReceipt,
-    submissionTriggerEvents,
+    submissionTriggerEvents, settleDispatchedIssueCommand,
     type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type RetryRunReceipt, type SubmissionRetry,
     type RunReceiptFence, type TriggerLabelEvent,
 } from '@propr/core';
@@ -90,6 +90,13 @@ export interface DispatcherDeps {
      * so a child that runs after a later request's children is still known to be older.
      */
     registerRequest?: (issueRef: IssueJobData) => Promise<void>;
+    /**
+     * Marks the issue's plugin command intent this job names (`pluginCommandIntent`)
+     * as carried, before any child is added: the intake's own settlement of it may
+     * have failed after queueing this job. Rejects when the intent cannot be
+     * settled, failing this attempt so its retry settles it before starting work.
+     */
+    settleIssueCommand?: (issueRef: IssueJobData) => Promise<void>;
 }
 
 async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promise<{ agentAlias: string; modelToUse: string | undefined }> {
@@ -141,6 +148,11 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         getAllCustomLabels,
         resolveDefaultAgentForDispatcher,
         saveDispatchData: (dispatchJob, data) => dispatchJob.updateData(data),
+        // Loaded on use, like registerRequest: the worker's Redis connection holds the intake's records.
+        settleIssueCommand: async issue => {
+            const { redisClient } = await import('./issueJob/config.js');
+            await settleDispatchedIssueCommand(redisClient, issue);
+        },
         // Loaded on use: the obligation module opens the worker's Redis connection.
         registerRequest: async issue => {
             const { registerNoChangeRequest, noChangeRequestId } = await import('./noChangeCompletionObligation.js');
@@ -413,6 +425,14 @@ function admissionParentLink(issue: CurrentIssueData, target: IssueJobData): Pic
     return { agentAdmissionParent: scope };
 }
 
+/**
+ * No child carries a plugin command until the intent the job names is settled,
+ * so a later label event cannot attach the same command to other work.
+ */
+async function settleCarriedCommand(issueRef: IssueJobData, deps: DispatcherDeps): Promise<void> {
+    if (issueRef.pluginCommandIntent && deps.settleIssueCommand) await deps.settleIssueCommand(issueRef);
+}
+
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const { submission, run, trigger } = await resolveCurrentRun(issueRef, deps);
@@ -433,6 +453,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
     let repoValidation: RepoValidation;
 
     try {
+        await settleCarriedCommand(issueRef, deps);
         octokit = await deps.withRetry(
             () => deps.getAuthenticatedOctokit(),
             { ...deps.retryConfigs.githubApi, correlationId },

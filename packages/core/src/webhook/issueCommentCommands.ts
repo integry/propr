@@ -150,7 +150,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
     }
     const data: IssueJobData = {
       repoOwner: owner, repoName: repo, number: issue.number, userId, triggeringLabel,
-      correlationId: generateCorrelationId(), pluginCommand: run,
+      correlationId: generateCorrelationId(), pluginCommand: run, pluginCommandIntent: token,
     };
     const jobId = `issue-${owner}-${repo}-${issue.number}`;
     const stored = await (deps.enqueue ?? defaultEnqueue)(data, jobId);
@@ -165,9 +165,10 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       await reply(`/${run.command} was not started: a ProPR task for this issue is already starting or running. Run the command again when it has finished.`);
       return { status: 'ignored', reason: 'job_already_queued' };
     }
-    // The queued job carries the command; a later label event must not.
+    // The queued job carries the command; a later label event must not. When
+    // this release fails, the job's dispatcher settles the record it names.
     await releaseIssueCommandIntent(deps.redis, intentKey, intentValue).catch((err: unknown) => {
-      log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task');
+      log.warn({ repository, issueNumber: issue.number, err }, 'Could not release the plugin command intent of a queued task; the job\'s dispatcher settles it');
     });
     log.info({ repository, issueNumber: issue.number, commentId: comment.id, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} started an implementation task`);
     return { status: 'accepted', billing: { seatConsumed: !/\[bot\]$/i.test(author) } };

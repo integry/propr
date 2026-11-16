@@ -46,6 +46,13 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
     requestedBy?: string;
     /** The plugin `prompt` command, run from an issue comment, this implementation task carries out. */
     pluginCommand?: PluginCommandRun;
+    /**
+     * The token of the issue's command intent this job carries `pluginCommand`
+     * for. The dispatcher settles that intent before it starts the work, so a
+     * settlement the intake could not record does not leave the consumed
+     * command pending for a later label event.
+     */
+    pluginCommandIntent?: string;
     /** Authenticated user retrying failed submission-backed work; owns that retry instead of the submitter. */
     retryRequesterId?: string;
     /** Issue comment carrying a requested retry's instructions; posted by the app, so exempt from author filtering. */
