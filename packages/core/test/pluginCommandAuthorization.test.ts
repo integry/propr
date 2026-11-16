@@ -19,7 +19,7 @@ import { PluginError, PluginStore } from '../src/plugins/pluginStore.js';
 import { resolvePluginCommand, type PluginCommandRequest } from '../src/plugins/pluginCommands.js';
 import { consumePluginCommandWriteGrant } from '../src/plugins/pluginCommandSettings.js';
 import { PluginCommandRunner, enqueuePluginCommandDelivery } from '../src/plugins/pluginCommandDeliveries.js';
-import { listPluginActivity } from '../src/plugins/pluginDeliveries.js';
+import { listPluginActivity, prunePluginDeliveries } from '../src/plugins/pluginDeliveries.js';
 import { pluginStateStore } from '../src/plugins/pluginStateStore.js';
 
 const ONE = 'fixture-deploy-one';
@@ -271,4 +271,64 @@ test('a failing handler command is retried on the delivery schedule, and a disab
   assert.equal(row.status, 'failed');
   assert.equal(row.error, 'Not delivered: the plugin was disabled');
   assert.equal(await enqueuePluginCommandDelivery(f.database, delivery, { repository: 'owner/app', number: 7, target: 'issue', actor: 'maintainer', commentId: 3 }, now), false, 'a disabled plugin records no delivery');
+});
+
+test('a plugin with paused deliveries does not hold back other plugins\' commands, and its own run after Resume', async t => {
+  const f = await fixture(t);
+  await f.enable(ONE);
+  await f.enable(TWO);
+  const now = 1_000_000;
+  const context = (commentId: number) => ({ repository: 'owner/app', number: 7, target: 'issue' as const, actor: 'maintainer', commentId });
+  // More of the paused plugin's commands than one pass attempts, all older than the other plugin's.
+  for (const commentId of [1, 2, 3]) {
+    assert.equal(await enqueuePluginCommandDelivery(f.database, { pluginId: TWO, pluginName: 'Deploy two', command: 'deploy-two', handler: 'deploy', argument: '' }, context(commentId), now), true);
+  }
+  assert.equal(await enqueuePluginCommandDelivery(f.database, { pluginId: ONE, pluginName: 'Deploy one', command: 'deploy-one', handler: 'deploy', argument: '' }, context(4), now), true);
+  await f.database('plugin_dispatch').where({ plugin_id: TWO }).update({ paused_at: now });
+
+  const { backend } = recordingBackend();
+  const runner = new PluginCommandRunner({
+    database: f.database, environment: ENVIRONMENT, catalog: f.catalog, backend, now: () => now, batchSize: 2,
+    handlers: id => loadPluginHandlers(id, { root: FIXTURE_REGISTRY, includeDevelopment: true }),
+  });
+  assert.equal(await runner.pass(), 1, 'the unpaused plugin\'s command runs');
+  assert.equal((await listPluginActivity(f.database, ONE)).deliveries[0].status, 'succeeded');
+  assert.deepEqual((await listPluginActivity(f.database, TWO)).deliveries.map(d => d.status), ['pending', 'pending', 'pending'], 'kept for after Resume');
+
+  await f.database('plugin_dispatch').where({ plugin_id: TWO }).update({ paused_at: null });
+  assert.equal(await runner.pass(), 2);
+  assert.equal(await runner.pass(), 1);
+  assert.deepEqual((await listPluginActivity(f.database, TWO)).deliveries.map(d => d.status), ['succeeded', 'succeeded', 'succeeded']);
+  await runner.stop();
+});
+
+test('a redelivered shared command comment is a duplicate after its shared owner changed, or its plugin was uninstalled', async t => {
+  const f = await fixture(t);
+  await f.enable(ONE);
+  await f.enable(TWO);
+  await f.store.setSharedCommandOwner('1', ONE, 'deploy', ONE);
+  const context = { repository: 'owner/app', number: 7, target: 'issue' as const, actor: 'maintainer', commentId: 5150 };
+  const first = await f.resolve('/deploy production', { target: 'issue', number: 7 });
+  if (first.status !== 'handler') return assert.fail('a handler command');
+  assert.equal(first.delivery.pluginId, ONE);
+  assert.equal(await enqueuePluginCommandDelivery(f.database, first.delivery, context), true);
+
+  await f.store.setSharedCommandOwner('1', ONE, 'deploy', TWO);
+  const redelivered = await f.resolve('/deploy production', { target: 'issue', number: 7 });
+  if (redelivered.status !== 'handler') return assert.fail('a handler command');
+  assert.equal(redelivered.delivery.pluginId, TWO, 'the plain name now runs the new owner');
+  assert.equal(await enqueuePluginCommandDelivery(f.database, redelivered.delivery, context), false, 'the comment was already accepted');
+  assert.equal((await listPluginActivity(f.database, TWO)).deliveries.length, 0, 'the new owner records nothing for it');
+
+  // Uninstalling the plugin it went to deletes its delivery records, not the comment's acceptance.
+  await f.store.setEnabled('1', ONE, false);
+  await f.store.uninstall('1', ONE, ONE);
+  assert.equal(await enqueuePluginCommandDelivery(f.database, redelivered.delivery, context), false);
+  assert.equal((await listPluginActivity(f.database, TWO)).deliveries.length, 0);
+  // Another comment is a new command.
+  assert.equal(await enqueuePluginCommandDelivery(f.database, redelivered.delivery, { ...context, commentId: 5151 }), true);
+
+  // Past retention, an acceptance whose delivery records are gone is pruned; one with a delivery still waiting is kept.
+  await prunePluginDeliveries(f.database, { now: () => Date.now() + 30 * 24 * 60 * 60 * 1000 });
+  assert.deepEqual(await f.database('plugin_command_acceptances').pluck('delivery_id'), ['cmd-issue-5151']);
 });

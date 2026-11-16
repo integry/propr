@@ -14,6 +14,13 @@
 // the run it was made for. A retry of that run or a later follow-up finds it
 // consumed and gets read servers only. Rows expire; nothing secret is stored.
 //
+// `plugin_command_acceptances` binds each accepted `handler` command comment
+// (keyed by its delivery id, `cmd-<target>-<comment id>`) to the plugin it was
+// delivered to, whichever plugin that was. It is written with the delivery, so
+// a redelivered comment is a duplicate even after the shared owner of its
+// command changed or the plugin was uninstalled. Rows are pruned with the
+// delivery records, once no delivery of theirs is left.
+//
 // `plugin_deliveries.command_input` holds a `handler` command delivery's
 // comment context (repository, number, target, commenter, comment id and the
 // argument) as JSON, so the delivery can be attempted again after a restart.
@@ -51,6 +58,15 @@ export async function up(knex) {
       t.bigInteger('consumed_at');
       t.string('consumed_by');
       t.index(['expires_at']);
+    });
+  }
+  if (!await knex.schema.hasTable('plugin_command_acceptances')) {
+    await knex.schema.createTable('plugin_command_acceptances', t => {
+      t.string('delivery_id').primary();
+      t.string('plugin_id').notNullable();
+      t.string('command').notNullable();
+      t.bigInteger('created_at').notNullable();
+      t.index(['created_at']);
     });
   }
   if (await knex.schema.hasTable('plugin_deliveries') && !await knex.schema.hasColumn('plugin_deliveries', 'command_input')) {

@@ -17,7 +17,10 @@ import type { PluginCommandDelivery } from './pluginCommands.js';
  * attempts it with the same retry schedule as events (1 min, 5 min, 30 min,
  * 2 h, then failed). Delivery is at least once: the delivery id
  * (`cmd-<target>-<comment id>`) is the same on every attempt and for every
- * redelivery of the comment, so the comment is recorded once.
+ * redelivery of the comment, so the comment is recorded once: its acceptance
+ * (`plugin_command_acceptances`) is keyed by that id alone, not by plugin, so
+ * a redelivery is a duplicate even when its shared command now resolves to
+ * another plugin.
  */
 
 /** The comment context of one command delivery, stored with it. */
@@ -28,15 +31,21 @@ export const pluginCommandDeliveryId = (target: CommandTarget, commentId: number
 
 /**
  * Record a command delivery, pending. False when the plugin is no longer
- * enabled, or this comment's delivery was already recorded (a redelivery).
+ * enabled, or this comment was already accepted for any plugin (a redelivery).
  */
 export async function enqueuePluginCommandDelivery(database: Knex, delivery: PluginCommandDelivery, context: PluginCommandContext, now: number = Date.now()): Promise<boolean> {
   const input: StoredCommandInput = { ...context, command: delivery.command, args: delivery.argument };
   return database.transaction(async trx => {
     const installed = await trx('plugin_installations').where({ plugin_id: delivery.pluginId, enabled: true }).first('plugin_id');
     if (!installed) return false;
+    // The comment's acceptance, whichever plugin it went to: a redelivery after the
+    // shared owner changed (or the plugin was uninstalled) finds it and records nothing.
+    const deliveryId = pluginCommandDeliveryId(context.target, context.commentId);
+    const accepted = await trx('plugin_command_acceptances').insert({ delivery_id: deliveryId, plugin_id: delivery.pluginId, command: delivery.command, created_at: now })
+      .onConflict('delivery_id').ignore().returning('delivery_id') as unknown[];
+    if (!accepted.length) return false;
     const inserted = await trx('plugin_deliveries').insert({
-      plugin_id: delivery.pluginId, delivery_id: pluginCommandDeliveryId(context.target, context.commentId), kind: 'command',
+      plugin_id: delivery.pluginId, delivery_id: deliveryId, kind: 'command',
       repository: context.repository, event_seq: context.number, event_type: `command.${delivery.command}`, handler: delivery.handler,
       status: 'pending', attempt: 0, next_attempt_at: now, created_at: now, logs: '[]', command_input: JSON.stringify(input),
     }).onConflict(['plugin_id', 'delivery_id']).ignore().returning('id') as unknown[];
@@ -121,7 +130,10 @@ export class PluginCommandRunner {
   private async passOnce(): Promise<number> {
     const now = this.now();
     const stale = now - (this.options.staleMs ?? 2 * (this.options.timeoutMs ?? PLUGIN_HANDLER_TIMEOUT_MS));
+    // Paused installations' deliveries are left out before the batch limit: they wait for a
+    // Resume without taking the places of other plugins' due commands.
     const rows = await this.options.database('plugin_deliveries').where({ kind: 'command' })
+      .whereNotExists(q => { void q.select(1).from('plugin_dispatch as d').whereRaw('?? = ??', ['d.plugin_id', 'plugin_deliveries.plugin_id']).whereNotNull('d.paused_at'); })
       .where(q => {
         void q.where(due => { void due.whereIn('status', ['pending', 'retrying']).where('next_attempt_at', '<=', now); })
           .orWhere(left => { void left.where('status', 'running').where('started_at', '<', stale); });
