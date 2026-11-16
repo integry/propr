@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- admission, execution, failure settlement and handoff ownership share one PR lease lifecycle */
 import { formatTaskTerminalReason, taskRunExtensionRequest } from '@propr/shared';
-import { pluginCommandExtensionBase, pluginCommandRequestText } from './pluginCommandTask.js';
+import { pluginCommandRequestText, pluginCommandRunExtensionBase } from './pluginCommandTask.js';
 import { prepareRepositoryWorkflow, resolveAttemptRepositoryWorkflow, persistRepositoryWorkflowDeferral, repositoryWorkflowHistoryMetadata,
     withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, nonRetryableRepositoryWorkflowError } from './repositoryWorkflow.js';
 import { Job } from 'bullmq';
@@ -326,6 +326,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         const prompt = [publication.status, buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection, visualPreviewSettings }), repositoryWorkflowPrompt(repositoryWorkflow)].filter(Boolean).join('\n\n');
 
         const { worktreePath, branchName } = state.worktreeInfo;
+        // An allowed `needsWrite` plugin command's single-use write grant is consumed by this run only.
+        const commandExtensionBase = await pluginCommandRunExtensionBase(job.data.pluginCommand, undefined, taskId);
         const { claudeResult, agentType } = await runWithJobAgentCapacity(agentCapacity, () => resolveAndExecuteAgent({
             llm, worktreePath, branchName, prompt,
             pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
@@ -333,10 +335,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             // Bind the launched container's immutable identity to the handoff, so
             // recovery never trusts a different container's evidence for this task.
             onContainerInfo: containerId => markExecutionHandoffContainer(state, containerId),
-            // Read library items only (follow-ups never carry write authorization);
+            // Read library items only (follow-ups carry no write authorization, except
+            // the explicit single-use grant of an allowed `needsWrite` plugin command);
             // the pull request's labels, loaded for this run, can remove them.
             // A plugin command adds its manifest's own skills and servers explicitly.
-            extensions: taskRunExtensionRequest({ kind: 'pull_request', repository: `${repoOwner}/${repoName}`, labels: prData!.data.labels, base: pluginCommandExtensionBase(job.data.pluginCommand) }),
+            extensions: taskRunExtensionRequest({ kind: 'pull_request', repository: `${repoOwner}/${repoName}`, labels: prData!.data.labels, base: commandExtensionBase }),
         }));
         state.claudeResult = claudeResult;
         await markExecutionHandoffAgentExited(state, claudeResult.success === true, claudeResult.success === true ? noChangeAnalysisSummary(claudeResult) : null);

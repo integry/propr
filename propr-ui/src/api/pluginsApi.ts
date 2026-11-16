@@ -65,6 +65,14 @@ export const startPluginOAuth = (id: string, name: string) =>
 export const disconnectPluginOAuth = (id: string, name: string): Plugin =>
   request(connection(id, name, '/oauth/disconnect'), { method: 'POST', body: {} });
 
+export type PluginCommandSettingView = NonNullable<PluginView['commands']>[number];
+/** Switch "Allow this command to use write access" of a `needsWrite` command on or off. */
+export const setPluginCommandWrite = (id: string, command: string, allowed: boolean): Plugin =>
+  request(plugin(id, `/commands${segment(command)}/write`), { method: 'PUT', body: { allowed } satisfies ProprApi.PluginCommandWriteRequest });
+/** Choose (a plugin id) or clear (`null`) which plugin a shared command name runs when several enabled plugins offer it. */
+export const setPluginSharedCommandOwner = (id: string, command: string, owner: string | null): Plugin =>
+  request(plugin(id, `/commands${segment(command)}/owner`), { method: 'PUT', body: { owner } satisfies ProprApi.PluginSharedCommandOwnerRequest });
+
 export type PluginActivityView = ProprApi.PluginActivityResponse;
 export type PluginDeliveryView = ProprApi.PluginDelivery;
 export type PluginHealthView = ProprApi.PluginHealth;

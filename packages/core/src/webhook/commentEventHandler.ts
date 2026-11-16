@@ -26,6 +26,7 @@ import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js'
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 import { commentAuthorMayFollowUp, commentSeatConsumed, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
 import { resolveCommentPluginCommand, type PluginCommandResolution, type PluginCommandRun } from '../plugins/pluginCommands.js';
+import { enqueueCommentPluginCommand } from '../plugins/pluginCommandDeliveries.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -777,10 +778,13 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
 type PluginCommandCommentOptions = Omit<SlashCommentOptions, 'parsedCommand'> & { resolution: Exclude<PluginCommandResolution, { status: 'none' }> };
 
 /**
- * A plugin `prompt` command on a pull request: the same claim and assignment
- * gate as a built-in command, then one one-shot follow-up job of its own whose
- * instruction and library additions come from the plugin's manifest. It is
- * never batched into another job, so the additions cannot reach other requests.
+ * A plugin command on a pull request: the same claim and assignment gate as a
+ * built-in command. A `prompt` command then queues one one-shot follow-up job
+ * of its own whose instruction and library additions (and, for an allowed
+ * `needsWrite` command, its single-use write grant) come from the plugin's
+ * manifest. It is never batched into another job, so the additions cannot
+ * reach other requests. A `handler` command records a delivery to the
+ * plugin's handler instead.
  */
 async function processPluginCommandComment(opts: PluginCommandCommentOptions): Promise<DeliveryDisposition> {
     const { resolution, comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck } = opts;
@@ -802,6 +806,16 @@ async function processPluginCommandComment(opts: PluginCommandCommentOptions): P
             const octokit = await getAuthenticatedOctokit();
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, body: `@${commentAuthor} ${resolution.message}` });
             return { status: 'ignored', reason: 'plugin_command_refused' };
+        }
+        if (resolution.status === 'handler') {
+            // No task: the plugin's handler gets the comment context as a delivery of kind `command`.
+            const { delivery } = resolution;
+            // A review comment and an issue comment can share a number: the comment type is part of its identity.
+            const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
+            const recorded = await enqueueCommentPluginCommand(delivery, { repository: `${owner}/${repo}`, number: prNumber, target: 'pull_request', commentType, actor: commentAuthor, commentId: comment.id });
+            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, plugin: delivery.pluginId, command: delivery.command, recorded }, `Plugin command /${delivery.command} queued for its handler`);
+            if (!recorded) return { status: 'ignored', reason: 'duplicate_delivery' };
+            return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
         }
         const { run } = resolution;
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} detected, enqueuing follow-up job`);
@@ -941,7 +955,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     // After the built-ins: a command an enabled plugin contributes for this repository.
     // Anything else, a disabled plugin's command included, stays an ordinary comment.
-    const pluginCommand = await resolveCommentPluginCommand({ body: comment.body, repository: repoFullName, target: 'pull_request', author: commentAuthor });
+    const pluginCommand = await resolveCommentPluginCommand({ body: comment.body, repository: repoFullName, target: 'pull_request', author: commentAuthor, number: prNumber });
     if (pluginCommand.status !== 'none') {
         return processPluginCommandComment({ resolution: pluginCommand, comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck });
     }

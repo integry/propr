@@ -19,9 +19,11 @@ const PluginManifestSummary = z.object({
     commands: z.array(z.object({
       name: z.string().describe('Used as /<name> in a comment.'), description: z.string(),
       where: z.array(z.enum(COMMAND_TARGETS)).describe('Where the command can be used: pull request comments, issue comments or both.'),
-      kind: z.enum(PLUGIN_COMMAND_KINDS).describe('prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue).'),
+      kind: z.enum(PLUGIN_COMMAND_KINDS).describe('prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command.'),
       skills: z.array(z.string()).describe('Skills of this plugin the command adds to its run.'), servers: z.array(z.string()).describe('MCP servers of this plugin the command adds to its run.'),
-      needsWrite: z.boolean().describe('The command needs write access; such commands are refused for now.'),
+      needsWrite: z.boolean().describe('The command may use the plugin\'s write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository.'),
+      shared: z.boolean().describe('Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs.'),
+      specific: z.array(z.string()).describe('This plugin\'s own commands that stand in for a shared name.'),
     })).describe('Slash commands the plugin adds; never their prompt text.'), subscriptions: z.array(z.string()),
     webhooks: z.array(z.object({ name: z.string(), description: z.string(), scheme: z.enum(PLUGIN_WEBHOOK_SCHEMES).describe('How ProPR verifies the webhook\'s requests.') })),
   }),
@@ -64,6 +66,16 @@ const pluginViewShape = {
   pendingAcknowledgements: z.array(z.object({ server: z.string(), package: z.string(), version: z.string(), secretEnv: z.array(z.string()) })),
   enableBlockers: z.array(z.string()).describe('Why enabling is refused right now; empty when it can be enabled.'),
   contributions: PluginContributions.optional(),
+  commands: z.array(z.object({
+    name: z.string(), needsWrite: z.boolean(),
+    writeAllowed: z.boolean().describe('"Allow this command to use write access" is on. Off until an administrator switches it on.'),
+    writeChangedBy: z.string().optional(), writeChangedAt: z.number().optional(),
+    sharedOwner: z.object({
+      owner: z.string().nullable().describe('The plugin the shared name runs when several enabled plugins offer it; null when none was chosen.'),
+      setBy: z.string().optional(), setAt: z.number().optional(),
+      candidates: z.array(z.object({ pluginId: z.string(), pluginName: z.string(), specific: z.array(z.string()), enabled: z.boolean() })).describe('Every installed plugin offering the name.'),
+    }).optional().describe('Present for a shared command.'),
+  })).optional().describe('Instance settings of the plugin\'s commands.'),
 };
 export const PluginView = component('PluginView', z.object(pluginViewShape), 'A plugin with its installation state on this instance.');
 export const PluginList = component('PluginList', z.object({ plugins: z.array(PluginView) }));
@@ -87,6 +99,8 @@ export const PluginConnectionRequest = component('PluginConnectionRequest', z.st
 export const PluginEnabledRequest = component('PluginEnabledRequest', z.strictObject({ enabled: z.boolean() }));
 export const PluginUninstallRequest = component('PluginUninstallRequest', z.strictObject({ confirm: z.string().describe('Must repeat the plugin id.') }));
 export const PluginEmptyRequest = component('PluginEmptyRequest', z.strictObject({}));
+export const PluginCommandWriteRequest = component('PluginCommandWriteRequest', z.strictObject({ allowed: z.boolean().describe('Allow this command to use write access.') }));
+export const PluginSharedCommandOwnerRequest = component('PluginSharedCommandOwnerRequest', z.strictObject({ owner: z.string().nullable().describe('An installed plugin that offers the shared name, or null to clear the choice.') }));
 export const PluginOAuthCompleteRequest = component('PluginOAuthCompleteRequest', z.strictObject({
   state: z.string().describe('The `state` the provider returned to the redirect URI.'), code: z.string().optional(), error: z.string().optional(), iss: z.string().optional(),
 }));
@@ -95,11 +109,11 @@ export const PluginOAuthStartResponse = component('PluginOAuthStartResponse', z.
 const PluginLogLine = z.object({ level: z.enum(['debug', 'info', 'warn', 'error']), message: z.string(), fields: z.record(z.string(), z.unknown()).optional(), at: z.number() });
 export const PluginDelivery = component('PluginDelivery', z.object({
   id: z.number().int().describe('The activity record id, used by the retry route.'),
-  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook); the same on every attempt.'),
-  kind: z.enum(PLUGIN_DELIVERY_KINDS).describe('`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler.'),
-  repository: z.string().describe('The event\'s repository; empty for a webhook delivery.'),
-  eventSeq: z.number().int().describe('The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery.'),
-  eventType: z.string().nullable().describe('`<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap.'),
+  deliveryId: z.string().describe('The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-issue-<comment id>` or `cmd-review-<comment id>` for a command run from an issue comment or a pull request review comment); the same on every attempt.'),
+  kind: z.enum(PLUGIN_DELIVERY_KINDS).describe('`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. `command`: one handler slash command to its handler.'),
+  repository: z.string().describe('The event\'s or command\'s repository; empty for a webhook delivery.'),
+  eventSeq: z.number().int().describe('The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery; the issue or pull request number for a command.'),
+  eventType: z.string().nullable().describe('`<domain>.<type>`; `webhook.<name>` for a webhook delivery; `command.<name>` for a command; null for a gap.'),
   handler: z.string().nullable(),
   status: z.enum(PLUGIN_DELIVERY_STATUSES),
   attempt: z.number().int().describe('Attempts made so far.'),

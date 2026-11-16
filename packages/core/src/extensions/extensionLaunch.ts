@@ -38,7 +38,8 @@ function launchContextFor(config: Pick<AgentConfig, 'alias' | 'type'>, options: 
   const request = options.extensions!;
   return {
     agentAlias: config.alias, runtime: config.type, repositories: request.repositories ?? [`${options.issueRef.repoOwner}/${options.issueRef.repoName}`],
-    allowWrite: request.allowWrite === true, autoApply: request.autoApply, additional: { servers: request.servers, skills: request.skills }, maxServers,
+    allowWrite: request.allowWrite === true, ...(request.allowWrite === true && request.writeServers ? { writeServers: [...request.writeServers] } : {}),
+    autoApply: request.autoApply, additional: { servers: request.servers, skills: request.skills }, maxServers,
   };
 }
 export interface ExtensionLaunchHooks {

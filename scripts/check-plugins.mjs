@@ -6,9 +6,11 @@
  *   - every manifest.json passes the plugin manifest schema of @propr/shared
  *     (which also checks connection references and exact package pins) and
  *     its id matches its folder;
- *   - command names are unique across all plugins, and none is a built-in
- *     ProPR command (the manifest schema refuses those, with the built-in
- *     list of @propr/shared's commands module);
+ *   - command names are unique across all plugins unless every plugin
+ *     offering one marks it `shared`, and none is a built-in ProPR command
+ *     (the manifest schema refuses those, with the built-in list of
+ *     @propr/shared's commands module); the schema also checks that each
+ *     shared command names, in `specific`, a command of its plugin that performs the same operation;
  *   - the README, the icon, every skill folder (with a SKILL.md naming the
  *     skill) and every automation template folder exist, and the templates
  *     pass the automation template contract.
@@ -120,8 +122,9 @@ export function checkPlugins({ root = PLUGINS_ROOT } = {}) {
     checkAssets(entry.id, directory, manifest, errors);
     for (const command of manifest.contributes.commands) {
       const owner = commands.get(command.name);
-      if (owner && owner !== entry.id) errors.push(`${entry.id}: command ${command.name} is also contributed by ${owner}`);
-      else commands.set(command.name, entry.id);
+      // A shared name may be offered by several plugins, as long as each of them marks it shared.
+      if (owner && owner.id !== entry.id && !(owner.shared && command.shared)) errors.push(`${entry.id}: command ${command.name} is also contributed by ${owner.id}${owner.shared || command.shared ? ' (a shared name must be marked shared by every plugin offering it)' : ''}`);
+      else if (!owner) commands.set(command.name, { id: entry.id, shared: command.shared });
     }
     plugins.push({ ...entry, directory, manifest });
   }

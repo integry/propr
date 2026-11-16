@@ -22,6 +22,7 @@ import { up as journalMigration } from '../../core/src/db/migrations/20261112160
 import { up as taskDomainMigration } from '../../core/src/db/migrations/20261114120000_add_task_repository_event_domain.js';
 import { up as deliveriesMigration } from '../../core/src/db/migrations/20261115000000_plugin_event_deliveries.js';
 import { up as webhookKeysMigration } from '../../core/src/db/migrations/20261116000000_plugin_webhook_keys.js';
+import { up as commandSettingsMigration } from '../../core/src/db/migrations/20261116120000_plugin_command_settings.js';
 
 /** The fixture plugin of the core dispatcher tests: its `flaky` handler fails while state key `fail` is above zero. */
 const REGISTRY = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'core', 'test', 'fixtures', 'plugins');
@@ -48,7 +49,7 @@ test('plugin activity API: deliveries and health are listed, a failed delivery i
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, pluginStateMigration, journalMigration, taskDomainMigration, deliveriesMigration, webhookKeysMigration]) await migrate(database);
+  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, pluginStateMigration, journalMigration, taskDomainMigration, deliveriesMigration, webhookKeysMigration, commandSettingsMigration]) await migrate(database);
   await database('instance_members').insert([{ github_user_id: '1', role: 'admin' }, { github_user_id: '2', role: 'member' }]);
   const manifest = getOfficialPlugin(ID, { root: REGISTRY, includeDevelopment: true })!.manifest;
   const catalog = async () => [manifest];

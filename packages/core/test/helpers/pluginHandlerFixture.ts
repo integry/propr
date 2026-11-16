@@ -14,6 +14,7 @@ import { up as journalMigration } from '../../src/db/migrations/20261112160000_c
 import { up as taskDomainMigration } from '../../src/db/migrations/20261114120000_add_task_repository_event_domain.js';
 import { up as deliveriesMigration } from '../../src/db/migrations/20261115000000_plugin_event_deliveries.js';
 import { up as webhookKeysMigration } from '../../src/db/migrations/20261116000000_plugin_webhook_keys.js';
+import { up as commandSettingsMigration } from '../../src/db/migrations/20261116120000_plugin_command_settings.js';
 import { PluginStore } from '../../src/plugins/pluginStore.js';
 import type { PluginProprBackend } from '../../src/plugins/pluginProprClient.js';
 import type { PluginHttpTransport, PluginHttpTransportRequest } from '../../src/plugins/pluginHttp.js';
@@ -83,7 +84,7 @@ export async function pluginHandlerFixture(t: TestContext, options: { secret?: s
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
   await database.schema.createTable('agent_definitions', c => { c.string('id').primary(); c.string('name'); });
-  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, stateMigration, journalMigration, taskDomainMigration, deliveriesMigration, webhookKeysMigration]) await migrate(database);
+  for (const migrate of [identityMigration, grantMigration, libraryMigration, oauthMigration, pluginMigration, stateMigration, journalMigration, taskDomainMigration, deliveriesMigration, webhookKeysMigration, commandSettingsMigration]) await migrate(database);
   const pluginId = options.pluginId ?? FIXTURE_ID;
   const manifest = fixtureManifest(pluginId);
   const catalog = async () => [manifest];

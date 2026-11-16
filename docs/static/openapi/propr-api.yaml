@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 345
-    documented: 107
+    total: 347
+    documented: 109
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4900,7 +4900,7 @@ paths:
   /api/instance/plugins/v1/{pluginId}/activity:
     get:
       operationId: getPluginActivity
-      summary: "Read the plugin's event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records: time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days."
+      summary: "Read the plugin's event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records (events, webhooks and handler commands): time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days."
       description: |-
         Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
 
@@ -5019,6 +5019,114 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/PluginAcknowledgementRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/commands/{commandName}/owner:
+    put:
+      operationId: setPluginSharedCommandOwner
+      summary: "Choose which plugin a shared command name (for example `/deploy`) runs when several enabled plugins offer it for a repository, or clear the choice (null): the only enabled one then runs it, and with several the command replies naming their specific commands. The owner must be installed and offer the name. Recorded on this plugin and on the previous and new owners. Refused (409) for a command that is not shared."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: commandName
+          in: path
+          required: true
+          description: A shared command name from the manifest, without the slash.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginSharedCommandOwnerRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/commands/{commandName}/write:
+    put:
+      operationId: setPluginCommandWrite
+      summary: Switch "Allow this command to use write access" of a `needsWrite` command on or off (off by default). With it on, a commenter with write permission on the repository can run the command, and its run alone may use the plugin's write servers the command names; otherwise the command is refused with a reply. Refused (409) for a command that does not use write access.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: commandName
+          in: path
+          required: true
+          description: A command name from the manifest, without the slash.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginCommandWriteRequest"
       responses:
         "200":
           description: The plugin's new state.
@@ -13286,6 +13394,15 @@ components:
         - health
         - deliveries
       additionalProperties: false
+    PluginCommandWriteRequest:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Allow this command to use write access.
+      required:
+        - allowed
+      additionalProperties: false
     PluginConnectionRequest:
       type: object
       properties:
@@ -13306,22 +13423,23 @@ components:
           description: The activity record id, used by the retry route.
         deliveryId:
           type: string
-          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`, or `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook); the same on every attempt.
+          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-issue-<comment id>` or `cmd-review-<comment id>` for a command run from an issue comment or a pull request review comment); the same on every attempt.
         kind:
           type: string
           enum:
             - event
             - gap
             - webhook
-          description: "`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler."
+            - command
+          description: "`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. `command`: one handler slash command to its handler."
         repository:
           type: string
-          description: The event's repository; empty for a webhook delivery.
+          description: The event's or command's repository; empty for a webhook delivery.
         eventSeq:
           type: integer
-          description: The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery.
+          description: The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery; the issue or pull request number for a command.
         eventType:
-          description: "`<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap."
+          description: "`<domain>.<type>`; `webhook.<name>` for a webhook delivery; `command.<name>` for a command; null for a gap."
           type:
             - string
             - "null"
@@ -13575,7 +13693,8 @@ components:
                                 type: string
                                 enum:
                                   - prompt
-                                description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue)."
+                                  - handler
+                                description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command."
                               skills:
                                 type: array
                                 items:
@@ -13588,7 +13707,15 @@ components:
                                 description: MCP servers of this plugin the command adds to its run.
                               needsWrite:
                                 type: boolean
-                                description: The command needs write access; such commands are refused for now.
+                                description: "The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository."
+                              shared:
+                                type: boolean
+                                description: Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs.
+                              specific:
+                                type: array
+                                items:
+                                  type: string
+                                description: This plugin's own commands that stand in for a shared name.
                             required:
                               - name
                               - description
@@ -13597,6 +13724,8 @@ components:
                               - skills
                               - servers
                               - needsWrite
+                              - shared
+                              - specific
                             additionalProperties: false
                           description: Slash commands the plugin adds; never their prompt text.
                         subscriptions:
@@ -13944,6 +14073,67 @@ components:
                 - automationTemplates
               additionalProperties: false
               description: The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed.
+            commands:
+              description: Instance settings of the plugin's commands.
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  needsWrite:
+                    type: boolean
+                  writeAllowed:
+                    type: boolean
+                    description: '"Allow this command to use write access" is on. Off until an administrator switches it on.'
+                  writeChangedBy:
+                    type: string
+                  writeChangedAt:
+                    type: number
+                  sharedOwner:
+                    description: Present for a shared command.
+                    type: object
+                    properties:
+                      owner:
+                        description: The plugin the shared name runs when several enabled plugins offer it; null when none was chosen.
+                        type:
+                          - string
+                          - "null"
+                      setBy:
+                        type: string
+                      setAt:
+                        type: number
+                      candidates:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            pluginId:
+                              type: string
+                            pluginName:
+                              type: string
+                            specific:
+                              type: array
+                              items:
+                                type: string
+                            enabled:
+                              type: boolean
+                          required:
+                            - pluginId
+                            - pluginName
+                            - specific
+                            - enabled
+                          additionalProperties: false
+                        description: Every installed plugin offering the name.
+                    required:
+                      - owner
+                      - candidates
+                    additionalProperties: false
+                required:
+                  - name
+                  - needsWrite
+                  - writeAllowed
+                additionalProperties: false
             audit:
               type: array
               items:
@@ -13972,6 +14162,8 @@ components:
                       - retry_delivery
                       - resume_deliveries
                       - regenerate_webhook_key
+                      - set_command_write
+                      - set_shared_command_owner
                   actor:
                     type: string
                   at:
@@ -14174,6 +14366,17 @@ components:
       required:
         - settings
       additionalProperties: false
+    PluginSharedCommandOwnerRequest:
+      type: object
+      properties:
+        owner:
+          description: An installed plugin that offers the shared name, or null to clear the choice.
+          type:
+            - string
+            - "null"
+      required:
+        - owner
+      additionalProperties: false
     PluginUninstallRequest:
       type: object
       properties:
@@ -14333,7 +14536,8 @@ components:
                             type: string
                             enum:
                               - prompt
-                            description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue)."
+                              - handler
+                            description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command."
                           skills:
                             type: array
                             items:
@@ -14346,7 +14550,15 @@ components:
                             description: MCP servers of this plugin the command adds to its run.
                           needsWrite:
                             type: boolean
-                            description: The command needs write access; such commands are refused for now.
+                            description: "The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository."
+                          shared:
+                            type: boolean
+                            description: Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs.
+                          specific:
+                            type: array
+                            items:
+                              type: string
+                            description: This plugin's own commands that stand in for a shared name.
                         required:
                           - name
                           - description
@@ -14355,6 +14567,8 @@ components:
                           - skills
                           - servers
                           - needsWrite
+                          - shared
+                          - specific
                         additionalProperties: false
                       description: Slash commands the plugin adds; never their prompt text.
                     subscriptions:
@@ -14702,6 +14916,67 @@ components:
             - automationTemplates
           additionalProperties: false
           description: The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed.
+        commands:
+          description: Instance settings of the plugin's commands.
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              needsWrite:
+                type: boolean
+              writeAllowed:
+                type: boolean
+                description: '"Allow this command to use write access" is on. Off until an administrator switches it on.'
+              writeChangedBy:
+                type: string
+              writeChangedAt:
+                type: number
+              sharedOwner:
+                description: Present for a shared command.
+                type: object
+                properties:
+                  owner:
+                    description: The plugin the shared name runs when several enabled plugins offer it; null when none was chosen.
+                    type:
+                      - string
+                      - "null"
+                  setBy:
+                    type: string
+                  setAt:
+                    type: number
+                  candidates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pluginId:
+                          type: string
+                        pluginName:
+                          type: string
+                        specific:
+                          type: array
+                          items:
+                            type: string
+                        enabled:
+                          type: boolean
+                      required:
+                        - pluginId
+                        - pluginName
+                        - specific
+                        - enabled
+                      additionalProperties: false
+                    description: Every installed plugin offering the name.
+                required:
+                  - owner
+                  - candidates
+                additionalProperties: false
+            required:
+              - name
+              - needsWrite
+              - writeAllowed
+            additionalProperties: false
       required:
         - id
         - available

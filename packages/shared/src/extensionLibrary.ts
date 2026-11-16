@@ -150,6 +150,12 @@ export interface ExtensionResolutionContext {
   autoApply?: boolean;
   /** When false, write-capability servers are left out. Omitted means not filtered by capability. */
   allowWrite?: boolean;
+  /**
+   * With `allowWrite`, the only write-capability servers the write grant covers
+   * (library names); any other write server is left out. Omitted means every
+   * write server the run resolves.
+   */
+  writeServers?: readonly string[];
   /** Per-run limits; default `EXTENSION_LIMITS`. */
   limits?: { servers?: number; bundles?: number };
 }
@@ -185,7 +191,7 @@ export function extensionItemSkipReason(library: LibraryView, item: ExtensionLib
   }
   if (item.agents.length && !item.agents.includes(context.agentAlias)) return 'agent';
   if ('kind' in item) {
-    if (context.allowWrite === false && item.capability === 'write') return 'write_not_authorized';
+    if (item.capability === 'write' && (context.allowWrite === false || (context.writeServers && !context.writeServers.includes(item.name)))) return 'write_not_authorized';
     if (item.kind === 'https' && item.authentication === 'bearer' && library.secrets && !library.secrets[item.name]?.configured) return 'secret_not_configured';
     if (item.kind === 'https' && item.authentication === 'oauth' && library.oauth) {
       const state = Object.hasOwn(library.oauth, item.name) ? library.oauth[item.name] : 'not_connected';
@@ -269,6 +275,8 @@ export function extensionLabelOptOut(labels: readonly (string | { name?: string 
 /** The extension request of an issue task or pull request follow-up (structurally Core's `AgentExtensionRequest`). */
 export interface TaskRunExtensionRequest {
   autoApply: boolean; servers: string[]; skills: string[]; repositories?: string[]; allowWrite?: boolean;
+  /** With `allowWrite`, the only write servers it covers (a plugin command's explicit write grant). */
+  writeServers?: string[];
   kind?: 'automation' | 'issue' | 'pull_request'; labels?: string[];
 }
 type LabelInput = string | { name?: string | null } | null | undefined;

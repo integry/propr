@@ -22,6 +22,10 @@ It contributes:
   writes release notes with the `example-notes` skill and the `example-remote`
   read server attached. The rest of the command line, as in
   `/example-notes focus on the API`, is passed to the task as untrusted text.
+- **/example-status**: a `handler` command on pull requests and issues. It
+  starts no task: `reportCommand` in `handlers.ts` receives the comment's
+  repository, number, author and argument as a delivery of kind `command`,
+  shown in the plugin's Activity, and logs them.
 - **recordEvent** (`handlers.ts`): a handler that keeps the newest journal
   event per repository as a cursor in `ctx.state` and logs a task event's task
   state. `../test/testing.test.ts` tests it with the plugin test kit.

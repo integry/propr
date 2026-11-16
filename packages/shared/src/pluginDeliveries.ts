@@ -29,8 +29,10 @@ export type PluginDeliveryStatus = typeof PLUGIN_DELIVERY_STATUSES[number];
  * `event`: one journal event to one handler. `gap`: journal retention removed
  * events before they were delivered. `webhook`: one verified inbound webhook
  * request to its handler (its body is held in memory only, never stored).
+ * `command`: one `handler` slash command to its handler, with the comment's
+ * repository, number, author and argument.
  */
-export const PLUGIN_DELIVERY_KINDS = ['event', 'gap', 'webhook'] as const;
+export const PLUGIN_DELIVERY_KINDS = ['event', 'gap', 'webhook', 'command'] as const;
 export type PluginDeliveryKind = typeof PLUGIN_DELIVERY_KINDS[number];
 
 export interface PluginDeliveryView {
@@ -39,11 +41,11 @@ export interface PluginDeliveryView {
   /** The stable delivery id handlers receive (`evt-<seq>-<handler>`, `whk-<webhook>:<id>`, `whk-<webhook>/<uuid>`); the same on every attempt. */
   deliveryId: string;
   kind: PluginDeliveryKind;
-  /** The event's repository; empty for a webhook delivery. */
+  /** The event's or command's repository; empty for a webhook delivery. */
   repository: string;
-  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook. */
+  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook; the issue or pull request number for a command. */
   eventSeq: number;
-  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; null for a gap. */
+  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; `command.<name>` for a command; null for a gap. */
   eventType: string | null;
   handler: string | null;
   status: PluginDeliveryStatus;

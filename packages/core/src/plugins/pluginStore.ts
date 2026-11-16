@@ -16,6 +16,7 @@ import { deletePluginState } from './pluginStateStore.js';
 import { deletePluginDispatch, restartPluginDispatch } from './pluginDeliveries.js';
 import { deletePluginWebhookKey } from './pluginWebhooks.js';
 import { pluginCommandConflicts } from './pluginCommands.js';
+import { deletePluginCommandSettings, pluginCommandSettingViews, setPluginCommandWrite, setPluginSharedCommandOwner } from './pluginCommandSettings.js';
 import {
   PluginError, enableBlockers, installationRecord, nextAcknowledgements, parseAcknowledgements, pendingAcknowledgements, pendingPermissions, pluginView,
   type PluginInstallationRow, type PluginSecretRow,
@@ -142,7 +143,10 @@ export class PluginStore {
       const state: PluginConnectionState = states.every(s => s === 'connected') ? 'connected' : states.includes('needs_sign_in') ? 'needs_sign_in' : 'not_connected';
       connections.push({ ...status, state });
     }
-    return { ...base, connections, contributions: pluginContributionViews(manifest, pluginId, row ? snapshot : null, ids.get(pluginId) ?? new Map(), Boolean(row?.enabled)) };
+    return {
+      ...base, connections, contributions: pluginContributionViews(manifest, pluginId, row ? snapshot : null, ids.get(pluginId) ?? new Map(), Boolean(row?.enabled)),
+      commands: await pluginCommandSettingViews(this.database, manifest, await this.manifests()),
+    };
   }
   /** Commands of `manifest` that a built-in command or another enabled plugin already has: enabling it is refused while there are any. */
   private async commandConflicts(pluginId: string, manifest: PluginManifest | null, database: Knex): Promise<string[]> {
@@ -333,7 +337,31 @@ export class PluginStore {
       const state = await deletePluginState(trx, pluginId);
       await deletePluginDispatch(trx, pluginId);
       await deletePluginWebhookKey(trx, pluginId);
+      await deletePluginCommandSettings(trx, pluginId);
       return { action: 'uninstall', detail: { version: row.manifest_version, stateKeys: state } };
+    });
+  }
+
+  /** Switch "Allow this command to use write access" of a `needsWrite` command on or off. Off by default. */
+  async setCommandWrite(actor: string, id: unknown, command: unknown, allowed: unknown): Promise<PluginView> {
+    return this.write(actor, id, async (trx, loaded) => {
+      PluginStore.installed(loaded); const manifest = PluginStore.current(loaded);
+      const detail = await setPluginCommandWrite(trx, manifest, command, allowed, actor, this.now());
+      return { action: 'set_command_write', detail };
+    });
+  }
+
+  /**
+   * Choose (a plugin id) or clear (`null`) which plugin a shared command name
+   * this plugin offers runs when several enabled plugins offer it. Recorded on
+   * this plugin and on the previous and new owners.
+   */
+  async setSharedCommandOwner(actor: string, id: unknown, command: unknown, owner: unknown): Promise<PluginView> {
+    return this.write(actor, id, async (trx, loaded) => {
+      PluginStore.installed(loaded); const manifest = PluginStore.current(loaded);
+      const { detail, alsoAudit } = await setPluginSharedCommandOwner(trx, { manifest, manifests: await this.manifests() }, command, owner, actor, this.now());
+      for (const other of alsoAudit) await this.audit(trx, other, 'set_shared_command_owner', actor, { ...detail, changedFrom: manifest.id });
+      return { action: 'set_shared_command_owner', detail };
     });
   }
 

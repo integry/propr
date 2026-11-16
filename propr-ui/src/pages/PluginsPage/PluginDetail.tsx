@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import { PluginConfigureStep } from './PluginConfigureStep';
 import { PluginConnections } from './PluginConnections';
 import { PluginActivity, PluginHealthBadge } from './PluginActivity';
+import { PluginCommandSettings } from './PluginCommandSettings';
 import { PluginContributions } from './PluginContributions';
 import { PluginEnableStep } from './PluginEnableStep';
 import { PluginInstallStep } from './PluginInstallStep';
@@ -18,7 +19,7 @@ const back = (
   </Link>
 );
 
-/** One plugin: its header (with Degraded or Paused delivery health), the four steps in a fixed order, what it added, its activity and uninstall. */
+/** One plugin: its header (with Degraded or Paused delivery health), the four steps in a fixed order, what it added, its command settings, its activity and uninstall. */
 export function PluginDetail({ id }: { id: string }) {
   const detail = usePluginDetail(id);
   const { view } = detail;
@@ -63,6 +64,7 @@ export function PluginDetail({ id }: { id: string }) {
       <PluginConfigureStep view={view} busy={detail.busy} settingsError={detail.errors.settings} onSaveSettings={detail.setSettings} onSaveRepositories={detail.setRepositories} />
       <PluginEnableStep view={view} busy={detail.busy} onChange={detail.setEnabled} />
       <PluginContributions view={view} />
+      <PluginCommandSettings view={view} busy={detail.busy} onSetWrite={detail.setCommandWrite} onSetOwner={detail.setSharedOwner} />
       {view.installation && <PluginActivity activity={activity} />}
       <PluginUninstall view={view} busy={detail.busy} error={detail.errors.uninstall} onUninstall={() => void detail.uninstall()} />
     </div>

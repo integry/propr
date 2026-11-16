@@ -197,7 +197,7 @@ export async function deletePluginDispatch(trx: Knex, pluginId: string): Promise
  */
 export async function prunePluginDeliveries(database: Knex, options: { olderThanDays?: number; now?: () => number } = {}): Promise<number> {
   const cutoff = (options.now ?? Date.now)() - (options.olderThanDays ?? PLUGIN_DELIVERY_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
-  return database('plugin_deliveries').where('created_at', '<', cutoff).whereIn('status', ['succeeded', 'failed', 'skipped'])
+  const deleted = await database('plugin_deliveries').where('created_at', '<', cutoff).whereIn('status', ['succeeded', 'failed', 'skipped'])
     .whereNot(needed => {
       void needed.where('plugin_deliveries.kind', 'event')
         .whereExists(q => { void q.select(1).from('repository_events as e').whereRaw('?? = ??', ['e.seq', 'plugin_deliveries.event_seq']); })
@@ -209,6 +209,16 @@ export async function prunePluginDeliveries(database: Knex, options: { olderThan
             ]);
         });
     })
+    .delete();
+  await prunePluginCommandAcceptances(database, cutoff);
+  return deleted;
+}
+
+/** Comment acceptances of `handler` commands older than the cutoff whose delivery records are gone. */
+async function prunePluginCommandAcceptances(database: Knex, cutoff: number): Promise<void> {
+  if (!await database.schema.hasTable('plugin_command_acceptances')) return;
+  await database('plugin_command_acceptances').where('created_at', '<', cutoff)
+    .whereNotExists(q => { void q.select(1).from('plugin_deliveries as r').where('r.kind', 'command').whereRaw('?? = ??', ['r.delivery_id', 'plugin_command_acceptances.delivery_id']); })
     .delete();
 }
 

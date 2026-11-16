@@ -53,7 +53,8 @@ export interface PreparedExtensionLaunch {
   set: ResolvedExtensionSet;
 }
 export interface ExtensionLaunchContext {
-  agentAlias: string; runtime: string; repositories: string[]; allowWrite: boolean;
+  /** `writeServers`: with `allowWrite`, the only write servers the grant covers. */
+  agentAlias: string; runtime: string; repositories: string[]; allowWrite: boolean; writeServers?: string[];
   additional?: AutomationExtensions | null; autoApply?: boolean;
   /** Per-run server budget left after the run's own MCP servers. */
   maxServers?: number;
@@ -69,7 +70,7 @@ const emptyLibrary = (instanceId: string): ExtensionLibraryRevision => ({
   servers: [], skills: [], secrets: {}, skillBundles: [],
 });
 const resolutionContext = (context: ExtensionLaunchContext): ExtensionResolutionContext => ({
-  repository: context.repositories, agentAlias: context.agentAlias, runtime: context.runtime, allowWrite: context.allowWrite,
+  repository: context.repositories, agentAlias: context.agentAlias, runtime: context.runtime, allowWrite: context.allowWrite, ...(context.allowWrite && context.writeServers ? { writeServers: context.writeServers } : {}),
   additional: context.additional ?? null, autoApply: context.autoApply !== false,
   limits: { servers: context.maxServers ?? EXTENSION_LIMITS.servers, bundles: EXTENSION_LIMITS.bundles },
 });

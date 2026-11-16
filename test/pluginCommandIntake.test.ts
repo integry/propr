@@ -1,7 +1,7 @@
-import { test, mock, describe, beforeEach, after } from 'node:test';
+import { test, mock, describe, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { IssueCommentEvent } from '@octokit/webhooks-types';
-import { createWebhookIssueCommentCreatedEvent } from './testHelpers.js';
+import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent } from './testHelpers.js';
 import { getOfficialPlugin } from '../packages/plugins/src/index.js';
 
 /**
@@ -193,6 +193,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent, setUltrafixDeps } = await import('../packages/core/src/webhook/commentEventHandler.js');
 const { processIssueCommentCommand } = await import('../packages/core/src/webhook/issueCommentCommands.js');
 const { resolvePluginCommand, setPluginCommandResolver } = await import('../packages/core/src/plugins/pluginCommands.js');
+const { setPluginCommandEnqueuer } = await import('../packages/core/src/plugins/pluginCommandDeliveries.js');
 const { pullRequestJobAllowed } = await import('../src/jobs/prCommentLabelGate.js');
 const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('../src/jobs/pluginCommandTask.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
@@ -230,6 +231,9 @@ const LIBRARY = {
 };
 let installation: { enabled: boolean; repositories: string[] | null } | null = { enabled: true, repositories: ['testowner/testrepo'] };
 const fakeDatabase = ((table: string) => {
+    // No command settings: no write switch on, no shared command owner.
+    if (table === 'plugin_command_settings') return { where: () => ({ select: async () => [] }) };
+    if (table === 'plugin_shared_command_owners') return { select: async () => [] };
     assert.strictEqual(table, 'plugin_installations');
     return {
         where: (filter: { enabled: boolean }) => ({
@@ -257,6 +261,7 @@ beforeEach(() => {
 
 after(async () => {
     setPluginCommandResolver(null);
+    setPluginCommandEnqueuer(null);
     await shutdownQueue();
     await closeConnection();
 });
@@ -1540,5 +1545,86 @@ describe('plugin prompt command on an issue', () => {
             if (previous === undefined) delete process.env.GITHUB_BOT_USERNAME;
             else process.env.GITHUB_BOT_USERNAME = previous;
         }
+    });
+});
+
+// ========== Handler commands, write authorization and shared names ==========
+
+describe('plugin handler commands, write refusals and shared names at intake', () => {
+    const defaultResolver = (request: Parameters<typeof resolvePluginCommand>[0]) => resolvePluginCommand(request, { database: fakeDatabase, catalog: async () => [example], library: async () => LIBRARY as never });
+    const recorded: Array<{ delivery: Record<string, unknown>; context: Record<string, unknown> }> = [];
+    beforeEach(() => {
+        recorded.length = 0;
+        setPluginCommandEnqueuer(async (delivery, context) => {
+            // Keyed like the acceptance: the comment's resource type and its number.
+            const duplicate = recorded.some(r => r.context.commentId === context.commentId && r.context.commentType === context.commentType);
+            if (!duplicate) recorded.push({ delivery: { ...delivery }, context: { ...context } });
+            return !duplicate;
+        });
+    });
+    afterEach(() => { setPluginCommandResolver(defaultResolver); });
+
+    test('the example plugin\'s /example-status records a command delivery with the pull request context instead of queueing a job', async () => {
+        const shared = config();
+        const disposition = await processCommentEvent(prComment('/example-status please', 811), 'issue_comment', 'corr-status', shared);
+        assert.strictEqual(disposition.status, 'accepted');
+        assert.strictEqual(queued().length, 0, 'no task');
+        assert.deepStrictEqual(recorded, [{
+            delivery: { pluginId: 'example-pack', pluginName: 'Example pack', command: 'example-status', handler: 'reportCommand', argument: 'please' },
+            context: { repository: 'testowner/testrepo', number: 42, target: 'pull_request', commentType: 'issue', actor: prComment('').comment.user.login, commentId: 811 },
+        }]);
+        assert.strictEqual((await processCommentEvent(prComment('/example-status please', 811), 'issue_comment', 'corr-status-2', shared)).reason, 'duplicate_delivery');
+        assert.strictEqual(recorded.length, 1);
+    });
+
+    test('a review comment with the same number as an issue comment is its own command delivery, and its redelivery is a duplicate', async () => {
+        const shared = config();
+        assert.strictEqual((await processCommentEvent(prComment('/example-status please', 812), 'issue_comment', 'corr-status-issue', shared)).status, 'accepted');
+        // A line comment on another pull request: review comments are numbered apart from issue comments.
+        const review = () => createWebhookPRReviewCommentCreatedEvent({ comment: { id: 812, body: '/example-status line' }, pullRequest: { number: 43 } });
+        assert.strictEqual((await processCommentEvent(review(), 'pull_request_review_comment', 'corr-status-review', shared)).status, 'accepted');
+        assert.deepStrictEqual(recorded.map(r => [r.context.commentType, r.context.commentId, r.context.number, r.delivery.argument]), [['issue', 812, 42, 'please'], ['review', 812, 43, 'line']]);
+        // With the comment claim gone (a fresh Redis), the recorded acceptance still makes the redelivery a duplicate.
+        assert.strictEqual((await processCommentEvent(review(), 'pull_request_review_comment', 'corr-status-review-2', config())).reason, 'duplicate_delivery');
+        assert.strictEqual(recorded.length, 2);
+    });
+
+    test('on an issue it records the delivery once, without a label, a job or a reply', async () => {
+        const requests: unknown[] = [];
+        const enqueued: unknown[] = [];
+        const deps = {
+            redis: createMockRedis(), github: async () => ({ request: async (...args: unknown[]) => { requests.push(args); return {}; } }),
+            enqueue: async (data: unknown) => { enqueued.push(data); return data; }, hasQueuedIssueJob: async () => false, primaryLabels: async () => ['AI'], ignoreKeywords: async () => [],
+        };
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-status'), 'corr-issue-status', deps as never)).status, 'accepted');
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-status'), 'corr-issue-status-2', deps as never)).reason, 'duplicate_delivery');
+        assert.strictEqual(recorded.length, 1);
+        assert.deepStrictEqual({ ...recorded[0].context, actor: 'x' }, { repository: 'testowner/testrepo', number: 7, target: 'issue', commentType: 'issue', actor: 'x', commentId: 601 });
+        assert.deepStrictEqual([requests.length, enqueued.length], [0, 0]);
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true, reason: 'in_blacklist' }));
+        assert.strictEqual((await processIssueCommentCommand(issueComment('/example-status x'), 'corr-filtered', deps as never)).reason, 'filtered_author');
+        assert.strictEqual(recorded.length, 1, 'the author rules apply');
+    });
+
+    test('a refused write command or an unowned shared name replies with the reason and starts nothing', async () => {
+        const replies: string[] = [];
+        mockOctokit.request.mock.mockImplementation(async (route: string, parameters: { body?: string }) => {
+            if (route.startsWith('POST') && parameters.body) replies.push(parameters.body);
+            return { data: { head: { ref: 'feature-branch' }, labels: [], assignees: [] } };
+        });
+        const message = '/deploy is offered by more than one plugin here: use /deploy-one (Deploy one), /deploy-two (Deploy two) instead. An administrator can choose which plugin /deploy runs on the Plugins page. Nothing was started.';
+        setPluginCommandResolver(async () => ({ status: 'refused', pluginId: null, pluginName: null, command: 'deploy', message }));
+        const disposition = await processCommentEvent(prComment('/deploy', 821), 'issue_comment', 'corr-shared', config());
+        assert.strictEqual(disposition.reason, 'plugin_command_refused');
+        assert.ok(replies.some(body => body.endsWith(message)), JSON.stringify(replies));
+        assert.deepStrictEqual([queued().length, recorded.length], [0, 0]);
+    });
+
+    test('the resolution is asked with the comment\'s number, for the write grant to bind to', async () => {
+        const requests: Array<{ number?: number; target: string }> = [];
+        setPluginCommandResolver(async request => { requests.push({ number: request.number, target: request.target }); return { status: 'none' }; });
+        await processCommentEvent(prComment('/deploy-one-release', 831), 'issue_comment', 'corr-number', config());
+        await processIssueCommentCommand(issueComment('/deploy-one-release'), 'corr-number-issue', { redis: createMockRedis(), ignoreKeywords: async () => [] } as never);
+        assert.deepStrictEqual(requests, [{ number: 42, target: 'pull_request' }, { number: 7, target: 'issue' }]);
     });
 });

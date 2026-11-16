@@ -6,7 +6,8 @@ import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilte
 import { commentSeatConsumed } from './followupAssignmentGate.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
-import { resolveCommentPluginCommand } from '../plugins/pluginCommands.js';
+import { resolveCommentPluginCommand, type PluginCommandDelivery } from '../plugins/pluginCommands.js';
+import { enqueueCommentPluginCommand, type PluginCommandContext } from '../plugins/pluginCommandDeliveries.js';
 import {
   issueCommandIntentKey, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
   reconcileIssueCommand, releaseIssueCommandIntent, retireIssueCommandIntent, withdrawIssueCommandIntent, type StoredIssueCommandIntent,
@@ -144,6 +145,14 @@ async function defaultIgnoreKeywords(): Promise<string[]> {
 
 const IGNORED: DeliveryDisposition = { status: 'ignored', reason: 'not_pull_request_comment' };
 
+/** Record a `handler` command's delivery to its plugin's handler. */
+async function deliverHandlerCommand(delivery: PluginCommandDelivery, context: PluginCommandContext, log: ReturnType<typeof logger.withCorrelation>, seatConsumed: boolean): Promise<DeliveryDisposition> {
+  const recorded = await enqueueCommentPluginCommand(delivery, context);
+  log.info({ repository: context.repository, number: context.number, commentId: context.commentId, plugin: delivery.pluginId, command: delivery.command, recorded }, recorded
+    ? `Plugin command /${delivery.command} queued for its handler` : `Plugin command /${delivery.command} was already queued, or its plugin is no longer enabled`);
+  return recorded ? { status: 'accepted', billing: { seatConsumed } } : { status: 'ignored', reason: 'duplicate_delivery' };
+}
+
 /** Handle a created comment on an issue (not a pull request). */
 // eslint-disable-next-line complexity -- the access, refusal and start steps of one command stay in reading order
 export async function processIssueCommentCommand(payload: IssueCommentEvent, correlationId: string, deps: IssueCommandDependencies): Promise<DeliveryDisposition> {
@@ -154,12 +163,14 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   const repository = `${owner}/${repo}`;
   const { comment, issue } = payload;
   const author = comment.user.login;
-  const resolution = await resolveCommentPluginCommand({ body: comment.body, repository, target: 'issue', author });
+  const resolution = await resolveCommentPluginCommand({ body: comment.body, repository, target: 'issue', author, number: issue.number });
   if (resolution.status === 'none') return IGNORED;
 
   // The trigger access rules of comment commands.
   if (filterCommentByAuthor(author, comment.user.type ?? null, correlationId).shouldFilter) return { status: 'ignored', reason: 'filtered_author' };
   if (checkCommentIgnore(comment.body, await (deps.ignoreKeywords ?? defaultIgnoreKeywords)(), correlationId).shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
+  // A handler command starts no task: its delivery is recorded once per comment (a redelivery finds it recorded).
+  if (resolution.status === 'handler') return deliverHandlerCommand(resolution.delivery, { repository, number: issue.number, target: 'issue', commentType: 'issue', actor: author, commentId: comment.id }, log, commentSeatConsumed(author, comment.user.type ?? null));
 
   // This attempt's token: its comment claim, the issue's dedupe window and
   // its command record are released or replaced only while they still hold it.

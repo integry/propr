@@ -2,7 +2,7 @@ import type { z } from 'zod';
 import {
   PluginAcknowledgementRequest, PluginConnectionRequest, PluginDetailResponse, PluginEnabledRequest, PluginList, PluginRepositoriesRequest, PluginResponse,
   PluginSettingsRequest, PluginUninstallRequest, PluginEmptyRequest, PluginOAuthClientRequest, PluginOAuthCompleteRequest, PluginOAuthStartResponse,
-  PluginActivityResponse, PluginDeliveryResponse, PluginHealthResponse, PluginWebhooksResponse,
+  PluginActivityResponse, PluginDeliveryResponse, PluginHealthResponse, PluginWebhooksResponse, PluginCommandWriteRequest, PluginSharedCommandOwnerRequest,
 } from './schemasPlugins.js';
 import { JsonObject } from './schemas.js';
 import type { RouteDoc } from './types.js';
@@ -41,8 +41,14 @@ export const PLUGIN_ROUTE_DOCS: Record<string, RouteDoc> = {
     pathParams: oauthParams, responses: { 200: { description: 'The authorization URL to open.', schema: PluginOAuthStartResponse } },
   }),
   [`POST ${BASE}/:pluginId/connections/:connectionName/oauth/complete`]: mutation('completePluginOAuth', 'Complete a sign-in of this connection with the state and code the provider returned, in the session that started it. The extension OAuth callback completes it too.', PluginOAuthCompleteRequest, { pathParams: oauthParams }),
+  [`PUT ${BASE}/:pluginId/commands/:commandName/write`]: mutation('setPluginCommandWrite', 'Switch "Allow this command to use write access" of a `needsWrite` command on or off (off by default). With it on, a commenter with write permission on the repository can run the command, and its run alone may use the plugin\'s write servers the command names; otherwise the command is refused with a reply. Refused (409) for a command that does not use write access.', PluginCommandWriteRequest, {
+    pathParams: { ...pluginId, commandName: 'A command name from the manifest, without the slash.' },
+  }),
+  [`PUT ${BASE}/:pluginId/commands/:commandName/owner`]: mutation('setPluginSharedCommandOwner', 'Choose which plugin a shared command name (for example `/deploy`) runs when several enabled plugins offer it for a repository, or clear the choice (null): the only enabled one then runs it, and with several the command replies naming their specific commands. The owner must be installed and offer the name. Recorded on this plugin and on the previous and new owners. Refused (409) for a command that is not shared.', PluginSharedCommandOwnerRequest, {
+    pathParams: { ...pluginId, commandName: 'A shared command name from the manifest, without the slash.' },
+  }),
   [`GET ${BASE}/:pluginId/activity`]: {
-    operationId: 'getPluginActivity', summary: 'Read the plugin\'s event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records: time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days.', description, tags: ['Configuration'],
+    operationId: 'getPluginActivity', summary: 'Read the plugin\'s event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records (events, webhooks and handler commands): time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days.', description, tags: ['Configuration'],
     pathParams: pluginId, responses: { 200: { description: 'Health and delivery records, newest first.', schema: PluginActivityResponse } },
   },
   [`POST ${BASE}/:pluginId/activity/:deliveryId/retry`]: mutation('retryPluginDelivery', 'Retry a failed event delivery: it gets one more attempt, with the same delivery id, the next time the dispatcher runs (after Resume while deliveries are paused). Refused (409) for a delivery that has not failed.', PluginEmptyRequest, {

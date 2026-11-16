@@ -685,8 +685,17 @@ export { PluginWebhookReceiver, type PluginWebhookReceiverOptions, type PluginWe
 export { PLUGIN_WEBHOOK_ROUTE, pluginWebhookEndpoints, regeneratePluginWebhookKey, type PluginWebhookEndpoints } from './plugins/pluginWebhooks.js';
 export {
     applicablePluginCommands, candidatePluginCommandName, listPluginCommandHelp, pluginCommandConflicts, pluginCommandExtensions, resolveCommentPluginCommand, resolvePluginCommand, setPluginCommandResolver,
-    type PluginCommandHelp, type PluginCommandRun, type PluginCommandResolution, type PluginCommandRequest, type PluginCommandResolver,
+    pluginCommandWriteServers, sharedCommandChoiceMessage,
+    type PluginCommandDelivery, type PluginCommandHelp, type PluginCommandRun, type PluginCommandResolution, type PluginCommandRequest, type PluginCommandResolver,
+    type PluginCommandWriteGrant, type RepositoryWritePermission,
 } from './plugins/pluginCommands.js';
+export {
+    PLUGIN_COMMAND_WRITE_GRANT_TTL_MS, consumePluginCommandWriteGrant, createPluginCommandWriteGrant, readPluginCommandAccess, type PluginCommandAccess,
+} from './plugins/pluginCommandSettings.js';
+export {
+    PluginCommandRunner, enqueueCommentPluginCommand, enqueuePluginCommandDelivery, pluginCommandDeliveryId, setPluginCommandEnqueuer,
+    type PluginCommandContext, type PluginCommandEnqueuer, type PluginCommandRunnerOptions,
+} from './plugins/pluginCommandDeliveries.js';
 export { processIssueCommentCommand } from './webhook/issueCommentCommands.js';
 export { settleDispatchedIssueCommand, type IssueCommandSettlement } from './plugins/issueCommandIntent.js';
 

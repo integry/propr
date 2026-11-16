@@ -3,6 +3,8 @@
   "plugins": [
     { "id": "fixture-handlers", "development": true },
     { "id": "fixture-events", "development": true },
-    { "id": "fixture-webhooks", "development": true }
+    { "id": "fixture-webhooks", "development": true },
+    { "id": "fixture-deploy-one", "development": true },
+    { "id": "fixture-deploy-two", "development": true }
   ]
 }

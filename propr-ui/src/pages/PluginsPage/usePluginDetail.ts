@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getExtensionLibrary } from '../../api/extensionProfilesApi';
 import {
-  approvePlugin, disconnectPluginOAuth, getPlugin, installPlugin, setPluginConnection, setPluginEnabled, setPluginRepositories, setPluginSettings,
-  startPluginOAuth, uninstallPlugin, type PluginView,
+  approvePlugin, disconnectPluginOAuth, getPlugin, installPlugin, setPluginCommandWrite, setPluginConnection, setPluginEnabled, setPluginRepositories, setPluginSettings,
+  setPluginSharedCommandOwner, startPluginOAuth, uninstallPlugin, type PluginView,
 } from '../../api/pluginsApi';
 
 /** The sign-in result page posts on this channel when the API shares the page's origin. */
@@ -123,5 +123,9 @@ export function usePluginDetail(id: string) {
     setRepositories: (repositories: string[]) => run(() => setPluginRepositories(id, repositories), 'Repository limit saved.'),
     setEnabled: (enabled: boolean) => run(() => setPluginEnabled(id, enabled), enabled ? 'Enabled.' : 'Disabled. Its settings and connections are kept.'),
     uninstall: () => run(() => uninstallPlugin(id), 'Uninstalled.', 'uninstall'),
+    setCommandWrite: (command: string, allowed: boolean) => run(() => setPluginCommandWrite(id, command, allowed),
+      allowed ? `/${command} can now use write access, for commenters with write permission.` : `/${command} can no longer use write access.`),
+    setSharedOwner: (command: string, owner: string | null) => run(() => setPluginSharedCommandOwner(id, command, owner),
+      owner ? `/${command} now runs the chosen plugin when several offer it.` : `No plugin is chosen for /${command}.`),
   };
 }

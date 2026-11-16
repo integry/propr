@@ -1,4 +1,4 @@
-import { definePluginHandler, type PluginEventInput } from '@propr/shared';
+import { definePluginHandler, type PluginCommandInput, type PluginEventInput } from '@propr/shared';
 
 /**
  * Example handler: remembers the newest journal event seen per repository (a
@@ -19,4 +19,15 @@ export const recordEvent = definePluginHandler<PluginEventInput, { repository: s
     ctx.log.info(`${event.domain} ${event.type}`, { repository: event.repository, seq: event.seq });
   }
   return { repository: event.repository, cursor };
+});
+
+/**
+ * Example command handler (`/example-status`): logs who ran the command, on
+ * which issue or pull request, and how long the argument was (the argument is
+ * untrusted text, so it is not logged), and returns the context. It starts no
+ * task and needs no permission.
+ */
+export const reportCommand = definePluginHandler<PluginCommandInput, { repository: string; number: number; target: string; actor: string }>(async (input, ctx) => {
+  ctx.log.info(`/${input.command} by @${input.actor} on ${input.repository}#${input.number}`, { target: input.target, argumentLength: input.args.length, attempt: input.attempt });
+  return { repository: input.repository, number: input.number, target: input.target, actor: input.actor };
 });

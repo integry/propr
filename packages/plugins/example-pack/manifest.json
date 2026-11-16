@@ -73,6 +73,13 @@
         "prompt": "Write short release notes for the changes in this repository's current work and add them to NOTES.md. Follow the example-notes skill. Use the example-remote server's search tool if you need background on a term.",
         "skills": ["example-notes"],
         "servers": ["example-remote"]
+      },
+      {
+        "name": "example-status",
+        "description": "Log who asked for the status, and where",
+        "where": ["pull_request", "issue"],
+        "kind": "handler",
+        "handler": "reportCommand"
       }
     ]
   }
