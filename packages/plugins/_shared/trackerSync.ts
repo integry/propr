@@ -62,17 +62,18 @@ async function pullLink(ctx: PluginContext, repository: string, number: number):
 /**
  * The ticket of a pull request: linked earlier (from the task that opened it),
  * or found from its head branch, which ProPR names `<issue number>/…`. Only
- * tickets this plugin handed over are found; a link found is remembered.
+ * tickets this plugin handed over are found; a link found is remembered. The
+ * branch is read for every event that syncs back, not only the opening: an
+ * opening delivery whose lookup failed until its retries ran out wrote no
+ * link, and the merge or close would otherwise never reach the ticket.
  */
-async function ticketOfPullRequest(ctx: PluginContext, event: RepositoryEvent): Promise<TicketRecord | undefined> {
-  const pr = positive(event.prNumber);
-  if (!pr) return undefined;
-  const linked = await findTicketByPullRequest(ctx, event.repository, pr);
-  if (linked || event.type !== 'opened') return linked;
+async function ticketOfPullRequest(ctx: PluginContext, repository: string, pr: number): Promise<TicketRecord | undefined> {
+  const linked = await findTicketByPullRequest(ctx, repository, pr);
+  if (linked) return linked;
   let head = '';
-  try { head = (await ctx.propr.getPullRequest(event.repository, pr)).headRef; } catch (error) { throw lookupFailure(error, pr); }
+  try { head = (await ctx.propr.getPullRequest(repository, pr)).headRef; } catch (error) { throw lookupFailure(error, pr); }
   const issue = positive(Number(/^(\d{1,9})\//.exec(head)?.[1]));
-  const ticket = issue ? await findTicketByIssue(ctx, event.repository, issue) : undefined;
+  const ticket = issue ? await findTicketByIssue(ctx, repository, issue) : undefined;
   if (ticket) await linkPullRequest(ctx, ticket, pr);
   return ticket;
 }
@@ -128,25 +129,34 @@ const openedStep = (ctx: PluginContext, ticket: TicketRecord, repository: string
   message: async () => ({ sentence: 'ProPR opened a pull request for this ticket.', link: await pullLink(ctx, repository, pr) }),
 });
 
-/** The step of a pull request event about a ticket's pull request. */
-async function pullRequestStep(ctx: PluginContext, event: RepositoryEvent): Promise<Step | null> {
-  const ticket = await ticketOfPullRequest(ctx, event);
-  const pr = positive(event.prNumber);
-  if (!ticket || !pr) return null;
-  const link = () => pullLink(ctx, event.repository, pr);
+type PullStep = Omit<Step, 'ticket' | 'message'> & { message: (link: () => Promise<SyncMessage['link']>) => Promise<SyncMessage> };
+
+/** What a pull request event syncs back, before its ticket is looked up: null for one that never does. */
+function pullRequestStepOf(event: RepositoryEvent, pr: number): PullStep | null {
   switch (event.type) {
-    case 'opened': return openedStep(ctx, ticket, event.repository, pr);
-    case 'merged': return { event: 'pull_request.merged', ticket, marker: `merged:${pr}`, move: 'merged', message: async () => ({ sentence: 'The pull request for this ticket was merged.', link: await link() }) };
-    case 'closed': return { event: 'pull_request.closed', ticket, marker: `closed:${pr}`, move: null, message: async () => ({ sentence: 'The pull request for this ticket was closed without merging.', link: await link() }) };
+    case 'merged': return { event: 'pull_request.merged', marker: `merged:${pr}`, move: 'merged', message: async link => ({ sentence: 'The pull request for this ticket was merged.', link: await link() }) };
+    case 'closed': return { event: 'pull_request.closed', marker: `closed:${pr}`, move: null, message: async link => ({ sentence: 'The pull request for this ticket was closed without merging.', link: await link() }) };
     case 'review_scored': {
       const payload = event.payload as { goalReached?: unknown; score?: unknown; goal?: unknown };
       if (payload.goalReached !== true) return null;
       const [value, goal] = [score(payload.score), score(payload.goal)];
       const detail = value === null ? '' : `: score ${value}${goal === null ? '' : ` (goal ${goal})`}`;
-      return { event: 'review.goal_reached', ticket, marker: `goal:${pr}`, move: null, message: async () => ({ sentence: `The review of the pull request for this ticket reached its goal${detail}.`, link: await link() }) };
+      return { event: 'review.goal_reached', marker: `goal:${pr}`, move: null, message: async link => ({ sentence: `The review of the pull request for this ticket reached its goal${detail}.`, link: await link() }) };
     }
     default: return null;
   }
+}
+
+/** The step of a pull request event about a ticket's pull request. */
+async function pullRequestStep(ctx: PluginContext, event: RepositoryEvent): Promise<Step | null> {
+  const pr = positive(event.prNumber);
+  if (!pr) return null;
+  const step = event.type === 'opened' ? null : pullRequestStepOf(event, pr);
+  if (event.type !== 'opened' && !step) return null;
+  const ticket = await ticketOfPullRequest(ctx, event.repository, pr);
+  if (!ticket) return null;
+  if (!step) return openedStep(ctx, ticket, event.repository, pr);
+  return { ...step, ticket, message: () => step.message(() => pullLink(ctx, event.repository, pr)) };
 }
 
 /**

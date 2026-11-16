@@ -44,7 +44,7 @@ function settings(values: PluginSettingValues): PluginSettingValues {
 type Gql = { query: string; variables: Record<string, PluginJsonValue> };
 const gqlOf = (init: PluginHttpRequestInit) => init.json as unknown as Gql;
 
-async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; state?: Record<string, PluginJsonValue>; graphql?: (gql: Gql) => Answer | undefined; pullRequestLookup?: () => void } = {}) {
+async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; state?: Record<string, PluginJsonValue>; graphql?: (gql: Gql) => Answer | undefined; pullRequestLookup?: () => void; headRefs?: Record<number, string> } = {}) {
   const { manifest } = plugin();
   let issues = 100;
   const k = createTestPluginContext({
@@ -53,7 +53,7 @@ async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { conne
     propr: {
       createIssue: repository => { issues += 1; return { repository, number: issues, url: `https://github.com/${repository}/issues/${issues}` }; },
       getIssue: (repository, number) => ({ repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/issues/${number}`, labels: [], author: null, createdAt: '', updatedAt: '' }),
-      getPullRequest: (repository, number) => (options.pullRequestLookup?.(), { repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/pull/${number}`, labels: [], author: null, createdAt: '', updatedAt: '', draft: false, merged: false, headRef: `101/claude-fix-${number}`, baseRef: 'main', headSha: 'abc' }),
+      getPullRequest: (repository, number) => (options.pullRequestLookup?.(), { repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/pull/${number}`, labels: [], author: null, createdAt: '', updatedAt: '', draft: false, merged: false, headRef: options.headRefs?.[number] ?? `101/claude-fix-${number}`, baseRef: 'main', headSha: 'abc' }),
     },
   });
   const byId = Object.fromEntries(Object.entries(HOOKS.ids.tickets).map(([name, id]) => [id, name]));
@@ -228,7 +228,7 @@ test('each sync-back event posts its comment and state change when switched on, 
 });
 
 test('a pull request opened by ProPR is linked to its ticket from its branch, without the task event', async () => {
-  const k = await handedOver();
+  const k = await handedOver(BASE_SETTINGS, { headRefs: { 78: '202/claude-other' } });
   await k.syncBack(pull('opened', {}, 77), k.ctx);
   assert.deepEqual(k.comments().map(g => g.variables.body), ['ProPR opened a pull request for this ticket. [acme/api#77](https://github.com/acme/api/pull/77)\n\n_Posted by ProPR._']);
   await k.syncBack(pull('merged', {}, 77), k.ctx);
@@ -269,6 +269,31 @@ test('a failed pull request lookup fails the delivery to be retried, and the ret
   // A refusal is not retried.
   refusal = new PluginSdkError('permission_denied', 'getPullRequest needs the pull_requests:read permission');
   await assert.rejects(k.syncBack(pull('opened', {}, 79), k.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent);
+});
+
+test('a pull request whose opening delivery ran out of retries is still linked from its branch by the merge, the close and the review', async () => {
+  let refusal: PluginSdkError | null = new PluginSdkError('unavailable', 'ProPR could not complete getPullRequest');
+  const k = await handedOver(BASE_SETTINGS, { pullRequestLookup: () => { if (refusal) throw refusal; } });
+  const opened = pull('opened', {}, 77);
+  for (const attempt of [1, 2, 3]) await assert.rejects(k.syncBack({ ...opened, attempt }, k.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent);
+  // The opening delivery is given up; the merge arrives while ProPR is still unavailable: retried, not acknowledged as untracked.
+  const merged = pull('merged', {}, 77);
+  await assert.rejects(k.syncBack(merged, k.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent && /pull request #77/.test(error.message));
+  assert.equal(k.comments().length, 0);
+  refusal = null;
+  const result = await k.syncBack({ ...merged, attempt: 2 }, k.ctx) as { ticket: string | null; commented: boolean; moved: string | null };
+  assert.deepEqual([result.ticket, result.commented, result.moved], ['ENG-123', true, 'Done']);
+  // The close of another pull request and a review reaching its goal find the ticket from the branch too.
+  const closed = await k.syncBack(pull('closed', {}, 80), k.ctx) as { ticket: string | null };
+  const goal = await k.syncBack(pull('review_scored', { goalReached: true, score: 9, goal: 8 }, 81), k.ctx) as { ticket: string | null };
+  assert.deepEqual([closed.ticket, goal.ticket], ['ENG-123', 'ENG-123']);
+  assert.deepEqual(k.comments().map(g => String(g.variables.body).split(' [')[0]), [
+    'The pull request for this ticket was merged.', 'The pull request for this ticket was closed without merging.',
+    'The review of the pull request for this ticket reached its goal: score 9 (goal 8).',
+  ]);
+  // A review short of its goal does nothing, so it reads no pull request.
+  refusal = new PluginSdkError('unavailable', 'ProPR could not complete getPullRequest');
+  assert.equal((await k.syncBack(pull('review_scored', { goalReached: false }, 82), k.ctx) as { skipped: string }).skipped, 'not_tracked');
 });
 
 test('a state name the ticket\'s team lacks is reported in Activity and does not block the comment or later events', async () => {
