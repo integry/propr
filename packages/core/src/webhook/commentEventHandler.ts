@@ -810,7 +810,9 @@ async function processPluginCommandComment(opts: PluginCommandCommentOptions): P
         if (resolution.status === 'handler') {
             // No task: the plugin's handler gets the comment context as a delivery of kind `command`.
             const { delivery } = resolution;
-            const recorded = await enqueueCommentPluginCommand(delivery, { repository: `${owner}/${repo}`, number: prNumber, target: 'pull_request', actor: commentAuthor, commentId: comment.id });
+            // A review comment and an issue comment can share a number: the comment type is part of its identity.
+            const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
+            const recorded = await enqueueCommentPluginCommand(delivery, { repository: `${owner}/${repo}`, number: prNumber, target: 'pull_request', commentType, actor: commentAuthor, commentId: comment.id });
             correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, plugin: delivery.pluginId, command: delivery.command, recorded }, `Plugin command /${delivery.command} queued for its handler`);
             if (!recorded) return { status: 'ignored', reason: 'duplicate_delivery' };
             return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));

@@ -15,7 +15,7 @@
 // consumed and gets read servers only. Rows expire; nothing secret is stored.
 //
 // `plugin_command_acceptances` binds each accepted `handler` command comment
-// (keyed by its delivery id, `cmd-<target>-<comment id>`) to the plugin it was
+// (keyed by its delivery id, `cmd-<comment type>-<comment id>`) to the plugin it was
 // delivered to, whichever plugin that was. It is written with the delivery, so
 // a redelivered comment is a duplicate even after the shared owner of its
 // command changed or the plugin was uninstalled. Rows are pruned with the

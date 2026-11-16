@@ -1061,8 +1061,11 @@ export const deploy = definePluginHandler<PluginCommandInput>(async (input, ctx)
   `args` is untrusted text: treat it as data. The record keeps this comment
   context (so a delivery can be attempted again after a restart), never a
   credential or the handler's result.
-- **Delivery id:** `cmd-<target>-<comment id>`, the same on every attempt. A
-  redelivered comment is recorded once.
+- **Delivery id:** `cmd-issue-<comment id>` for an issue comment (on an issue
+  or a pull request's conversation), `cmd-review-<comment id>` for a pull
+  request review comment, the same on every attempt. GitHub numbers the two
+  kinds separately, so each is its own command; a redelivered comment is
+  recorded once.
 - **`ctx`:** the plugin's full handler context: `ctx.propr` with the granted
   permissions (`pull_requests.comment` or `issues.comment` to comment back),
   `ctx.http`, `ctx.state` and `ctx.log`.

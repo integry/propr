@@ -16,31 +16,56 @@ import type { PluginCommandDelivery } from './pluginCommands.js';
  * with its comment context; a runner in the daemon (`PluginCommandRunner`)
  * attempts it with the same retry schedule as events (1 min, 5 min, 30 min,
  * 2 h, then failed). Delivery is at least once: the delivery id
- * (`cmd-<target>-<comment id>`) is the same on every attempt and for every
- * redelivery of the comment, so the comment is recorded once: its acceptance
- * (`plugin_command_acceptances`) is keyed by that id alone, not by plugin, so
- * a redelivery is a duplicate even when its shared command now resolves to
- * another plugin.
+ * (`cmd-<comment type>-<comment id>`) is the same on every attempt and for
+ * every redelivery of the comment, so the comment is recorded once: its
+ * acceptance (`plugin_command_acceptances`) is keyed by that id alone, not by
+ * plugin, so a redelivery is a duplicate even when its shared command now
+ * resolves to another plugin.
+ *
+ * The id names the GitHub comment resource, not only its number: issue
+ * comments (on an issue or a pull request's conversation) and pull request
+ * review comments are numbered separately, so the same number can be two
+ * distinct comments, `cmd-issue-<id>` and `cmd-review-<id>`.
  */
 
-/** The comment context of one command delivery, stored with it. */
-export interface PluginCommandContext { repository: string; number: number; target: CommandTarget; actor: string; commentId: number }
-interface StoredCommandInput extends PluginCommandContext { command: string; args: string }
+/**
+ * The GitHub resource type of the comment: `issue` for an issue comment (on an
+ * issue, or on a pull request's conversation), `review` for a pull request
+ * review (line) comment.
+ */
+export type PluginCommandCommentType = 'issue' | 'review';
 
-export const pluginCommandDeliveryId = (target: CommandTarget, commentId: number) => `cmd-${target}-${commentId}`;
+/** The comment context of one command delivery. */
+export interface PluginCommandContext { repository: string; number: number; target: CommandTarget; commentType: PluginCommandCommentType; actor: string; commentId: number }
+/** What the delivery record keeps and the handler receives (the comment type is in the delivery id). */
+type StoredCommandInput = Omit<PluginCommandContext, 'commentType'> & { command: string; args: string };
+
+export const pluginCommandDeliveryId = (commentType: PluginCommandCommentType, commentId: number) => `cmd-${commentType}-${commentId}`;
+/**
+ * The id acceptances were keyed by before the comment type was part of it
+ * (`cmd-<target>-<comment id>`). On an issue it is the current id (only issue
+ * comments are posted there); `cmd-pull_request-<id>` is no longer written,
+ * and could be either kind of pull request comment.
+ */
+const legacyPluginCommandDeliveryId = (target: CommandTarget, commentId: number) => `cmd-${target}-${commentId}`;
 
 /**
  * Record a command delivery, pending. False when the plugin is no longer
  * enabled, or this comment was already accepted for any plugin (a redelivery).
  */
 export async function enqueuePluginCommandDelivery(database: Knex, delivery: PluginCommandDelivery, context: PluginCommandContext, now: number = Date.now()): Promise<boolean> {
-  const input: StoredCommandInput = { ...context, command: delivery.command, args: delivery.argument };
+  const { commentType, ...comment } = context;
+  const input: StoredCommandInput = { ...comment, command: delivery.command, args: delivery.argument };
   return database.transaction(async trx => {
     const installed = await trx('plugin_installations').where({ plugin_id: delivery.pluginId, enabled: true }).first('plugin_id');
     if (!installed) return false;
+    const deliveryId = pluginCommandDeliveryId(commentType, context.commentId);
+    // A pull request comment accepted under the former id, which did not say which kind of
+    // comment it was, stays a duplicate: it is never written again, so only such records match.
+    const legacyId = legacyPluginCommandDeliveryId(context.target, context.commentId);
+    if (legacyId !== deliveryId && await trx('plugin_command_acceptances').where({ delivery_id: legacyId }).first('delivery_id')) return false;
     // The comment's acceptance, whichever plugin it went to: a redelivery after the
     // shared owner changed (or the plugin was uninstalled) finds it and records nothing.
-    const deliveryId = pluginCommandDeliveryId(context.target, context.commentId);
     const accepted = await trx('plugin_command_acceptances').insert({ delivery_id: deliveryId, plugin_id: delivery.pluginId, command: delivery.command, created_at: now })
       .onConflict('delivery_id').ignore().returning('delivery_id') as unknown[];
     if (!accepted.length) return false;

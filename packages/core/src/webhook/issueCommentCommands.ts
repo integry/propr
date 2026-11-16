@@ -170,7 +170,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   if (filterCommentByAuthor(author, comment.user.type ?? null, correlationId).shouldFilter) return { status: 'ignored', reason: 'filtered_author' };
   if (checkCommentIgnore(comment.body, await (deps.ignoreKeywords ?? defaultIgnoreKeywords)(), correlationId).shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
   // A handler command starts no task: its delivery is recorded once per comment (a redelivery finds it recorded).
-  if (resolution.status === 'handler') return deliverHandlerCommand(resolution.delivery, { repository, number: issue.number, target: 'issue', actor: author, commentId: comment.id }, log, commentSeatConsumed(author, comment.user.type ?? null));
+  if (resolution.status === 'handler') return deliverHandlerCommand(resolution.delivery, { repository, number: issue.number, target: 'issue', commentType: 'issue', actor: author, commentId: comment.id }, log, commentSeatConsumed(author, comment.user.type ?? null));
 
   // This attempt's token: its comment claim, the issue's dedupe window and
   // its command record are released or replaced only while they still hold it.

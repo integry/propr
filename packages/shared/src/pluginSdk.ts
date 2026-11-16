@@ -158,8 +158,11 @@ export interface PluginWebhookInput { kind: 'webhook'; webhook: string; headers:
  * A `handler` slash command: the comment's repository (`owner/repo`), the
  * issue or pull request `number` it was posted on (`target`), the commenter's
  * login (`actor`) and the rest of the command line (`args`), which is
- * untrusted text. `deliveryId` (`cmd-<target>-<comment id>`) is the same on
- * every attempt; `attempt` counts from 1.
+ * untrusted text. `deliveryId` is the same on every attempt: `cmd-issue-<id>`
+ * for an issue comment (on an issue or a pull request's conversation),
+ * `cmd-review-<id>` for a pull request review comment; the two kinds are
+ * numbered separately, so `commentId` alone may name either. `attempt` counts
+ * from 1.
  */
 export interface PluginCommandInput {
   kind: 'command'; command: string; args: string; repository: string; number: number; target: 'issue' | 'pull_request';

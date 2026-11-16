@@ -1,7 +1,7 @@
 import { test, mock, describe, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
 import type { IssueCommentEvent } from '@octokit/webhooks-types';
-import { createWebhookIssueCommentCreatedEvent } from './testHelpers.js';
+import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent } from './testHelpers.js';
 import { getOfficialPlugin } from '../packages/plugins/src/index.js';
 
 /**
@@ -1556,7 +1556,8 @@ describe('plugin handler commands, write refusals and shared names at intake', (
     beforeEach(() => {
         recorded.length = 0;
         setPluginCommandEnqueuer(async (delivery, context) => {
-            const duplicate = recorded.some(r => r.context.commentId === context.commentId && r.context.target === context.target);
+            // Keyed like the acceptance: the comment's resource type and its number.
+            const duplicate = recorded.some(r => r.context.commentId === context.commentId && r.context.commentType === context.commentType);
             if (!duplicate) recorded.push({ delivery: { ...delivery }, context: { ...context } });
             return !duplicate;
         });
@@ -1570,10 +1571,22 @@ describe('plugin handler commands, write refusals and shared names at intake', (
         assert.strictEqual(queued().length, 0, 'no task');
         assert.deepStrictEqual(recorded, [{
             delivery: { pluginId: 'example-pack', pluginName: 'Example pack', command: 'example-status', handler: 'reportCommand', argument: 'please' },
-            context: { repository: 'testowner/testrepo', number: 42, target: 'pull_request', actor: prComment('').comment.user.login, commentId: 811 },
+            context: { repository: 'testowner/testrepo', number: 42, target: 'pull_request', commentType: 'issue', actor: prComment('').comment.user.login, commentId: 811 },
         }]);
         assert.strictEqual((await processCommentEvent(prComment('/example-status please', 811), 'issue_comment', 'corr-status-2', shared)).reason, 'duplicate_delivery');
         assert.strictEqual(recorded.length, 1);
+    });
+
+    test('a review comment with the same number as an issue comment is its own command delivery, and its redelivery is a duplicate', async () => {
+        const shared = config();
+        assert.strictEqual((await processCommentEvent(prComment('/example-status please', 812), 'issue_comment', 'corr-status-issue', shared)).status, 'accepted');
+        // A line comment on another pull request: review comments are numbered apart from issue comments.
+        const review = () => createWebhookPRReviewCommentCreatedEvent({ comment: { id: 812, body: '/example-status line' }, pullRequest: { number: 43 } });
+        assert.strictEqual((await processCommentEvent(review(), 'pull_request_review_comment', 'corr-status-review', shared)).status, 'accepted');
+        assert.deepStrictEqual(recorded.map(r => [r.context.commentType, r.context.commentId, r.context.number, r.delivery.argument]), [['issue', 812, 42, 'please'], ['review', 812, 43, 'line']]);
+        // With the comment claim gone (a fresh Redis), the recorded acceptance still makes the redelivery a duplicate.
+        assert.strictEqual((await processCommentEvent(review(), 'pull_request_review_comment', 'corr-status-review-2', config())).reason, 'duplicate_delivery');
+        assert.strictEqual(recorded.length, 2);
     });
 
     test('on an issue it records the delivery once, without a label, a job or a reply', async () => {
@@ -1586,7 +1599,7 @@ describe('plugin handler commands, write refusals and shared names at intake', (
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-status'), 'corr-issue-status', deps as never)).status, 'accepted');
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-status'), 'corr-issue-status-2', deps as never)).reason, 'duplicate_delivery');
         assert.strictEqual(recorded.length, 1);
-        assert.deepStrictEqual({ ...recorded[0].context, actor: 'x' }, { repository: 'testowner/testrepo', number: 7, target: 'issue', actor: 'x', commentId: 601 });
+        assert.deepStrictEqual({ ...recorded[0].context, actor: 'x' }, { repository: 'testowner/testrepo', number: 7, target: 'issue', commentType: 'issue', actor: 'x', commentId: 601 });
         assert.deepStrictEqual([requests.length, enqueued.length], [0, 0]);
         mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true, reason: 'in_blacklist' }));
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-status x'), 'corr-filtered', deps as never)).reason, 'filtered_author');

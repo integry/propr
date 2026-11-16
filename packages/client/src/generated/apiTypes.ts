@@ -938,7 +938,7 @@ export interface PluginConnectionRequest {
 export interface PluginDelivery {
   /** The activity record id, used by the retry route. */
   id: number;
-  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-<target>-<comment id>` for a command); the same on every attempt. */
+  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-issue-<comment id>` or `cmd-review-<comment id>` for a command run from an issue comment or a pull request review comment); the same on every attempt. */
   deliveryId: string;
   /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. `command`: one handler slash command to its handler. */
   kind: "event" | "gap" | "webhook" | "command";
