@@ -91,6 +91,8 @@ export function describePluginContributions(manifest: PluginManifestView): strin
   if (manifest.outboundHosts.length) lines.push(`Sends requests to ${manifest.outboundHosts.join(', ')}`);
   const urlSettings = (manifest.outboundHostsFromSettings ?? []).map(key => settingLabel(manifest, key));
   if (urlSettings.length) lines.push(`Sends requests to the hosts of the URLs you enter in ${urlSettings.join(', ')}, and nowhere else`);
+  const webhookHosts = [...new Set(manifest.connections.flatMap(c => c.secretUrl?.hosts ?? []))];
+  if (webhookHosts.length) lines.push(`Posts to the webhook URLs you enter under Connections, which must be on ${webhookHosts.join(', ')}`);
   return lines.length ? lines : ['Adds nothing the agent uses yet'];
 }
 

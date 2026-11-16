@@ -998,6 +998,11 @@ export interface PluginDetailResponse {
         label: string;
         help: string;
         helpUrl: string;
+        /** A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored. */
+        secretUrl?: {
+          hosts: string[];
+          pathPrefixes?: string[];
+        };
         [key: string]: unknown;
       }>;
       /** The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map). */
@@ -1276,6 +1281,11 @@ export interface PluginView {
       label: string;
       help: string;
       helpUrl: string;
+      /** A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored. */
+      secretUrl?: {
+        hosts: string[];
+        pathPrefixes?: string[];
+      };
       [key: string]: unknown;
     }>;
     /** The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map). */

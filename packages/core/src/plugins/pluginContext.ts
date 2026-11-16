@@ -2,12 +2,12 @@ import type { Knex } from 'knex';
 import {
   PLUGIN_LOG_LIMITS, PluginSdkError, defaultPluginSettings, pluginOutboundHosts, validatePluginSettings,
   type PluginContext, type PluginHttpFetch, type PluginInstallationRecord, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
-  type PluginAuditAction, type PluginLogger, type PluginManifest, type PluginPermission,
+  type PluginAuditAction, type PluginLogger, type PluginManifest, type PluginPermission, type PluginSecretUrl,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
 import type { ExtensionLookup } from '../extensions/endpointPolicy.js';
 import { redactExtensionOutput } from '../extensions/extensionOutput.js';
-import { createPluginHttp, scrubCredentialValues, type PluginHttpTransport } from './pluginHttp.js';
+import { createPluginHttp, scrubCredentialValues, secretUrlCredentials, type PluginHttpTransport } from './pluginHttp.js';
 import { githubPluginProprBackend } from './pluginProprBackend.js';
 import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallOutcome, type PluginProprCallRecord, type PluginProprCallScope } from './pluginProprClient.js';
 import { pluginStateStore, requireInstallation, type PluginInstallationAuthority, type PluginStateWriteGuard } from './pluginStateStore.js';
@@ -195,21 +195,24 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   const outboundHosts = pluginOutboundHosts(manifest, settings);
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
-    let credentialUse: 'bearer' | 'signature' = 'bearer';
+    let credentialUse: 'bearer' | 'signature' | 'url' = 'bearer';
+    let secretUrl: PluginSecretUrl | undefined;
     if (connection !== undefined) {
       const declared = manifest.connections.find(c => c.name === connection);
       if (!declared) throw new PluginSdkError('connection_unavailable', `The plugin declares no connection ${String(connection).slice(0, 48)}`);
       if (declared.type === 'oauth') throw new PluginSdkError('connection_unavailable', `Connection ${connection} is oauth; ctx.http uses token and signing_secret connections only`);
       if (declared.type === 'signing_secret') credentialUse = 'signature';
+      if (declared.type === 'token' && declared.secretUrl) { credentialUse = 'url'; secretUrl = declared.secretUrl; }
       credential = async () => {
         const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret({ database: deps.database, environment }, id, name, installation)))(pluginId, connection);
         if (!secret) throw new PluginSdkError('connection_unavailable', `Connection ${connection} is not set`);
-        credentials.push(secret);
+        // A secret URL is redacted whole and by its path and query, which carry its credential.
+        credentials.push(...(credentialUse === 'url' ? secretUrlCredentials(secret) : [secret]));
         return secret;
       };
     }
     return createPluginHttp({
-      outboundHosts, credential, credentialUse, lookup: deps.lookup, transport: deps.transport, signal,
+      outboundHosts, credential, credentialUse, secretUrl, lookup: deps.lookup, transport: deps.transport, signal,
       authorize: credential ? authorize.request : undefined,
       onDecision: ({ host, allowed, reason }) => write(allowed ? 'debug' : 'warn', allowed ? `ctx.http request to ${host}` : `ctx.http request to ${host} refused: ${reason}`, { host, ...(connection ? { connection } : {}) }),
     });

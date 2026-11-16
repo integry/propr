@@ -2,6 +2,9 @@
   "version": 1,
   "plugins": [
     { "id": "webhooks" },
+    { "id": "slack" },
+    { "id": "discord" },
+    { "id": "teams" },
     { "id": "example-pack", "development": true }
   ]
 }

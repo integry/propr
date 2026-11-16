@@ -3,8 +3,8 @@ import dns from 'node:dns/promises';
 import https from 'node:https';
 import { isIP } from 'node:net';
 import {
-  PLUGIN_HTTP_LIMITS, PluginSdkError,
-  type PluginHttpFetch, type PluginHttpRequestInit, type PluginHttpResponse, type PluginHttpSignature,
+  PLUGIN_CONNECTION_URL, PLUGIN_HTTP_LIMITS, PluginSdkError, pluginSecretUrlProblem,
+  type PluginHttpFetch, type PluginSecretUrl, type PluginHttpRequestInit, type PluginHttpResponse, type PluginHttpSignature,
 } from '@propr/shared';
 import { extensionPublicAddress, extensionReservedHostname, type ExtensionLookup } from '../extensions/endpointPolicy.js';
 
@@ -28,9 +28,14 @@ export interface PluginHttpOptions {
   /**
    * How the credential is used: `bearer` (the default) injects it as
    * `Authorization: Bearer`; `signature` (a `signing_secret` connection) signs
-   * each request as its `signature` says, and every request must have one.
+   * each request as its `signature` says, and every request must have one;
+   * `url` (a `token` connection with `secretUrl`) sends each request to the
+   * stored URL: the handler passes `PLUGIN_CONNECTION_URL`, and no header is
+   * added.
    */
-  credentialUse?: 'bearer' | 'signature';
+  credentialUse?: 'bearer' | 'signature' | 'url';
+  /** With `credentialUse: 'url'`: the hosts and paths the stored URL must be on, checked on every request. */
+  secretUrl?: PluginSecretUrl;
   /**
    * Called before every request is sent, after its lookups: throws to refuse
    * it (the installation the credential belongs to was removed or replaced).
@@ -303,6 +308,29 @@ function vetUrl(value: unknown, outboundHosts: readonly string[]): URL {
   return url;
 }
 
+/**
+ * The stored URL of a secret URL connection, checked as `vetUrl` checks a
+ * handler's URL but against the connection's hosts and paths. The handler
+ * must pass `PLUGIN_CONNECTION_URL`; refusals never repeat the stored URL.
+ */
+function vetSecretUrl(value: unknown, secret: string | null, secretUrl: PluginSecretUrl | undefined): URL {
+  if (value !== PLUGIN_CONNECTION_URL) throw new PluginSdkError('invalid_input', `A secret URL connection sends to its stored URL: pass ${PLUGIN_CONNECTION_URL} as the URL`);
+  if (!secret) throw new PluginSdkError('connection_unavailable', 'The connection\'s URL is not set');
+  const problem = secretUrl ? pluginSecretUrlProblem(secretUrl, secret) : 'The connection does not declare its hosts';
+  if (problem) throw new PluginSdkError('host_not_allowed', `The stored URL is not allowed: ${problem}`);
+  const url = new URL(secret);
+  if (extensionReservedHostname(url.hostname.toLowerCase())) throw new PluginSdkError('private_address', `${url.hostname} is a local name`);
+  return url;
+}
+
+/** Every credential spelling of a secret URL: the whole URL and its path and query, which carry the credential. */
+export function secretUrlCredentials(secret: string): string[] {
+  try {
+    const url = new URL(secret);
+    return [secret, url.href, `${url.pathname}${url.search}`].filter((value, index, all) => value.length > 1 && all.indexOf(value) === index);
+  } catch { return [secret]; }
+}
+
 /** Resolve and require every address to be public, like extension endpoints. */
 async function resolvePublic(host: string, lookup: ExtensionLookup): Promise<{ address: string; family: number }> {
   let timer: NodeJS.Timeout | undefined;
@@ -362,6 +390,10 @@ function signatureSpec(signature: unknown, headers: Record<string, string>): { h
 
 /** The signature a request gets: required with a signing connection, refused without one. */
 function requestSignature(options: Pick<PluginHttpOptions, 'credentialUse'>, init: PluginHttpRequestInit, headers: Record<string, string>): ReturnType<typeof signatureSpec> | undefined {
+  if (options.credentialUse === 'url') {
+    if (init.signature !== undefined) throw new PluginSdkError('invalid_input', 'signature needs a signing_secret connection: ctx.http(<connection>)');
+    return undefined;
+  }
   const signing = options.credentialUse === 'signature';
   if (!signing && init.signature !== undefined) throw new PluginSdkError('invalid_input', 'signature needs a signing_secret connection: ctx.http(<connection>)');
   if (signing && init.signature === undefined) throw new PluginSdkError('invalid_input', 'Requests with a signing_secret connection need a signature');
@@ -420,7 +452,7 @@ export const httpsPluginTransport: PluginHttpTransport = request => new Promise(
   outgoing.end(request.body);
 });
 
-function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spellings: readonly CredentialSpelling[]): PluginHttpResponse {
+function bufferedResponse(url: string, response: PluginHttpTransportResponse, spellings: readonly CredentialSpelling[]): PluginHttpResponse {
   const text = scrubbedBody(response.body.toString('utf8'), spellings);
   // A header whose name echoes the credential is dropped: the handler can read names as well as values.
   const headers = Object.fromEntries(Object.entries(response.headers)
@@ -428,7 +460,7 @@ function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spell
     .filter(([name]) => !nameRevealsCredential(name, spellings))
     .map(([name, value]) => [name, scrubbedHeader(value, spellings)]));
   return {
-    status: response.status, ok: response.status >= 200 && response.status < 300, url: url.toString(), headers,
+    status: response.status, ok: response.status >= 200 && response.status < 300, url, headers,
     text: async () => text,
     json: async <T>() => {
       try { return JSON.parse(text) as T; } catch { throw new PluginSdkError('http_failed', 'The response is not JSON'); }
@@ -442,18 +474,33 @@ function bufferedResponse(url: URL, response: PluginHttpTransportResponse, spell
  * the extension endpoint policy (public addresses only, the checked address
  * is the one dialed), with bounded request and response sizes and time. A
  * token is injected as `Authorization: Bearer`, a signing secret signs the
- * request; either is scrubbed from the response, so the handler never sees it.
+ * request, a secret URL is the request's URL; any is scrubbed from the
+ * response, so the handler never sees it.
  */
 export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
   const lookup = options.lookup ?? defaultLookup;
   const transport = options.transport ?? httpsPluginTransport;
   let credential: Promise<string | null> | undefined;
+  const readCredential = () => (credential ??= options.credential ? options.credential() : Promise.resolve(null));
+  /** The URL to send to: the handler's, or a secret URL connection's stored one, read first (it is the credential). */
+  const target = async (value: unknown): Promise<URL> => {
+    if (options.credentialUse !== 'url') return vetUrl(value, options.outboundHosts);
+    checkLive(options.signal);
+    return vetSecretUrl(value, await untilEnded(readCredential(), options.signal), options.secretUrl);
+  };
+  /** Every spelling of the run's credential a response could echo: a secret URL by its path and query too. */
+  const spellingsOf = (secret: string | null) => {
+    if (!secret) return [];
+    return options.credentialUse === 'url' ? uniqueSpellings(secretUrlCredentials(secret).flatMap(credentialSpellings)) : credentialSpellings(secret);
+  };
   return async (value, init = {}) => {
     // Only the hostname is ever logged: a refused URL may carry credentials or a query.
+    const secretUrl = options.credentialUse === 'url';
     let host = '(invalid URL)';
-    try { host = new URL(String(value)).hostname || host; } catch { /* stays invalid */ }
+    if (!secretUrl) try { host = new URL(String(value)).hostname || host; } catch { /* stays invalid */ }
     try {
-      const url = vetUrl(value, options.outboundHosts);
+      const url = await target(value);
+      host = url.hostname.toLowerCase();
       const method = (init.method ?? 'GET').toUpperCase();
       if (!METHODS.has(method)) throw new PluginSdkError('invalid_input', `Method ${String(init.method).slice(0, 16)} is not allowed`);
       const headers = requestHeaders(init);
@@ -462,16 +509,16 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       const { signal } = options;
       checkLive(signal);
       const { address, family } = await untilEnded(resolvePublic(host, lookup), signal);
-      credential ??= options.credential ? options.credential() : Promise.resolve(null);
-      const secret = await untilEnded(credential, signal);
-      applyCredential(headers, body, secret, spec);
+      const secret = await untilEnded(readCredential(), signal);
+      if (!secretUrl) applyCredential(headers, body, secret, spec);
       if (options.authorize) await untilEnded(options.authorize(), signal);
       // The run may have ended during the lookups: nothing is sent for an ended handler.
       checkLive(signal);
       options.onDecision?.({ host, allowed: true });
       const response = await untilEnded(transport({ url, address, family, method, headers, body, timeoutMs: PLUGIN_HTTP_LIMITS.timeoutMs, maxResponseBytes: PLUGIN_HTTP_LIMITS.responseBytes, signal }), signal);
       checkLive(signal);
-      return bufferedResponse(url, response, secret ? credentialSpellings(secret) : []);
+      // A secret URL is never handed back: the response names the placeholder the handler passed.
+      return bufferedResponse(secretUrl ? PLUGIN_CONNECTION_URL : url.toString(), response, spellingsOf(secret));
     } catch (error) {
       const refused = error instanceof PluginSdkError ? error : new PluginSdkError('http_failed', `Request to ${host} failed`);
       options.onDecision?.({ host, allowed: false, reason: refused.code });

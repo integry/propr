@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import {
-  PLUGIN_PERMISSIONS, PLUGIN_PROPR_OPERATIONS, PLUGIN_STATE_LIMITS, PluginSdkError, pluginOutboundHosts,
-  type PluginContext, type PluginHttpRequestInit, type PluginHttpResponse, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
+  PLUGIN_CONNECTION_URL, PLUGIN_PERMISSIONS, PLUGIN_PROPR_OPERATIONS, PLUGIN_STATE_LIMITS, PluginSdkError, pluginOutboundHosts, pluginSecretUrlProblem,
+  type PluginConnection, type PluginContext, type PluginHttpRequestInit, type PluginHttpResponse, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
   type PluginPermission, type PluginProprClient, type PluginProprOperation, type PluginSettingValues,
 } from '@propr/shared';
 
@@ -12,11 +12,14 @@ import {
  * context, a call outside the granted permissions or the repository limit
  * throws a `PluginSdkError`, and so does a request to a host the plugin does
  * not list or over plain HTTP. A request with a `signature` is signed as the
- * real `ctx.http` signs it, with the connection's secret from `secrets`.
+ * real `ctx.http` signs it, with the connection's secret from `secrets`. A
+ * request through a secret URL connection (`connectionDefinitions` with
+ * `secretUrl`) must name `PLUGIN_CONNECTION_URL`; it is sent to, and recorded
+ * with, the connection's URL from `secrets`, checked against its hosts.
  */
 
 export interface RecordedProprCall { operation: PluginProprOperation; args: unknown[] }
-/** A request as sent: `init.headers` include the signature header of a signed request. */
+/** A request as sent: `init.headers` include the signature header of a signed request; `url` is a secret URL connection's stored URL. */
 export interface RecordedHttpRequest { url: string; init: PluginHttpRequestInit; connection: string | null }
 export interface ScriptedHttpResponse { status?: number; headers?: Record<string, string>; body?: string; json?: PluginJsonValue }
 type Matcher = string | RegExp | ((url: string, init: PluginHttpRequestInit) => boolean);
@@ -35,8 +38,14 @@ export interface TestPluginContextOptions {
   outboundHostsFromSettings?: readonly string[];
   /** Connection names `ctx.http(connection)` accepts; any when omitted. */
   connections?: readonly string[];
-  /** Secrets of `signing_secret` connections, by name: a request with a `signature` is signed with its connection's secret. */
+  /**
+   * Secrets of `signing_secret` connections, by name: a request with a
+   * `signature` is signed with its connection's secret. For a secret URL
+   * connection, its stored URL.
+   */
   secrets?: Record<string, string>;
+  /** The manifest's connections: those with `secretUrl` send to their URL in `secrets`. */
+  connectionDefinitions?: readonly PluginConnection[];
   /** Answers to `ctx.propr` calls; an unanswered call resolves with a minimal placeholder. */
   propr?: Answers;
   /** Initial state. */
@@ -161,7 +170,22 @@ export function createTestPluginContext(options: TestPluginContextOptions = {}):
     : null;
   const http = (connection?: string) => {
     if (connection !== undefined && options.connections && !options.connections.includes(connection)) throw new PluginSdkError('connection_unavailable', `No connection ${connection}`);
+    const definition = options.connectionDefinitions?.find(c => c.name === connection);
+    const secretUrl = definition?.type === 'token' ? definition.secretUrl : undefined;
     return async (url: string, init: PluginHttpRequestInit = {}) => {
+      if (secretUrl) {
+        // Like the real context: the handler names the placeholder, the request goes to the stored URL, checked against the connection's hosts.
+        if (url !== PLUGIN_CONNECTION_URL) throw new PluginSdkError('invalid_input', `A secret URL connection sends to its stored URL: pass ${PLUGIN_CONNECTION_URL} as the URL`);
+        if (init.signature !== undefined) throw new PluginSdkError('invalid_input', 'signature needs a signing_secret connection');
+        const stored = connection !== undefined && options.secrets && Object.hasOwn(options.secrets, connection) ? options.secrets[connection] : undefined;
+        if (stored === undefined) throw new PluginSdkError('connection_unavailable', `Connection ${connection} is not set`);
+        const problem = pluginSecretUrlProblem(secretUrl, stored);
+        if (problem) throw new PluginSdkError('host_not_allowed', `The stored URL is not allowed: ${problem}`);
+        requests.push({ url: stored, init: structuredClone(init), connection: connection ?? null });
+        const script = [...scripts].reverse().find(s => matches(s.matcher, stored, init));
+        if (!script) throw new PluginSdkError('http_failed', `No scripted response for ${init.method ?? 'GET'} the URL of ${connection}`);
+        return response(PLUGIN_CONNECTION_URL, typeof script.answer === 'function' ? script.answer(stored, init) : script.answer);
+      }
       let parsed: URL;
       try { parsed = new URL(url); } catch { throw new PluginSdkError('invalid_input', 'Invalid URL'); }
       if (parsed.protocol !== 'https:') throw new PluginSdkError('insecure_url', 'Only https:// URLs are allowed');

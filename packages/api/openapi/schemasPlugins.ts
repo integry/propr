@@ -10,7 +10,11 @@ const settingValue = z.union([z.string(), z.number(), z.boolean(), z.array(z.str
 const PluginManifestSummary = z.object({
   id: z.string(), name: z.string(), description: z.string(), version: z.string(), category: z.enum(PLUGIN_CATEGORIES), homepage: z.string(),
   permissions: z.array(z.object({ name: permission, description: z.string() })),
-  connections: z.array(z.object({ type: z.enum(PLUGIN_CONNECTION_TYPES), name: z.string(), label: z.string(), help: z.string(), helpUrl: z.string() }).loose()),
+  connections: z.array(z.object({
+    type: z.enum(PLUGIN_CONNECTION_TYPES), name: z.string(), label: z.string(), help: z.string(), helpUrl: z.string(),
+    secretUrl: z.object({ hosts: z.array(z.string()), pathPrefixes: z.array(z.string()).optional() }).optional()
+      .describe('A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored.'),
+  }).loose()),
   settings: z.object({ type: z.literal('object'), properties: z.record(z.string(), z.object({}).loose()), required: z.array(z.string()) }).describe('The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map).'),
   outboundHosts: z.array(z.string()),
   outboundHostsFromSettings: z.array(z.string()).describe('Settings (https-url strings) whose URL host the plugin\'s handlers may also call, as saved.'),

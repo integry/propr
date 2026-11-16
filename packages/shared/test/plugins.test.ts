@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
-  PLUGIN_PERMISSIONS, parsePluginManifest, pluginHttpsUrlHost, pluginManifestSchema, pluginOutboundHosts, pluginSharedCommandSiblings, publicPluginManifest,
+  PLUGIN_PERMISSIONS, parsePluginManifest, pluginHttpsUrlHost, pluginSecretUrlHostAllowed, pluginSecretUrlProblem, pluginManifestSchema, pluginOutboundHosts, pluginSharedCommandSiblings, publicPluginManifest,
   type PluginManifestInput,
 } from '../src/plugins.js';
 import { validatePluginSettings } from '../src/pluginInstallations.js';
@@ -302,4 +302,27 @@ test('URL settings and multiple-choice lists: format https-url and items.enum', 
   assert.deepEqual(pluginOutboundHosts(parsed.manifest, { hook: 'https://Hooks.Example.com/in' }), ['api.acme.example.com', 'hooks.example.com']);
   assert.deepEqual(pluginOutboundHosts(parsed.manifest, { hook: 'http://plain.example.com/in' }), ['api.acme.example.com'], 'an unacceptable URL gives no host');
   assert.deepEqual(pluginOutboundHosts(parsed.manifest, { channel: 'https://not.named.example.com' }), ['api.acme.example.com'], 'only the named settings count');
+});
+
+test('a token connection may be a secret URL on declared host patterns; it is never a token for servers', () => {
+  const webhook = { type: 'token' as const, name: 'webhook', label: 'Webhook URL', help: 'Paste the webhook URL.', helpUrl: 'https://acme.example.com/hooks', secretUrl: { hosts: ['hooks.acme.example', '*.region.acme.example'], pathPrefixes: ['/services/'] } };
+  const parsed = parsePluginManifest(variant(m => { m.connections.push(webhook); }));
+  assert.ok(parsed.ok, JSON.stringify(parsed));
+  rejects(variant(m => { m.connections.push({ ...webhook, secretUrl: { hosts: ['https://hooks.acme.example'] } }); }), /Enter a hostname such as hooks\.example\.com, or \*\.example\.com/);
+  rejects(variant(m => { m.connections.push({ ...webhook, secretUrl: { hosts: ['*'] } }); }), /Enter a hostname/);
+  rejects(variant(m => { m.connections.push({ ...webhook, secretUrl: { hosts: [] } }); }), /secretUrl/);
+  rejects(variant(m => { m.connections.push({ ...webhook, type: 'signing_secret' } as never); }), /secretUrl/);
+  rejects(variant(m => { m.connections.push(webhook); m.contributes.mcpServers[2].secretEnv[0].connection = 'webhook'; }), /Variable ACME_TOKEN of server acme-local references connection webhook, whose value is a secret URL, not a token/);
+
+  const { secretUrl } = webhook;
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'https://hooks.acme.example/services/T/B/x'), null);
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'https://eu.region.acme.example:443/services/x?sig=1'), null);
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'https://region.acme.example/services/x'), 'The URL must be on one of hooks.acme.example, *.region.acme.example, not region.acme.example');
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'https://evilregion.acme.example/services/x'), 'The URL must be on one of hooks.acme.example, *.region.acme.example, not evilregion.acme.example');
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'https://hooks.acme.example/other/x'), 'The URL\'s path must start with /services/');
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'http://hooks.acme.example/services/x'), 'The URL must be an https:// URL');
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'https://user:pw@hooks.acme.example/services/x'), 'The URL must not carry a user name or password');
+  assert.equal(pluginSecretUrlProblem(secretUrl, 'not a url'), 'The URL must be an https:// URL');
+  assert.equal(pluginSecretUrlHostAllowed(['*.acme.example'], 'a.b.acme.example'), true);
+  assert.equal(pluginSecretUrlHostAllowed(['*.acme.example'], 'acme.example'), false);
 });

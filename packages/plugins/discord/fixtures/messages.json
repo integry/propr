@@ -1,0 +1,228 @@
+{
+  "pull_request.opened": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Pull request #12 opened in acme/api",
+        "color": 5533306,
+        "fields": [
+          {
+            "name": "Base branch",
+            "value": "main",
+            "inline": true
+          }
+        ],
+        "url": "https://github.com/acme/api/pull/12",
+        "description": "[Pull request #12](https://github.com/acme/api/pull/12) · [Issue #9](https://github.com/acme/api/issues/9)"
+      }
+    ]
+  },
+  "review.below_threshold": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Pull request #12 in acme/api scored 72.5, below 90",
+        "color": 16361509,
+        "fields": [
+          {
+            "name": "Score",
+            "value": "72.5",
+            "inline": true
+          },
+          {
+            "name": "Threshold",
+            "value": "90",
+            "inline": true
+          },
+          {
+            "name": "Review cycle",
+            "value": "1",
+            "inline": true
+          },
+          {
+            "name": "Reviewer model",
+            "value": "claude-opus-5-5",
+            "inline": true
+          }
+        ],
+        "url": "https://github.com/acme/api/pull/12",
+        "description": "[Pull request #12](https://github.com/acme/api/pull/12) · [Issue #9](https://github.com/acme/api/issues/9)"
+      }
+    ]
+  },
+  "review.at_or_above_threshold": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Pull request #12 in acme/api scored 94, at or above 90",
+        "color": 3046706,
+        "fields": [
+          {
+            "name": "Score",
+            "value": "94",
+            "inline": true
+          },
+          {
+            "name": "Threshold",
+            "value": "90",
+            "inline": true
+          },
+          {
+            "name": "Review cycle",
+            "value": "3",
+            "inline": true
+          },
+          {
+            "name": "Reviewer model",
+            "value": "claude-opus-5-5",
+            "inline": true
+          }
+        ],
+        "url": "https://github.com/acme/api/pull/12",
+        "description": "[Pull request #12](https://github.com/acme/api/pull/12) · [Issue #9](https://github.com/acme/api/issues/9)"
+      }
+    ]
+  },
+  "pull_request.ultrafix_ended": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Ultrafix on pull request #12 in acme/api reached its goal",
+        "color": 3046706,
+        "fields": [
+          {
+            "name": "Outcome",
+            "value": "goal\\_reached",
+            "inline": true
+          },
+          {
+            "name": "Final score",
+            "value": "92",
+            "inline": true
+          }
+        ],
+        "url": "https://github.com/acme/api/pull/12",
+        "description": "[Pull request #12](https://github.com/acme/api/pull/12) · [Issue #9](https://github.com/acme/api/issues/9)"
+      }
+    ]
+  },
+  "pull_request.merged": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Pull request #12 merged in acme/api",
+        "color": 3046706,
+        "fields": [],
+        "url": "https://github.com/acme/api/pull/12",
+        "description": "[Pull request #12](https://github.com/acme/api/pull/12) · [Issue #9](https://github.com/acme/api/issues/9)"
+      }
+    ]
+  },
+  "pull_request.closed": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Pull request #12 closed without merging in acme/api",
+        "color": 5533306,
+        "fields": [],
+        "url": "https://github.com/acme/api/pull/12",
+        "description": "[Pull request #12](https://github.com/acme/api/pull/12)"
+      }
+    ]
+  },
+  "task.failed": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "Implementation task failed in acme/api",
+        "color": 12986408,
+        "fields": [
+          {
+            "name": "Failure",
+            "value": "timed\\_out",
+            "inline": true
+          },
+          {
+            "name": "Agent",
+            "value": "claude",
+            "inline": true
+          },
+          {
+            "name": "Model",
+            "value": "claude-opus-5-5",
+            "inline": true
+          },
+          {
+            "name": "Attempts",
+            "value": "2",
+            "inline": true
+          },
+          {
+            "name": "Duration",
+            "value": "31 min",
+            "inline": true
+          }
+        ],
+        "url": "https://github.com/acme/api/issues/9",
+        "description": "[Issue #9](https://github.com/acme/api/issues/9) · [Task in ProPR](https://propr.example.com/tasks/task-42)"
+      }
+    ]
+  },
+  "epic_queue.blocked": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "An epic queue is blocked in acme/api",
+        "color": 16361509,
+        "fields": [
+          {
+            "name": "Blocked at issue",
+            "value": "31",
+            "inline": true
+          }
+        ],
+        "url": "https://github.com/acme/api/issues/31",
+        "description": "[Issue #31](https://github.com/acme/api/issues/31) · [Epic #30](https://github.com/acme/api/issues/30)"
+      }
+    ]
+  },
+  "epic_queue.completed": {
+    "username": "ProPR",
+    "allowed_mentions": {
+      "parse": []
+    },
+    "embeds": [
+      {
+        "title": "An epic queue completed in acme/api",
+        "color": 3046706,
+        "fields": [],
+        "url": "https://github.com/acme/api/issues/30",
+        "description": "[Epic #30](https://github.com/acme/api/issues/30)"
+      }
+    ]
+  }
+}

@@ -1,0 +1,289 @@
+{
+  "pull_request.opened": {
+    "text": "Pull request #12 opened in acme/api",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":information_source: *Pull request #12 opened in acme/api*"
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Base branch*\nmain"
+          }
+        ]
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/pull/12|Pull request #12>  ·  <https://github.com/acme/api/issues/9|Issue #9>"
+          }
+        ]
+      }
+    ]
+  },
+  "review.below_threshold": {
+    "text": "Pull request #12 in acme/api scored 72.5, below 90",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":warning: *Pull request #12 in acme/api scored 72.5, below 90*"
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Score*\n72.5"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Threshold*\n90"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Review cycle*\n1"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Reviewer model*\nclaude-opus-5-5"
+          }
+        ]
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/pull/12|Pull request #12>  ·  <https://github.com/acme/api/issues/9|Issue #9>"
+          }
+        ]
+      }
+    ]
+  },
+  "review.at_or_above_threshold": {
+    "text": "Pull request #12 in acme/api scored 94, at or above 90",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":white_check_mark: *Pull request #12 in acme/api scored 94, at or above 90*"
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Score*\n94"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Threshold*\n90"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Review cycle*\n3"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Reviewer model*\nclaude-opus-5-5"
+          }
+        ]
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/pull/12|Pull request #12>  ·  <https://github.com/acme/api/issues/9|Issue #9>"
+          }
+        ]
+      }
+    ]
+  },
+  "pull_request.ultrafix_ended": {
+    "text": "Ultrafix on pull request #12 in acme/api reached its goal",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":white_check_mark: *Ultrafix on pull request #12 in acme/api reached its goal*"
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Outcome*\ngoal_reached"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Final score*\n92"
+          }
+        ]
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/pull/12|Pull request #12>  ·  <https://github.com/acme/api/issues/9|Issue #9>"
+          }
+        ]
+      }
+    ]
+  },
+  "pull_request.merged": {
+    "text": "Pull request #12 merged in acme/api",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":white_check_mark: *Pull request #12 merged in acme/api*"
+        }
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/pull/12|Pull request #12>  ·  <https://github.com/acme/api/issues/9|Issue #9>"
+          }
+        ]
+      }
+    ]
+  },
+  "pull_request.closed": {
+    "text": "Pull request #12 closed without merging in acme/api",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":information_source: *Pull request #12 closed without merging in acme/api*"
+        }
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/pull/12|Pull request #12>"
+          }
+        ]
+      }
+    ]
+  },
+  "task.failed": {
+    "text": "Implementation task failed in acme/api",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":x: *Implementation task failed in acme/api*"
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Failure*\ntimed_out"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Agent*\nclaude"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Model*\nclaude-opus-5-5"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Attempts*\n2"
+          },
+          {
+            "type": "mrkdwn",
+            "text": "*Duration*\n31 min"
+          }
+        ]
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/issues/9|Issue #9>  ·  <https://propr.example.com/tasks/task-42|Task in ProPR>"
+          }
+        ]
+      }
+    ]
+  },
+  "epic_queue.blocked": {
+    "text": "An epic queue is blocked in acme/api",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":warning: *An epic queue is blocked in acme/api*"
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          {
+            "type": "mrkdwn",
+            "text": "*Blocked at issue*\n31"
+          }
+        ]
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/issues/31|Issue #31>  ·  <https://github.com/acme/api/issues/30|Epic #30>"
+          }
+        ]
+      }
+    ]
+  },
+  "epic_queue.completed": {
+    "text": "An epic queue completed in acme/api",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": ":white_check_mark: *An epic queue completed in acme/api*"
+        }
+      },
+      {
+        "type": "context",
+        "elements": [
+          {
+            "type": "mrkdwn",
+            "text": "<https://github.com/acme/api/issues/30|Epic #30>"
+          }
+        ]
+      }
+    ]
+  }
+}
