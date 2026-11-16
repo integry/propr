@@ -37,6 +37,22 @@ describe('plugin page helpers', () => {
     ]);
   });
 
+  it('names the hosts the webhook URL connections accept', () => {
+    const manifest = examplePlugin().manifest!;
+    const chat = {
+      ...manifest, outboundHosts: [],
+      connections: [
+        { type: 'token' as const, name: 'default-webhook', label: 'Default webhook URL', help: 'x', helpUrl: 'https://example.com', secretUrl: { hosts: ['discord.com', 'discordapp.com'] } },
+        { type: 'token' as const, name: 'webhook-2', label: 'Webhook URL 2', help: 'x', helpUrl: 'https://example.com', secretUrl: { hosts: ['discord.com'] } },
+      ],
+      contributes: { ...manifest.contributes, mcpServers: [], skills: [], automationTemplates: [], commands: [], subscriptions: ['pull_request.merged'] },
+    };
+    expect(describePluginContributions(chat)).toEqual([
+      'Receives ProPR events: pull_request.merged',
+      'Posts to the webhook URLs you enter under Connections, which must be on discord.com, discordapp.com',
+    ]);
+  });
+
   it('links only https URLs', () => {
     expect(safeHttpsUrl('https://example.com/docs')).toBe('https://example.com/docs');
     for (const url of ['http://example.com', 'javascript:alert(1)', 'data:text/html,x', 'not a url', undefined]) expect(safeHttpsUrl(url)).toBeNull();

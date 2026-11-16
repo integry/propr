@@ -13618,6 +13618,21 @@ components:
                             type: string
                           helpUrl:
                             type: string
+                          secretUrl:
+                            description: "A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored."
+                            type: object
+                            properties:
+                              hosts:
+                                type: array
+                                items:
+                                  type: string
+                              pathPrefixes:
+                                type: array
+                                items:
+                                  type: string
+                            required:
+                              - hosts
+                            additionalProperties: false
                         required:
                           - type
                           - name
@@ -14467,6 +14482,21 @@ components:
                         type: string
                       helpUrl:
                         type: string
+                      secretUrl:
+                        description: "A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored."
+                        type: object
+                        properties:
+                          hosts:
+                            type: array
+                            items:
+                              type: string
+                          pathPrefixes:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - hosts
+                        additionalProperties: false
                     required:
                       - type
                       - name

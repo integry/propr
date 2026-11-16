@@ -1,0 +1,186 @@
+{
+  "manifestVersion": 1,
+  "id": "discord",
+  "name": "Discord",
+  "description": "Posts short ProPR notifications (pull requests opened, merged or closed, review scores, Ultrafix outcomes, failed tasks, epic queues blocked or completed) to Discord channels as embeds through channel webhooks. Messages link to the pull request, the issue and the task; they never contain code, logs or prompt text.",
+  "version": "1.0.0",
+  "category": "messaging",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/discord",
+  "icon": "icon.svg",
+  "permissions": [
+    "events.read"
+  ],
+  "connections": [
+    {
+      "type": "token",
+      "name": "default-webhook",
+      "label": "Default webhook URL",
+      "help": "Paste a Discord channel webhook URL, such as https://discord.com/api/webhooks/…/…. Every event goes here unless Repository destinations sends its repository elsewhere. The URL is a secret: ProPR stores it sealed and never shows it again.",
+      "helpUrl": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+      "secretUrl": {
+        "hosts": [
+          "discord.com",
+          "discordapp.com",
+          "ptb.discord.com",
+          "canary.discord.com"
+        ],
+        "pathPrefixes": [
+          "/api/webhooks/",
+          "/api/v10/webhooks/"
+        ]
+      }
+    },
+    {
+      "type": "token",
+      "name": "webhook-2",
+      "label": "Webhook URL 2",
+      "help": "Optional: a Discord channel webhook URL for another Discord channel. In Repository destinations, map a repository to webhook-2 to send its events here. Stored sealed and never shown again.",
+      "helpUrl": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+      "secretUrl": {
+        "hosts": [
+          "discord.com",
+          "discordapp.com",
+          "ptb.discord.com",
+          "canary.discord.com"
+        ],
+        "pathPrefixes": [
+          "/api/webhooks/",
+          "/api/v10/webhooks/"
+        ]
+      }
+    },
+    {
+      "type": "token",
+      "name": "webhook-3",
+      "label": "Webhook URL 3",
+      "help": "Optional: a Discord channel webhook URL for another Discord channel. In Repository destinations, map a repository to webhook-3 to send its events here. Stored sealed and never shown again.",
+      "helpUrl": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+      "secretUrl": {
+        "hosts": [
+          "discord.com",
+          "discordapp.com",
+          "ptb.discord.com",
+          "canary.discord.com"
+        ],
+        "pathPrefixes": [
+          "/api/webhooks/",
+          "/api/v10/webhooks/"
+        ]
+      }
+    },
+    {
+      "type": "token",
+      "name": "webhook-4",
+      "label": "Webhook URL 4",
+      "help": "Optional: a Discord channel webhook URL for another Discord channel. In Repository destinations, map a repository to webhook-4 to send its events here. Stored sealed and never shown again.",
+      "helpUrl": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+      "secretUrl": {
+        "hosts": [
+          "discord.com",
+          "discordapp.com",
+          "ptb.discord.com",
+          "canary.discord.com"
+        ],
+        "pathPrefixes": [
+          "/api/webhooks/",
+          "/api/v10/webhooks/"
+        ]
+      }
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "pull_request.opened",
+            "review.below_threshold",
+            "review.at_or_above_threshold",
+            "pull_request.ultrafix_ended",
+            "pull_request.merged",
+            "pull_request.closed",
+            "task.failed",
+            "epic_queue.blocked",
+            "epic_queue.completed"
+          ]
+        },
+        "maxItems": 9,
+        "default": [
+          "pull_request.opened",
+          "review.below_threshold",
+          "review.at_or_above_threshold",
+          "pull_request.ultrafix_ended",
+          "pull_request.merged",
+          "pull_request.closed",
+          "task.failed",
+          "epic_queue.blocked",
+          "epic_queue.completed"
+        ],
+        "label": "Events to post",
+        "help": "The events posted to Discord. A scored review is posted when its score is below the review threshold, at or above it, or both, as selected. Unselected events are not posted."
+      },
+      "reviewThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100,
+        "label": "Review threshold",
+        "help": "Scores below this are 'below the threshold'. Leave empty to use the review's own goal (or 80 when it has none)."
+      },
+      "proprUrl": {
+        "type": "string",
+        "maxLength": 500,
+        "label": "ProPR address",
+        "help": "The address people open ProPR at, such as https://propr.example.com. Messages then link to the task in ProPR. Leave empty for messages with GitHub links only."
+      },
+      "repositoryDestinations": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "label": "Repository destinations",
+        "help": "Send a repository (owner/repo) somewhere other than the default webhook: webhook-2, webhook-3, webhook-4, or none to post nothing for it. Repositories not listed use the default webhook URL."
+      }
+    },
+    "required": []
+  },
+  "contributes": {
+    "subscriptions": [
+      {
+        "on": "pull_request.opened",
+        "handler": "notify"
+      },
+      {
+        "on": "pull_request.review_scored",
+        "handler": "notify"
+      },
+      {
+        "on": "pull_request.ultrafix_ended",
+        "handler": "notify"
+      },
+      {
+        "on": "pull_request.merged",
+        "handler": "notify"
+      },
+      {
+        "on": "pull_request.closed",
+        "handler": "notify"
+      },
+      {
+        "on": "task.failed",
+        "handler": "notify"
+      },
+      {
+        "on": "epic_queue.blocked",
+        "handler": "notify"
+      },
+      {
+        "on": "epic_queue.completed",
+        "handler": "notify"
+      }
+    ]
+  }
+}

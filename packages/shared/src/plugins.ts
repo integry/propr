@@ -114,6 +114,51 @@ export function pluginHttpsUrlHost(value: unknown): string | null {
 }
 
 const connectionBase = { name: keySchema, label: textSchema(100), help: textSchema(), helpUrl: httpsUrlSchema };
+
+/**
+ * A host pattern of a secret URL connection: a hostname, or `*.` and a
+ * hostname for any name ending in `.<hostname>` (at least one label more).
+ */
+export const PLUGIN_SECRET_URL_HOST_PATTERN = /^(?:\*\.)?(?=.*[a-z])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/**
+ * A `token` connection whose value is a secret URL (a chat service's incoming
+ * webhook URL, whose path carries the credential): the value must be an
+ * `https://` URL on one of `hosts` and, with `pathPrefixes`, under one of them.
+ * The handler never sees it: `ctx.http(<connection>)(PLUGIN_CONNECTION_URL)`
+ * sends to the stored URL, and only to it.
+ */
+export const pluginSecretUrlSchema = z.strictObject({
+  hosts: z.array(z.string().max(253).regex(PLUGIN_SECRET_URL_HOST_PATTERN, 'Enter a hostname such as hooks.example.com, or *.example.com')).min(1).max(8),
+  pathPrefixes: z.array(z.string().max(200).regex(/^\/[A-Za-z0-9_.~/-]*$/, 'Enter a path such as /services/')).min(1).max(8).optional(),
+});
+export type PluginSecretUrl = z.infer<typeof pluginSecretUrlSchema>;
+
+/** Whether `host` (lower case) matches one of the secret URL host patterns. */
+export function pluginSecretUrlHostAllowed(hosts: readonly string[], host: string): boolean {
+  const name = host.toLowerCase();
+  return hosts.some(pattern => (pattern.startsWith('*.') ? name.endsWith(pattern.slice(1)) && name.length > pattern.length - 1 : name === pattern));
+}
+
+/**
+ * Why `value` is not an acceptable value of a secret URL connection, or null:
+ * an `https://` URL to a public host name (as `pluginHttpsUrlProblem` requires)
+ * that one of the connection's host patterns takes, under one of its path
+ * prefixes. The message never repeats the value: it is a secret.
+ */
+export function pluginSecretUrlProblem(secretUrl: PluginSecretUrl, value: string): string | null {
+  const problem = pluginHttpsUrlProblem(value);
+  if (problem) return `The URL ${problem.replace(/, not .*$/, '')}`;
+  const url = new URL(value);
+  const host = url.hostname.toLowerCase();
+  const hosts = secretUrl.hosts.join(', ');
+  if (!pluginSecretUrlHostAllowed(secretUrl.hosts, host)) return `The URL must be on ${secretUrl.hosts.length === 1 ? hosts : `one of ${hosts}`}, not ${host}`;
+  const prefixes = secretUrl.pathPrefixes;
+  if (prefixes && !prefixes.some(prefix => url.pathname.startsWith(prefix))) return `The URL's path must start with ${prefixes.join(' or ')}`;
+  return null;
+}
+
+/** The URL a handler passes to `ctx.http(<secret URL connection>)`: ProPR sends to the connection's stored URL instead. */
+export const PLUGIN_CONNECTION_URL = 'propr-connection:url' as const;
 export const pluginConnectionSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('oauth'), ...connectionBase,
@@ -121,7 +166,11 @@ export const pluginConnectionSchema = z.discriminatedUnion('type', [
     registrations: z.array(z.enum(EXTENSION_OAUTH_REGISTRATIONS)).min(1).max(EXTENSION_OAUTH_REGISTRATIONS.length).default([...EXTENSION_OAUTH_REGISTRATIONS]),
     scopes: remoteMcpSchema.shape.scopes,
   }),
-  z.strictObject({ type: z.literal('token'), ...connectionBase }),
+  z.strictObject({
+    type: z.literal('token'), ...connectionBase,
+    /** The token is a secret URL (an incoming webhook URL) on these hosts: see `pluginSecretUrlSchema`. */
+    secretUrl: pluginSecretUrlSchema.optional(),
+  }),
   z.strictObject({ type: z.literal('signing_secret'), ...connectionBase }),
 ]);
 export type PluginConnection = z.infer<typeof pluginConnectionSchema>;
@@ -329,11 +378,13 @@ type Issue = (message: string, path: (string | number)[]) => void;
 
 function checkConnectionReferences(manifest: z.infer<typeof pluginManifestObjectSchema>, issue: Issue) {
   const connections = new Map(manifest.connections.map(c => [c.name, c.type]));
+  const secretUrls = new Set(manifest.connections.flatMap(c => (c.type === 'token' && c.secretUrl ? [c.name] : [])));
   const expect = (name: string | undefined, type: PluginConnectionType, path: (string | number)[], what: string) => {
     if (name === undefined) return issue(`${what} needs a ${type} connection`, path);
     const actual = connections.get(name);
     if (!actual) issue(`${what} references connection ${name}, which the plugin does not declare`, path);
     else if (actual !== type) issue(`${what} references connection ${name}, which is ${actual}, not ${type}`, path);
+    else if (secretUrls.has(name)) issue(`${what} references connection ${name}, whose value is a secret URL, not a token`, path);
   };
   manifest.contributes.mcpServers.forEach((server, index) => {
     const at = ['contributes', 'mcpServers', index];

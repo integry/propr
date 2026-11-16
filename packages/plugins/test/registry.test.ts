@@ -14,11 +14,14 @@ after(() => rm(scratch, { recursive: true, force: true }));
 
 test('the registry root is the package folder', () => {
   assert.equal(PLUGINS_ROOT, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
-  assert.deepEqual(readPluginRegistryIndex(), [{ id: 'webhooks', development: false }, { id: 'example-pack', development: true }]);
+  assert.deepEqual(readPluginRegistryIndex(), [
+    { id: 'webhooks', development: false }, { id: 'slack', development: false }, { id: 'discord', development: false }, { id: 'teams', development: false },
+    { id: 'example-pack', development: true },
+  ]);
 });
 
 test('example-pack is exported only when the development flag is set', () => {
-  assert.deepEqual(officialPlugins({ includeDevelopment: false }).map(p => p.manifest.id), ['webhooks']);
+  assert.deepEqual(officialPlugins({ includeDevelopment: false }).map(p => p.manifest.id), ['webhooks', 'slack', 'discord', 'teams']);
   assert.equal(getOfficialPlugin('example-pack', { includeDevelopment: false }), undefined);
   const example = getOfficialPlugin('example-pack', { includeDevelopment: true });
   assert.ok(example);
@@ -34,9 +37,9 @@ test('the development flag is read from the environment', () => {
   const previous = process.env[PLUGIN_DEVELOPMENT_FLAG];
   try {
     process.env[PLUGIN_DEVELOPMENT_FLAG] = '1';
-    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks', 'example-pack']);
+    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks', 'slack', 'discord', 'teams', 'example-pack']);
     delete process.env[PLUGIN_DEVELOPMENT_FLAG];
-    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks']);
+    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks', 'slack', 'discord', 'teams']);
   } finally {
     if (previous === undefined) delete process.env[PLUGIN_DEVELOPMENT_FLAG];
     else process.env[PLUGIN_DEVELOPMENT_FLAG] = previous;

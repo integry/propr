@@ -100,6 +100,9 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/plugins',
         'plugins/webhooks',
+        'plugins/slack',
+        'plugins/discord',
+        'plugins/teams',
       ],
     },
     {

@@ -51,6 +51,9 @@ own tests and as a reference for plugin authors.
 | Plugin | What it does |
 | --- | --- |
 | [Outbound webhooks](../plugins/webhooks.md) (`webhooks`) | Sends ProPR events as signed JSON to any HTTPS endpoint, with a documented, versioned envelope. |
+| [Slack](../plugins/slack.md) (`slack`) | Posts short notifications to Slack channels through incoming webhooks. |
+| [Discord](../plugins/discord.md) (`discord`) | Posts short notifications to Discord channels as embeds through channel webhooks. |
+| [Microsoft Teams](../plugins/teams.md) (`teams`) | Posts short notifications to Teams channels or chats as Adaptive Cards through a Workflows webhook. |
 
 ## The manifest
 
@@ -92,8 +95,37 @@ pointing to where the credential is obtained.
 | Type | What the administrator provides |
 | --- | --- |
 | `oauth` | A sign-in, using the same flow as [OAuth library servers](./agent-extensions.md#oauth-servers). `registrations` limits the client registration methods (`metadata_document`, `dynamic`, `preregistered`; all three by default) and `scopes` lists the scopes to request. |
-| `token` | A secret pasted by the administrator, such as an API token. |
+| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). |
 | `signing_secret` | A shared secret: it verifies inbound webhooks, and `ctx.http` signs outbound requests with it. |
+
+#### Webhook URL connections
+
+A chat service's incoming webhook URL is itself the credential: anyone who has
+it can post to the channel. A `token` connection with `secretUrl` stores such a
+URL. ProPR seals it like any other secret and never shows it again:
+
+```json
+{
+  "type": "token", "name": "default-webhook", "label": "Default webhook URL",
+  "help": "Paste a Slack incoming webhook URL.", "helpUrl": "https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks",
+  "secretUrl": { "hosts": ["hooks.slack.com"], "pathPrefixes": ["/services/"] }
+}
+```
+
+When the URL is saved, it must be an `https://` URL on one of `hosts`, under one
+of `pathPrefixes` when they are given. A host may be `*.` and a name, which
+matches any name ending in `.<name>`, such as `*.logic.azure.com`. The refusal
+names the host but never repeats the URL. Such a connection cannot authenticate
+an MCP server or a package server's variable.
+
+A handler sends to the stored URL with
+`ctx.http('default-webhook')(PLUGIN_CONNECTION_URL, { method: 'POST', json })`.
+Any other URL is refused, no `Authorization` header is added, and the URL (and
+its path and query, together or apart, and each token or signature in them) is
+redacted from the response, logs and errors. The host
+does not need to be in `outboundHosts`. The stored URL is checked against
+`hosts` and `pathPrefixes` again on every request, and its addresses must be
+public, as for any other host.
 
 ### Settings
 
@@ -731,6 +763,10 @@ Handlers never receive raw secrets. `ctx.http('my-token')` opens the stored
 `token` connection only to send the request, as `Authorization: Bearer …`, and
 removes the credential from the response before the handler reads it. Log lines,
 error messages and results pass the secret redaction.
+
+`ctx.http('my-webhook-url')` with a [webhook URL connection](#webhook-url-connections)
+sends to the stored URL: pass `PLUGIN_CONNECTION_URL` from `@propr/shared` as the
+URL. The handler never learns the URL.
 
 `ctx.http('my-signing-secret')` uses a `signing_secret` connection to sign
 instead. Every request needs a `signature`, and ProPR sets its header:

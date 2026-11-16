@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import {
-  PLUGIN_REPOSITORY_LIMIT, PLUGIN_REPOSITORY_PATTERN, PLUGIN_SECRET_PATTERN, defaultPluginSettings, missingRequiredPluginSettings, pluginIdSchema,
+  PLUGIN_REPOSITORY_LIMIT, PLUGIN_REPOSITORY_PATTERN, PLUGIN_SECRET_PATTERN, defaultPluginSettings, pluginSecretUrlProblem, missingRequiredPluginSettings, pluginIdSchema,
   requiredPluginConnections, validatePluginSettings,
   type PluginAuditAction, type PluginAuditEvent, type PluginConnectionState, type PluginDetail, type PluginManifest, type PluginView,
 } from '@propr/shared';
@@ -265,6 +265,8 @@ export class PluginStore {
       const connection = manifest.connections.find(c => c.name === name);
       if (!connection) throw new PluginError(404, 'Connection not found');
       if (connection.type === 'oauth') throw new PluginError(400, 'An OAuth connection is connected through its sign-in, not with a value');
+      const urlProblem = value !== null && connection.type === 'token' && connection.secretUrl ? pluginSecretUrlProblem(connection.secretUrl, value) : null;
+      if (urlProblem) throw new PluginError(400, `${connection.label}: ${urlProblem}`);
       if (value === null) {
         if (row.enabled && requiredPluginConnections(manifest).includes(connection.name)) throw new PluginError(409, `Connection ${connection.name} is required while the plugin is enabled; disable it first`);
         await trx('plugin_secrets').where({ plugin_id: pluginId, connection_name: connection.name }).delete();

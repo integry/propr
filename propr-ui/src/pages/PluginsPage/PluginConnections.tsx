@@ -19,7 +19,7 @@ export interface PluginConnectionActions {
 const TYPE_LABELS = { oauth: 'OAuth sign-in', token: 'API token', signing_secret: 'Signing secret' } as const;
 
 /** A write-only secret: the field never shows a stored value, only whether one is set and by whom. */
-function SecretField({ connection, actions, locked }: { connection: PluginConnectionView; actions: PluginConnectionActions; locked: boolean }) {
+function SecretField({ connection, actions, locked, webhookHosts }: { connection: PluginConnectionView; actions: PluginConnectionActions; locked: boolean; webhookHosts?: string[] }) {
   const [value, setValue] = useState('');
   const set = connection.state === 'connected';
   const fieldId = `plugin-secret-${connection.name}`;
@@ -32,6 +32,7 @@ function SecretField({ connection, actions, locked }: { connection: PluginConnec
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <label htmlFor={fieldId} className="min-w-0 flex-1 text-sm font-medium">{set ? `Replace ${connection.label}` : connection.label}
           <input id={fieldId} type="password" autoComplete="off" spellCheck={false} className={inputClass} value={value}
+            aria-describedby={webhookHosts ? `${fieldId}-hosts` : undefined} placeholder={webhookHosts ? 'https://…' : undefined}
             onChange={event => setValue(event.target.value)} />
         </label>
         <button type="button" className={primaryButtonClass} disabled={actions.busy || !value.trim()} onClick={save}>{set ? 'Replace' : 'Save'}</button>
@@ -39,26 +40,29 @@ function SecretField({ connection, actions, locked }: { connection: PluginConnec
           <button type="button" className={dangerButtonClass} disabled={actions.busy || locked} onClick={() => void actions.onSetSecret(connection.name, null)}>Clear</button>
         )}
       </div>
+      {webhookHosts && <p id={`${fieldId}-hosts`} className="text-xs text-slate-600 [overflow-wrap:anywhere]">Accepted only on {webhookHosts.join(', ')}.</p>}
       {set && locked && <p className="text-xs text-slate-600">Disable the plugin before clearing this required connection.</p>}
     </div>
   );
 }
 
-function ConnectionRow({ connection, help, helpUrl, actions, locked }: {
+function ConnectionRow({ connection, help, helpUrl, actions, locked, webhookHosts }: {
   connection: PluginConnectionView; help?: string; helpUrl: string | null; actions: PluginConnectionActions; locked: boolean;
+  /** The hosts a webhook URL connection (a token with `secretUrl`) accepts. */
+  webhookHosts?: string[];
 }) {
   return (
     <li data-testid="plugin-connection" data-state={connection.state} className="space-y-2 rounded-md border border-slate-200 p-3">
       <p className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-slate-900">{connection.label}</span>
-        <span className="text-xs text-slate-500">{TYPE_LABELS[connection.type]}{connection.required ? ' · required to enable' : ''}</span>
+        <span className="text-xs text-slate-500">{webhookHosts ? 'Webhook URL' : TYPE_LABELS[connection.type]}{connection.required ? ' · required to enable' : ''}</span>
       </p>
       {help && <p className="text-slate-600 [overflow-wrap:anywhere]">{help}</p>}
       {helpUrl && <p className="text-xs"><ExternalLink href={helpUrl}>How to get it</ExternalLink></p>}
       {connection.type === 'oauth' ? (
         <ExtensionOAuthConnection name={connection.label} status={{ state: connection.state }} redirectUri={actions.redirectUri}
           busy={actions.oauthBusy(connection.name)} onConnect={() => actions.onConnect(connection.name)} onDisconnect={() => actions.onDisconnect(connection.name)} />
-      ) : <SecretField connection={connection} actions={actions} locked={locked} />}
+      ) : <SecretField connection={connection} actions={actions} locked={locked} webhookHosts={webhookHosts} />}
     </li>
   );
 }
@@ -78,7 +82,7 @@ export function PluginConnections({ view, actions }: { view: PluginView; actions
             const manifest = declared.find(c => c.name === connection.name);
             return (
               <ConnectionRow key={connection.name} connection={connection} help={manifest?.help} helpUrl={safeHttpsUrl(manifest?.helpUrl)}
-                actions={actions} locked={Boolean(view.installation?.enabled && connection.required)} />
+                actions={actions} locked={Boolean(view.installation?.enabled && connection.required)} webhookHosts={manifest?.secretUrl?.hosts} />
             );
           })}
         </ul>
