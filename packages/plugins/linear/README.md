@@ -64,7 +64,9 @@ token, which that server accepts. The handlers never see it.
   `webhookTimestamp` more than 60 seconds from when ProPR received the request,
   any event that is not an Issue create or a label change, and reads the ticket
   back with GraphQL before deciding. One ticket creates at most one issue:
-  tickets are remembered by id in `ctx.state` (`tickets:<n>` shards).
+  tickets are remembered by id in `ctx.state` (`tickets:<n>` shards), each
+  shard changed in one atomic `ctx.state.update`, so deliveries handled at the
+  same time never lose each other's records nor both create an issue.
 - **Untrusted text**: the ticket's title and description only become the
   issue's title and body, quoted with `&`, `<`, `>` escaped and `@` mentions
   made inert. The repository comes from the mapping, the label from settings.

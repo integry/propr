@@ -115,15 +115,22 @@ function stateStore(state: Map<string, PluginJsonValue>): PluginContext['state']
     if (typeof key !== 'string' || !key.length || key.length > PLUGIN_STATE_LIMITS.keyLength || !/^[\x21-\x7e]+$/.test(key)) throw new PluginSdkError('invalid_input', 'Invalid state key');
     return key;
   };
+  const put = (key: string, value: PluginJsonValue) => {
+    check(key);
+    const bytes = Buffer.byteLength(JSON.stringify(value) ?? '');
+    if (bytes > PLUGIN_STATE_LIMITS.valueBytes) throw new PluginSdkError('state_limit', 'State value too large');
+    if (!state.has(key) && state.size + 1 > PLUGIN_STATE_LIMITS.keys) throw new PluginSdkError('state_limit', 'Too many state keys');
+    if (size(key) + bytes > PLUGIN_STATE_LIMITS.totalBytes) throw new PluginSdkError('state_limit', 'State too large');
+    state.set(key, structuredClone(value));
+  };
   return {
     get: async <T extends PluginJsonValue = PluginJsonValue>(key: string) => structuredClone(state.get(check(key))) as T | undefined,
-    async set(key, value) {
-      check(key);
-      const bytes = Buffer.byteLength(JSON.stringify(value) ?? '');
-      if (bytes > PLUGIN_STATE_LIMITS.valueBytes) throw new PluginSdkError('state_limit', 'State value too large');
-      if (!state.has(key) && state.size + 1 > PLUGIN_STATE_LIMITS.keys) throw new PluginSdkError('state_limit', 'Too many state keys');
-      if (size(key) + bytes > PLUGIN_STATE_LIMITS.totalBytes) throw new PluginSdkError('state_limit', 'State too large');
-      state.set(key, structuredClone(value));
+    async set(key, value) { put(key, value); },
+    // Read and write with no await between them: atomic, like ProPR's store.
+    async update(key, change) {
+      const next = change(structuredClone(state.get(check(key))));
+      if (next !== undefined) put(key, next);
+      return structuredClone(state.get(key));
     },
     delete: async key => state.delete(check(key)),
     keys: async (prefix = '') => [...state.keys()].filter(key => key.startsWith(prefix)).sort(),

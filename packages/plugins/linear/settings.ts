@@ -1,4 +1,4 @@
-import { PLUGIN_REPOSITORY_PATTERN, type PluginContext, type PluginSettingOption, type PluginSettingOptions, type PluginSettingOptionsInput, type PluginSettingValues } from '@propr/shared';
+import { PLUGIN_REPOSITORY_PATTERN, PLUGIN_SETTING_OPTIONS_LIMITS, type PluginContext, type PluginSettingOption, type PluginSettingOptions, type PluginSettingOptionsInput, type PluginSettingValues } from '@propr/shared';
 import { LIST_PROJECTS, LIST_STATES, LIST_TEAMS, deliveryFailure, linearGraphql } from './api.js';
 
 /** The Linear plugin's setting keys. */
@@ -47,6 +47,12 @@ export function ticketRepository(settings: PluginSettingValues, ticket: { teamId
 type Nodes<T> = { nodes?: T[] } | null | undefined;
 const nodes = <T>(value: Nodes<T>): T[] => (Array.isArray(value?.nodes) ? value!.nodes : []);
 const byLabel = (a: PluginSettingOption, b: PluginSettingOption) => a.label.localeCompare(b.label);
+const cut = (text: string, chars: number) => { const list = Array.from(text); return list.length > chars ? `${list.slice(0, chars - 1).join('').trimEnd()}…` : text; };
+/** The choices within the options contract: values Linear gave that fit, labels shortened, at most the allowed count. */
+const withinLimits = (options: PluginSettingOption[]): PluginSettingOption[] => options
+  .filter(option => typeof option.value === 'string' && option.value && option.value.length <= PLUGIN_SETTING_OPTIONS_LIMITS.valueChars && typeof option.label === 'string' && option.label.trim())
+  .map(option => ({ value: option.value, label: cut(option.label.trim(), PLUGIN_SETTING_OPTIONS_LIMITS.labelChars) }))
+  .slice(0, PLUGIN_SETTING_OPTIONS_LIMITS.options);
 
 /** Linear's teams for Repository teams: the team id saved, its name and key shown. */
 async function teamOptions(ctx: PluginContext): Promise<PluginSettingOption[]> {
@@ -82,7 +88,7 @@ const LOADERS: Record<string, (ctx: PluginContext) => Promise<PluginSettingOptio
 /** Run one options loader; Linear's refusal becomes a message the form shows. */
 export async function settingOptions(loader: keyof typeof LOADERS, input: PluginSettingOptionsInput, ctx: PluginContext): Promise<PluginSettingOptions> {
   try {
-    return { options: await LOADERS[loader](ctx) };
+    return { options: withinLimits(await LOADERS[loader](ctx)) };
   } catch (error) {
     throw deliveryFailure(error, `the list for ${input.setting}`);
   }

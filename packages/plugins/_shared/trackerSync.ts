@@ -1,5 +1,5 @@
 import type { PluginContext, PluginEventInput, PluginSettingValues, RepositoryEvent } from '@propr/shared';
-import { findTicketByIssue, findTicketByPullRequest, readProgress, writeProgress, type TicketRecord } from './trackerRecords.js';
+import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, type TicketRecord } from './trackerRecords.js';
 
 /**
  * Sync-back for issue tracker plugins (Linear, Jira): which ProPR events
@@ -75,8 +75,7 @@ async function ticketOfPullRequest(ctx: PluginContext, event: RepositoryEvent): 
 }
 
 async function linkPullRequest(ctx: PluginContext, ticket: TicketRecord, pr: number): Promise<void> {
-  const progress = await readProgress(ctx, ticket.t);
-  if (progress.p !== pr) await writeProgress(ctx, { t: ticket.t, p: pr, d: progress.d });
+  await updateProgress(ctx, ticket.t, progress => (progress.p === pr ? undefined : { t: ticket.t, p: pr, d: progress.d }));
 }
 
 interface Step { event: TrackerSyncEvent; ticket: TicketRecord; marker: string; message: () => Promise<SyncMessage>; move: TrackerMove | null }
@@ -152,6 +151,5 @@ export async function planSync(ctx: PluginContext, input: PluginEventInput, sett
 
 /** Record that an action was done, so a redelivery does not repeat it. */
 export async function markSyncDone(ctx: PluginContext, ticket: TicketRecord, marker: string): Promise<void> {
-  const progress = await readProgress(ctx, ticket.t);
-  if (!progress.d.includes(marker)) await writeProgress(ctx, { ...progress, d: [...progress.d, marker] });
+  await updateProgress(ctx, ticket.t, progress => (progress.d.includes(marker) ? undefined : { ...progress, d: [...progress.d, marker] }));
 }

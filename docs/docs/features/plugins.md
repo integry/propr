@@ -157,7 +157,9 @@ exported handler in `optionsFrom` (it cannot be combined with `enum` or
 ```
 
 The handler receives `{ kind: 'setting_options', setting }` and returns
-`{ options: [{ value, label }] }` (at most 250, each value once). It runs when
+`{ options: [{ value, label }] }` (at most 250, each value once, values up to
+500 and labels up to 200 characters; a result within these limits is never too
+large). It runs when
 the Plugins page shows the form, through
 `GET /api/instance/plugins/v1/<id>/settings/<key>/options`, which only an
 administrator may call. It runs whether the plugin is enabled or not, with
@@ -696,7 +698,8 @@ ordinary automations and are not changed.
 
 A plugin folder may contain a `handlers.ts` that exports named async functions.
 Each handler receives `(input, ctx)` and returns nothing or a small JSON result
-(at most 16 KiB). `ctx` is the only way a handler touches anything. Handlers of
+(at most 16 KiB; an `optionsFrom` handler's choices may be larger, up to the
+options limits). `ctx` is the only way a handler touches anything. Handlers of
 official plugins run in-process, but only through this interface, so the same
 plugin could later run out of process. How ProPR runs them is described in
 [Plugin runtime](../architecture/plugin-runtime.md).
@@ -721,7 +724,7 @@ export const onTaskEvent = definePluginHandler<PluginEventInput>(async (input, c
 | `ctx.repositories` | The repository limit (`owner/repo` list), or `null` for all repositories. |
 | `ctx.propr` | ProPR, limited to the granted permissions and the repository limit (below). |
 | `ctx.http(connection?)` | `fetch`-like outbound HTTPS to the manifest's `outboundHosts` (and the hosts of its `outboundHostsFromSettings` URLs) only. With a `token` connection name, its credential is injected. With a `signing_secret` connection name, ProPR signs each request. |
-| `ctx.state` | A small JSON key-value store for this installation: `get`, `set`, `delete`, `keys(prefix?)`. |
+| `ctx.state` | A small JSON key-value store for this installation: `get`, `set`, `delete`, `keys(prefix?)`, and `update(key, change)`, an atomic read-and-replace. |
 | `ctx.log` | `debug`, `info`, `warn`, `error(message, fields?)`: structured lines returned with the run, redacted. |
 | `ctx.signal` | Aborted when the handler runs past its 30 second limit. |
 
@@ -811,7 +814,11 @@ body bytes as sent, preceded by the timestamp header's value and `.` when
 
 `ctx.state` holds up to 256 keys and 256 KiB per installation, each value at
 most 16 KiB of JSON. It is meant for cursors and mappings, for example "this
-pull request maps to that chat thread". It is kept when the plugin is disabled
+pull request maps to that chat thread". Handlers can run at the same time, in
+several ProPR processes: a `get` followed by a `set` can overwrite what another
+handler wrote in between. `update(key, current => next)` reads and replaces a
+key atomically; `change` must not await, and returns `undefined` to leave the
+value unchanged. It is kept when the plugin is disabled
 and deleted when it is uninstalled.
 
 ### Imports

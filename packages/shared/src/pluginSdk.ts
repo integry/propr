@@ -165,6 +165,15 @@ export interface PluginStateStore {
   get<T extends PluginJsonValue = PluginJsonValue>(key: string): Promise<T | undefined>;
   set(key: string, value: PluginJsonValue): Promise<void>;
   delete(key: string): Promise<boolean>;
+  /**
+   * Read and replace one key atomically: no other `update` of the same
+   * installation's state, in this process or another, runs between the read
+   * and the write. `change` gets the current value (`undefined` when none)
+   * and returns the value to store, or `undefined` to leave it as it is; it
+   * must not await anything. The write has the limits of `set`. Resolves to
+   * the value stored afterwards.
+   */
+  update(key: string, change: (current: PluginJsonValue | undefined) => PluginJsonValue | undefined): Promise<PluginJsonValue | undefined>;
   /** Keys in order, optionally only those starting with `prefix`. */
   keys(prefix?: string): Promise<string[]>;
 }
@@ -238,8 +247,17 @@ export interface PluginInvokeInput { kind: 'invoke'; payload: PluginJsonValue }
 export interface PluginSettingOptionsInput { kind: 'setting_options'; setting: string }
 export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput | PluginSettingOptionsInput;
 
-/** Limits of the choices an `optionsFrom` handler returns. */
-export const PLUGIN_SETTING_OPTIONS_LIMITS = { options: 250, valueChars: 500, labelChars: 200 } as const;
+const SETTING_OPTIONS = { options: 250, valueChars: 500, labelChars: 200 } as const;
+/**
+ * Limits of the choices an `optionsFrom` handler returns. `resultBytes`: the
+ * size of its serialized result, room for every choice at its limits even
+ * with each character JSON-escaped (6 bytes), so any result within the other
+ * limits fits; a handler's other results are held to a much smaller size.
+ */
+export const PLUGIN_SETTING_OPTIONS_LIMITS = {
+  ...SETTING_OPTIONS,
+  resultBytes: SETTING_OPTIONS.options * ((SETTING_OPTIONS.valueChars + SETTING_OPTIONS.labelChars) * 6 + 32) + 16,
+} as const;
 /** One choice of a select: the value saved and the label shown. */
 export interface PluginSettingOption { [key: string]: PluginJsonValue; value: string; label: string }
 /** What an `optionsFrom` handler returns. */

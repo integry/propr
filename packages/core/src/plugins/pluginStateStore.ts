@@ -80,10 +80,14 @@ export async function requireInstallation(trx: Knex.Transaction, pluginId: strin
  * a limit throws `state_limit` and changes nothing. With a `guard`, every
  * operation (read, write, delete, list) runs in a transaction that requires
  * its installation to still exist, and is refused (a change rolled back)
- * when the handler run ends before it commits.
+ * when the handler run ends before it commits. `update` holds the
+ * installation row exclusively for its read and write (SQLite runs write
+ * transactions one at a time), so updates never interleave across processes.
  */
 export function pluginStateStore(database: Knex, pluginId: string, now: () => number = Date.now, guard?: PluginStateWriteGuard): PluginStateStore {
-  const fenced = <R>(run: (trx: Knex.Transaction) => Promise<R>): Promise<R> => database.transaction(async trx => {
+  const fenced = <R>(run: (trx: Knex.Transaction) => Promise<R>, exclusive = false): Promise<R> => database.transaction(async trx => {
+    // Taken before requireInstallation's shared lock: two updates both upgrading a shared lock would deadlock.
+    if (exclusive && !isSqlite(trx)) await trx('plugin_installations').where({ plugin_id: pluginId }).forUpdate().first('plugin_id');
     if (guard) await requireInstallation(trx, pluginId, guard);
     const result = await run(trx);
     // Cancellation observed during the operation: throwing rolls a change back.
@@ -91,6 +95,22 @@ export function pluginStateStore(database: Knex, pluginId: string, now: () => nu
     return result;
   });
   const rows = (trx: Knex.Transaction) => trx(PLUGIN_STATE_TABLE).where({ plugin_id: pluginId });
+  const checkSize = (text: string) => {
+    const bytes = Buffer.byteLength(text);
+    if (bytes > PLUGIN_STATE_LIMITS.valueBytes) throw new PluginSdkError('state_limit', `A state value is at most ${PLUGIN_STATE_LIMITS.valueBytes} bytes; this one is ${bytes}`);
+    return bytes;
+  };
+  const write = async (trx: Knex.Transaction, stateKey: string, text: string, bytes: number) => {
+    // The other keys' count and size: a rewrite of a key replaces its own bytes.
+    const totals = await rows(trx).whereNot({ state_key: stateKey })
+      .first(trx.raw('COUNT(*) AS count'), trx.raw('COALESCE(SUM(bytes), 0) AS total')) as { count: number | string; total: number | string } | undefined;
+    if (guard) requireLive(guard);
+    const count = Number(totals?.count ?? 0); const total = Number(totals?.total ?? 0);
+    if (count + 1 > PLUGIN_STATE_LIMITS.keys) throw new PluginSdkError('state_limit', `The plugin state holds at most ${PLUGIN_STATE_LIMITS.keys} keys`);
+    if (total + bytes > PLUGIN_STATE_LIMITS.totalBytes) throw new PluginSdkError('state_limit', `The plugin state holds at most ${PLUGIN_STATE_LIMITS.totalBytes} bytes`);
+    await trx(PLUGIN_STATE_TABLE).insert({ plugin_id: pluginId, state_key: stateKey, value: text, bytes, updated_at: now() })
+      .onConflict(['plugin_id', 'state_key']).merge();
+  };
   return {
     async get<T extends PluginJsonValue = PluginJsonValue>(key: string): Promise<T | undefined> {
       const stateKey = checkKey(key);
@@ -100,19 +120,21 @@ export function pluginStateStore(database: Knex, pluginId: string, now: () => nu
     async set(key: string, value: PluginJsonValue): Promise<void> {
       const stateKey = checkKey(key);
       const text = serialize(value);
-      const bytes = Buffer.byteLength(text);
-      if (bytes > PLUGIN_STATE_LIMITS.valueBytes) throw new PluginSdkError('state_limit', `A state value is at most ${PLUGIN_STATE_LIMITS.valueBytes} bytes; this one is ${bytes}`);
-      await fenced(async trx => {
-        // The other keys' count and size: a rewrite of a key replaces its own bytes.
-        const totals = await rows(trx).whereNot({ state_key: stateKey })
-          .first(trx.raw('COUNT(*) AS count'), trx.raw('COALESCE(SUM(bytes), 0) AS total')) as { count: number | string; total: number | string } | undefined;
-        if (guard) requireLive(guard);
-        const count = Number(totals?.count ?? 0); const total = Number(totals?.total ?? 0);
-        if (count + 1 > PLUGIN_STATE_LIMITS.keys) throw new PluginSdkError('state_limit', `The plugin state holds at most ${PLUGIN_STATE_LIMITS.keys} keys`);
-        if (total + bytes > PLUGIN_STATE_LIMITS.totalBytes) throw new PluginSdkError('state_limit', `The plugin state holds at most ${PLUGIN_STATE_LIMITS.totalBytes} bytes`);
-        await trx(PLUGIN_STATE_TABLE).insert({ plugin_id: pluginId, state_key: stateKey, value: text, bytes, updated_at: now() })
-          .onConflict(['plugin_id', 'state_key']).merge();
-      });
+      const bytes = checkSize(text);
+      await fenced(trx => write(trx, stateKey, text, bytes));
+    },
+    async update(key: string, change: (current: PluginJsonValue | undefined) => PluginJsonValue | undefined): Promise<PluginJsonValue | undefined> {
+      const stateKey = checkKey(key);
+      if (typeof change !== 'function') throw new PluginSdkError('invalid_input', 'update needs a function computing the new value');
+      return fenced(async trx => {
+        const row = await rows(trx).where({ state_key: stateKey }).first('value');
+        const current = row ? JSON.parse(row.value as string) as PluginJsonValue : undefined;
+        const next = change(current);
+        if (next === undefined) return current;
+        const text = serialize(next);
+        await write(trx, stateKey, text, checkSize(text));
+        return JSON.parse(text) as PluginJsonValue;
+      }, true);
     },
     async delete(key: string): Promise<boolean> {
       const stateKey = checkKey(key);

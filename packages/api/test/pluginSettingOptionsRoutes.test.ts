@@ -55,10 +55,11 @@ test('the settings options route loads choices through the plugin for administra
   const environment = { SYSTEM_TASK_SECRET: 'plugin-options-custody' };
   const store = new PluginStore(database, environment, catalog);
   const requests: PluginHttpTransportRequest[] = [];
+  let teamsAnswer: unknown = TEAMS;
   const transport: PluginHttpTransport = async request => {
     requests.push(request);
     const { query } = JSON.parse(request.body?.toString() ?? '{}') as { query: string };
-    return { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(query.includes('ProprTeams') ? TEAMS : STATES)) };
+    return { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(query.includes('ProprTeams') ? teamsAnswer : STATES)) };
   };
   const runOptions = {
     catalog, transport, handlers: (id: string) => loadPluginHandlers(id, { includeDevelopment: false }),
@@ -107,4 +108,23 @@ test('the settings options route loads choices through the plugin for administra
   assert.equal(requests.length, sent, 'no request reached Linear for a refused caller');
   for (const request of requests) assert.equal(request.headers.authorization, API_KEY);
   assert.equal(JSON.stringify(teams.body).includes(API_KEY), false);
+
+  // A workspace at the 250-choice limit: UUID values and long, multibyte labels, far over the 16 KiB of an ordinary handler result.
+  const uuid = (i: number) => `3f1c2a9e-1b2c-4d5e-8f90-${String(i).padStart(12, '0')}`;
+  const many = Array.from({ length: 250 }, (_, i) => ({ id: uuid(i), key: `T${i}`, name: `Équipe plateforme numéro ${String(i).padStart(3, '0')} — 東京 ${'ü'.repeat(120)}` }));
+  teamsAnswer = { data: { teams: { nodes: many } } };
+  const large = await get('/linear/settings/repositoryTeams/options');
+  assert.ok(Buffer.byteLength(JSON.stringify(large.body)) > 16 * 1024, 'the list is larger than an ordinary handler result');
+  assert.equal(large.status, 200, JSON.stringify(large.body).slice(0, 200));
+  const options = (large.body as { options: { value: string; label: string }[] }).options;
+  assert.equal(options.length, 250);
+  assert.deepEqual(new Set(options.map(o => o.value)), new Set(many.map(team => team.id)));
+  assert.ok(options.every(o => [...o.label].length <= 200));
+  assert.ok(schemas.PluginSettingOptionsResponse.safeParse(large.body).success);
+
+  // More than Linear's page gives, or labels over the limit, stay within the contract rather than fail the form.
+  teamsAnswer = { data: { teams: { nodes: [...many, ...many.map((team, i) => ({ ...team, id: uuid(1000 + i) }))] } } };
+  const capped = await get('/linear/settings/repositoryTeams/options');
+  assert.equal(capped.status, 200);
+  assert.equal((capped.body as { options: unknown[] }).options.length, 250);
 });

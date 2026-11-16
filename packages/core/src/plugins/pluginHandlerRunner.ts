@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import {
-  PLUGIN_HANDLER_TIMEOUT_MS, clampPluginRetryAfter,
+  PLUGIN_HANDLER_TIMEOUT_MS, PLUGIN_SETTING_OPTIONS_LIMITS, clampPluginRetryAfter,
   type PluginHandler, type PluginHandlerInput, type PluginHandlerModule, type PluginHandlerRun, type PluginJsonValue, type PluginLogLine, type PluginManifest,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
@@ -36,6 +36,8 @@ export type PluginInstallationRef = string | PluginInstallationTarget;
 const HANDLER_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 const ERROR_CHARS = 1_000;
 const RESULT_BYTES = 16 * 1024;
+/** An `optionsFrom` handler's choices may be larger: up to the setting options contract (they are shown, not stored). */
+const resultBytes = (input: PluginHandlerInput) => (input.kind === 'setting_options' ? PLUGIN_SETTING_OPTIONS_LIMITS.resultBytes : RESULT_BYTES);
 
 class HandlerTimeout extends Error { constructor(ms: number) { super(`The handler did not finish within ${Math.round(ms / 1000)} seconds`); } }
 
@@ -58,12 +60,12 @@ async function loadHandler(target: PluginInstallationTarget, name: string, sourc
 }
 
 /** The handler's return value as JSON, or an error when it is not JSON or too large. */
-function resultValue(value: unknown): PluginJsonValue | undefined {
+function resultValue(value: unknown, maxBytes: number): PluginJsonValue | undefined {
   if (value === undefined) return undefined;
   let text: string | undefined;
   try { text = JSON.stringify(value); } catch { /* not JSON */ }
   if (text === undefined) throw new Error('The handler returned a value that is not JSON');
-  if (Buffer.byteLength(text) > RESULT_BYTES) throw new Error(`The handler returned more than ${RESULT_BYTES} bytes`);
+  if (Buffer.byteLength(text) > maxBytes) throw new Error(`The handler returned more than ${maxBytes} bytes`);
   return JSON.parse(text) as PluginJsonValue;
 }
 
@@ -144,7 +146,7 @@ export async function runPluginHandler(installation: PluginInstallationRef, hand
     const built = buildPluginContext(target, options, handlerName, controller.signal);
     finalLogs = built.finalLogs; redact = built.redact; clip = built.clip;
     const value = await withTimeout(() => handler(input, built.ctx), options.timeoutMs ?? PLUGIN_HANDLER_TIMEOUT_MS, controller);
-    const result = resultValue(value);
+    const result = resultValue(value, resultBytes(input));
     return finish({ outcome: 'succeeded', timedOut: false, error: null, ...(result === undefined ? {} : { result: redact(result) }) });
   } catch (error) {
     return finish({ outcome: 'failed', timedOut: isTimeout(error), error: message(error), ...deliveryHint(error) });

@@ -21,6 +21,11 @@ import { PluginDeliveryError, type PluginContext, type PluginJsonValue } from '@
  * first. Progress records are forgotten oldest first, those of tickets whose
  * pull request merged or closed before the others: losing one at worst
  * repeats a comment.
+ *
+ * Every change of a shard is one `ctx.state.update`: deliveries handled at
+ * the same time (in other processes too) for tickets sharing a shard never
+ * overwrite each other's records, and of two deliveries for one ticket only
+ * one reserves it.
  */
 
 export type TicketStatus = 'pending' | 'created';
@@ -47,9 +52,12 @@ export const progressKey = (id: string) => `sync:${shardOf(id, PROGRESS_SHARDS)}
 const bytes = (list: unknown[]) => Buffer.byteLength(JSON.stringify(list));
 const oldestFirst = <T extends { at: number }>(list: T[]) => [...list].sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
 
-async function loadList<T extends { t: string }>(ctx: PluginContext, key: string): Promise<T[]> {
-  const value = await ctx.state.get(key);
-  return Array.isArray(value) ? (value as unknown as T[]).filter(entry => !!entry && typeof entry === 'object' && typeof entry.t === 'string') : [];
+const asList = <T extends { t: string }>(value: unknown): T[] =>
+  Array.isArray(value) ? (value as T[]).filter(entry => !!entry && typeof entry === 'object' && typeof entry.t === 'string') : [];
+const loadList = async <T extends { t: string }>(ctx: PluginContext, key: string): Promise<T[]> => asList<T>(await ctx.state.get(key));
+/** Replace a shard's list atomically: `change` gets the current list and returns the new one, or undefined for no change. */
+async function updateList<T extends { t: string }>(ctx: PluginContext, key: string, change: (list: T[]) => T[] | undefined): Promise<void> {
+  await ctx.state.update(key, current => change(asList<T>(current)) as unknown as PluginJsonValue | undefined);
 }
 
 const sameRepository = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -59,28 +67,45 @@ export async function readTicket(ctx: PluginContext, id: string): Promise<Ticket
 }
 
 /**
- * Write (or replace) a ticket record. Expired records are dropped; when the
- * shard is still full, the oldest created records go first. A pending record
- * is never dropped: with no room left the write fails the delivery, to be
- * retried later, rather than forget a ticket whose issue may exist.
+ * A shard's list with `record` written (or replaced). Expired records are
+ * dropped; when the shard is still full, the oldest created records go first.
+ * A pending record is never dropped: with no room left the write fails the
+ * delivery, to be retried later, rather than forget a ticket whose issue may
+ * exist.
  */
-export async function writeTicket(ctx: PluginContext, record: Omit<TicketRecord, 'at'>): Promise<void> {
+function withTicket(current: TicketRecord[], record: Omit<TicketRecord, 'at'>): TicketRecord[] {
   const now = Date.now();
-  const key = ticketKey(record.t);
   const next = { ...record, at: now } as TicketRecord;
-  const list = [...oldestFirst((await loadList<TicketRecord>(ctx, key)).filter(entry => entry.t !== record.t && now - Number(entry.at || 0) < TICKET_KEEP_MS)), next];
+  const list = [...oldestFirst(current.filter(entry => entry.t !== record.t && now - Number(entry.at || 0) < TICKET_KEEP_MS)), next];
   while (bytes(list) > SHARD_BYTES) {
     const oldest = list.findIndex(entry => entry !== next && entry.s === 'created');
     if (oldest < 0) throw new PluginDeliveryError('Too many tickets are being handed to ProPR at once to remember another one; it is retried later', { retryAfterMs: 10 * 60_000 });
     list.splice(oldest, 1);
   }
-  await ctx.state.set(key, list as unknown as PluginJsonValue);
+  return list;
+}
+
+/**
+ * Reserve a ticket: record it as pending unless it already has a record, in
+ * one atomic shard update. Returns the existing record (nothing written), or
+ * undefined when this call reserved it.
+ */
+export async function reserveTicket(ctx: PluginContext, record: Omit<TicketRecord, 'at' | 's' | 'n'>): Promise<TicketRecord | undefined> {
+  let seen: TicketRecord | undefined;
+  await updateList<TicketRecord>(ctx, ticketKey(record.t), list => {
+    seen = list.find(entry => entry.t === record.t);
+    return seen ? undefined : withTicket(list, { ...record, s: 'pending' });
+  });
+  return seen;
+}
+
+/** Write (or replace) a ticket record, in one atomic shard update. */
+export async function writeTicket(ctx: PluginContext, record: Omit<TicketRecord, 'at'>): Promise<void> {
+  await updateList<TicketRecord>(ctx, ticketKey(record.t), list => withTicket(list, record));
 }
 
 export async function deleteTicket(ctx: PluginContext, id: string): Promise<void> {
-  const key = ticketKey(id);
-  const list = await loadList<TicketRecord>(ctx, key);
-  if (list.some(entry => entry.t === id)) await ctx.state.set(key, list.filter(entry => entry.t !== id) as unknown as PluginJsonValue);
+  await updateList<TicketRecord>(ctx, ticketKey(id), list => (list.some(entry => entry.t === id) ? list.filter(entry => entry.t !== id) : undefined));
 }
 
 /** The created ticket whose GitHub issue is `repository#number`, if any. */
@@ -96,16 +121,23 @@ export async function readProgress(ctx: PluginContext, id: string): Promise<Prog
   return (await loadList<ProgressRecord>(ctx, progressKey(id))).find(entry => entry.t === id) ?? { t: id, d: [], at: 0 };
 }
 
-/** Write a ticket's progress; a full shard forgets finished tickets' progress first, then the oldest. */
-export async function writeProgress(ctx: PluginContext, record: Omit<ProgressRecord, 'at'>): Promise<void> {
-  const key = progressKey(record.t);
-  const next = { ...record, d: record.d.slice(-DONE_LIMIT), at: Date.now() } as ProgressRecord;
-  const list = [...oldestFirst((await loadList<ProgressRecord>(ctx, key)).filter(entry => entry.t !== record.t)), next];
-  while (bytes(list) > SHARD_BYTES && list.length > 1) {
-    const finished = list.findIndex(entry => entry !== next && entry.d.some(done => FINISHED_MARKERS.test(done)));
-    list.splice(finished >= 0 ? finished : 0, 1);
-  }
-  await ctx.state.set(key, list as unknown as PluginJsonValue);
+/**
+ * Change a ticket's progress in one atomic shard update: `change` gets the
+ * current progress and returns the new one, or undefined for no change. A
+ * full shard forgets finished tickets' progress first, then the oldest.
+ */
+export async function updateProgress(ctx: PluginContext, id: string, change: (progress: ProgressRecord) => Omit<ProgressRecord, 'at'> | undefined): Promise<void> {
+  await updateList<ProgressRecord>(ctx, progressKey(id), current => {
+    const record = change(current.find(entry => entry.t === id) ?? { t: id, d: [], at: 0 });
+    if (!record) return undefined;
+    const next = { ...record, t: id, d: record.d.slice(-DONE_LIMIT), at: Date.now() } as ProgressRecord;
+    const list = [...oldestFirst(current.filter(entry => entry.t !== id)), next];
+    while (bytes(list) > SHARD_BYTES && list.length > 1) {
+      const finished = list.findIndex(entry => entry !== next && entry.d.some(done => FINISHED_MARKERS.test(done)));
+      list.splice(finished >= 0 ? finished : 0, 1);
+    }
+    return list;
+  });
 }
 
 /** The ticket whose linked pull request is `repository#number`, if any. */
