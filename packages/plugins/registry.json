@@ -5,6 +5,7 @@
     { "id": "slack" },
     { "id": "discord" },
     { "id": "teams" },
+    { "id": "linear" },
     { "id": "example-pack", "development": true }
   ]
 }

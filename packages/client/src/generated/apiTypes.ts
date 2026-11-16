@@ -1003,9 +1003,11 @@ export interface PluginDetailResponse {
           hosts: string[];
           pathPrefixes?: string[];
         };
+        /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default) or `Authorization: <token>` (raw). */
+        authorization?: "bearer" | "raw";
         [key: string]: unknown;
       }>;
-      /** The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map). */
+      /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
       settings: {
         type: "object";
         properties: {
@@ -1240,6 +1242,17 @@ export interface PluginResponse {
   plugin: PluginView;
 }
 
+/** The choices of a plugin setting, loaded from the service by the plugin's optionsFrom handler. */
+export interface PluginSettingOptionsResponse {
+  /** At most 250 choices. */
+  options: {
+    /** The value saved. */
+    value: string;
+    /** The label shown. */
+    label: string;
+  }[];
+}
+
 export interface PluginSettingsRequest {
   /** The complete settings; validated against the manifest's settings schema. Null values are removed. */
   settings: {
@@ -1286,9 +1299,11 @@ export interface PluginView {
         hosts: string[];
         pathPrefixes?: string[];
       };
+      /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default) or `Authorization: <token>` (raw). */
+      authorization?: "bearer" | "raw";
       [key: string]: unknown;
     }>;
-    /** The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map). */
+    /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
     settings: {
       type: "object";
       properties: {

@@ -182,7 +182,8 @@ export interface PluginContext {
   propr: PluginProprClient;
   /**
    * Outbound HTTP. With a `token` connection name, its credential is injected
-   * as `Authorization: Bearer`; with a `signing_secret` connection name, each
+   * as `Authorization: Bearer` (or as the whole `Authorization` value, for a
+   * connection with `authorization: raw`); with a `signing_secret` connection name, each
    * request must have a `signature` and ProPR signs it.
    */
   http(connection?: string): PluginHttpFetch;
@@ -226,7 +227,23 @@ export interface PluginCommandInput {
   actor: string; commentId: number; deliveryId: string; attempt: number;
 }
 export interface PluginInvokeInput { kind: 'invoke'; payload: PluginJsonValue }
-export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput;
+/**
+ * The configure form asks for a setting's choices: `setting` is the key of a
+ * setting whose `optionsFrom` names this handler. It runs whether or not the
+ * plugin is enabled, with `ctx.http` and `ctx.state` but no `ctx.propr`
+ * permission, and returns `PluginSettingOptions`. A failure (the connection is
+ * not set yet) is shown next to the field, so its message should say what to
+ * do. Only an administrator can ask.
+ */
+export interface PluginSettingOptionsInput { kind: 'setting_options'; setting: string }
+export type PluginHandlerInput = PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput | PluginSettingOptionsInput;
+
+/** Limits of the choices an `optionsFrom` handler returns. */
+export const PLUGIN_SETTING_OPTIONS_LIMITS = { options: 250, valueChars: 500, labelChars: 200 } as const;
+/** One choice of a select: the value saved and the label shown. */
+export interface PluginSettingOption { [key: string]: PluginJsonValue; value: string; label: string }
+/** What an `optionsFrom` handler returns. */
+export interface PluginSettingOptions { [key: string]: PluginJsonValue; options: PluginSettingOption[] }
 
 /** A handler returns nothing or a small JSON result. */
 export type PluginHandlerResultValue = PluginJsonValue | void;
@@ -273,4 +290,27 @@ export interface PluginHandlerRun {
   retryAfterMs?: number;
   /** The handler failed with a permanent `PluginDeliveryError`: not retried. */
   permanent?: boolean;
+}
+
+/**
+ * The choices an `optionsFrom` handler returned, checked: at most
+ * `PLUGIN_SETTING_OPTIONS_LIMITS.options`, each with a non-empty string value
+ * and label within their limits, each value once (the first wins). Null when
+ * the result is not `{ options: [...] }`.
+ */
+export function parsePluginSettingOptions(value: unknown): PluginSettingOption[] | null {
+  const options = value && typeof value === 'object' && !Array.isArray(value) ? (value as { options?: unknown }).options : undefined;
+  if (!Array.isArray(options)) return null;
+  const seen = new Set<string>();
+  const parsed: PluginSettingOption[] = [];
+  for (const option of options) {
+    const { value: optionValue, label } = (option && typeof option === 'object' ? option : {}) as { value?: unknown; label?: unknown };
+    if (typeof optionValue !== 'string' || !optionValue || optionValue.length > PLUGIN_SETTING_OPTIONS_LIMITS.valueChars) return null;
+    if (typeof label !== 'string' || !label.trim()) return null;
+    if (seen.has(optionValue)) continue;
+    seen.add(optionValue);
+    parsed.push({ value: optionValue, label: label.trim().slice(0, PLUGIN_SETTING_OPTIONS_LIMITS.labelChars) });
+    if (parsed.length === PLUGIN_SETTING_OPTIONS_LIMITS.options) break;
+  }
+  return parsed;
 }

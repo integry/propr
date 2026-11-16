@@ -13,6 +13,7 @@ export function createPluginRouteEntries(plugins: ReturnType<typeof createPlugin
     ['get', `${base}/:pluginId`, requireManageSettings, plugins.get],
     ['post', `${base}/:pluginId/install`, requireManageSettings, plugins.install],
     ['put', `${base}/:pluginId/settings`, requireManageSettings, plugins.updateSettings],
+    ['get', `${base}/:pluginId/settings/:settingKey/options`, requireManageSettings, plugins.settingOptions],
     ['put', `${base}/:pluginId/repositories`, requireManageSettings, plugins.setRepositories],
     ['put', `${base}/:pluginId/connections/:connectionName`, requireManageSettings, plugins.setConnection],
     ['put', `${base}/:pluginId/enabled`, requireManageSettings, plugins.setEnabled],

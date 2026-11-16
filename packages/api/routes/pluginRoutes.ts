@@ -1,6 +1,8 @@
 import type { Request, RequestHandler } from 'express';
 import { db } from '@propr/core';
 import { PluginError, PluginStore } from '../../core/src/plugins/pluginStore.js';
+import { loadPluginSettingOptions } from '../../core/src/plugins/pluginSettingOptions.js';
+import type { RunPluginHandlerOptions } from '../../core/src/plugins/pluginHandlerRunner.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
 import { extensionOAuthUrls } from './extensionOAuthRoutes.js';
@@ -37,7 +39,7 @@ export function pluginRouteHandler(store: PluginStore) {
  * signed in through the extension OAuth module: the provider redirects to the
  * extension callback, which completes the sign-in as `oauth/complete` does.
  */
-export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env) {
+export function createPluginRoutes(store = new PluginStore(db), environment: NodeJS.ProcessEnv = process.env, database = db, runOptions: Omit<RunPluginHandlerOptions, 'database'> = {}) {
   const handle = pluginRouteHandler(store);
   const body = (req: Request, keys: string[], required: string[] = keys): Record<string, unknown> => {
     const value = req.body as unknown;
@@ -53,6 +55,8 @@ export function createPluginRoutes(store = new PluginStore(db), environment: Nod
     /** `acknowledgements` names the package servers whose secret variables the administrator confirmed are readable in the task container. */
     install: handle(async (req, actor) => ({ plugin: await store.install(actor, id(req), body(req, ['acknowledgements'], []).acknowledgements) })),
     updateSettings: handle(async (req, actor) => ({ plugin: await store.updateSettings(actor, id(req), body(req, ['settings']).settings) })),
+    /** The choices of a setting with `optionsFrom`, from its handler (through `ctx.http`); refused (409) with the handler's message when it fails, for example before the service is connected. */
+    settingOptions: handle(async req => loadPluginSettingOptions(database, id(req), String(req.params.settingKey), { environment, ...runOptions })),
     setRepositories: handle(async (req, actor) => ({ plugin: await store.setRepositories(actor, id(req), body(req, ['repositories']).repositories) })),
     /** `value` sets the secret; `null` clears it. */
     setConnection: handle(async (req, actor) => ({ plugin: await store.setConnection(actor, id(req), String(req.params.connectionName), body(req, ['value']).value) })),

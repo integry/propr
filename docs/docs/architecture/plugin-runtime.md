@@ -74,6 +74,17 @@ it with `PluginWebhookInput`. A later issue calls it from commands
 (`PluginCommandInput`).
 `PluginInvokeInput` carries a JSON payload for direct calls and tests.
 
+`loadPluginSettingOptions` (`packages/core/src/plugins/pluginSettingOptions.ts`)
+calls it with `PluginSettingOptionsInput` (`{ kind: 'setting_options', setting }`)
+for a setting whose manifest entry names an `optionsFrom` handler, when the
+settings options route (`GET /api/instance/plugins/v1/:pluginId/settings/:settingKey/options`,
+administrators only) asks. It passes `allowDisabled`, so the handler runs, and its
+`ctx.http` may use the installation's connections, while the plugin is installed
+but not enabled; the installation's granted permissions are replaced with none,
+so every `ctx.propr` call is refused. Nothing is recorded as a delivery. A failed
+run is a 409 carrying the redacted error; a result that is not
+`{ options: [{ value, label }] }` is a 502.
+
 ## Event dispatcher
 
 `PluginDispatcher` delivers [journal events](./repository-event-journal.md) to
@@ -487,6 +498,11 @@ A new or changed URL's host must also resolve to public addresses only, which
 the plugin store checks before the settings are written. On each request
 `ctx.http` allows exactly those hosts, from the settings the run started with,
 and checks their addresses again.
+
+**Raw tokens.** A `token` connection declared with `"authorization": "raw"` is
+sent as the whole `Authorization` value instead of `Bearer <token>` (Linear's
+personal API keys need this). It is redacted from responses, logs and errors in
+the same spellings as a Bearer token.
 
 **Secret URLs.** A `token` connection with `secretUrl` holds a URL, such as a
 chat service's incoming webhook URL (`pluginSecretUrlSchema` in

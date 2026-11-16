@@ -48,8 +48,8 @@ async function loadTarget(installation: PluginInstallationRef, database: Knex, c
   return { pluginId: installation, manifest, record: installationRecord(row) };
 }
 
-async function loadHandler(target: PluginInstallationTarget, name: string, source: PluginHandlerSource): Promise<PluginHandler> {
-  if (!target.record.enabled) throw new Error(`Plugin ${target.pluginId} is not enabled`);
+async function loadHandler(target: PluginInstallationTarget, name: string, source: PluginHandlerSource, allowDisabled = false): Promise<PluginHandler> {
+  if (!target.record.enabled && !allowDisabled) throw new Error(`Plugin ${target.pluginId} is not enabled`);
   if (!HANDLER_NAME.test(name)) throw new Error('Invalid handler name');
   const module = await source(target.pluginId);
   const handler = module && Object.hasOwn(module, name) ? module[name] : undefined;
@@ -140,7 +140,7 @@ export async function runPluginHandler(installation: PluginInstallationRef, hand
   };
   try {
     const target = await loadTarget(installation, options.database, options.catalog ?? officialPluginCatalog);
-    const handler = await loadHandler(target, handlerName, options.handlers ?? officialPluginHandlers);
+    const handler = await loadHandler(target, handlerName, options.handlers ?? officialPluginHandlers, options.allowDisabled === true);
     const built = buildPluginContext(target, options, handlerName, controller.signal);
     finalLogs = built.finalLogs; redact = built.redact; clip = built.clip;
     const value = await withTimeout(() => handler(input, built.ctx), options.timeoutMs ?? PLUGIN_HANDLER_TIMEOUT_MS, controller);

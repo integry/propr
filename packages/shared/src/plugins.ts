@@ -157,6 +157,9 @@ export function pluginSecretUrlProblem(secretUrl: PluginSecretUrl, value: string
   return null;
 }
 
+/** How a `token` connection's credential is written in the `Authorization` header of `ctx.http` requests. */
+export const PLUGIN_TOKEN_AUTHORIZATIONS = ['bearer', 'raw'] as const;
+export type PluginTokenAuthorization = typeof PLUGIN_TOKEN_AUTHORIZATIONS[number];
 /** The URL a handler passes to `ctx.http(<secret URL connection>)`: ProPR sends to the connection's stored URL instead. */
 export const PLUGIN_CONNECTION_URL = 'propr-connection:url' as const;
 export const pluginConnectionSchema = z.discriminatedUnion('type', [
@@ -170,12 +173,27 @@ export const pluginConnectionSchema = z.discriminatedUnion('type', [
     type: z.literal('token'), ...connectionBase,
     /** The token is a secret URL (an incoming webhook URL) on these hosts: see `pluginSecretUrlSchema`. */
     secretUrl: pluginSecretUrlSchema.optional(),
+    /**
+     * How `ctx.http(<connection>)` sends the token: `bearer` (the default) as
+     * `Authorization: Bearer <token>`, `raw` as `Authorization: <token>`, for
+     * services whose API keys take no scheme (Linear's personal API keys).
+     * MCP servers using the connection always receive it as Bearer.
+     */
+    authorization: z.enum(PLUGIN_TOKEN_AUTHORIZATIONS).optional(),
   }),
   z.strictObject({ type: z.literal('signing_secret'), ...connectionBase }),
 ]);
 export type PluginConnection = z.infer<typeof pluginConnectionSchema>;
 
 const settingBase = { label: textSchema(100), help: textSchema().optional() };
+/**
+ * `optionsFrom` names an exported handler of the plugin that lists the
+ * setting's choices from the service (Linear's teams, a workflow's states):
+ * the configure form loads them through the settings options route and offers
+ * them in a select. Saved values are still plain strings, validated like any
+ * other; the handler runs with outbound HTTP only (see `PluginSettingOptionsInput`).
+ */
+const optionsFromSchema = z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/, 'Use the name of an exported handler function');
 const stringList = z.array(z.string().max(PLUGIN_LIMITS.text)).max(PLUGIN_LIMITS.listItems);
 /**
  * One setting, in a JSON Schema subset: a string (optionally an enum), a
@@ -189,6 +207,8 @@ export const pluginSettingSchema = z.discriminatedUnion('type', [
     maxLength: z.number().int().positive().max(PLUGIN_LIMITS.text).optional(),
     /** `https-url`: an `https://` URL to a public host (see `pluginHttpsUrlProblem`). */
     format: z.enum(PLUGIN_STRING_SETTING_FORMATS).optional(),
+    /** The handler that lists the choices of this select; see `optionsFromSchema`. */
+    optionsFrom: optionsFromSchema.optional(),
   }),
   z.strictObject({
     type: z.literal('number'), ...settingBase, default: z.number().finite().optional(),
@@ -204,6 +224,8 @@ export const pluginSettingSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('object'), ...settingBase, format: z.literal('repository-map'),
     additionalProperties: z.strictObject({ type: z.literal('string') }),
+    /** The handler that lists the choices of each repository's value; see `optionsFromSchema`. */
+    optionsFrom: optionsFromSchema.optional(),
     default: z.record(z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/), z.string().max(PLUGIN_LIMITS.text)).optional(),
   }),
 ]);
@@ -386,6 +408,9 @@ function checkConnectionReferences(manifest: z.infer<typeof pluginManifestObject
     else if (actual !== type) issue(`${what} references connection ${name}, which is ${actual}, not ${type}`, path);
     else if (secretUrls.has(name)) issue(`${what} references connection ${name}, whose value is a secret URL, not a token`, path);
   };
+  manifest.connections.forEach((connection, index) => {
+    if (connection.type === 'token' && connection.secretUrl && connection.authorization) issue(`Connection ${connection.name} is a secret URL; it sends no Authorization header, so it takes no authorization`, ['connections', index, 'authorization']);
+  });
   manifest.contributes.mcpServers.forEach((server, index) => {
     const at = ['contributes', 'mcpServers', index];
     if (server.kind === 'https') {
@@ -498,6 +523,7 @@ function stringSettingProblems(key: string, setting: SettingOf<'string'>): Setti
   if (setting.enum && setting.default !== undefined && !setting.enum.includes(setting.default)) problems.push({ message: `Default of setting ${key} is not one of its enum values`, field: 'default' });
   if (setting.maxLength !== undefined && (setting.default?.length ?? 0) > setting.maxLength) problems.push({ message: `Default of setting ${key} is longer than maxLength`, field: 'default' });
   if (setting.format && setting.enum) problems.push({ message: `Setting ${key} has a format and an enum; use one`, field: 'format' });
+  if (setting.optionsFrom && (setting.enum || setting.format)) problems.push({ message: `Setting ${key} has optionsFrom and ${setting.enum ? 'an enum' : 'a format'}; use one`, field: 'optionsFrom' });
   if (setting.format === 'https-url' && setting.default !== undefined && setting.default !== '') {
     const problem = pluginHttpsUrlProblem(setting.default);
     if (problem) problems.push({ message: `Default of setting ${key} ${problem}`, field: 'default' });
