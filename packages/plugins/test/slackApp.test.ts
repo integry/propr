@@ -217,6 +217,25 @@ test('the reply is posted on a later attempt when it failed after the issue was 
   assert.equal(k.posted().filter(p => String(p.text).startsWith(':memo:')).length, 2, 'the failed reply, then the one that was posted');
   assert.equal((await k.onSlackEvent(webhookInput('mention', 3, 'wh-r'), k.ctx)).reason, 'replied');
 
+  // Stopped after the issue was recorded but before its thread was stored: the retry stores the thread before replying.
+  const cut = await kit();
+  const set = cut.ctx.state.set.bind(cut.ctx.state);
+  let interrupted = false;
+  cut.ctx.state.set = async (key, value) => {
+    if (!interrupted && key.startsWith('thread:')) { interrupted = true; throw new Error('handler timed out'); }
+    return set(key, value);
+  };
+  await assert.rejects(cut.onSlackEvent(webhookInput('mention', 1, 'wh-t'), cut.ctx), /handler timed out/);
+  assert.equal(await findThread(cut.ctx, 'acme/api', null, 101), null);
+  assert.equal(cut.posted().length, 0);
+  assert.equal((await cut.onSlackEvent(webhookInput('mention', 2, 'wh-t'), cut.ctx)).reason, 'created');
+  const stored = (await findThread(cut.ctx, 'acme/api', null, 101))!.thread;
+  assert.deepEqual([stored.c, stored.t], ['C0APICHAN', MENTION_TS], 'the retry stored the mention\'s thread');
+  assert.equal(cut.posted().filter(p => String(p.text).startsWith(':memo:')).length, 1);
+  const opened = await cut.notify(eventInput({ ...CHAT_FIXTURE_EVENTS['pull_request.merged'], type: 'opened', prNumber: 31, entityId: '31', issueNumber: 101 }), cut.ctx);
+  assert.equal((opened as { thread: string }).thread, 'reused');
+  assert.deepEqual([cut.posted().at(-1)!.channel, cut.posted().at(-1)!.thread_ts], ['C0APICHAN', MENTION_TS], 'the pull request is posted in the mention\'s thread');
+
   // A failure that may have created the issue: permanent, and the next delivery creates nothing.
   let tries = 0;
   const lost = await kit(APP_SETTINGS, { createIssue: () => { tries += 1; throw new Error('socket hang up'); } });

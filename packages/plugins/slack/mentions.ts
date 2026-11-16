@@ -5,7 +5,7 @@ import {
 import { SlackApiError, deliveryFailure, permalink, postMessage, userGroupMembers } from './api.js';
 import { slackEscape } from './format.js';
 import { deleteMention, mentionExpired, readMention, writeMention } from './mentionRecords.js';
-import { rememberThread } from './threads.js';
+import { findThread, rememberThread } from './threads.js';
 
 /**
  * Slack app mode, inbound: the Events API request URL is the plugin's
@@ -215,6 +215,9 @@ export async function handleSlackEvent(input: PluginWebhookInput, ctx: PluginCon
   if (seen) {
     // The same Slack message again (a retry of the event): no second issue. A reply the first attempt did not get to is posted now.
     if (seen.s === 'created' && seen.r && seen.n) {
+      // The first attempt may have stopped before the issue's thread was stored: store it before the reply promises updates here.
+      // A thread stored since (a new one after the first was deleted) is kept.
+      if (!(await findThread(ctx, seen.r, null, seen.n))) await rememberThread(ctx, seen.r, seen.n, 'issue', channel, threadTs);
       if (await reply(ctx, channel, threadTs, createdReply(seen.r, seen.n, seen.u, triggerLabel(ctx.settings)), 'the reply with the issue link')) await writeMention(ctx, { ...seen, s: 'replied' });
     }
     return result('duplicate', seen.s, seen.r ?? null, seen.n ?? null);
