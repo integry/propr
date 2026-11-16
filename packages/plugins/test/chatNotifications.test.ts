@@ -271,6 +271,22 @@ test('the shared formatting compares a review with the threshold setting, else t
   assert.equal(notificationKind({}, review(79, null)), 'review.below_threshold');
   assert.equal(notificationKind({}, review(80, null)), 'review.at_or_above_threshold');
   assert.equal(notificationKind({}, { ...review(1, 1), payload: { score: 'high' } }), null, 'a review without a numeric score is not posted');
+  // Fractional scores, thresholds and goals are compared unrounded; only the display is rounded, never across the threshold.
+  assert.equal(notificationKind({ reviewThreshold: 80 }, review(79.96, null)), 'review.below_threshold');
+  assert.equal(notificationKind({ reviewThreshold: 79.96 }, review(79.95, null)), 'review.below_threshold');
+  assert.equal(notificationKind({ reviewThreshold: 79.96 }, review(79.96, null)), 'review.at_or_above_threshold');
+  assert.equal(notificationKind({}, review(89.96, 90)), 'review.below_threshold', 'the review goal is compared unrounded too');
+  assert.equal(notificationKind({}, review(90.04, 90.05)), 'review.below_threshold');
+  assert.equal(notificationKind({}, review(90.05, 90.05)), 'review.at_or_above_threshold');
+  const below = { events: ['review.below_threshold'], reviewThreshold: 80 };
+  assert.equal(buildNotification(review(79.96, null), { events: ['review.at_or_above_threshold'], reviewThreshold: 80 }), null, 'no success notice for a score just below');
+  const nearMiss = buildNotification(review(79.96, null), below)!;
+  assert.equal(nearMiss.tone, 'warning');
+  assert.match(nearMiss.title, /scored 79\.96, below 80$/);
+  assert.deepEqual(nearMiss.facts.filter(f => ['Score', 'Threshold'].includes(f.label)).map(f => f.value), ['79.96', '80']);
+  const nearGoal = buildNotification(review(89.96, 90), { events: ['review.below_threshold'] })!;
+  assert.match(nearGoal.title, /scored 89\.96, below 90$/);
+  assert.match(buildNotification(review(72.54, 90), { events: ['review.below_threshold'] })!.title, /scored 72\.5, below 90$/, 'away from the threshold one decimal is shown');
   // Without a ProPR address, or with an unacceptable one, messages carry only GitHub links.
   const task = CHAT_FIXTURE_EVENTS['task.failed'];
   const links = (proprUrl?: string) => buildNotification(task, { events: ['task.failed'], ...(proprUrl === undefined ? {} : { proprUrl }) })!.links.map(l => l.url);

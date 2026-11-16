@@ -57,7 +57,24 @@ export interface Notification {
 const CODE = /^[A-Za-z0-9._:/@+-]{1,64}$/;
 const code = (value: unknown): string | null => (typeof value === 'string' && CODE.test(value) ? value : null);
 const integer = (value: unknown): number | null => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null);
-const score = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value * 10) / 10 : null);
+/** A finite number as given: scores and thresholds are compared unrounded. */
+const finite = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const rounded = (value: number, decimals: number) => Math.round(value * 10 ** decimals) / 10 ** decimals;
+/** A score for display only, to one decimal. */
+const score = (value: unknown): number | null => { const number = finite(value); return number === null ? null : rounded(number, 1); };
+/**
+ * A score and its threshold for display: to one decimal, or as many more (up
+ * to six) as it takes for the shown numbers to compare as the actual ones do
+ * (79.96 against 80 is shown as 79.96 and 80, not as 80 and 80).
+ */
+function shownAgainst(value: number, threshold: number): [number, number] {
+  const below = value < threshold;
+  for (let decimals = 1; decimals <= 6; decimals += 1) {
+    const pair: [number, number] = [rounded(value, decimals), rounded(threshold, decimals)];
+    if ((pair[0] < pair[1]) === below) return pair;
+  }
+  return [value, threshold];
+}
 
 const ULTRAFIX_OUTCOMES: Record<string, { text: string; tone: NotificationTone }> = {
   goal_reached: { text: 'reached its goal', tone: 'success' },
@@ -81,14 +98,14 @@ export function selectedKinds(settings: PluginSettingValues): NotificationKind[]
 export function reviewThreshold(settings: PluginSettingValues, event: Pick<RepositoryEvent, 'payload'>): number {
   const setting = settings[NOTIFICATION_SETTINGS.reviewThreshold];
   if (typeof setting === 'number' && Number.isFinite(setting)) return setting;
-  return score(event.payload.goal) ?? DEFAULT_REVIEW_THRESHOLD;
+  return finite(event.payload.goal) ?? DEFAULT_REVIEW_THRESHOLD;
 }
 
 /** The notification kind of an event, or null for an event no kind covers (or a review without a score). */
 export function notificationKind(settings: PluginSettingValues, event: Pick<RepositoryEvent, 'domain' | 'type' | 'payload'>): NotificationKind | null {
   const name = eventName(event);
   if (name === 'pull_request.review_scored') {
-    const value = score(event.payload.score);
+    const value = finite(event.payload.score);
     if (value === null) return null;
     return value < reviewThreshold(settings, event) ? 'review.below_threshold' : 'review.at_or_above_threshold';
   }
@@ -144,13 +161,13 @@ function describe(kind: NotificationKind, event: RepositoryEvent, settings: Plug
       return { tone: 'info', title: `${subject} opened in ${repository}`, facts };
     case 'review.below_threshold':
     case 'review.at_or_above_threshold': {
-      const threshold = reviewThreshold(settings, event);
       const below = kind === 'review.below_threshold';
-      fact('Score', score(p.score));
+      const [shownScore, threshold] = shownAgainst(finite(p.score) ?? Number.NaN, reviewThreshold(settings, event));
+      fact('Score', shownScore);
       fact('Threshold', threshold);
       fact('Review cycle', integer(p.cycle));
       fact('Reviewer model', code(p.reviewerModel));
-      return { tone: below ? 'warning' : 'success', title: `${subject} in ${repository} scored ${score(p.score)}, ${below ? 'below' : 'at or above'} ${threshold}`, facts };
+      return { tone: below ? 'warning' : 'success', title: `${subject} in ${repository} scored ${shownScore}, ${below ? 'below' : 'at or above'} ${threshold}`, facts };
     }
     case 'pull_request.ultrafix_ended': {
       const outcome = ULTRAFIX_OUTCOMES[String(p.outcome)];

@@ -497,8 +497,10 @@ a connection accepts only `PLUGIN_CONNECTION_URL` as the URL (anything else is
 `invalid_input`): it reads the secret first, checks it again as above
 (`host_not_allowed`), then applies every check in the table except the
 `outboundHosts` one. No header is added and a `signature` is refused. The full
-URL and its path and query are credentials of the run: they are scrubbed from
-the response like any secret, and the response's `url` is the placeholder.
+URL, its path and query (together and apart) and every path segment or query
+value of 16 or more characters without a `/` (the token, workflow ID or
+signature) are credentials of the run: they are scrubbed from the response and
+logs like any secret, and the response's `url` is the placeholder.
 
 **Credentials.** With a connection name, the connection must be a `token` or
 `signing_secret` connection of the plugin and must be set. Its sealed secret is

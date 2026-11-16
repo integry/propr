@@ -121,7 +121,8 @@ an MCP server or a package server's variable.
 A handler sends to the stored URL with
 `ctx.http('default-webhook')(PLUGIN_CONNECTION_URL, { method: 'POST', json })`.
 Any other URL is refused, no `Authorization` header is added, and the URL (and
-its path and query) is redacted from the response, logs and errors. The host
+its path and query, together or apart, and each token or signature in them) is
+redacted from the response, logs and errors. The host
 does not need to be in `outboundHosts`. The stored URL is checked against
 `hosts` and `pathPrefixes` again on every request, and its addresses must be
 public, as for any other host.

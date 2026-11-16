@@ -323,11 +323,33 @@ function vetSecretUrl(value: unknown, secret: string | null, secretUrl: PluginSe
   return url;
 }
 
-/** Every credential spelling of a secret URL: the whole URL and its path and query, which carry the credential. */
+/**
+ * The shortest path segment or query value redacted on its own: long enough
+ * for a webhook token, workflow ID or signature (16 characters and more),
+ * short enough to leave values such as `api-version=2016-06-01` and `sv=1.0`
+ * readable. A value holding `/` is a path (Teams' `sp=/triggers/manual/run`),
+ * not a token.
+ */
+const SECRET_URL_PART_MIN = 16;
+const decodedOrRaw = (part: string) => { try { return decodeURIComponent(part.replace(/\+/g, ' ')); } catch { return part; } };
+const tokenSpellings = (part: string) => [part, decodedOrRaw(part)].filter(text => text.length >= SECRET_URL_PART_MIN && !text.includes('/'));
+
+/**
+ * Every credential spelling of a secret URL: the whole URL, its path and
+ * query together and apart (a response may echo them as separate fields), and
+ * each token-like path segment and query value (the token or signature they
+ * carry, with its `name=` too), as written and decoded.
+ */
 export function secretUrlCredentials(secret: string): string[] {
   try {
     const url = new URL(secret);
-    return [secret, url.href, `${url.pathname}${url.search}`].filter((value, index, all) => value.length > 1 && all.indexOf(value) === index);
+    const segments = url.pathname.split('/').flatMap(tokenSpellings);
+    const parameters = url.search.slice(1).split('&').flatMap(pair => {
+      const values = tokenSpellings(pair.slice(pair.indexOf('=') + 1));
+      return values.length ? [pair, ...values] : [];
+    });
+    const whole = [secret, url.href, `${url.pathname}${url.search}`, url.pathname, url.search, url.search.slice(1)];
+    return [...whole, ...segments, ...parameters].filter((value, index, all) => value.length > 1 && all.indexOf(value) === index);
   } catch { return [secret]; }
 }
 

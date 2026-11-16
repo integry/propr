@@ -139,6 +139,43 @@ test('the real ctx.http posts to the stored URL without a credential header, and
   assert.equal(s.sent.length, before, 'none of the refused requests was sent');
 });
 
+test('a query-bearing Teams URL echoed as separate path, query and signature fields reaches neither the handler nor its logs', async t => {
+  const s = await setup(t);
+  const workflow = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const sig = 'SiGnAtUrE_0123456789abcdefGHIJKLmnopqrstuvwx';
+  const teamsUrl = `https://prod-12.westus.logic.azure.com:443/workflows/${workflow}/triggers/manual/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=${sig}`;
+  s.addresses['prod-12.westus.logic.azure.com'] = '20.42.0.10';
+  await s.store.install('1', 'teams');
+  await s.store.setConnection('1', 'teams', 'default-webhook', teamsUrl);
+  await s.store.setEnabled('1', 'teams', true);
+  const url = new URL(teamsUrl);
+  const echo = { path: url.pathname, query: url.search, rawQuery: url.search.slice(1), sig, sp: url.searchParams.get('sp'), workflow, version: 'api-version=2016-06-01' };
+  s.answerWith({ status: 200, headers: { 'content-type': 'application/json', 'x-sig': sig }, body: JSON.stringify(echo) });
+  let seen: unknown;
+  const handlers = async (): Promise<PluginHandlerModule> => ({ probe: async (_input: PluginHandlerInput, ctx: PluginContext) => {
+    const response = await ctx.http('default-webhook')(PLUGIN_CONNECTION_URL, { method: 'POST', body: '{}' });
+    const text = await response.text();
+    const fields = JSON.parse(text) as Record<string, string>;
+    // Logging the separate components, or the raw values, is redacted as well.
+    ctx.log.info(`echo ${fields.path} ${fields.query} ${fields.sig}`, { fields });
+    ctx.log.info(`raw ${url.pathname} ${url.search.slice(1)} ${sig} ${workflow}`);
+    seen = { header: response.headers['x-sig'], fields };
+  } });
+  const run = await runPluginHandler('teams', 'probe', { kind: 'invoke', payload: {} }, { ...s.options, handlers });
+  assert.equal(run.outcome, 'succeeded', run.error ?? '');
+  assert.equal(s.sent[0].url, new URL(teamsUrl).href);
+  assert.deepEqual(seen, {
+    header: '[REDACTED]',
+    fields: { path: '[REDACTED]', query: '[REDACTED]', rawQuery: '[REDACTED]', sig: '[REDACTED]', sp: '/triggers/manual/run', workflow: '[REDACTED]', version: 'api-version=2016-06-01' },
+  });
+  const everything = JSON.stringify([seen, run]);
+  for (const secret of [sig, workflow, url.pathname, url.search.slice(1)]) assert.equal(everything.includes(secret), false, `${secret} leaked`);
+  const messages = run.logs.map(line => line.message).filter(message => /^(echo|raw) /.test(message));
+  assert.equal(messages.length, 2);
+  assert.match(messages[0], /^echo \[REDACTED\] \[REDACTED\] \[REDACTED\]$/);
+  assert.match(messages[1], /^raw \[REDACTED\] \[REDACTED\] \[REDACTED\] \[REDACTED\]$/);
+});
+
 test('through the dispatcher, a 429 with Retry-After is retried after the delay and a permanent error fails the delivery at once', async t => {
   const s = await setup(t);
   await s.store.install('1', 'slack');
