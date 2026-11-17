@@ -129,6 +129,31 @@ export function epicIssuesWithMergedWork(
     return mergedIssues;
 }
 
+/**
+ * The plan issues whose work already shipped through a predecessor epic PR:
+ * a pull request in `shipped` is the issue's linked PR, or comes from a
+ * branch cut for the issue, by the same attribution epicIssuesWithMergedWork
+ * uses. Such an issue no longer counts towards a successor epic, even when its
+ * linked PR is still open and an alternate PR is the one that shipped.
+ */
+export function epicIssuesShippedBefore(
+    childPullRequests: EpicChildPullRequest[],
+    shipped: ReadonlySet<number>,
+    planIssues: PlanIssue[],
+): Set<number> {
+    const planIssueNumbers = new Set(planIssues.map(issue => issue.issue_number));
+    const shippedIssues = new Set<number>();
+    for (const pr of childPullRequests) {
+        if (!shipped.has(pr.number)) continue;
+        const issue = epicChildBranchIssue(pr.headRef);
+        if (issue !== null && planIssueNumbers.has(issue)) shippedIssues.add(issue);
+    }
+    for (const issue of planIssues) {
+        if (issue.pr_number != null && shipped.has(issue.pr_number)) shippedIssues.add(issue.issue_number);
+    }
+    return shippedIssues;
+}
+
 export function isEpicMergeComplete(progress: EpicMergeProgress): boolean {
     return progress.total > 0 && progress.merged >= progress.total;
 }

@@ -620,6 +620,27 @@ for (const mergedChildPrNumber of [204, null]) {
     });
 }
 
+for (const mergedChildPrNumber of [205, null]) {
+    test(`a successor drops an issue whose alternate PR shipped through its predecessor while its linked PR is open (trigger ${mergedChildPrNumber})`, async () => {
+        // Issue #101 still links open #202, but alternate #203 from its branch merged before predecessor #500.
+        const octokit = createOctokit([
+            { number: 202, state: 'open', merged_at: null, head: { ref: '101/claude-second' } },
+            { number: 203, state: 'closed', merged_at: '2026-10-09T00:30:00Z', head: { ref: '101/codex-second' } },
+            { number: 204, state: 'closed', merged_at: '2026-10-09T01:30:00Z', head: { ref: 'fix-ci-cache' } },
+            { number: 205, state: 'closed', merged_at: '2026-10-09T02:00:00Z', head: { ref: '102/claude-third' } },
+        ]);
+        octokit.history = [{ number: 500, merged_at: '2026-10-09T01:00:00Z' }];
+        octokit.epicMerged = mergedChildPrNumber === null;
+        const result = await updateEpicMergeProgress({
+            ...baseRequest, epicPrNumber: 501, mergedChildPrNumber,
+            planIssues: [planIssue(101, PlanIssueStatus.UNDER_REVIEW, 202), planIssue(102, PlanIssueStatus.MERGED, 205)],
+        }, 'test', { getOctokit: async () => octokit });
+        assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [204, 205] });
+        if (mergedChildPrNumber !== null) assert.ok(octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
+        else assert.ok(octokit.comments.some(c => c.body.includes('All planned epic work')));
+    });
+}
+
 test('successor readiness counts only its children, retaining a same-second child the predecessor head excludes', async () => {
     const octokit = createOctokit([
         { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' },

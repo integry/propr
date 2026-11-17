@@ -225,6 +225,20 @@ test('a successor whose plan issues all shipped through its predecessor does not
     assert.doesNotMatch(github.epic().title, / \d+\/\d+ \[Epic\]/);
 });
 
+test('a successor drops an issue whose alternate PR shipped through its predecessor while its linked PR is open', async () => {
+    // Issue #801 still links open #911, but alternate #912 from its branch merged before predecessor #899 merged the
+    // epic branch. #910 (issue #800) shipped too; only #802, merged through #914 after #899, is the successor's.
+    github.pulls.set(912, pull(912, { state: 'closed', merged: true, merged_at: '2026-11-13T08:10:00Z', head: { sha: 'h912', ref: '801/codex-second', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    github.pulls.set(899, pull(899, { state: 'closed', merged: true, merged_at: '2026-11-13T08:30:00Z', head: { sha: 'p899', ref: EPIC_BRANCH, repo: { full_name: REPOSITORY } } }));
+    github.pulls.set(914, pull(914, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z', head: { sha: 'h914', ref: '802/claude-third', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    await database('plan_issues').where({ issue_number: 802 }).update({ status: 'merged', pr_number: 914 });
+    await database('epic_execution_queues').update({ cursor: 3, status: 'completed' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ 1 of 1 issues? merged · /);
+    assert.match(github.epic().title, / 1\/1 \[Epic\]/);
+});
+
 test('a ready sub-PR waiting to be merged shows ⚠️ with the count, and the block names it', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(statusLine(), '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated 09:41 UTC');

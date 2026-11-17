@@ -5,11 +5,13 @@ import logger from '../utils/logger.js';
 import { epicHeadSha, isMergeContained, isRecord, type EpicProgressOctokit } from './epicMergeEvidence.js';
 import { extractEpicProgressActivityLines, insertEpicProgressActivityLines, replaceEpicProgressActivityLines } from './epicProgressActivity.js';
 import {
-    computeEpicMergeProgress, epicProgressCountText, isEpicMergeComplete, progressNoun, type EpicChildPullRequest, type EpicMergeProgress,
+    computeEpicMergeProgress, epicIssuesShippedBefore, epicProgressCountText, isEpicMergeComplete, progressNoun,
+    type EpicChildPullRequest, type EpicMergeProgress,
 } from './epicProgressCount.js';
 
 export {
-    computeEpicMergeProgress, epicChildBranchIssue, epicProgressCountText, isEpicMergeComplete, type EpicChildPullRequest, type EpicMergeProgress,
+    computeEpicMergeProgress, epicChildBranchIssue, epicIssuesShippedBefore, epicProgressCountText, isEpicMergeComplete,
+    type EpicChildPullRequest, type EpicMergeProgress,
 } from './epicProgressCount.js';
 
 export const EPIC_PROGRESS_MARKER = '<!-- propr:epic-merge-progress -->';
@@ -357,10 +359,13 @@ export async function withTriggeringChildEvidence(
  */
 function reportablePlanIssues(
     request: EpicMergeProgressRequest,
-    { epicMerged, shipped, included }: { epicMerged: boolean; shipped: Set<number>; included: Set<number> },
+    { children, epicMerged, shipped, included }: { children: EpicChildPullRequest[]; epicMerged: boolean; shipped: Set<number>; included: Set<number> },
     demoted: number[],
 ): PlanIssue[] | undefined {
-    return request.planIssues?.filter(issue => issue.pr_number == null || !shipped.has(issue.pr_number))
+    if (!request.planIssues) return undefined;
+    // Linked or from the issue's branch, as the count attributes merged work (an alternate PR may have shipped it).
+    const shippedIssues = epicIssuesShippedBefore(children, shipped, request.planIssues);
+    return request.planIssues.filter(issue => !shippedIssues.has(issue.issue_number))
         .map(issue => {
             if (!epicMerged || issue.status !== PlanIssueStatus.MERGED) return issue;
             if (issue.pr_number != null && included.has(issue.pr_number)) return issue;
@@ -429,7 +434,7 @@ export async function updateEpicMergeProgress(
     const progress = computeEpicMergeProgress(
         children.filter(pr => !shipped.has(pr.number)).map(pr => epicMerged ? { ...pr, merged: included.has(pr.number) } : pr),
         epicMerged || (request.mergedChildPrNumber !== null && shipped.has(request.mergedChildPrNumber)) ? null : request.mergedChildPrNumber,
-        reportablePlanIssues(request, { epicMerged, shipped, included }, demoted),
+        reportablePlanIssues(request, { children, epicMerged, shipped, included }, demoted),
     );
     if (demoted.length > 0) {
         // No later event revises a final report; name the issues it keeps outstanding.

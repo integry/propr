@@ -4,7 +4,7 @@ import type { PlanIssue } from '../../config/planIssueManager.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { agentBlockedIssueNumber, isAgentBlockedReason } from '../taskPlanning/epicQueueBlockedHead.js';
 import {
-    computeEpicMergeProgress, epicChildBranchIssue, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
+    computeEpicMergeProgress, epicChildBranchIssue, epicIssuesShippedBefore, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
 } from '../../webhook/epicMergeProgress.js';
 import type { EpicProgressOctokit } from '../../webhook/epicMergeEvidence.js';
 import { pullRequestBodyKey } from './pullRequestBodyLock.js';
@@ -207,7 +207,8 @@ export async function loadEpicStatusFacts(
     const listed = await listChildPullRequests(github, owner, repo, epicBranch);
     const shipped = await listChildrenShippedBeforeOpenEpic(github, { owner, repo, epicBranch, epicPrNumber: prNumber, baseBranch: pull.base?.ref }, listed);
     const children = listed.filter(child => !shipped.has(child.number));
-    const issues = plan.issues.filter(issue => issue.pr_number == null || !shipped.has(issue.pr_number));
+    const shippedIssues = epicIssuesShippedBefore(listed, shipped, plan.issues);
+    const issues = plan.issues.filter(issue => !shippedIssues.has(issue.issue_number));
     const progress = computeEpicMergeProgress(children, null, issues);
 
     const titles = epicIssueTitles(pull.body);
