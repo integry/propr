@@ -20,7 +20,7 @@ export default function ExperimentalSettingsSection({ dashboardSummaryEnabled, o
         id="dashboard_summary_enabled"
         name="dashboard_summary_enabled"
         label="Dashboard AI summaries"
-        helperText="Shows a one-line summary of current activity at the top of the dashboard for everyone on this instance. Uses the summarization model under AI Models & Reasoning, so each update costs an LLM call."
+        helperText="Shows a one-line activity summary on the dashboard for everyone. Each update costs one LLM call."
         checked={dashboardSummaryEnabled}
         onChange={event => onDashboardSummaryChange(event.target.checked)}
       />

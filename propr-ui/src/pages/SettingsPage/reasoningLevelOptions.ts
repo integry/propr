@@ -23,9 +23,9 @@ export function formatReasoningLevelOption(level: string, agentType?: AgentType,
   if (agentType && !getReasoningLevelsForAgentType(agentType, model).includes(level as ReasoningLevel)) {
     const plainLabel = displayLabel.replace(/\s+\([^)]+ only\)$/, '');
     const agentLabel = agentType === 'codex' ? 'Codex' : agentType === 'claude' ? 'Claude' : agentType;
-    return `${plainLabel} (unsupported for ${agentLabel}) — GitHub: level-${level}`;
+    return `${plainLabel} (unsupported for ${agentLabel})`;
   }
-  return `${displayLabel} — GitHub: level-${level}`;
+  return displayLabel;
 }
 
 export function buildReasoningLevelSelectOptions(

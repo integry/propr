@@ -243,15 +243,15 @@ test('turns the PR title status off and on for every branch of the repository', 
   await page.goto('/repositories');
   await page.getByRole('button', { name: 'Select integry/propr', exact: true }).nth(1).click();
   const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
-  const titleStatus = settings.getByRole('checkbox', { name: 'Show the PR state in pull request titles for integry/propr', exact: true });
-  const label = 'Show the PR state as a leading emoji in the pull request title';
+  const titleStatus = settings.getByRole('checkbox', { name: 'Show status in pull request titles for integry/propr', exact: true });
+  const label = 'Show status in pull request titles';
   const titleStatusWrites = () => api.writes.at(-1)?.map(repo => [repo.id, repo.prTitleStatus]);
 
   await expect(titleStatus).toBeChecked();
   // Clicking scrolls outer containers too; show the Automation section in the settings panel only.
   await settings.evaluate(panel => {
     for (const element of [document.scrollingElement, ...document.querySelectorAll('*')]) if (element && element !== panel) element.scrollTop = 0;
-    const control = panel.querySelector('input[aria-label^="Show the PR state in pull request titles"]')?.closest('label');
+    const control = panel.querySelector('input[aria-label^="Show status in pull request titles"]')?.closest('label');
     if (control) panel.scrollTop = (control as HTMLElement).getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop - 420;
   });
   await capturePreview(page, 'repository-pr-title-status-on');

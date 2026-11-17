@@ -127,7 +127,7 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     const view = await section();
     const linear = within(rowOf(view, 'linear')).getByTestId('extension-oauth-connection');
     expect(within(linear).getByRole('button', { name: 'Connect' })).toBeDisabled();
-    expect(linear).toHaveTextContent('Connect needs a public HTTPS base URL for this instance (API_PUBLIC_URL)');
+    expect(linear).toHaveTextContent('Set a public HTTPS URL for this instance (API_PUBLIC_URL) to sign in.');
   });
 
   it('the form offers OAuth sign-in with scopes, a pre-registered client, the redirect URI, the shared-identity warning and Check', async () => {

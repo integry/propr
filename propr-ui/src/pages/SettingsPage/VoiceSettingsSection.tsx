@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { isDesktopRuntime } from '../../config/runtimeMode';
 import { useVoicePreference } from '../../hooks/useVoicePreference';
 import { SettingsSection } from './SettingsLayout';
 import { SETTINGS_CHECKBOX, SETTINGS_LABEL } from './settingsStyles';
@@ -29,14 +28,7 @@ export function VoiceBriefingsToggle() {
           Enable voice briefings
         </label>
         <p id="voice-settings-explanation" className="mt-1 text-[12px] leading-5 text-slate-500">
-          Off by default in every runtime. Saved for this account and instance on this device; other
-          devices, browsers, and accounts keep their own choice. Enables on-demand briefings and, where
-          the runtime supports it, one short spoken command.
-          {isDesktopRuntime()
-            ? ' Microphone access does not enable speech recognition in this desktop runtime; use text briefings or voice commands in a supported browser.'
-            : ' Microphone access is requested only after you acknowledge the vendor-processing notice and select Listen.'}
-          {' '}Turning this off stops voice activity and hides its controls. Enabling it does not request
-          microphone access or start audio.
+          Spoken summaries on request. Saved for this browser only. The microphone is used only after you choose Listen.
         </p>
         {!preference.available && (
           <p className="mt-2 text-[12px] leading-5 text-slate-500">
@@ -53,7 +45,7 @@ export function VoiceBriefingsToggle() {
 
 export default function VoiceSettingsSection() {
   return (
-    <SettingsSection title="Voice briefings · Experimental">
+    <SettingsSection title="Voice briefings">
       <VoiceBriefingsToggle />
     </SettingsSection>
   );

@@ -64,7 +64,7 @@ const AgentCredentialSetup: React.FC<AgentCredentialSetupProps> = ({
       {(isEditing || !supportsLogin || credentialSetup === 'existing') && (
         <div>
           <label className="block text-gray-700 mb-1.5 font-medium text-sm" htmlFor="configPath">
-            Config Path
+            Config path
           </label>
           <input
             type="text"
@@ -79,7 +79,7 @@ const AgentCredentialSetup: React.FC<AgentCredentialSetupProps> = ({
           {configPathError && <p className="mt-1 text-xs text-red-600">{configPathError}</p>}
           {!isEditing && credentialSetup === 'existing' && (
             <p className="mt-1 text-xs text-gray-500">
-              ProPR will reuse this directory. Provider login and agent runs may refresh files in it.
+              ProPR reads and updates the login files in this directory.
             </p>
           )}
         </div>

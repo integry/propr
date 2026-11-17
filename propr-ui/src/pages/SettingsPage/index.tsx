@@ -102,7 +102,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'model-selection',
       category: 'models',
-      searchText: 'model selection AI implementation agent reasoning level planning context analysis plan generation summarization fallback pull request PR review prompt review context budget percentage token limit',
+      searchText: 'model selection AI implementation agent reasoning level effort GitHub level label planning context analysis plan generation summarization fallback pull request PR review prompt guidance review context budget percentage token limit safe input allowance partial reviews scout',
       content: (
         <AIModelSelectionSection
           settings={{
@@ -150,7 +150,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'workflow-processing',
       category: 'workflow',
-      searchText: 'workflow processing worker concurrency provider failure replacements retry spend cap cost budget max cost usd repository defaults resolve merge conflicts follow-up followup comments assignment assignee assigned users',
+      searchText: 'workflow processing worker concurrency provider failure replacements retry retries transient 5xx overloaded usage limits 429 spend cap cost budget max cost usd max_cost_usd workflow.yml repository defaults resolve merge conflicts follow-up followup comments assignment assignee assigned users',
       content: (
         <WorkflowSettingsSection
           settings={{
@@ -183,7 +183,7 @@ const AdminSettingsPage: React.FC = () => {
       searchText: 'primary processing labels issues auto processed state labels GitHub',
       content: (
         <TagListSection
-          title="Primary Processing Labels"
+          title="Primary processing labels"
           description="Issues with these labels will be auto-processed."
           items={primaryLabels}
           newItem={newPrimaryLabel}
@@ -204,7 +204,7 @@ const AdminSettingsPage: React.FC = () => {
       searchText: 'follow-up keywords trigger processing comments phrases',
       content: (
         <TagListSection
-          title="Follow-up Keywords"
+          title="Follow-up keywords"
           description="Triggers processing when found in comments."
           items={keywords}
           newItem={newKeyword}
@@ -223,7 +223,7 @@ const AdminSettingsPage: React.FC = () => {
       searchText: 'PR pull request follow-up ignore keywords prevent loops comments phrases',
       content: (
         <TagListSection
-          title="PR Follow-up Ignore Keywords"
+          title="PR follow-up ignore keywords"
           description="Ignore comments containing these phrases (prevents loops)."
           items={ignoreKeywords}
           newItem={newIgnoreKeyword}
@@ -251,7 +251,7 @@ const AdminSettingsPage: React.FC = () => {
           onRemoveItem={removeWhitelistItem}
           placeholder="e.g., octocat"
           addLabel="GitHub username"
-          emptyMessage="Allowed for all users (Empty whitelist)."
+          emptyMessage="Allowed for all users (empty whitelist)."
         />
       )
     },
@@ -277,12 +277,12 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
-    { id: 'agent-network', category: 'sandbox', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce',
+    { id: 'agent-network', category: 'sandbox', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce AGENT_NETWORK_ALLOW environment default custom list network interface denied hosts',
       content: <AgentNetworkSettingsSection values={settings} defaults={settings.agent_network_defaults} onCommit={handleAgentRunSettingChange} /> },
     {
       id: 'agent-watchdog',
       category: 'sandbox',
-      searchText: 'agent watchdog stall timeout inactivity silent hung tool stall degenerate whitespace output limit',
+      searchText: 'agent watchdog stall timeout inactivity silent hung tool stall degenerate whitespace blank output deltas limit worker slot execution timeout',
       content: (
         <AgentWatchdogSettingsSection
           values={{
@@ -339,7 +339,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'experimental',
       category: 'experimental',
-      searchText: 'experimental features opt-in voice briefings microphone speech briefing catch me up dashboard AI summary summaries activity overview summarization LLM cost enable disable desktop browser',
+      searchText: 'experimental features opt-in voice briefings microphone speech spoken listen briefing catch me up device account dashboard AI summary summaries activity overview summarization LLM cost enable disable desktop browser',
       content: <ExperimentalSettingsSection dashboardSummaryEnabled={settings.dashboard_summary_enabled === true} onDashboardSummaryChange={handleDashboardSummaryChange} />
     }
   ];

@@ -38,15 +38,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   return <div>
     <div className="flex justify-between items-center mb-1.5">
       <label className="block text-gray-700 font-medium text-sm">
-        Supported Models
+        Supported models
       </label>
       <div className="flex gap-2">
         <button type="button" onClick={onSelectAll} className="text-xs text-primary-600 hover:text-primary-800 font-medium">
-          Select All
+          Select all
         </button>
         <span className="text-gray-300">|</span>
         <button type="button" onClick={onDeselectAll} className="text-xs text-gray-500 hover:text-gray-700 font-medium">
-          Deselect All
+          Deselect all
         </button>
       </div>
     </div>

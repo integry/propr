@@ -329,7 +329,7 @@ export default function McpServerSection({ onError }: McpServerSectionProps) {
 
   return (
     <SettingsSection
-      title="MCP Server"
+      title="MCP server"
       description={<>
         Allows AI assistants like Claude Code and Claude.ai to connect to this ProPR instance via the Model Context Protocol.
         {statusDescriptionSuffix(data)}
