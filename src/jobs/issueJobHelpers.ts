@@ -1,13 +1,13 @@
 import { initialPullRequestStatusBlock, initialPullRequestTitle, pullRequestStatusBlockReserve, withPullRequestStatusBlock, writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import type { Logger } from 'pino';
+import { addMissingPullRequestLabels } from './pullRequestLabels.js';
+import { taskLinkOption } from './failureCommentDedupe.js';
 import {
     generateCompletionCommentParts,
     buildPrTemplateValues,
     describePullRequest,
     db,
     getModelShortName,
-    withRetry,
-    retryConfigs,
     MODEL_INFO_MAP,
     buildAgentModelLlmLabel,
     getAgentTypeFromModel,
@@ -238,7 +238,8 @@ export async function createPullRequest(
     const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
     const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        { review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger),
+        { ...taskLinkOption(options.taskId),
+            review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger),
             config: options.review, acceptanceCriteria: extractAcceptanceCriteria(options.issueBody) } });
     await recordReviewDigest(options.taskId, completion.reviewDigest, correlatedLogger, options.stateManager);
     const visualPreviewSection = visualPreview && commitResult
@@ -290,16 +291,8 @@ export async function createPullRequest(
         const modelLabel = getPullRequestModelLabel(issueRef, modelName);
         const labelsToAdd = modelLabel ? [PR_LABEL, modelLabel] : [PR_LABEL];
         try {
-            await withRetry(
-                () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                    owner: issueRef.repoOwner,
-                    repo: issueRef.repoName,
-                    issue_number: prResponse.data.number,
-                    labels: labelsToAdd
-                }),
-                retryConfigs.githubApi,
-                `add_pr_label_${prResponse.data.number}`
-            );
+            await addMissingPullRequestLabels(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, pullRequestNumber: prResponse.data.number },
+                labelsToAdd, `add_pr_label_${prResponse.data.number}`);
             correlatedLogger.info({ prNumber: prResponse.data.number, labels: labelsToAdd }, 'Added PR labels to new PR');
         } catch (labelError) {
             correlatedLogger.warn({ prNumber: prResponse.data.number, labels: labelsToAdd, error: (labelError as Error).message }, 'Failed to add PR labels to new PR after retries');
@@ -395,16 +388,8 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
             const modelLabel = getPullRequestModelLabel(issueRef, modelName);
             const labelsToAdd = modelLabel ? [PR_LABEL, modelLabel] : [PR_LABEL];
             try {
-                await withRetry(
-                    () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                        owner: issueRef.repoOwner,
-                        repo: issueRef.repoName,
-                        issue_number: existingPR.number,
-                        labels: labelsToAdd
-                    }),
-                    retryConfigs.githubApi,
-                    `add_pr_label_existing_${existingPR.number}`
-                );
+                await addMissingPullRequestLabels(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, pullRequestNumber: existingPR.number },
+                    labelsToAdd, `add_pr_label_existing_${existingPR.number}`);
                 correlatedLogger.info({ prNumber: existingPR.number, labels: labelsToAdd }, 'Added PR labels to existing PR');
             } catch (labelError) {
                 correlatedLogger.warn({ prNumber: existingPR.number, labels: labelsToAdd, error: (labelError as Error).message }, 'Failed to add PR labels to existing PR after retries');

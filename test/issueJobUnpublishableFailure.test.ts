@@ -115,8 +115,9 @@ test('an agent failure without publishable work remains retryable and never crea
         },
     });
 
-    assert.equal(request.mock.calls.length, 1);
-    const comment = request.mock.calls[0].arguments[1].body as string;
+    const posts = request.mock.calls.filter(call => call.arguments[0] === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments');
+    assert.equal(posts.length, 1);
+    const comment = posts[0].arguments[1].body as string;
     assert.match(comment, /failed before producing publishable work/i);
     assert.match(comment, /\[REDACTED\]/);
     assert.doesNotMatch(comment, /Post-processing encountered an error/);
@@ -210,9 +211,10 @@ test('an interrupted execution without a commit remains retryable and never crea
     assert.equal(result.commitResult, null);
     assert.equal(result.postProcessingResult?.success, false);
     assert.deepEqual(result.postProcessingResult?.updatedLabels, []);
-    assert.equal(request.mock.calls.length, 1);
-    assert.match(request.mock.calls[0].arguments[1].body as string, /failed before producing publishable work/i);
-    assert.doesNotMatch(request.mock.calls[0].arguments[1].body as string, /AI-done/);
+    const posts = request.mock.calls.filter(call => call.arguments[0] === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments');
+    assert.equal(posts.length, 1);
+    assert.match(posts[0].arguments[1].body as string, /failed before producing publishable work/i);
+    assert.doesNotMatch(posts[0].arguments[1].body as string, /AI-done/);
 });
 
 test('publication obtains current credentials after committing instead of reusing the pre-agent token', async () => {

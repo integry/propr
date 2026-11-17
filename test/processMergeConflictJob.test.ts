@@ -235,6 +235,7 @@ async function fakePerformConflictResolution(options: {
 await mock.module('@propr/core', {
     namedExports: {
         ...pushSalvageExports,
+        redactSecrets: (value: string) => value,
         logger: {
             info: mock.fn(),
             warn: mock.fn(),

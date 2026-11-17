@@ -10,6 +10,7 @@ import { fetchIssueComments } from './github.js';
 import { executeAgentAndRecordMetrics } from './agent.js';
 import { performPostProcessing } from '../issueJobPostProcessing.js';
 import { workflowReportsBlockers } from '../blockedRunText.js';
+import { postNoticeOnce } from '../failureCommentDedupe.js';
 
 export async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise<ExecuteWorktreeResult> {
   const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
@@ -35,8 +36,10 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
     ? `- Attempt: ${issueRef.attemptNumber ?? 2} (replaces [${issueRef.replacesTaskId}](${frontendUrl}/tasks/${encodeURIComponent(issueRef.replacesTaskId)}))\n`
     : '';
 
-  await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-    owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+  // Jobs started by one event for the same agent, model and branch announce once.
+  await postNoticeOnce(octokit as never, {
+    owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number,
+    kind: 'issue-start', identity: `${agentAlias}\n${modelName}\n${worktreeInfo.branchName}`,
     body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n${attemptLine}\n🔍 [Track Task Execution](${taskUrl})`,
   });
 

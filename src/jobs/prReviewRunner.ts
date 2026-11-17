@@ -7,7 +7,7 @@ import { calculateReviewCost, resolveReviewerBudget, type ReviewBudgetSettings }
 import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
 import type { PreparedPRDiff } from './prDiffFormatting.js';
 import { ReviewTokenEstimator, type ReviewTokenStatsCache } from './reviewTokenEstimator.js';
-import { buildReviewErrorComment, type ReviewRecordStartNumbers } from './reviewCommentFormatter.js';
+import { buildReviewErrorComment, isReviewErrorComment, summarizeReviewFailure, type ReviewRecordStartNumbers } from './reviewCommentFormatter.js';
 import { buildReviewCommentWithReservedRecordRanges } from './reviewFindingNumberAllocator.js';
 
 const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
@@ -185,6 +185,11 @@ export async function runSingleReview(
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
         });
 
+        if (isReviewErrorComment(reviewCommentBody)) {
+            // Failed or invalid output: posted as a diagnostic, never as a review.
+            const error = analysisResult.error || 'Review output was invalid.';
+            return { assignment, analysisResult: { ...analysisResult, success: false, error }, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, error, prompt: reviewPrompt, commentBody: reviewCommentBody };
+        }
         const isPartial = promptResult.prDiffTruncated === true || promptResult.missingPatchFiles.length > 0
             || promptResult.ioGuardOmittedFiles.length > 0 || promptResult.budgetOmittedFiles.length > 0;
         return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount, suggestionCount, isPartial, commentBody: reviewCommentBody };
@@ -196,7 +201,7 @@ export async function runSingleReview(
         try {
             errorComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: buildReviewErrorComment(label, model, errorMsg),
+                body: buildReviewErrorComment(label, model, summarizeReviewFailure(errorMsg), { taskUrl }),
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');

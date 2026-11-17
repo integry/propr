@@ -6,12 +6,13 @@ import {
     safeRemoveLabel,
     safeAddLabel,
     formatRetryTime,
-    hoursUntil,
     issueQueue,
     recordLLMMetrics,
     updateWithdrawnIssueLabels
 } from '@propr/core';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
+import { describeUsageLimitKind, formatTimeUntil } from '@propr/shared';
+import { postNoticeOnce } from './failureCommentDedupe.js';
 import { completeProviderReplacement, isAgentExecutionFailure, prepareProviderReplacement } from './providerReplacement.js';
 
 type Octokit = {
@@ -21,6 +22,8 @@ type Octokit = {
 export interface UsageLimitError extends Error {
     resetTimestamp?: number;
     rawErrorMessage?: string;
+    /** False when the reset time is ProPR's estimate, not the provider's. */
+    resetTimeStated?: boolean;
 }
 
 interface UsageLimitErrorOptions {
@@ -82,25 +85,28 @@ export async function handleSimpleUsageLimitError(
     return { status: 'requeued', repository, delay };
 }
 
-function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number): string {
-    const rawMessage = error.rawErrorMessage || 'Usage limit reached';
-    const resetTimeStr = error.resetTimestamp ? formatRetryTime(error.resetTimestamp) : 'Unknown';
-    const retryTimeStr = formatRetryTime(retryTimestamp);
-    const hoursRemaining = error.resetTimestamp ? hoursUntil(error.resetTimestamp) : 1;
-    const hoursText = hoursRemaining < 1
-        ? 'less than an hour'
-        : `approximately ${Math.ceil(hoursRemaining)} hour${Math.ceil(hoursRemaining) > 1 ? 's' : ''}`;
+/**
+ * The rate-limit notice: one reset time, the one the provider stated for the
+ * limit it named, and the single retry scheduled after it.
+ */
+export function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number, nowMs: number = Date.now()): string {
+    const rawMessage = (error.rawErrorMessage || 'Usage limit reached').split('\n')[0].trim();
+    const limitKind = describeUsageLimitKind(rawMessage);
+    const stated = error.resetTimestamp !== undefined && error.resetTimeStated !== false;
+    const resetLine = stated
+        ? `**Reset time:** ${formatRetryTime(error.resetTimestamp!, nowMs)} (${formatTimeUntil(error.resetTimestamp!, nowMs)})${limitKind ? `, when the ${limitKind} resets` : ''}`
+        : `**Reset time:** not stated by the provider${limitKind ? ` for the ${limitKind}` : ''}`;
 
     return `⌛ **Rate Limit Reached**
 
 **Error from agent:**
 > ${rawMessage}
 
-**Reset time:** ${resetTimeStr} (in ${hoursText})
-**Next retry:** ${retryTimeStr}
+${resetLine}
+**Retry:** once, at ${formatRetryTime(retryTimestamp, nowMs)} (${formatTimeUntil(retryTimestamp, nowMs)})
 
 ---
-*The task will automatically resume after the rate limit resets. No action needed.*`;
+*No action needed: the task waits until then and does not restart earlier.*`;
 }
 
 async function requireIssueRetry(jobId: string, correlationId: string): Promise<Job<IssueJobData> | null> {
@@ -123,6 +129,16 @@ function issueUsageLimitRetryJobId(issueRef: IssueJobData, attempt: string): str
     return `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${issueRef.agentAlias || 'default'}-${issueRef.modelName || 'default'}-${issueRef.baseBranch || 'main'}-ratelimit-retry-${attempt}`;
 }
 
+/** Id of a delayed usage-limit retry of the same issue run owned by another task, if any. */
+async function findOtherPendingIssueRetry(issueRef: IssueJobData): Promise<string | null> {
+    const queue = issueQueue as unknown as { getDelayed?: () => Promise<Array<{ id?: string; data?: { correlationId?: string } }>> };
+    if (typeof queue.getDelayed !== 'function') return null;
+    const prefix = issueUsageLimitRetryJobId(issueRef, '');
+    const delayed = await queue.getDelayed().catch(() => []);
+    const other = delayed.find(job => String(job.id ?? '').startsWith(prefix) && job.data?.correlationId !== issueRef.correlationId);
+    return other ? String(other.id) : null;
+}
+
 export async function handleUsageLimitError(
     error: UsageLimitError,
     job: Job<IssueJobData>,
@@ -141,6 +157,18 @@ export async function handleUsageLimitError(
 
     const delay = calculateUsageLimitDelay(error);
     const retryTimestamp = Math.floor((Date.now() + delay) / 1000);
+
+    // One pending retry per issue run: another task's retry already owns the
+    // issue's next attempt, so this task neither posts a notice nor schedules.
+    const pendingRetry = await findOtherPendingIssueRetry(issueRef);
+    if (pendingRetry) {
+        correlatedLogger.info({ issueNumber: issueRef.number, pendingRetry }, 'Usage-limit retry already scheduled for this issue by another task; not scheduling another');
+        await stateManager.updateTaskState(taskId, 'processing', {
+            reason: 'Rate limit reached - retry already scheduled by another task',
+            historyMetadata: { rateLimitError: true, supersededByRetryJob: pendingRetry, resetTimestamp: error.resetTimestamp },
+        }).catch(() => undefined);
+        return;
+    }
 
     if (octokit && AI_PROCESSING_TAG && AI_WAITING_TAG) {
         try {
@@ -279,11 +307,10 @@ export async function postCancellationNotice(
 ): Promise<void> {
     const { octokit, correlatedLogger } = options;
     try {
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: issueRef.number,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can remove and re-add the trigger label to restart processing.`
+        // One cancel stops every task of the issue; it is announced once.
+        await postNoticeOnce(octokit as never, {
+            owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, kind: 'issue-cancelled',
+            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can remove and re-add the trigger label to restart processing.`,
         });
     } catch (commentError) {
         correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');

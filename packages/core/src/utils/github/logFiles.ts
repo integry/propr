@@ -32,6 +32,8 @@ interface IssueRef {
 
 interface CompletionCommentOptions {
     publishedAs?: 'pull_request' | 'issue_comment';
+    /** Task page linked in place of log paths and conversation excerpts. */
+    taskUrl?: string;
     /** The run's diff; with changes, the parts include a review digest. */
     review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig; acceptanceCriteria?: readonly AcceptanceCriterion[] };
 }
@@ -259,7 +261,8 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
     if (claudeResult?.conversationId) {
         lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
     }
-    if (claudeResult?.model) {
+    // `<synthetic>` and similar placeholders are CLI bookkeeping, not a model.
+    if (claudeResult?.model && !/^<[^>]*>$/.test(claudeResult.model.trim())) {
         const modelDisplayName = getModelName(claudeResult.model);
         lines.push(`- LLM Model: ${modelDisplayName}`);
     }
@@ -345,33 +348,13 @@ function buildSummarySection(claudeResult: ClaudeResult): string {
     return section;
 }
 
-function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): string {
-    if (Object.keys(logFiles).length === 0) return '';
-    const lines = ['**Detailed Logs:**'];
-    if (logFiles.conversation && claudeResult.conversationLog?.length) {
-        lines.push(`- Conversation: ${claudeResult.conversationLog.length} messages`);
-        lines.push(`- Session: \`${claudeResult.sessionId}\``);
-    }
-    lines.push('\nLog files stored at:');
-    Object.entries(logFiles).forEach(([type, filePath]) => lines.push(`- ${type}: \`${filePath}\``));
-    lines.push('\n<details>\n<summary>Latest Conversation Messages</summary>\n');
-    if (claudeResult.conversationLog?.length) {
-        lines.push('```');
-        claudeResult.conversationLog.slice(-3).forEach(msg => {
-            if (msg.type === 'assistant') {
-                const rawContent = msg.message?.content
-                    ?.map(block => block.text)
-                    .filter(Boolean)
-                    .join('\n') || '[content unavailable]';
-                const content = redactSecrets(rawContent);
-                const preview = content.substring(0, 200);
-                lines.push(`ASSISTANT: ${preview}${content.length > 200 ? '...' : ''}\n`);
-            }
-        });
-        lines.push('```');
-    }
-    lines.push('</details>\n');
-    return lines.join('\n') + '\n';
+/**
+ * Public pointer to the run's details. Container log paths, session ids and
+ * conversation excerpts stay on the task page; they are meaningless (and
+ * revealing) in a PR body or issue comment.
+ */
+function buildTaskLinkSection(taskUrl: string | undefined): string {
+    return taskUrl ? `[View task details and logs](${taskUrl})\n\n` : '';
 }
 
 export interface CompletionCommentParts {
@@ -385,7 +368,7 @@ export interface CompletionCommentParts {
     reviewDigest: ReviewDigest | null;
     /** Container-observed repository validation report. */
     validation: string;
-    /** Log file locations and the latest conversation messages. */
+    /** Link to the task page; empty when no task URL is known. */
     logs: string;
     /** Attribution line; generateCompletionComment puts a horizontal rule above it. */
     trailer: string;
@@ -401,10 +384,10 @@ export async function generateCompletionCommentParts(
     const timestamp = new Date().toISOString();
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
     const execution = await buildExecutionDetails(result, issueRef, timestamp);
-    let logs = '';
+    const logs = buildTaskLinkSection(options.taskUrl);
     try {
-        const logFiles = await createLogFiles(result, issueRef);
-        logs = buildLogFilesSection(logFiles, result);
+        // Files and Redis index stay available to the task page and operators.
+        await createLogFiles(result, issueRef);
     } catch (logError) {
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');

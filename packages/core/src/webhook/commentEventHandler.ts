@@ -100,9 +100,11 @@ type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 're
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { id?: number; login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
 
-function getCommentRevisionIdentity(comment: Pick<PRComment, 'updated_at' | 'body'>, eventType: CommentEventType): string {
+export function getCommentRevisionIdentity(comment: Pick<PRComment, 'updated_at' | 'body'>, eventType: CommentEventType): string {
     const contentDigest = createHash('sha256').update(`${eventType}\0${comment.body}`).digest('hex').slice(0, 12);
-    return `${comment.updated_at}:${contentDigest}`;
+    // Polled and synthesized comments may carry no updated_at; the identity
+    // (and the job/task id built from it) must never read "undefined".
+    return comment.updated_at ? `${comment.updated_at}:${contentDigest}` : contentDigest;
 }
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
@@ -208,6 +210,14 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
         if (jobCommentIds.includes(commentId)) { foundJob = job; break; }
     }
 
+    // ProPR edits the head commit's CI-failure comment to add later failures of
+    // that commit. A follow-up already queued or running for it covers the
+    // head; restarting it (or starting another) would only repeat the work.
+    if (isSystemCiFailureEdit(payload) && (foundJob || await isPendingBatchComment(redisClient, { owner, repo, prNumber }, commentId))) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'CI-failure comment updated while its follow-up is queued or running; not restarting');
+        return;
+    }
+
     if (foundJob) {
         correlatedLogger.info({ jobId: foundJob.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting existing job due to comment edit');
         const taskId = foundJob.id ?? `${owner}-${repo}-${prNumber}`;
@@ -218,6 +228,17 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     await redisClient.del(`pr-comment-processed:${owner}:${repo}:${prNumber}:${commentId}`);
     correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'Reprocessing edited comment');
     if (processCommentEventFn) await processCommentEventFn(payload, eventType, correlationId, config);
+}
+
+function isSystemCiFailureEdit(payload: IssueCommentEvent | PullRequestReviewCommentEvent): boolean {
+    return getSystemBotUsernames().has(payload.comment.user.login) && isCiFailureFollowupComment(payload.comment.body);
+}
+
+async function isPendingBatchComment(redisClient: Redis, pr: { owner: string; repo: string; prNumber: number }, commentId: number): Promise<boolean> {
+    const pending = await redisClient.lrange(getPendingPrCommentsKey(pr.owner, pr.repo, pr.prNumber), 0, -1).catch(() => [] as string[]);
+    return pending.some(entry => {
+        try { return (JSON.parse(entry) as { id?: number }).id === commentId; } catch { return false; }
+    });
 }
 
 interface SlashCommandComment { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }

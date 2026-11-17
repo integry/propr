@@ -8,7 +8,7 @@ import {
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel, getModelName,
     resolveModelAlias, getPendingPrCommentsKey,
     buildVisualPreviewPrompt, describeAgentTermination, resolveAgentTerminationReason,
-    sanitizeAgentReport, getPushFailure, formatPushFailureMarkdown,
+    sanitizeAgentReport, getPushFailure,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager, type VisualPreviewSettings,
 } from '@propr/core';
@@ -23,6 +23,7 @@ import type { CiSuspensionOctokit } from './followupCiSuspensionRuns.js';
 import { schedulePRCommentUsageLimitRetry } from './prCommentUsageLimitRecovery.js';
 import { automaticRetryFailureMetadata } from './prCommentAutomaticRetry.js';
 import { normalFailureHandoffMarkers } from './followupHandoffMarker.js';
+import { publishFollowupFailureComment } from './prCommentFailureComment.js';
 import type { FollowupHandoffRecord } from './followupHandoffStore.js';
 
 export async function fetchOriginalContributionDiscussion(
@@ -317,11 +318,10 @@ async function handleGenericError(error: Error, job: Job<CommentJobData>, option
     }
     if (octokit && startingWorkComment) {
         try {
-            const realCommentIds = filterRealComments(unprocessedComments).map(comment => comment.id);
-            const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
-            await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-                owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `${options.followupHandoff ? normalFailureHandoffMarkers(options.followupHandoff) + '\n\n' : ''}${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `An error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\``}\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
+            const prefix = `${options.followupHandoff ? normalFailureHandoffMarkers(options.followupHandoff) + '\n\n' : ''}${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}`;
+            await publishFollowupFailureComment({
+                octokit, repoOwner, repoName, pullRequestNumber, startingCommentId: startingWorkComment.data.id,
+                authorsText, comments: unprocessedComments, taskId, error, pushFailure, prefix,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');

@@ -45,6 +45,8 @@ let baseSha = 'base-sha';
 let emptyRepository = false;
 let workflowYaml = 'limits: { max_parallel_tasks: 1 }\nvalidation: [npm test]';
 const fakeGitHubRequest = async (route: string, params: { path?: string; body?: string }) => {
+  // Notice dedupe lists recent comments first; only posted comments are recorded.
+  if (route.startsWith('GET ') && route.endsWith('/comments')) return { data: [] };
   if (route.endsWith('/comments')) { githubComments.push(params.body!); return { data: liveIssue }; }
   if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: liveIssue };
   githubRequests!.push(route);

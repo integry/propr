@@ -104,8 +104,14 @@ function issueSeatConsumed(issue: DetectedIssue): boolean {
     return Boolean(actor && !BOT_LOGIN_PATTERN.test(actor));
 }
 
-function excludeLabelsFor(triggers: string[]): string[] {
-    return triggers.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`]);
+/**
+ * Markers that keep an issue out of admission. `-waiting` is a rate-limited
+ * task whose single delayed retry owns the issue: without it, ProPR's own
+ * label swap (an unrelated label event, admitted on the current labels)
+ * started a second task seconds after every rate-limit notice (#3556).
+ */
+export function excludeLabelsFor(triggers: string[]): string[] {
+    return triggers.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`, `${label}-waiting`]);
 }
 
 // Restoration evidence must show an application ordered after every stale

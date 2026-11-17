@@ -423,6 +423,18 @@ export function parsePublishableReview(
     return { cleaned, parsed };
 }
 
+/** One plain sentence saying why `parsePublishableReview` refused a reviewer response. */
+export function describeUnpublishableReview(body: string, options: Pick<PublicReviewRenderOptions, 'changedFilePaths'> = {}): string {
+    const cleaned = prepareReviewBody(body);
+    const scores = [...extractMarkdownSection(cleaned, 'Score').matchAll(SCORE_LINE_RE)].map(match => Number(match[2]));
+    if (!cleaned.trim()) return 'The reviewer returned an empty response.';
+    if (!hasExpectedSections(cleaned, MACHINE_CONTRACT.headings)) return 'The reviewer\'s response did not contain the required review sections in the expected order.';
+    if (scores.length !== 1 || !(scores[0] >= 1 && scores[0] <= 10)) return 'The reviewer\'s response did not contain exactly one score from 1 to 10.';
+    return parseContract(cleaned, MACHINE_CONTRACT).status !== 'invalid' && options.changedFilePaths
+        ? 'A merge blocker cited evidence outside the files this pull request changes.'
+        : 'A merge blocker or suggestion in the reviewer\'s response was missing required fields.';
+}
+
 /** The score a published review shows: the parsed score under any external cap. */
 export const publishedReviewScore = (score: number, scoreCap?: { maximum: number }): number =>
     Math.min(score, scoreCap?.maximum ?? 10);

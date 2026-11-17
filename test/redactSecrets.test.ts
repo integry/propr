@@ -419,7 +419,7 @@ test('redactSecrets redacts OpenAI project keys (sk-proj-)', () => {
 
 // --- End-to-end test for generateCompletionComment (Review warning: comment redaction) ---
 
-test('generateCompletionComment redacts secrets in summary, conversation preview, and raw output', async (t) => {
+test('generateCompletionComment redacts secrets in the summary and publishes no conversation preview', async (t) => {
     const githubToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
     const bearerToken = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
     const awsKey = 'AKIAIOSFODNN7EXAMPLE';
@@ -468,8 +468,8 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
 
     // Redaction placeholders should be present
     assert.ok(comment.includes('[REDACTED_GITHUB_TOKEN]'), 'GitHub redaction placeholder should appear in comment');
-    assert.ok(comment.includes('[REDACTED_BEARER_TOKEN]'), 'Bearer redaction placeholder should appear in comment');
-    assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
+    // The conversation preview is no longer published (#3622): its secrets never reach the comment.
+    assert.doesNotMatch(comment, /Latest Conversation Messages|ASSISTANT:/);
 });
 
 test('generateCompletionComment does not claim a PR exists when posted to an issue', async () => {

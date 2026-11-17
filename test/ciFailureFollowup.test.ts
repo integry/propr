@@ -127,8 +127,10 @@ describe('automatic failed-CI follow-up', () => {
         ]);
         assert.strictEqual(results.filter(result => result.posted).length, 1);
         assert.strictEqual(results.filter(result => result.reason === 'duplicate').length, 1);
-        assert.strictEqual(redis.set.mock.callCount(), 2);
-        assert.strictEqual(redis.del.mock.callCount(), 0);
+        // Two per-source claims; the winner alone also takes (and releases) the head lock.
+        const claimKey = (call: { arguments: unknown[] }) => String(call.arguments[0]).startsWith('ci-failure-followup:');
+        assert.strictEqual(redis.set.mock.calls.filter(claimKey).length, 2);
+        assert.strictEqual(redis.del.mock.calls.filter(claimKey).length, 0);
     });
 
     test('recognizes and strips only the hidden CI control marker', () => {

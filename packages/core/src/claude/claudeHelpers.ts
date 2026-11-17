@@ -14,6 +14,7 @@ export class UsageLimitError extends Error {
     resetTimestamp: number;
     retryable: boolean;
     rawErrorMessage?: string;
+    resetTimeStated?: boolean; // false: `resetTimestamp` is ProPR's estimate, not the provider's
     /**
      * The stream parsed up to the usage-limit event: the turns, token usage and
      * cost the run consumed before it was stopped, so they can still be recorded.
@@ -342,9 +343,9 @@ function handleRateLimitError(jsonLine: JsonLineMessage): void {
         const textItem = jsonLine.message.content.find(item => item.type === 'text' && item.text);
         if (textItem) messageText = textItem.text || '';
     }
-    const resetTimestamp = parseResetTimeFromMessage(messageText) || calculateNextRoundHourPlus2Minutes();
-    logger.warn({ messageText, resetTimestamp }, 'Claude rate limit reached (new format). Throwing specific error for requeue.');
-    throw new UsageLimitError(`Claude usage limit reached. Limit resets at timestamp ${resetTimestamp}.`, resetTimestamp, messageText || 'Rate limit reached');
+    const statedReset = parseResetTimeFromMessage(messageText), resetTimestamp = statedReset || calculateNextRoundHourPlus2Minutes();
+    logger.warn({ messageText, resetTimestamp, resetTimeStated: statedReset !== null }, 'Claude rate limit reached (new format). Throwing specific error for requeue.');
+    throw Object.assign(new UsageLimitError(`Claude usage limit reached. Limit resets at timestamp ${resetTimestamp}.`, resetTimestamp, messageText || 'Rate limit reached'), { resetTimeStated: statedReset !== null });
 }
 
 function processConversationMessage(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput, messageTimestamps: Map<string, string>): void {

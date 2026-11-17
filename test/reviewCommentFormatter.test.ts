@@ -97,7 +97,7 @@ describe('buildReviewComment', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
-                response: '## Actionable Findings\nNo actionable findings.\n\n## Score\nScore: 10/10',
+                response: '## Overall Evaluation\nLooks focused.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 8/10',
                 modelUsed: 'claude-sonnet',
                 executionTimeMs: 1000,
                 success: true,
@@ -504,7 +504,7 @@ describe('buildReviewComment', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
-                response: '## Overall Evaluation\nLooks focused.\n\n## Findings\n✅ **Positive** — Fine.\n\n## Score\n**Score: 8/10**',
+                response: '## Overall Evaluation\nLooks focused.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 8/10',
                 modelUsed: 'claude-sonnet',
                 executionTimeMs: 1200,
                 success: true,
@@ -586,7 +586,7 @@ describe('buildReviewComment', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             {
-                response: '## Overall Evaluation\nLooks focused.\n\n## Findings\n✅ **Positive** — Fine.\n\n## Score\n**Score: 8/10**',
+                response: '## Overall Evaluation\nLooks focused.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 8/10',
                 modelUsed: 'claude-opus-4-8',
                 executionTimeMs: 153000,
                 success: true,

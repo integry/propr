@@ -101,11 +101,10 @@ async function updateReviewCompletionComment(
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
 
     try {
-        const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${getModelName(r.assignment.model)}](${r.commentUrl})`).join('\n');
+        const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${getModelName(r.assignment.model)}](${r.commentUrl})${r.analysisResult.success ? '' : ' (failed)'}`).join('\n');
         const statusEmoji = failCount === 0 ? '✅' : '⚠️';
-        const statusText = failCount === 0
-            ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
-            : `Posted ${successCount} review${successCount > 1 ? 's' : ''}, ${failCount} failed`;
+        const posted = `Posted ${successCount} review${successCount === 1 ? '' : 's'}`;
+        const statusText = failCount === 0 ? posted : `${posted}, ${failCount} failed`;
         const completedEvidence = buildWorkEvidenceMarker(
             reviewResults.length > 0 && failCount === reviewResults.length ? 'failed' : 'completed',
             filterRealComments(state.unprocessedComments).map(comment => comment.id),

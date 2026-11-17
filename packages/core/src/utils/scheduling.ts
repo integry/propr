@@ -6,19 +6,23 @@ export function formatResetTime(resetTimestamp: number | null | undefined): stri
     return `${resetDate.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })} on ${resetDate.toLocaleDateString()}`;
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
 /**
  * Parse reset time from Claude rate limit message format.
- * Handles formats like "resets 1am (UTC)" or "resets 12pm (UTC)"
+ * Handles "resets 1am (UTC)", "resets 12:30pm (UTC)" and the dated weekly
+ * form "resets Nov 18, 4pm (UTC)" / "resets Nov 18 at 4pm (UTC)".
  * @returns Unix timestamp (seconds) or null if not parseable
  */
-export function parseResetTimeFromMessage(message: string): number | null {
-    // Match patterns like "resets 1am (UTC)", "resets 12pm (UTC)", "resets 1:00am (UTC)"
-    const match = message.match(/resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i);
+export function parseResetTimeFromMessage(message: string, now: Date = new Date()): number | null {
+    const match = message.match(/resets?\s+(?:(?:on\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i);
     if (!match) return null;
+    const [, monthName, dayText, hourText, minuteText, meridiem] = match;
 
-    const hours = parseInt(match[1], 10);
-    const minutes = match[2] ? parseInt(match[2], 10) : 0;
-    const isPM = match[3].toLowerCase() === 'pm';
+    const hours = parseInt(hourText, 10);
+    const minutes = minuteText ? parseInt(minuteText, 10) : 0;
+    const isPM = meridiem.toLowerCase() === 'pm';
+    if (hours < 1 || hours > 12 || minutes > 59) return null;
 
     // Convert to 24-hour format
     let hour24 = hours;
@@ -28,8 +32,19 @@ export function parseResetTimeFromMessage(message: string): number | null {
         hour24 = 0;
     }
 
+    if (monthName) {
+        const month = MONTHS.indexOf(monthName.slice(0, 3).toLowerCase());
+        const day = parseInt(dayText, 10);
+        if (month < 0 || day < 1 || day > 31) return null;
+        // The year is implied: the next such date that is not in the past.
+        let resetDate = new Date(Date.UTC(now.getUTCFullYear(), month, day, hour24, minutes, 0, 0));
+        if (resetDate.getTime() <= now.getTime() - 24 * 60 * 60 * 1000) {
+            resetDate = new Date(Date.UTC(now.getUTCFullYear() + 1, month, day, hour24, minutes, 0, 0));
+        }
+        return Math.floor(resetDate.getTime() / 1000);
+    }
+
     // Create date in UTC
-    const now = new Date();
     const resetDate = new Date(Date.UTC(
         now.getUTCFullYear(),
         now.getUTCMonth(),
@@ -66,14 +81,17 @@ export function calculateNextRoundHourPlus2Minutes(): number {
  * Format a Unix timestamp for display in a user-friendly format.
  * @returns String like "1:02 AM UTC"
  */
-export function formatRetryTime(timestamp: number): string {
+export function formatRetryTime(timestamp: number, nowMs: number = Date.now()): string {
     const date = new Date(timestamp * 1000);
-    return date.toLocaleString('en-US', {
+    const time = date.toLocaleString('en-US', {
         hour: 'numeric',
         minute: '2-digit',
         hour12: true,
         timeZone: 'UTC'
     }) + ' UTC';
+    // A reset on another day (a weekly limit) names its date.
+    const sameDay = new Date(nowMs).toISOString().slice(0, 10) === date.toISOString().slice(0, 10);
+    return sameDay ? time : `${date.toLocaleString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}, ${time}`;
 }
 
 /**

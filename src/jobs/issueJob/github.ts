@@ -71,7 +71,9 @@ export function isUnfinishedDispatchSibling(issueRef: IssueJobData, doneTag: str
 export function checkLabelConditions(currentLabels: string[], context: JobContext, ownTaskState?: string): LabelCheckResult {
   const { jobId, issueRef, AI_PRIMARY_TAG, AI_DONE_TAG } = context;
   if (currentLabels.includes(AI_DONE_TAG)) {
-    if (ownTaskState !== 'completed' && isUnfinishedDispatchSibling(issueRef, AI_DONE_TAG)) {
+    // A delayed rate-limit retry wakes long after its dispatch: the issue's
+    // done marker is current, not a sibling's in-flight result (#3556).
+    if (ownTaskState !== 'completed' && !issueRef.isRetryFromRateLimit && isUnfinishedDispatchSibling(issueRef, AI_DONE_TAG)) {
       logger.info({ jobId, issueNumber: issueRef.number, dispatchId: issueRef.dispatchId },
         `Issue has '${AI_DONE_TAG}' from a sibling model of the same request. Continuing.`);
       return { skip: false };

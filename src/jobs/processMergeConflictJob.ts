@@ -1,4 +1,4 @@
-import { stripStatusSlot } from '@propr/shared';
+import { describeFailureCause, stripStatusSlot } from '@propr/shared';
 import { startPRProcessingLockHeartbeat, releasePRProcessingLock } from './prProcessingLock.js';
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
@@ -13,8 +13,7 @@ import { ensureGitRepository } from '@propr/core';
 import { UsageLimitError, AgentRegistry } from '@propr/core';
 import type { MergeConflictJobData, JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
-import { getDefaultModel, NoDefaultModelConfiguredError } from '@propr/core';
-import { cleanupWorktree, formatPushFailureMarkdown, getPushFailure } from '@propr/core';
+import { cleanupWorktree, formatPushFailureMarkdown, getDefaultModel, getPushFailure, NoDefaultModelConfiguredError, redactSecrets } from '@propr/core';
 import {
     fetchMergeTaskPRInfo,
     updateMergeTaskWithKnownPRInfo,
@@ -38,6 +37,7 @@ import type { GitHubToken } from './githubTypes.js';
 import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
 import { runWithJobAgentCapacity } from './agentCapacityDeferral.js';
 import { checkMergeConflictAgentCapacity } from './mergeConflictCapacity.js';
+import { failureCommentKey, publishFailureComment, readPullRequestHeadSha, taskPageUrl } from './failureCommentDedupe.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 type MergeTaskPrInfo = { prTitle: string; linkedIssueNumber: number | null };
@@ -109,10 +109,11 @@ async function handleMergeJobError(error: Error, options: {
 
     if (octokit && startingCommentId) {
         try {
-            await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-                owner: repoOwner, repo: repoName, comment_id: startingCommentId,
-                body: `❌ **Failed to resolve merge conflicts** from \`${baseBranch}\` into \`${headBranch}\`\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `\`\`\`\n${errorMessage}\n\`\`\``}\n\n---\n_System-triggered merge conflict resolution_`,
-            });
+            const cause = pushFailure ? `push-rejected:${pushFailure.diagnosis.classification}` : redactSecrets(describeFailureCause(errorMessage));
+            const headSha = await readPullRequestHeadSha(octokit, { owner: repoOwner, repo: repoName, issueNumber: pullRequestNumber });
+            // Repeated identical failures on one head update the first notice with a count.
+            await publishFailureComment(octokit, { owner: repoOwner, repo: repoName, issueNumber: pullRequestNumber, startingCommentId, key: failureCommentKey({ kind: `merge-conflict:${baseBranch}`, headSha, cause }),
+                body: `❌ **Failed to resolve merge conflicts** from \`${baseBranch}\` into \`${headBranch}\`\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `**Cause:** ${cause}`}\n\n[View task details](${taskPageUrl(taskId)})\n\n---\n_System-triggered merge conflict resolution_` });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
         }

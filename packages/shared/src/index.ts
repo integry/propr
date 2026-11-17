@@ -594,6 +594,8 @@ export * from './extensionOAuth.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+export { describeFailureCause } from './failureCause.js';
+export { describeUsageLimitKind, formatTimeUntil } from './usageLimitText.js';
 export * from './planItemGraph.js';
 export {
   TOKEN_OUTLIER_MIN_HISTORY,

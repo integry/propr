@@ -12,7 +12,8 @@ import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
 import { redactSecrets } from '@propr/core';
-import { agentFailureLine } from '@propr/shared';
+import { agentFailureLine, describeFailureCause } from '@propr/shared';
+import { failureCommentKey, publishFailureComment, taskLinkOption } from './failureCommentDedupe.js';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
@@ -77,13 +78,14 @@ async function handleUnpublishableAgentFailure(options: {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
-    }, { publishedAs: 'issue_comment' });
+    }, { publishedAs: 'issue_comment', ...taskLinkOption(taskId) });
     const replacementSection = await prepareProviderReplacement({ taskId, error: claudeResult.error ?? errorMessage, fromAgentExecution: true, terminationReason: resolveAgentTerminationReason(claudeResult) ?? null, correlatedLogger });
-    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: issueRef.repoOwner,
-        repo: issueRef.repoName,
-        issue_number: issueRef.number,
-        body: `❌ **AI processing failed before producing publishable work.**\n\n${formatErrorBlock('System Error', errorMessage)}${completionComment}${replacementSection}`,
+    const cause = redactSecrets(describeFailureCause(errorMessage));
+    // A repeat of the same failure within the hour is counted on the first notice.
+    await publishFailureComment(octokit as never, {
+        owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number,
+        key: failureCommentKey({ kind: 'issue-agent-failure', cause }),
+        body: `❌ **AI processing failed before producing publishable work.**\n\n**Cause:** ${cause}\n\n${completionComment}${replacementSection}`,
     });
 
     return { success: false, pr: null, updatedLabels: [], error: errorMessage };

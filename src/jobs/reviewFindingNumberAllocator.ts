@@ -84,7 +84,8 @@ export async function buildReviewCommentWithReservedRecordRanges(
             reviewCommentBody: buildReviewErrorComment(
                 assignment.label,
                 assignment.model,
-                analysisResult.error || 'Unknown error',
+                analysisResult.error,
+                { taskUrl },
             ),
             findingCount: 0,
             suggestionCount: 0,

@@ -2,16 +2,21 @@ import { createHash } from 'node:crypto';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { getBotUsername, isAutoCiFollowupEnabledForRepository } from '../daemon/configLoader.js';
+import { isAutoCiFollowupEnabledForRepository } from '../daemon/configLoader.js';
 import logger from '../utils/logger.js';
-import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
+import {
+    buildCiFailureHeadKey, renderCiFailureHeadComment, stripCiFailureEntryMarkers, type CiFailureEntry,
+} from './ciFailureHeadComment.js';
+import { publishHeadFailure, withHeadLock, type CiFailureFollowupTiming } from './ciFailureHeadPublication.js';
 
+export type { CiFailureFollowupTiming } from './ciFailureHeadPublication.js';
+
+export const CI_FAILURE_DEDUPE_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
 const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-followup key="[a-f0-9]{64}" -->/gu;
-const DEDUPE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_EXCERPT_LENGTH = 1800;
 
 const FAILING_CHECK_RUN_CONCLUSIONS = new Set([
@@ -50,23 +55,26 @@ export interface CiFailureFollowupRequest {
     evidence: CiFailureEvidence;
 }
 
-interface CiFailureOctokit {
+export interface CiFailureOctokit {
     request: (route: string, parameters: Record<string, unknown>) => Promise<{ data: unknown }>;
     paginate?: (route: string, parameters: Record<string, unknown>) => Promise<unknown[]>;
 }
 
-type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'>;
+export type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'>;
+
 
 export interface CiFailureFollowupDependencies {
     isEnabled?: (owner: string, repo: string) => Promise<boolean>;
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
+    timing?: CiFailureFollowupTiming;
 }
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    reason: 'posted' | 'disabled' | 'duplicate' | 'cancellation_induced';
+    /** `merged`: added to the head commit's existing CI-failure comment, no new comment or follow-up. */
+    reason: 'posted' | 'merged' | 'disabled' | 'duplicate' | 'cancellation_induced';
     body?: string;
 }
 
@@ -143,33 +151,35 @@ export function isCiFailureFollowupComment(body: string | null | undefined): boo
 
 export function stripCiFailureFollowupMarker(body: string): string {
     CI_FAILURE_FOLLOWUP_MARKER_RE.lastIndex = 0;
-    return body.replace(CI_FAILURE_FOLLOWUP_MARKER_RE, '').trim();
+    return stripCiFailureEntryMarkers(body.replace(CI_FAILURE_FOLLOWUP_MARKER_RE, '')).trim();
 }
 
+function toCiFailureEntry(request: CiFailureFollowupRequest, failureExcerpt: string | undefined): CiFailureEntry {
+    const { evidence } = request;
+    return {
+        name: evidence.name,
+        state: evidence.state,
+        url: evidence.url,
+        source: evidence.source,
+        excerpt: truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.'),
+    };
+}
+
+/** The comment for the first failure of a head; `dedupeKey` is the head key. */
 export function buildCiFailureFollowupComment(
     request: CiFailureFollowupRequest,
     failureExcerpt: string | undefined,
-    dedupeKey = buildCiFailureDedupeKey(request),
+    dedupeKey = buildCiFailureHeadKeyFor(request),
 ): string {
-    const { evidence } = request;
-    const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
-    const shortSha = evidence.sha.slice(0, 12);
+    return renderCiFailureHeadComment({
+        owner: request.owner, repo: request.repo, sha: request.evidence.sha,
+        entries: [toCiFailureEntry(request, failureExcerpt)],
+        marker: buildCiFailureFollowupMarker(dedupeKey),
+    });
+}
 
-    return [
-        `CI failed: **${escapeInlineMarkdown(evidence.name)}**`,
-        '',
-        'Please investigate and fix this CI failure.',
-        '',
-        `- Check: \`${escapeInlineCode(evidence.name)}\``,
-        `- Result: \`${escapeInlineCode(evidence.state)}\``,
-        `- Commit: [\`${shortSha}\`](${evidence.url}) (\`${escapeInlineCode(evidence.sha)}\`)`,
-        `- Details: [View CI failure](${evidence.url})`,
-        '',
-        '**Failure evidence**',
-        ...excerpt.split('\n').map(line => `> ${line || ' '}`),
-        '',
-        buildCiFailureFollowupMarker(dedupeKey),
-    ].join('\n');
+function buildCiFailureHeadKeyFor(request: CiFailureFollowupRequest): string {
+    return buildCiFailureHeadKey({ owner: request.owner, repo: request.repo, prNumber: request.prNumber, sha: request.evidence.sha });
 }
 
 /**
@@ -208,24 +218,12 @@ export async function postCiFailureFollowup(
     let claimed = false;
 
     try {
-        const claim = await redis.set(redisKey, Date.now().toString(), 'EX', DEDUPE_TTL_SECONDS, 'NX');
+        const claim = await redis.set(redisKey, Date.now().toString(), 'EX', CI_FAILURE_DEDUPE_TTL_SECONDS, 'NX');
         if (claim !== 'OK') {
             log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up already claimed');
             return { posted: false, reason: 'duplicate' };
         }
         claimed = true;
-
-        try {
-            if (await hasExistingFollowupComment(octokit, request, dedupeKey)) {
-                log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
-                return { posted: false, reason: 'duplicate' };
-            }
-        } catch (error) {
-            // The atomic Redis claim still protects concurrent/redelivered
-            // events. A transient comment-list failure should not hide a new CI
-            // failure from the agent.
-            log.warn({ error: (error as Error).message }, 'Could not scan PR comments for an existing failed-CI follow-up');
-        }
 
         let annotations: CiFailureAnnotation[] = [];
         if (request.evidence.kind === 'check_run' && request.evidence.checkRunId != null) {
@@ -237,21 +235,15 @@ export async function postCiFailureFollowup(
                 log.warn({ error: (error as Error).message }, 'Could not load check-run annotations; using webhook output instead');
             }
         }
-        const annotationExcerpt = buildAnnotationExcerpt(annotations);
-        const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
-
-        await withRetry(
-            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: request.owner,
-                repo: request.repo,
-                issue_number: request.prNumber,
-                body,
-            }),
-            { maxAttempts: 3, baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, correlationId },
-            `post_ci_failure_followup_${request.owner}_${request.repo}_${request.prNumber}`,
-        );
-
-        log.info({ ...failureLogContext(request), dedupeKey }, 'Posted automatic failed-CI follow-up comment');
+        const entry = toCiFailureEntry(request, buildAnnotationExcerpt(annotations));
+        const headKey = buildCiFailureHeadKeyFor(request);
+        // One comment per head commit: the lock serializes the failures of one
+        // head so they merge into one comment instead of racing to post.
+        const outcome = await withHeadLock({ redis, headKey, timing: dependencies.timing, log },
+            () => publishHeadFailure({ octokit, redis, request, entry, headKey, correlationId, log }));
+        if (outcome.reason === 'merged' || outcome.reason === 'duplicate') return outcome;
+        const body = outcome.body;
+        log.info({ ...failureLogContext(request), dedupeKey, headKey }, 'Posted automatic failed-CI follow-up comment');
         return { posted: true, reason: 'posted', body };
     } catch (error) {
         if (claimed) {
@@ -294,30 +286,6 @@ async function isCancellationInduced(
         log.warn({ error: (error as Error).message }, 'Could not determine whether a failed check run was cancellation-induced; posting follow-up');
         return false;
     }
-}
-
-async function hasExistingFollowupComment(
-    octokit: CiFailureOctokit,
-    request: CiFailureFollowupRequest,
-    dedupeKey: string,
-): Promise<boolean> {
-    if (!octokit.paginate) return false;
-    const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: request.owner,
-        repo: request.repo,
-        issue_number: request.prNumber,
-        per_page: 100,
-    });
-    const marker = buildCiFailureFollowupMarker(dedupeKey);
-    const configuredBotUsernames = new Set(
-        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]'].filter(Boolean),
-    );
-    return comments.some(comment => {
-        if (!isRecord(comment) || typeof comment.body !== 'string' || !comment.body.includes(marker)) return false;
-        const user = isRecord(comment.user) ? comment.user : null;
-        const login = user && typeof user.login === 'string' ? user.login : '';
-        return configuredBotUsernames.has(login);
-    });
 }
 
 async function loadCheckRunAnnotations(
@@ -376,19 +344,11 @@ function truncate(value: string): string {
     return `${value.slice(0, MAX_EXCERPT_LENGTH - 1).trimEnd()}…`;
 }
 
-function escapeInlineCode(value: string): string {
-    return value.replace(/([\\`])/gu, '\\$1');
-}
-
-function escapeInlineMarkdown(value: string): string {
-    return value.replace(/([\\*_`[\]])/gu, '\\$1');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
 
-function failureLogContext(request: CiFailureFollowupRequest): Record<string, unknown> {
+export function failureLogContext(request: CiFailureFollowupRequest): Record<string, unknown> {
     return {
         owner: request.owner,
         repo: request.repo,

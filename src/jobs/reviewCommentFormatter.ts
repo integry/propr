@@ -15,7 +15,7 @@ import { formatFixCommand } from '@propr/shared';
 import type { ReviewAssignment } from './prReviewRunner.js';
 import { countFindingsByCategory, type ReviewFindingCategoryCounts } from './reviewFindingCategory.js';
 import {
-    FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parsePublishableReview, parseStructuredReview,
+    describeUnpublishableReview, FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parsePublishableReview, parseStructuredReview,
     publishedReviewScore, renderPublicReview,
 } from './reviewOutputParser.js';
 
@@ -208,8 +208,15 @@ export function buildReviewComment(
         firstSuggestionNumber: options.firstSuggestionNumber,
         changedFilePaths: options.changedFilePaths,
     });
+    if (publicResponse === null) {
+        // An invalid review is a failed review: one reason, the error marker,
+        // and no /fix instructions, so it is never counted as posted.
+        return buildReviewErrorComment(label, effectiveModel, describeUnpublishableReview(sanitizedResponse, {
+            changedFilePaths: options.changedFilePaths,
+        }), { taskUrl, invalidOutput: true });
+    }
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
+    comment += publicResponse;
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -339,17 +346,48 @@ function formatOmittedDiffFilesForComment(omittedFiles: string[], reasons: Omitt
     ].join('\n');
 }
 
+/** Fallback when a review fails without any usable error text. */
+export const UNKNOWN_REVIEW_FAILURE = 'The reviewer stopped without reporting an error.';
+
 /**
- * Build the GitHub comment body for a *failed* review.
+ * Reduce a raw review error to one plain sentence: first line only, no
+ * container paths, no upstream HTML, bounded length, never empty.
+ */
+export function summarizeReviewFailure(errorMessage: string | null | undefined): string {
+    const firstLine = (errorMessage ?? '')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/(?:\/usr\/src\/app|\/app|\/tmp|\/home\/[^/\s]+)\/\S*/g, '[path]')
+        .split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? '';
+    const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+    if (!collapsed) return UNKNOWN_REVIEW_FAILURE;
+    const bounded = collapsed.length > 300 ? `${collapsed.slice(0, 297).trimEnd()}...` : collapsed;
+    return /[.!?]$/.test(bounded) ? bounded : `${bounded}.`;
+}
+
+/** True when a review comment body is a failed or invalid review, not a posted review. */
+export function isReviewErrorComment(body: string): boolean {
+    return /<!-- propr:ai-review [^>]*\berror="true"/.test(body);
+}
+
+/**
+ * Build the GitHub comment body for a *failed* review. It always states a
+ * reason, carries the error marker, and has no /fix instructions.
  */
 export function buildReviewErrorComment(
     label: string,
     model: string,
-    errorMessage: string,
+    errorMessage: string | null | undefined,
+    options: { taskUrl?: string; invalidOutput?: boolean } = {},
 ): string {
+    const reason = summarizeReviewFailure(errorMessage);
+    const headline = options.invalidOutput
+        ? '⚠️ **Review output was invalid and could not be displayed safely.**'
+        : '❌ **Review failed.**';
+    const taskLink = options.taskUrl ? `[View Task](${options.taskUrl})\n\n` : '';
     return (
         `## 🔍 AI Code Review — ${label}\n\n` +
-        `❌ **Review failed:** ${errorMessage}\n\n` +
+        `${headline} ${reason}\n\n` +
+        taskLink +
         `<!-- propr:ai-review model="${model}" error="true" -->`
     );
 }
