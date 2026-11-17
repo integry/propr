@@ -15,6 +15,7 @@ import {
 } from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
+import { sameStatusSubject } from './pullRequestStatusSubject.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
 import {
     setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusRedisProvider, setPullRequestStatusSyncRunner,
@@ -163,9 +164,11 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
 /**
  * The status to write, whether a GitHub check read rejected while its facts
  * were read (PullRequestStatusChecks.readFailed), and whether ProPR created the
- * pull request (only its title is ever changed).
+ * pull request (only its title is ever changed). checksAwaitedForMs: the status
+ * waits this long for a new head's checks to appear; no webhook ends that wait
+ * in a repository without CI.
  */
-interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null }
+interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null; checksAwaitedForMs: number | null }
 
 async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
@@ -175,12 +178,10 @@ async function desiredStatus(
         await removeLeftoverUltrafixLabel(deps.github, repository, prNumber, pull);
         // Ownership decides only whether a slot left in the title is removed; a title without one is never read for it.
         const isPropr = hasStatusSlot(pull.title) && await isProprCreatedPullRequest(deps.sources.db, repository, { number: prNumber, head: pull.head });
-        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null };
+        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null, checksAwaitedForMs: null };
     }
-    const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
-    return {
-        status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest, epic: facts.epic,
-    };
+    const facts = await loadPullRequestStatusFacts(repository, prNumber, { now: () => deps.now().getTime(), ...deps.sources, github: deps.github }, pull);
+    return { status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest, epic: facts.epic, checksAwaitedForMs: facts.checksAwaitedForMs ?? null };
 }
 
 /**
@@ -198,12 +199,15 @@ function bodyWithStatus(current: string, status: PullRequestStatus | null, now: 
     return applyPullRequestStatusBlock(current, null);
 }
 
+const earliest = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : Math.min(a, b);
+
 /** GitHub is still computing mergeability, so the status cannot settle yet. */
 function awaitsMergeability(status: PullRequestStatus | null): boolean {
     return status?.state === 'working' && status.detail.activity === 'checking_mergeability';
 }
 
-interface SyncOutcome {
+/** checksAwaitedForMs: the status waits this long for the head's checks to appear (DesiredStatus). */
+interface SyncOutcome extends Pick<DesiredStatus, 'checksAwaitedForMs'> {
     result: PullRequestStatusSyncResult;
     awaitingMergeability: boolean;
     open: boolean;
@@ -213,7 +217,7 @@ interface SyncOutcome {
     checksReadFailed: boolean;
     /**
      * Update again after this many milliseconds: the title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle),
-     * or an epic has sub-PRs still to read (withEpicChildReadContinuation).
+     * an epic has sub-PRs still to read (withEpicChildReadContinuation), or the wait for a new head's checks ends.
      */
     titleSettleInMs: number | null;
 }
@@ -231,23 +235,6 @@ export class PullRequestChangedDuringStatusSyncError extends Error {
         super('The pull request kept changing while its status was read');
         this.name = 'PullRequestChangedDuringStatusSyncError';
     }
-}
-
-function mergeability(pull: PullRequestStatusPull): boolean | null {
-    return typeof pull.mergeable === 'boolean' ? pull.mergeable : null;
-}
-
-/**
- * The facts read for `read` still describe `latest`: same state, head, base
- * and mergeability. A push to the base branch changes neither the head nor
- * the state, but can make the pull request conflict: GitHub then reports a
- * different mergeability (or base tip), and a status computed from the old
- * value, such as ready, must not be written.
- */
-function sameStatusSubject(read: PullRequestStatusPull, latest: PullRequestStatusPull): boolean {
-    return read.state === latest.state && (read.merged === true) === (latest.merged === true) && read.head.sha === latest.head.sha
-        && mergeability(read) === mergeability(latest)
-        && read.base?.ref === latest.base?.ref && read.base?.sha === latest.base?.sha;
 }
 
 /**
@@ -300,8 +287,8 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
         const written = extractPullRequestStatusBlock(next) !== null;
         const bodyChanged = !(next === current || sameRenderedStatus(next, current));
         const read = {
-            awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
-            titleSettleInMs: withEpicChildReadContinuation(title.settleInMs, desired),
+            awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed, checksAwaitedForMs: desired.checksAwaitedForMs,
+            titleSettleInMs: withEpicChildReadContinuation(earliest(title.settleInMs, desired.checksAwaitedForMs), desired),
             notes: await epicSyncNotes(deps.redis, { repository, prNumber, lease }, desired, bodyChanged || title.title !== null),
         };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };
@@ -361,6 +348,12 @@ interface ScheduledSync {
     awaitedBaseSha: string | null;
     /** A reconciliation read (startup backfill), which no later transition may come to retry. */
     reconcile: boolean;
+    /**
+     * The published status waits for the head's checks to appear: no webhook
+     * comes to end that wait in a repository without CI, so a failed re-read
+     * is retried like a base push or a backfill.
+     */
+    awaitsChecks: boolean;
 }
 interface ScheduleTarget { repository: string; prNumber: number; key: string }
 const scheduled = new Map<string, ScheduledSync>();
@@ -396,17 +389,19 @@ function runScheduled(target: ScheduleTarget): void {
             // A rejected check read wrote "checks could not be read", which no
             // later transition may come to refresh after a base push or a backfill;
             // checks left unread by the page budget are no reason to read again.
-            if (outcome.checksReadFailed && (awaitedBaseSha !== null || entry.reconcile)) {
+            if (outcome.checksReadFailed && (awaitedBaseSha !== null || entry.reconcile || entry.awaitsChecks)) {
                 unsettled = true;
                 logger.warn({ repository, prNumber, retry: 'scheduled' }, 'The pull request checks could not be read for the status block');
             }
+            // A written wait is released only by a read that ended it; one whose checks could not be read ended nothing.
+            if (!(outcome.checksReadFailed && entry.awaitsChecks)) entry.awaitsChecks = outcome.checksAwaitedForMs !== null;
         })
         .catch(error => {
             // Another writer took the body lock mid-update, or the pull request
             // kept changing while it was read: re-read and write again.
             if (error instanceof PullRequestBodyLockLostError || error instanceof PullRequestChangedDuringStatusSyncError) entry.rerun = true;
-            // A failed read settles nothing; a base push or a backfill has no later transition to retry it.
-            else unsettled = awaitedBaseSha !== null || entry.reconcile;
+            // A failed read settles nothing; a base push, a backfill or a wait for checks has no later transition to retry it.
+            else unsettled = awaitedBaseSha !== null || entry.reconcile || entry.awaitsChecks;
             logger.warn({ repository, prNumber, error: (error as Error).message, retry: entry.rerun || unsettled ? 'scheduled' : 'next_transition' },
                 'Failed to update the pull request status block');
         })
@@ -453,7 +448,7 @@ function schedulePullRequestStatusSync(repository: string, number: number, optio
     const target = { repository, prNumber: number, key: prKey(repository, number) };
     let entry = scheduled.get(target.key);
     if (!entry) {
-        entry = { timer: null, dueAt: 0, running: false, rerun: false, refreshes: 0, awaitedBaseSha: null, reconcile: false };
+        entry = { timer: null, dueAt: 0, running: false, rerun: false, refreshes: 0, awaitedBaseSha: null, reconcile: false, awaitsChecks: false };
         scheduled.set(target.key, entry);
     }
     if (options.baseSha) {

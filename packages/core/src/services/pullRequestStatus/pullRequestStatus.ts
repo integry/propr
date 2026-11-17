@@ -89,6 +89,13 @@ export interface PullRequestStatusChecks {
      * incomplete without it, a limit no retry lifts.
      */
     readFailed?: boolean;
+    /**
+     * GitHub listed at least one check run or commit status for the head,
+     * non-blocking ones included; absent when not known. None listed is either
+     * a head whose checks have not started yet or a repository without CI
+     * (PullRequestStatusFacts.checksAwaitedForMs tells them apart).
+     */
+    reported?: boolean;
     passed: number;
     failed: number;
     pending: number;
@@ -179,8 +186,17 @@ export interface PullRequestStatusFacts {
     queuedJobs: number;
     ultrafix: PullRequestStatusUltrafix | null;
     checks: PullRequestStatusChecks;
+    /**
+     * The head lists no check yet, and checks may still appear for it (a push
+     * moments ago, in a repository that reports checks): the status waits this
+     * many more milliseconds for them, as it waits for pending ones. Null or
+     * absent: it does not wait (pullRequestStatusCheckWait).
+     */
+    checksAwaitedForMs?: number | null;
     /** Latest persisted review score, null when the PR was never reviewed. */
     latestReviewScore: number | null;
+    /** The head the latest review score was given for; null or absent when not recorded. */
+    latestReviewHeadSha?: string | null;
     /** Instance Ultrafix rating goal. */
     ratingGoal: number;
     /** Present for an epic pull request ProPR recorded for its plan. */
@@ -230,7 +246,7 @@ function taskActivity(task: PullRequestStatusTask): PullRequestActivity {
 function activeProprWork(facts: PullRequestStatusFacts): PullRequestActivity | null {
     const active = facts.tasks.find(task => isActiveTaskState(task.state));
     if (active) return taskActivity(active);
-    if (facts.ultrafix?.active) return facts.ultrafix.waitingForCi || facts.checks.pending > 0 ? 'waiting_for_ci' : 'ultrafix';
+    if (facts.ultrafix?.active) return facts.ultrafix.waitingForCi || checksOutstanding(facts) ? 'waiting_for_ci' : 'ultrafix';
     if (facts.queuedJobs > 0) return 'queued';
     return null;
 }
@@ -245,10 +261,26 @@ function stoppedUltrafix(facts: PullRequestStatusFacts): PullRequestStatusUltraf
     return loop;
 }
 
+/** Checks on the head have not concluded: some are pending, or none has appeared yet on a head that should have some. */
+function checksOutstanding(facts: PullRequestStatusFacts): boolean {
+    return facts.checks.pending > 0 || (facts.checksAwaitedForMs ?? 0) > 0;
+}
+
+function reviewBelowGoal(facts: PullRequestStatusFacts): boolean {
+    return facts.latestReviewScore !== null && facts.latestReviewScore < facts.ratingGoal;
+}
+
+/** The latest review score was given for an older head than the current one (a fix was pushed since). */
+function reviewForOlderHead(facts: PullRequestStatusFacts): boolean {
+    return !!facts.latestReviewHeadSha && facts.latestReviewHeadSha !== facts.pullRequest.headSha;
+}
+
 /**
  * A problem that is established whatever the checks still pending conclude:
  * no pending check can undo a failed run or check, a stopped loop, a conflict
- * or a recorded review score.
+ * or a review score of the current head. A score given for an older head is
+ * not established for the new one while its checks are outstanding: a fix was
+ * pushed, and the PR waits for its CI (computeSinglePullRequestStatus).
  */
 function confirmedAttentionReason(facts: PullRequestStatusFacts): PullRequestAttentionReason | null {
     const latest = facts.tasks[0];
@@ -256,7 +288,7 @@ function confirmedAttentionReason(facts: PullRequestStatusFacts): PullRequestAtt
     if (stoppedUltrafix(facts)) return 'ultrafix_stopped';
     if (facts.checks.failed > 0) return 'check_failed';
     if (facts.pullRequest.mergeable === false) return 'merge_conflict';
-    if (facts.latestReviewScore !== null && facts.latestReviewScore < facts.ratingGoal) return 'review_below_goal';
+    if (reviewBelowGoal(facts) && !(reviewForOlderHead(facts) && checksOutstanding(facts))) return 'review_below_goal';
     return null;
 }
 
@@ -271,7 +303,9 @@ function emptyDetail(facts: PullRequestStatusFacts): PullRequestStatusDetail {
  * Computes the status of a pull request from its facts. `ready` is only ever
  * reported once nothing is running, every blocking check on the current head
  * completed and passed, and GitHub has determined that the PR does not
- * conflict with its base; a review score alone never makes a PR ready.
+ * conflict with its base; a review score alone never makes a PR ready. A
+ * head that lists no check yet is waited on like pending checks while its
+ * checks may still appear (PullRequestStatusFacts.checksAwaitedForMs).
  */
 export function computePullRequestStatus(facts: PullRequestStatusFacts): PullRequestStatus {
     const base = emptyDetail(facts);
@@ -301,8 +335,9 @@ function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: Pul
         return { state: 'needs_attention', detail: { ...detail, reason, ultrafixStopped: stopped } };
     }
     // Nothing ProPR runs is left and nothing is known to be wrong: the checks
-    // still pending decide, so the PR is neither ready nor needs a person yet.
-    if (facts.checks.pending > 0) return { state: 'working', detail: { ...detail, activity: 'waiting_for_ci' } };
+    // still pending, or not yet started on a new head, decide, so the PR is
+    // neither ready nor needs a person yet.
+    if (checksOutstanding(facts)) return { state: 'working', detail: { ...detail, activity: 'waiting_for_ci' } };
     if (!facts.checks.complete) return { state: 'needs_attention', detail: { ...detail, reason: 'checks_unavailable' } };
     // Unknown mergeability has not established that the PR is free of conflicts.
     if (facts.pullRequest.mergeable === null) return { state: 'working', detail: { ...detail, activity: 'checking_mergeability' } };
