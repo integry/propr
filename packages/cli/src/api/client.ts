@@ -18,6 +18,7 @@ import {
 import {
   ApiError,
   createApiError,
+  InvalidApiResponseError,
   NetworkError,
   RequestCancelledError,
   TimeoutError,
@@ -50,6 +51,58 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms);
     signal?.addEventListener("abort", done, { once: true });
   });
+}
+
+function isJsonContentType(contentType: string): boolean {
+  return /^application\/(?:[\w.+-]+\+)?json\b/i.test(contentType.trim());
+}
+
+function looksLikeHtml(body: string): boolean {
+  return /^\s*<(?:!doctype\s+html|html|head|body)\b/i.test(body);
+}
+
+/**
+ * Reads a successful response body, accepting only what a ProPR API sends for
+ * `responseType`. An empty body (204, or an empty 200) reads as "" as before.
+ */
+async function readSuccessBody(response: Response, responseType: "json" | "csv"): Promise<unknown> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const text = await response.text();
+  if (text.length === 0) return "";
+  const invalid = () => new InvalidApiResponseError(response.status, contentType || undefined);
+  if (responseType === "csv") {
+    if (!/^text\/csv\b/i.test(contentType.trim()) || looksLikeHtml(text)) throw invalid();
+    return text;
+  }
+  if (!isJsonContentType(contentType)) throw invalid();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw invalid();
+  }
+}
+
+/**
+ * Reads the body of an error response. JSON becomes the structured error; an
+ * HTML page means the remote is not a ProPR API at all.
+ */
+async function readErrorBody(response: Response): Promise<ApiErrorResponse | undefined> {
+  const contentType = response.headers.get("content-type") ?? "";
+  let text = "";
+  try {
+    text = await response.text();
+  } catch {
+    return undefined;
+  }
+  if (/^text\/html\b/i.test(contentType.trim()) || looksLikeHtml(text)) {
+    throw new InvalidApiResponseError(response.status, contentType || undefined);
+  }
+  try {
+    return text ? JSON.parse(text) as ApiErrorResponse : undefined;
+  } catch {
+    // Response body is not JSON or empty
+    return undefined;
+  }
 }
 
 /**
@@ -137,6 +190,7 @@ export class ApiClient {
       timeout = this.defaultTimeout,
       signal,
       retry = true,
+      responseType = "json",
     } = options;
 
     // Build the full URL
@@ -145,7 +199,7 @@ export class ApiClient {
     // Build headers
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "Accept": "application/json",
+      "Accept": responseType === "csv" ? "text/csv" : "application/json",
       ...customHeaders,
     };
 
@@ -182,24 +236,11 @@ export class ApiClient {
 
         // Handle error responses
         if (!response.ok) {
-          let errorResponse: ApiErrorResponse | undefined;
-          try {
-            errorResponse = await response.json() as ApiErrorResponse;
-          } catch {
-            // Response body is not JSON or empty
-          }
-          throw createApiError(response.status, errorResponse);
+          throw createApiError(response.status, await readErrorBody(response));
         }
 
-        // Parse successful response
-        let data: T;
-        const contentType = response.headers.get("content-type");
-        if (contentType?.includes("application/json")) {
-          data = await response.json() as T;
-        } else {
-          // Handle non-JSON responses
-          data = await response.text() as unknown as T;
-        }
+        // Parse successful response; anything but a ProPR API body rejects.
+        const data = await readSuccessBody(response, responseType) as T;
 
         return {
           data,

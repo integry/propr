@@ -182,6 +182,8 @@ Configuration is stored in `~/.propr/config.json`.
 - Interactive `propr login` reuses an existing `gh` session, or launches `gh auth login` if none exists.
 - For a Personal Access Token, create a classic token at `https://github.com/settings/tokens` with the `repo` and `read:org` scopes.
 - `propr logout` clears the stored token.
+- When a remote is configured, `propr login` checks the token against that remote's API before reporting success. A token the remote rejects is not saved (exit 1). If the remote cannot be reached, the token is saved and the CLI says it could not be verified.
+- If the remote URL points at something other than a ProPR API, such as the Web UI host, backend commands print one line, "The remote did not return a ProPR API response. Check the URL with `propr remote`.", and exit 1.
 
 ## Global Options
 
@@ -224,6 +226,7 @@ Run `propr runtime packages verify` after replacing or pulling an agent base ima
 
 ```bash
 propr plan list                                  # List plans for the default project
+propr plan list -l 50 --offset 50                # Page through plans (max 100 per page)
 propr plan create "Add dark mode" --wait         # Create a plan and wait for generation
 propr plan create "Fix bug" -b develop           # Target a specific branch
 propr plan get <draft-id>                        # Plan details (--json for JSON)
@@ -532,7 +535,7 @@ propr stats review-scores --period 30d [--repository owner/repo] [--json]  # Rev
 propr stats cost --period 30d [--repository owner/repo] [--group-by day,model] [--json|--csv]  # Recorded LLM cost export
 propr pr readiness <number> [-p owner/repo] [--json]  # Read-only readiness verdict with a reason code per gate
 propr events list [-p owner/repo] [--after-cursor <c>] [--from-start] [--domain d] [--type t] [--pr n] [--plan id] [--json] [--follow]  # Repository change events after a cursor
-propr events wait [same filters] [--timeout 15] [--json] [--follow]  # Wait (max 30s per request) for a matching event; exit 2 on timeout
+propr events wait [same filters] [--timeout 15] [--json] [--follow]  # Wait (max 30s per request) for a matching event; exit 2 on timeout. With --follow, waits start at least 1 s apart
 ```
 
 Settings keys:

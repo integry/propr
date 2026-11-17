@@ -353,8 +353,10 @@ Examples:
           console.log("");
         }
 
+        const { reportLoginVerification } = await import("./auth/verifyToken.js");
+        const outcome = await reportLoginVerification(configManager, token);
+        if (!outcome.save) process.exit(outcome.exitCode);
         await configManager.setGithubToken(token);
-        console.log("Authentication successful!");
         console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
         return;
       }
@@ -372,6 +374,11 @@ Examples:
       console.log("");
       console.log(result.message);
       console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
+      if (result.token) {
+        const { reportLoginVerification } = await import("./auth/verifyToken.js");
+        const outcome = await reportLoginVerification(configManager, result.token, { alreadySaved: true });
+        if (outcome.exitCode !== 0) process.exit(outcome.exitCode);
+      }
     } catch (error) {
       console.error(`Error during login: ${(error as Error).message}`);
       process.exit(1);

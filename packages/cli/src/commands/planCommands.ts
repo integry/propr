@@ -7,7 +7,6 @@
 
 import { Command } from "commander";
 import {
-  listPlans,
   createPlan,
   getPlan,
   deletePlan,
@@ -20,13 +19,14 @@ import {
   PlanStatus,
 } from "../api/index.js";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { resolveProject, ProjectResolutionError, printOutput, parsePositiveInteger } from "../utils/index.js";
+import { listPlansWindow, PLAN_LIST_MAX_LIMIT } from "../api/plans.js";
 import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a plan status for display with color hints.
  */
-function formatStatus(status: PlanStatus): string {
+export function formatStatus(status: PlanStatus): string {
   const statusMap: Record<PlanStatus, string> = {
     draft: "Draft",
     review: "Review",
@@ -39,6 +39,29 @@ function formatStatus(status: PlanStatus): string {
     failed: "Failed",
   };
   return statusMap[status] || status;
+}
+
+class PlanListUsageError extends Error {}
+
+/** Validate `plan list --limit/--offset`. */
+export function parsePlanListWindow(options: { limit?: string; offset?: string }): { limit?: number; offset?: number } {
+  let limit: number | undefined;
+  let offset: number | undefined;
+  try {
+    if (options.limit !== undefined) limit = parsePositiveInteger(options.limit, "--limit");
+  } catch (error) {
+    throw new PlanListUsageError((error as Error).message);
+  }
+  if (limit !== undefined && limit > PLAN_LIST_MAX_LIMIT) {
+    throw new PlanListUsageError(`--limit must be at most ${PLAN_LIST_MAX_LIMIT}.`);
+  }
+  if (options.offset !== undefined) {
+    if (!/^\d+$/.test(options.offset) || !Number.isSafeInteger(Number(options.offset))) {
+      throw new PlanListUsageError("--offset must be a non-negative integer.");
+    }
+    offset = Number(options.offset);
+  }
+  return { limit, offset };
 }
 
 /**
@@ -154,19 +177,24 @@ Examples:
     .command("list")
     .description("List all implementation plans for a project")
     .option("-p, --project <project>", "Target project (owner/repo)")
+    .option("-l, --limit <limit>", `Maximum number of plans to show (max ${PLAN_LIST_MAX_LIMIT}; server default 10)`)
+    .option("--offset <offset>", "Number of plans to skip, newest first (default 0)")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Examples:
   $ propr plan list                    # Use default project
   $ propr plan list -p myorg/myrepo    # Specify project
+  $ propr plan list -l 50              # Show 50 plans
+  $ propr plan list -l 50 --offset 50  # The next 50
   $ propr plan list --json             # JSON output
 `)
-    .action(async (options: { project?: string; json?: boolean }) => {
+    .action(async (options: { project?: string; limit?: string; offset?: string; json?: boolean }) => {
       try {
+        const window = parsePlanListWindow(options);
         const configManager = await createConfigManager();
         const project = resolveProject(options, configManager);
 
-        const result = await listPlans(project);
+        const result = await listPlansWindow(project, window);
 
         if (options.json) {
           console.log(JSON.stringify(result, null, 2));
@@ -194,7 +222,7 @@ Examples:
         );
         const statusWidth = Math.max(
           "Status".length,
-          ...result.drafts.map((p: PlanSummary) => p.status.length)
+          ...result.drafts.map((p: PlanSummary) => formatStatus(p.status).length)
         );
 
         const header = `${"ID".padEnd(idWidth)}  ${"Name".padEnd(nameWidth)}  ${"Status".padEnd(statusWidth)}`;
@@ -203,18 +231,20 @@ Examples:
 
         for (const p of result.drafts) {
           console.log(
-            `${p.draft_id.padEnd(idWidth)}  ${p.name.padEnd(nameWidth)}  ${p.status.padEnd(statusWidth)}`
+            `${p.draft_id.padEnd(idWidth)}  ${p.name.padEnd(nameWidth)}  ${formatStatus(p.status).padEnd(statusWidth)}`
           );
         }
 
+        const offset = result.offset ?? (result.page - 1) * result.limit;
         console.log("");
-        console.log(`Total: ${result.total} plan(s)`);
+        console.log(`Showing ${offset + 1}-${offset + result.drafts.length} of ${result.total} plan(s)`);
 
         if (result.hasMore) {
-          console.log(`Showing page ${result.page} of results. More plans available.`);
+          const next = offset + result.drafts.length;
+          console.log(`More plans available. Use --offset ${next}${window.limit === undefined ? "" : ` --limit ${window.limit}`} to show the next page.`);
         }
       } catch (error) {
-        if (error instanceof ProjectResolutionError) {
+        if (error instanceof ProjectResolutionError || error instanceof PlanListUsageError) {
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
