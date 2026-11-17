@@ -302,13 +302,24 @@ test('390px completed PR: inspect the review, then open and close an added file\
     const back = await swipe(near, 300, 0);
     expect(back.top).toBe(start.bottom);
     expect(back.left).toBeLessThan(across.left);
-    expect(await swipe(near, 300, 0)).toEqual({ top: start.bottom, left: 0 });
+    // How far one swipe carries depends on its fling, which depends on how evenly the input lands, so each edge is reached
+    // by swiping on until it is there: every swipe moves toward it along one axis only, and a few are always enough.
+    const swipeTo = async (from: { x: number; y: number }, dx: number, dy: number, reached: (at: { top: number; left: number }) => boolean,
+      still: (at: { top: number; left: number }) => void) => {
+      for (let swipes = 0; swipes < 6; swipes++) {
+        const landed = await swipe(from, dx, dy);
+        still(landed);
+        if (reached(landed)) return landed;
+      }
+      throw new Error('The diff did not reach its edge after six swipes');
+    };
+    await swipeTo(near, 300, 0, ({ left }) => left === 0, ({ top }) => expect(top).toBe(start.bottom));
     const high = { x: Math.round(centre.x), y: Math.round(diffBox.y + diffBox.height / 4) };
     const up = await swipe(high, 0, 200);
     expect(up.left).toBe(0);
     expect(up.top).toBeLessThan(start.bottom);
     const low = { x: high.x, y: Math.round(diffBox.y + diffBox.height * 3 / 4) };
-    for (let swipes = 0; swipes < 2; swipes++) expect((await swipe(low, 0, -200)).left).toBe(0);
+    await swipeTo(low, 0, -200, ({ top }) => top === start.bottom, ({ left }) => expect(left).toBe(0));
     expect((await position()).top).toBe(start.bottom);
   } else {
     // Other engines bring the start of the lines back with the same real wheel input, carried on past it.
