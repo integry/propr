@@ -190,3 +190,20 @@ test('readiness is served only for an enabled configured repository, under its c
   assert.deepEqual(evaluated, ['acme/app#7']);
   assert.deepEqual(checked, ['acme/app']);
 });
+
+test('the response echoes the configured name even when the evaluator reports GitHub\'s spelling', async () => {
+  await database.migrate.latest();
+  const routes = createPullRequestReadinessRoutes({
+    db: database,
+    configuredRepositories: async () => [{ name: 'Acme/App', enabled: true }],
+    verifyAccess: allowAccess,
+    // Like the core evaluator, report the identity GitHub returned for the pull request.
+    evaluate: async (_owner, _repo, number) => ({ repository: 'acme/app', number, verdict: 'ready' }) as never,
+  });
+
+  const sent = await invoke(routes.getReadiness, { number: '3' }, { repository: 'acme/APP' });
+  assert.equal(sent.status, 200);
+  assert.equal((sent.body as { repository: string }).repository, 'Acme/App');
+  assert.equal((sent.body as { number: number }).number, 3);
+  assert.equal((sent.body as { verdict: string }).verdict, 'ready');
+});

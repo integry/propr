@@ -70,7 +70,9 @@ export function createPullRequestReadinessRoutes({ db, evaluate = evaluatePullRe
     if (repository === null) return;
     const [owner, repo] = repository.split('/');
     try {
-      res.json(await evaluate(owner, repo, prNumber, { loadReviewScores }));
+      // The evaluator keys its own reads by GitHub's spelling; the response echoes the configured name.
+      const readiness = await evaluate(owner, repo, prNumber, { loadReviewScores });
+      res.json({ ...readiness, repository });
     } catch (error) {
       const failure = readinessFailure(error);
       if (failure.status === 500) console.error('Error in /api/pull-requests/:number/readiness:', error);
