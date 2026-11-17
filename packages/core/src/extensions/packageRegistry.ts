@@ -6,7 +6,7 @@ import {
   EXTENSION_LIMITS, extensionPackageBinSchema, extensionPackageIntegritySchema, extensionPackageNameSchema, extensionPackageVersionSchema,
   type ExtensionPackageResolution,
 } from '@propr/shared';
-import { resolveExtensionEndpoint } from './endpointPolicy.js';
+import { pinnedLookup, resolveExtensionEndpoint } from './endpointPolicy.js';
 import { ExtensionError } from './extensionProfileStore.js';
 
 /** The public npm registry. Private registries and registry credentials are out of scope. */
@@ -27,15 +27,22 @@ export function npmRegistryUrl(environment: NodeJS.ProcessEnv = process.env): { 
   return { url: url.toString().replace(/\/+$/, ''), operator: true };
 }
 
-/** One bounded GET without redirects, cookies or credentials. The public registry is dialled only at its vetted address. */
-async function registryGet(target: string, operator: boolean): Promise<{ status: number; body: Buffer }> {
+type RegistryVetting = (endpoint: string) => Promise<{ address: string; family: number }>;
+
+/**
+ * One bounded GET without redirects, cookies or credentials. The public
+ * registry is dialled only at its vetted address. `vet` is the public-address
+ * check; it is replaceable only so tests can point the pinned dial at a local
+ * server.
+ */
+export async function registryGet(target: string, operator: boolean, vet: RegistryVetting = endpoint => resolveExtensionEndpoint(endpoint)): Promise<{ status: number; body: Buffer }> {
   const url = new URL(target);
   let options: https.RequestOptions = {};
   if (!operator) {
     // The public registry is HTTPS on 443 and must resolve to public addresses only.
-    const { address, family } = await resolveExtensionEndpoint(`${url.origin}${url.pathname}`);
+    const { address, family } = await vet(`${url.origin}${url.pathname}`);
     const host = url.hostname.replace(/^\[|\]$/g, '');
-    options = { servername: isIP(host) ? undefined : host, lookup: (_host, _options, callback) => callback(null, address, family) };
+    options = { servername: isIP(host) ? undefined : host, lookup: pinnedLookup(address, family) };
   }
   const transport = url.protocol === 'http:' ? http : https;
   return new Promise((resolve, reject) => {
