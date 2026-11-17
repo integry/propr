@@ -168,6 +168,7 @@ export * from './webhook/pullRequestReadiness.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';
+export { ciFailureRequestRevision, currentCiFailureRequestBody, type CiFailureRequestRevision } from './webhook/ciFailureCommentRevision.js';
 export * from './webhook/closedPullRequestCi.js';
 export { retryPendingEpicMergeProgress } from './webhook/epicPRHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, getWebhookDeliveryInterest, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';

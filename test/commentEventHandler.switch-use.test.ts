@@ -196,6 +196,8 @@ const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js'
 const { applyPendingCommentCommandContext, pickUpPendingCommentsWithClaim } = await import(
     '../src/jobs/prPendingComments.js'
 );
+const { validateAndFilterComments } = await import('../src/jobs/prCommentJobHelpers.js');
+type UnprocessedCommentLike = { id: number; body: string; author: string };
 
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
@@ -418,6 +420,51 @@ describe('commentEventHandler — automatic CI follow-up marker', () => {
         await handleCommentEdited(ciFailureEdit(['Lint', 'Typecheck'], '2026-11-17T08:01:00Z'), 'issue_comment', 'corr-ci-claimed-edit', config);
         assert.strictEqual(reprocess.mock.callCount(), 1, 'the edited comment is processed again so its new failure is not lost');
         mockActiveJobs = [];
+    });
+
+    test('a queued CI follow-up runs on the failures added to its comment before pickup, without a restart (F8)', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: { head: { ref: 'feature-branch' }, labels: [] } }));
+        const redisClient = createListRedis();
+        const reprocess = mock.fn(async () => ({ status: 'accepted' }));
+        const config = createTestConfig({ redisClient, processCommentEvent: reprocess });
+
+        // The first failed check creates the head's comment and queues its follow-up.
+        const first = ciFailureEdit(['Lint'], '2026-11-17T08:00:00Z');
+        await processCommentEvent(first, 'issue_comment', 'corr-ci-queued', config);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const [, jobData] = mockQueueAdd.mock.calls[0].arguments as unknown as [string, { comments: UnprocessedCommentLike[] }];
+        const queuedBody = jobData.comments[0].body;
+        const remove = mock.fn(async () => {});
+        mockDelayedJobs = [{ id: 'pr-comments-batch-queued', name: 'processPullRequestComment', data: jobData, remove }];
+
+        // Before pickup another check fails and ProPR adds it to the same comment.
+        const edited = ciFailureEdit(['Lint', 'Typecheck'], '2026-11-17T08:01:00Z');
+        await handleCommentEdited(edited, 'issue_comment', 'corr-ci-queued-edit', config);
+        assert.strictEqual(remove.mock.callCount(), 0, 'the queued follow-up is not removed');
+        assert.strictEqual(reprocess.mock.callCount(), 0, 'and not restarted');
+        assert.ok(!redisClient.set.mock.calls.some(call => String(call.arguments[0]).startsWith('worker:abort:')), 'nor aborted');
+
+        // The worker claims the job and reads the PR's comments from GitHub.
+        const onGitHub = (event: typeof edited) => ({ id: event.comment.id, body: event.comment.body, updated_at: event.comment.updated_at, user: { login: event.comment.user.login } });
+        const [picked] = await validateAndFilterComments(jobData.comments as never, [onGitHub(edited)], 42, mockLoggerInstance as never);
+        assert.match(picked.body, /Lint.*Typecheck/, 'the run input lists both failures');
+        assert.doesNotMatch(picked.body, /propr:ci-failure-followup/);
+
+        // An unchanged comment yields exactly the queued request (same normalization as intake).
+        const [unchanged] = await validateAndFilterComments(jobData.comments as never, [onGitHub(first)], 42, mockLoggerInstance as never);
+        assert.strictEqual(unchanged.body, queuedBody);
+
+        // Only ProPR's own comment carries the request: a copy under another author changes nothing.
+        const copied = { ...onGitHub(edited), user: { login: 'someone-else' } };
+        const [kept] = await validateAndFilterComments(jobData.comments as never, [copied], 42, mockLoggerInstance as never);
+        assert.strictEqual(kept.body, queuedBody);
+        mockDelayedJobs = [];
     });
 
     test('does not let an unrelated bot use the CI marker to bypass author filtering', async () => {

@@ -25,6 +25,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 import { refreshPendingComment } from './pendingCommentRefresh.js';
+import { ciFailureRequestRevision } from './ciFailureCommentRevision.js';
 import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
 
 export interface UltrafixDeps {
@@ -214,9 +215,12 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     // ProPR edits the head commit's CI-failure comment to add later failures of
     // that commit. A follow-up already queued or running for it covers the
     // head; restarting it (or starting another) would only repeat the work.
-    // A waiting batch record first takes the edited body, so the batch that
-    // claims it carries every failure listed on the comment; when the record is
-    // claimed under the update, the edit is handled normally instead.
+    // The edit is not written into the queued job: the worker re-reads the
+    // comment from GitHub after it claims the job, right before it builds the
+    // request, and runs on that revision (currentCiFailureRequestBody), so a
+    // claim racing this edit cannot lose it. A waiting batch record first takes
+    // the edited body; when the record is claimed under the update, the edit is
+    // handled normally instead.
     if (isSystemCiFailureEdit(payload) && (foundJob || await refreshPendingCiFailureComment(payload, config, { owner, repo, prNumber, eventType }))) {
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'CI-failure comment updated while its follow-up is queued or running; not restarting');
         return;
@@ -244,9 +248,7 @@ async function refreshPendingCiFailureComment(
     pr: RepoContext & { eventType: CommentEventType },
 ): Promise<boolean> {
     const { comment } = payload;
-    const proofBody = stripCiFailureFollowupMarker(comment.body);
-    const keywords = config.PR_FOLLOWUP_TRIGGER_KEYWORDS;
-    const body = keywords.length > 0 ? stripKeywordsFromBody(proofBody, keywords) : proofBody;
+    const { body, proofBody } = ciFailureRequestRevision(comment.body, config.PR_FOLLOWUP_TRIGGER_KEYWORDS);
     const outcome = await refreshPendingComment(config.redisClient, pr, comment.id, {
         body,
         proofBody,
