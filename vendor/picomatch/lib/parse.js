@@ -198,6 +198,40 @@ const hasUnboundedWildcard = branch => {
   return false;
 };
 
+/**
+ * [extglobguard] GHSA-fc5q-39xc-vjpf: true when the tokens parse() emitted for
+ * a repeated extglob's body hold a live `*` wildcard (star/globstar) or a regex
+ * `+` quantifier. This reads the parser's own result, so it follows its bracket
+ * rules exactly: an unclosed `[` (`+([*)`) and a `[` inside a class
+ * (`+([[]*)`) are literal, and the `*` after them still counts. The same holds
+ * for a `"` swallowed by a run of plain text (`+(a"*)`), which never opens a
+ * quote. `hasUnboundedWildcard` scans the source text instead and stays in the
+ * check, because it also flags literal `+` signs that close nested repeats
+ * (`+(+(+))`). Nested extglob openers are left to the recursion check, and
+ * tokens emptied by an inner literalized extglob no longer reach the output.
+ */
+
+const hasUnboundedToken = tokens => {
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const next = tokens[i + 1];
+
+    if (next && next.type === 'paren' && next.extglob === true && next.value === '(') {
+      continue;
+    }
+
+    if ((tok.type === 'star' || tok.type === 'globstar') && tok.value !== '') {
+      return true;
+    }
+
+    if (tok.type === 'plus' && tok.value === '+' && tok.output === undefined) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const hasRepeatedCharPrefixOverlap = branches => {
   const values = branches.map(normalizeSimpleBranch).filter(Boolean);
 
@@ -343,7 +377,7 @@ const repeatedExtglobRecursion = pattern => {
   return depth;
 };
 
-const analyzeRepeatedExtglob = (body, options) => {
+const analyzeRepeatedExtglob = (body, options, tokens = []) => {
   if (options.maxExtglobRecursion === false) {
     return { risky: false };
   }
@@ -405,7 +439,7 @@ const analyzeRepeatedExtglob = (body, options) => {
   // [extglobguard] GHSA-fc5q-39xc-vjpf: checked for every branch count, since a
   // single branch such as `+(*)` or `+(*a)` is enough to nest an unbounded
   // quantifier inside the repeat. Risky extglobs are matched literally.
-  if (branches.some(hasUnboundedWildcard)) {
+  if (branches.some(hasUnboundedWildcard) || hasUnboundedToken(tokens)) {
     return { risky: true };
   }
 
@@ -605,7 +639,7 @@ const parse = (input, options) => {
   const extglobClose = token => {
     const literal = input.slice(token.startIndex, state.index + 1);
     const body = input.slice(token.startIndex + 2, state.index);
-    const analysis = analyzeRepeatedExtglob(body, opts);
+    const analysis = analyzeRepeatedExtglob(body, opts, tokens.slice(token.tokensIndex + 2));
 
     if ((token.type === 'plus' || token.type === 'star') && analysis.risky) {
       const safeOutput = analysis.safeOutput

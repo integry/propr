@@ -74,8 +74,16 @@ The only code change for the advisory is in `lib/parse.js`:
   bare `*` wildcard or `+` quantifier (one not opening a nested `*(...)` or
   `+(...)` extglob), at any group depth, outside escapes, quotes and bracket
   expressions;
+- a second helper, `hasUnboundedToken(tokens)`, true when the tokens `parse()`
+  emitted for the extglob's body hold a live `*` wildcard or regex `+`
+  quantifier. It reads the parser's own result, so its bracket and quote rules
+  are the parser's: `hasUnboundedWildcard` alone misses the `*` after an
+  unclosed `[` (`+([*)`), after a `[` inside a class (`+([[]*)`) and after a
+  `"` that a run of plain text swallows (`+(a"*)`), which compile to
+  `(?:\[[^/]*?)+`-style regexes;
 - one check at the end of `analyzeRepeatedExtglob`, for every branch count:
-  `if (branches.some(hasUnboundedWildcard)) return { risky: true };`.
+  `if (branches.some(hasUnboundedWildcard) || hasUnboundedToken(tokens)) return { risky: true };`,
+  with `extglobClose` passing the body's tokens.
 
 A risky `+(...)`/`*(...)` extglob is matched as literal text by the existing
 upstream code path, the same treatment upstream already gives `+(*|?)` or
