@@ -374,6 +374,8 @@ export interface AgentExecutionResult {
     /** Why an otherwise publishable implementation run stopped before completion. */
     terminationReason?: AgentTerminationReason;
     commitMessage?: string | null;
+    /** Set when the small summary-selection call decided the published summary. */
+    summarySelection?: 'selected' | 'none';
     prompt?: string;
 
     // Conversation log for execution analysis
