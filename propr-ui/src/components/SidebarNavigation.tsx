@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, ChevronDown, ChevronRight,
@@ -61,7 +61,7 @@ function getResourceNavigation(
   canReadMcpLog: boolean,
 ): NavEntry[] {
   const navigation: NavEntry[] = [{ name: 'Repositories', href: '/repositories', icon: BookMarked }];
-  if (canManageAgents) navigation.push({ name: 'Coding Agents', href: '/ai-agents', icon: Bot });
+  if (canManageAgents) navigation.push({ name: 'Coding agents', href: '/ai-agents', icon: Bot });
   const logs: NavItem[] = [{ name: 'LLM Log', href: '/llm-logs', icon: Cpu }];
   // The MCP access log is readable only by operators who may manage the
   // instance — the same permission /api/admin/mcp/logs itself requires.
@@ -117,7 +117,7 @@ function WorkCountBadge({ name, taskCount, goalCount }: { name: string; taskCoun
 
 function getReadinessMessage(name: string, state: NavigationState): string | null {
   if (name === 'Repositories' && !state.hasRepos) return 'No repositories configured';
-  if (name === 'Coding Agents' && !state.hasAgents) return 'No AI agents configured';
+  if (name === 'Coding agents' && !state.hasAgents) return 'No coding agents configured';
   if (name === 'Tasks' && state.taskCount === 0 && !state.hasTasks && state.hasAgents && state.hasRepos) {
     return 'No tasks created yet';
   }
@@ -273,21 +273,56 @@ function NavigationEntry({ entry, state }: { entry: NavEntry; state: NavigationS
     : <NavigationItem item={entry} state={state} />;
 }
 
+/** Whether a scroller has content below its visible part, kept current on scroll and resize. */
+function useScrollableBelow() {
+  const [below, setBelow] = useState(false);
+  const elementRef = useRef<HTMLElement | null>(null);
+  const update = useCallback(() => {
+    const element = elementRef.current;
+    setBelow(Boolean(element && element.scrollTop + element.clientHeight < element.scrollHeight - 1));
+  }, []);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((element: HTMLElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    elementRef.current = element;
+    if (!element) return;
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    for (const child of Array.from(element.children)) observer.observe(child);
+    observerRef.current = observer;
+  }, [update]);
+  return useMemo(() => ({ below, ref, update }), [below, ref, update]);
+}
+
 /**
  * The sidebar's two navigation zones: the core workflow, then the technical
  * resources. They are separated by whitespace — never a divider line.
  */
-export function SidebarNavigation({ state, permissions }: {
+export function SidebarNavigation({ state, permissions, navRef }: {
   state: NavigationState;
   permissions: { canManageAgents: boolean; canManageMembers: boolean; canReadMcpLog: boolean };
+  /** The scroller, for the sidebar to measure whether every item fits. */
+  navRef?: (element: HTMLElement | null) => void;
 }) {
   const resources = getResourceNavigation(
     permissions.canManageAgents,
     permissions.canManageMembers,
     permissions.canReadMcpLog,
   );
+  const { below: scrollableBelow, ref: scrollRef, update: updateScroll } = useScrollableBelow();
+  const setNav = useCallback((element: HTMLElement | null) => {
+    scrollRef(element);
+    navRef?.(element);
+  }, [navRef, scrollRef]);
   return (
-    <nav className="flex min-h-0 flex-col overflow-y-auto pt-2 pb-1">
+    // When the window is too short for every item, the list scrolls with a
+    // visible thin scrollbar and a fade over the last visible row, so the
+    // items below are evidently there rather than hidden under Usage.
+    <nav ref={setNav} onScroll={updateScroll} data-scrollable-below={scrollableBelow || undefined}
+      className="scrollbar-thin relative flex min-h-0 flex-col overflow-y-auto pt-2 pb-1">
       <div className="flex flex-col gap-0.5">
         {CORE_NAVIGATION.map(item => <NavigationItem key={item.name} item={item} state={state} />)}
       </div>
@@ -296,6 +331,10 @@ export function SidebarNavigation({ state, permissions }: {
       <div className="mt-6 flex flex-col gap-0.5">
         {resources.map(entry => <NavigationEntry key={entry.name} entry={entry} state={state} />)}
       </div>
+      {scrollableBelow && !state.desktop && (
+        <div aria-hidden="true" data-testid="sidebar-nav-fade"
+          className="pointer-events-none sticky bottom-0 -mt-8 h-8 flex-none bg-gradient-to-t from-white to-transparent" />
+      )}
     </nav>
   );
 }

@@ -243,7 +243,7 @@ const AdminSettingsPage: React.FC = () => {
       content: (
         <TagListSection
           title="GitHub trigger whitelist"
-          description="Allow these GitHub users to trigger ProPR from issues and comments. This is separate from instance roles, which you manage in Instance access. An empty whitelist allows every GitHub user."
+          description="Allow these GitHub users to trigger ProPR from issues and comments. This is separate from instance roles, which you manage in Access. An empty whitelist allows every GitHub user."
           items={whitelist}
           newItem={newWhitelistItem}
           onNewItemChange={setNewWhitelistItem}

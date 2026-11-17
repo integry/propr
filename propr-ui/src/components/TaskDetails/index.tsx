@@ -2,6 +2,8 @@ import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import type { RunRevealHistory } from './RunTimeline';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
+import { NOT_FOUND_TITLE } from '../NotFound';
+import { isTaskNotFound, renderTaskDetailsStatus } from './TaskDetailsStatus';
 import { renderMarkdown } from './renderMarkdown';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
@@ -35,11 +37,6 @@ import { useTaskFollowup } from './useTaskFollowup';
 import FollowupHandoffBanner from './FollowupHandoffBanner';
 import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_STATIC, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
 
-const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
-  <div className="h-full bg-white flex items-center justify-center">
-    <div className={className}>{children}</div>
-  </div>
-);
 
 type MobileHeaderProps = {
   contextStripProps: React.ComponentProps<typeof ContextStrip>;
@@ -115,28 +112,13 @@ const useMobileHeaderCollapsed = () => {
   return { summaryRef: setSummary, collapsed };
 };
 
-const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId?: string) => {
+const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId: string | undefined, notFound: boolean) => {
+  if (notFound) return NOT_FOUND_TITLE;
   if (taskInfo?.title) return getCleanDocumentTitle(taskInfo.title, taskInfo.issueNumber);
 
   return taskId ? `Task #${taskId}` : undefined;
 };
 
-const renderTaskDetailsStatus = (
-  loading: boolean,
-  error: string | null | undefined,
-  history: ReturnType<typeof useTaskData>['history'],
-  taskId?: string,
-) => {
-  if (loading) return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
-
-  if (error) return <CenteredStatus className="text-red-600">Error loading task details: {error}</CenteredStatus>;
-
-  if (!history || history.length === 0) {
-    return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
-  }
-
-  return null;
-};
 
 interface TaskDetailsProps {
   /** Wins over the `:taskId` route param, so the task list can show a task beside itself. */
@@ -231,8 +213,9 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     }
   }, [taskId, taskData, navigate, addToast, embedded, onDeleted]);
 
+  const notFound = isTaskNotFound(taskData.loading, taskData.error, taskData.history);
   // Set document title with task info
-  const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId);
+  const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId, notFound);
   useDocumentTitle(documentTitle, !embedded);
 
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
@@ -265,7 +248,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const pullRequest = useTaskPullRequestScores(taskData.taskInfo, derivedData.prInfo, runs);
 
-  const statusView = renderTaskDetailsStatus(taskData.loading, taskData.error, taskData.history, taskId);
+  const statusView = renderTaskDetailsStatus(taskData.loading, taskData.error, notFound);
 
   if (statusView) {
     // The pane's controls live in the task's header; until there is one, they sit above the status.

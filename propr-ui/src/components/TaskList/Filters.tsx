@@ -4,6 +4,7 @@ import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { ListSearchInput } from '../ListSearchInput';
+import { TASK_SEARCH_MAX_LENGTH } from './searchLimits';
 import { AssigneeFilter } from './AssigneeFilter';
 import './task-queue.css';
 
@@ -111,6 +112,7 @@ export const Filters: React.FC<FiltersProps> = ({
                   onChange={setSearchQuery}
                   onClear={() => setSearchQuery('')}
                   label="Search tasks"
+                  maxLength={TASK_SEARCH_MAX_LENGTH}
                   className="task-search hidden sm:block min-w-[13rem] flex-1 max-w-xs"
                 />
               )}
@@ -164,6 +166,7 @@ export const Filters: React.FC<FiltersProps> = ({
           onChange={setSearchQuery}
           onClear={() => setSearchQuery('')}
           label="Search tasks"
+          maxLength={TASK_SEARCH_MAX_LENGTH}
           className="min-w-0 flex-1"
           touch
         />

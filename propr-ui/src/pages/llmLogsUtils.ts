@@ -58,11 +58,22 @@ export const formatTimestamp = (timestamp: string | null): string => {
   });
 };
 
-// Format execution type for display
+/** Words in an execution type that are acronyms, written in capitals. */
+const TYPE_ACRONYMS = new Set(['pr', 'ci', 'ai', 'llm', 'mcp', 'api', 'ui', 'url', 'id']);
+
+/**
+ * An execution type for display, in sentence case with its acronyms in
+ * capitals: `pr_review_context_scout` reads "PR review context scout".
+ */
 export const formatType = (type: string): string => {
   return type
-    .split(/[-_]/)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      if (TYPE_ACRONYMS.has(lower)) return lower.toUpperCase();
+      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+    })
     .join(' ');
 };
 

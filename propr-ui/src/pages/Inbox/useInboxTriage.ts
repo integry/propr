@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import type { Notification } from '@propr/shared';
 import { isDialogOpen, isTypingTarget } from '../../components/TaskList/keyboardOwnership';
 import { useOptionalToast } from '../../components/ui/useToast';
-import { useInboxSelection } from '../../hooks/useInboxSelection';
+import { useInboxSelection, type InboxSelection } from '../../hooks/useInboxSelection';
 import { triageTaskId } from './triageVerdict';
 
 /** Marks the verdict pane; arrow keys pressed inside it scroll it rather than step the queue. */
@@ -96,7 +96,7 @@ interface InboxTriageOptions {
 export interface InboxTriage {
   /** The notification open beside the queue; always null below the split breakpoint. */
   selected: Notification | null;
-  select: (id: string | null) => void;
+  select: InboxSelection['select'];
   closePane: () => void;
   isSplitViewport: boolean;
 }

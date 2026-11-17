@@ -84,7 +84,7 @@ describe('AgentRunDetail', () => {
     expect(screen.getByTestId('agent-run-state')).toHaveTextContent('Completed');
     expect(screen.getByRole('link', { name: 'Open report task' })).toHaveAttribute('href', '/tasks/task-report');
     expect(screen.queryByRole('link', { name: 'Open action task' })).not.toBeInTheDocument();
-    expect(document.title).toBe('Run · Dependency review | ProPR');
+    expect(document.title).toBe('Run · Dependency review · ProPR');
     expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));

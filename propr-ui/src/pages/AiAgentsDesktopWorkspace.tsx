@@ -36,9 +36,9 @@ const AiAgentsDesktopWorkspace: React.FC<AiAgentsDesktopWorkspaceProps> = ({
             aria-labelledby="ai-agents-configuration-heading"
           >
             <div className="ai-agents-pane-header flex flex-none items-center justify-between gap-2 border-b border-slate-200 bg-white">
-              <h2 id="ai-agents-configuration-heading" aria-label="Agent Configuration" className="min-w-0 font-semibold leading-tight text-gray-900">
-                <span className="ai-agents-heading-wide">Agent Configuration</span>
-                <span className="ai-agents-heading-compact">Configuration</span>
+              <h2 id="ai-agents-configuration-heading" aria-label="Coding agents" className="min-w-0 font-semibold leading-tight text-gray-900">
+                <span className="ai-agents-heading-wide">Coding agents</span>
+                <span className="ai-agents-heading-compact">Agents</span>
               </h2>
               <button
                 type="button"

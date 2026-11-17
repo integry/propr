@@ -59,7 +59,7 @@ const NoAgentsMessage = ({ label }: { label: string }) => (
   <p className="text-[12px] leading-5 text-amber-700">
     No {label} available. Enable an agent on the{' '}
     <a href={buildAiAgentsSettingsHref()} className="font-medium underline hover:text-amber-800">
-      AI Agents
+      Coding agents
     </a>{' '}
     page first.
   </p>

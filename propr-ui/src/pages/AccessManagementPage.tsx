@@ -8,12 +8,7 @@ import {
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
-import {
-  addToTriggerWhitelist,
-  getTriggerWhitelist,
-  isLoginInWhitelist,
-  removeFromTriggerWhitelist
-} from '../api/triggerWhitelistApi';
+import { addToTriggerWhitelist, getTriggerWhitelist, isLoginInWhitelist, removeFromTriggerWhitelist } from '../api/triggerWhitelistApi';
 import type {
   InstanceMember,
   InstanceMembersResponse,
@@ -23,6 +18,7 @@ import type {
 import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { ListSkeleton } from '../components/ui/Skeleton';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
   members: [],
@@ -52,9 +48,10 @@ function getCollectionState(loading: boolean, itemCount: number, error: string):
   return itemCount === 0 ? 'empty' : 'ready';
 }
 
-const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="mb-6 border-l-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">Demo mode is read-only. Instance access can be inspected but not changed.</p> : null;
+const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="mb-6 border-l-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">Demo mode is read-only. Access can be inspected but not changed.</p> : null;
 
 const AccessManagementPage: React.FC = () => {
+  useDocumentTitle('Access');
   const currentUser = useCurrentUser();
   const refreshCurrentUser = useRefreshCurrentUser();
   const { isDemoMode } = useDemoMode();
@@ -225,7 +222,7 @@ const AccessManagementPage: React.FC = () => {
           <ShieldCheck className="h-6 w-6" />
         </div>
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Instance access</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Access</h1>
           <p className="mt-1 text-sm text-gray-600">
             Administrators manage installation settings. Members can use ProPR but cannot change the installation.
           </p>

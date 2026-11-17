@@ -6,6 +6,7 @@ import ActionBar from './ActionBar';
 import TaskHeader, { RunStateLabel, TaskStatusBadge } from './TaskHeader';
 import { getDisplayTitle, getSubtitle } from './taskHeaderText';
 import { taskLabelMode } from './taskKind';
+import TaskTitleSkeleton from './TaskTitleSkeleton';
 
 interface DesktopTaskHeaderProps {
   headerProps: React.ComponentProps<typeof TaskHeader>;
@@ -94,8 +95,8 @@ const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, cont
           </div>
         </div>
       </div>
-      <h2 className="text-base font-semibold leading-tight text-gray-900 break-words line-clamp-2" title={title.tooltip}>
-        {title.text || 'Loading...'}
+      <h2 className="text-base font-semibold leading-tight text-gray-900 break-words line-clamp-2" title={title.tooltip} aria-busy={!title.text || undefined}>
+        {title.text || <TaskTitleSkeleton />}
       </h2>
       <ContextStrip {...runStripProps} part="telemetry" lead={lead} />
     </div>

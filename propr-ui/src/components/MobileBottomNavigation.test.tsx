@@ -208,7 +208,7 @@ describe('MobileBottomNavigation', () => {
     expect(within(dialog).getByRole('link', { name: 'Automations' })).toHaveAttribute('href', '/automations');
     expect(within(dialog).getByRole('link', { name: 'Analytics' })).toHaveAttribute('href', '/analytics');
     expect(screen.getByRole('link', { name: 'Plans' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Coding Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Coding agents' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'LLM Log' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Access' })).toBeInTheDocument();

@@ -1,6 +1,12 @@
 import { useEffect, useRef } from 'react';
 
 const APP_NAME = 'ProPR';
+/** Every tab reads "<Page> · ProPR". */
+const TITLE_SEPARATOR = ' · ';
+
+/** The tab title for a page, or the app name alone for an empty page title. */
+export const formatDocumentTitle = (title?: string): string =>
+  title?.trim() ? `${title.trim()}${TITLE_SEPARATOR}${APP_NAME}` : APP_NAME;
 
 /**
  * Custom hook for dynamic document title management.
@@ -10,7 +16,7 @@ const APP_NAME = 'ProPR';
  *                If empty or undefined, only the app name "ProPR" will be shown.
  *
  * @example
- * // Shows "Settings | ProPR" in the browser tab
+ * // Shows "Settings · ProPR" in the browser tab
  * useDocumentTitle('Settings');
  *
  * @example
@@ -30,12 +36,7 @@ export function useDocumentTitle(title?: string, enabled = true): void {
       originalTitleRef.current = document.title;
     }
 
-    // Format the new title
-    const newTitle = title?.trim()
-      ? `${title.trim()} | ${APP_NAME}`
-      : APP_NAME;
-
-    document.title = newTitle;
+    document.title = formatDocumentTitle(title);
 
     // Restore original title on unmount
     return () => {

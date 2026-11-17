@@ -353,8 +353,9 @@ test('silences notifications for every branch entry of the selected repository',
   await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeVisible();
   await capturePreview(page, 'repository-notifications-disabled');
 
+  // The selection is the URL, so the reload reopens the same entry.
   await page.reload();
-  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
+  await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('checkbox', { name: 'Notifications for integry/propr', exact: true })).not.toBeChecked();
 });
 

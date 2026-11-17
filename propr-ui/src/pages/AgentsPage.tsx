@@ -11,6 +11,7 @@ import { AgentEditor } from '../components/Agents/AgentEditor';
 import { useUnsavedEditorGuard } from '../components/Agents/useUnsavedEditorGuard';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { TASK_SPLIT_QUERY } from '../hooks/useTaskSelection';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const matchesSplit = (): boolean =>
   typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(TASK_SPLIT_QUERY).matches;
@@ -250,6 +251,8 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   const catalogAgents = useCatalogAgents();
   const { host: editorHost, dockRef } = useEditorDock();
   const editing = isNew || definitionId !== null;
+  // The open automation (or its run) titles the tab; the list alone is "Automations".
+  useDocumentTitle('Automations', !editing);
   const editorKey = editing ? (definitionId ?? `new:${templateId ?? ''}`) : null;
   const unsavedGuard = useUnsavedEditorGuard(editorKey);
   const { guard } = unsavedGuard;
