@@ -204,6 +204,13 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
         commentId = prPayload.comment.id;
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit'); return; }
 
+    // ProPR adds later failing checks of the same head to its CI-failure
+    // comment; the follow-up already requested for that commit keeps running.
+    if (getSystemBotUsernames().has(payload.comment.user?.login ?? '') && isCiFailureFollowupComment(payload.comment.body)) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId }, 'ProPR listed another failed check on its CI-failure comment; no new follow-up');
+        return;
+    }
+
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment edited, restarting any active jobs for this PR');
     const allJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
 

@@ -169,6 +169,25 @@ export async function findCancellationProvenance(
     return { cancelledBy, runId, runAttempt };
 }
 
+/**
+ * The Actions run of a job whose recognized dependency gate failed, i.e. an
+ * aggregate that failed on its needed jobs' results; otherwise null.
+ */
+export async function isDependencyGateFailure(
+    octokit: CancellationProvenanceOctokit,
+    target: { owner: string; repo: string; jobId: number },
+): Promise<number | null> {
+    const job = asRecord((await octokit.request('GET /repos/{owner}/{repo}/actions/jobs/{job_id}', {
+        owner: target.owner, repo: target.repo, job_id: target.jobId,
+    })).data) as ActionsJob | null;
+    if (!job || typeof job.run_id !== 'number' || !Array.isArray(job.steps)) return null;
+    const gateFailed = job.steps.some(entry => {
+        const step = asRecord(entry) as ActionsStep | null;
+        return typeof step?.name === 'string' && DEPENDENCY_GATE_STEPS.has(step.name) && step.conclusion === 'failure';
+    });
+    return gateFailed ? job.run_id : null;
+}
+
 interface TargetJob {
     job: ActionsJob & { completed_at: string };
     jobId: number;

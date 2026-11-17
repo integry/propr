@@ -7,10 +7,18 @@ import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
+import {
+    appendCheckToCiFailureComment,
+    buildCiFailureHeadMarker,
+    editCiFailureComment,
+    isAggregateOfListedCheck,
+    scanCiFailureComments,
+    type CiFailureCommentScan,
+} from './ciFailureCommentGrouping.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
-const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-followup key="[a-f0-9]{64}" -->/gu;
+const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-(?:followup key="[a-f0-9]{64}"|head sha="[^"]*") -->/gu;
 const DEDUPE_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_EXCERPT_LENGTH = 1800;
 
@@ -66,7 +74,8 @@ export interface CiFailureFollowupDependencies {
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    reason: 'posted' | 'disabled' | 'duplicate' | 'cancellation_induced';
+    /** `updated`: listed on the same head's comment; `aggregate_omitted`: one of its shards is already listed there. */
+    reason: 'posted' | 'updated' | 'aggregate_omitted' | 'disabled' | 'duplicate' | 'cancellation_induced';
     body?: string;
 }
 
@@ -152,31 +161,48 @@ export function buildCiFailureFollowupComment(
     dedupeKey = buildCiFailureDedupeKey(request),
 ): string {
     const { evidence } = request;
-    const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
     const shortSha = evidence.sha.slice(0, 12);
     const commitUrl = `https://github.com/${encodeURIComponent(request.owner)}/${encodeURIComponent(request.repo)}/commit/${encodeURIComponent(evidence.sha)}`;
+    const [checkLine, resultLine, ...evidenceLines] = buildCheckSection(evidence, failureExcerpt);
 
     return [
-        `CI failed: **${escapeInlineMarkdown(evidence.name)}**`,
+        `CI failed: ${checkTitle(evidence)}`,
         '',
         'Please investigate and fix this CI failure.',
         '',
+        checkLine,
+        resultLine,
+        `- Commit: [\`${shortSha}\`](${commitUrl}) (\`${escapeInlineCode(evidence.sha)}\`)`,
+        ...evidenceLines,
+        '',
+        buildCiFailureFollowupMarker(dedupeKey),
+        buildCiFailureHeadMarker(evidence.sha),
+    ].join('\n');
+}
+
+function checkTitle(evidence: CiFailureEvidence): string {
+    return `**${escapeInlineMarkdown(evidence.name)}**`;
+}
+
+/** One check's details and evidence; the commit is shared by every check of a comment. */
+function buildCheckSection(evidence: CiFailureEvidence, failureExcerpt: string | undefined): string[] {
+    const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
+    return [
         `- Check: \`${escapeInlineCode(evidence.name)}\``,
         `- Result: \`${escapeInlineCode(evidence.state)}\``,
-        `- Commit: [\`${shortSha}\`](${commitUrl}) (\`${escapeInlineCode(evidence.sha)}\`)`,
         `- Run: [View CI failure](${evidence.url})`,
         '',
         '**Failure evidence**',
         ...excerpt.split('\n').map(line => `> ${line || ' '}`),
-        '',
-        buildCiFailureFollowupMarker(dedupeKey),
-    ].join('\n');
+    ];
 }
 
 /**
- * Posts one bot-authored follow-up for a failing CI source. A Redis NX claim
- * closes concurrent webhook races, while the marker scan makes deduplication
- * survive process restarts and Redis expiry.
+ * Reports a failing CI source in one bot-authored comment per head commit. A
+ * Redis NX claim closes redelivery races for the same source, while the marker
+ * scan makes deduplication survive process restarts and Redis expiry. When a
+ * comment for the same head exists, the check is added to it instead of
+ * posting (best effort: near-simultaneous deliveries may still both post).
  */
 export async function postCiFailureFollowup(
     request: CiFailureFollowupRequest,
@@ -216,29 +242,35 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
+        let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
         try {
-            if (await hasExistingFollowupComment(octokit, request, dedupeKey)) {
-                log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
-                return { posted: false, reason: 'duplicate' };
-            }
+            scan = await scanExistingComments(octokit, request, dedupeKey);
         } catch (error) {
             // The atomic Redis claim still protects concurrent/redelivered
             // events. A transient comment-list failure should not hide a new CI
-            // failure from the agent.
+            // failure from the agent: it is posted as a new comment.
             log.warn({ error: (error as Error).message }, 'Could not scan PR comments for an existing failed-CI follow-up');
         }
+        if (scan.duplicate) {
+            log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
+            return { posted: false, reason: 'duplicate' };
+        }
+        if (scan.sameHead && await isAggregateOfListedCheck(octokit, request, scan.sameHead.body, log)) {
+            log.info({ ...failureLogContext(request), commentId: scan.sameHead.id }, 'Failed aggregate job is not listed next to its own failing shard');
+            return { posted: false, reason: 'aggregate_omitted' };
+        }
 
-        let annotations: CiFailureAnnotation[] = [];
-        if (request.evidence.kind === 'check_run' && request.evidence.checkRunId != null) {
-            try {
-                annotations = await loadCheckRunAnnotations(octokit, request);
-            } catch (error) {
-                // Output summaries are carried in the webhook and remain useful
-                // when the annotations endpoint is temporarily unavailable.
-                log.warn({ error: (error as Error).message }, 'Could not load check-run annotations; using webhook output instead');
+        const annotationExcerpt = await loadAnnotationExcerpt(octokit, request, log);
+        if (scan.sameHead) {
+            const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
+                title: checkTitle(request.evidence),
+                section: buildCheckSection(request.evidence, annotationExcerpt),
+                marker: buildCiFailureFollowupMarker(dedupeKey),
+            });
+            if (await editCiFailureComment(octokit, { ...request, commentId: scan.sameHead.id, body: updated }, log)) {
+                return { posted: false, reason: 'updated', body: updated };
             }
         }
-        const annotationExcerpt = buildAnnotationExcerpt(annotations);
         const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
 
         await withRetry(
@@ -297,28 +329,38 @@ async function isCancellationInduced(
     }
 }
 
-async function hasExistingFollowupComment(
+async function scanExistingComments(
     octokit: CiFailureOctokit,
     request: CiFailureFollowupRequest,
     dedupeKey: string,
-): Promise<boolean> {
-    if (!octokit.paginate) return false;
+): Promise<CiFailureCommentScan> {
+    if (!octokit.paginate) return { duplicate: false, sameHead: null };
     const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: request.owner,
         repo: request.repo,
         issue_number: request.prNumber,
         per_page: 100,
     });
-    const marker = buildCiFailureFollowupMarker(dedupeKey);
-    const configuredBotUsernames = new Set(
-        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]'].filter(Boolean),
+    const botUsernames = new Set(
+        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]'].filter((name): name is string => Boolean(name)),
     );
-    return comments.some(comment => {
-        if (!isRecord(comment) || typeof comment.body !== 'string' || !comment.body.includes(marker)) return false;
-        const user = isRecord(comment.user) ? comment.user : null;
-        const login = user && typeof user.login === 'string' ? user.login : '';
-        return configuredBotUsernames.has(login);
-    });
+    return scanCiFailureComments(comments, { dedupeKey, sha: request.evidence.sha, botUsernames });
+}
+
+async function loadAnnotationExcerpt(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<string | undefined> {
+    if (request.evidence.kind !== 'check_run' || request.evidence.checkRunId == null) return undefined;
+    try {
+        return buildAnnotationExcerpt(await loadCheckRunAnnotations(octokit, request));
+    } catch (error) {
+        // Output summaries are carried in the webhook and remain useful
+        // when the annotations endpoint is temporarily unavailable.
+        log.warn({ error: (error as Error).message }, 'Could not load check-run annotations; using webhook output instead');
+        return undefined;
+    }
 }
 
 async function loadCheckRunAnnotations(
