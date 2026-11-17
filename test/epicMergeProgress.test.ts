@@ -13,6 +13,7 @@ import {
     replaceEpicProgressActivityLines,
     buildEpicFinalMergeComment,
     computeEpicMergeProgress,
+    epicChildBranchIssue,
     isEpicMergeComplete,
     updateEpicMergeProgress,
     type EpicMergeProgressRequest,
@@ -196,6 +197,18 @@ describe('computeEpicMergeProgress', () => {
             { number: 300, merged: true, abandoned: false, headRef: '101-epic-other-plan-abc' },
         ], null, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.PENDING)]);
         assert.deepStrictEqual({ merged: progress.merged, total: progress.total }, { merged: 1, total: 2 });
+    });
+
+    test('an issue branch that only starts like an epic branch is still a PR for its issue', () => {
+        // `101-epic-progress-count-plan` is not an epic branch (`{id}-epic-{word}-{word}-{rand}`): it is #101's.
+        assert.strictEqual(epicChildBranchIssue('101-epic-progress-count-plan'), 101);
+        assert.strictEqual(epicChildBranchIssue('101-epic-other-plan-abc'), null);
+        // #101 is closed after its linked PR #202 was abandoned; the alternate #203 from its branch merged.
+        const progress = computeEpicMergeProgress([
+            { number: 202, merged: false, abandoned: true, headRef: '101/claude-second' },
+            { number: 203, merged: true, abandoned: false, headRef: '101-epic-progress-count-plan' },
+        ], 203, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.CLOSED, 202)]);
+        assert.deepStrictEqual({ merged: progress.merged, total: progress.total, excluded: progress.excluded }, { merged: 2, total: 2, excluded: 0 });
     });
 
     test('a plan whose issues were all filtered out still counts issues, not the PRs into the branch', () => {

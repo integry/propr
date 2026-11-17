@@ -471,15 +471,16 @@ test('the epic PR body leaves out issues closed without a merge or as not planne
     assert.doesNotMatch(body, /#101|#102/);
 });
 
-for (const epicExists of [false, true]) {
-    test(`the epic PR body keeps a closed issue whose alternate PR merged after its linked PR was abandoned (${epicExists ? 'body rewrite' : 'creation'})`, async () => {
+// `101-epic-progress-count-plan` only starts like an epic branch (`{id}-epic-{word}-{word}-{rand}`): it is still #101's.
+for (const [epicExists, alternateBranch] of [false, true].flatMap(exists => ['101/codex-second', '101-epic-progress-count-plan'].map(branch => [exists, branch] as const))) {
+    test(`the epic PR body keeps a closed issue whose alternate PR merged after its linked PR was abandoned (${epicExists ? 'body rewrite' : 'creation'}, ${alternateBranch})`, async () => {
         // #101's linked PR #202 closed without merging (status closed); the alternate #203 from its branch merges now.
         planIssueRows[1] = { ...planIssueRows[1], status: 'closed', pr_number: 202 };
         planIssueRows[2] = { ...planIssueRows[2], status: 'closed' };
         epicBranchChildren = [
             { number: 201, state: 'closed', merged_at: '2026-10-10T18:00:00Z', head: { ref: '100/claude-first' } },
             { number: 202, state: 'closed', merged_at: null, head: { ref: '101/claude-second' } },
-            { number: 203, state: 'closed', merged_at: '2026-10-10T19:00:00Z', head: { ref: '101/codex-second' } },
+            { number: 203, state: 'closed', merged_at: '2026-10-10T19:00:00Z', head: { ref: alternateBranch } },
         ];
         epicPrExists = epicExists;
         const alternate = { ...payload, pull_request: { ...payload.pull_request, number: 203 } } as unknown as PullRequestEvent;
@@ -493,8 +494,8 @@ for (const epicExists of [false, true]) {
     });
 }
 
-for (const epicExists of [false, true]) {
-    test(`the epic PR body keeps a closed issue whose alternate PR merges before GitHub's list includes it (${epicExists ? 'body rewrite' : 'creation'})`, async () => {
+for (const [epicExists, alternateBranch] of [false, true].flatMap(exists => ['101/codex-second', '101-epic-progress-count-plan'].map(branch => [exists, branch] as const))) {
+    test(`the epic PR body keeps a closed issue whose alternate PR merges before GitHub's list includes it (${epicExists ? 'body rewrite' : 'creation'}, ${alternateBranch})`, async () => {
         // As above, but the list lags the merge of #203: only its own read shows it merged from #101's branch.
         planIssueRows[1] = { ...planIssueRows[1], status: 'closed', pr_number: 202 };
         planIssueRows[2] = { ...planIssueRows[2], status: 'closed' };
@@ -502,7 +503,7 @@ for (const epicExists of [false, true]) {
             { number: 201, state: 'closed', merged_at: '2026-10-10T18:00:00Z', head: { ref: '100/claude-first' } },
             { number: 202, state: 'closed', merged_at: null, head: { ref: '101/claude-second' } },
         ];
-        childHeadRefs = { 203: '101/codex-second' };
+        childHeadRefs = { 203: alternateBranch };
         epicPrExists = epicExists;
         const alternate = { ...payload, pull_request: { ...payload.pull_request, number: 203 } } as unknown as PullRequestEvent;
         await handleEpicPRCreationOnMerge(alternate, 'test', logger.withCorrelation('test'));

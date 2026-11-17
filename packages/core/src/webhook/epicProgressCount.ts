@@ -3,6 +3,7 @@
  * its progress, ready and final-merge comments, its status line and its title.
  */
 import { PlanIssueStatus, type PlanIssue } from '../config/planIssueManager.js';
+import { EPIC_BRANCH_PATTERN } from '../services/epicPRService.js';
 
 export interface EpicChildPullRequest {
     number: number;
@@ -34,12 +35,14 @@ export interface EpicMergeProgress {
     unit?: 'pullRequests';
 }
 
-/** An epic branch starts with a number too (`3589-epic-…`), which names its first issue, not the PR's. */
-const EPIC_HEAD_PATTERN = /^\d+-epic-/;
-
-/** The issue a child PR's branch was cut for (`3594/…` or `3594-…`), or null. */
+/**
+ * The issue a child PR's branch was cut for (`3594/…` or `3594-…`), or null.
+ * An epic branch (`3589-epic-short-name-x7y`) starts with a number too, which
+ * names its first issue, not the PR's; an issue branch that merely starts
+ * with `3589-epic-…` is still that issue's.
+ */
 export function epicChildBranchIssue(headRef: string | undefined): number | null {
-    if (!headRef || EPIC_HEAD_PATTERN.test(headRef)) return null;
+    if (!headRef || EPIC_BRANCH_PATTERN.test(headRef)) return null;
     const issue = Number(headRef.match(/^(\d+)[/-]/)?.[1]);
     return Number.isSafeInteger(issue) && issue > 0 ? issue : null;
 }
