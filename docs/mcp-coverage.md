@@ -307,7 +307,9 @@ What this surface deliberately does **not** claim:
   `truncated`, and `scanTruncated` say a scan stopped early; they never mean the
   remainder is empty; `repositoriesNotScanned` counts the repositories left out.
   The inventory scans at most 20 granted repositories per call — continue with
-  `repositoryOffset` set to `nextRepositoryOffset` — and at most four GraphQL pages of 50 pull
+  `repositoryOffset` set to `nextRepositoryOffset` while it is not null; its
+  `repositoriesNotScanned` counts every repository outside that call's window,
+  earlier windows included — and at most four GraphQL pages of 50 pull
   requests per repository and attaches the newest comment to at most 10 results.
 - **A repository the credential lost access to is skipped, not failed.** The
   cross-repository fan-outs drop a repository that answers 403, exactly as

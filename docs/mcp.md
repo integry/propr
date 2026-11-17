@@ -1270,9 +1270,13 @@ Each result carries `head`, `reviewDecision`, `checksSummary`, `labels` and a
 `issueNumber`, `agentAlias` and `modelName` that produced it, plus
 `ultrafixActive`. `ultrafixActive` is `null` when GitHub truncated the label
 list — undetermined, not absent. Each GraphQL scan is per repository, so one
-call covers at most 20 granted repositories: when `repositoriesNotScanned` is
-above zero, call again with `repositoryOffset` set to `nextRepositoryOffset`
-(and `offset` 0) to reach the rest. Then read the discussion newest-first:
+call covers at most 20 granted repositories. Continue while
+`nextRepositoryOffset` is not null: call again with `repositoryOffset` set to
+it (and `offset` 0) to reach the next window; `null` means the last window has
+been read. `repositoriesNotScanned` is per call — it counts every granted
+repository outside this call's window, including those of earlier windows —
+so the last window can report a positive count with `nextRepositoryOffset:
+null`; do not use it to decide whether to continue. Then read the discussion newest-first:
 
 ```json
 { "repository": "acme/web", "pullRequest": 42, "order": "newest", "limit": 10 }

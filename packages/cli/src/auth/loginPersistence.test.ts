@@ -97,6 +97,30 @@ test("explicit-token login saves only when the remote does not reject it", async
   assert.deepEqual(unreachable.state.saves, ["ghp_maybe"]);
 });
 
+test("a failed save prints no success line, whatever the remote answered", async () => {
+  const remotes: Array<[string, string | undefined, () => Promise<Response>]> = [
+    ["verified", "http://propr.test", async () => json({ login: "octocat" })],
+    ["forbidden", "http://propr.test", async () => json({ error: "Not a member" }, 403)],
+    ["unverified", "http://propr.test", async () => { throw new TypeError("fetch failed"); }],
+    ["no remote", undefined, async () => { throw new Error("no request expected"); }],
+  ];
+  for (const [label, remoteUrl, answer] of remotes) {
+    for (const successMessage of [undefined, "Authentication successful."]) {
+      const { manager, state } = fakeConfig(remoteUrl);
+      (manager as unknown as { setGithubToken: () => Promise<void> }).setGithubToken = async () => {
+        throw new Error("EACCES: permission denied");
+      };
+      globalThis.fetch = answer as typeof fetch;
+      const lines: string[] = [];
+      await assert.rejects(
+        completeLogin(manager, "ghp_new", { successMessage, log: line => lines.push(line), error: line => lines.push(line), timeoutMs: 50 }),
+        /EACCES/, label);
+      assert.deepEqual(lines, [], `${label}${successMessage ? " (gh flow)" : ""}: nothing printed before the save failed`);
+      assert.equal(state.token, "ghp_previous", label);
+    }
+  }
+});
+
 function stubClient(): ApiClient {
   return new ApiClient({ getRemoteUrl: () => "http://propr.test", getGithubToken: () => "token" } as unknown as ConfigManager);
 }
