@@ -45,7 +45,8 @@ describe('local package servers', () => {
     const { form, onSave } = newForm();
     expect(within(form).getByLabelText('Server type')).toHaveDisplayValue('Local package (npm)');
     expect(within(form).queryByLabelText('HTTPS endpoint')).toBeNull();
-    expect(within(form).getByText(/PyPI packages are not supported yet/)).toBeInTheDocument();
+    expect(within(form).getByTestId('extension-package-registry')).toHaveTextContent('npm');
+    expect(within(form).queryByLabelText('Package registry')).toBeNull();
     fireEvent.change(within(form).getByLabelText(/^Server name/), { target: { value: 'files' } });
     fireEvent.change(within(form).getByLabelText('Package'), { target: { value: '@example/files-mcp' } });
     fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '2.0.1' } });
@@ -71,9 +72,8 @@ describe('local package servers', () => {
       fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: version } });
       expect(within(form).getByLabelText(/^Exact version/)).toHaveAttribute('aria-invalid', 'true');
       expect(within(form).getAllByText(/Ranges and tags \(latest, \^1.2\) are not accepted/).length).toBeGreaterThan(0);
-      expect(within(form).getByRole('button', { name: 'Check' })).toBeDisabled();
-      fireEvent.click(within(form).getByRole('button', { name: 'Add server' }));
-      expect(await within(form).findByRole('alert')).toHaveTextContent('Enter an exact version');
+      expect(within(form).getByRole('button', { name: 'Check package' })).toBeDisabled();
+      expect(within(form).getByRole('button', { name: 'Add server' })).toBeDisabled();
     }
     fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '1.0.0' } });
     fireEvent.change(within(form).getByLabelText(/^Variables/), { target: { value: 'NODE_OPTIONS=--require=/tmp/x' } });
@@ -88,7 +88,7 @@ describe('local package servers', () => {
     fireEvent.change(within(form).getByLabelText('Package'), { target: { value: 'tool' } });
     fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '1.0.0' } });
     fireEvent.change(within(form).getByLabelText(/^Executable/), { target: { value: 'tool-mcp' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Check' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Check package' }));
     const result = await within(form).findByTestId('extension-package-check');
     expect(resolveExtensionPackage).toHaveBeenCalledWith({ ecosystem: 'npm', package: 'tool', version: '1.0.0', bin: 'tool-mcp' });
     expect(result).toHaveTextContent('tool@1.0.0');
@@ -97,7 +97,7 @@ describe('local package servers', () => {
     fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '1.0.1' } });
     expect(within(form).queryByTestId('extension-package-check')).toBeNull();
     vi.mocked(resolveExtensionPackage).mockRejectedValueOnce(new Error('tool@1.0.1 was not found in the npm registry'));
-    fireEvent.click(within(form).getByRole('button', { name: 'Check' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Check package' }));
     expect(await within(form).findByRole('alert')).toHaveTextContent('was not found');
   });
 
@@ -138,7 +138,7 @@ describe('local package servers', () => {
     expect(row).not.toHaveTextContent('Secret variables not configured');
     expect(within(form).getByText(`Pinned integrity: ${integrity}`)).toBeInTheDocument();
     expect(within(form).getByLabelText(/^BROWSER_TOKEN/)).toHaveValue('');
-    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('configured; write-only');
+    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('(saved)');
     // The saved acknowledgement covers this package, version and variables.
     expect(acknowledgement(form)).toBeChecked();
     expect(within(form).getByText(/Acknowledged by user 1/)).toBeInTheDocument();
@@ -191,7 +191,7 @@ describe('local package servers', () => {
     const { form } = await openSaved();
     fireEvent.change(within(form).getByLabelText(new RegExp(field)), { target: { value } });
     const secret = within(form).getByLabelText(/^BROWSER_TOKEN/);
-    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('not configured; write-only');
+    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('(not set)');
     expect(secret).toHaveAttribute('placeholder', 'Enter the value');
     expect(within(form).getByText('Changing the server name or package clears the stored value. Enter it again.')).toBeInTheDocument();
     fireEvent.change(secret, { target: { value: 'new-token' } });
@@ -206,8 +206,8 @@ describe('local package servers', () => {
   it('a version change keeps the stored secret value configured', async () => {
     const { form } = await openSaved();
     fireEvent.change(within(form).getByLabelText(/^Exact version/), { target: { value: '1.5.0' } });
-    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('(configured; write-only)');
-    expect(within(form).getByLabelText(/^BROWSER_TOKEN/)).toHaveAttribute('placeholder', 'Leave blank to keep the configured value');
+    expect(within(form).getByText(/^BROWSER_TOKEN/)).toHaveTextContent('(saved)');
+    expect(within(form).getByLabelText(/^BROWSER_TOKEN/)).toHaveAttribute('placeholder', 'Leave blank to keep the saved value');
     expect(within(form).queryByText(/clears the stored value/)).not.toBeInTheDocument();
   });
 

@@ -85,7 +85,7 @@ describe('extension warnings', () => {
     expect(appliesToCodex(server('x'), choices.codexAgents)).toBe(true);
     expect(appliesToCodex(server('x', { agents: ['claude-main'] }), choices.codexAgents)).toBe(false);
     expect(appliesToCodex(server('x'), [])).toBe(false);
-    expect(text(itemNotes(server('x'), { usage: EMPTY_USAGE, choices }))).toContain('--ignore-user-config');
+    expect(text(itemNotes(server('x'), { usage: EMPTY_USAGE, choices }))).toContain('Codex: not used in runs that need a custom Codex config.');
   });
 
   it('notes migrated items, automations that add an item, and that they run without a disabled one', () => {
@@ -108,7 +108,7 @@ describe('extension warnings', () => {
   it('falls back to the catalog secret status for a catalog server named like an inherited object property', () => {
     const catalogServer = { kind: 'catalog', name: 'constructor', catalogId: 'docs', digest: 'abc', enabled: true, tools: [], capability: 'read', repositories: [], agents: [], autoApply: true } as unknown as ExtensionLibraryServer;
     render(<CatalogServerDetails server={catalogServer} catalog={[{ id: 'docs', secrets: { configured: true } }] as never} secrets={{}} />);
-    expect(screen.getByText('Operator secrets: configured')).toBeTruthy();
+    expect(screen.getByText('Credentials: set by the operator')).toBeTruthy();
   });
 
   it('warns about a Bearer server without a stored token', () => {

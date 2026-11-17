@@ -1,10 +1,13 @@
-import { useId, useState, type FormEvent } from 'react';
+import { useId, useRef, useState, type FormEvent } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryServer, ExtensionSecretAcknowledgement, ExtensionSecretStatus } from '@propr/shared';
 import { ExtensionItemLimits } from './ExtensionItemLimits';
 import { PackageServerFields } from './ExtensionPackageFields';
 import { PACKAGE_TYPE, acknowledgedNames, acknowledgementCovers, acknowledgementScope, packageProblem, packageSecretsDropped, serverTypeValue, writeOnlyValues } from './packageServerUi';
-import { CatalogServerDetails, ServerAccessFields, ServerEndpointField, ServerToolsField } from './ExtensionServerFields';
-import { buttonClass, inputClass, ownEntry, primaryButtonClass, type ExtensionChoices } from './extensionUi';
+import { CatalogServerDetails, ServerAccessFields, ServerEndpointField, ServerNameField, ServerToolsField } from './ExtensionServerFields';
+import { buttonClass, inputClass, labelClass, ownEntry, primaryButtonClass, type ExtensionChoices } from './extensionUi';
+import { serverDraftDirty, useServerFieldChecks } from './extensionValidation';
+import { useDiscardGuard } from './useDiscardGuard';
+import { ExtensionFormActions } from './ExtensionFormActions';
 import { newHttpsServer, newPackageServer } from './libraryEdits';
 
 
@@ -13,9 +16,40 @@ const fromCatalog = (entry: ExtensionCatalogEntry, base: ExtensionLibraryServer)
   repositories: base.repositories, agents: base.agents, autoApply: base.autoApply,
 });
 
+/** The HTTPS endpoints saved in the library, and the tools saved for the draft's endpoint. */
+const savedEndpoints = (servers: ExtensionLibraryServer[], draft: ExtensionLibraryServer) => ({
+  endpoints: [...new Set(servers.flatMap(server => (server.kind === 'https' && server.url ? [server.url] : [])))],
+  knownTools: draft.kind === 'https' ? servers.flatMap(server => (server.kind === 'https' && server.url === draft.url ? server.tools : [])) : [],
+});
+
+/** A token (or, for OAuth, a client secret) is stored for the saved HTTPS server. */
+const httpsSecretConfigured = (saved: ExtensionLibraryServer | undefined, secrets: Record<string, ExtensionSecretStatus> | undefined) =>
+  saved?.kind === 'https' && Boolean(ownEntry(secrets, saved.name)?.configured);
+
 /** The name, endpoint, authentication or client changed, so the saved server's credential will not carry over. */
 const credentialDropped = (saved: ExtensionLibraryServer | undefined, draft: ExtensionLibraryServer) => saved?.kind === 'https' && draft.kind === 'https'
   && (draft.name !== saved.name || draft.url !== saved.url || draft.authentication !== saved.authentication || draft.clientId !== saved.clientId);
+
+/** The kind of a new server: an HTTPS endpoint, a local npm package or a preinstalled catalog entry. Its name and limits carry over. */
+function ServerTypeSelect({ draft, servers, catalog, onSelect }: {
+  draft: ExtensionLibraryServer; servers: ExtensionLibraryServer[]; catalog: ExtensionCatalogEntry[]; onSelect: (server: ExtensionLibraryServer) => void;
+}) {
+  return (
+    <label className={labelClass}>
+      Server type
+      <select className={inputClass} value={serverTypeValue(draft)} onChange={event => {
+        const entry = catalog.find(item => item.id === event.target.value);
+        onSelect(entry ? fromCatalog(entry, draft)
+          : event.target.value === PACKAGE_TYPE ? { ...newPackageServer(servers, draft), name: draft.name }
+            : { ...newHttpsServer(servers, draft), name: draft.name });
+      }}>
+        <option value="">HTTPS endpoint</option>
+        <option value={PACKAGE_TYPE}>Local package (npm)</option>
+        {catalog.map(entry => <option key={entry.id} value={entry.id}>Preinstalled: {entry.id}</option>)}
+      </select>
+    </label>
+  );
+}
 
 /**
  * Whether the secret-variable acknowledgement is given for the draft as it is now. The box is ticked for one scope (name,
@@ -49,7 +83,9 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
   onCancel: () => void;
 }) {
   const titleId = useId();
+  const formRef = useRef<HTMLFormElement>(null);
   const [draft, setDraft] = useState<ExtensionLibraryServer>(() => (initial ? { ...initial } : newHttpsServer(servers)));
+  const [opened] = useState(() => JSON.stringify(draft));
   const [token, setToken] = useState('');
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
   const savedAcknowledgement = initial ? ownEntry(acknowledgements, initial.name) : undefined;
@@ -70,14 +106,14 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
       return next as ExtensionLibraryServer;
     });
   };
-  const httpsSaved = initial?.kind === 'https' ? initial : undefined;
-  const tokenDropped = credentialDropped(httpsSaved, draft);
+  const tokenDropped = credentialDropped(initial, draft);
   const others = servers.filter(server => server.name !== initial?.name);
-  const endpoints = [...new Set(servers.flatMap(server => (server.kind === 'https' && server.url ? [server.url] : [])))];
-  const knownTools = draft.kind === 'https' ? servers.flatMap(server => (server.kind === 'https' && server.url === draft.url ? server.tools : [])) : [];
+  const { endpoints, knownTools } = savedEndpoints(servers, draft);
+  const { problems, invalid, shownProblem, touch, touchAll } = useServerFieldChecks(draft, others);
+  const guard = useDiscardGuard(formRef, !saving && serverDraftDirty(draft, opened, token, secretValues), onCancel);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (others.some(server => server.name === draft.name)) { setError(`Another server is already named ${draft.name}.`); return; }
+    if (invalid) { touchAll(); return; }
     const problem = packageProblem(draft, acknowledged);
     if (problem) { setError(problem); return; }
     const values = writeOnlyValues(draft, token, secretValues);
@@ -86,50 +122,37 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
     catch (e) { setError((e as Error).message); setSaving(false); }
   };
   return (
-    <form aria-labelledby={titleId} onSubmit={event => void submit(event)} data-testid="extension-server-form"
-      className="space-y-4 rounded-md border border-teal-200 bg-white p-4">
+    <form ref={formRef} aria-labelledby={titleId} onSubmit={event => void submit(event)} onKeyDown={guard.onKeyDown} data-testid="extension-server-form"
+      noValidate className="space-y-4 rounded-md border border-teal-200 bg-white p-3 sm:p-4">
       <h5 id={titleId} className="text-sm font-semibold">{initial ? `Edit server ${initial.name}` : 'Add server'}</h5>
       <fieldset disabled={saving} className="min-w-0 space-y-4">
         {!initial && (
-          <label className="block text-sm">
-            Server type
-            <select className={inputClass} value={serverTypeValue(draft)} onChange={event => {
-              const entry = catalog.find(item => item.id === event.target.value);
-              setToken(''); setSecretValues({}); setAcknowledged(false);
-              setDraft(value => (entry ? fromCatalog(entry, value)
-                : event.target.value === PACKAGE_TYPE ? { ...newPackageServer(servers, value), name: value.name }
-                  : { ...newHttpsServer(servers, value), name: value.name }));
-            }}>
-              <option value="">HTTPS endpoint</option>
-              <option value={PACKAGE_TYPE}>Local package (npm)</option>
-              {catalog.map(entry => <option key={entry.id} value={entry.id}>Operator catalog entry: {entry.id}</option>)}
-            </select>
-          </label>
+          <ServerTypeSelect draft={draft} servers={servers} catalog={catalog} onSelect={next => {
+            setToken(''); setSecretValues({}); setAcknowledged(false); setDraft(next);
+          }} />
         )}
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="text-sm">
-            Server name
-            <input className={inputClass} value={draft.name} onChange={event => change({ name: event.target.value })} />
-            <span className="mt-1 block text-xs text-slate-500">Lowercase letters, digits, - and _; unique in the library.</span>
-          </label>
-          <ServerEndpointField server={draft} endpoints={endpoints} onChange={change} />
+          <ServerNameField name={draft.name} problem={shownProblem('name')} onBlur={() => touch('name')} onChange={name => change({ name })} />
+          <ServerEndpointField server={draft} endpoints={endpoints} problem={shownProblem('url')} onBlur={() => touch('url')} onChange={change} />
           <CatalogServerDetails server={draft} catalog={catalog} secrets={secrets} />
         </div>
         {draft.kind === 'package' && (
           <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} secretsDropped={packageSecretsDropped(initial, draft)} acknowledgement={draft.name === initial?.name ? savedAcknowledgement : undefined}
             secretValues={secretValues} onSecretValues={setSecretValues} acknowledged={acknowledged} onAcknowledged={setAcknowledged}
+            problems={{ package: shownProblem('package'), version: shownProblem('version') }} onBlur={touch}
             onChange={patch => change(patch as Partial<ExtensionLibraryServer>)} />
         )}
-        <ServerToolsField key={draft.kind === 'catalog' ? draft.catalogId : draft.kind} server={draft} catalog={catalog} knownTools={knownTools} onChange={change} />
-        <ServerAccessFields server={draft} configured={Boolean(httpsSaved && secrets?.[httpsSaved.name]?.configured)} token={token}
-          tokenDropped={tokenDropped} redirectUri={redirectUri} onChange={change} onToken={setToken} />
+        <ServerToolsField key={draft.kind === 'catalog' ? draft.catalogId : draft.kind} server={draft} catalog={catalog} knownTools={knownTools} urlValid={!problems.url} onChange={change} />
+        <ServerAccessFields server={draft} configured={httpsSecretConfigured(initial, secrets)} token={token}
+          tokenDropped={tokenDropped} redirectUri={redirectUri} urlValid={!problems.url} onChange={change} onToken={setToken} />
         <ExtensionItemLimits item={draft} choices={choices} onChange={change} />
       </fieldset>
       {error && <p role="alert" className="rounded-md bg-red-50 p-2 text-sm text-red-800">{error}</p>}
-      <div className="flex flex-wrap gap-2">
-        <button type="submit" className={primaryButtonClass} disabled={saving}>{saving ? 'Saving…' : initial ? 'Save server' : 'Add server'}</button>
-        <button type="button" className={buttonClass} disabled={saving} onClick={onCancel}>Cancel</button>
-      </div>
+      <ExtensionFormActions>
+        <button type="submit" className={primaryButtonClass} disabled={saving || invalid}>{saving ? 'Saving…' : initial ? 'Save server' : 'Add server'}</button>
+        <button type="button" className={buttonClass} disabled={saving} onClick={guard.requestClose}>Cancel</button>
+      </ExtensionFormActions>
+      {guard.dialog}
     </form>
   );
 }

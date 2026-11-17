@@ -26,7 +26,7 @@ const threeStates = oauth({
 const rowOf = (view: HTMLElement, name: string) => within(view).getAllByTestId('extension-server').find(row => row.textContent?.includes(name))!;
 const section = async () => {
   render(<AgentExtensionsSection />);
-  await screen.findByText(/Revision 5/);
+  await screen.findByTestId('extension-library-status');
   return screen.getByRole('region', { name: 'Skills & MCP servers' });
 };
 
@@ -116,7 +116,7 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     fireEvent.click(within(rowOf(view, 'notion')).getByRole('button', { name: 'Disconnect' }));
     expect(disconnectExtensionOAuth).not.toHaveBeenCalled();
     vi.mocked(getExtensionLibrary).mockResolvedValue({ instanceId: 'instance', library, bundles: [], catalog: [], oauth: oauth({ ...threeStates.connections, notion: { state: 'not_connected' } }) });
-    fireEvent.click(within(rowOf(view, 'notion')).getByRole('button', { name: 'Confirm disconnect' }));
+    fireEvent.click(within(rowOf(view, 'notion')).getByRole('button', { name: 'Disconnect' }));
     expect(await screen.findByText('notion disconnected; the provider revoked its tokens.')).toBeInTheDocument();
     expect(disconnectExtensionOAuth).toHaveBeenCalledWith('notion');
     expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveAttribute('data-state', 'not_connected');
@@ -145,10 +145,11 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     fireEvent.change(within(fields).getByLabelText(/^Scopes/), { target: { value: 'docs.read  docs.search' } });
     fireEvent.change(within(fields).getByLabelText(/^Client id/), { target: { value: 'console-client' } });
     fireEvent.change(within(fields).getByLabelText(/^Client secret/), { target: { value: 'console-secret' } });
-    fireEvent.click(within(fields).getByRole('button', { name: 'Check' }));
+    fireEvent.click(within(fields).getByRole('button', { name: 'Check sign-in' }));
     const check = await within(fields).findByTestId('extension-oauth-check');
-    expect(check).toHaveTextContent('Authorization server: https://auth.example.com');
-    expect(check).toHaveTextContent('Registration: Pre-registered client');
+    expect(check).toHaveTextContent('Sign-in server: https://auth.example.com');
+    expect(check).not.toHaveTextContent('401');
+    expect(check).toHaveTextContent('Client setup: uses the client id above');
     expect(checkExtensionOAuth).toHaveBeenCalledWith('https://tools.example.com/mcp', { clientId: 'console-client', scopes: ['docs.read', 'docs.search'] });
     fireEvent.click(within(form).getByRole('button', { name: 'Add server' }));
     await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalled());

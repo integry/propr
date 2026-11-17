@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { expectExistingDocsRoute } from './docsRoutes.testUtils';
 import { SETTINGS_CATEGORIES } from './SettingsNavigation';
 import { SETTINGS_CATEGORY_GUIDES } from './settingsCategoryGuides';
+import { CODEX_LIMITATION_DOCS } from './extensions/CodexLimitation';
 
 describe('settings category guides', () => {
   test('cover every category', () => {
@@ -12,6 +13,13 @@ describe('settings category guides', () => {
     .flatMap(([category, guide]) => guide.links.map(link => [category, link.href] as const));
 
   test.each(links)('%s links to an existing docs page and heading: %s', (_category, href) => {
+    expectExistingDocsRoute(href);
+  });
+
+  test.each([
+    ['Codex limitation note', CODEX_LIMITATION_DOCS],
+    ['runtime package name help', 'https://docs.propr.dev/docs/features/propr-cli#finding-package-names'],
+  ])('the %s links to an existing docs heading', (_label, href) => {
     expectExistingDocsRoute(href);
   });
 

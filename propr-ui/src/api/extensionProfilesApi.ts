@@ -11,7 +11,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   const failure = await response.json().catch(() => null) as { code?: string; message?: string; error?: string } | null;
   // The read-only demo explains why the extension library is not shown.
   if (response.status === 403 && failure?.code === 'DEMO_MODE_LIVE_DATA_UNAVAILABLE' && failure.message) throw new Error(failure.message);
-  if (response.status === 403) throw new Error('A current durable instance administrator is required.');
+  if (response.status === 403) throw new Error('Only instance administrators can do this.');
   // Conflicts and validation errors name what to fix, such as the automations that add an item.
   if ([400, 404, 409].includes(response.status) && typeof failure?.error === 'string' && failure.error) throw new Error(failure.error);
   if (response.status === 409) throw new Error('The extension library changed. Refresh and try again.');

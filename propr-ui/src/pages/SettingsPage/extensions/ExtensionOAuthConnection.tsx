@@ -46,8 +46,8 @@ export function ExtensionOAuthConnection({ name, status, redirectUri, busy, onCo
         {confirming ? (
           <>
             <span className="text-red-800">Disconnect {name}? ProPR asks the provider to revoke the tokens, then deletes them.</span>
-            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => { setConfirming(false); onDisconnect(); }}>Confirm disconnect</button>
-            <button type="button" className={buttonClass} onClick={() => setConfirming(false)}>Keep connected</button>
+            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => { setConfirming(false); onDisconnect(); }}>Disconnect</button>
+            <button type="button" className={buttonClass} onClick={() => setConfirming(false)}>Cancel</button>
           </>
         ) : (
           <>
