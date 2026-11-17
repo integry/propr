@@ -72,17 +72,18 @@ export function createStatsCommand(): Command {
   const stats = new Command("stats").description("Read ProPR analytics");
   stats.addCommand(new Command("review-scores")
     .description("Review quality per implementer model and effort: scores, cycles to goal, merge rate, runs to merge and cost per merged PR")
-    .addOption(new Option("--period <period>", "Timeframe").choices([...ANALYTICS_TIMEFRAMES]))
-    .option("--repository <owner/repo>", "Limit to one repository")
-    .option("--json", "Output raw JSON response")
+    .addOption(new Option("--period <period>", "Timeframe (default: all time)").choices([...ANALYTICS_TIMEFRAMES]))
+    .option("--repository <owner/repo>", "Limit to one repository (default: all repositories)")
+    .option("-p, --project <owner/repo>", "Same as --repository")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Examples:
   $ propr stats review-scores --period 30d
   $ propr stats review-scores --repository acme/app --json
 `)
-    .action(async (options: { period?: string; repository?: string; json?: boolean }) => {
+    .action(async (options: { period?: string; repository?: string; project?: string; json?: boolean }) => {
       try {
-        const summary = await getReviewScoreSummary({ period: options.period, repository: options.repository });
+        const summary = await getReviewScoreSummary({ period: options.period, repository: options.repository ?? options.project });
         if (printOutput(summary, options.json ?? false)) return;
         displayReviewScores(summary);
       } catch (error) {

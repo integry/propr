@@ -1182,6 +1182,8 @@ Conditions:
   paused                         A pause the worker confirmed (a pause request alone does not match).
   terminal                       Any of completed, failed or cancelled.
   checkpoint                     A checkpoint published after the cursor; never an older one.
+  blocked                        The goal's provider opened a question or approval for its operator;
+                                 without --after-cursor, a still-open blocker matches at once.
   (none)                         Any new durable goal event after the cursor.
 
 Without --after-cursor, a state condition that already holds matches at once;
@@ -1222,8 +1224,9 @@ JSON:
   "cursor" is null when no request completed and no --after-cursor was given.
 
 Examples:
-  propr goal wait <id> --until terminal --timeout 3600
-  propr goal wait <id> --until checkpoint --after-cursor <cursor> --json
+  $ propr goal wait <id> --until terminal --timeout 3600
+  $ propr goal wait <id> --until checkpoint --after-cursor <cursor> --json
+  $ propr goal wait <id> --until blocked --timeout 600
 `)
     .action(async (goalId: string, options: { until?: string; afterCursor?: string; timeout: string; json?: boolean }) => {
       const controller = new AbortController();

@@ -26,8 +26,9 @@ import {
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult, UltrafixContinuationParams } from './ultrafixLoopContinuation.js';
-import { postPrComment, updatePrComment } from './ultrafixLoopContinuationHelpers.js';
+import { postPrComment, removeUltrafixLabel, updatePrComment } from './ultrafixLoopContinuationHelpers.js';
 import { stashUltrafixCiWaitNotice } from './ultrafixCiWaitNotice.js';
+import { buildUltrafixStopNoticeHeader } from './ultrafixStopNotice.js';
 
 const CI_WAIT_KEY_PREFIX = 'ultrafix:ci-wait';
 const CI_WAIT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -161,12 +162,13 @@ export function buildCiDeferralComment(record: UltrafixCiWaitRecord, timeoutMs: 
     ].join('\n');
 }
 
-export function buildCiTimeoutComment(input: Pick<UltrafixCiTimeoutStopInput, 'goal' | 'lastScore' | 'waitedMs' | 'blockingChecks'>): string {
-    const goal = input.goal !== undefined ? `Requested goal: ${input.goal}/10. ` : '';
+export function buildCiTimeoutComment(
+    input: Pick<UltrafixCiTimeoutStopInput, 'goal' | 'lastScore' | 'waitedMs' | 'blockingChecks'> & { cycle?: number; maxCycles?: number },
+): string {
     const checks = input.blockingChecks.length > 0
         ? ` Blocking checks: ${input.blockingChecks.map(name => `\`${name}\``).join(', ')}.`
         : '';
-    return `⚠️ **Ultrafix stopped before reaching its goal.** ${goal}Last score: ${input.lastScore ?? 'unknown'}. `
+    return buildUltrafixStopNoticeHeader(input)
         + `${ULTRAFIX_CI_TIMEOUT_REASON}: blocking checks were still not passing after ${formatWaitDuration(input.waitedMs)}.${checks} `
         + 'Fix or re-run those checks, then re-arm the loop with `/ultrafix`.';
 }
@@ -184,16 +186,22 @@ export async function stopUltrafixLoopForCiTimeout(input: UltrafixCiTimeoutStopI
             finalScore: input.lastScore ?? null,
             workEpoch,
             outcome: 'failed',
+            // The loop stopped waiting to start its next review.
+            endedOn: { action: 'review', completed: false },
         });
         if (!completed) return false;
         await clearDeferredContinuationIfCurrent(redis, identity, workEpoch);
-        const body = buildCiTimeoutComment({ ...input, goal: input.goal ?? completed.goal });
+        const body = buildCiTimeoutComment({
+            ...input, goal: input.goal ?? completed.goal, lastScore: completed.finalScore,
+            cycle: completed.finalCycle, maxCycles: completed.maxCycles,
+        });
         // Turn the waiting comment into the stop comment rather than leave it looking like a live wait.
         const replaced = input.noticeCommentId !== undefined
             && await updatePrComment({ owner, repo, pullRequestNumber: pr, commentId: input.noticeCommentId, body, correlatedLogger });
         if (!replaced) {
             await postPrComment({ owner, repo, pullRequestNumber: pr, body, correlatedLogger });
         }
+        await removeUltrafixLabel(owner, repo, pr, correlatedLogger);
         return true;
     });
     if (stopped) {
@@ -336,10 +344,12 @@ export async function handleUltrafixCiDeferralSafely(
 export async function applyUltrafixCiDeferral(
     params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger' | 'ultrafixMeta'>,
     readiness: UltrafixReadinessResult,
-    loop: { goal: number; maxCycles: number; cycleCount: number; lastScore?: number | null },
+    loop: { goal: number; maxCycles: number; cycleCount: number; lastScore?: number | null; lastReviewScore?: number | null },
     options: Pick<UltrafixCiDeferralInput, 'carryOverFromEpoch'> = {},
 ): Promise<{ terminal?: ContinuationResult; extra: Pick<ContinuationResult, 'blockingChecks'> }> {
     if (!readiness.ci || !readiness.reasons.includes('checks_not_passing')) return { extra: {} };
+    // The step before a CI wait is usually a fix, which has no score: report the loop's last review.
+    const lastScore = typeof loop.lastScore === 'number' ? loop.lastScore : loop.lastReviewScore ?? loop.lastScore;
     const result = await handleUltrafixCiDeferralSafely({
         redis: params.redisClient,
         owner: params.owner,
@@ -349,7 +359,7 @@ export async function applyUltrafixCiDeferral(
         ...options,
         ci: readiness.ci,
         goal: loop.goal,
-        lastScore: loop.lastScore,
+        lastScore,
         correlatedLogger: params.correlatedLogger,
     });
     const extra = result.blockingChecks.length > 0 ? { blockingChecks: result.blockingChecks } : {};
@@ -361,7 +371,7 @@ export async function applyUltrafixCiDeferral(
             reason: ULTRAFIX_CI_TIMEOUT_REASON,
             outcome: 'failed',
             ...extra,
-            ...(loop.lastScore !== undefined ? { score: loop.lastScore } : {}),
+            ...(lastScore !== undefined ? { score: lastScore } : {}),
             cycleCount: loop.cycleCount,
             goal: loop.goal,
             maxCycles: loop.maxCycles,

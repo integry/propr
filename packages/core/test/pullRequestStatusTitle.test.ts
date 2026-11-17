@@ -9,12 +9,15 @@ const { closeConnection } = await import('../src/db/connection.js');
 const { disablePullRequestStatusSync, enablePullRequestStatusSync, syncPullRequestStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { setPullRequestStatusSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
+const { resetPullRequestStatusEditPacingForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const {
     initialPullRequestTitle, resetPullRequestTitleStateForTests, setPullRequestTitleSettleMsForTests,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusTitle.js');
 const { classifyPullRequestStatusEdit } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 const { isEpicPullRequestTitle } = await import('../src/webhook/planIssueTracking.js');
+const { CHECKS_EXPECTED_WAIT_MS, resetPullRequestCheckWaitForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
+const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
 
 const REPOSITORY = 'integry/propr';
 const PR = 42;
@@ -78,6 +81,8 @@ let github: FakeGitHub;
 let redis: FakeRedis;
 let setting: boolean | Error;
 let queuedJobs: number;
+/** The clock the wait for a new head's checks runs on; the title settle runs on real time. */
+let clock: number;
 
 before(async () => {
     database = knexFactory({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
@@ -93,6 +98,7 @@ before(async () => {
     await database.schema.createTable('goals', table => { table.string('goal_id'); table.string('repository'); table.integer('final_pr_number'); });
     await database.schema.createTable('review_scores', table => {
         table.increments('id'); table.string('repository_id'); table.integer('pr_number'); table.integer('score'); table.string('created_at');
+        table.string('head_sha'); table.string('task_id'); table.integer('blocker_count').defaultTo(0); table.integer('cycle_number');
     });
     setPullRequestTitleSettleMsForTests(SETTLE_MS);
 });
@@ -109,14 +115,18 @@ beforeEach(async () => {
     redis = new FakeRedis();
     setting = true;
     queuedJobs = 0;
+    clock = Date.parse('2026-11-16T13:30:00Z');
     resetPullRequestStatusProvenanceForTests();
+    resetPullRequestStatusEditPacingForTests();
     resetPullRequestTitleStateForTests();
+    resetPullRequestCheckWaitForTests();
 });
 
 function deps(): Partial<PullRequestStatusSyncDeps> {
     return {
         github,
         redis: redis as never,
+        now: () => new Date(clock),
         sources: {
             db: database,
             redis: redis as never,
@@ -147,8 +157,19 @@ async function setTaskState(taskId: string, state: string): Promise<void> {
     await database('task_history').insert({ task_id: taskId, state });
 }
 
-async function addScore(score: number): Promise<void> {
-    await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score, created_at: new Date().toISOString() });
+async function addScore(score: number, headSha: string | null = null): Promise<void> {
+    await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score, created_at: new Date().toISOString(), head_sha: headSha });
+}
+
+/** One `/review` that asked several models: one row per reviewer, in posting order, as recordReviewScores writes them. */
+async function addReviewRound(taskId: string, headSha: string, reviews: Array<{ score: number; blockers: number }>): Promise<void> {
+    const createdAt = new Date().toISOString();
+    for (const review of reviews) {
+        await database('review_scores').insert({
+            repository_id: REPOSITORY, pr_number: PR, task_id: taskId, head_sha: headSha,
+            score: review.score, blocker_count: review.blockers, created_at: createdAt,
+        });
+    }
 }
 
 function setUltrafix(state: Record<string, unknown>): void {
@@ -203,7 +224,7 @@ test('creation costs no rename, and a full Ultrafix loop to the goal with passin
     await syncSettled();
     await syncSettled();
 
-    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`]);
+    assert.deepEqual(github.renames, [`✅❽ ${TITLE}`]);
 });
 
 test('checks pending keep 🔨; a failure without follow-up shows ⚠️, passing checks show ✅', async () => {
@@ -218,12 +239,12 @@ test('checks pending keep 🔨; a failure without follow-up shows ⚠️, passin
     assert.equal(github.pull.title, `🔨 ${TITLE}`, '⚠️ is held until it settles');
     await new Promise(resolve => setTimeout(resolve, SETTLE_MS + 10));
     await sync();
-    assert.equal(github.pull.title, `⚠️➇ ${TITLE}`);
+    assert.equal(github.pull.title, `⚠️❽ ${TITLE}`);
 
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
-    assert.deepEqual(github.renames, [`⚠️➇ ${TITLE}`, `✅➇ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    assert.deepEqual(github.renames, [`⚠️❽ ${TITLE}`, `✅❽ ${TITLE}`]);
 });
 
 test('a brief ⚠️ between a failed check and its queued follow-up costs no rename', async () => {
@@ -245,7 +266,7 @@ test('a follow-up on a ✅ pull request renames it to 🔨 at once and back only
     await addTask('issue', 'completed');
     await addScore(8);
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
 
     const followUp = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'default' }] });
     await sync();
@@ -256,8 +277,8 @@ test('a follow-up on a ✅ pull request renames it to 🔨 at once and back only
     assert.equal(github.pull.title, `🔨 ${TITLE}`, 'still 🔨 while the checks of the follow-up run');
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
-    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`, `🔨 ${TITLE}`, `✅➇ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    assert.deepEqual(github.renames, [`✅❽ ${TITLE}`, `🔨 ${TITLE}`, `✅❽ ${TITLE}`]);
 });
 
 test('a person\'s edit to the rest of the title survives later state changes', async () => {
@@ -267,7 +288,7 @@ test('a person\'s edit to the rest of the title survives later state changes', a
     await setTaskState(implementation, 'completed');
     await addScore(9);
     await syncSettled();
-    assert.equal(github.pull.title, '✅➈ [12 by Claude Opus 5.5] A better title, by a person');
+    assert.equal(github.pull.title, '✅❾ [12 by Claude Opus 5.5] A better title, by a person');
 });
 
 test('a slot a person removed comes back on the next state change, not before', async () => {
@@ -403,7 +424,176 @@ test('the edited webhook of a ProPR rename causes no further write or work', asy
 });
 
 test('[Epic] detection accepts titles with and without the slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️➅ ', '⚠ ', '✅➇ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
+    for (const slot of ['', '🔨 ', '⚠️❻ ', '⚠ ', '✅❽ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
     assert.equal(isEpicPullRequestTitle('Not an [Epic]'), false);
     assert.equal(isEpicPullRequestTitle(null), false);
+});
+
+// --- A freshly pushed head before its checks exist (#3590) ---
+
+function statusLine(): string {
+    return github.pull.body.split('\n').find(line => line.startsWith('**ProPR**')) ?? '';
+}
+
+function push(sha: string): void {
+    github.pull.head = { ...github.pull.head, sha };
+    github.checkRuns = [];
+}
+
+function advance(ms: number): void {
+    clock += ms;
+}
+
+test('#3420: a fix pushed on a ✅ pull request stays 🔨 until the new head\'s checks were reported and completed', async () => {
+    await addTask('issue', 'completed');
+    await addScore(8, 'head-1');
+    await syncSettled();
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    assert.match(statusLine(), /✅ Ready · review 8\/10 · checks: 1 passed/);
+
+    // A follow-up fixes a finding and pushes; its run ends before GitHub created any check run for the new head.
+    const fix = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'default' }] });
+    await sync();
+    assert.equal(github.pull.title, `🔨 ${TITLE}`);
+    push('head-2');
+    await setTaskState(fix, 'completed');
+
+    // No check yet: waiting for CI, with no checks segment to report, and no ✅ however long it is held.
+    for (const step of [18_000, 32_000, 60_000, 60_000]) {
+        advance(step);
+        await syncSettled();
+        assert.match(statusLine(), /🔨 Waiting for CI/, `${step} ms later`);
+        assert.equal(github.pull.title, `🔨 ${TITLE}`);
+    }
+    assert.ok(NO_CI_GRACE_MS < 3 * 60_000 && CHECKS_EXPECTED_WAIT_MS > 3 * 60_000, 'past the no-CI grace, within the wait for a repository that reports checks');
+
+    // The checks appear, pending, then pass.
+    github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }, ...Array.from({ length: 12 }, (_, index) => ({ name: `e2e-${index}`, status: 'queued', conclusion: null }))];
+    advance(20_000);
+    await syncSettled();
+    assert.match(statusLine(), /🔨 Waiting for CI · .*checks: 1 passed, 12 pending/);
+    assert.equal(github.pull.title, `🔨 ${TITLE}`);
+
+    github.checkRuns = github.checkRuns.map(run => ({ ...run, status: 'completed', conclusion: 'success' }));
+    advance(20_000);
+    await syncSettled();
+    assert.match(statusLine(), /✅ Ready · review 8\/10 · checks: 13 passed/);
+    assert.deepEqual(github.renames, [`✅❽ ${TITLE}`, `🔨 ${TITLE}`, `✅❽ ${TITLE}`], 'one rename per real state change');
+});
+
+test('#3573: after a fix push the pre-fix ⚠️ and score do not come back while the new head\'s checks are absent or pending', async () => {
+    await addTask('issue', 'completed');
+    await addScore(6, 'head-1');
+    await syncSettled();
+    assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
+
+    for (const [round, head] of ['head-2', 'head-3'].entries()) {
+        const fix = await addTask('pr-comment', 'processing', { commandMode: 'fix' });
+        await sync();
+        push(head);
+        await setTaskState(fix, 'completed');
+        for (const checks of [[], [{ name: 'unit', status: 'in_progress', conclusion: null }]]) {
+            github.checkRuns = checks;
+            advance(30_000);
+            await syncSettled();
+            assert.match(statusLine(), /🔨 Waiting for CI/, `round ${round + 1}, ${checks.length} checks`);
+            assert.equal(github.pull.title, `🔨 ${TITLE}`, `round ${round + 1}: no stale ⚠️❻`);
+        }
+        const review = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'review' }] });
+        await sync();
+        await setTaskState(review, 'completed');
+        // The second fix reaches the goal; the first one's review is still short of it, for the head it reviewed.
+        await addScore(round === 0 ? 6 : 8, head);
+        github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
+        advance(30_000);
+        await syncSettled();
+    }
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    // ⚠️❻ → 🔨 (fix) → ⚠️❻ (its review, on its head) → 🔨 (second fix) → ✅❽.
+    assert.deepEqual(github.renames, [`⚠️❻ ${TITLE}`, `🔨 ${TITLE}`, `⚠️❻ ${TITLE}`, `🔨 ${TITLE}`, `✅❽ ${TITLE}`]);
+});
+
+test('a review below the goal for the current head still needs you while its checks are pending', async () => {
+    await addTask('issue', 'completed');
+    await addScore(6, 'head-1');
+    github.checkRuns = [{ name: 'unit', status: 'in_progress', conclusion: null }];
+    await syncSettled();
+    assert.match(statusLine(), /⚠️ Needs you · review 6\/10, goal 7 · /);
+    assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
+});
+
+test('a repository with no CI becomes ✅ once its head went without checks for the no-CI grace', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = [];
+    await syncSettled();
+    assert.match(statusLine(), /🔨 Waiting for CI/);
+    advance(NO_CI_GRACE_MS - 1_000);
+    await syncSettled();
+    assert.equal(github.pull.title, `🔨 ${TITLE}`);
+    advance(1_000);
+    await syncSettled();
+    assert.match(statusLine(), /✅ Ready/);
+    assert.deepEqual(github.renames, [`✅ ${TITLE}`]);
+});
+
+test('a head without checks in a repository that reports them is ready once the bounded wait is over', async () => {
+    await addTask('issue', 'completed');
+    await syncSettled();
+    assert.equal(github.pull.title, `✅ ${TITLE}`);
+    push('head-2');
+    await syncSettled();
+    assert.equal(github.pull.title, `🔨 ${TITLE}`);
+    advance(CHECKS_EXPECTED_WAIT_MS - 1_000);
+    await syncSettled();
+    assert.equal(github.pull.title, `🔨 ${TITLE}`);
+    advance(1_000);
+    await syncSettled();
+    assert.equal(github.pull.title, `✅ ${TITLE}`);
+    assert.deepEqual(github.renames, [`✅ ${TITLE}`, `🔨 ${TITLE}`, `✅ ${TITLE}`]);
+});
+
+// --- several reviews of one round (#3591) ---
+
+for (const order of ['blocked review first', 'blocked review last'] as const) {
+    test(`a round scored 6 with a blocker and 8 needs you at 6, in the title and the line (${order})`, async () => {
+        await addTask('issue', 'completed');
+        const reviews = [{ score: 6, blockers: 1 }, { score: 8, blockers: 0 }];
+        await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
+        await syncSettled();
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review 6\/10, goal 7 · /);
+        assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
+    });
+
+    test(`a round scored 8 and 9 with no blocker is ready at 8, in the title and the line (${order})`, async () => {
+        await addTask('issue', 'completed');
+        const reviews = [{ score: 8, blockers: 0 }, { score: 9, blockers: 0 }];
+        await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
+        await syncSettled();
+        assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · review 8\/10/);
+        assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    });
+
+    test(`a round at the goal with one reviewer's open blocker is not ready (${order})`, async () => {
+        await addTask('issue', 'completed');
+        const reviews = [{ score: 8, blockers: 1 }, { score: 9, blockers: 0 }];
+        await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
+        await syncSettled();
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review has open blockers · review 8\/10/);
+        assert.equal(github.pull.title, `⚠️❽ ${TITLE}`);
+    });
+}
+
+test('a later single review of a newer head replaces the round', async () => {
+    await addTask('issue', 'completed');
+    const firstHead = github.pull.head.sha;
+    await addReviewRound('review-1', firstHead, [{ score: 6, blockers: 1 }, { score: 8, blockers: 0 }]);
+    await syncSettled();
+    assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
+
+    push(`${firstHead}-fixed`);
+    github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
+    await addReviewRound('review-2', github.pull.head.sha, [{ score: 9, blockers: 0 }]);
+    await syncSettled();
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · review 9\/10/);
+    assert.equal(github.pull.title, `✅❾ ${TITLE}`);
 });

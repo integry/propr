@@ -26,15 +26,34 @@ import {
 } from "../utils/index.js";
 import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One value inside an array or object row: nested containers stay readable as JSON. */
+function formatNestedValue(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 /**
- * Formats a setting value for display.
+ * Formats a setting value for display. Object-valued rows (for example
+ * agent_watchdog_effective) are rendered as compact `key=value` pairs.
  */
-function formatValue(value: unknown): string {
+export function formatValue(value: unknown): string {
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return "(empty)";
     }
-    return value.join(", ");
+    return value.map(formatNestedValue).join(", ");
+  }
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return "(empty)";
+    }
+    return entries.map(([key, item]) => `${key}=${formatNestedValue(item)}`).join(", ");
   }
   if (value === null || value === undefined || value === "") {
     return "(not set)";
@@ -75,6 +94,8 @@ function getSettingDescription(key: SettingKey): string {
     default_max_cost_usd: "Default per-run spend cap in USD (0 = no cap; task override and workflow.yml take precedence)",
     ultrafix_ci_wait_timeout_ms: "Milliseconds an Ultrafix review waits for blocking CI before stopping (default 7200000)",
     goal_question_max_wait_ms: "Milliseconds a Claude goal question waits for an operator answer (default 86400000; bounded by the agent timeout)",
+    agent_run_usage_pause_percent: "Defer or skip unattended agent runs at or above this % of provider subscription usage (50-100, default 90)",
+    automation_unproductive_run_threshold: "Consecutive unproductive scheduled automation runs before the owner is notified (1-50, default 3)",
     agent_stall_timeout_ms: "Stop an agent run silent this long, in ms (0 disables; \"default\" = env AGENT_STALL_TIMEOUT_MS)",
     agent_tool_stall_timeout_ms: "Silence allowed while a tool call runs, in ms (0 disables; \"default\" = env AGENT_TOOL_STALL_TIMEOUT_MS)",
     agent_degenerate_output_limit: "Consecutive whitespace-only deltas that stop a run (0 disables; \"default\" = env AGENT_DEGENERATE_OUTPUT_LIMIT)",
@@ -359,7 +380,7 @@ Examples:
   $ propr setting update worker_concurrency 10
   $ propr setting update github_user_whitelist "user1,user2,user3"
   $ propr setting update followup-keywords "!propr,propr"
-  $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022
+  $ propr setting update analysis_model_fast claude-haiku-5-5
 `
     )
     .action(async (key: string, value: string) => {

@@ -12,7 +12,9 @@ export const PR_STATUS_BLOCK_END = '<!-- /propr:pr-status -->';
 /** Separator between the block and the rest of the body. */
 const SEPARATOR = '\n\n';
 const TRAILING_SEPARATOR_PATTERN = /^\r?\n\r?\n/;
-const TIMESTAMP_PATTERN = / · updated \d{2}:\d{2} UTC/g;
+/** The update stamp, with its date ("Nov 16 13:59 UTC") or, as blocks written before the date was added have it, without. */
+export const STATUS_TIMESTAMP_PATTERN = / · updated (?:[A-Z][a-z]{2} \d{1,2} )?\d{2}:\d{2} UTC/;
+const TIMESTAMP_PATTERN = new RegExp(STATUS_TIMESTAMP_PATTERN.source, 'g');
 
 const ACTIVITY_TEXT: Record<PullRequestActivity, string> = {
     implementing: 'Implementing',
@@ -32,6 +34,7 @@ const REASON_TEXT: Record<PullRequestAttentionReason, string> = {
     check_failed: 'checks failed',
     merge_conflict: 'conflicts with base',
     review_below_goal: 'review below goal',
+    review_blockers: 'review has open blockers',
     checks_unavailable: 'checks could not be read',
     epic_child_needs_attention: 'a sub-PR needs you',
     epic_child_ready: 'a sub-PR waits to be merged',
@@ -45,10 +48,13 @@ const MAX_FAILED_CHECK_NAMES = 3;
 
 function checksText(checks: PullRequestStatus['detail']['checks']): string | null {
     if (!checks) return null;
+    // Skipped and cancelled checks neither passed nor failed: they are counted apart, and only when there are any.
     const parts = [
         checks.passed > 0 ? `${checks.passed} passed` : null,
         checks.failed > 0 ? `${checks.failed} failed` : null,
         checks.pending > 0 ? `${checks.pending} pending` : null,
+        (checks.skipped ?? 0) > 0 ? `${checks.skipped} skipped` : null,
+        (checks.cancelled ?? 0) > 0 ? `${checks.cancelled} cancelled` : null,
     ].filter((part): part is string => part !== null);
     return parts.length > 0 ? `checks: ${parts.join(', ')}` : null;
 }
@@ -58,6 +64,17 @@ function inlineName(name: string): string {
     return name.replace(/[\r\n`*_<>|[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
+/**
+ * "failed: unit, lint +2": at most `maxNames` names, the rest counted. A name
+ * that still holds a workflow expression (`${{ matrix.os }}`) was never
+ * expanded and names no check a person can find, so it is only counted.
+ */
+function namedChecks(label: string, names: readonly string[], maxNames: number): string | null {
+    const listed = names.filter(name => !name.includes('${{')).map(inlineName).filter(Boolean).slice(0, maxNames);
+    const more = names.length > listed.length ? ` +${names.length - listed.length}` : '';
+    return listed.length > 0 ? `${label}: ${listed.join(', ')}${more}` : null;
+}
+
 function reasonText(status: PullRequestStatus, maxNames: number): string {
     const { detail } = status;
     if (detail.reason === 'ultrafix_stopped' && detail.ultrafixStopped) {
@@ -65,12 +82,17 @@ function reasonText(status: PullRequestStatus, maxNames: number): string {
         const score = finalScore !== null ? ` at ${finalScore}/10` : '';
         return `Ultrafix stopped after ${cycles} cycle${cycles === 1 ? '' : 's'}${score}`;
     }
-    if (detail.reason === 'check_failed' && detail.failedChecks.length > 0) {
-        const names = detail.failedChecks.slice(0, maxNames).map(inlineName).filter(Boolean);
-        const more = detail.failedChecks.length > names.length ? ` +${detail.failedChecks.length - names.length}` : '';
-        if (names.length > 0) return `failed: ${names.join(', ')}${more}`;
+    if (detail.reason === 'check_failed') {
+        const cancelled = detail.cancelledChecks ?? [];
+        // A cancelled run is no failure; only when nothing failed does the reason name it.
+        const named = detail.failedChecks.length > 0 ? namedChecks('failed', detail.failedChecks, maxNames) : namedChecks('cancelled', cancelled, maxNames);
+        if (named) return named;
+        if (detail.failedChecks.length === 0 && cancelled.length > 0) return 'checks cancelled';
     }
-    if (detail.reason === 'review_below_goal') return `review below goal ${detail.ratingGoal}/10`;
+    // One score and the goal it falls short of; the separate review score is left out (reviewScoreText).
+    if (detail.reason === 'review_below_goal') {
+        return detail.reviewScore !== null ? `review ${detail.reviewScore}/10, goal ${detail.ratingGoal}` : `review below goal ${detail.ratingGoal}`;
+    }
     return detail.reason ? REASON_TEXT[detail.reason] : '';
 }
 
@@ -83,25 +105,51 @@ function headline(status: PullRequestStatus): string {
     }
     if (status.state === 'ready') return '✅ Ready';
     if (status.state === 'needs_attention') return '⚠️ Needs you';
+    // A running loop names its cycle once: "🔨 Ultrafix cycle 3 of 10", not "Ultrafix in progress · Ultrafix cycle 3 of 10".
+    if (ultrafixHeadline(status)) return `🔨 ${ultrafixCycleText(status.detail.ultrafix!)}`;
     return `🔨 ${ACTIVITY_TEXT[status.detail.activity ?? 'queued']}`;
 }
 
-function utcTime(now: Date): string {
-    return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
+function ultrafixHeadline(status: PullRequestStatus): boolean {
+    return status.state === 'working' && status.detail.activity === 'ultrafix' && status.detail.ultrafix !== null;
 }
+
+function ultrafixCycleText(ultrafix: { cycle: number; maxCycles: number }): string {
+    return `Ultrafix cycle ${ultrafix.cycle} of ${ultrafix.maxCycles}`;
+}
+
+/** The review score part, unless the reason already states it (review_below_goal) or it describes a stopped loop. */
+function reviewScoreText(status: PullRequestStatus, previous: 'last review' | 'review'): string | null {
+    const { detail } = status;
+    if (detail.reviewScore === null || detail.reason === 'ultrafix_stopped') return null;
+    if (status.state === 'needs_attention' && detail.reason === 'review_below_goal') return null;
+    return `${previous} ${detail.reviewScore}/10`;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * When the status was written, e.g. "Nov 16 13:59 UTC". The block is read
+ * long after it is written (it only changes with the status), so it always
+ * carries its date: a bare time reads as today's.
+ */
+export function statusTimestamp(now: Date): string {
+    const time = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
+    return `${MONTHS[now.getUTCMonth()]} ${now.getUTCDate()} ${time} UTC`;
+}
+
 
 /** What a sub-PR's status says, in a few words: "Ultrafix cycle 4 of 10, last review 6/10", "ready to merge". */
 export function describeChildStatus(status: PullRequestStatus | null, order: 'block' | 'comment' = 'block'): string {
     if (!status || status.state === 'none') return '';
     const { detail } = status;
     const lower = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
-    const score = detail.reviewScore !== null && detail.reason !== 'ultrafix_stopped'
-        ? `${status.state === 'working' && order === 'block' ? 'last review' : 'review'} ${detail.reviewScore}/10` : null;
+    const score = reviewScoreText(status, status.state === 'working' && order === 'block' ? 'last review' : 'review');
     let what: string | null;
     if (status.state === 'ready') what = 'ready to merge';
     else if (status.state === 'needs_attention') what = reasonText(status, 0);
     else what = detail.ultrafix ? null : lower(ACTIVITY_TEXT[detail.activity ?? 'queued']);
-    const cycle = detail.ultrafix ? `Ultrafix cycle ${detail.ultrafix.cycle} of ${detail.ultrafix.maxCycles}` : null;
+    const cycle = detail.ultrafix ? ultrafixCycleText(detail.ultrafix) : null;
     // The comment leads with the score, the block with what runs.
     const parts = order === 'comment' ? [score, what, cycle] : [what, cycle, score];
     return parts.filter(Boolean).join(', ');
@@ -138,7 +186,7 @@ function epicStatusLine(status: PullRequestStatus, maxNames: number): string[] {
     const parts = [`**ProPR** ${headline(status)}`];
     if (epic.merged >= epic.total) {
         if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
-        else if (status.state === 'working') parts.push(ACTIVITY_TEXT[detail.activity ?? 'queued']);
+        else if (status.state === 'working') parts.push(ultrafixHeadline(status) ? ultrafixCycleText(detail.ultrafix!) : ACTIVITY_TEXT[detail.activity ?? 'queued']);
         const checks = checksText(detail.checks);
         if (checks) parts.push(checks);
         return parts;
@@ -148,16 +196,14 @@ function epicStatusLine(status: PullRequestStatus, maxNames: number): string[] {
 
 function statusLine(status: PullRequestStatus, now: Date, maxNames: number): string {
     const { detail } = status;
-    if (detail.epic && detail.epic.total > 0) return [...epicStatusLine(status, maxNames), `updated ${utcTime(now)}`].filter(Boolean).join(' · ');
+    if (detail.epic && detail.epic.total > 0) return [...epicStatusLine(status, maxNames), `updated ${statusTimestamp(now)}`].filter(Boolean).join(' · ');
     const parts = [`**ProPR** ${headline(status)}`];
     if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
-    if (detail.ultrafix) parts.push(`Ultrafix cycle ${detail.ultrafix.cycle} of ${detail.ultrafix.maxCycles}`);
-    if (detail.reviewScore !== null && detail.reason !== 'ultrafix_stopped') {
-        parts.push(status.state === 'working' ? `last review ${detail.reviewScore}/10` : `review ${detail.reviewScore}/10`);
-    }
+    if (detail.ultrafix && !ultrafixHeadline(status)) parts.push(ultrafixCycleText(detail.ultrafix));
+    parts.push(reviewScoreText(status, status.state === 'working' ? 'last review' : 'review') ?? '');
     const checks = status.state === 'needs_attention' && detail.reason === 'ultrafix_stopped' ? null : checksText(detail.checks);
     if (checks) parts.push(checks);
-    parts.push(`updated ${utcTime(now)}`);
+    parts.push(`updated ${statusTimestamp(now)}`);
     return parts.filter(Boolean).join(' · ');
 }
 
@@ -166,7 +212,7 @@ const MARKERS_LENGTH = `${PR_STATUS_BLOCK_START}\n\n${PR_STATUS_BLOCK_END}`.leng
 const MAX_LINE_LENGTH = PR_STATUS_BLOCK_MAX_LENGTH - MARKERS_LENGTH;
 
 /**
- * The one-line status text, e.g. "**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC".
+ * The one-line status text, e.g. "**ProPR** ✅ Ready · review 8/10 · checks: 35 passed, 12 skipped · updated Nov 16 10:02 UTC".
  * Never longer than the block budget: failed check names are dropped first,
  * then the line is cut, so the space new descriptions reserve always holds it.
  */
@@ -176,7 +222,7 @@ export function renderPullRequestStatusLine(status: PullRequestStatus, now: Date
         if (line.length <= MAX_LINE_LENGTH) return line;
     }
     const line = statusLine(status, now, 0);
-    const stamp = ` · updated ${utcTime(now)}`;
+    const stamp = ` · updated ${statusTimestamp(now)}`;
     // The line always ends with the stamp; cut before it, never inside a surrogate pair.
     const cut = line.slice(0, MAX_LINE_LENGTH - stamp.length - 1).replace(/[\uD800-\uDBFF]$/, '');
     return `${cut}…${stamp}`;
@@ -199,7 +245,7 @@ export function renderPullRequestStatusBlock(status: PullRequestStatus, now: Dat
  */
 export function renderCompactPullRequestStatusBlock(status: PullRequestStatus, now: Date = new Date()): string | null {
     if (status.state === 'none') return null;
-    return wrapBlock(`**ProPR** ${headline(status)} · updated ${utcTime(now)}`);
+    return wrapBlock(`**ProPR** ${headline(status)} · updated ${statusTimestamp(now)}`);
 }
 
 interface BlockMatch {
@@ -268,7 +314,7 @@ export function preservePullRequestStatusBlock(nextBody: string, currentBody: st
     return block ? applyPullRequestStatusBlock(stripped, block) : stripped;
 }
 
-/** Bodies that differ only in the block's "updated HH:MM UTC" stamp are the same status. */
+/** Bodies that differ only in the block's "updated Nov 16 13:59 UTC" stamp are the same status. */
 export function sameRenderedStatus(left: string, right: string): boolean {
     return left.replace(TIMESTAMP_PATTERN, '') === right.replace(TIMESTAMP_PATTERN, '');
 }

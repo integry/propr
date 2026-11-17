@@ -157,7 +157,7 @@ Argument:
 Examples:
   $ propr issue implement abc123/1
   $ propr issue implement abc123:42 --wait
-  $ propr issue implement abc123/1 -a claude -m claude-sonnet-4-20250514 --wait
+  $ propr issue implement abc123/1 -a claude -m claude-sonnet-5-5 --wait
   $ propr issue implement abc123/1 --epic --auto-merge
   $ propr issue implement abc123/1 --max-cost 5
 `)

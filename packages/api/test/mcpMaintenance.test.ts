@@ -187,3 +187,56 @@ test('list_followup_handoffs shows only handoffs in repositories the client may 
   for (const hidden of [outsideGrant, 'secret-branch', revokedOnGitHub, unconfigured]) assert.ok(!text.includes(hidden), `${hidden} is not disclosed`);
   assert.deepEqual(githubChecks.sort(), [repository, revokedOnGitHub], 'current GitHub access is checked once per granted, configured repository');
 });
+
+test('list_followup_handoffs leaves released handoffs out unless asked, and pages the rest', async () => {
+  await core.runMigrations();
+  const { McpStore } = await import('../mcp/store.js');
+  const { McpOAuthProvider } = await import('../mcp/oauth.js');
+  const { McpPolicy } = await import('../mcp/policy.js');
+  const { createToolCatalog, executeTool } = await import('../mcp/tools.js');
+  const mcpConfig = { origin: 'https://instance.example', resource: 'https://instance.example/api/mcp', instanceId: 'fixture-instance', encryptionKey: randomBytes(32) };
+  const policy = new McpPolicy(new McpOAuthProvider(new McpStore(core.db, mcpConfig.encryptionKey), mcpConfig), mcpConfig);
+  const principal = {
+    user: { id: '829273', username: 'integry' },
+    authorization: { permissions: ['instance.manage_runtime'], role: 'admin', source: 'local' },
+    scopes: ['read', 'manage'],
+    grant: { id: 'paging-grant', repositories: [repository], membershipSource: 'local' },
+    github: { request: async () => ({ data: { permissions: { pull: true } } }) },
+  } as unknown as McpPrincipal;
+  const released = (pullRequest: number) => ({ ...status({ pull_request: pullRequest, status: 'released', status_reason: 'released_by_operator', worktree_path: undefined }), nextAction: 'none' });
+  const records = [
+    status(),
+    released(3400),
+    status({ pull_request: 3425, status: 'active', status_reason: 'recovering', phase: 'pushed' }),
+    released(3401),
+    status({ pull_request: 3426, status: 'active', status_reason: 'recovering', phase: 'committed' }),
+  ];
+  const unused = async () => { throw new Error('the list must not call a mutating recovery entry point'); };
+  const deps = {
+    db: core.db, policy,
+    followupHandoffs: { inspectFollowupHandoffs: async () => records, releaseFollowupHandoffRecord: unused, resumeOperatorHeldFollowupHandoff: unused, authorizeCancelledFollowupHandoff: unused, recoverInterruptedFollowupHandoffs: unused },
+    redisClient: { set: async () => 'OK', get: async () => null, eval: async () => 1, publish: async () => 1, lPush: async () => 1, lTrim: async () => 'OK' },
+    taskQueue: {}, runtimeBuildQueue: {},
+  } as unknown as ToolDeps;
+  const list = createToolCatalog(deps).find(entry => entry.name === 'list_followup_handoffs')!;
+  type Page = { handoffs: Array<Record<string, unknown>>; nextOffset: number | null };
+  const read = async (args: Record<string, unknown>) => (await executeTool(list, args, principal, deps)).data as Page;
+
+  const owed = await read({});
+  assert.deepEqual(owed.handoffs.map(handoff => handoff.pullRequest), [3423, 3425, 3426], 'held and recovering handoffs only, by default');
+  assert.ok(owed.handoffs.every(handoff => handoff.nextAction !== 'none'));
+  assert.equal(owed.nextOffset, null);
+
+  const first = await read({ limit: 2 });
+  assert.deepEqual(first.handoffs.map(handoff => handoff.pullRequest), [3423, 3425]);
+  assert.equal(first.nextOffset, 2);
+  const second = await read({ limit: 2, offset: first.nextOffset });
+  assert.deepEqual(second.handoffs.map(handoff => handoff.pullRequest), [3426]);
+  assert.equal(second.nextOffset, null);
+
+  const all = await read({ includeReleased: true });
+  assert.deepEqual(all.handoffs.map(handoff => handoff.pullRequest), [3423, 3400, 3425, 3401, 3426]);
+  assert.deepEqual(all.handoffs.filter(handoff => handoff.status === 'released').map(handoff => handoff.nextAction), ['none', 'none']);
+  // The handoff store writes epoch milliseconds; the MCP result reports ISO 8601 UTC.
+  assert.equal(all.handoffs[0].updatedAt, new Date(1794092314931).toISOString());
+});

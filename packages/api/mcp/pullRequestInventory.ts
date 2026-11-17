@@ -59,6 +59,8 @@ export interface InventoryOptions {
   updatedWithinMinutes?: number;
   limit: number;
   offset: number;
+  /** Position in the granted repository list where this call's repository window starts. */
+  repositoryOffset?: number;
   includeLatestComment: boolean;
 }
 
@@ -68,7 +70,7 @@ export interface InventoryItem extends Record<string, unknown> {
 }
 
 /** Bounded fan-out: at most `limit` in-flight operations, results in input order. */
-async function mapConcurrent<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapConcurrent<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let cursor = 0;
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -107,25 +109,40 @@ export function managedModelLabels(labels: string[]): string[] {
   return labels.filter(name => name.toLowerCase().startsWith(MANAGED_MODEL_LABEL_PREFIX));
 }
 
+export interface InventoryRepositories {
+  repositories: string[]; truncated: boolean; notScanned: number; nextRepositoryOffset: number | null;
+}
+
 /**
  * The repositories this call may read: the grant intersected with currently
  * enabled configured repositories, each verified against live GitHub access.
  * Repositories the credential can no longer read are skipped, not failed.
+ * Every scanned repository costs its own GraphQL pages, so one call covers a
+ * window of at most `MAX_REPOSITORIES` granted repositories starting at
+ * `repositoryOffset`; `nextRepositoryOffset` reaches the rest.
  */
-export async function inventoryRepositories(principal: McpPrincipal, policy: McpPolicy, repository?: string): Promise<{ repositories: string[]; truncated: boolean }> {
-  if (repository) return { repositories: [repository], truncated: false };
+export async function inventoryRepositories(
+  principal: McpPrincipal, policy: McpPolicy, repository?: string, repositoryOffset = 0,
+): Promise<InventoryRepositories> {
+  if (repository) return { repositories: [repository], truncated: false, notScanned: 0, nextRepositoryOffset: null };
+  const granted = new Set(principal.grant.repositories.map(name => name.toLowerCase()));
   // One repository can be configured once per base branch; scan it once.
   const seen = new Set<string>();
   const configured = (await loadMonitoredReposRaw())
-    .filter(repo => repo.enabled && !seen.has(repo.name.toLowerCase()) && !!seen.add(repo.name.toLowerCase()));
-  const repositories: string[] = [];
-  let truncated = false;
-  for (const repo of configured) {
-    if (repositories.length >= MAX_REPOSITORIES) { truncated = true; break; }
-    try { await policy.repository(principal, repo.name); repositories.push(repo.name); }
-    catch (error) { if (!(error instanceof McpError) || error.status !== 403) throw error; }
-  }
-  return { repositories, truncated };
+    .filter(repo => repo.enabled && granted.has(repo.name.toLowerCase())
+      && !seen.has(repo.name.toLowerCase()) && !!seen.add(repo.name.toLowerCase()));
+  const window = configured.slice(repositoryOffset, repositoryOffset + MAX_REPOSITORIES);
+  const verified = await mapConcurrent(window, REPOSITORY_CONCURRENCY, async repo => {
+    try { await policy.repository(principal, repo.name); return repo.name; }
+    catch (error) { if (!(error instanceof McpError) || error.status !== 403) throw error; return null; }
+  });
+  const end = repositoryOffset + window.length;
+  const notScanned = configured.length - window.length;
+  return {
+    repositories: verified.filter((name): name is string => name !== null),
+    truncated: notScanned > 0, notScanned,
+    nextRepositoryOffset: end < configured.length ? end : null,
+  };
 }
 
 function projectPullRequest(repository: string, node: GraphPullRequest): InventoryItem {
@@ -303,7 +320,8 @@ export async function attachLatestComments(principal: McpPrincipal, items: Inven
 export async function listPullRequestInventory(
   deps: { db: Knex; policy: McpPolicy } & Partial<Pick<ToolDeps, 'redisClient' | 'taskQueue'>>, principal: McpPrincipal, options: InventoryOptions,
 ): Promise<Record<string, unknown>> {
-  const { repositories, truncated } = await inventoryRepositories(principal, deps.policy, options.repository);
+  const { repositories, truncated, notScanned, nextRepositoryOffset } = await inventoryRepositories(
+    principal, deps.policy, options.repository, options.repositoryOffset ?? 0);
   const field = options.updatedWithinMinutes && !options.openedWithinMinutes ? 'UPDATED_AT' : 'CREATED_AT';
   // One result beyond the requested page is all it takes to tell a next page from
   // the end of the inventory.
@@ -320,7 +338,8 @@ export async function listPullRequestInventory(
   const nextOffset = options.offset + options.limit;
   const hasMore = all.length > nextOffset;
   return {
-    repositories, repositoriesTruncated: truncated, order: field === 'UPDATED_AT' ? 'updated' : 'created',
+    repositories, repositoriesTruncated: truncated, repositoriesNotScanned: notScanned, nextRepositoryOffset,
+    order: field === 'UPDATED_AT' ? 'updated' : 'created',
     pullRequests: page, latestCommentTruncated, statusTruncated,
     // A scan that ran out of page budget has not proven exhaustion; report that
     // instead of letting a null continuation imply there is nothing left.

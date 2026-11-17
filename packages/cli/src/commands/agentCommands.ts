@@ -173,7 +173,7 @@ Examples:
           console.log("  propr agent add <alias> --type <type> --model <models>");
           console.log("");
           console.log("Example:");
-          console.log("  propr agent add claude-prod --type claude --model claude-sonnet-4-20250514,claude-opus-4-20250514");
+          console.log("  propr agent add claude-prod --type claude --model claude-sonnet-5-5,claude-opus-5-5");
           return;
         }
 

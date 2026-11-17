@@ -12,7 +12,7 @@ await mock.module('@propr/core', {
 });
 
 await mock.module('../src/jobs/ultrafixLoopContinuationHelpers.js', {
-    namedExports: { postPrComment: mock.fn(async () => null), updatePrComment: mock.fn(async () => false) },
+    namedExports: { postPrComment: mock.fn(async () => null), updatePrComment: mock.fn(async () => false), removeUltrafixLabel: mock.fn(async () => undefined) },
 });
 
 const {
@@ -180,8 +180,8 @@ describe('Ultrafix CI deferral notice', () => {
     });
 
     test('the timeout comment reuses the "Ultrafix stopped" wording with the CI reason', () => {
-        const body = buildCiTimeoutComment({ goal: 8, lastScore: 6, waitedMs: TIMEOUT_MS, blockingChecks: ['Run Full Test Suite'] });
-        assert.match(body, /^⚠️ \*\*Ultrafix stopped before reaching its goal\.\*\* Requested goal: 8\/10\. Last score: 6\./);
+        const body = buildCiTimeoutComment({ goal: 8, lastScore: 6, waitedMs: TIMEOUT_MS, blockingChecks: ['Run Full Test Suite'], cycle: 5, maxCycles: 10 });
+        assert.match(body, /^⚠️ \*\*Ultrafix stopped before reaching its goal\.\*\* Requested goal: 8\/10\. Last score: 6\/10\. Stopped in cycle 5 of 10\./);
         assert.match(body, /CI did not settle: blocking checks were still not passing after 2 hours\./);
         assert.match(body, /`Run Full Test Suite`/);
     });

@@ -33,6 +33,8 @@ import type {
     GetCheckRunsStatusFn,
 } from './ultrafixLoopContinuation.js';
 import { maybeEnableAutoMerge, postPrComment, removeUltrafixLabel } from './ultrafixLoopGithub.js';
+import { buildUltrafixStopNoticeHeader } from './ultrafixStopNotice.js';
+import { LIVE_QUEUE_JOB_STATES, recordUltrafixStepEnqueue } from './ultrafixStepEnqueueMarker.js';
 
 export {
     getUltrafixLabelState,
@@ -56,14 +58,18 @@ export async function finishUltrafixLoop(input: {
     blocked?: boolean;
     /** The review left only stylistic blockers, so no fix was scheduled. */
     styleFindingsOnly?: boolean;
+    /** Plain-words reason for the stop notice when none of the cases above applies. */
+    stopExplanation?: string;
 }): Promise<ContinuationResult> {
-    const { params, state, latestScore, reviewStatus, isPartial, decisionReason, blocked, styleFindingsOnly } = input;
+    const { params, state, latestScore, reviewStatus, isPartial, decisionReason, blocked, styleFindingsOnly, stopExplanation } = input;
     const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
     const workEpoch = params.ultrafixMeta?.workEpoch ?? 0;
     const identity = { owner, repo, pr: pullRequestNumber };
 
     const goalReached = completedAction === 'review'
         && hasReviewReachedGoal(reviewStatus, latestScore, state.goal, isPartial);
+    let finalScore = latestScore;
+    let finalCycle = state.cycleCount;
     const outcome: UltrafixOutcome = goalReached ? 'goal_reached' : blocked ? 'stopped' : styleFindingsOnly ? 'style_findings_only'
         : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted';
     const finishResult = await withUltrafixLabelTransition(redisClient, identity, async () => {
@@ -75,8 +81,12 @@ export async function finishUltrafixLoop(input: {
             finalScore: latestScore,
             workEpoch,
             outcome,
+            // A blocked fix never completed, so the loop stopped in that fix's cycle.
+            ...(blocked ? { endedOn: { action: 'fix' as const, completed: false } } : {}),
         });
         if (!completedState) return false;
+        finalScore = completedState.finalScore;
+        finalCycle = completedState.finalCycle ?? finalCycle;
         if (!goalReached) {
             const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
             const cleanPartialReview = cleanReviewMissedGoal && isPartial;
@@ -90,14 +100,20 @@ export async function finishUltrafixLoop(input: {
                 ? 'The latest review had partial diff coverage, so it cannot establish merge readiness. Manual review and merge are now required.'
                 : cleanReviewMissedGoal
                 ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
-                : 'Max cycles were exhausted, so manual review and merge are now required.';
+                : stopExplanation
+                ?? 'Max cycles were exhausted, so manual review and merge are now required.';
             await postPrComment({
                 owner,
                 repo,
                 pullRequestNumber,
-                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${state.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
+                body: buildUltrafixStopNoticeHeader({
+                    goal: state.goal, lastScore: completedState.finalScore,
+                    cycle: completedState.finalCycle, maxCycles: completedState.maxCycles,
+                }) + manualReason,
                 correlatedLogger,
             });
+            // The loop is over: the label must not keep advertising it as in progress.
+            await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
             return true;
         }
 
@@ -114,13 +130,13 @@ export async function finishUltrafixLoop(input: {
     if (!finishResult) return { continued: false, reason: 'ultrafix_superseded' };
 
     correlatedLogger.info(
-        { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, goalReached },
+        { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, finalCycle, goalReached },
         'Ultrafix loop: loop finished',
     );
     return {
         continued: false,
         reason: decisionReason,
-        score: latestScore,
+        score: finalScore,
         cycleCount: state.cycleCount,
         outcome,
         goal: state.goal,
@@ -241,6 +257,10 @@ export async function enqueueNextStep(
         return false;
     }
 
+    // Lets the stranded-loop sweep see this step while it is delayed, waits for capacity or runs.
+    await recordUltrafixStepEnqueue(params.redisClient, { owner, repo, pr: pullRequestNumber }, {
+        jobId, workEpoch: ultrafixMeta?.workEpoch ?? 0, delayMs,
+    });
     correlatedLogger.info(
         { pullRequestNumber, nextAction, jobId, delayMs, nextCorrelationId },
         `Ultrafix loop: enqueued next ${nextAction} step`,
@@ -327,7 +347,7 @@ export async function findOutstandingUltrafixWork(
     let currentSteps = false;
     try {
         const issueQueue = await getIssueQueue();
-        const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: { workEpoch?: number } } }>;
+        const jobs = await issueQueue.getJobs([...LIVE_QUEUE_JOB_STATES]) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: { workEpoch?: number } } }>;
         const prJobs = jobs.filter(job => job.data.repoOwner === owner
             && job.data.repoName === repo
             && job.data.pullRequestNumber === pullRequestNumber);

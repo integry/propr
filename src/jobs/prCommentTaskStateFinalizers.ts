@@ -37,8 +37,12 @@ async function readFailedJobState(job: Job<MainJobData>): Promise<string> {
 }
 
 export interface PRCommentTaskStateFinalizerOptions {
-    /** Runs once a job's attempts are exhausted, e.g. so a failed Ultrafix step's loop is not stranded. */
-    onExhaustedFailure?: (job: Job<MainJobData>) => Promise<void>;
+    /**
+     * Runs once a job's attempts are exhausted, e.g. so a failed Ultrafix step's loop is not stranded.
+     * `reportedOnPullRequest` suppresses the "could not start" comment (an Ultrafix loop waiting
+     * for disk space posts its own single notice instead of one refusal per attempt).
+     */
+    onExhaustedFailure?: (job: Job<MainJobData>, error: Error) => Promise<{ reportedOnPullRequest?: boolean } | void>;
 }
 
 export function attachPRCommentTaskStateFinalizers(
@@ -91,15 +95,18 @@ export function attachPRCommentTaskStateFinalizers(
                     ? { outcome: 'retry_scheduled', stateChanged: true }
                     : { outcome: 'retry_pending', stateChanged: false };
             }
+            let reportedOnPullRequest = false;
             try {
-                await options.onExhaustedFailure?.(job);
+                reportedOnPullRequest = (await options.onExhaustedFailure?.(job, error))?.reportedOnPullRequest === true;
             } catch (hookError) {
                 logger.warn({ taskId, error: (hookError as Error).message }, 'Failed to record follow-up for exhausted PR comment job');
             }
             const result = await finalizeFailedPRCommentTask(taskId, error, stateManager);
             // No task means the processor never ran (worktree admission refused the job, for
             // instance), so its own failure handling never told GitHub; this does.
-            if (result.outcome === 'task_missing') await postUnstartedPRCommentFailure(job as Job<CommentJobData>, error);
+            if (result.outcome === 'task_missing' && !reportedOnPullRequest) {
+                await postUnstartedPRCommentFailure(job as Job<CommentJobData>, error);
+            }
             return result;
         };
         track(finalizeIfExhausted(), taskId);

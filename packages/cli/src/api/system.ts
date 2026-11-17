@@ -66,6 +66,17 @@ export interface SystemStatus {
   claudeAuth: string;
 
   /**
+   * Repository indexing queue health ('idle' | 'active' | 'queued' |
+   * 'failed' | 'disconnected' | 'unknown').
+   */
+  indexing?: string;
+
+  /**
+   * Operational warnings reported by the server.
+   */
+  warnings?: Array<{ type?: string; message?: string }>;
+
+  /**
    * Timestamp of the status check.
    */
   timestamp: string;

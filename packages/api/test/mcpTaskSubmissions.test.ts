@@ -565,3 +565,44 @@ test('create_task rejects out-of-range ultrafix bounds and requires review and m
     assert.deepEqual([f.calls.length, (await f.db('task_submissions')).length, f.enqueues()], [0, 0, 0]);
   } finally { await f.db.destroy(); }
 });
+
+test('submission reads report the state of the task they follow, never queued next to finished progress', async () => {
+  const f = await fixture();
+  try {
+    await f.call('create_task', { repository: 'owner/repo', instruction: 'Fix dates', idempotencyKey: 'state-agreement' });
+    const submission = await f.db('task_submissions').first();
+    assert.equal(submission.state, 'queued', 'the stored submission stops at dispatch');
+    type Listed = { submissions: Array<SubmissionData & { submissionState: string }> };
+    const list = async () => ((await f.call('list_task_submissions', { limit: 1, sinceMinutes: 10080 })).data as Listed).submissions[0];
+    const read = async () => (await f.call('get_task_submission', { repository: 'owner/repo', submissionId: submission.id })).data as SubmissionData & { submissionState: string };
+
+    const queued = await list();
+    assert.deepEqual([queued.state, queued.submissionState, queued.progress.stage], ['queued', 'queued', 'queued']);
+
+    await f.db('tasks').insert({ task_id: 'agreeing-task', repository: 'owner/repo', task_type: 'issue' });
+    await associateSubmissionTask(f.db, submission.id, 'agreeing-task');
+    await f.db('task_history').insert({ task_id: 'agreeing-task', state: 'pending' });
+    const pending = await list();
+    assert.deepEqual([pending.state, pending.submissionState, pending.progress.stage], ['queued', 'queued', 'queued']);
+
+    await f.db('task_history').insert({ task_id: 'agreeing-task', state: 'claude_execution' });
+    for (const running of [await list(), await read()]) {
+      assert.deepEqual([running.state, running.submissionState, running.progress.stage], ['running', 'running', 'running']);
+    }
+
+    await f.db('tasks').where({ task_id: 'agreeing-task' }).update({ pr_number: 96 });
+    await f.db('notification_pull_request_state').insert({ repository: 'owner/repo', pr_number: 96, merged_at: '2026-11-02 10:12:51' });
+    await f.db('task_history').insert({ task_id: 'agreeing-task', state: 'completed', timestamp: '2026-11-02 10:12:47' });
+    for (const completed of [await list(), await read()]) {
+      assert.deepEqual([completed.state, completed.submissionState, completed.progress.stage], ['completed', 'completed', 'completed']);
+      assert.equal(completed.progress.pullRequest?.state, 'merged');
+      assert.equal((completed.progress.task as { updatedAt?: string }).updatedAt, '2026-11-02T10:12:47.000Z');
+    }
+    assert.equal((await f.db('task_submissions').first()).state, 'queued', 'the read derives the state; the stored row is unchanged');
+    assert.deepEqual(((await f.call('list_task_submissions', { stage: 'completed', sinceMinutes: 10080 })).data as Listed).submissions.map(item => item.state), ['completed']);
+
+    await f.db('task_history').insert({ task_id: 'agreeing-task', state: 'failed', reason: 'Agent exited' });
+    const failed = await read();
+    assert.deepEqual([failed.state, failed.submissionState, failed.progress.stage], ['failed', 'failed', 'failed']);
+  } finally { await f.db.destroy(); }
+});

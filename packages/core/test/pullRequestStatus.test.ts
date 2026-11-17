@@ -104,6 +104,38 @@ test('goal reached while checks are pending is working, not ready', () => {
     assert.equal(status.detail.activity, 'waiting_for_ci');
 });
 
+// --- a new head whose checks have not appeared yet (#3590) ---
+
+test('a head whose checks have not appeared yet waits for CI instead of being ready', () => {
+    const empty = { complete: true, reported: false, passed: 0, failed: 0, pending: 0, failedNames: [] };
+    const waiting = computePullRequestStatus(facts({ checks: empty, checksAwaitedForMs: 60_000, latestReviewScore: 8 }));
+    assert.equal(waiting.state, 'working');
+    assert.equal(waiting.detail.activity, 'waiting_for_ci');
+    // The wait is over (or the repository has no CI): nothing else holds it.
+    assert.equal(computePullRequestStatus(facts({ checks: empty, checksAwaitedForMs: null, latestReviewScore: 8 })).state, 'ready');
+    const ultrafix = computePullRequestStatus(facts({ checks: empty, checksAwaitedForMs: 60_000, ultrafix: loop() }));
+    assert.equal(ultrafix.detail.activity, 'waiting_for_ci');
+});
+
+test('a review score of an older head is not held against a new head while its checks are outstanding', () => {
+    const pushed = { latestReviewScore: 6, latestReviewHeadSha: 'old', pullRequest: { state: 'open', merged: false, headSha: 'abc', mergeable: true } };
+    const pending = { complete: true, reported: true, passed: 9, failed: 0, pending: 12, failedNames: [] };
+    const absent = { complete: true, reported: false, passed: 0, failed: 0, pending: 0, failedNames: [] };
+    for (const [label, extra] of [['pending', { checks: pending }], ['absent', { checks: absent, checksAwaitedForMs: 30_000 }]] as const) {
+        const status = computePullRequestStatus(facts({ ...pushed, ...extra }));
+        assert.equal(status.state, 'working', label);
+        assert.equal(status.detail.activity, 'waiting_for_ci', label);
+    }
+    // Once the new head's checks concluded, the latest score is what there is.
+    assert.equal(computePullRequestStatus(facts(pushed)).detail.reason, 'review_below_goal');
+    // A score for the current head (or one recorded without its head) is established whatever pending checks conclude.
+    for (const head of ['abc', null]) {
+        assert.equal(computePullRequestStatus(facts({ ...pushed, latestReviewHeadSha: head, checks: pending })).detail.reason, 'review_below_goal');
+    }
+    // A failed check still needs you on the new head.
+    assert.equal(computePullRequestStatus(facts({ ...pushed, checks: { ...pending, failed: 1, failedNames: ['lint'] } })).detail.reason, 'check_failed');
+});
+
 // --- state table: needs_attention ---
 
 test('the last ProPR run failed', () => {
@@ -261,24 +293,24 @@ test('the block renders the documented one-line examples', () => {
             tasks: [task('pr-comment', 'claude_execution', 'follow_up')], ultrafix: loop(), latestReviewScore: 6,
             checks: { complete: true, passed: 31, failed: 0, pending: 4, failedNames: [] },
         })), NOW),
-        '**ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated 09:41 UTC',
+        '**ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated Nov 13 09:41 UTC',
     );
     assert.equal(
         renderPullRequestStatusLine(computePullRequestStatus(facts({ latestReviewScore: 8 })), new Date('2026-11-13T10:02:00Z')),
-        '**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC',
+        '**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated Nov 13 10:02 UTC',
     );
     assert.equal(
         renderPullRequestStatusLine(computePullRequestStatus(facts({
             latestReviewScore: 6,
             ultrafix: loop({ active: false, cycleCount: 10, completionStatus: 'failed', completionReason: 'cycles_exhausted', finalScore: 6, completedAt: '2026-11-13T10:00:00Z' }),
         })), new Date('2026-11-13T10:15:00Z')),
-        '**ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated 10:15 UTC',
+        '**ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated Nov 13 10:15 UTC',
     );
 });
 
 test('epic pull requests lead with merged and total issue counts', () => {
     const line = renderPullRequestStatusLine(computePullRequestStatus(facts({ epic: { merged: 2, total: 5 } })), NOW);
-    assert.equal(line, '**ProPR** ⚠️ 2 of 5 issues merged · nothing in progress · updated 09:41 UTC');
+    assert.equal(line, '**ProPR** ⚠️ 2 of 5 issues merged · nothing in progress · updated Nov 13 09:41 UTC');
 });
 
 test('failed check names cannot break out of the one-line block', () => {
@@ -299,7 +331,7 @@ test('the block never exceeds the size new descriptions reserve for it', () => {
     assert.equal(worst.state, 'needs_attention');
     const block = renderPullRequestStatusBlock(worst, NOW);
     assert.ok(block && block.length <= PR_STATUS_BLOCK_MAX_LENGTH, `block is ${block?.length} characters`);
-    assert.match(block!, /updated 09:41 UTC\n<!-- \/propr:pr-status -->$/, 'the block keeps its markers and update time');
+    assert.match(block!, /updated Nov 13 09:41 UTC\n<!-- \/propr:pr-status -->$/, 'the block keeps its markers and update time');
     // Every state stays within the bound.
     for (const status of [computePullRequestStatus(facts()), computePullRequestStatus(facts({ tasks: [task('issue', 'processing')] }))]) {
         assert.ok(renderPullRequestStatusBlock(status, NOW)!.length <= PR_STATUS_BLOCK_MAX_LENGTH);
@@ -308,7 +340,7 @@ test('the block never exceeds the size new descriptions reserve for it', () => {
 
 test('the compact block keeps only the headline and the update time', () => {
     const status = computePullRequestStatus(facts({ latestReviewScore: 6 }));
-    assert.equal(renderCompactPullRequestStatusBlock(status, NOW), `${PR_STATUS_BLOCK_START}\n**ProPR** ⚠️ Needs you · updated 09:41 UTC\n${PR_STATUS_BLOCK_END}`);
+    assert.equal(renderCompactPullRequestStatusBlock(status, NOW), `${PR_STATUS_BLOCK_START}\n**ProPR** ⚠️ Needs you · updated Nov 13 09:41 UTC\n${PR_STATUS_BLOCK_END}`);
     assert.equal(renderCompactPullRequestStatusBlock(computePullRequestStatus(facts({ isProprPullRequest: false })), NOW), null);
 });
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  formatValue,
   getAllDisplaySettings,
   getExtraConfigSetting,
   isSuccessfulExtraConfigUpdate,
@@ -104,4 +105,20 @@ test("extra config update success only fails on an explicit unsuccessful backend
   assert.equal(isSuccessfulExtraConfigUpdate({ success: false }), false);
   assert.equal(isSuccessfulExtraConfigUpdate({ pr_label: "propr" }), true);
   assert.equal(isSuccessfulExtraConfigUpdate(null), true);
+});
+
+test("formatValue renders object-valued settings as compact key=value pairs", () => {
+  assert.equal(
+    formatValue({ agent_stall_timeout_ms: 600000, agent_tool_stall_timeout_ms: 1800000, agent_degenerate_output_limit: 0 }),
+    "agent_stall_timeout_ms=600000, agent_tool_stall_timeout_ms=1800000, agent_degenerate_output_limit=0",
+  );
+  assert.equal(formatValue({ mode: "restricted", allow: ["a.example", "b.example"], enforced: null }), 'mode=restricted, allow=["a.example","b.example"], enforced=null');
+  assert.equal(formatValue({ auto_followup_score_threshold: "Retired" }), "auto_followup_score_threshold=Retired");
+  assert.equal(formatValue({}), "(empty)");
+  assert.equal(formatValue([{ id: 1 }]), '{"id":1}');
+  assert.equal(formatValue(["a", "b"]), "a, b");
+  for (const value of [
+    { agent_stall_timeout_ms: 1 },
+    { mode: "open", nested: { deeper: true } },
+  ]) assert.doesNotMatch(formatValue(value), /\[object Object\]/);
 });

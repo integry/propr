@@ -104,6 +104,29 @@ export class TimeoutError extends ApiError {
   }
 }
 
+/** The one-line explanation printed when the remote is not a ProPR API. */
+export const INVALID_API_RESPONSE_MESSAGE =
+  "The remote did not return a ProPR API response. Check the URL with `propr remote`.";
+
+/**
+ * Error thrown when the remote answers with something other than a ProPR API
+ * response: an HTML page, a non-JSON body, or malformed JSON. Typical cause:
+ * `propr remote` points at the web UI host instead of the API.
+ */
+export class InvalidApiResponseError extends ApiError {
+  /** HTTP status of the offending response. */
+  public readonly httpStatus: number;
+  /** Content type of the offending response, when present. */
+  public readonly contentType?: string;
+
+  constructor(httpStatus: number, contentType?: string) {
+    super(INVALID_API_RESPONSE_MESSAGE, "INVALID_RESPONSE", 0);
+    this.name = "InvalidApiResponseError";
+    this.httpStatus = httpStatus;
+    this.contentType = contentType;
+  }
+}
+
 /**
  * Creates an appropriate ApiError subclass based on the HTTP status code.
  *

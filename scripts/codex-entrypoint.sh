@@ -117,6 +117,29 @@ if [ "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" = "1" ]; then
     done
 fi
 
+# Codex 0.168 and older saved trust for the workspace in CODEX_HOME whenever
+# `codex exec` ran with --dangerously-bypass-approvals-and-sandbox. From 0.169
+# an untrusted workspace's .codex/config.toml and project MCP servers are
+# ignored unless `--trust` is passed; that flag saves the same entry, still
+# respects a project the operator marked untrusted, and older CLIs reject it.
+# The worker only asks for this on runs that load the user configuration
+# (not repository inspection or exclusive-MCP extension runs).
+# Even `--help` writes helper links under CODEX_HOME, so probe as node.
+codex_exec_offers_trust() {
+    local help
+    if [ "$(id -u)" = "0" ]; then
+        help=$(su-exec node env HOME=/home/node USER=node LOGNAME=node codex exec --help 2>/dev/null) || return 1
+    else
+        help=$(codex exec --help 2>/dev/null) || return 1
+    fi
+    printf '%s\n' "$help" | grep -Eq -- '^[[:space:]]+--trust([[:space:]]|$)'
+}
+if [ "${PROPR_CODEX_TRUST_WORKSPACE:-0}" = "1" ] && [ "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" != "1" ] \
+    && [ "${1:-}" = "codex" ] && [ "${2:-}" = "exec" ] && codex_exec_offers_trust; then
+    shift 2
+    set -- codex exec --trust "$@"
+fi
+
 # If arguments are provided, execute them
 if [ $# -gt 0 ]; then
     echo "Executing command: $@"

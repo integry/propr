@@ -50,7 +50,7 @@ test('get_pull_request_readiness authorizes like get_pull_request, then evaluate
     assert.ok(tool);
     assert.equal(tool.scope, 'read');
     assert.equal(tool.readOnly, true);
-    assert.deepEqual(Object.keys(tool.schema.shape), ['repository', 'number']);
+    assert.deepEqual(Object.keys(tool.schema.shape), ['repository', 'pullRequest', 'number']);
 
     await seedReviewScore(core.db, 'acme/app', 42, { score: 9 });
     const result = await executeTool(tool, { repository: 'acme/app', number: 42 }, principal, deps);
@@ -71,10 +71,22 @@ test('get_pull_request_readiness authorizes like get_pull_request, then evaluate
     // Outside the grant: refused before GitHub or the evaluation is touched.
     await assert.rejects(executeTool(tool, { repository: 'acme/forbidden', number: 42 }, principal, deps), { code: 'FORBIDDEN' });
     // The caller cannot see #44: the App identity is never consulted on their behalf.
-    await assert.rejects(executeTool(tool, { repository: 'acme/app', number: 44 }, principal, deps));
+    await assert.rejects(executeTool(tool, { repository: 'acme/app', number: 44 }, principal, deps), (error: { code?: string; status?: number; message?: string }) =>
+      error.code === 'NOT_FOUND' && error.status === 404 && /^Pull request #44 was not found in acme\/app\b.*\.$/.test(String(error.message)));
     // The caller sees #43 but the App does not: a coded not-found, not a guessed verdict.
     await assert.rejects(executeTool(tool, { repository: 'acme/app', number: 43 }, principal, deps), { code: 'PULL_REQUEST_NOT_FOUND' });
     assert.deepEqual(evaluated, ['acme/app#42', 'acme/app#43']);
+
+    // pullRequest names the PR as in every other PR tool; number stays an alias.
+    const byPullRequest = await executeTool(tool, { repository: 'acme/app', pullRequest: 42 }, principal, deps);
+    assert.equal((byPullRequest.data as { number: number }).number, 42);
+    assert.match(byPullRequest.summary, /^PR #42 is ready to integrate\.$/);
+    assert.equal(byPullRequest.links.ui, 'https://github.com/acme/app/pull/42');
+    assert.equal((await executeTool(tool, { repository: 'acme/app', pullRequest: 42, number: 42 }, principal, deps).then(value => value.data as { number: number })).number, 42);
+    for (const args of [{ repository: 'acme/app' }, { repository: 'acme/app', pullRequest: 42, number: 43 }]) {
+      await assert.rejects(executeTool(tool, args, principal, deps), { code: 'INVALID_INPUT', status: 400 });
+    }
+    assert.deepEqual(evaluated, ['acme/app#42', 'acme/app#43', 'acme/app#42', 'acme/app#42']);
   } finally {
     await core.closeConnection();
     await rm(root, { recursive: true, force: true });

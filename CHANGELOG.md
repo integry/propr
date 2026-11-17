@@ -217,6 +217,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /api/tasks` accepts at most `limit=200`. The web
   console walks the goal pages, and `propr task list --limit` rejects values
   above 200.
+- **Bundled Claude Code 2.1.326, Codex 0.169.0, Antigravity CLI 1.5.10 and
+  OpenCode CLI 1.19.6**: the `propr/agent` image moves from Claude Code
+  2.1.325, Codex 0.168.0, Antigravity CLI 1.5.9 and OpenCode CLI 1.19.5.
+  Mistral Vibe stays on 2.25.8.
+  - Claude Code 2.1.326 refuses more tool calls in bypass permissions mode
+    when no one can be asked, including file-tool writes to its sign-in files
+    such as `.credentials.json`. Ordinary repository work in ProPR's headless
+    `--dangerously-skip-permissions` runs (edits, git, npm) is unaffected. Its
+    new startup warning for incomplete `--tools`, `--allowedTools` and
+    `--disallowedTools` entries is not triggered by ProPR's values. The
+    bundled model catalog is unchanged.
+  - Antigravity 1.5.10 is release `5253791805734912`, SHA-512 checked against
+    Google's linux_amd64 install manifest, which has moved to
+    `antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`.
+    Its model list for `agy login` accounts is unchanged; the new Orchestrator
+    model is only for Gemini Enterprise and Application Default Credentials
+    and is not added. Rate-limit waits now retry for up to 4 minutes, a silent
+    high-effort response counts as stalled after 10 minutes instead of 5, and
+    the `--sandbox` used for repository inspection no longer reads
+    `~/.config` or `~/.git-credentials`.
+  - OpenCode 1.19.6 adds three free models to the catalog: Hy4 Flash Free
+    (`llm-opencode-hy4-flash-free`, 1M), Iceman Free
+    (`llm-opencode-iceman-free`, 262K) and LongCat 2.5 Free
+    (`llm-opencode-longcat25-free`, 1M). Each passed a live run that included a
+    tool call. Inkling 2 Small Free is also listed but is not added: it
+    refused every run with "This model is not available in your country". The
+    existing eight free models stay.
+  - Codex 0.169.0 stops `codex exec` from loading the repository's
+    `.codex/config.toml` and project MCP servers in an untrusted workspace.
+    Through 0.168.0, every bypass-mode run saved that trust in the mounted
+    `config.toml` without being asked. Codex task runs now pass `--trust`,
+    which saves the same entry and still respects a workspace marked
+    `untrusted`. 0.168.0 rejects the flag, so the entrypoint adds it only when
+    `codex exec --help` lists it and a pinned older CLI keeps working.
+    Repository inspection and exclusive extension MCP runs stay untrusted.
+    Goal runs need no flag: `codex app-server` saves the trust entry when it
+    starts the goal's thread, as it did in 0.168.0, and also leaves a
+    workspace marked `untrusted` alone. The bundled model catalog and the
+    files Codex writes under its home directory are unchanged from 0.168.0.
 - **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the
   `propr/agent` image moves from Claude Code 2.1.323 and Antigravity CLI
   1.5.8. Codex stays on 0.168.0 and Mistral Vibe on 2.25.8.
@@ -323,6 +362,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/api/automation-definitions/templates`; and `GET /api/task/{id}/history`,
   `/live-details` and `/file-changes` answer 404 for a task id ProPR does not
   know instead of an empty, pending-looking task.
+- **PR status line and review digest wording**: the status line no longer
+  counts skipped checks as passed (`checks: 35 passed, 12 skipped`), its
+  update time carries the date (`updated Nov 16 13:59 UTC`), a review below
+  the goal reads as one score (`⚠️ Needs you · review 6/10, goal 8`), and a
+  running loop names itself once (`🔨 Ultrafix cycle 3 of 10`). A cancelled
+  check run is no longer reported as failed: one that a newer run of the same
+  check replaced (a re-run job, or a newer run of the same workflow; a
+  same-named job of another workflow does not count), or whose name was never
+  expanded (`${{ matrix.platform }}`), is left out,
+  and one nothing replaced shows as cancelled. Check names that still hold
+  `${{` are never listed. When only check counts change, the body is edited
+  at most once every 30 seconds; a change of state is still written at once.
+  The review digest leaves out the Validation evidence section when no
+  validation command is configured or ran, and acceptance-criterion evidence
+  keeps its own inline code instead of showing literal backticks. The PR
+  status docs now say that a merge made on GitHub while the title has the
+  status slot keeps it in GitHub's default merge commit message.
+- **Epic progress counts plan issues, and every epic comment shows the same
+  count**: "N of M issues merged" now counts the plan's issues whose pull
+  request is merged into the epic branch. A pull request without a plan issue
+  (a fix opened by hand into the epic branch) no longer changes N or M, two
+  pull requests for one issue count it once, and an issue closed as not
+  planned leaves M and, on the next update, the epic body's issue list and
+  `Fixes` lines. The progress comment, the "Epic ready for final merge"
+  comment (`All N issues have been merged`), the status line and the title
+  use the same numbers, and a merged epic's progress comment no longer shows
+  a progress bar and `⏳ 75%` next to "merged".
 - **Connected apps page shows a full page of apps**: `/mcp/apps` counted
   revoked and expired grants towards each page of 50 and hid them afterwards,
   so an account that had reconnected apps many times saw one or two apps per

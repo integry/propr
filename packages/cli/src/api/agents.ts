@@ -183,7 +183,7 @@ export async function listAgents(client?: ApiClient): Promise<GetAgentsResponse>
  * const result = await addAgent({
  *   alias: 'claude-prod',
  *   type: 'claude',
- *   models: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514']
+ *   models: ['claude-sonnet-5-5', 'claude-opus-5-5']
  * });
  * ```
  */

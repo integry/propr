@@ -618,12 +618,12 @@ describe('prTaskTitleHelpers merge conflict diff context', () => {
 
 describe('PR task titles and the title status slot', () => {
     test('a task built from a PR title with a slot has no emoji in its title', () => {
-        for (const slot of ['🔨 ', '⚠️➅ ', '✅➇ ', '']) {
+        for (const slot of ['🔨 ', '⚠️❻ ', '✅❽ ', '']) {
             assert.strictEqual(
                 buildPrTaskTitle({ workflow: 'followup', pullRequestNumber: 3510, prTitle: `${slot}[3510 by Claude Opus 5.5] Apply library extensions` }),
                 'Follow-up PR #3510: [3510 by Claude Opus 5.5] Apply library extensions',
             );
         }
-        assert.strictEqual(buildPrTaskTitle({ workflow: 'fix', pullRequestNumber: 7, prTitle: '✅➇ [Epic] Plan' }), 'Fix PR #7: [Epic] Plan');
+        assert.strictEqual(buildPrTaskTitle({ workflow: 'fix', pullRequestNumber: 7, prTitle: '✅❽ [Epic] Plan' }), 'Fix PR #7: [Epic] Plan');
     });
 });

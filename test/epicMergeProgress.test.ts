@@ -13,6 +13,7 @@ import {
     replaceEpicProgressActivityLines,
     buildEpicFinalMergeComment,
     computeEpicMergeProgress,
+    epicChildBranchIssue,
     isEpicMergeComplete,
     updateEpicMergeProgress,
     type EpicMergeProgressRequest,
@@ -155,13 +156,83 @@ describe('computeEpicMergeProgress', () => {
         assert.strictEqual(isEpicMergeComplete(progress), true);
     });
 
-    test('counts child PRs outside the plan alongside planned issues', () => {
+    test('a pull request into the epic branch without a plan issue changes neither count', () => {
+        // #3563: a human CI pull request (#203, merged) and an open one (#202) are not plan issues.
         const progress = computeEpicMergeProgress([
-            { number: 201, merged: true, abandoned: false },
-            { number: 202, merged: false, abandoned: false },
-        ], 201, [planIssue(100, PlanIssueStatus.MERGED, 201)]);
-        assert.deepStrictEqual(progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] });
+            { number: 201, merged: true, abandoned: false, headRef: '100/claude-first' },
+            { number: 202, merged: false, abandoned: false, open: true, headRef: 'fix-flaky-test' },
+            { number: 203, merged: true, abandoned: false, headRef: 'ci-cache' },
+        ], 201, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.PENDING)]);
+        assert.deepStrictEqual(progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201, 203] });
         assert.strictEqual(isEpicMergeComplete(progress), false);
+        const done = computeEpicMergeProgress([
+            { number: 201, merged: true, abandoned: false },
+            { number: 202, merged: false, abandoned: false, open: true, headRef: 'fix-flaky-test' },
+        ], 201, [planIssue(100, PlanIssueStatus.MERGED, 201)]);
+        assert.deepStrictEqual({ merged: done.merged, total: done.total }, { merged: 1, total: 1 });
+        assert.strictEqual(isEpicMergeComplete(done), true, 'an open human PR does not hold the epic back');
+    });
+
+    test('two pull requests for one plan issue count it once', () => {
+        // #3587 and #3588 were both open for one issue; the issue is still one of the epic's issues.
+        const issues = [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.UNDER_REVIEW, 202)];
+        const open = computeEpicMergeProgress([
+            { number: 201, merged: true, abandoned: false, headRef: '100/claude-first' },
+            { number: 202, merged: false, abandoned: false, open: true, headRef: '101/claude-second' },
+            { number: 203, merged: false, abandoned: false, open: true, headRef: '101/codex-second' },
+        ], null, issues);
+        assert.deepStrictEqual({ merged: open.merged, total: open.total }, { merged: 1, total: 2 });
+        // The PR merged is not the one the issue links: it still merges the issue, once.
+        const merged = computeEpicMergeProgress([
+            { number: 201, merged: true, abandoned: false, headRef: '100/claude-first' },
+            { number: 202, merged: false, abandoned: true, headRef: '101/claude-second' },
+            { number: 203, merged: true, abandoned: false, headRef: '101-codex-second' },
+        ], 203, issues);
+        assert.deepStrictEqual(merged, { merged: 2, total: 2, excluded: 0, mergedPullRequests: [201, 203] });
+        assert.strictEqual(isEpicMergeComplete(merged), true);
+    });
+
+    test('an epic branch merged into another is not a PR for the issue its name starts with', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 300, merged: true, abandoned: false, headRef: '101-epic-other-plan-abc' },
+        ], null, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.PENDING)]);
+        assert.deepStrictEqual({ merged: progress.merged, total: progress.total }, { merged: 1, total: 2 });
+    });
+
+    test('an issue branch that only starts like an epic branch is still a PR for its issue', () => {
+        // `101-epic-progress-count-plan` is not an epic branch (`{id}-epic-{word}-{word}-{rand}`): it is #101's.
+        assert.strictEqual(epicChildBranchIssue('101-epic-progress-count-plan'), 101);
+        assert.strictEqual(epicChildBranchIssue('101-epic-other-plan-abc'), null);
+        // #101 is closed after its linked PR #202 was abandoned; the alternate #203 from its branch merged.
+        const progress = computeEpicMergeProgress([
+            { number: 202, merged: false, abandoned: true, headRef: '101/claude-second' },
+            { number: 203, merged: true, abandoned: false, headRef: '101-epic-progress-count-plan' },
+        ], 203, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.CLOSED, 202)]);
+        assert.deepStrictEqual({ merged: progress.merged, total: progress.total, excluded: progress.excluded }, { merged: 2, total: 2, excluded: 0 });
+    });
+
+    test('a plan whose issues were all filtered out still counts issues, not the PRs into the branch', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 204, merged: true, abandoned: false, headRef: 'fix-ci-cache' },
+        ], 204, []);
+        assert.deepStrictEqual(progress, { merged: 0, total: 0, excluded: 0, mergedPullRequests: [204] });
+    });
+
+    test('a closed issue whose alternate PR merged after its linked PR was abandoned counts as merged', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 202, merged: false, abandoned: true, headRef: '101/claude-second' },
+            { number: 203, merged: true, abandoned: false, headRef: '101/codex-second' },
+        ], 203, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.CLOSED, 202)]);
+        assert.deepStrictEqual({ merged: progress.merged, total: progress.total, excluded: progress.excluded }, { merged: 2, total: 2, excluded: 0 });
+    });
+
+    test('an issue closed as not planned leaves the total', () => {
+        const issues = [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.UNDER_REVIEW, 202), planIssue(102, PlanIssueStatus.PENDING)];
+        const before = computeEpicMergeProgress([{ number: 201, merged: true, abandoned: false }], null, issues);
+        assert.deepStrictEqual({ merged: before.merged, total: before.total }, { merged: 1, total: 3 });
+        const after = computeEpicMergeProgress([{ number: 201, merged: true, abandoned: false }], null,
+            [issues[0], issues[1], planIssue(102, PlanIssueStatus.CLOSED)]);
+        assert.deepStrictEqual({ merged: after.merged, total: after.total, excluded: after.excluded }, { merged: 1, total: 2, excluded: 1 });
     });
 
     test('counts a planned issue once when its PR is also a listed child', () => {
@@ -184,14 +255,14 @@ describe('computeEpicMergeProgress', () => {
             { number: 202, merged: false, abandoned: false },
             { number: 203, merged: false, abandoned: true },
         ], 201);
-        assert.deepStrictEqual(progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] });
+        assert.deepStrictEqual(progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201], unit: 'pullRequests' });
     });
 });
 
 describe('buildEpicProgressComment', () => {
     test('renders the x of y status with the tracking marker', () => {
         const body = buildEpicProgressComment({ merged: 2, total: 4, excluded: 0, mergedPullRequests: [201, 202] }, 'Big Plan');
-        assert.match(body, /\*\*2 out of 4 PRs merged\*\*/);
+        assert.match(body, /\*\*2 of 4 issues merged\*\*/);
         assert.match(body, /50%/);
         assert.match(body, /#201, #202/);
         assert.ok(body.includes(EPIC_PROGRESS_MARKER));
@@ -223,7 +294,7 @@ describe('buildEpicProgressComment', () => {
         assert.ok(activity.join('\n').length > 2 * EPIC_PROGRESS_COMMENT_MAX_LENGTH, 'the unbounded activity does not fit a comment');
         const body = buildEpicProgressComment(progress, 'Big Plan', undefined, activity);
         assert.ok(body.length <= EPIC_PROGRESS_COMMENT_MAX_LENGTH, `${body.length} characters is more than GitHub accepts`);
-        assert.match(body, /\*\*5 out of 1005 PRs merged\*\* ⏳/);
+        assert.match(body, /\*\*5 of 1005 issues merged\*\* ⏳/);
         assert.match(body, /Merged child PRs: #1, #2, #3, #4, #5\n\nIn progress: #10000 \(issue #5000, T+\); #10001 .*; and \d+ more\n\nUp next: #7000 \(T+\); .*#7099 \(T+\)\n/,
             'the In progress line lists leading entries and counts the rest; the shorter Up next line is complete');
         assert.ok(body.includes(EPIC_PROGRESS_MARKER));
@@ -274,7 +345,7 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(result.trackingComment, 'created');
         assert.strictEqual(result.completionPosted, false);
         assert.strictEqual(octokit.comments.length, 1);
-        assert.match(octokit.comments[0].body, /1 out of 2 PRs merged/);
+        assert.match(octokit.comments[0].body, /1 of 2 pull requests merged/);
         const listPulls = octokit.calls.find(call => call.route === 'GET /repos/{owner}/{repo}/pulls');
         assert.strictEqual(listPulls?.parameters.base, baseRequest.epicBranch);
         assert.strictEqual(listPulls?.parameters.state, 'all');
@@ -297,11 +368,11 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(result.completionPosted, true);
         const tracking = octokit.comments.filter(c => c.body.includes(EPIC_PROGRESS_MARKER));
         assert.strictEqual(tracking.length, 1);
-        assert.match(tracking[0].body, /2 out of 2 PRs merged/);
+        assert.match(tracking[0].body, /2 of 2 pull requests merged/);
         const completion = octokit.comments.filter(c => c.body.includes(EPIC_COMPLETE_MARKER));
         assert.strictEqual(completion.length, 1);
         assert.match(completion[0].body, /Epic ready for final merge: Big Plan/);
-        assert.match(completion[0].body, /All 2 child PRs have been merged/);
+        assert.match(completion[0].body, /All 2 child pull requests have been merged/);
     });
 
     test('a child merge keeps the activity lines the status sync wrote', async () => {
@@ -315,7 +386,7 @@ describe('updateEpicMergeProgress', () => {
         const result = await updateEpicMergeProgress(baseRequest, 'test', { getOctokit: async () => octokit });
         assert.strictEqual(result.trackingComment, 'updated');
         const tracking = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
-        assert.equal(tracking.body, buildEpicProgressComment({ merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] }, 'Big Plan', undefined, activity));
+        assert.equal(tracking.body, buildEpicProgressComment({ merged: 1, total: 2, excluded: 0, mergedPullRequests: [201], unit: 'pullRequests' }, 'Big Plan', undefined, activity));
     });
 
     test('a child merge that grows a full progress comment past the limit counts one more entry instead of failing', async () => {
@@ -336,7 +407,7 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(result.trackingComment, 'updated');
         const tracking = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
         assert.ok(tracking.body.length <= EPIC_PROGRESS_COMMENT_MAX_LENGTH, `${tracking.body.length} characters is more than GitHub accepts`);
-        assert.match(tracking.body, /\*\*1 out of 2 PRs merged\*\*/);
+        assert.match(tracking.body, /\*\*1 of 2 pull requests merged\*\*/);
         assert.match(tracking.body, /Merged child PRs: #201\n\nIn progress: #10000 /);
         assert.equal(omittedOf(tracking.body), omittedOf(existing) + 1, 'one entry gave way to the merged child PR');
         assert.deepEqual(extractEpicProgressActivityLines(tracking.body)[1], extractEpicProgressActivityLines(existing)[1], 'the Up next line is kept whole');
@@ -353,19 +424,25 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(octokit.comments.length, 2);
     });
 
-    test('does not confirm completion while a child PR outside the plan is open', async () => {
+    test('a child PR outside the plan changes no count: the progress and ready comments agree', async () => {
         const octokit = createOctokit([
-            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' },
-            { number: 202, state: 'open', merged_at: null },
+            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z', head: { ref: '100/claude-first' } },
+            { number: 202, state: 'open', merged_at: null, head: { ref: 'human-ci-fix' } },
+            { number: 203, state: 'closed', merged_at: '2026-10-09T00:30:00Z', head: { ref: 'human-test-fix' } },
         ]);
         const result = await updateEpicMergeProgress(
-            { ...baseRequest, planIssues: [planIssue(100, PlanIssueStatus.MERGED, 201)] },
+            { ...baseRequest, planIssues: [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.MERGED, 204)] },
             'test',
             { getOctokit: async () => octokit },
         );
-        assert.strictEqual(result.completionPosted, false);
-        assert.match(octokit.comments[0].body, /1 out of 2 PRs merged/);
-        assert.ok(!octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
+        assert.deepStrictEqual({ merged: result.progress.merged, total: result.progress.total }, { merged: 2, total: 2 });
+        assert.strictEqual(result.completionPosted, true);
+        const progress = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
+        const ready = octokit.comments.find(c => c.body.includes(EPIC_COMPLETE_MARKER))!;
+        assert.match(progress.body, /\*\*2 of 2 issues merged\*\* ✅/);
+        assert.match(ready.body, /\*\*2 of 2 issues merged\*\*/);
+        assert.match(ready.body, /All 2 issues have been merged into this epic branch/);
+        assert.match(progress.body, /Merged child PRs: #201, #203/, 'the human PR is still listed as merged');
     });
 
     test('writes nothing once ownership of the epic is lost after the reads', async () => {
@@ -444,7 +521,7 @@ test('an early aggregate merge does not claim unfinished planned work is complet
         planIssues: [planIssue(100, PlanIssueStatus.PENDING)],
     }, 'test', { getOctokit: async () => octokit });
     const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
-    assert.match(final.body, /0 out of 1 PRs merged/);
+    assert.match(final.body, /0 of 1 issue merged/);
     assert.ok(!final.body.includes('All planned epic work is now merged'));
 });
 
@@ -454,15 +531,17 @@ test('final merge builder preserves counts, optional plan title and completion w
         const body = buildEpicFinalMergeComment(progress, { epicPrNumber: 501, baseBranch: 'trunk' });
         assert.match(body, /### ✅ Epic merged\n/);
         assert.match(body, /Epic PR #501 has been merged into trunk/);
-        if (total > 0) assert.ok(body.includes(`**${total} out of ${total} PRs merged**`));
+        if (total > 0) assert.ok(body.includes(`**${total} of ${total} issue${total === 1 ? '' : 's'} merged**`));
         else {
             assert.ok(body.includes('No child PRs or planned issues were tracked for this epic.'));
-            assert.ok(!body.includes('out of'));
+            assert.ok(!body.includes(' of 0 '));
         }
         assert.equal(body.includes('All planned epic work is now merged.'), total > 0);
         assert.ok(body.includes(EPIC_FINAL_MERGE_MARKER));
         if (total > 0) assert.ok(buildEpicCompleteComment(progress).includes(
-            total === 1 ? '1 child PR has' : '2 child PRs have'));
+            total === 1 ? 'All 1 issue has' : 'All 2 issues have'));
+        if (total > 0) assert.ok(buildEpicCompleteComment({ ...progress, unit: 'pullRequests' }).includes(
+            total === 1 ? 'All 1 child pull request has' : 'All 2 child pull requests have'));
     }
     const incomplete = buildEpicFinalMergeComment(
         { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] },
@@ -522,6 +601,46 @@ for (const mergedChildPrNumber of [201, 202, null]) {
     });
 }
 
+for (const mergedChildPrNumber of [204, null]) {
+    test(`a successor whose plan issues all shipped through its predecessor does not count a human PR (trigger ${mergedChildPrNumber})`, async () => {
+        const octokit = createOctokit([
+            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z', head: { ref: '100/claude-first' } },
+            { number: 202, state: 'closed', merged_at: '2026-10-09T00:30:00Z', head: { ref: '101/claude-second' } },
+            { number: 204, state: 'closed', merged_at: '2026-10-09T02:00:00Z', head: { ref: 'fix-ci-cache' } },
+        ]);
+        octokit.history = [{ number: 500, merged_at: '2026-10-09T01:00:00Z' }];
+        octokit.epicMerged = mergedChildPrNumber === null;
+        const result = await updateEpicMergeProgress({
+            ...baseRequest, epicPrNumber: 501, mergedChildPrNumber,
+            planIssues: [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.MERGED, 202)],
+        }, 'test', { getOctokit: async () => octokit });
+        assert.deepEqual(result.progress, { merged: 0, total: 0, excluded: 0, mergedPullRequests: [204] });
+        assert.ok(!octokit.comments.some(c => c.body.includes('pull request')));
+        assert.ok(!octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
+    });
+}
+
+for (const mergedChildPrNumber of [205, null]) {
+    test(`a successor drops an issue whose alternate PR shipped through its predecessor while its linked PR is open (trigger ${mergedChildPrNumber})`, async () => {
+        // Issue #101 still links open #202, but alternate #203 from its branch merged before predecessor #500.
+        const octokit = createOctokit([
+            { number: 202, state: 'open', merged_at: null, head: { ref: '101/claude-second' } },
+            { number: 203, state: 'closed', merged_at: '2026-10-09T00:30:00Z', head: { ref: '101/codex-second' } },
+            { number: 204, state: 'closed', merged_at: '2026-10-09T01:30:00Z', head: { ref: 'fix-ci-cache' } },
+            { number: 205, state: 'closed', merged_at: '2026-10-09T02:00:00Z', head: { ref: '102/claude-third' } },
+        ]);
+        octokit.history = [{ number: 500, merged_at: '2026-10-09T01:00:00Z' }];
+        octokit.epicMerged = mergedChildPrNumber === null;
+        const result = await updateEpicMergeProgress({
+            ...baseRequest, epicPrNumber: 501, mergedChildPrNumber,
+            planIssues: [planIssue(101, PlanIssueStatus.UNDER_REVIEW, 202), planIssue(102, PlanIssueStatus.MERGED, 205)],
+        }, 'test', { getOctokit: async () => octokit });
+        assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [204, 205] });
+        if (mergedChildPrNumber !== null) assert.ok(octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
+        else assert.ok(octokit.comments.some(c => c.body.includes('All planned epic work')));
+    });
+}
+
 test('successor readiness counts only its children, retaining a same-second child the predecessor head excludes', async () => {
     const octokit = createOctokit([
         { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' },
@@ -531,7 +650,7 @@ test('successor readiness counts only its children, retaining a same-second chil
     octokit.containment['p1...c2'] = 1;
     await updateEpicMergeProgress({ ...baseRequest, epicPrNumber: 501, mergedChildPrNumber: 202 },
         'test', { getOctokit: async () => octokit });
-    assert.ok(octokit.comments.some(c => c.body.includes('All 1 child PR has been merged')));
+    assert.ok(octokit.comments.some(c => c.body.includes('All 1 child pull request has been merged')));
 });
 
 test('a same-second predecessor child without inclusion evidence keeps the obligation instead of being counted', async () => {
@@ -570,7 +689,7 @@ for (const trigger of [null, 201]) {
         }, 'test', { getOctokit: async () => octokit });
         assert.deepEqual(result.progress, { merged: 1, total: 4, excluded: 0, mergedPullRequests: [201] });
         const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
-        assert.match(final.body, /1 out of 4 PRs merged/);
+        assert.match(final.body, /1 of 4 issues merged/);
         assert.ok(!final.body.includes('All planned epic work'));
     });
 }
@@ -586,13 +705,13 @@ test('late child evidence edits the final confirmation in place and leaves ident
     const dependencies = { getOctokit: async () => octokit };
     await updateEpicMergeProgress(request, 'test', dependencies);
     const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
-    assert.match(final.body, /1 out of 2/);
+    assert.match(final.body, /1 of 2 issue/);
     delete octokit.childReads[202];
     pulls.push({ number: 202, state: 'closed', merged_at: '2026-10-10T19:30:00Z' });
     const late = { ...request, mergedChildPrNumber: 202 };
     const result = await updateEpicMergeProgress(late, 'test', dependencies);
     assert.equal(result.completionPosted, false);
-    assert.match(final.body, /2 out of 2/);
+    assert.match(final.body, /2 of 2 issue/);
     assert.match(final.body, /All planned epic work/);
     assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_FINAL_MERGE_MARKER)).length, 1);
     octokit.calls.length = 0;
@@ -671,7 +790,7 @@ test('an older-numbered aggregate merged later cannot erase outstanding work fro
     const result = await updateEpicMergeProgress({ ...baseRequest, mergedChildPrNumber: null }, 'test', {
         getOctokit: async () => octokit,
     });
-    assert.deepEqual(result.progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] });
+    assert.deepEqual(result.progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201], unit: 'pullRequests' });
 });
 
 test('a delayed child missing from the list uses its timestamp for final counts', async () => {
@@ -679,7 +798,7 @@ test('a delayed child missing from the list uses its timestamp for final counts'
     octokit.epicMerged = true;
     octokit.childReads[201] = { merged_at: '2026-10-10T19:00:00Z' };
     const result = await updateEpicMergeProgress(baseRequest, 'test', { getOctokit: async () => octokit });
-    assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201] });
+    assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201], unit: 'pullRequests' });
 });
 
 for (const trigger of [null, 201]) {
@@ -695,7 +814,7 @@ for (const trigger of [null, 201]) {
         assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201] });
         assert.equal(childReadsOf(octokit, 201), 1);
         const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
-        assert.match(final.body, /1 out of 1 PRs merged/);
+        assert.match(final.body, /1 of 1 issue merged/);
         assert.match(final.body, /All planned epic work is now merged/);
     });
 }
@@ -712,7 +831,7 @@ test('an aggregate delivery reads a merged plan PR missing from the list and app
     // #203 merged after the epic and stays outstanding; a fresh row needs no read.
     assert.deepEqual(result.progress, { merged: 2, total: 3, excluded: 0, mergedPullRequests: [201, 202] });
     assert.equal(childReadsOf(octokit, 201), 0);
-    assert.match(octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!.body, /2 out of 3 PRs merged/);
+    assert.match(octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!.body, /2 of 3 issues merged/);
 });
 
 test('a merged plan PR targeting another base stays outstanding in the final report', async () => {
@@ -758,7 +877,7 @@ test('a stale triggering row on an open epic recovers its timestamp for the ship
     octokit.history = [{ number: 500, merged_at: '2026-10-09T01:00:00Z' }];
     octokit.childReads[201] = { state: 'closed', merged_at: '2026-10-09T00:00:00Z' };
     const result = await updateEpicMergeProgress({ ...baseRequest, epicPrNumber: 501 }, 'test', { getOctokit: async () => octokit });
-    assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [202] });
+    assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [202], unit: 'pullRequests' });
 });
 
 // The epic's merge commit per merge method: only a merge commit keeps the child's commit as an ancestor.
@@ -772,9 +891,9 @@ for (const [method, mergeCommitSha] of Object.entries(EPIC_MERGE_COMMITS)) {
         octokit.headSha = 'h1';
         octokit.containment['h1...c1'] = 0;
         const result = await updateEpicMergeProgress({ ...baseRequest, mergedChildPrNumber: null }, 'test', { getOctokit: async () => octokit });
-        assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201] });
+        assert.deepEqual(result.progress, { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201], unit: 'pullRequests' });
         const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
-        assert.match(final.body, /1 out of 1 PRs merged/);
+        assert.match(final.body, /1 of 1 pull request merged/);
         assert.match(final.body, /All planned epic work is now merged/);
         const compares = octokit.calls.filter(c => c.route === 'GET /repos/{owner}/{repo}/compare/{basehead}');
         assert.ok(compares.length > 0);
@@ -788,9 +907,9 @@ for (const [method, mergeCommitSha] of Object.entries(EPIC_MERGE_COMMITS)) {
         octokit.headSha = 'h1';
         octokit.containment['h1...c1'] = 1;
         const result = await updateEpicMergeProgress({ ...baseRequest, mergedChildPrNumber: null }, 'test', { getOctokit: async () => octokit });
-        assert.deepEqual(result.progress, { merged: 0, total: 1, excluded: 0, mergedPullRequests: [] });
+        assert.deepEqual(result.progress, { merged: 0, total: 1, excluded: 0, mergedPullRequests: [], unit: 'pullRequests' });
         const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
-        assert.match(final.body, /0 out of 1 PRs merged/);
+        assert.match(final.body, /0 of 1 pull request merged/);
         assert.ok(!final.body.includes('All planned epic work'));
     });
 }
@@ -848,7 +967,7 @@ test('a child merged in the predecessor\'s second is shipped once the predecesso
     octokit.containment['p1...c2'] = 0;
     const result = await updateEpicMergeProgress({ ...baseRequest, epicPrNumber: 501, mergedChildPrNumber: 202 },
         'test', { getOctokit: async () => octokit });
-    assert.deepEqual(result.progress, { merged: 0, total: 0, excluded: 0, mergedPullRequests: [] });
+    assert.deepEqual(result.progress, { merged: 0, total: 0, excluded: 0, mergedPullRequests: [], unit: 'pullRequests' });
     assert.equal(result.trackingComment, 'skipped');
     assert.deepEqual(octokit.comments, []);
 });
@@ -859,7 +978,7 @@ test('an existing tracking comment is still updated when nothing remains to trac
     octokit.history = [{ number: 500, merged_at: '2026-10-09T01:00:00Z' }];
     const result = await updateEpicMergeProgress({ ...baseRequest, epicPrNumber: 501 }, 'test', { getOctokit: async () => octokit });
     assert.equal(result.trackingComment, 'updated');
-    assert.match(octokit.comments[0].body, /0 out of 0 PRs merged/);
+    assert.match(octokit.comments[0].body, /0 of 0 pull requests merged/);
 });
 
 test('planned issues closed without a merge are still reported when no PR is counted', async () => {
@@ -880,7 +999,7 @@ test('the merged-into line of the tracking comment precedes its marker', async (
     assert.ok(tracking.body.endsWith(EPIC_PROGRESS_MARKER));
     assert.match(tracking.body, /✅ This epic PR has been merged into main\.\n\n---/);
     assert.equal(tracking.body, buildEpicProgressComment(
-        { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201] }, 'Big Plan', 'main'));
+        { merged: 1, total: 1, excluded: 0, mergedPullRequests: [201], unit: 'pullRequests' }, 'Big Plan', 'main'));
 });
 
 test('canCarryChild settles equal merge timestamps against the epic head and reuses given evidence', async () => {
@@ -900,4 +1019,38 @@ test('canCarryChild settles equal merge timestamps against the epic head and reu
     await assert.rejects(canCarryChild(octokit, baseRequest, epic, { ...evidence, childMergeCommitSha: null }), /could not be resolved/);
     await assert.rejects(canCarryChild(octokit, baseRequest, { ...epic, head: null }, evidence), /could not be resolved/);
     assert.deepEqual(routes, ['GET /repos/{owner}/{repo}/compare/{basehead}', 'GET /repos/{owner}/{repo}/compare/{basehead}']);
+});
+
+test('a merged epic reads as merged in its progress comment: no progress bar, percentage or pending mark', () => {
+    // #3456 ended as `3 out of 4 PRs merged ⏳ 75%` above `✅ This epic PR has been merged into main.`
+    const partial = buildEpicProgressComment({ merged: 3, total: 4, excluded: 0, mergedPullRequests: [201, 202, 203] }, 'Big Plan', 'main');
+    assert.match(partial, /^\*\*3 of 4 issues merged\*\*$/m);
+    assert.match(partial, /_1 issue was not merged into this epic branch before the epic PR merged\._/);
+    assert.doesNotMatch(partial, /%|⏳|[█░]/);
+    assert.match(partial, /✅ This epic PR has been merged into main\./);
+    const complete = buildEpicProgressComment({ merged: 3, total: 3, excluded: 1, mergedPullRequests: [201, 202, 203] }, 'Big Plan', 'main');
+    assert.match(complete, /^\*\*3 of 3 issues merged\*\* ✅$/m);
+    assert.doesNotMatch(complete, /%|⏳|not merged into this epic branch/);
+    assert.match(buildEpicProgressComment({ merged: 3, total: 4, excluded: 0, mergedPullRequests: [] }, 'Big Plan'), /\*\*3 of 4 issues merged\*\* ⏳\n\n`[█░]{10}` 75%/,
+        'an open epic keeps its bar');
+});
+
+test('the final report of a merged epic counts plan issues only, as the open epic did', async () => {
+    const octokit = createOctokit([
+        { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z', head: { ref: '100/claude-first' } },
+        { number: 202, state: 'closed', merged_at: '2026-10-09T01:00:00Z', head: { ref: '101/claude-second' } },
+        { number: 203, state: 'closed', merged_at: '2026-10-09T02:00:00Z', head: { ref: 'human-test-fix' } },
+    ]);
+    octokit.epicMerged = true;
+    const result = await updateEpicMergeProgress({
+        ...baseRequest, mergedChildPrNumber: null,
+        planIssues: [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.MERGED, 202), planIssue(102, PlanIssueStatus.CLOSED)],
+    }, 'test', { getOctokit: async () => octokit });
+    assert.deepEqual(result.progress, { merged: 2, total: 2, excluded: 1, mergedPullRequests: [201, 202, 203] });
+    const tracking = octokit.comments.find(c => c.body.includes(EPIC_PROGRESS_MARKER))!;
+    const final = octokit.comments.find(c => c.body.includes(EPIC_FINAL_MERGE_MARKER))!;
+    assert.match(tracking.body, /\*\*2 of 2 issues merged\*\* ✅/);
+    assert.doesNotMatch(tracking.body, /%|⏳/);
+    assert.match(final.body, /\*\*2 of 2 issues merged\*\* into main/);
+    assert.match(final.body, /All planned epic work is now merged\./);
 });
