@@ -124,7 +124,9 @@ for (const [kind, repository] of Object.entries(repositories)) {
 
 for (const scale of [1.5, 2]) {
   test(`enlarged text at ${scale * 100}% keeps a long repository chip inside a docked pane`, async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 820 });
+    // Tall enough that the enlarged header still leaves a usable workspace: in a shorter window the
+    // one-line compact header stands in for it (see task-details-short-viewport.pw.ts).
+    await page.setViewportSize({ width: 1280, height: 1400 });
     await openTask(page, repositories.longest, '/tasks');
     await page.addStyleTag({ content: `html { font-size: ${scale * 100}% !important; }` });
     const identity = page.getByTestId('task-split-details').getByTestId('task-header-identity');

@@ -999,9 +999,10 @@ function GoalDetails({ goalId }: { goalId: string }) {
             </>}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {/* The menu wraps together with the last action, so it never sits alone on a row of its own. */}
+            {/* The menu wraps together with the last action, so it never sits alone on a row of its own;
+                only when the pair is wider than the row (enlarged text on a phone) does it split, rather than overflow. */}
             {headerActions.slice(0, -1)}
-            <span className="inline-flex flex-nowrap items-center gap-2">
+            <span className="inline-flex max-w-full flex-wrap items-center justify-end gap-2">
               {headerActions[headerActions.length - 1]}
               <details className="group relative">
                 <summary aria-label="More goal actions" className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border border-slate-300 text-slate-600 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-4 w-4" /></summary>
