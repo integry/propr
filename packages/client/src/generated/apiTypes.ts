@@ -1003,11 +1003,11 @@ export interface PluginDetailResponse {
           hosts: string[];
           pathPrefixes?: string[];
         };
-        /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default) or `Authorization: <token>` (raw). */
-        authorization?: "bearer" | "raw";
+        /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`). */
+        authorization?: "bearer" | "raw" | "basic";
         [key: string]: unknown;
       }>;
-      /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
+      /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
       settings: {
         type: "object";
         properties: {
@@ -1299,11 +1299,11 @@ export interface PluginView {
         hosts: string[];
         pathPrefixes?: string[];
       };
-      /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default) or `Authorization: <token>` (raw). */
-      authorization?: "bearer" | "raw";
+      /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`). */
+      authorization?: "bearer" | "raw" | "basic";
       [key: string]: unknown;
     }>;
-    /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
+    /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
     settings: {
       type: "object";
       properties: {

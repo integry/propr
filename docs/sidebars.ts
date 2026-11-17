@@ -104,6 +104,7 @@ const sidebars: SidebarsConfig = {
         'plugins/discord',
         'plugins/teams',
         'plugins/linear',
+        'plugins/jira',
       ],
     },
     {

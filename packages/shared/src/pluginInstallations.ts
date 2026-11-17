@@ -1,4 +1,4 @@
-import { pluginHttpsUrlProblem, type PluginConnectionType, type PluginManifest, type PluginPermission, type PluginSetting, type PluginSettings, type PublicPluginManifest } from './plugins.js';
+import { pluginHttpsUrlSettingProblem, type PluginConnectionType, type PluginManifest, type PluginPermission, type PluginSetting, type PluginSettings, type PublicPluginManifest } from './plugins.js';
 
 /**
  * Installation state of a plugin on one ProPR instance: whether an
@@ -151,7 +151,7 @@ function stringProblem(key: string, setting: Extract<PluginSetting, { type: 'str
   if (value.length > (setting.maxLength ?? 500)) return `${key} is longer than ${setting.maxLength ?? 500} characters`;
   if (setting.enum && !setting.enum.includes(value)) return `${key} must be one of ${setting.enum.join(', ')}`;
   if (setting.format === 'https-url' && value !== '') {
-    const problem = pluginHttpsUrlProblem(value);
+    const problem = pluginHttpsUrlSettingProblem(setting, value);
     if (problem) return `${key} ${problem}`;
   }
   return null;

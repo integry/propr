@@ -267,6 +267,9 @@ export class PluginStore {
       if (connection.type === 'oauth') throw new PluginError(400, 'An OAuth connection is connected through its sign-in, not with a value');
       const urlProblem = value !== null && connection.type === 'token' && connection.secretUrl ? pluginSecretUrlProblem(connection.secretUrl, value) : null;
       if (urlProblem) throw new PluginError(400, `${connection.label}: ${urlProblem}`);
+      if (value !== null && connection.type === 'token' && connection.authorization === 'basic' && !/^[^:]+:[^:].*$/.test(value)) {
+        throw new PluginError(400, `${connection.label}: enter the user name (the account email), a colon and the API token, such as name@example.com:<token>`);
+      }
       if (value === null) {
         if (row.enabled && requiredPluginConnections(manifest).includes(connection.name)) throw new PluginError(409, `Connection ${connection.name} is required while the plugin is enabled; disable it first`);
         await trx('plugin_secrets').where({ plugin_id: pluginId, connection_name: connection.name }).delete();
