@@ -136,11 +136,13 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     if (!await pullRequestJobAllowed(prData.data.labels, primaryProcessingLabels, { data: context.jobRequest ?? {}, comments: validatedComments, correlationId: context.correlationId })) return { skip: true, reason: 'missing_required_label' };
     const llm = extractModelFromLabels(prData.data.labels, initialLlm, pullRequestNumber, correlatedLogger);
     const pr = { repoOwner, repoName, pullRequestNumber };
-    const unconsumedRevisionIds = await unconsumedCiFailureRevisions(redisClient, pr, { comments: commentsToProcess, current: allCommentsForValidation, correlatedLogger });
+    const revisions = { current: allCommentsForValidation, receipts: { comments: prCommentsForValidation, botUsername } };
+    const unconsumedRevisionIds = await unconsumedCiFailureRevisions(redisClient, pr, { ...revisions, comments: commentsToProcess, correlatedLogger });
     const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger, unconsumedRevisionIds });
     if (unprocessedComments.length === 0) return { skip: true, reason: 'already_processed' };
-    // This run takes these revisions; a CI-failure comment edited from here on is new work.
-    await recordConsumedCiFailureRevisions(redisClient, pr, unprocessedComments, allCommentsForValidation);
+    // This run takes these revisions; a CI-failure comment edited from here on, or
+    // left without a receipt of this run, is still work.
+    await recordConsumedCiFailureRevisions(redisClient, pr, { ...revisions, comments: unprocessedComments });
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
 }
 

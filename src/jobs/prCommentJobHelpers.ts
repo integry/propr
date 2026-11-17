@@ -103,7 +103,7 @@ export async function validateAndFilterComments(
     return validatedComments;
 }
 
-/** `unconsumedRevisionIds`: CI-failure comments edited after a run consumed them; their receipts are for an earlier revision. */
+/** `unconsumedRevisionIds`: CI-failure comments whose current revision no receipt of its own consumed; their receipts are for an earlier revision. */
 interface FilterOptions { pullRequestNumber: number; correlatedLogger: Logger; unconsumedRevisionIds?: ReadonlySet<number> }
 
 export function filterUnprocessedComments(

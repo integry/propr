@@ -488,7 +488,8 @@ describe('commentEventHandler — automatic CI follow-up marker', () => {
         const [, jobData] = mockQueueAdd.mock.calls[0].arguments as unknown as [string, { comments: UnprocessedCommentLike[]; repoOwner: string; repoName: string }];
         const pr = { repoOwner: jobData.repoOwner, repoName: jobData.repoName, pullRequestNumber: 42 };
         const consumed = await validateAndFilterComments(jobData.comments as never, [onGitHub(first)], 42, log);
-        await recordConsumedCiFailureRevisions(redisClient as never, pr, consumed, [onGitHub(first)]);
+        const noReceipts = { comments: [], botUsername: 'propr-dev[bot]' };
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, { comments: consumed, current: [onGitHub(first)], receipts: noReceipts });
         assert.doesNotMatch(consumed[0].body, /Typecheck/, 'the running request lists Lint only');
         const remove = mock.fn(async () => {});
         mockActiveJobs = [{ id: 'pr-comments-batch-running', name: 'processPullRequestComment', data: jobData, remove }];
@@ -518,19 +519,25 @@ describe('commentEventHandler — automatic CI follow-up marker', () => {
         };
         // The revision job then reads the comment as GitHub holds it now.
         const current = [onGitHub(edited)];
+        const receipts = { comments: [receipt], botUsername: 'propr-dev[bot]' };
         const validated = await validateAndFilterComments(revisionData.comments as never, current, 42, log);
         assert.strictEqual(filterUnprocessedComments(validated, [receipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log }).length, 0,
             'by id alone the earlier receipt hides the added failure');
-        const unconsumedRevisionIds = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current });
+        const unconsumedRevisionIds = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current, receipts });
         const toRun = filterUnprocessedComments(validated, [receipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log, unconsumedRevisionIds });
         assert.strictEqual(toRun.length, 1, 'the revision no run consumed is run');
         assert.match(toRun[0].body, /Lint.*Typecheck/);
 
-        // Once a run took that revision, another job for it is handled work.
-        await recordConsumedCiFailureRevisions(redisClient as never, pr, toRun, current);
-        const handled = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current });
+        // A run takes that revision. The earlier receipt still does not end it (F11)...
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, { comments: toRun, current, receipts });
+        const taken = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current, receipts });
+        assert.deepStrictEqual([...taken], [7001], 'a run that took the revision but left no receipt of its own leaves it to run');
+        // ...the receipt of the run that took it does: another job for it is handled work.
+        const ownReceipt = { ...receipt, id: 9002, created_at: '2026-11-17T08:40:00Z', body: receipt.body.replace('Fixed lint', 'Fixed typecheck') };
+        const withOwn = { comments: [receipt, ownReceipt], botUsername: 'propr-dev[bot]' };
+        const handled = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current, receipts: withOwn });
         assert.strictEqual(handled.size, 0);
-        assert.strictEqual(filterUnprocessedComments(validated, [receipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log, unconsumedRevisionIds: handled }).length, 0);
+        assert.strictEqual(filterUnprocessedComments(validated, [receipt, ownReceipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log, unconsumedRevisionIds: handled }).length, 0);
     });
 
     test('an edit that reached GitHub before the running follow-up read the comment is not run twice (F9)', async () => {
@@ -539,15 +546,20 @@ describe('commentEventHandler — automatic CI follow-up marker', () => {
         const pr = { repoOwner: edited.repository.owner.login, repoName: edited.repository.name, pullRequestNumber: 42 };
         const queued = [{ id: 7001, author: 'propr-dev[bot]', body: 'CI failed: **Lint**', type: 'issue' }];
         const current = [{ id: 7001, body: edited.comment.body, updated_at: edited.comment.updated_at, user: { login: 'propr-dev[bot]' } }];
-        // The running follow-up read the comment after the edit, so it consumed the edited revision.
+        // The running follow-up read the comment after the edit, so it took the edited revision.
         const consumed = await validateAndFilterComments(queued as never, current, 42, mockLoggerInstance as never);
-        await recordConsumedCiFailureRevisions(redisClient as never, pr, consumed, current);
-        // The revision job queued for that edit finds its revision consumed; the receipt decides, and it is skipped.
-        const unconsumed = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: queued, current });
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, { comments: consumed, current, receipts: { comments: [], botUsername: 'propr-dev[bot]' } });
+        // It completed before the revision job queued for that edit got the PR lock.
+        const completion = {
+            id: 9001, user: { login: 'propr-dev[bot]' },
+            body: '✅ Fixed\n\n---\n_Processing comment ID: 7001✓_\n<!-- propr:work-evidence phase=completed trigger-comment-ids=7001 -->',
+        };
+        // The revision job finds its revision finished by that run; the receipt decides, and it is skipped.
+        const unconsumed = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: queued, current, receipts: { comments: [completion], botUsername: 'propr-dev[bot]' } });
         assert.strictEqual(unconsumed.size, 0);
         // A comment of another author with the marker never gets a revision record.
         const copied = [{ ...current[0], user: { login: 'someone-else' } }];
-        await recordConsumedCiFailureRevisions(redisClient as never, pr, [{ ...queued[0], id: 7002, author: 'someone-else' }], [{ ...copied[0], id: 7002 }]);
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, { comments: [{ ...queued[0], id: 7002, author: 'someone-else' }], current: [{ ...copied[0], id: 7002 }], receipts: { comments: [], botUsername: 'propr-dev[bot]' } });
         assert.ok(![...redisClient._store.keys()].some(key => key.endsWith(':7002')));
     });
 

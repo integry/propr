@@ -222,7 +222,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     //   revision (currentCiFailureRequestBody).
     // - A running follow-up may already have built its request. The revision is
     //   recorded as its own queued follow-up, which waits behind the PR lock and
-    //   then runs unless the revision it reads is the one a run already consumed
+    //   then runs unless a run already finished the revision it reads
     //   (see ciFailureCommentPickup in the worker).
     // A waiting batch record takes the edited body; when the record is claimed
     // under the update, the edit is handled normally instead.
