@@ -30,26 +30,30 @@ function useMinuteClock(): Date {
   return now;
 }
 
-type ScheduleMode = 'off' | 'repeat' | 'custom';
+type ScheduleMode = 'off' | 'repeat';
 const MODES: readonly { mode: ScheduleMode; label: string }[] = [
   { mode: 'off', label: 'Off' },
   { mode: 'repeat', label: 'Repeat' },
-  { mode: 'custom', label: 'Custom (cron)' },
 ];
+/** How Repeat is entered: the plain controls, or the expression itself as an advanced input. */
+type RepeatInput = 'simple' | 'expression';
+
+const LINK_CLASSES = 'text-xs font-medium text-teal-700 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed disabled:text-slate-400';
 
 const normalize = (expression: string) => expression.trim().split(/\s+/).join(' ');
-/** Repeat for an expression its controls produce (or none yet), Custom for anything else. */
-const modeOf = (expression: string): 'repeat' | 'custom' => (!expression.trim() || cronToRepeat(expression) ? 'repeat' : 'custom');
+/** The plain controls for an expression they produce (or none yet), the expression field for anything else. */
+const inputOf = (expression: string): RepeatInput => (!expression.trim() || cronToRepeat(expression) ? 'simple' : 'expression');
 
 /**
- * Off, Repeat (plain controls that write the cron) or Custom (the cron itself,
- * with presets), with a live next-run preview and inline validation in UTC.
+ * Off or Repeat. Repeat is built from plain controls that write the cron, or,
+ * behind a secondary link, typed as the expression itself (with presets); a live
+ * next-run preview and inline validation in UTC either way.
  */
 export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
   enabled, expression, pauseWhenUnproductive = false, onChange, disabled, unproductiveRunThreshold, error: submitError = null,
 }) => {
   const now = useMinuteClock();
-  const [onMode, setOnMode] = useState<'repeat' | 'custom'>(() => modeOf(expression));
+  const [input, setInput] = useState<RepeatInput>(() => inputOf(expression));
   const [settings, setSettings] = useState<RepeatSettings>(() => cronToRepeat(expression) ?? DEFAULT_REPEAT);
   // The last expression this section wrote; any other value came from outside (a loaded automation, a template).
   const written = useRef(expression);
@@ -58,15 +62,15 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
     written.current = expression;
     const parsed = cronToRepeat(expression);
     if (parsed) setSettings(parsed);
-    setOnMode(modeOf(expression));
+    setInput(inputOf(expression));
   }, [expression]);
 
-  const mode: ScheduleMode = enabled ? onMode : 'off';
+  const mode: ScheduleMode = enabled ? 'repeat' : 'off';
   const error = enabled ? (expression.trim() ? scheduleErrorMessage(expression) : submitError) : null;
   const next = enabled && !error && expression.trim() ? nextScheduledRun(expression.trim(), now) : null;
   const feedbackId = error ? agentFieldErrorId('schedule') : 'agent-schedule-feedback';
-  // Repeat chosen on an expression it cannot show: the expression stays until a control changes.
-  const keeping = mode === 'repeat' && expression.trim() !== '' && normalize(expression) !== repeatToCron(settings);
+  // The plain controls chosen for an expression they cannot show: the expression stays until a control changes.
+  const keeping = enabled && input === 'simple' && expression.trim() !== '' && normalize(expression) !== repeatToCron(settings);
 
   const write = (schedule: string, change: { scheduleEnabled?: boolean } = {}) => {
     written.current = schedule;
@@ -78,16 +82,21 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
       onChange({ scheduleEnabled: false });
       return;
     }
-    setOnMode(choice);
-    if (choice === 'repeat') {
+    if (enabled) return;
+    if (!expression.trim()) {
+      setInput('simple');
+      write(repeatToCron(settings), { scheduleEnabled: true });
+      return;
+    }
+    onChange({ scheduleEnabled: true });
+  };
+
+  const switchInput = (next: RepeatInput) => {
+    if (next === 'simple') {
       const parsed = cronToRepeat(expression);
       if (parsed) setSettings(parsed);
-      if (!expression.trim()) {
-        write(repeatToCron(settings), { scheduleEnabled: true });
-        return;
-      }
     }
-    if (!enabled) onChange({ scheduleEnabled: true });
+    setInput(next);
   };
 
   const changeRepeat = (changed: RepeatSettings) => {
@@ -115,7 +124,7 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
 
       {enabled && (
         <div className="mt-3 space-y-2">
-          {mode === 'repeat' ? (
+          {input === 'simple' ? (
             <>
               <AgentScheduleRepeatControls settings={settings} onChange={changeRepeat} disabled={disabled} invalid={Boolean(error)} describedBy={feedbackId} />
               {keeping && (
@@ -123,6 +132,9 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
                   Keeps <span className="font-mono text-slate-700">{expression.trim()}</span> until you change a control.
                 </p>
               )}
+              <button type="button" disabled={disabled} onClick={() => switchInput('expression')} className={LINK_CLASSES}>
+                Use a cron expression
+              </button>
             </>
           ) : (
             <>
@@ -154,6 +166,9 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
                   </button>
                 ))}
               </div>
+              <button type="button" disabled={disabled} onClick={() => switchInput('simple')} className={LINK_CLASSES}>
+                Use simple schedule
+              </button>
             </>
           )}
           <p id={feedbackId} className="text-xs" data-testid="agent-schedule-feedback">

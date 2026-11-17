@@ -45,7 +45,8 @@ describe('AgentEditor validation', () => {
   it('words an invalid cron under the field, focuses it on submit and sends no request', async () => {
     renderEditor();
     fillRequired();
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom (cron)' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use a cron expression' }));
     fireEvent.change(screen.getByLabelText('Cron expression'), { target: { value: '61 * * * *' } });
 
     expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent('The minute must be from 0 to 59.');

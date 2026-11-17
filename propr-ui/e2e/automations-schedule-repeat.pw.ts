@@ -1,7 +1,7 @@
 /**
  * The automation editor's Schedule row at desktop (1440) and phone (390) widths: Repeat builds the cron from plain
  * controls that fit on one or two rows without horizontal scroll, each with a label and reachable by keyboard, and
- * Custom (cron) shows the expression they wrote.
+ * the "Use a cron expression" link inside Repeat shows the expression they wrote.
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
@@ -54,7 +54,7 @@ for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['ph
     await page.goto('/automations/new');
     const form = page.getByTestId('agent-editor');
     const modes = form.getByRole('radiogroup', { name: 'Schedule' });
-    await expect(modes.getByRole('radio')).toHaveText(['Off', 'Repeat', 'Custom (cron)']);
+    await expect(modes.getByRole('radio')).toHaveText(['Off', 'Repeat']);
 
     await modes.getByRole('radio', { name: 'Repeat' }).click();
     const every = form.getByLabel('Every', { exact: true });
@@ -89,9 +89,19 @@ for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['ph
     expect(await noHorizontalScroll(page)).toBe(true);
     await capture(form.getByTestId('agent-schedule-feedback').locator('xpath=ancestor::div[contains(@class,"grid")][1]'), `automation-schedule-weekly-${label}`);
 
-    await modes.getByRole('radio', { name: 'Custom (cron)' }).click();
+    // The expression is an advanced input inside Repeat, reached from a secondary link and left the same way.
+    const row = form.getByTestId('agent-schedule-feedback').locator('xpath=ancestor::div[contains(@class,"grid")][1]');
+    expect((await row.innerText()).match(/cron/gi)).toEqual(['cron']);
+    const toExpression = form.getByRole('button', { name: 'Use a cron expression' });
+    await toExpression.focus();
+    await page.keyboard.press('Enter');
+    await expect(modes.getByRole('radio', { name: 'Repeat' })).toHaveAttribute('aria-checked', 'true');
     await expect(form.getByLabel('Cron expression')).toHaveValue('30 7 * * 1,2,4');
+    await expect(form.getByLabel('Every', { exact: true })).toHaveCount(0);
     expect(await noHorizontalScroll(page)).toBe(true);
-    await capture(form.getByTestId('agent-schedule-feedback').locator('xpath=ancestor::div[contains(@class,"grid")][1]'), `automation-schedule-custom-${label}`);
+    await capture(row, `automation-schedule-expression-${label}`);
+    await form.getByRole('button', { name: 'Use simple schedule' }).click();
+    await expect(form.getByLabel('Every', { exact: true })).toHaveValue('weeks');
+    await expect(form.getByRole('checkbox', { name: 'Thursday' })).toBeChecked();
   });
 }

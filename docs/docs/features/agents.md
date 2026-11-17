@@ -82,10 +82,10 @@ In the automation editor, **Additional extensions** shows two lists, MCP servers
 
 ### Schedule
 
-**Schedule** is off by default: the automation then runs only when triggered. To run it automatically, choose one of:
+**Schedule** is **Off** by default: the automation then runs only when triggered. To run it automatically, choose **Repeat**:
 
-- **Repeat** (the default when you turn a schedule on): `Every [N] [minutes | hours | day | week]`, with a time for days and weeks and the days of the week for weeks. Only rhythms a cron expression repeats exactly are offered: every 15, 20 or 30 minutes; every 1, 2, 3, 4, 6, 8 or 12 hours; every day at a time; chosen weekdays at a time. The editor saves the matching cron expression, for example `0 */3 * * *` for every 3 hours or `0 9 * * 1-5` for Monday to Friday at 09:00.
-- **Custom (cron)**: a standard 5-field cron expression (`minute hour day-of-month month day-of-week`), or one of the presets:
+- The plain controls read `Every [N] [minutes | hours | day | week]`, with a time for days and weeks and the days of the week for weeks. Only rhythms a cron expression repeats exactly are offered: every 15, 20 or 30 minutes; every 1, 2, 3, 4, 6, 8 or 12 hours; every day at a time; chosen weekdays at a time. The editor saves the matching cron expression, for example `0 */3 * * *` for every 3 hours or `0 9 * * 1-5` for Monday to Friday at 09:00.
+- For any other rhythm, **Use a cron expression** under the controls swaps them for a standard 5-field cron expression (`minute hour day-of-month month day-of-week`) with these presets beside it; **Use simple schedule** goes back:
 
 | Preset | Expression |
 | --- | --- |
@@ -94,7 +94,7 @@ In the automation editor, **Additional extensions** shows two lists, MCP servers
 | Weekdays 09:00 | `0 9 * * 1-5` |
 | Weekly Mon 09:00 | `0 9 * * 1` |
 
-An automation opens in **Repeat** when its expression is one the Repeat controls produce, and in **Custom (cron)** otherwise; its expression is never rewritten unless you change a control. Switching from Repeat to Custom shows the generated expression.
+A scheduled automation always opens in **Repeat**: with the plain controls filled in when they produce its expression, and with the expression field otherwise; its expression is never rewritten unless you change a control. Switching to the expression field shows the expression the controls generated.
 
 The rules:
 

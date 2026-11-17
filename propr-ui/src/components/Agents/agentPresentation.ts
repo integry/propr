@@ -50,7 +50,7 @@ export const RUN_STATE_BADGE_CLASSES: Record<AutomationRunState, string> = {
   cancelled: 'border-slate-200 bg-white text-slate-500',
 };
 
-/** One-click schedules offered under Custom (cron), all in UTC. */
+/** One-click schedules offered beside the expression field, all in UTC. */
 export const SCHEDULE_PRESETS = [
   { label: 'Hourly', expression: '0 * * * *' },
   { label: 'Daily 09:00', expression: '0 9 * * *' },

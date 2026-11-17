@@ -57,7 +57,7 @@ describe('AgentEditor schedule modes', () => {
     fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Summarize new issues' } });
 
     const modes = screen.getByRole('radiogroup', { name: 'Schedule' });
-    expect(within(modes).getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Off', 'Repeat', 'Custom (cron)']);
+    expect(within(modes).getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Off', 'Repeat']);
     fireEvent.click(within(modes).getByRole('radio', { name: 'Repeat' }));
     // Turning a schedule on starts from every day at 09:00 UTC.
     expect(screen.getByLabelText('Every')).toHaveValue('days');
@@ -70,6 +70,10 @@ describe('AgentEditor schedule modes', () => {
     expect(screen.getByLabelText('Unit')).toHaveValue('hours');
     expect(screen.queryByLabelText('Hour (UTC)')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Cron expression')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use a cron expression' })).toBeInTheDocument();
+    // "cron" is written only in that link (and the expression field's label, not shown here).
+    const row = screen.getByRole('radiogroup', { name: 'Schedule' }).closest('.grid') as HTMLElement;
+    expect(row.textContent?.match(/cron/gi)).toEqual(['cron']);
     expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent(/^Next run: \w{3} \d{1,2} \w{3} (00|03|06|09|12|15|18|21):00 UTC$/);
 
     fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
@@ -112,43 +116,50 @@ describe('AgentEditor schedule modes', () => {
     await saveChanges('0 9 * * 1');
   });
 
-  it('opens a hand-written expression in Custom (cron) and saves it unchanged', async () => {
+  it('opens a hand-written expression in Repeat with the expression field and saves it unchanged', async () => {
     await openSaved('15 9,17 * * 1-5');
-    expect(screen.getByRole('radio', { name: 'Custom (cron)' })).toBeChecked();
+    expect(within(screen.getByRole('radiogroup', { name: 'Schedule' })).getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Off', 'Repeat']);
+    expect(screen.getByRole('radio', { name: 'Repeat' })).toBeChecked();
     expect(screen.getByLabelText('Cron expression')).toHaveValue('15 9,17 * * 1-5');
+    expect(screen.queryByLabelText('Every')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use simple schedule' })).toBeInTheDocument();
     await saveChanges('15 9,17 * * 1-5');
   });
 
-  it('shows the generated expression under Custom (cron)', async () => {
+  it('shows the generated expression behind "Use a cron expression"', async () => {
     await openSaved('0 9 * * 1-5');
     fireEvent.change(screen.getByLabelText('Every'), { target: { value: 'days' } });
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom (cron)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use a cron expression' }));
+    expect(screen.getByRole('radio', { name: 'Repeat' })).toBeChecked();
     expect(screen.getByLabelText('Cron expression')).toHaveValue('0 9 * * *');
+    expect(screen.queryByLabelText('Every')).not.toBeInTheDocument();
     // The presets stay as shortcuts there.
     fireEvent.click(screen.getByRole('button', { name: 'Weekly Mon 09:00' }));
     expect(screen.getByLabelText('Cron expression')).toHaveValue('0 9 * * 1');
-    // Back in Repeat, a representable expression fills the controls.
-    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    // Back to the simple controls, a representable expression fills them.
+    fireEvent.click(screen.getByRole('button', { name: 'Use simple schedule' }));
+    expect(screen.queryByLabelText('Cron expression')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Every')).toHaveValue('weeks');
     expect(screen.getByRole('checkbox', { name: 'Monday' })).toBeChecked();
   });
 
-  it('keeps a custom expression Repeat cannot show until a control changes', async () => {
+  it('keeps an expression the simple controls cannot show until a control changes', async () => {
     await openSaved('*/45 * * * *');
-    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
-    expect(screen.getByTestId('agent-schedule-kept')).toHaveTextContent('Keeps */45 * * * * until you change a control.');
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom (cron)' }));
     expect(screen.getByLabelText('Cron expression')).toHaveValue('*/45 * * * *');
-    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use simple schedule' }));
+    expect(screen.getByTestId('agent-schedule-kept')).toHaveTextContent('Keeps */45 * * * * until you change a control.');
+    fireEvent.click(screen.getByRole('button', { name: 'Use a cron expression' }));
+    expect(screen.getByLabelText('Cron expression')).toHaveValue('*/45 * * * *');
+    fireEvent.click(screen.getByRole('button', { name: 'Use simple schedule' }));
     fireEvent.change(screen.getByLabelText('Hour (UTC)'), { target: { value: '6' } });
     expect(screen.queryByTestId('agent-schedule-kept')).not.toBeInTheDocument();
     await saveChanges('0 6 * * *');
   });
 
-  it('shows the validator message inline in Repeat for a kept expression it refuses', async () => {
+  it('shows the validator message inline in the simple controls for a kept expression it refuses', async () => {
     await openSaved('*/5 * * * *');
     expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent('Run at most every 15 minutes.');
-    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use simple schedule' }));
     expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent('Run at most every 15 minutes.');
     expect(screen.getByLabelText('Every')).toHaveAttribute('aria-invalid', 'true');
   });

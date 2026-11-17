@@ -82,7 +82,8 @@ for (const [label, viewport] of [['desktop', { width: 1440, height: 900 }], ['ph
       await name.fill('Nightly triage');
       await form.getByLabel('Prompt', { exact: true }).fill('Summarize new issues');
       await expect(form.getByTestId('agent-name-error')).toHaveCount(0);
-      await form.getByRole('radio', { name: 'Custom (cron)' }).click();
+      await form.getByRole('radio', { name: 'Repeat' }).click();
+      await form.getByRole('button', { name: 'Use a cron expression' }).click();
       const cron = form.getByLabel('Cron expression');
       await cron.fill('0 9 * *');
       await expect(form.getByTestId('agent-schedule-feedback')).toHaveText('Enter a schedule with five parts, e.g. 0 9 * * 1-5.');
