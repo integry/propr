@@ -30,6 +30,12 @@ const COMPLETION_ONLY = /^(?:(?:the )?(?:verification|validation|work|task|run|e
 const ABOUT_NOTIFICATION = /\b(?:notification|notice|monitor|watcher|timed out|timeout|background (?:task|command|job|run|process)|probe|re-?arm)/i;
 /** What a still-waiting note waits on: a pronoun for it, or a named running operation. */
 const RUNNING_WORK_SUBJECT = '(?:it|they|that|this|the (?:[\\w-]+\\s+){0,4}?(?:suites?|tests?|runs?|builds?|jobs?|tasks?|commands?|monitors?|watchers?|batch(?:es)?|process(?:es)?|probes?))';
+/**
+ * An optional inline status label that may open a sentence ("Summary: Fixed
+ * the timeout."). Sentence classifiers skip it, so a labelled sentence is read
+ * by what it says rather than by its label.
+ */
+const INLINE_LABEL = '(?:(?:summary|status|update|progress)\\s*:\\s*)?';
 /** The operation finishing, as the event the note waits for. */
 const RUNNING_WORK_FINISHES = '(?:\\s+(?:finish(?:es)?|complete[sd]?|returns?|ends?|reports?(?: back)?)|(?:\\s+(?:is|are)|[\'\u2019](?:s|re)) (?:done|finished|complete|over))\\b';
 /**
@@ -39,7 +45,7 @@ const RUNNING_WORK_FINISHES = '(?:\\s+(?:finish(?:es)?|complete[sd]?|returns?|en
  * Waiting for the notification") is not an unfinished run.
  */
 const UNFINISHED_WORK_SENTENCE = new RegExp([
-    '^(?:(?:summary|status|update|progress)\\s*:\\s*)?(?:',
+    '^', INLINE_LABEL, '(?:',
     'still (?:running|in progress|executing)\\b',
     '|(?:(?:i[\'\u2019]m|i am|we[\'\u2019]re|we are) )?(?:(?:still|currently|now) )?(?:keep )?waiting (?:for|on|until)\\b.*\\b(?:notification|completion|complete|finish|finishes|done|suites?|tests?|run|build|job|task|command|monitor|watcher|background|results?)\\b',
     '|(?:i(?:[\'\u2019]ll| will) |will )keep waiting\\b',
@@ -53,7 +59,7 @@ const UNFINISHED_WORK_SENTENCE = new RegExp([
 /** Unfinished-work notes are status messages, not reports; a longer text is a report. */
 const UNFINISHED_WORK_MAX_LENGTH = SHORT_TEXT_LENGTH;
 /** Leads of a sentence that reports a completed change, not a notification. */
-const COMPLETED_CHANGE = /^(?:i(?:['\u2019]ve|\s+have)?\s+)?(?:now\s+)?(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)\b/i;
+const COMPLETED_CHANGE = new RegExp(`^${INLINE_LABEL}(?:i(?:['\u2019]ve|\\s+have)?\\s+)?(?:now\\s+)?(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)\\b`, 'i');
 /** A short reply to a notification that says nothing needs doing. */
 const NO_ACTION = /\b(?:nothing (?:else |more |further )?(?:to do|is needed|needed|to change)|no (?:further |other )?(?:action|changes?) (?:is |are )?(?:needed|required)|(?:doesn'?t|does not) change anything|nothing (?:has )?changed)\b/i;
 

@@ -166,6 +166,44 @@ describe('run summary selection', () => {
         assert.match(commitMessage, /Fixed the retry assertion exposed by the background run/);
     });
 
+    test('an inline-labelled fix summary written after a notified failure is kept', () => {
+        const fixed = 'Summary: Fixed the timeout in worker.ts. All 28 suites now pass.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('suite failed'),
+            toolUse('t2', 'One suite timed out; fixing it.'), toolResult('t2'),
+            toolUse('t3'), toolResult('t3'),
+            assistantText(fixed),
+        ];
+        assert.equal(isRunStatusNote(fixed, { afterNotification: true }), false);
+        assert.equal(isRunStatusNote(fixed), false);
+        for (const label of ['Status: ', 'Update:', '**Summary:** ', 'Progress : ']) {
+            const labelled = `${label}Fixed the timeout in worker.ts. All 28 suites now pass.`;
+            assert.equal(isRunStatusNote(labelled, { afterNotification: true }), false, labelled);
+        }
+        // A label in front of a notification-only reply does not make it a report.
+        assert.equal(isRunStatusNote('Summary: The watcher timed out after the suites finished; nothing else to do.', { afterNotification: true }), true);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fixed)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, fixed);
+        assert.match(response.commitMessage?.split('\n')[0] ?? '', /Fixed the timeout in worker\.ts/);
+        assert.equal(selectRunSummary({ resultText: fixed, conversationLog }).summary, fixed);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fixed);
+
+        const claudeResult = agentResultToClaudeResponse({
+            success: true, model: 'claude-opus-5-5', executionTimeMs: 1000, logs: '', exitCode: 0, modelUsed: 'claude-opus-5-5',
+            modifiedFiles: ['worker.ts'], commitMessage: response.commitMessage ?? null, summary: response.summary, conversationLog,
+        });
+        const commitMessage = buildCommitMessage({
+            changesSummary: fixed, unprocessedComments: [], pullRequestNumber: 12, claudeResult, llm: 'claude-opus-5-5', authorsText: '@octo',
+        });
+        assert.notEqual(commitMessage.split('\n')[0], 'feat(ai): Apply follow-up changes from PR comment');
+        assert.match(commitMessage.split('\n')[0], /Fixed the timeout in worker\.ts/);
+        assert.doesNotMatch(commitMessage, /epic queue/);
+    });
+
     test('a newer concise fix summary beats an older long one when the last reply is a status note', () => {
         const fixed = 'Fixed the retry assertion. All 28 suites now pass.';
         const status = 'The monitor expired; my summary above still holds.';
