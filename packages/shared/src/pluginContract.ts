@@ -27,8 +27,13 @@ import {
  *   fields, error codes and the runtime exports of the SDK module are
  *   additive only.
  *
- * `buildPluginContract()` describes the current interface; the shared
- * package's contract test compares it with the committed snapshot
+ * `buildPluginContract()` describes the current interface. The shared
+ * package's contract test reads the TypeScript sources with the compiler
+ * (`packages/shared/test/support/pluginContractSource.ts`): it checks the
+ * payload and envelope descriptors below against the real field types, and
+ * adds the declared type of every SDK member (`sdk.types`: `ctx` members,
+ * `ctx.state` and `ctx.propr` parameters and results, input envelope fields
+ * and the shared types they reach). It compares that with the committed snapshot
  * (`packages/shared/test/contracts/plugin-contract.snapshot.json`) using
  * `comparePluginContract()`, and fails on any breaking change.
  */
@@ -40,7 +45,9 @@ export const PLUGIN_SUPPORTED_MANIFEST_VERSIONS: readonly number[] = [PLUGIN_MAN
  * Payload fields of each journal event, as `key: type`. A key ending in `?`
  * may be absent. Types are `string`, `number`, `boolean`, `string[]`,
  * `number[]`, each optionally `| null`. Keep this in step with the payload
- * interfaces of `repositoryEvents.ts`: the type checks below compare the keys.
+ * interfaces of `repositoryEvents.ts`: the type checks below compare the keys,
+ * and the shared package's contract test compares each type with the field's
+ * declared type.
  */
 export const PLUGIN_EVENT_PAYLOAD_FIELDS = {
   'pull_request.opened': { baseRef: 'string | null', draft: 'boolean' },
@@ -132,6 +139,13 @@ export interface PluginContract {
     errorCodes: string[];
     /** Runtime exports of the SDK module (`@propr/shared`'s `pluginSdk`). */
     exports: string[];
+    /**
+     * Declared types of the SDK, read from the sources by the contract test:
+     * `Interface.member` (`?` when optional) or a type alias's name → its type
+     * text, e.g. `PluginStateStore.get` → `(key: string) => Promise<…>`.
+     * Absent from `buildPluginContract()`, which runs without the compiler.
+     */
+    types?: Record<string, string>;
   };
 }
 
@@ -326,5 +340,14 @@ export function comparePluginContract(previous: PluginContract, current: PluginC
   for (const kind of Object.keys(current.sdk.inputs)) if (!sdk.inputs[kind]) result.additions.push(`sdk: input kind ${kind} was added`);
   compareList('sdk: error code', sdk.errorCodes, current.sdk.errorCodes, result);
   compareList('sdk: export', sdk.exports, current.sdk.exports, result);
+  // A declared SDK type is promised exactly: a changed parameter or result type can break a plugin compiled against it.
+  if (sdk.types) {
+    const now = current.sdk.types ?? {};
+    for (const [member, type] of Object.entries(sdk.types)) {
+      if (!(member in now)) result.breaking.push(`sdk: type ${member} was removed`);
+      else if (now[member] !== type) result.breaking.push(`sdk: type ${member} changed from ${type} to ${now[member]}`);
+    }
+    for (const member of Object.keys(now)) if (!(member in sdk.types)) result.additions.push(`sdk: type ${member} was added`);
+  }
   return result;
 }

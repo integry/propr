@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { ESLint } from 'eslint';
+import { parse as parseYaml } from 'yaml';
 import { checkPlugins } from '../scripts/check-plugins.mjs';
 import { generatePluginDocs, staleFiles } from '../scripts/gen-plugin-docs.mjs';
 import { EXAMPLE_HANDLER, parseArguments, registerPlugin, scaffoldPlugin, serializeRegistry, titleCase } from '../scripts/new-plugin.mjs';
@@ -113,6 +114,30 @@ test('the scaffold passes plugins:check, lint, typecheck, the docs check and its
   const { stdout } = await run(join(BIN, 'tsx'), ['--test-reporter=tap', join(root, 'test/acme-chat.test.ts')], { cwd: REPOSITORY, env, timeout: 120_000 })
     .catch(error => assert.fail(`generated test failed:\n${error.stdout}${error.stderr}`));
   assert.match(stdout, /# pass 3\n# fail 0/);
+});
+
+/** The front matter of a Markdown page, parsed as YAML (strictly: a malformed scalar throws). */
+const frontMatter = page => {
+  const match = /^---\n([\s\S]*?)\n---\n/.exec(page);
+  assert.ok(match, 'the page starts with front matter');
+  return parseYaml(match[1], { strict: true, uniqueKeys: true });
+};
+
+test('the docs page front matter stays valid YAML for names and descriptions with quotes and backslashes', async () => {
+  const { root, docs } = await workspace();
+  const name = 'Acme "Chat" \\ Ops';
+  const description = 'Posts "merged" notes to C:\\builds\\new and \\"escapes\\". Second sentence.';
+  scaffoldPlugin({ id: 'acme-quoted', name, category: 'messaging', description, root, docs });
+  const page = await readFile(join(docs, 'docs/plugins/acme-quoted.md'), 'utf8');
+  assert.deepEqual(frontMatter(page), { sidebar_label: name, title: `${name} plugin`, description: 'Posts "merged" notes to C:\\builds\\new and \\"escapes\\".' });
+  // The manifest accepted those values, and the docs regenerated from it are current.
+  assert.deepEqual(checkPlugins({ root }).errors, []);
+  const generated = generatePluginDocs({ root, docs });
+  assert.deepEqual(generated.problems, []);
+  assert.deepEqual(staleFiles(generated.files), []);
+  // The default page parses too.
+  scaffoldPlugin({ id: 'acme-plain', root, docs });
+  assert.equal(frontMatter(await readFile(join(docs, 'docs/plugins/acme-plain.md'), 'utf8')).title, 'Acme Plain plugin');
 });
 
 test('the scaffold refuses ids that are taken, reserved or malformed, and unknown categories', async () => {

@@ -23,6 +23,11 @@
     "log": ["info", "trace"],
     "inputs": { "event": ["kind", "event", "deliveryId", "attempt", "legacyId"], "cron": ["kind"] },
     "errorCodes": ["permission_denied", "rate_limited"],
-    "exports": ["definePluginHandler", "legacyHelper"]
+    "exports": ["definePluginHandler", "legacyHelper"],
+    "types": {
+      "PluginStateStore.delete": "(key: string) => Promise<void>",
+      "PluginStateStore.clear": "() => Promise<void>",
+      "PluginProprClient.getTask": "(taskId: string) => Promise<PluginTaskSummary>"
+    }
   }
 }

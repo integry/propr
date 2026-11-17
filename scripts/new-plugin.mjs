@@ -230,11 +230,18 @@ record the result in the pull request:
 `;
 }
 
+/**
+ * A YAML double-quoted scalar for front matter. A JSON string is one (YAML 1.2
+ * is a superset of JSON), so quotes, backslashes and control characters in a
+ * name or description are escaped the way YAML reads them back.
+ */
+export const yamlString = value => JSON.stringify(String(value));
+
 export function docsPageFor({ id, name, manifest }) {
   return `---
-sidebar_label: "${name}"
-title: "${name} plugin"
-description: "${manifest.description.split(/(?<=[.!?])\s/)[0].replaceAll('"', '\\"')}"
+sidebar_label: ${yamlString(name)}
+title: ${yamlString(`${name} plugin`)}
+description: ${yamlString(manifest.description.split(/(?<=[.!?])\s/)[0])}
 ---
 # ${name}
 

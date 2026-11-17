@@ -16,7 +16,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildPluginContract, comparePluginContract } from '../packages/shared/src/pluginContract.js';
+import { comparePluginContract } from '../packages/shared/src/pluginContract.js';
+import { buildSourcePluginContract, pluginContractSourceMismatches } from '../packages/shared/test/support/pluginContractSource.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PLUGIN_CONTRACT_SNAPSHOT = path.join(repositoryRoot, 'packages/shared/test/contracts/plugin-contract.snapshot.json');
@@ -25,7 +26,13 @@ export const serializePluginContract = contract => `${JSON.stringify(contract, n
 
 function main(argv) {
   const acceptBreaking = argv.includes('--accept-breaking');
-  const current = buildPluginContract();
+  const mismatches = pluginContractSourceMismatches();
+  if (mismatches.length) {
+    console.error(`The event descriptors in packages/shared/src/pluginContract.ts differ from the source interfaces:\n${mismatches.map(m => `  - ${m}`).join('\n')}\nUpdate them first. Nothing was written.`);
+    return 1;
+  }
+  // The contract as the TypeScript sources declare it: real payload field types and SDK signatures.
+  const current = buildSourcePluginContract();
   if (existsSync(PLUGIN_CONTRACT_SNAPSHOT)) {
     const previous = JSON.parse(readFileSync(PLUGIN_CONTRACT_SNAPSHOT, 'utf8'));
     const { breaking, additions } = comparePluginContract(previous, current);

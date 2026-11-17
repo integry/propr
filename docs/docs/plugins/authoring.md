@@ -462,13 +462,17 @@ breaking change is caught.
    never removed, retyped or made optional; an event type is never removed.
    New keys and new event types are fine. The contract test snapshots every
    event type's payload keys and types, and fails on a removal or a type
-   change.
+   change. It reads the types from the payload interfaces in
+   `repositoryEvents.ts` with the TypeScript compiler, so retyping a field
+   there fails the test even when the field keeps its name.
 3. **`ctx` operations are additive only.** `ctx` members, `ctx.propr`
    operations and the permission each needs, `ctx.state` methods, `ctx.log`
    levels, input envelope fields, error codes and the SDK module's runtime
    exports may be added, never removed or changed. The contract test snapshots
-   that surface; type checks in `pluginContract.ts` keep the snapshot in step
-   with the TypeScript types.
+   that surface, including the declared type of every `ctx` member, every
+   `ctx.state` and `ctx.propr` method's parameters and result, every input
+   envelope field and the shared types they reach (read from `pluginSdk.ts`
+   with the TypeScript compiler); changing any of them is a breaking change.
 
 After an additive change, record it with `npm run plugins:contract:update`
 (the test reports that the snapshot is out of date until you do). The script
