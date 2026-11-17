@@ -11,7 +11,7 @@ const image = (index: number) => ({ type: 'image', title: `Preview ${index}`, ur
 
 describe('sanitizeTaskTitle', () => {
   it('drops the PR status slot and the model tag, with or without the slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️➅ ', '✅➇ ']) {
+    for (const slot of ['', '🔨 ', '⚠️❻ ', '✅❽ ', '⚠️➅ ', '✅⑧ ']) {
       expect(sanitizeTaskTitle(`Ultrafix PR #2664: ${slot}[2659 by GPT-6 Astra] Stop work when intent is withdrawn`))
         .toEqual({ type: 'Ultrafix', title: 'Stop work when intent is withdrawn', fullTitle: 'Stop work when intent is withdrawn' });
       expect(sanitizeTaskTitle(`PR #2664: ${slot}Stop work`).title).toBe('Stop work');

@@ -222,7 +222,7 @@ test('creation costs no rename, and a full Ultrafix loop to the goal with passin
     await syncSettled();
     await syncSettled();
 
-    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`]);
+    assert.deepEqual(github.renames, [`✅❽ ${TITLE}`]);
 });
 
 test('checks pending keep 🔨; a failure without follow-up shows ⚠️, passing checks show ✅', async () => {
@@ -237,12 +237,12 @@ test('checks pending keep 🔨; a failure without follow-up shows ⚠️, passin
     assert.equal(github.pull.title, `🔨 ${TITLE}`, '⚠️ is held until it settles');
     await new Promise(resolve => setTimeout(resolve, SETTLE_MS + 10));
     await sync();
-    assert.equal(github.pull.title, `⚠️➇ ${TITLE}`);
+    assert.equal(github.pull.title, `⚠️❽ ${TITLE}`);
 
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
-    assert.deepEqual(github.renames, [`⚠️➇ ${TITLE}`, `✅➇ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    assert.deepEqual(github.renames, [`⚠️❽ ${TITLE}`, `✅❽ ${TITLE}`]);
 });
 
 test('a brief ⚠️ between a failed check and its queued follow-up costs no rename', async () => {
@@ -264,7 +264,7 @@ test('a follow-up on a ✅ pull request renames it to 🔨 at once and back only
     await addTask('issue', 'completed');
     await addScore(8);
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
 
     const followUp = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'default' }] });
     await sync();
@@ -275,8 +275,8 @@ test('a follow-up on a ✅ pull request renames it to 🔨 at once and back only
     assert.equal(github.pull.title, `🔨 ${TITLE}`, 'still 🔨 while the checks of the follow-up run');
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
-    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`, `🔨 ${TITLE}`, `✅➇ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    assert.deepEqual(github.renames, [`✅❽ ${TITLE}`, `🔨 ${TITLE}`, `✅❽ ${TITLE}`]);
 });
 
 test('a person\'s edit to the rest of the title survives later state changes', async () => {
@@ -286,7 +286,7 @@ test('a person\'s edit to the rest of the title survives later state changes', a
     await setTaskState(implementation, 'completed');
     await addScore(9);
     await syncSettled();
-    assert.equal(github.pull.title, '✅➈ [12 by Claude Opus 5.5] A better title, by a person');
+    assert.equal(github.pull.title, '✅❾ [12 by Claude Opus 5.5] A better title, by a person');
 });
 
 test('a slot a person removed comes back on the next state change, not before', async () => {
@@ -422,7 +422,7 @@ test('the edited webhook of a ProPR rename causes no further write or work', asy
 });
 
 test('[Epic] detection accepts titles with and without the slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️➅ ', '⚠ ', '✅➇ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
+    for (const slot of ['', '🔨 ', '⚠️❻ ', '⚠ ', '✅❽ ', '🔨 3/5 ', '○ 0/5 ', '◔ 1/5 ', '◑ 3/5 ', '◕ 4/5 ', '⚠️ 4/5 ', '✅ 5/5 ']) assert.equal(isEpicPullRequestTitle(`${slot}[Epic] Plan`), true, slot);
     assert.equal(isEpicPullRequestTitle('Not an [Epic]'), false);
     assert.equal(isEpicPullRequestTitle(null), false);
 });
@@ -446,7 +446,7 @@ test('#3420: a fix pushed on a ✅ pull request stays 🔨 until the new head\'s
     await addTask('issue', 'completed');
     await addScore(8, 'head-1');
     await syncSettled();
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
     assert.match(statusLine(), /✅ Ready · review 8\/10 · checks: 1 passed/);
 
     // A follow-up fixes a finding and pushes; its run ends before GitHub created any check run for the new head.
@@ -476,14 +476,14 @@ test('#3420: a fix pushed on a ✅ pull request stays 🔨 until the new head\'s
     advance(20_000);
     await syncSettled();
     assert.match(statusLine(), /✅ Ready · review 8\/10 · checks: 13 passed/);
-    assert.deepEqual(github.renames, [`✅➇ ${TITLE}`, `🔨 ${TITLE}`, `✅➇ ${TITLE}`], 'one rename per real state change');
+    assert.deepEqual(github.renames, [`✅❽ ${TITLE}`, `🔨 ${TITLE}`, `✅❽ ${TITLE}`], 'one rename per real state change');
 });
 
 test('#3573: after a fix push the pre-fix ⚠️ and score do not come back while the new head\'s checks are absent or pending', async () => {
     await addTask('issue', 'completed');
     await addScore(6, 'head-1');
     await syncSettled();
-    assert.equal(github.pull.title, `⚠️➅ ${TITLE}`);
+    assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
 
     for (const [round, head] of ['head-2', 'head-3'].entries()) {
         const fix = await addTask('pr-comment', 'processing', { commandMode: 'fix' });
@@ -495,7 +495,7 @@ test('#3573: after a fix push the pre-fix ⚠️ and score do not come back whil
             advance(30_000);
             await syncSettled();
             assert.match(statusLine(), /🔨 Waiting for CI/, `round ${round + 1}, ${checks.length} checks`);
-            assert.equal(github.pull.title, `🔨 ${TITLE}`, `round ${round + 1}: no stale ⚠️➅`);
+            assert.equal(github.pull.title, `🔨 ${TITLE}`, `round ${round + 1}: no stale ⚠️❻`);
         }
         const review = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'review' }] });
         await sync();
@@ -506,9 +506,9 @@ test('#3573: after a fix push the pre-fix ⚠️ and score do not come back whil
         advance(30_000);
         await syncSettled();
     }
-    assert.equal(github.pull.title, `✅➇ ${TITLE}`);
-    // ⚠️➅ → 🔨 (fix) → ⚠️➅ (its review, on its head) → 🔨 (second fix) → ✅➇.
-    assert.deepEqual(github.renames, [`⚠️➅ ${TITLE}`, `🔨 ${TITLE}`, `⚠️➅ ${TITLE}`, `🔨 ${TITLE}`, `✅➇ ${TITLE}`]);
+    assert.equal(github.pull.title, `✅❽ ${TITLE}`);
+    // ⚠️❻ → 🔨 (fix) → ⚠️❻ (its review, on its head) → 🔨 (second fix) → ✅❽.
+    assert.deepEqual(github.renames, [`⚠️❻ ${TITLE}`, `🔨 ${TITLE}`, `⚠️❻ ${TITLE}`, `🔨 ${TITLE}`, `✅❽ ${TITLE}`]);
 });
 
 test('a review below the goal for the current head still needs you while its checks are pending', async () => {
@@ -517,7 +517,7 @@ test('a review below the goal for the current head still needs you while its che
     github.checkRuns = [{ name: 'unit', status: 'in_progress', conclusion: null }];
     await syncSettled();
     assert.match(statusLine(), /⚠️ Needs you · review below goal/);
-    assert.equal(github.pull.title, `⚠️➅ ${TITLE}`);
+    assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
 });
 
 test('a repository with no CI becomes ✅ once its head went without checks for the no-CI grace', async () => {
@@ -559,7 +559,7 @@ for (const order of ['blocked review first', 'blocked review last'] as const) {
         await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
         await syncSettled();
         assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review below goal 7\/10 · review 6\/10/);
-        assert.equal(github.pull.title, `⚠️➅ ${TITLE}`);
+        assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
     });
 
     test(`a round scored 8 and 9 with no blocker is ready at 8, in the title and the line (${order})`, async () => {
@@ -568,7 +568,7 @@ for (const order of ['blocked review first', 'blocked review last'] as const) {
         await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
         await syncSettled();
         assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · review 8\/10/);
-        assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+        assert.equal(github.pull.title, `✅❽ ${TITLE}`);
     });
 
     test(`a round at the goal with one reviewer's open blocker is not ready (${order})`, async () => {
@@ -577,7 +577,7 @@ for (const order of ['blocked review first', 'blocked review last'] as const) {
         await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
         await syncSettled();
         assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review has open blockers · review 8\/10/);
-        assert.equal(github.pull.title, `⚠️➇ ${TITLE}`);
+        assert.equal(github.pull.title, `⚠️❽ ${TITLE}`);
     });
 }
 
@@ -586,12 +586,12 @@ test('a later single review of a newer head replaces the round', async () => {
     const firstHead = github.pull.head.sha;
     await addReviewRound('review-1', firstHead, [{ score: 6, blockers: 1 }, { score: 8, blockers: 0 }]);
     await syncSettled();
-    assert.equal(github.pull.title, `⚠️➅ ${TITLE}`);
+    assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
 
     push(`${firstHead}-fixed`);
     github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
     await addReviewRound('review-2', github.pull.head.sha, [{ score: 9, blockers: 0 }]);
     await syncSettled();
     assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · review 9\/10/);
-    assert.equal(github.pull.title, `✅➈ ${TITLE}`);
+    assert.equal(github.pull.title, `✅❾ ${TITLE}`);
 });
