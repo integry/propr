@@ -151,6 +151,76 @@ describe('run summary selection', () => {
         assert.equal(selectRunSummary({ resultText: status, conversationLog }).summary, null);
     });
 
+    for (const [label, status] of [
+        ['a heading', '## Summary\n\nVerification is complete. Summarizing now.'],
+        ['a bullet', '- Verification is complete.\n- Summarizing now.'],
+        ['bold text', '**Summary:** Verification is complete. Summarizing now.'],
+    ]) {
+        test(`a summary announcement formatted with ${label} is not published`, async () => {
+            assert.equal(isRunStatusNote(status), true);
+            const { response } = processDockerResult(execution([
+                toolUse('t1', 'Running the related suites.'), toolResult('t1'),
+                assistantText(status), result(status),
+            ]), 'prompt', 'claude-opus-5-5', 1);
+            assert.equal(response.success, true);
+            assert.equal(response.summary, undefined);
+            assert.equal(response.commitMessage, null);
+
+            const claudeResult = agentResultToClaudeResponse({
+                success: true, model: 'claude-opus-5-5', executionTimeMs: 1000, logs: '', exitCode: 0, modelUsed: 'claude-opus-5-5',
+                modifiedFiles: ['a.ts'], commitMessage: null, summary: status,
+                conversationLog: [toolUse('t1', 'Running the related suites.'), toolResult('t1'), assistantText(status)],
+            });
+            const commitMessage = buildCommitMessage({
+                changesSummary: status, unprocessedComments: [], pullRequestNumber: 12, claudeResult, llm: 'claude-opus-5-5', authorsText: '@octo',
+            });
+            assert.equal(commitMessage.split('\n')[0], 'feat(ai): Apply follow-up changes from PR comment');
+            const body = await buildCompletionComment({ commitHash: 'abcdef1234567' }, [], {
+                changesSummary: status, commitMessage, llm: 'claude-opus-5-5', authorsText: '@octo',
+            }, claudeResult);
+            assert.doesNotMatch(body, /Summarizing now/);
+            assert.match(body, new RegExp(NO_AGENT_SUMMARY_TEXT.replace('.', '\\.')));
+        });
+    }
+
+    test('a formatted summary with substance and an announcement is kept', () => {
+        const formatted = '## Summary\n\nFixed the retry backoff in the worker. Summarizing now.';
+        assert.equal(isRunStatusNote(formatted), false);
+        assert.equal(isRunStatusNote(`## Summary\n\n${SUMMARY}`), false);
+    });
+
+    test('a new summary that opens with the notification keeps the fix it reports', async () => {
+        const fresh = 'The watcher exposed a retry bug.\n\n- Fixed retry handling in the worker.\n- Added a regression test; all suites pass.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('Watcher reported a failure'),
+            toolUse('t2', 'Looking at the failure.'), toolResult('t2'),
+            toolUse('t3'), toolResult('t3'),
+            assistantText(fresh),
+        ];
+        assert.equal(isRunStatusNote(fresh, { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('The watcher timed out; I\'ve fixed the retry handling it exposed.', { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('The watcher timed out after the suites finished, so it says nothing about the code.', { afterNotification: true }), true);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fresh)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, fresh);
+        assert.equal(response.commitMessage?.split('\n')[0], 'The watcher exposed a retry bug.');
+        // Without a reported result, the recent-message fallback and the
+        // comment's conversation summary keep the same answer.
+        assert.equal(selectRunSummary({ conversationLog }).summary, fresh);
+
+        const claudeResult = agentResultToClaudeResponse({
+            success: true, model: 'claude-opus-5-5', executionTimeMs: 1000, logs: '', exitCode: 0, modelUsed: 'claude-opus-5-5',
+            modifiedFiles: ['a.ts'], commitMessage: null, summary: undefined, conversationLog,
+        });
+        const body = await buildCompletionComment({ commitHash: 'abcdef1234567' }, [], {
+            changesSummary: '', commitMessage: 'feat(ai): Apply follow-up changes from PR comment', llm: 'claude-opus-5-5', authorsText: '@octo',
+        }, claudeResult);
+        assert.match(body, /Fixed retry handling in the worker/);
+    });
+
     for (const [label, waiting] of [
         ['a heading', '## Summary\n\nStill running (7 of ~110 suites done). Waiting for the completion notification.'],
         ['a bullet', '- Still running (7 of ~110 suites done). Waiting for the completion notification.'],

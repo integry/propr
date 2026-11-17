@@ -43,8 +43,8 @@ const UNFINISHED_WORK_SENTENCE = new RegExp([
 ].join(''), 'i');
 /** Unfinished-work notes are status messages, not reports; a longer text is a report. */
 const UNFINISHED_WORK_MAX_LENGTH = SHORT_TEXT_LENGTH;
-/** Leads of a first sentence that reports a completed change, not a notification. */
-const COMPLETED_CHANGE = /^(?:i\s+)?(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)\b/i;
+/** Leads of a sentence that reports a completed change, not a notification. */
+const COMPLETED_CHANGE = /^(?:i(?:['\u2019]ve|\s+have)?\s+)?(?:now\s+)?(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)\b/i;
 /** A short reply to a notification that says nothing needs doing. */
 const NO_ACTION = /\b(?:nothing (?:else |more |further )?(?:to do|is needed|needed|to change)|no (?:further |other )?(?:action|changes?) (?:is |are )?(?:needed|required)|(?:doesn'?t|does not) change anything|nothing (?:has )?changed)\b/i;
 
@@ -170,10 +170,37 @@ export function reportsUnfinishedWork(text: string | null | undefined): boolean 
     return sentences(prose).some(sentence => UNFINISHED_WORK_SENTENCE.test(sentence));
 }
 
-/** The first sentence reacts to a notification rather than reporting a change. */
-function opensAboutNotification(text: string): boolean {
-    const first = firstSentence(plainProse(text));
-    return ABOUT_NOTIFICATION.test(first) && !COMPLETED_CHANGE.test(first);
+/**
+ * A reply that only reacts to a notification: its first sentence is about the
+ * notification and no sentence reports a change. Opening with the notification
+ * ("The watcher exposed a retry bug.") does not discard a report of the fix
+ * that follows it.
+ */
+function isNotificationOnlyReply(text: string): boolean {
+    const prose = plainProse(text);
+    const first = firstSentence(prose);
+    if (!ABOUT_NOTIFICATION.test(first)) return false;
+    return !sentences(prose).some(sentence => COMPLETED_CHANGE.test(sentence));
+}
+
+/** Longest sentence still read as a bare status line rather than a report. */
+const STATUS_SENTENCE_MAX_LENGTH = 120;
+
+/** A sentence that only announces, completes or points back to a summary. */
+function isStatusSentence(sentence: string): boolean {
+    if (COMPLETION_ONLY.test(sentence)) return true;
+    if (sentence.length > STATUS_SENTENCE_MAX_LENGTH || /:\s*\S/.test(sentence)) return false;
+    return ANNOUNCES_SUMMARY.test(sentence) || BACK_REFERENCE.test(sentence);
+}
+
+/**
+ * Every sentence of the message's prose is a status line. Judged on the prose
+ * without Markdown, so a heading or bullet does not turn "Summarizing now."
+ * into a summary, while any substantive sentence keeps the message.
+ */
+function isStatusOnlyProse(text: string): boolean {
+    const all = sentences(plainProse(text));
+    return all.length > 0 && all.every(isStatusSentence);
 }
 
 /**
@@ -188,7 +215,8 @@ export function isRunStatusNote(text: string | null | undefined, options: { afte
     if (!trimmed) return true;
     if (reportsUnfinishedWork(trimmed)) return true;
     const short = isShort(trimmed);
-    if (options.afterNotification && (BACK_REFERENCE.test(trimmed) || opensAboutNotification(trimmed) || (short && NO_ACTION.test(trimmed)))) return true;
+    if (isStatusOnlyProse(trimmed)) return true;
+    if (options.afterNotification && (BACK_REFERENCE.test(trimmed) || isNotificationOnlyReply(trimmed) || (short && NO_ACTION.test(trimmed)))) return true;
     if (!short) return false;
     return BACK_REFERENCE.test(trimmed)
         || ANNOUNCES_SUMMARY.test(trimmed)
