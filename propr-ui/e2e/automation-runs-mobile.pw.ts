@@ -42,7 +42,7 @@ const firstPage = [running, cancelled, completed];
 const runs = [...firstPage, older];
 
 /** A run as the run list sends it: no report, its one-line preview instead. */
-const listed = ({ report, ...run }: typeof completed | typeof running) => {
+const listed = ({ report, ...run }: (typeof runs)[number]) => {
   const reportPreview = automationReportPreview(report);
   return reportPreview ? { ...run, reportPreview } : run;
 };
