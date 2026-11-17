@@ -45,13 +45,16 @@ type WorkflowRuns = Array<{ check_suite_id: number; workflow_id: number }> | Err
 async function checksOf(runs: Run[], patterns: string[] = [], workflowRuns: WorkflowRuns = new Error('unexpected workflow runs read'), reads: string[] = []) {
     return await loadPullRequestStatusChecks({
         github: {
-            request: async (route: string) => {
+            request: async (route: string, parameters: Record<string, unknown>) => {
                 reads.push(route);
                 if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') return { data: { total_count: runs.length, check_runs: runs } };
                 if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: { state: 'pending', total_count: 0, statuses: [] } };
                 if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
                     if (workflowRuns instanceof Error) throw workflowRuns;
-                    return { data: { total_count: workflowRuns.length, workflow_runs: workflowRuns } };
+                    // Paged as GitHub pages it: per_page runs from the requested page (1 when absent).
+                    const perPage = Number(parameters.per_page ?? 30);
+                    const page = Number(parameters.page ?? 1);
+                    return { data: { total_count: workflowRuns.length, workflow_runs: workflowRuns.slice((page - 1) * perPage, page * perPage) } };
                 }
                 throw new Error(`unexpected ${route}`);
             },
@@ -163,6 +166,29 @@ test('two workflows with a job of the same name: the passing one does not hide t
     assert.equal((await checksOf(independent, [], [{ check_suite_id: 2, workflow_id: 100 }])).cancelled, 1, 'cancelled suite unlisted');
     assert.equal((await checksOf([runIn(1, 30, 'test', 'cancelled'), runIn(1, 11, 'test', 'success')])).cancelled, 1, 'the passing run is older');
     assert.equal((await checksOf([run('test', 'cancelled'), run('test', 'success')])).cancelled, 1, 'no run identity');
+});
+
+test('the workflow runs are paged until the suites of a cancelled run and its replacement are resolved', async () => {
+    // The newer suite is on page one; the cancelled run's older suite only on page two.
+    const newer = Array.from({ length: 100 }, (_, index) => ({ check_suite_id: 1000 + index, workflow_id: index === 0 ? 100 : 500 + index }));
+    const older = [{ check_suite_id: 1, workflow_id: 100 }, ...Array.from({ length: 40 }, (_, index) => ({ check_suite_id: 2000 + index, workflow_id: 900 }))];
+    const superseded = [runIn(1, 10, 'test', 'cancelled'), runIn(1000, 20, 'test', 'success')];
+    const reads: string[] = [];
+    const checks = await checksOf(superseded, [], [...newer, ...older], reads);
+    assert.deepEqual({ passed: checks.passed, cancelled: checks.cancelled }, { passed: 1, cancelled: undefined });
+    assert.equal(computePullRequestStatus(facts({ checks })).state, 'ready');
+    assert.equal(reads.filter(route => route === 'GET /repos/{owner}/{repo}/actions/runs').length, 2, 'stops once both suites are resolved');
+    // A suite on page two of another workflow still leaves the cancellation.
+    const other = await checksOf(superseded, [], [...newer, { check_suite_id: 1, workflow_id: 200 }]);
+    assert.equal(other.cancelled, 1);
+    // A suite GitHub never lists is read to the end of the listing, then stays cancelled.
+    const unlistedReads: string[] = [];
+    assert.equal((await checksOf(superseded, [], [...newer, ...older.slice(1)], unlistedReads)).cancelled, 1);
+    assert.equal(unlistedReads.filter(route => route === 'GET /repos/{owner}/{repo}/actions/runs').length, 2, 'stops at the end of the listing');
+    // Resolved on page one: no second page is read.
+    const firstPageReads: string[] = [];
+    assert.equal((await checksOf(superseded, [], [{ check_suite_id: 1, workflow_id: 100 }, ...newer, ...older.slice(1)], firstPageReads)).cancelled, undefined);
+    assert.equal(firstPageReads.filter(route => route === 'GET /repos/{owner}/{repo}/actions/runs').length, 1);
 });
 
 test('a failed check name holding a workflow expression is counted, never listed', () => {

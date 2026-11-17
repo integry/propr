@@ -310,14 +310,36 @@ export function isUnexpandedCheckName(name: string | null | undefined): boolean 
     return typeof name === 'string' && name.includes('${{');
 }
 
-/** The listed GitHub Actions workflow runs of a head, as check suite id to workflow id. */
-async function loadSuiteWorkflows(github: PullRequestStatusGitHub, owner: string, repo: string, headSha: string): Promise<Map<number, number>> {
+/**
+ * Pages of a head's workflow runs read to resolve suites. GitHub lists at most
+ * 1,000 workflow runs for a `head_sha` query, so ten pages are all it returns.
+ */
+const MAX_WORKFLOW_PAGES = 10;
+
+/**
+ * The GitHub Actions workflow runs of a head, as check suite id to workflow
+ * id. Pages are read until every suite in `wanted` is resolved or the listing
+ * is exhausted: GitHub lists the newest runs first, so the older suite of a
+ * superseded run may only appear on a later page. A suite still unresolved
+ * then is not a workflow run GitHub lists for the head.
+ */
+async function loadSuiteWorkflows(
+    github: PullRequestStatusGitHub, { owner, repo, headSha }: { owner: string; repo: string; headSha: string }, wanted: ReadonlySet<number>,
+): Promise<Map<number, number>> {
     const workflows = new Map<number, number>();
-    const { data } = await github.request('GET /repos/{owner}/{repo}/actions/runs', { owner, repo, head_sha: headSha, per_page: CHECK_PAGE }) as {
-        data: { workflow_runs?: Array<{ check_suite_id?: unknown; workflow_id?: unknown }> };
-    };
-    for (const run of data.workflow_runs ?? []) {
-        if (typeof run.check_suite_id === 'number' && typeof run.workflow_id === 'number') workflows.set(run.check_suite_id, run.workflow_id);
+    let listed = 0;
+    for (let page = 1; page <= MAX_WORKFLOW_PAGES; page++) {
+        const { data } = await github.request('GET /repos/{owner}/{repo}/actions/runs', { owner, repo, head_sha: headSha, per_page: CHECK_PAGE, page }) as {
+            data: { total_count?: unknown; workflow_runs?: Array<{ check_suite_id?: unknown; workflow_id?: unknown }> };
+        };
+        const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
+        for (const run of runs) {
+            if (typeof run.check_suite_id === 'number' && typeof run.workflow_id === 'number') workflows.set(run.check_suite_id, run.workflow_id);
+        }
+        listed += runs.length;
+        if ([...wanted].every(suite => workflows.has(suite))) break;
+        const total = typeof data.total_count === 'number' ? data.total_count : listed;
+        if (listed >= total || runs.length < CHECK_PAGE) break;
     }
     return workflows;
 }
@@ -347,10 +369,11 @@ function startedAfter(later: CheckRun, earlier: CheckRun): boolean {
  * passing says nothing about the other being cancelled. Any other blocking
  * cancelled run is reported as cancelled; nothing runs it again, so it still
  * keeps the PR from being ready. The workflow of a suite is read only when
- * a replacement in another suite is possible; a failed read establishes none.
+ * a replacement in another suite is possible, page by page until those
+ * suites are resolved (loadSuiteWorkflows); a failed read establishes none.
  */
 async function cancelledCheckRuns(
-    runs: readonly CheckRun[], patterns: readonly string[], workflowsOf: () => Promise<Map<number, number>>,
+    runs: readonly CheckRun[], patterns: readonly string[], workflowsOf: (suites: ReadonlySet<number>) => Promise<Map<number, number>>,
 ): Promise<{ checkRuns: CheckRun[]; cancelledNames: string[] }> {
     const isCancelled = (run: CheckRun) => run.status === 'completed' && run.conclusion === 'cancelled';
     const kept = runs.filter(run => !isCancelled(run));
@@ -358,10 +381,20 @@ async function cancelledCheckRuns(
     const candidates = (cancelled: CheckRun) => kept.filter(other =>
         (other.name ?? '') === (cancelled.name ?? '') && suiteOf(other) !== null && suiteOf(cancelled) !== null && startedAfter(other, cancelled));
     let workflows: Map<number, number> | null = null;
-    const needsWorkflows = reported.some(cancelled => candidates(cancelled).some(other => suiteOf(other) !== suiteOf(cancelled)));
-    if (needsWorkflows) {
+    // The suites whose workflow decides a replacement: each cancelled run's and its newer same-name runs' in other suites.
+    const wanted = new Set<number>();
+    for (const cancelled of reported) {
+        const cancelledSuite = suiteOf(cancelled);
+        for (const other of candidates(cancelled)) {
+            const otherSuite = suiteOf(other);
+            if (cancelledSuite === null || otherSuite === null || otherSuite === cancelledSuite) continue;
+            wanted.add(cancelledSuite);
+            wanted.add(otherSuite);
+        }
+    }
+    if (wanted.size > 0) {
         try {
-            workflows = await workflowsOf();
+            workflows = await workflowsOf(wanted);
         } catch (error) {
             logger.warn({ error: (error as Error).message }, 'Could not read the workflow runs of a head; a cancelled check counts as unreplaced');
         }
@@ -396,7 +429,7 @@ export async function loadPullRequestStatusChecks(
     const patternList = patterns.status === 'fulfilled' ? patterns.value : [];
     const legacy = classifyLegacyStatuses(statuses.status === 'fulfilled' ? statuses.value : null, patternList);
     // Cancelled runs are no verdict (cancelledCheckRuns); the shared summary reads the rest.
-    const { checkRuns, cancelledNames } = await cancelledCheckRuns(listedRuns, patternList, () => loadSuiteWorkflows(sources.github, owner, repo, ref));
+    const { checkRuns, cancelledNames } = await cancelledCheckRuns(listedRuns, patternList, suites => loadSuiteWorkflows(sources.github, { owner, repo, headSha: ref }, suites));
     // Legacy contexts are classified above; the shared summary reads the check runs.
     const summary = summarizeCheckSignals(checkRuns, { state: 'success', totalCount: 0, statuses: [] }, patternList);
     const runFailed = summary.blockingFailed ?? [];
