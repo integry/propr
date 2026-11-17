@@ -125,6 +125,19 @@ describe('review input capacity resolution', () => {
         assert.equal(terra.contextWindow, 500000);
         assert.equal(terra.runtimeOverheadReserve, 12000 + 50000);
         assert.equal(terra.safeInputTokens, 500000 - REVIEW_OUTPUT_TOKEN_RESERVE - 62000);
+
+        // GPT-6.2 Astra uses the GPT-6 Astra window; GPT-6.2 Sol the 500K
+        // window used for GPT-6.1 Terra. GPT-6.1 Sol keeps 272K.
+        const astra62 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.2-astra' });
+        assert.equal(astra62.source, 'runtime-verified');
+        assert.equal(astra62.contextWindow, astra.contextWindow);
+        assert.equal(astra62.safeInputTokens, astra.safeInputTokens);
+        const sol62 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.2-sol' });
+        assert.equal(sol62.source, 'runtime-verified');
+        assert.equal(sol62.contextWindow, 500000);
+        assert.equal(sol62.safeInputTokens, terra.safeInputTokens);
+        const sol61 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.1-sol' });
+        assert.equal(sol61.contextWindow, 272000);
     });
 
     test('keeps documented conservative fallbacks for unknown models and runtimes', () => {

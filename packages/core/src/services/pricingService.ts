@@ -118,6 +118,15 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
         prompt: perMillion(1), completion: perMillion(5),
         cacheCreation: perMillion(1.25), cacheRead: perMillion(0.1)
     },
+    // OpenRouter list prices, verified 2026-11-17. Cached reads cost 5% of input.
+    'openai/gpt-6.2-astra': {
+        prompt: perMillion(8), completion: perMillion(40),
+        cacheCreation: perMillion(10), cacheRead: perMillion(0.4)
+    },
+    'openai/gpt-6.2-sol': {
+        prompt: perMillion(2), completion: perMillion(10),
+        cacheCreation: perMillion(2.5), cacheRead: perMillion(0.1)
+    },
     'openai/gpt-6-astra': {
         prompt: perMillion(10), completion: perMillion(50),
         cacheCreation: perMillion(12.5), cacheRead: perMillion(1)

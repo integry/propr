@@ -130,7 +130,7 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
                 type: 'codex' as const,
                 alias: 'codex',
                 enabled: true,
-                supportedModels: ['gpt-6.1-terra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
+                supportedModels: ['gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano'],
                 defaultModel: 'gpt-5.6-sol'
             }
         },
@@ -400,6 +400,21 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         const result = await resolveLlmLabel('codex-gpt61-terra');
         assert.strictEqual(result.agentAlias, 'codex');
         assert.strictEqual(result.model, 'gpt-6.1-terra');
+    });
+
+    await t.test('Codex Astra label targets GPT-6.2 Astra; versioned labels keep their models', async () => {
+        for (const [label, model] of [
+            ['codex-astra', 'gpt-6.2-astra'],
+            ['codex-gpt62-sol', 'gpt-6.2-sol'],
+            ['codex-gpt6-astra', 'gpt-6-astra'],
+            ['codex-gpt61-sol', 'gpt-6.1-sol'],
+            ['codex-gpt-6-astra', 'gpt-6-astra'],
+            ['codex-gpt-6.1-sol', 'gpt-6.1-sol'],
+        ] as const) {
+            const result = await resolveLlmLabel(label);
+            assert.strictEqual(result.agentAlias, 'codex', label);
+            assert.strictEqual(result.model, model, label);
+        }
     });
 
     await t.test('Gemini 4 Argon label resolves to the Antigravity agent', async () => {

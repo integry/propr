@@ -118,8 +118,12 @@ const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 // model maximum (GPT-6 Astra lists `max_context_window` 872,000 and the ProPR
 // catalog 1,050,000). The larger window is opt-in through
 // `model_context_window`, which ProPR never sets, so the runtime default is
-// the verified capacity.
+// the verified capacity. GPT-6.2 Astra and GPT-6.2 Sol are not in that bundled
+// catalog (signed-in accounts get them from the server); Astra 6.2 uses the
+// GPT-6 Astra window and Sol 6.2 the 500,000 window of GPT-6.1 Terra.
 const CODEX_RUNTIME_WINDOWS: Record<string, number> = {
+  'gpt-6.2-astra': 272000,
+  'gpt-6.2-sol': 500000,
   'gpt-6-astra': 272000,
   'gpt-6.1-sol': 272000,
   'gpt-6.1-terra': 500000,

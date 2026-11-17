@@ -210,12 +210,14 @@ describe('agent config migration', () => {
         assert.ok(codex.supportedModels.includes('gpt-5.6-terra'));
         assert.ok(codex.supportedModels.includes('gpt-5.6-luna'));
         assert.ok(codex.supportedModels.includes('gpt-5.5'));
+        assert.ok(codex.supportedModels.includes('gpt-6.2-astra'));
+        assert.ok(codex.supportedModels.includes('gpt-6.2-sol'));
         assert.ok(codex.supportedModels.includes('gpt-6-astra'));
         assert.ok(codex.supportedModels.includes('gpt-6.1-sol'));
         assert.ok(codex.supportedModels.includes('gpt-6.1-terra'));
         assert.ok(codex.supportedModels.includes('gpt-6-sol'));
         assert.ok(codex.supportedModels.includes('gpt-6-luna'));
-        assert.strictEqual(codex.defaultModel, 'gpt-6-astra');
+        assert.strictEqual(codex.defaultModel, 'gpt-6.2-astra');
     });
 
     test('normalizes custom images during default CLI migration', () => {
@@ -229,7 +231,7 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.strictEqual(agent.cliVersionType, 'default');
         assert.strictEqual(agent.dockerImage, 'propr/agent:latest');
-        assert.strictEqual(agent.defaultModel, 'gpt-6-astra');
+        assert.strictEqual(agent.defaultModel, 'gpt-6.2-astra');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.codex);
     });
 
@@ -246,13 +248,33 @@ describe('agent config migration', () => {
         assert.ok(agent.supportedModels.includes('gpt-5.6-sol'));
         assert.ok(agent.supportedModels.includes('gpt-5.6-terra'));
         assert.ok(agent.supportedModels.includes('gpt-5.6-luna'));
+        assert.ok(agent.supportedModels.includes('gpt-6.2-astra'));
+        assert.ok(agent.supportedModels.includes('gpt-6.2-sol'));
         assert.ok(agent.supportedModels.includes('gpt-6-astra'));
         assert.ok(agent.supportedModels.includes('gpt-6.1-sol'));
         assert.ok(agent.supportedModels.includes('gpt-6.1-terra'));
         assert.ok(agent.supportedModels.includes('gpt-6-sol'));
         assert.ok(agent.supportedModels.includes('gpt-6-luna'));
-        assert.strictEqual(agent.defaultModel, 'gpt-6-astra');
+        assert.strictEqual(agent.defaultModel, 'gpt-6.2-astra');
         assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.codex);
+    });
+
+    test('keeps Codex agents that explicitly default to GPT-6 Astra or GPT-6.1 Sol', () => {
+        for (const savedDefault of ['gpt-6-astra', 'gpt-6.1-sol']) {
+            const agent = createAgent({
+                type: 'codex',
+                supportedModels: ['gpt-6-astra', 'gpt-6.1-sol'],
+                defaultModel: savedDefault,
+                cliVersionType: 'default',
+                cliVersionResolved: AGENT_DEFAULT_VERSIONS.codex
+            });
+
+            migrateAgentConfig(agent);
+            assert.strictEqual(agent.defaultModel, savedDefault);
+            assert.ok(agent.supportedModels.includes('gpt-6.2-astra'));
+            assert.ok(agent.supportedModels.includes('gpt-6.2-sol'));
+            assert.ok(agent.supportedModels.includes(savedDefault));
+        }
     });
 
     test('fills in a missing Docker image instead of crashing', () => {

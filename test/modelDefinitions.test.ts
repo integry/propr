@@ -39,6 +39,11 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
 
 test('current GPT-6 Codex models are in the catalog with runtime requirements', () => {
     const expectedModels = [
+        // GPT-6.2 Astra and Sol are absent from the Codex 0.169.0 bundled
+        // catalog but run on it for signed-in accounts (verified 2026-11-17)
+        ['gpt-6.2-astra', 'llm-codex-astra', '0.169.0'],
+        ['gpt-6.2-sol', 'llm-codex-gpt62-sol', '0.169.0'],
+        ['gpt-6-astra', 'llm-codex-gpt6-astra', '0.153.1'],
         ['gpt-6.1-sol', 'llm-codex-gpt61-sol', '0.153.0'],
         // GPT-6.1 Terra first ships in the models.json bundled with Codex 0.165.0
         ['gpt-6.1-terra', 'llm-codex-gpt61-terra', '0.165.0'],
@@ -191,12 +196,26 @@ test('retired OpenCode free models route to a current catalog model', () => {
     assert.ok(!agentSupportsSavedModel({ type: 'claude', supportedModels: agent.supportedModels }, 'opencode-ling-3.0-flash-fin-free'));
 });
 
-test('GPT-6 Astra is the preferred Codex default', () => {
-    assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6-astra');
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6-astra');
-    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-astra');
-    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.openRouterId, 'openai/gpt-6-astra');
-    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
+test('GPT-6.2 Astra is the preferred Codex default', () => {
+    assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6.2-astra');
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6.2-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.githubLabel, 'llm-codex-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.shortAlias, 'astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.openRouterId, 'openai/gpt-6.2-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.minAgentVersion, '0.169.0');
+});
+
+test('GPT-6.2 Sol supersedes GPT-6.1 Sol; GPT-6 Astra and GPT-6.1 Sol stay as legacy entries', () => {
+    const ids = CODEX_MODELS.map(model => model.id);
+    assert.strictEqual(ids[1], 'gpt-6.2-sol');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-sol']?.shortAlias, 'gpt62-sol');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.shortAlias, 'gpt6-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-gpt6-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.1-sol']?.shortAlias, 'gpt61-sol');
+    assert.ok(ids.indexOf('gpt-6-astra') > ids.indexOf('gpt-6-luna'));
+    assert.ok(ids.indexOf('gpt-6.1-sol') > ids.indexOf('gpt-6-luna'));
+    assert.strictEqual(CODEX_MODELS.filter(model => model.shortAlias === 'astra').length, 1);
+    assert.ok(!ids.some(id => id.startsWith('gpt-6.2') && id.endsWith('-pro')));
 });
 
 test('Claude Code CLI default supports every catalog model', () => {

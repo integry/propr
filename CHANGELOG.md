@@ -182,6 +182,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consolidations as repository To-Dos. The default review guidance now also
   asks reviewers to check new helpers for duplicates and flag them under the
   `complexity` category when the review uses it.
+- **GPT-6.2 Astra and GPT-6.2 Sol**: GPT-6.2 Astra (`gpt-6.2-astra`, $8 / $40
+  per million tokens) is the new Codex default, the target of the `astra`
+  alias and the `llm-codex-astra` label, and the recommended Codex model for
+  plan generation and PR review. GPT-6.2 Sol (`gpt-6.2-sol`, alias
+  `gpt62-sol`, label `llm-codex-gpt62-sol`, $2 / $10) is the recommended Sol.
+  Both need Codex 0.169.0 or later, the bundled version: they are not in its
+  bundled model catalog, but signed-in accounts take the model list from the
+  server. Reviews use a 272K Codex runtime window for GPT-6.2 Astra and 500K
+  for GPT-6.2 Sol. GPT-6 Astra (`gpt6-astra`, `llm-codex-gpt6-astra`) and
+  GPT-6.1 Sol (`gpt61-sol`, `llm-codex-gpt61-sol`) stay selectable as legacy
+  models; agents, saved selections and labels that name them explicitly keep
+  using them.
 - **Claude Fable 5.2 and GPT-6.1 Terra**: Claude Fable 5.2 (`claude-fable-5-2`,
   label `llm-claude-fable52`, 1M context, $8 / $40 per million tokens with
   cache reads at 2.5% of input) is the new target of the plain `fable` and
