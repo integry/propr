@@ -19,7 +19,8 @@ import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import { timeApiStage } from '../apiPerformanceTiming.js';
-import { validatePositiveInteger, validateRepositoryFilter, validateStringLength } from './validation.js';
+import { validatePositiveInteger, validateStringLength } from './validation.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import {
   phaseLabel,
   RECENT_COMPLETION_WINDOW_HOURS,
@@ -58,6 +59,8 @@ export interface DashboardRoutesDeps {
   narrativeModel?: NarrativeModel;
   /** The experimental dashboard AI summary is opt-in; production reads `dashboard_summary_enabled`. */
   isSummaryEnabled?: () => Promise<boolean>;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
 }
 
 export interface ActiveItem {
@@ -109,16 +112,6 @@ export interface OutcomeItem {
   occurredAt: string;
 }
 
-function readRepositoryFilter(req: Request, res: Response): string | null {
-  const repository = typeof req.query.repository === 'string' ? req.query.repository : 'all';
-  const validation = validateRepositoryFilter(repository);
-  if (!validation.valid) {
-    res.status(400).json({ error: validation.error });
-    return null;
-  }
-  return repository || 'all';
-}
-
 export function toOutcomeUpdate(row: OutcomeUpdate) {
   return { id: `task:${row.taskId}:completed:${row.completionId}`, taskId: row.taskId,
     repository: row.repository, issueNumber: row.issueNumber, prNumber: row.prNumber,
@@ -142,6 +135,9 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
     }));
   });
   const now = deps.now ?? (() => new Date());
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
+  const readRepositoryFilter = (req: Request, res: Response): Promise<string | null> =>
+    repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: `/api/dashboard${req.path ?? ''}` });
   // Loaded lazily so a dashboard read only reaches the live-details module
   // (and its provider parsers) when there is running work to project. A read
   // that fails rejects, and one that succeeds but finds no output at all is an
@@ -242,7 +238,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   }
 
   async function getNarrative(req: Request, res: Response): Promise<void> {
-    const repository = readRepositoryFilter(req, res);
+    const repository = await readRepositoryFilter(req, res);
     if (repository === null) return;
     res.setHeader('Cache-Control', 'no-store');
     try {
@@ -264,7 +260,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   }
 
   async function getSummary(req: Request, res: Response): Promise<void> {
-    const repository = readRepositoryFilter(req, res);
+    const repository = await readRepositoryFilter(req, res);
     if (repository === null) return;
     try {
       const work = await timeApiStage('dashboard.summary', () =>
@@ -284,7 +280,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   }
 
   async function getAttention(req: Request, res: Response): Promise<void> {
-    const repository = readRepositoryFilter(req, res);
+    const repository = await readRepositoryFilter(req, res);
     if (repository === null) return;
     try {
       const work = await timeApiStage('dashboard.attention', () =>
@@ -306,7 +302,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   }
 
   async function getActive(req: Request, res: Response): Promise<void> {
-    const repository = readRepositoryFilter(req, res);
+    const repository = await readRepositoryFilter(req, res);
     if (repository === null) return;
     try {
       const [work, goals] = await timeApiStage('dashboard.active', () => Promise.all([
@@ -357,7 +353,7 @@ export function createDashboardRoutes(deps: DashboardRoutesDeps) {
   }
 
   async function getOutcomes(req: Request, res: Response): Promise<void> {
-    const repository = readRepositoryFilter(req, res);
+    const repository = await readRepositoryFilter(req, res);
     if (repository === null) return;
 
     res.setHeader('Cache-Control', 'no-store');

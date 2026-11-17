@@ -84,6 +84,8 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     fireEvent.click(within(rowOf(view, 'notion')).getByRole('button', { name: 'Reconnect' }));
     expect(await screen.findByText(/Finish signing in to notion in the new tab/)).toBeInTheDocument();
     // Back in Settings before finishing consent: the original connection is still the one shown.
+    // The notice can be in the DOM before React runs the effect that adds the focus listener; flush it first.
+    await act(async () => {});
     const reads = vi.mocked(getExtensionLibrary).mock.calls.length;
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     await waitFor(() => expect(vi.mocked(getExtensionLibrary).mock.calls.length).toBe(reads + 1));
@@ -94,7 +96,8 @@ describe('OAuth MCP servers in Skills & MCP servers', () => {
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     await waitFor(() => expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('Granted scopes: write:docs'));
     expect(within(rowOf(view, 'notion')).getByTestId('extension-oauth-connection')).toHaveTextContent('by administrator 7');
-    // Finished: the listeners are gone.
+    // Finished: the listeners are gone (flush the effect cleanup that removes them).
+    await act(async () => {});
     const settled = vi.mocked(getExtensionLibrary).mock.calls.length;
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     expect(vi.mocked(getExtensionLibrary).mock.calls.length).toBe(settled);

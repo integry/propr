@@ -73,7 +73,7 @@ const { getPendingPrCommentsKey } = await import('../packages/core/src/utils/con
 
 // The plan issues endpoint, served from this database through the real core exports.
 await mock.module('@propr/core', { namedExports: { ...await import('../packages/core/src/index.ts') } });
-const { createGetIssuesHandler } = await import('../packages/api/routes/planIssueHandlers.ts');
+const { createGetIssuesHandler } = await import('../packages/api/routes/planIssueListHandler.ts');
 
 await runMigrations();
 const stateManager = new WorkerStateManager({ keyPrefix: 'test:plan-refinement:' });

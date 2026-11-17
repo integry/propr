@@ -9,6 +9,7 @@ import { markMergedListPullRequests } from '../services/pullRequestMergeState.js
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
 import { narrowToTaskPage, type TaskSelection } from './taskGrouping.js';
 import { applyAssigneeSelection, loadPageAssignees, resolveAssigneeSelection, selectsNothing, type AssigneeSelection } from './taskAssignees.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -186,7 +187,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     `);
 
   if (repository && repository !== 'all') {
-    baseQuery.where('t.repository', repository);
+    whereRepositoryMatches(baseQuery, 't.repository', repository);
   }
   if (excludeMerged) {
     // A task was included by the previous left join whenever it had no linked

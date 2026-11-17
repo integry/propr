@@ -2,7 +2,7 @@ import { compileEgressAllowlist, normalizeEgressHost } from '../network/egressAl
 import type { ExtensionGrantNetwork } from './extensionProfileStore.js';
 import dns from 'node:dns/promises';
 import https from 'node:https';
-import { isIP, BlockList } from 'node:net';
+import { isIP, BlockList, type LookupFunction } from 'node:net';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { isNonPublicAddress } from '../network/egressProxy.js';
 
@@ -30,6 +30,19 @@ export function extensionEndpoint(value: string): URL {
   if (isIP(host) && !extensionPublicAddress(host)) throw new Error('MCP endpoint must be public');
   if (/^(localhost|.*\.localhost|.*\.local|metadata\.google\.internal)$/i.test(host)) throw new Error('MCP endpoint must be public');
   return url;
+}
+/**
+ * A socket `lookup` that answers every query with the one vetted address, so
+ * the connection can only be made to it. Node asks with `all: true` (and then
+ * expects a list) whenever it may race address families, which is the default
+ * for named hosts since Node 20; answering that with a single address fails
+ * every request with ERR_INVALID_IP_ADDRESS.
+ */
+export function pinnedLookup(address: string, family: number): LookupFunction {
+  return (_host, options, callback) => {
+    if (options?.all) callback(null, [{ address, family }]);
+    else callback(null, address, family);
+  };
 }
 export type ExtensionLookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
 export interface ExtensionEndpointPolicy { network?: ExtensionGrantNetwork; internalAddresses?: string[]; onDecision?: (host: string, allowed: boolean) => Promise<void> }
@@ -76,7 +89,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     const request = https.request(destination, {
       method: 'POST', agent: false,
       servername: isIP(host) ? undefined : host,
-      lookup: (_host, _options, callback) => callback(null, address, family),
+      lookup: pinnedLookup(address, family),
       headers: { Host: url.host, 'Content-Type': 'application/json', Accept: 'application/json', 'MCP-Protocol-Version': '2025-03-26', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     }, response => {
       if (response.statusCode === 202 || response.statusCode === 204) { response.destroy(); resolve(null); return; }

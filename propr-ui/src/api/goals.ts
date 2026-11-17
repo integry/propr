@@ -62,7 +62,6 @@ export interface Goal {
   attachments: GoalAttachment[];
   baseBranch: string | null;
   branchName: string | null;
-  worktreePath: string | null;
   agent: { id: string; alias: string; type: string };
   requestedModel: string;
   effectiveModel: string | null;
@@ -159,8 +158,39 @@ export const getGoalCapabilities = async (recheck = false) =>
   request<{ agents: GoalCapability[] }>(`/api/goals/capabilities${recheck ? '?recheck=true' : ''}`);
 // The reads accept a signal so a push-driven caller can cut off a request whose
 // scope has already moved on (a different repository filter, another goal).
-export const listGoals = async (options: { signal?: AbortSignal } = {}) =>
-  request<{ goals: Goal[] }>('/api/goals', { signal: options.signal });
+/** The server's largest goal page. */
+export const GOAL_LIST_PAGE_SIZE = 200;
+/**
+ * Every goal of the caller, newest activity first. The list is paged on the
+ * server, so this walks explicit pages (in the server's stable creation order)
+ * until the server reports no continuation, and then orders by the latest
+ * update, as the console shows it. A continuation that does not advance, or
+ * that follows an empty page, cannot be walked to completion, so it fails the
+ * read instead of passing a partial list off as every goal.
+ */
+export const listGoals = async (options: { signal?: AbortSignal } = {}): Promise<{ goals: Goal[] }> => {
+  const goals: Goal[] = [];
+  const seen = new Set<string>();
+  let offset: number | null = 0;
+  while (offset !== null) {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(GOAL_LIST_PAGE_SIZE) });
+    const response: { goals?: Goal[]; nextOffset?: number | null } =
+      await request<{ goals?: Goal[]; nextOffset?: number | null }>(`/api/goals?${params.toString()}`, { signal: options.signal });
+    const page = response.goals ?? [];
+    for (const goal of page) {
+      if (seen.has(goal.id)) continue;
+      seen.add(goal.id);
+      goals.push(goal);
+    }
+    const next = response.nextOffset;
+    if (next === undefined || next === null) break;
+    if (typeof next !== 'number' || !Number.isSafeInteger(next) || next <= offset || page.length === 0) {
+      throw new Error('The goal list could not be read completely: the server returned an invalid continuation.');
+    }
+    offset = next;
+  }
+  return { goals: goals.sort((left, right) => (right.updatedAt ?? '').localeCompare(left.updatedAt ?? '')) };
+};
 export const getGoal = async (id: string, options: { signal?: AbortSignal } = {}) =>
   request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}`, { signal: options.signal });
 export const getGoalVisualPreviews = async (id: string) => {

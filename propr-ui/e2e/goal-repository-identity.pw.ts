@@ -20,7 +20,7 @@ const goal = (repository: string) => ({
   title: 'Add the requested four-line Markdown file',
   objective: 'Add exactly the requested four lines to notes.md and open a draft PR.',
   launchStrategy: 'direct', initialPrompt: '/goal Add notes', attachments: [],
-  baseBranch: null, branchName: 'goal/notes', worktreePath: '/tmp/goal-notes',
+  baseBranch: null, branchName: 'goal/notes',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' },
   requestedModel: 'gpt-6-astra', effectiveModel: 'gpt-6-astra',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: 'completed',

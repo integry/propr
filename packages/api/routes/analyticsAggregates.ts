@@ -20,6 +20,7 @@ import {
   type AnalyticsWindow,
 } from './analyticsWindow.js';
 import { hasColumn } from './analyticsSchema.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 
 export interface TaskSummary {
   /** Tasks worked on in the window — pull requests, as `groupTaskRuns` groups them — goal tasks aside. */
@@ -39,7 +40,7 @@ export interface TaskSummary {
 }
 
 const scopeToRepository = <T extends Knex.QueryBuilder>(query: T, column: string, repository: string): T => {
-  if (repository && repository !== 'all') query.where(column, repository);
+  if (repository && repository !== 'all') whereRepositoryMatches(query, column, repository);
   return query;
 };
 
@@ -252,7 +253,7 @@ export async function loadRecordedSpend(
   const query = db('llm_executions as e').whereNotNull('e.cost_usd');
   whereCreatedWithin(query, 'e.start_time', window);
   if (repository && repository !== 'all') {
-    query.join('tasks as t', 't.task_id', 'e.task_id').where('t.repository', repository);
+    whereRepositoryMatches(query.join('tasks as t', 't.task_id', 'e.task_id'), 't.repository', repository);
   }
   const row = await query
     .sum({ cost: 'e.cost_usd' })

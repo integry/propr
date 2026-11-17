@@ -18,6 +18,7 @@ import {
 import crypto from 'crypto';
 import type { AttributedUser } from '@propr/shared';
 import { isDemoMode } from '../demoMode.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import { creatorFrom, projectCreator, projectCreators, rememberCreator } from '../services/creatorProjection.js';
 
 interface CreateCategoryRequest {
@@ -90,13 +91,14 @@ function toTodoDomain(record: RepoTodoRecord, creators: CreatorProfiles = NO_CRE
  * and resolve every creator with one profile read. A null owner is the demo's unscoped read.
  */
 async function getCategoryRecords(ownerId: string | null, repository: string): Promise<RepoTodoCategoryRecord[]> {
-  const query = db<RepoTodoCategoryRecord>('repo_todo_categories').where('repository', repository);
+  // Rows keep the spelling they were created with; `repository` is the configured one.
+  const query = db<RepoTodoCategoryRecord>('repo_todo_categories').whereRaw('repository = ? COLLATE NOCASE', [repository]);
   if (ownerId === null) return query.orderBy('order_index', 'asc').orderBy('name', 'asc').orderBy('category_id', 'asc');
   return query.andWhere('user_id', ownerId).orderBy('order_index', 'asc');
 }
 
 async function getTodoRecords(ownerId: string | null, repository: string): Promise<RepoTodoRecord[]> {
-  const query = db<RepoTodoRecord>('repo_todos').where('repository', repository);
+  const query = db<RepoTodoRecord>('repo_todos').whereRaw('repository = ? COLLATE NOCASE', [repository]);
   if (ownerId === null) return query.orderBy('order_index', 'asc').orderBy('category_id', 'asc').orderBy('todo_id', 'asc');
   return query.andWhere('user_id', ownerId).orderBy('category_id', 'asc').orderBy('order_index', 'asc');
 }
@@ -126,7 +128,12 @@ function ownerScope(userId: string): string | null {
   return isDemoMode() ? null : userId;
 }
 
-export function createRepoTodoRoutes() {
+export function createRepoTodoRoutes(deps: { repositoryScope?: RepositoryScopeResolver } = {}) {
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
+  /** The configured spelling of a configured, visible repository; null once a failure was answered. */
+  const scoped = (req: Request, res: Response, repository: string, context: string) =>
+    repositoryScopeOrRespond(req, res, repository, { resolver: repositoryScope, allowAll: false, context });
+
   // ============================================================================
   // Category Endpoints
   // ============================================================================
@@ -149,7 +156,10 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const categories = await categoriesWithCreators(await getCategoryRecords(ownerScope(req.user.id), repository));
+      const canonical = await scoped(req, res, repository, '/api/repos/todos/categories');
+      if (canonical === null) return;
+
+      const categories = await categoriesWithCreators(await getCategoryRecords(ownerScope(req.user.id), canonical));
       res.json({ categories });
     } catch (error) {
       console.error('Error getting categories:', error);
@@ -180,11 +190,14 @@ export function createRepoTodoRoutes() {
         return;
       }
 
+      const canonical = await scoped(req, res, repository, '/api/repos/todos/categories');
+      if (canonical === null) return;
+
       const categoryId = crypto.randomUUID();
       const category = await createCategory({
         categoryId,
         userId: req.user.id,
-        repository,
+        repository: canonical,
         name,
         orderIndex,
       });
@@ -279,7 +292,10 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      await batchReorderCategories(req.user.id, repository, items);
+      const canonical = await scoped(req, res, repository, '/api/repos/todos/categories/reorder');
+      if (canonical === null) return;
+
+      await batchReorderCategories(req.user.id, canonical, items);
       res.json({ success: true });
     } catch (error) {
       console.error('Error reordering categories:', error);
@@ -309,7 +325,10 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const todos = await todosWithCreators(await getTodoRecords(ownerScope(req.user.id), repository));
+      const canonical = await scoped(req, res, repository, '/api/repos/todos');
+      if (canonical === null) return;
+
+      const todos = await todosWithCreators(await getTodoRecords(ownerScope(req.user.id), canonical));
       res.json({ todos });
     } catch (error) {
       console.error('Error getting todos:', error);
@@ -373,11 +392,14 @@ export function createRepoTodoRoutes() {
         return;
       }
 
+      const canonical = await scoped(req, res, repository, '/api/repos/todos');
+      if (canonical === null) return;
+
       const todoId = crypto.randomUUID();
       const todo = await createTodo({
         todoId,
         userId: req.user.id,
-        repository,
+        repository: canonical,
         categoryId,
         content,
         orderIndex,
@@ -478,7 +500,10 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      await batchReorderTodos(req.user.id, repository, items);
+      const canonical = await scoped(req, res, repository, '/api/repos/todos/reorder');
+      if (canonical === null) return;
+
+      await batchReorderTodos(req.user.id, canonical, items);
       res.json({ success: true });
     } catch (error) {
       console.error('Error reordering todos:', error);

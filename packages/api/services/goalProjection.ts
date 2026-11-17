@@ -309,6 +309,7 @@ export async function serializeGoal(
   const attention = await goalAttention(db, row.owner_id, row);
   const createdBy = goalCreator(row, options.creators ?? await loadGoalCreators([row]));
   const optionalInputs: { inputs?: GoalInputProjection[] } = includeInputs ? { inputs } : {};
+  // Host paths (the goal's worktree on the API host) are never part of this member-visible projection.
   const projection = {
     id: row.goal_id,
     owner: row.owner_login,
@@ -320,7 +321,6 @@ export async function serializeGoal(
     attachments: publicGoalAttachments(parseGoalAttachments(row.attachments)),
     baseBranch: row.base_branch,
     branchName: row.branch_name,
-    worktreePath: row.worktree_path,
     agent: { id: row.agent_id, alias: row.agent_alias, type: row.agent_type },
     requestedModel: row.requested_model,
     effectiveModel: row.effective_model,

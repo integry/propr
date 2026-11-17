@@ -80,3 +80,81 @@ test('a graph execution is headed by its first ready issue, keeping publication 
   assert.equal(none.order, null);
   assert.deepEqual(none.order === null ? [...none.waiting] : [], [[10, [99]], [30, [10]]]);
 });
+
+/** The reported states of a schedule: `[issue, schedule state, waitingOn]` per issue. */
+function report(rows: EpicScheduleIssue[], options: { limit?: number | null; inOrder?: boolean } = {}) {
+  const schedule = scheduleEpicIssues({ issues: rows, ...options });
+  return { schedule, states: rows.map(row => [row.issueNumber, epicScheduleState(row, schedule), schedule.waiting.get(row.issueNumber) ?? []]) };
+}
+
+test('sequential: an issue behind a skipped predecessor waits on the unfinished issue further up the chain', () => {
+  const items = [{ issueNumber: 3557 }, { issueNumber: 3558 }, { issueNumber: 3559 }, { issueNumber: 3560 }];
+  const edges = executionEdges('sequential', items);
+  const chain = (states: EpicScheduleIssueState[], inFlight: boolean[]) => items.map((item, position) => ({ ...item, position,
+    state: states[position], dependsOn: edges[position], inFlight: inFlight[position], satisfiesDependents: true }));
+  // The head is in flight: 3558 waits on it, and 3560 (behind the skipped 3559) waits on 3558, not ready.
+  const running = report(chain(['dispatched', 'pending', 'skipped', 'pending'], [true, false, false, false]), { limit: 1, inOrder: true });
+  assert.deepEqual(running.states, [[3557, 'in_flight', []], [3558, 'waiting', [3557]], [3559, 'skipped', []], [3560, 'waiting', [3558]]]);
+  assert.deepEqual(running.schedule.ready, []);
+  // The head becomes blocked without settling: its slot frees, yet 3560 still never starts before 3558.
+  for (const options of [{ limit: 1, inOrder: true }, { limit: 1 }, { limit: null }]) {
+    const blocked = report(chain(['blocked', 'pending', 'skipped', 'pending'], [false, false, false, false]), options);
+    assert.deepEqual(blocked.schedule.start, [], JSON.stringify(options));
+    assert.deepEqual(blocked.states, [[3557, 'blocked', []], [3558, 'waiting', [3557]], [3559, 'skipped', []], [3560, 'waiting', [3558]]]);
+  }
+  // Once 3558 is done, 3560 is next.
+  assert.deepEqual(report(chain(['done', 'done', 'skipped', 'pending'], [false, false, false, false]), { limit: 1, inOrder: true }).schedule.start, [3560]);
+  // Consecutive skips are followed all the way up.
+  const skips = report(chain(['blocked', 'skipped', 'skipped', 'pending'], [false, false, false, false]), { limit: 1, inOrder: true });
+  assert.deepEqual(skips.states[3], [3560, 'waiting', [3557]]);
+});
+
+test('sequential: an issue done out of order does not let a later issue overtake an unfinished earlier one', () => {
+  const items = [{ issueNumber: 1 }, { issueNumber: 2 }, { issueNumber: 3 }];
+  const edges = executionEdges('sequential', items);
+  const rows = items.map((item, position) => ({ ...item, position, state: (['blocked', 'done', 'pending'] as const)[position],
+    dependsOn: edges[position], inFlight: false, satisfiesDependents: true }));
+  const { schedule, states } = report(rows, { limit: 1, inOrder: true });
+  assert.deepEqual(schedule.start, []);
+  assert.deepEqual(states[2], [3, 'waiting', [1]]);
+  // Without the in-order guard (a graph), a done prerequisite is enough.
+  assert.deepEqual(report(rows, { limit: 1 }).schedule.start, [3]);
+});
+
+test('graph: a prerequisite skipped as satisfying stands in for its own unfinished prerequisites, transitively', () => {
+  // 1 -> 2 (skipped, satisfies) -> 3 (skipped, satisfies) -> 4; 5 independent.
+  const graph = (head: EpicScheduleIssueState, inFlight: boolean): EpicScheduleIssue[] => [
+    { issueNumber: 1, position: 0, state: head, dependsOn: [], inFlight },
+    { issueNumber: 2, position: 1, state: 'skipped', dependsOn: [1], inFlight: false, satisfiesDependents: true },
+    { issueNumber: 3, position: 2, state: 'skipped', dependsOn: [2], inFlight: false, satisfiesDependents: true },
+    { issueNumber: 4, position: 3, state: 'pending', dependsOn: [3], inFlight: false },
+    { issueNumber: 5, position: 4, state: 'pending', dependsOn: [], inFlight: false },
+  ];
+  const running = report(graph('dispatched', true), { limit: 2 });
+  assert.deepEqual(running.schedule.start, [5]);
+  assert.deepEqual(running.states[3], [4, 'waiting', [1]]);
+  // The head becomes blocked: 4 still waits on it, and only the independent issue starts.
+  const blocked = report(graph('blocked', false), { limit: 2 });
+  assert.deepEqual(blocked.schedule.start, [5]);
+  assert.deepEqual(blocked.states[3], [4, 'waiting', [1]]);
+  assert.deepEqual(report(graph('done', false), { limit: 2 }).schedule.start, [4, 5]);
+  // An unmerged prerequisite outside the execution behind a satisfying skip is named too.
+  const outside: EpicScheduleIssue[] = [
+    { issueNumber: 2, position: 0, state: 'skipped', dependsOn: [99], inFlight: false, satisfiesDependents: true },
+    { issueNumber: 4, position: 1, state: 'pending', dependsOn: [2], inFlight: false },
+  ];
+  assert.deepEqual([...scheduleEpicIssues({ issues: outside }).waiting], [[4, [99]]]);
+  assert.deepEqual(scheduleEpicIssues({ issues: outside, mergedOutside: [99] }).start, [4]);
+  // A skip that does not satisfy its dependents is still the one named.
+  const unsatisfied = graph('pending', false).map(issue => issue.issueNumber === 3 ? { ...issue, satisfiesDependents: false } : issue);
+  assert.deepEqual(scheduleEpicIssues({ issues: unsatisfied }).waiting.get(4), [3]);
+});
+
+test('a dependency cycle through satisfying skips terminates', () => {
+  const cycle: EpicScheduleIssue[] = [
+    { issueNumber: 1, position: 0, state: 'skipped', dependsOn: [2], inFlight: false, satisfiesDependents: true },
+    { issueNumber: 2, position: 1, state: 'skipped', dependsOn: [1], inFlight: false, satisfiesDependents: true },
+    { issueNumber: 3, position: 2, state: 'pending', dependsOn: [1], inFlight: false },
+  ];
+  assert.deepEqual(scheduleEpicIssues({ issues: cycle }).start, [3]);
+});

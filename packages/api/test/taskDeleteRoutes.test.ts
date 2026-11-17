@@ -8,6 +8,7 @@ import express from 'express';
 import type { Request, Response as ExpressResponse } from 'express';
 import knex, { type Knex } from 'knex';
 import { resetConfiguredDemoMode } from '../demoMode.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDbFilename = process.env.DB_FILENAME;
@@ -118,7 +119,7 @@ async function createDeleteApp(database: Knex, authenticated: boolean): Promise<
   });
   app.use('/api', ensureAuthenticated);
 
-  const taskRoutes = createTaskRoutes({ db: database });
+  const taskRoutes = createTaskRoutes({ repositoryScope: unscopedRepositoryResolver, db: database });
   for (const [method, pathPattern, ...handlers] of createTaskDeleteRouteEntries({ taskRoutes })) {
     app[method](pathPattern, ...handlers);
   }

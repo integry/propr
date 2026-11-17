@@ -29,6 +29,15 @@ import {
   type TaskPushFailure,
 } from "../api/index.js";
 
+/** The largest task page the server returns for one request. */
+export const TASK_LIST_MAX_LIMIT = 200;
+
+function parseTaskListLimit(value: string): number {
+  const limit = parsePositiveInteger(value, "Limit");
+  if (limit > TASK_LIST_MAX_LIMIT) throw new Error(`Limit must be at most ${TASK_LIST_MAX_LIMIT}.`);
+  return limit;
+}
+
 const TASK_LIST_STATUSES = [
   "pending",
   "queued",
@@ -583,7 +592,7 @@ Examples:
       "Filter by status (pending, queued, processing, completed, failed, cancelled, or all)",
       "all"
     )
-    .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
+    .option("-l, --limit <limit>", `Maximum number of tasks to show (1-${TASK_LIST_MAX_LIMIT})`, "50")
     .option("--search <term>", "Search tasks by term")
     .option("--assignee <assignee>", "Filter by assignee: all, me, unassigned, or comma-separated GitHub logins")
     .option("-j, --json", "Output as JSON for programmatic use")
@@ -638,7 +647,7 @@ Examples:
             listOptions.repository = project;
           }
 
-          listOptions.limit = parsePositiveInteger(options.limit, "Limit");
+          listOptions.limit = parseTaskListLimit(options.limit);
 
           if (options.search) {
             listOptions.search = options.search;
@@ -707,7 +716,7 @@ Examples:
     .option("-s, --state <state>", "Fetch one authoritative lifecycle state instead of all active states")
     .option("--status <state>", "Alias for --state")
     .option("-p, --project <project>", "Filter active tasks by project (owner/repo)")
-    .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
+    .option("-l, --limit <limit>", `Maximum number of tasks to show (1-${TASK_LIST_MAX_LIMIT})`, "50")
     .option("-j, --json", "Output the documented version 1 inspection JSON shape")
     .addHelpText("after", `
 Without a task ID, this command fetches each active state from the server:
@@ -771,7 +780,7 @@ Examples:
         }
 
         const project = resolveOptionalProject(options);
-        const limit = parsePositiveInteger(options.limit, "Limit");
+        const limit = parseTaskListLimit(options.limit);
         const results = await Promise.all(states.map((state) => listTasks({
           status: state,
           repository: project,

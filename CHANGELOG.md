@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bounded goal and task pages**: `GET /api/goals` without a `limit` now
+  returns one page of 50 goals (at most 200 per request; follow
+  `nextOffset`). Every goal page, including that first one, is now newest
+  created first, so following `nextOffset` neither skips nor repeats a goal;
+  the read without paging parameters no longer sorts by latest update.
+  `GET /api/tasks` accepts at most `limit=200`. The web
+  console walks the goal pages, and `propr task list --limit` rejects values
+  above 200.
 - **Bundled Claude Code 2.1.326, Codex 0.169.0, Antigravity CLI 1.5.10 and
   OpenCode CLI 1.19.6**: the `propr/agent` image moves from Claude Code
   2.1.325, Codex 0.168.0, Antigravity CLI 1.5.9 and OpenCode CLI 1.19.5.
@@ -327,6 +335,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Repository filters only reach repositories this instance configures**:
+  `GET /api/pull-requests/:number/readiness` is served only for an enabled
+  configured repository the caller can read on GitHub, so a member can no
+  longer spend the instance's GitHub quota on arbitrary public repositories,
+  and it echoes the configured repository name. The `repository` filter of
+  the stats, cost, review-score, dashboard, task, pull request score, to-do,
+  media, planner draft and goal list routes matches a configured repository
+  in any capitalization (`integry/PROPR` finds `integry/propr`) and answers
+  404 `REPOSITORY_NOT_ACCESSIBLE` for one that is not configured or that the
+  caller cannot read, instead of an empty 200. `all` keeps working.
+- **Goals no longer expose host paths**: goal responses no longer carry
+  `worktreePath`, the goal's worktree path on the API host.
+- **API errors are JSON, with basic security headers**: a malformed,
+  undecodable, oversized or wrongly encoded request body, an unknown route and
+  any unhandled error now get a JSON `{ "error", "code" }` response with the
+  right status (400, 413, 415, 404, 500) instead of Express's HTML page, which
+  outside production included a stack trace and container paths. Responses no
+  longer send `X-Powered-By`, carry `X-Content-Type-Options: nosniff`, send
+  `Access-Control-Allow-Credentials` only to an allowed `Origin`, and 401s
+  carry `WWW-Authenticate: Bearer`. `GET /api/activity` answers 400 for a
+  `limit` outside 1–200 or a negative or non-integer `offset` instead of
+  returning the whole log or a 500; the GitHub branch and workflow proxies
+  answer 400 for an invalid owner or repository name; `GET
+  /api/agent-definitions/templates` serves the template catalog like
+  `/api/automation-definitions/templates`; and `GET /api/task/{id}/history`,
+  `/live-details` and `/file-changes` answer 404 for a task id ProPR does not
+  know instead of an empty, pending-looking task.
 - **PR status line and review digest wording**: the status line no longer
   counts skipped checks as passed (`checks: 35 passed, 12 skipped`), its
   update time carries the date (`updated Nov 16 13:59 UTC`), a review below
@@ -354,7 +389,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comment (`All N issues have been merged`), the status line and the title
   use the same numbers, and a merged epic's progress comment no longer shows
   a progress bar and `⏳ 75%` next to "merged".
-
 - **Connected apps page shows a full page of apps**: `/mcp/apps` counted
   revoked and expired grants towards each page of 50 and hid them afterwards,
   so an account that had reconnected apps many times saw one or two apps per

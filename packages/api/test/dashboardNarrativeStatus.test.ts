@@ -6,12 +6,13 @@ import { test } from 'node:test';
 import type { Knex } from 'knex';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import { call } from './dashboardTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const unreadable = (() => { throw new Error('Must not query'); }) as unknown as Knex;
 
 test('narrative status reports the opt-in without reading data or resolving a model', async () => {
   for (const enabled of [false, true]) {
-    const routes = createDashboardRoutes({
+    const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
       db: unreadable, redisClient: {} as never, taskQueue: {} as never,
       isSummaryEnabled: async () => enabled,
       narrativeModel: async () => { assert.fail('Must not resolve model'); },
@@ -23,7 +24,7 @@ test('narrative status reports the opt-in without reading data or resolving a mo
 });
 
 test('an unreadable opt-in is a retryable 503, not a confirmed disablement', async () => {
-  const routes = createDashboardRoutes({
+  const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: unreadable, redisClient: {} as never, taskQueue: {} as never,
     isSummaryEnabled: async () => { throw new Error('Config unavailable'); },
   });
@@ -42,7 +43,7 @@ test('the production opt-in read keeps missing as off and unreadable as 503', as
   const { isDashboardSummaryEnabled } = await import('../routes/dashboardSummarySetting.js');
   try {
     await runMigrations();
-    const status = () => call(createDashboardRoutes({
+    const status = () => call(createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
       db: unreadable, redisClient: {} as never, taskQueue: {} as never, isSummaryEnabled: isDashboardSummaryEnabled,
     }).getNarrativeStatus);
     const setValue = (value: string) => db('system_configs').insert({ key: 'dashboard_summary_enabled', value }).onConflict('key').merge();

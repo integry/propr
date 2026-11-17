@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
     applyDatabaseMigrations,
+    assertDatabaseNotNewerThanCode,
+    DatabaseNewerThanCodeError,
+    findNewerMigrations,
+    type AppliedMigrationSource,
     type MigrationDatabase,
 } from '../packages/core/src/db/migrationGate.js';
 
@@ -133,4 +140,41 @@ test('migration gate reports an undefined migration rejection with a restoration
             && error.errors[0] === undefined
             && error.errors[1] === restoreError,
     );
+});
+
+function appliedMigrations(names: string[] | null): AppliedMigrationSource {
+    return {
+        schema: { hasTable: async () => names !== null },
+        select: () => ({ from: async () => (names ?? []).map(name => ({ name })) }),
+    };
+}
+
+async function withMigrationDirectory(files: string[], run: (directory: string) => Promise<void>): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-migration-directory-'));
+    try {
+        for (const file of files) await writeFile(join(directory, file), '');
+        await run(directory);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
+test('newer-database check passes a blank, current or behind database', async () => {
+    await withMigrationDirectory(['001_a.js', '002_b.js', 'README.md'], async directory => {
+        assert.deepEqual(await findNewerMigrations(appliedMigrations(null), directory), []);
+        assert.deepEqual(await findNewerMigrations(appliedMigrations(['001_a.js']), directory), []);
+        await assertDatabaseNotNewerThanCode(appliedMigrations(['001_a.js', '002_b.js']), directory);
+    });
+});
+
+test('newer-database check names how many migrations are newer and the latest one', async () => {
+    await withMigrationDirectory(['001_a.js'], async directory => {
+        const database = appliedMigrations(['001_a.js', '003_newest.js', '002_newer.js']);
+        assert.deepEqual(await findNewerMigrations(database, directory), ['003_newest.js', '002_newer.js']);
+        await assert.rejects(
+            assertDatabaseNotNewerThanCode(database, directory),
+            (error: unknown) => error instanceof DatabaseNewerThanCodeError
+                && error.message === 'This database was migrated by a newer ProPR version (2 newer migrations, latest: 003_newest.js). Start that version or newer, or restore a backup taken before the upgrade.',
+        );
+    });
 });

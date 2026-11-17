@@ -21,6 +21,7 @@ import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createDockerRoutes, stopTaskExecution } from '../routes/dockerRoutes.js';
 import { createFileChangesRoutes } from '../routes/fileChangesRoutes.js';
 import { createRepoTodoRoutes } from '../routes/repoTodoRoutes.js';
+import { createRepositoryScopeResolver } from '../repositoryScope.js';
 import { createNotificationRoutes } from '../routes/notificationRoutes.js';
 import { createConfigRoutes } from '../routes/configRoutes.js';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
@@ -145,8 +146,10 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const goals = createGoalRoutes({ ...deps.goalServices, db, taskQueue, redisClient });
   const tasks = createTaskRoutes({ db, taskQueue });
   const docker = createDockerRoutes({ redisClient, stopTaskExecution: (id, options) => stopTaskExecution(id, { ...options, exactTaskId: true }) });
-  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false });
-  const todos = createRepoTodoRoutes();
+  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false, redisClient, taskQueue });
+  // Dispatch already proved the caller's repository access with the grant's verified GitHub
+  // client (toolExecution's policy.repository), so the route only resolves the configured spelling.
+  const todos = createRepoTodoRoutes({ repositoryScope: createRepositoryScopeResolver({ checksGitHubAccess: () => false }) });
   const notifications = createNotificationRoutes({ webPushDispatcherConfigured: false });
   const config = createConfigRoutes({ redisClient });
   const runtime = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => deps.runtimeBuildQueue });

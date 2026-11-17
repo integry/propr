@@ -62,3 +62,31 @@ test('migration command owns blank startup and the preapplied gate skips a secon
         await rm(dataDirectory, { recursive: true, force: true });
     }
 });
+
+test('an older build on a database a newer version migrated stops with a version message, not knex\'s "corrupt directory"', async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), 'propr-newer-database-'));
+    const databasePath = join(dataDirectory, 'propr.sqlite');
+
+    try {
+        const owner = await runMigrationProcess(databasePath);
+        assert.equal(owner.code, 0, owner.output);
+
+        // A newer ProPR version applied two migrations this checkout does not ship.
+        const database = new Database(databasePath);
+        try {
+            const insert = database.prepare('INSERT INTO knex_migrations (name, batch, migration_time) VALUES (?, 99, CURRENT_TIMESTAMP)');
+            insert.run('29990101000000_from_a_newer_version.js');
+            insert.run('29990102000000_latest_from_a_newer_version.js');
+        } finally {
+            database.close();
+        }
+
+        const older = await runMigrationProcess(databasePath);
+        assert.equal(older.code, 1, older.output);
+        assert.match(older.output, /^This database was migrated by a newer ProPR version \(2 newer migrations, latest: 29990102000000_latest_from_a_newer_version\.js\)\. Start that version or newer, or restore a backup taken before the upgrade\.$/m);
+        assert.doesNotMatch(older.output, /corrupt/);
+        assert.doesNotMatch(older.output, /^\s+at /m, 'no stack trace');
+    } finally {
+        await rm(dataDirectory, { recursive: true, force: true });
+    }
+});

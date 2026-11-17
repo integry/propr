@@ -14,6 +14,7 @@ import {
   minutesAgo,
   seedTask,
 } from './dashboardTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 let database: Knex;
 
@@ -132,7 +133,7 @@ test('outcomes exclude operational handoffs without letting them consume the res
     states: [{ state: 'cancelled', timestamp: minutesAgo(35), reason: 'Cancelled by user' }],
   });
 
-  const dashboard = createDashboardRoutes({
+  const dashboard = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: database,
     redisClient: {} as RedisClientType,
     taskQueue: {} as never,
@@ -164,7 +165,7 @@ test('outcomes identify issue-typed historical PR-comment tasks by their task ID
     states: [{ state: 'completed', timestamp: minutesAgo(6), reason: 'Task completed successfully' }],
   });
 
-  const dashboard = createDashboardRoutes({
+  const dashboard = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: database,
     redisClient: {} as RedisClientType,
     taskQueue: {} as never,
