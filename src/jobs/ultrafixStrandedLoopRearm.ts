@@ -36,6 +36,7 @@ import {
     reserveStateWorkEpoch,
 } from './ultrafixResumeClaim.js';
 import type { ResumeClaim, StrandedLoopRearmDecision, UltrafixPrId, UltrafixStateSnapshot } from './ultrafixResumeClaim.js';
+import { findLiveCurrentEpochStep, STEP_RECENTLY_ENQUEUED_REASON } from './ultrafixStepEnqueueMarker.js';
 
 /** Bound on re-evaluations when the loop state changes underneath a re-arm. */
 const MAX_REARM_ATTEMPTS = 3;
@@ -161,10 +162,17 @@ async function rearmFromSnapshot(
         };
     }
 
-    const attempt: RearmAttempt = {
-        prId, ctx, snapshot, ownHandoff,
-        currentEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
-    };
+    const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr);
+    // The step this epoch last enqueued may be delayed, waiting for capacity or
+    // running without the scan above seeing it: re-arming would supersede it.
+    const liveStep = await findLiveCurrentEpochStep(redisClient, prId, currentEpoch);
+    if (liveStep) {
+        correlatedLogger.info({ pr, workEpoch: currentEpoch, jobState: liveStep.jobState, retryDelayMs: liveStep.retryDelayMs },
+            'Ultrafix re-arm: current step was enqueued recently and has not finished, leaving loop to it');
+        return { continued: false, reason: `rearm_not_ready: ${STEP_RECENTLY_ENQUEUED_REASON}`, retryDelayMs: liveStep.retryDelayMs };
+    }
+
+    const attempt: RearmAttempt = { prId, ctx, snapshot, ownHandoff, currentEpoch };
     const label = await getUltrafixLabelState(owner, repo, pr, correlatedLogger);
     // A failed lookup is not a removed label: keep the loop and retry later.
     if (label === 'unverified') return { continued: false, reason: `rearm_not_ready: ${LABEL_UNVERIFIED_REASON}` };
@@ -276,7 +284,14 @@ async function completeStrandedLoop(
         reviewStatus: succeeded ? 'valid_clean' : 'invalid',
         isPartial: false,
         decisionReason: decision.reason,
+        ...(succeeded ? {} : { stopExplanation: explainStrandedLoopStop(decision.reason) }),
     });
+}
+
+/** The breaker's reason in plain words, with what the user can do about it. */
+export function explainStrandedLoopStop(reason: string): string {
+    if (reason.startsWith('Max cycles reached')) return 'Max cycles were exhausted, so manual review and merge are now required.';
+    return `${reason}, so the loop was stopped instead of retrying again. Check the failed Ultrafix tasks for this pull request, then restart the loop with \`/ultrafix\`.`;
 }
 
 async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptResult> {
