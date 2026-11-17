@@ -4,7 +4,7 @@ const SUMMARY_LIMIT = 240;
 const TITLE_LIMIT = 160;
 const RELATION_LIMIT = 8;
 const RELATION_PAGE_BUDGET = RELATION_LIMIT * 20;
-const MODEL_LIMIT = 100;
+export const MODEL_LIMIT = 100;
 
 type JsonObject = Record<string, unknown>;
 

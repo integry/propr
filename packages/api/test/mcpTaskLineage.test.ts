@@ -165,3 +165,21 @@ test('list_tasks names the agent a running task executes with when submission ro
     assert.equal(byId.get('pr-comment-acme-repo-12')!.updated_at, '2026-11-02T10:00:10.000Z');
   } finally { await db.destroy(); }
 });
+
+test('list_tasks reports the executed model with an agent filled from execution evidence', async () => {
+  const { db, call } = await harness();
+  try {
+    // Submission recorded only a model; execution routing then ran a different model with its agent.
+    await db('tasks').insert({ task_id: 'rerouted', repository, task_type: 'issue', issue_number: 11,
+      created_at: '2026-11-02 11:00:00', initial_job_data: JSON.stringify({ modelName: 'opus' }) });
+    await db('task_history').insert([
+      { task_id: 'rerouted', state: 'processing', reason: 'started', timestamp: '2026-11-02 11:00:05',
+        metadata: JSON.stringify({ model: 'gpt-5.6', executionRouting: { model: 'gpt-5.6', agentAlias: 'codex' } }) },
+      { task_id: 'rerouted', state: 'claude_execution', reason: 'running', timestamp: '2026-11-02 11:00:10',
+        metadata: JSON.stringify({ sessionId: 's-2', model: 'gpt-5.6' }) },
+    ]);
+    const [row] = (await call('list_tasks', { repository, state: 'active' })).data.tasks as Json[];
+    assert.equal(row.task_id, 'rerouted');
+    assert.deepEqual([row.agent_alias, row.model_name], ['codex', 'gpt-5.6'], 'agent and model come from one executed identity');
+  } finally { await db.destroy(); }
+});

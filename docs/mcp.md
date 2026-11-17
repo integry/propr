@@ -848,7 +848,7 @@ assignments, and pull requests; `pull_request_count` counts every pull request
 and `pull_requests_truncated` is true when the bounded `pull_requests` list
 leaves some out (`get_plan` lists every issue with its pull request). A task's
 `agent_alias` falls back to the agent its execution recorded when submission
-routing named none. TODO entries include their category and linked
+routing named none, and the task then reports the model that agent ran. TODO entries include their category and linked
 plan. Full objectives, prompts, and TODO bodies remain available from the
 corresponding `get_*` tool without inflating large list pages.
 

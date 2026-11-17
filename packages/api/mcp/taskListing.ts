@@ -1,5 +1,5 @@
 import type { Knex } from 'knex';
-import { compactText, summarizeTask } from './listSummaries.js';
+import { compactText, MODEL_LIMIT, summarizeTask } from './listSummaries.js';
 import { loadTaskModelIdentities } from '../routes/taskModelIdentity.js';
 import { TERMINAL_TASK_STATES } from './goalTaskDetail.js';
 import { applyAssigneeSelection, type AssigneeSelection } from '../routes/taskAssignees.js';
@@ -89,7 +89,8 @@ async function markMergedTaskSummaries(db: Knex, tasks: TaskSummary[]): Promise<
 /**
  * Submission-time routing does not name the agent of every task (PR follow-ups, label-routed and
  * automation runs pick it at execution time). Fill the gap from the same execution evidence the
- * REST task status and CLI report, so a running task's agent is never shown as unknown here.
+ * REST task status and CLI report, so a running task's agent is never shown as unknown here. The
+ * model is taken from the same identity so the reported agent/model pair is one that executed.
  */
 async function fillExecutionAgents(db: Knex, rows: Record<string, unknown>[], summaries: TaskSummary[]): Promise<void> {
   const missing = rows.filter((_row, index) => summaries[index].agent_alias == null);
@@ -97,8 +98,12 @@ async function fillExecutionAgents(db: Knex, rows: Record<string, unknown>[], su
   const identities = await loadTaskModelIdentities(db, missing);
   for (const summary of summaries) {
     if (summary.agent_alias != null) continue;
-    const alias = identities.get(String(summary.task_id))?.agentAlias;
-    if (alias) summary.agent_alias = compactText(alias, 100);
+    const identity = identities.get(String(summary.task_id));
+    if (!identity?.agentAlias) continue;
+    // The execution identity pairs the agent with the model it ran; keep the pair together so a
+    // submission-time model is never reported alongside an agent that ran a different model.
+    summary.agent_alias = compactText(identity.agentAlias, 100);
+    if (identity.modelName) summary.model_name = compactText(identity.modelName, MODEL_LIMIT);
   }
 }
 
