@@ -52,7 +52,9 @@ export function ExtensionItemPicker({ label, options, selected, onChange, hint, 
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={filterId} className="sr-only">Filter {label.toLowerCase()}</label>
           <input id={filterId} type="search" className={`${controlClass} max-w-xs`} value={filter} placeholder={`Filter ${items.length}…`}
-            onChange={event => setFilter(event.target.value)} />
+            onChange={event => setFilter(event.target.value)}
+            // Filtering only narrows the list; Enter must not submit the enclosing form.
+            onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} />
           {selected.length > 0 && <span className="text-[12px] text-slate-500">{selected.length} selected</span>}
         </div>
       )}

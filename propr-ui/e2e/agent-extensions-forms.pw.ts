@@ -96,6 +96,13 @@ for (const width of [1440, 390]) {
     expect(listBox.inner % listBox.row).toBe(0);
     await limit.getByLabel('Filter limit to repositories').fill('service-2');
     await expect(limit.getByRole('checkbox')).toHaveCount(7);
+    // Enter finishes the search; it must not submit the valid form.
+    const saved = page.waitForRequest(request => request.method() === 'POST', { timeout: 1000 }).then(() => true, () => false);
+    await limit.getByLabel('Filter limit to repositories').press('Enter');
+    expect(await saved).toBe(false);
+    await expect(form).toBeVisible();
+    await expect(limit.getByRole('checkbox')).toHaveCount(7);
+    expect(requests).toEqual([]);
 
     if (width < 600) {
       // The actions stay on screen while the long form scrolls.

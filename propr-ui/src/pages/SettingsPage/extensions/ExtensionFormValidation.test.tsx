@@ -126,6 +126,35 @@ describe('Add server validation', () => {
     for (const row of list.querySelectorAll('label')) expect(row).toHaveClass('h-8');
   });
 
+  it('Enter in the filter does not save the server form', () => {
+    const many = Array.from({ length: 26 }, (_, i) => `acme/repo-${String(i).padStart(2, '0')}`);
+    const { form, onSave } = serverForm({ choices: { ...choices, repositories: many } });
+    fireEvent.change(within(form).getByLabelText(/^Server name/), { target: { value: 'docs' } });
+    fireEvent.change(within(form).getByLabelText('HTTPS endpoint'), { target: { value: 'https://tools.example.com/mcp' } });
+    expect(within(form).getByRole('button', { name: 'Add server' })).toBeEnabled();
+    const filter = within(form).getByLabelText('Filter limit to repositories');
+    fireEvent.change(filter, { target: { value: 'repo-2' } });
+    // jsdom has no implicit submission, so check the browser default (submitting) was cancelled.
+    expect(fireEvent.keyDown(filter, { key: 'Enter' })).toBe(false);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(filter).toHaveValue('repo-2');
+  });
+
+  it('Enter in the filter does not save the skill form', () => {
+    const many = Array.from({ length: 26 }, (_, i) => `acme/repo-${String(i).padStart(2, '0')}`);
+    const bundle = { id: '075bb20e-4156-4f6c-a7e2-20fd6c8ba84e', instanceId: 'instance', name: 'Documentation review', digest: 'd'.repeat(64), files: 2, bytes: 2048,
+      source: { kind: 'archive' as const, filename: 'review.tar' }, requirements: [], createdAt: 0, auditActor: '1' };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<ExtensionSkillForm initial={{ bundleId: bundle.id, enabled: true, repositories: [], agents: [], autoApply: false }} bundle={bundle} available={[]}
+      choices={{ ...choices, repositories: many }} onImported={() => {}} onSave={onSave} onCancel={vi.fn()} />);
+    const form = screen.getByTestId('extension-skill-form');
+    expect(within(form).getByRole('button', { name: 'Save skill' })).toBeEnabled();
+    const filter = within(form).getByLabelText('Filter limit to repositories');
+    fireEvent.change(filter, { target: { value: 'repo-2' } });
+    expect(fireEvent.keyDown(filter, { key: 'Enter' })).toBe(false);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('a short list has no filter', () => {
     serverForm();
     expect(screen.queryByLabelText('Filter limit to repositories')).toBeNull();
