@@ -22,6 +22,7 @@ import {
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState, UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult } from './ultrafixLoopContinuation.js';
+import { getDiskPressureWait, ULTRAFIX_DISK_PRESSURE_REASON } from './ultrafixDiskPressureWait.js';
 import type { ExpectedRearmRetry, RearmRetryClearOutcome, RearmRetrySaveOutcome } from './ultrafixDeferredContinuationStore.js';
 
 export type UltrafixPrId = { owner: string; repo: string; pr: number };
@@ -188,6 +189,11 @@ export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): Stra
             completionStatus: 'failed',
             reason: `Max cycles reached: ${reviewCount} review and ${fixCount} fix steps completed (limit ${state.maxCycles})`,
         };
+    }
+
+    // Disk-pressure refusals never count as failed steps; only running out of retries ends the loop.
+    if (getDiskPressureWait(state)?.exhausted) {
+        return { action: 'complete', completionStatus: 'failed', reason: ULTRAFIX_DISK_PRESSURE_REASON };
     }
 
     const failedSteps = getConsecutiveFailedSteps(state);

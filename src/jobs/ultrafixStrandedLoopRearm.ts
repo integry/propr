@@ -37,6 +37,13 @@ import {
 } from './ultrafixResumeClaim.js';
 import type { ResumeClaim, StrandedLoopRearmDecision, UltrafixPrId, UltrafixStateSnapshot } from './ultrafixResumeClaim.js';
 import { findLiveCurrentEpochStep, STEP_RECENTLY_ENQUEUED_REASON } from './ultrafixStepEnqueueMarker.js';
+import {
+    DISK_PRESSURE_WAIT_REASON,
+    diskPressureRetryDelayMs,
+    explainDiskPressureStop,
+    getDiskPressureWait,
+    ULTRAFIX_DISK_PRESSURE_REASON,
+} from './ultrafixDiskPressureWait.js';
 
 /** Bound on re-evaluations when the loop state changes underneath a re-arm. */
 const MAX_REARM_ATTEMPTS = 3;
@@ -148,6 +155,13 @@ async function rearmFromSnapshot(
     if (await isOwnedByCurrentEpoch(prId, redisClient, snapshot.state, ownHandoff)) {
         correlatedLogger.info({ pr }, 'Ultrafix re-arm: loop is owned by its current epoch, leaving it to its own step');
         return { continued: false, reason: LOOP_OWNED_BY_CURRENT_EPOCH_REASON };
+    }
+    // A step refused for disk pressure is retried on its backoff, never sooner,
+    // whichever trigger (sweep or check event) gets here first.
+    const diskPressureDelayMs = diskPressureRetryDelayMs(snapshot.state);
+    if (diskPressureDelayMs > 0) {
+        correlatedLogger.info({ pr, retryDelayMs: diskPressureDelayMs }, 'Ultrafix re-arm: waiting for free disk space on the worker');
+        return { continued: false, reason: `rearm_not_ready: ${DISK_PRESSURE_WAIT_REASON}`, retryDelayMs: diskPressureDelayMs };
     }
 
     // A queued or running step (e.g. a permitted final fix) is not stranded:
@@ -280,23 +294,27 @@ async function completeStrandedLoop(
     return finishUltrafixLoop({
         params: { ...params, completedAction: succeeded ? 'review' : params.completedAction },
         state: owned,
-        latestScore: owned.finalScore,
+        // An active loop has no final score yet: its latest review's score is the real last score.
+        latestScore: owned.finalScore ?? owned.lastScore ?? null,
         reviewStatus: succeeded ? 'valid_clean' : 'invalid',
         isPartial: false,
         decisionReason: decision.reason,
-        ...(succeeded ? {} : { stopExplanation: explainStrandedLoopStop(decision.reason) }),
+        ...(succeeded ? {} : { stopExplanation: explainStrandedLoopStop(decision.reason, owned) }),
     });
 }
 
 /** The breaker's reason in plain words, with what the user can do about it. */
-export function explainStrandedLoopStop(reason: string): string {
+export function explainStrandedLoopStop(reason: string, state?: UltrafixStateSnapshot['state']): string {
     if (reason.startsWith('Max cycles reached')) return 'Max cycles were exhausted, so manual review and merge are now required.';
+    if (reason === ULTRAFIX_DISK_PRESSURE_REASON && state) return explainDiskPressureStop(state);
     return `${reason}, so the loop was stopped instead of retrying again. Check the failed Ultrafix tasks for this pull request, then restart the loop with \`/ultrafix\`.`;
 }
 
 async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptResult> {
     const { prId: { pr }, ctx, snapshot, currentEpoch } = attempt;
-    const readiness = await evaluateReadiness(buildRearmParams(attempt, currentEpoch), 'review', ctx.checkRunDeps);
+    // A step refused for disk pressure is retried as the same step; anything else resumes with a review.
+    const action = getDiskPressureWait(snapshot.state)?.action ?? 'review';
+    const readiness = await evaluateReadiness(buildRearmParams(attempt, currentEpoch), action, ctx.checkRunDeps);
     ctx.correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix re-arm: readiness check for stranded loop',
@@ -315,20 +333,20 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
 
     const enqueued = await enqueueNextStep(
         buildRearmParams(attempt, owned.workEpoch),
-        'review',
+        action,
         (owned.pauseSeconds || 60) * 1000,
-        getNextStepNumber(owned, 'review'),
+        getNextStepNumber(owned, action),
     );
     if (!enqueued) return { continued: false, reason: 'rearm_duplicate' };
 
     ctx.correlatedLogger.info(
-        { pr, workEpoch: owned.workEpoch, previousWorkEpoch: snapshot.state.workEpoch },
-        'Ultrafix re-arm: enqueued review for stranded loop',
+        { pr, action, workEpoch: owned.workEpoch, previousWorkEpoch: snapshot.state.workEpoch },
+        `Ultrafix re-arm: enqueued ${action} for stranded loop`,
     );
     return {
         continued: true,
         reason: 'stranded_loop_rearmed',
-        nextAction: 'review',
+        nextAction: action,
         cycleCount: owned.cycleCount,
         workEpoch: owned.workEpoch,
     };
