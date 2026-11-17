@@ -2,7 +2,13 @@ import { z } from 'zod';
 
 export const EXTENSION_PROFILE_VERSION = 1 as const;
 /** Per-run limits: what one launch may carry, whatever the library holds. */
-export const EXTENSION_LIMITS = { servers: 8, tools: 64, bundles: 8, files: 256, bytes: 4 * 1024 * 1024, archiveBytes: 5 * 1024 * 1024, responseBytes: 1024 * 1024, calls: 256, egressBytes: 16 * 1024 * 1024, timeoutMs: 10_000 } as const;
+/**
+ * `tools` bounds a server's allow-list. `upstreamTools` bounds the catalog an
+ * upstream `tools/list` may return before the gateway filters it to that
+ * allow-list: hosted servers publish more tools than any one allow-list names
+ * (Notion's documented catalog has 70). Response bytes stay capped separately.
+ */
+export const EXTENSION_LIMITS = { servers: 8, tools: 64, upstreamTools: 256, bundles: 8, files: 256, bytes: 4 * 1024 * 1024, archiveBytes: 5 * 1024 * 1024, responseBytes: 1024 * 1024, calls: 256, egressBytes: 16 * 1024 * 1024, timeoutMs: 10_000 } as const;
 export const extensionServerNameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/).refine(v => v !== 'propr', 'Reserved server name');
 export const extensionRepositorySchema = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
 export const extensionAgentAliasSchema = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);

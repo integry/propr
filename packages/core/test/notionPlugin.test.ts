@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pluginManifestSchema, taskRunExtensionRequest, type PluginManifest } from '@propr/shared';
+import { EXTENSION_LIMITS, pluginManifestSchema, taskRunExtensionRequest, type PluginManifest } from '@propr/shared';
 import { getOfficialPlugin } from '../../plugins/src/index.js';
 import { extensionTestResources } from './helpers/extensionTestResources.js';
 import { up as identityMigration } from '../src/db/migrations/20261013210000_extension_profiles.js';
@@ -20,9 +20,10 @@ import { up as commandSettingsMigration } from '../src/db/migrations/20261116120
 import { PluginStore } from '../src/plugins/pluginStore.js';
 import { PluginContributions } from '../src/plugins/pluginContributions.js';
 import { officialPluginAssets } from '../src/plugins/pluginAssets.js';
-import { ExtensionLibraryStore } from '../src/extensions/extensionProfileStore.js';
+import { ExtensionLibraryStore, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
 import { ExtensionOAuthStore, setExtensionOAuth } from '../src/extensions/extensionOAuthStore.js';
 import { executeWithExtensions } from '../src/extensions/extensionLaunch.js';
+import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
 import { OAUTH_MCP_URL, OAUTH_URLS, syntheticOAuthProvider } from '../../../test/fixtures/extensionOAuthFixture.js';
 
@@ -83,7 +84,15 @@ async function fixture(t: TestContext) {
     const { authorizationUrl } = await plugins.startOAuth('1', ID, 'notion-account', 'session-a', OAUTH_URLS);
     return plugins.completeOAuth('1', ID, 'notion-account', 'session-a', synthetic.authorize(authorizationUrl));
   };
-  return { plugins, library, run, connect, head: () => library.readLibrary('1') };
+  /** A run grant for a matching repository, as the task container's gateway token. */
+  const grant = async () => {
+    const context: ExtensionLaunchContext = { agentAlias: claude.alias, runtime: 'claude', repositories: ['team/specs'], allowWrite: false };
+    const prepared = await library.resolveLaunch(context, false);
+    const token = await library.createGrant(prepared, randomUUID());
+    await library.activateGrant(token, prepared, context);
+    return token;
+  };
+  return { plugins, library, run, connect, grant, synthetic, head: () => library.readLibrary('1') };
 }
 
 test('install, sign-in and enable give one read-only managed Notion server and the skill, applied in the plugin\'s repository limit only', async t => {
@@ -131,4 +140,28 @@ test('the managed Notion server keeps its read capability and tool list: the lib
       JSON.stringify(change),
     );
   }
+});
+
+test('the gateway lists only the allow-listed tools from Notion\'s full documented catalog', async t => {
+  const f = await fixture(t);
+  await f.plugins.install('1', ID);
+  await f.plugins.setRepositories('1', ID, ['team/specs']);
+  await f.connect();
+  await f.plugins.setEnabled('1', ID, true);
+  const allowed = getOfficialPlugin(ID, { includeDevelopment: false })!.manifest.contributes.mcpServers[0].tools!;
+  const documented = JSON.parse(await fs.readFile(new URL('../../plugins/notion/fixtures/tools.json', import.meta.url), 'utf8')) as { tools: { name: string }[] };
+  const catalog = documented.tools.map(tool => ({ name: tool.name, description: `Notion ${tool.name}`, inputSchema: { type: 'object' } }));
+  assert.ok(catalog.length > EXTENSION_LIMITS.tools, 'the documented catalog is larger than one allow-list may be');
+  // The synthetic OAuth MCP server still checks the signed-in access token; only its catalog is Notion's.
+  const upstream = (tools: unknown[]) => async (endpoint: string, body: unknown, token?: string) => {
+    const response = await f.synthetic.send(endpoint, body, token);
+    return (body as { method: string }).method === 'tools/list' ? { ...response, result: { tools } } : response;
+  };
+  const token = await f.grant();
+  const listed = await extensionGatewayCall(f.library, token, 'notion', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, upstream(catalog)) as { result: { tools: { name: string }[] } };
+  assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), [...allowed].sort());
+  // A documented write tool stays unavailable, and an unbounded catalog is still refused.
+  await assert.rejects(extensionGatewayCall(f.library, token, 'notion', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'notion-update-page', arguments: {} } }, upstream(catalog)), /tool unavailable/);
+  const oversized = Array.from({ length: EXTENSION_LIMITS.upstreamTools + 1 }, (_, i) => ({ name: `tool-${i}` }));
+  await assert.rejects(extensionGatewayCall(f.library, token, 'notion', { jsonrpc: '2.0', id: 3, method: 'tools/list' }, upstream(oversized)), /catalog unavailable/);
 });
