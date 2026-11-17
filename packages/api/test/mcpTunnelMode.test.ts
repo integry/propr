@@ -318,7 +318,8 @@ test('a 409 keeps forcing registration through transient failures until one succ
     assert.equal(manager.scheduledDelayMs(), 60_000, 'the success keeps the newer rejection\'s cooldown, not the daily refresh');
     clock += 60_000;
     timers.pending().at(-1)!.callback();
-    for (let tick = 0; tick < 100 && registrations.length < 5; tick += 1) await new Promise(resolve => setImmediate(resolve));
+    // The timer-driven check does threadpool I/O (SQLite, crypto), so bound the wait by time, not event-loop turns.
+    for (const deadline = Date.now() + 10_000; registrations.length < 5 && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(registrations.length, 5, 'the newer rejection still forces a registration through the timer');
     assert.equal(await manager.trigger(), 'registered');
     assert.equal(manager.scheduledDelayMs(), CONNECT_REGISTRATION_REFRESH_MS);
