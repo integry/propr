@@ -178,8 +178,7 @@ test('HTTP update records both the rename and outgoing snapshot when name and pl
   assert.equal(rename.nameAfter, 'HTTP renamed plan');
   const snapshot = revisions.find(revision => revision.cause !== 'rename')!;
   assert.deepEqual(snapshot.titles, ['A1', 'A2', 'A3', 'A4']);
-  assert.equal(snapshot.nameBefore, null);
-  assert.equal(snapshot.nameAfter, null);
+  assert.deepEqual([snapshot.nameBefore, snapshot.nameAfter], [null, null]);
 });
 
 test('reports unknown for legacy rows and live plans without provenance', async t => {
