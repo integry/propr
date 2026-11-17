@@ -49,6 +49,21 @@ test('retyping a payload field in its interface, keeping its name, is a breaking
   assert.deepEqual(breaking, ['events: pull_request.review_scored payload: field score changed type from number to string']);
 });
 
+test('allowing undefined in a required payload or envelope field is a breaking change', () => {
+  const required = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, '  score: number;\n', '  score: number | undefined;\n');
+  assert.match(required.mismatches.join('\n'), /PLUGIN_EVENT_PAYLOAD_FIELDS\['pull_request\.review_scored'\].*"score":"number \| undefined"/);
+  assert.deepEqual(required.breaking, ['events: pull_request.review_scored payload: field score changed type from number to number | undefined']);
+  const nullable = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, '  goal: number | null;\n  goalReached', '  goal: number | null | undefined;\n  goalReached');
+  assert.deepEqual(nullable.breaking, ['events: pull_request.review_scored payload: field goal changed type from number | null to number | null | undefined']);
+  const envelope = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, '  seq: number;\n  repository: string;\n', '  seq: number | undefined;\n  repository: string;\n');
+  assert.ok(envelope.mismatches.some(message => message.startsWith('PLUGIN_EVENT_ENVELOPE_FIELDS')), envelope.mismatches.join('\n'));
+  assert.ok(envelope.breaking.includes('event envelope: field seq changed type from number to number | undefined'), envelope.breaking.join('\n'));
+  // An optional field's `?` already says it may be absent, so `?: number` reads as `number` and is only an addition.
+  const optional = readPluginContractSource({ overrides: editedSource(REPOSITORY_EVENTS_SOURCE, '  score: number;\n', '  score: number;\n  rank?: number | undefined;\n') });
+  assert.equal(optional.payloads['pull_request.review_scored']['rank?'], 'number');
+  assert.deepEqual(comparePluginContract(readJson(SNAPSHOT), buildSourcePluginContract(optional)).breaking, []);
+});
+
 test('retyping an inherited payload field or an envelope field in the source is a breaking change', () => {
   const inherited = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, '  attempts: number;\n', '  attempts: number | null;\n');
   for (const event of ['task.queued', 'task.started', 'task.completed', 'task.failed', 'task.cancelled']) {

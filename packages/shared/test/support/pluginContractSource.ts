@@ -66,12 +66,17 @@ function createProgram(overrides: Record<string, string>) {
   return ts.createProgram([PLUGIN_SDK_SOURCE, REPOSITORY_EVENTS_SOURCE], options, host);
 }
 
-/** A declaration's type reduced to a contract descriptor, as `PLUGIN_EVENT_PAYLOAD_FIELDS` writes it. */
-function descriptor(checker: ts.TypeChecker, type: ts.Type): string {
+/**
+ * A declaration's type reduced to a contract descriptor, as `PLUGIN_EVENT_PAYLOAD_FIELDS` writes it.
+ * `undefined` is kept (after `null`), so `score: number | undefined` is not read as `score: number`; only
+ * an optional property drops it (`optionalProperty`), because its `?` key already says it may be absent.
+ */
+function descriptor(checker: ts.TypeChecker, type: ts.Type, { optionalProperty = false } = {}): string {
   const parts = type.isUnion() ? type.types : [type];
   const nullable = parts.some(part => part.flags & ts.TypeFlags.Null);
+  const undefinable = !optionalProperty && parts.some(part => part.flags & ts.TypeFlags.Undefined);
   const names = [...new Set(parts.filter(part => !(part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))).map(part => baseDescriptor(checker, part)))].sort();
-  return [...names, ...(nullable ? ['null'] : [])].join(' | ');
+  return [...names, ...(nullable ? ['null'] : []), ...(undefinable ? ['undefined'] : [])].join(' | ');
 }
 
 function baseDescriptor(checker: ts.TypeChecker, type: ts.Type): string {
@@ -97,7 +102,7 @@ function fieldDescriptors(checker: ts.TypeChecker, declaration: ts.InterfaceDecl
   const fields: Record<string, string> = {};
   for (const property of checker.getPropertiesOfType(checker.getTypeAtLocation(declaration))) {
     const optional = (property.flags & ts.SymbolFlags.Optional) !== 0;
-    fields[optional ? `${property.name}?` : property.name] = descriptor(checker, checker.getTypeOfSymbolAtLocation(property, declaration));
+    fields[optional ? `${property.name}?` : property.name] = descriptor(checker, checker.getTypeOfSymbolAtLocation(property, declaration), { optionalProperty: optional });
   }
   return fields;
 }
