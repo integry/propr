@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { RefreshCw, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { InboxClearAllButton } from '../components/Inbox/InboxClearAllButton';
@@ -69,6 +69,14 @@ const InboxPage: React.FC = () => {
     loadMore: readingPage(inbox) ? null : inbox.loadMore,
   });
 
+  // Opening an item from the queue adds a history entry, so Back returns to the
+  // queue; moving on to another item while one is open replaces it.
+  const selectedRef = useRef(selected);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
+  const openFromQueue = useCallback((id: string) => {
+    select(id, { push: selectedRef.current === null });
+  }, [select]);
+
   const showState = inboxState(inbox);
 
   const canClearAll = inbox.notifications.length > 0 && inbox.mutationsEnabled;
@@ -80,7 +88,7 @@ const InboxPage: React.FC = () => {
       <InboxList
         notifications={activity}
         {...listProps}
-        {...(isSplitViewport ? { selectedId: selected?.id ?? null, onSelect: select, compact: selected !== null } : {})}
+        {...(isSplitViewport ? { selectedId: selected?.id ?? null, onSelect: openFromQueue, compact: selected !== null } : {})}
       />
       {inbox.hasMore && (
         <button

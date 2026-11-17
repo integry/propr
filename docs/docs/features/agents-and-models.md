@@ -50,7 +50,7 @@ Keep Antigravity's mounted configuration directory across goal attempts, since i
 
 ## Agent Configuration
 
-The Web UI includes an AI Agents page for configuring coding agents. Each agent entry defines:
+The Web UI includes a Coding agents page for configuring coding agents. Each agent entry defines:
 
 - Agent type (claude, codex, antigravity, opencode, vibe)
 - A unique alias (lowercase alphanumeric and hyphens)

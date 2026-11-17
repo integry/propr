@@ -591,21 +591,21 @@ describe('GoalsPage', () => {
     trigger.focus();
     fireEvent.click(trigger);
 
-    expect(await screen.findByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'New goal' })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Unsaved goal details' } });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'New goal' })).toBeInTheDocument();
     expect(screen.getByLabelText('Prompt')).toHaveValue('Unsaved goal details');
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog', { name: 'Start a goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'New goal' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
     expect(confirm).toHaveBeenCalledTimes(2);
 
     fireEvent.click(trigger);
-    expect(await screen.findByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'New goal' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Start a goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'New goal' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
     confirm.mockRestore();
   });
@@ -617,7 +617,7 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
     openGoalCreator();
 
-    const dialog = await screen.findByRole('dialog', { name: 'Start a goal' });
+    const dialog = await screen.findByRole('dialog', { name: 'New goal' });
     const selectedImage = new File(['image'], 'pending.png', { type: 'image/png' });
     fireEvent.change(within(dialog).getByLabelText('Attach files'), { target: { files: [selectedImage] } });
     expect(within(dialog).getByText('Preparing files…')).toBeInTheDocument();
@@ -647,7 +647,7 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
     openGoalCreator();
 
-    const dialog = await screen.findByRole('dialog', { name: 'Start a goal' });
+    const dialog = await screen.findByRole('dialog', { name: 'New goal' });
     fireEvent.change(within(dialog).getByLabelText('Prompt'), { target: { value: 'Keep this draft' } });
     fireEvent.click(within(dialog).getByRole('button', { name: /acme.*web/ }));
     const repositoryFilter = within(dialog).getByPlaceholderText('Filter repositories...');

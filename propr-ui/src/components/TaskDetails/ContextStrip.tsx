@@ -122,10 +122,10 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
   );
 };
 
-// Model chip component
+// Model chip component: the run's model and runtime; a run without a model shows only the runtime.
 const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean; compact?: boolean }> = ({ modelName, duration, synthetic, compact }) => (
   <>
-    <span
+    {modelName && <span
       className={`inline-flex min-w-0 items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800 [&>svg]:shrink-0${compact ? ' max-w-full shrink-0' : ''}`}
       title={getDisplayModelName(modelName)}
     >
@@ -133,7 +133,7 @@ const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthet
         ? <Layers3 className="h-3 w-3" aria-label="Synthetic pool" />
         : <ProviderLogo provider={modelName} className="w-3 h-3" />}
       <span className={compact ? "truncate" : undefined}>{getDisplayModelName(modelName)}</span>
-    </span>
+    </span>}
     {duration !== null && duration !== undefined && (
       <span className="shrink-0 text-gray-500 font-mono text-xs">{formatRelativeTime(duration)}</span>
     )}

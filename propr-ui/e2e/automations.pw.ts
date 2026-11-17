@@ -66,7 +66,7 @@ test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
 });
 
-test('the sidebar names the feature Automations, apart from Coding Agents', async ({ page }) => {
+test('the sidebar names the feature Automations, apart from Coding agents', async ({ page }) => {
   await page.goto('/agents');
   await expect(page).toHaveURL(/\/automations$/);
   await expect(page.getByRole('link', { name: 'Automations', exact: true }).first()).toBeVisible();
@@ -215,7 +215,7 @@ test.describe('mobile creation sheet', () => {
         await expect(sheet).toBeHidden();
         if (label === 'New goal') {
           // Goals consumes ?new=1 after opening its creation dialog.
-          const dialog = page.getByRole('dialog', { name: 'Start a goal' });
+          const dialog = page.getByRole('dialog', { name: 'New goal' });
           await expect(dialog).toBeVisible();
           await dialog.getByRole('button', { name: 'Cancel', exact: true }).tap();
           await expect(page).toHaveURL(/\/goals$/);

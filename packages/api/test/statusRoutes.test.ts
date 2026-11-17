@@ -642,6 +642,11 @@ test('/api/status stops serving a stale measurement at the hard freshness bound'
 
   await routes.getStatus({} as Request, createJsonResponse().response);
   currentTime += 6;
+  // The 40ms health timeout is a real timer, so a stalled runner can let the
+  // in-flight refresh finish before the hard-expired read starts. Measure the
+  // wait from when that refresh started: the read must not return before the
+  // refresh's health timeout, whichever side of the read the timeout fires on.
+  const refreshStartedAt = performance.now();
   await routes.getStatus({} as Request, createJsonResponse().response);
   await new Promise<void>(resolve => setImmediate(resolve));
   currentTime += 25;
@@ -649,10 +654,13 @@ test('/api/status stops serving a stale measurement at the hard freshness bound'
   const startedAt = performance.now();
   const hardExpired = createJsonResponse();
   await routes.getStatus({} as Request, hardExpired.response);
-  const elapsedMs = performance.now() - startedAt;
+  const finishedAt = performance.now();
+  const sinceRefreshMs = finishedAt - refreshStartedAt;
+  const elapsedMs = finishedAt - startedAt;
 
   assert.equal(healthChecks, 2, 'hard-expired readers should join the in-flight refresh');
-  assert.ok(elapsedMs >= 10 && elapsedMs < 200, `hard-expired read took ${elapsedMs.toFixed(1)}ms`);
+  assert.ok(sinceRefreshMs >= 10, `hard-expired read returned ${sinceRefreshMs.toFixed(1)}ms after the refresh started`);
+  assert.ok(elapsedMs < 200, `hard-expired read took ${elapsedMs.toFixed(1)}ms`);
   assert.equal((hardExpired.body().agents as Array<{ status: string }>)[0]?.status, 'disconnected');
 });
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GripVertical, ArrowLeft } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -15,10 +15,13 @@ import { RepositorySettingsBar } from '../components/RepositorySettingsBar';
 import { RepositoryListContent } from '../components/RepositoryListContent';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { REPOSITORIES_PATH, repositoryPath, repositorySelectionFromUrl } from '../utils/repositoryPath';
 
 const RepositoriesPage: React.FC = () => {
   useDocumentTitle('Repositories');
   const location = useLocation();
+  const navigate = useNavigate();
+  const { '*': repositorySplat } = useParams();
   const { isDemoMode } = useDemoMode();
   const currentUser = useCurrentUser();
   const isReadOnly = isDemoMode || !userHasPermission(currentUser, 'instance.manage_settings');
@@ -39,24 +42,26 @@ const RepositoriesPage: React.FC = () => {
   const [autoFollowupOnFailedCi, setAutoFollowupOnFailedCi] = useState<boolean>(false);
   const [newVisualPreview, setNewVisualPreview] = useState<VisualPreviewSettings>(defaultVisualPreview);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [navActiveTab, setNavActiveTab] = useState<'chat' | 'improve' | 'browse' | 'todos' | undefined>(undefined);
 
-  // Handle navigation state from QuickAddTodo "View Todos" link and global search results
+  // The selected repository is the URL (`/repositories/<owner>/<repo>`), so it
+  // survives a reload, can be shared, and Back returns to the list or to the
+  // repository that was open before.
+  const urlSelection = repositorySelectionFromUrl(repositorySplat, location.search);
+  // Match the list's shared settings, including when the selected entry is hidden.
+  const displayRepos = buildRepositoriesForDisplay(repos);
+  const selectedRepo = urlSelection ? findSelectedRepository(displayRepos, urlSelection) : undefined;
+  const selectedRepoId = selectedRepo?.id ?? null;
+
+  // The QuickAddTodo "View Todos" link and older callers name the repository in
+  // navigation state; it becomes the repository's URL in place of that entry.
   useEffect(() => {
     const state = location.state as { selectRepo?: string; selectBranch?: string | null; activeTab?: string } | null;
-    if (state?.selectRepo && repos.length > 0) {
-      const match = findSelectedRepository(repos, { selectRepo: state.selectRepo, selectBranch: state.selectBranch });
-      if (match) {
-        setSelectedRepoId(match.id);
-        if (state.activeTab === 'todos') {
-          setNavActiveTab('todos');
-        }
-      }
-      // Clear navigation state so it doesn't re-trigger
-      window.history.replaceState({}, '');
-    }
-  }, [location.state, repos]);
+    if (!state?.selectRepo || repos.length === 0) return;
+    const match = findSelectedRepository(repos, { selectRepo: state.selectRepo, selectBranch: state.selectBranch });
+    if (match && state.activeTab === 'todos') setNavActiveTab('todos');
+    navigate(match ? repositoryPath(match, repos) : `${location.pathname}${location.search}`, { replace: true });
+  }, [location.pathname, location.search, location.state, navigate, repos]);
 
   const handleOpenModal = () => {
     if (isReadOnly) return;
@@ -89,12 +94,11 @@ const RepositoriesPage: React.FC = () => {
     }
   };
 
+  // Selecting pushes a history entry, so Back returns to the list (or the repository before).
   const handleSelectRepo = (repoId: string) => {
-    setSelectedRepoId(prevId => prevId === repoId ? null : repoId);
+    const repo = repos.find(candidate => candidate.id === repoId);
+    navigate(!repo || repoId === selectedRepoId ? REPOSITORIES_PATH : repositoryPath(repo, repos));
   };
-
-  // Match the list's shared settings, including when the selected entry is hidden.
-  const selectedRepo = buildRepositoriesForDisplay(repos).find(r => r.id === selectedRepoId);
   const settingsContent = selectedRepo ? (
     <RepositorySettingsBar
       key={selectedRepo.id}
@@ -162,7 +166,7 @@ const RepositoriesPage: React.FC = () => {
               {selectedRepo && (
                 <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 bg-white lg:hidden">
                   <button
-                    onClick={() => setSelectedRepoId(null)}
+                    onClick={() => navigate(REPOSITORIES_PATH)}
                     className="p-1.5 -ml-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
                     title="Back to repositories"
                   >

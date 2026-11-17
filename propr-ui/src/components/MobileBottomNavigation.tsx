@@ -96,7 +96,7 @@ const getMoreGroups = (user: CurrentUser | null) => ({
   ] as MoreItem[],
   configuration: [
     ...(userHasPermission(user, 'instance.manage_agents')
-      ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
+      ? [{ label: 'Coding agents', to: '/ai-agents', icon: Bot }]
       : []),
     { label: 'Settings', to: '/settings', icon: Settings },
     ...(userHasPermission(user, 'instance.manage_members')

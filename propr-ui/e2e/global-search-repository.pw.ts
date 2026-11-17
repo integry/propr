@@ -59,7 +59,8 @@ test('a repository search result opens the repository by default', async ({ page
   await capturePreview(page, 'global-search-repository-actions');
 
   await input.press('Enter');
-  await expect(page).toHaveURL(/\/repositories$/);
+  // The repository is its own URL; three entries track it, so the URL names the branch.
+  await expect(page).toHaveURL(/\/repositories\/integry\/mcptest\?branch=release$/);
   // The highlighted entry is the release branch, so that branch entry is the one selected.
   await expect(page.getByRole('region', { name: 'Settings for integry/mcptest', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Select integry/mcptest', exact: true }).nth(1)).toHaveAttribute('aria-pressed', 'true');
@@ -82,7 +83,8 @@ test('a repository without an explicit branch opens its own entry, not a same-na
   await input.press('ArrowDown');
   await expect(preview.getByText('default', { exact: true })).toBeVisible();
   await input.press('Enter');
-  await expect(page).toHaveURL(/\/repositories$/);
+  // `?branch=` (empty) names the entry that tracks no explicit branch.
+  await expect(page).toHaveURL(/\/repositories\/integry\/mcptest\?branch=$/);
   const entries = page.getByRole('button', { name: 'Select integry/mcptest', exact: true });
   await expect(entries.nth(2)).toHaveAttribute('aria-pressed', 'true');
   await expect(entries.nth(1)).toHaveAttribute('aria-pressed', 'false');

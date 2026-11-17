@@ -10,12 +10,7 @@ import {
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
-import {
-  addToTriggerWhitelist,
-  getTriggerWhitelist,
-  isLoginInWhitelist,
-  removeFromTriggerWhitelist
-} from '../api/triggerWhitelistApi';
+import { addToTriggerWhitelist, getTriggerWhitelist, isLoginInWhitelist, removeFromTriggerWhitelist } from '../api/triggerWhitelistApi';
 import type {
   InstanceMember,
   InstanceMembersResponse,
@@ -25,6 +20,7 @@ import type {
 import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { ListSkeleton } from '../components/ui/Skeleton';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
   members: [],
@@ -54,9 +50,10 @@ function getCollectionState(loading: boolean, itemCount: number, error: string):
   return itemCount === 0 ? 'empty' : 'ready';
 }
 
-const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:px-6">Demo mode is read-only. Instance access can be inspected but not changed.</p> : null;
+const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:px-6">Demo mode is read-only. Access can be inspected but not changed.</p> : null;
 
 const AccessManagementPage: React.FC = () => {
+  useDocumentTitle('Access');
   const currentUser = useCurrentUser();
   const refreshCurrentUser = useRefreshCurrentUser();
   const { isDemoMode } = useDemoMode();
@@ -223,7 +220,7 @@ const AccessManagementPage: React.FC = () => {
   return (
     <div className="flex min-h-full w-full min-w-0 flex-col bg-white">
       <header className="flex-none border-b border-slate-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
-        <PageHeading>Instance access</PageHeading>
+        <PageHeading>Access</PageHeading>
         <p className="mt-1 text-sm text-slate-600">
           Administrators manage installation settings. Members can use ProPR but cannot change the installation.
         </p>

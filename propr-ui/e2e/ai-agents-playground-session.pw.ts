@@ -89,7 +89,7 @@ const visibleTranscript = (page: Page) => page.getByTestId('ai-agents-playground
 async function useViewport(page: Page, size: { width: number; height: number }) {
   await page.setViewportSize(size);
   if (size.width >= 768) {
-    await expect(page.getByRole('heading', { name: 'Agent Configuration' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Coding agents', level: 2 })).toBeVisible();
   } else {
     await expect(page.getByRole('button', { name: 'Configuration', exact: true })).toBeVisible();
   }
