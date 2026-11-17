@@ -50,7 +50,7 @@ export const RUN_STATE_BADGE_CLASSES: Record<AutomationRunState, string> = {
   cancelled: 'border-slate-200 bg-white text-slate-500',
 };
 
-/** One-click schedules offered by the editor, all in UTC. */
+/** One-click schedules offered beside the expression field, all in UTC. */
 export const SCHEDULE_PRESETS = [
   { label: 'Hourly', expression: '0 * * * *' },
   { label: 'Daily 09:00', expression: '0 9 * * *' },
@@ -78,7 +78,10 @@ export const formatDuration = (ms: number): string => {
   return `${Math.round(hours / 24)}d`;
 };
 
-/** A schedule in words: `title` heads a list row ("Weekdays 07:00 UTC"), `phrase` follows "Scheduled ·" ("weekdays 07:00 UTC"). */
+/**
+ * A schedule in words, as the editor's Repeat controls put it: `title` heads a list row
+ * ("Every weekday at 07:00 UTC"), `phrase` follows "Scheduled ·" ("every weekday at 07:00 UTC").
+ */
 interface ScheduleWords { title: string; phrase: string }
 
 const CRON_MACRO_EXPANSIONS: Record<string, string> = {
@@ -117,18 +120,15 @@ const weekdaysOf = (field: string): number[] | null => {
 };
 
 const describeDays = (field: string, time: string): ScheduleWords | null => {
-  if (field === '*') return { title: `Daily ${time} UTC`, phrase: `every day ${time} UTC` };
+  if (field === '*') return words(`Every day at ${time} UTC`);
   const days = weekdaysOf(field);
   if (!days) return null;
   const key = days.join(',');
-  if (key === '1,2,3,4,5') return { title: `Weekdays ${time} UTC`, phrase: `weekdays ${time} UTC` };
-  if (key === '0,6') return { title: `Weekends ${time} UTC`, phrase: `weekends ${time} UTC` };
-  if (key === '0,1,2,3,4,5,6') return { title: `Daily ${time} UTC`, phrase: `every day ${time} UTC` };
+  if (key === '1,2,3,4,5') return words(`Every weekday at ${time} UTC`);
+  if (key === '0,1,2,3,4,5,6') return words(`Every day at ${time} UTC`);
   // Monday first, as a week is read.
   const names = [...days.filter(day => day !== 0), ...days.filter(day => day === 0)].map(day => WEEKDAYS[day]).join(', ');
-  return days.length === 1
-    ? { title: `Weekly ${names} ${time} UTC`, phrase: `every ${names} ${time} UTC` }
-    : { title: `${names} ${time} UTC`, phrase: `every ${names} ${time} UTC` };
+  return words(`Every ${names} at ${time} UTC`);
 };
 
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
@@ -150,7 +150,7 @@ const describeMonthly = ([minute, hour, dayOfMonth, month, dayOfWeek]: string[])
   const time = timesOf(minute, hour);
   const day = NUMBER.test(dayOfMonth) ? +dayOfMonth : 0;
   if (!time || !isEvery(month, dayOfWeek) || day < 1 || day > 31) return null;
-  return { title: `Monthly on day ${day}, ${time} UTC`, phrase: `monthly on day ${day}, ${time} UTC` };
+  return words(`Every month on day ${day} at ${time} UTC`);
 };
 
 /** Every hour, or every few hours (a step in the hour part), on the minute given. */
@@ -158,7 +158,7 @@ const describeHours = ([minute, hour, , , dayOfWeek]: string[]): ScheduleWords |
   if (dayOfWeek !== '*') return null;
   const past = +minute === 0 ? '' : ` at :${pad(+minute)}`;
   const step = hour.match(STEP);
-  if (hour === '*' || step?.[1] === '1') return { title: `Hourly${past}`, phrase: `every hour${past}` };
+  if (hour === '*' || step?.[1] === '1') return words(`Every hour${past}`);
   // `*/5` runs at 00, 05, 10, 15 and 20, then 4 hours later at midnight: only a step dividing the day is an even interval.
   return step && 24 % +step[1] === 0 ? words(`Every ${plural(+step[1], 'hour')}${past}`) : null;
 };
@@ -182,7 +182,7 @@ export const describeSchedule = (expression: string): ScheduleWords | null => {
 export const describeCron = (expression: string): string =>
   describeSchedule(expression)?.title ?? `${expression.trim()} (UTC)`;
 
-/** The schedule as it follows "Scheduled ·" on a run: `every day 09:00 UTC`. */
+/** The schedule as it follows "Scheduled ·" on a run: `every day at 09:00 UTC`. */
 export const scheduleSentence = (expression: string): string =>
   describeSchedule(expression)?.phrase ?? `${expression.trim()} (UTC)`;
 
@@ -201,7 +201,7 @@ export const scheduleTooltip = (definition: Pick<AutomationDefinitionRecord, 'sc
   definition.scheduleCron && definition.scheduleEnabled ? `${definition.scheduleCron} (UTC)` : null;
 
 /**
- * "Daily 09:00 UTC · next in 3h", "On blocked issue" for an automation that only runs on its
+ * "Every day at 09:00 UTC · next in 3h", "On blocked issue" for an automation that only runs on its
  * event trigger, or "Manual" when it has neither.
  * The stored next run is read when the list loads, so once a page left open
  * passes it, the next occurrence is worked out from the schedule instead.

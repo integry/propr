@@ -4,21 +4,21 @@ import { runTriggerSummary } from './agentRunPresentation';
 
 describe('schedules in words', () => {
   it.each([
-    ['0 * * * *', 'Hourly', 'every hour'],
-    ['@hourly', 'Hourly', 'every hour'],
-    ['30 * * * *', 'Hourly at :30', 'every hour at :30'],
+    ['0 * * * *', 'Every hour', 'every hour'],
+    ['@hourly', 'Every hour', 'every hour'],
+    ['30 * * * *', 'Every hour at :30', 'every hour at :30'],
     ['*/15 * * * *', 'Every 15 minutes', 'every 15 minutes'],
     ['0 */3 * * *', 'Every 3 hours', 'every 3 hours'],
     ['15 */6 * * *', 'Every 6 hours at :15', 'every 6 hours at :15'],
-    ['0 9 * * *', 'Daily 09:00 UTC', 'every day 09:00 UTC'],
-    ['@daily', 'Daily 00:00 UTC', 'every day 00:00 UTC'],
-    ['0 7 * * 1-5', 'Weekdays 07:00 UTC', 'weekdays 07:00 UTC'],
-    ['0 10 * * 0,6', 'Weekends 10:00 UTC', 'weekends 10:00 UTC'],
-    ['0 9 * * 1', 'Weekly Mon 09:00 UTC', 'every Mon 09:00 UTC'],
-    ['0 9 * * 7', 'Weekly Sun 09:00 UTC', 'every Sun 09:00 UTC'],
-    ['0 9 * * 1,3,5', 'Mon, Wed, Fri 09:00 UTC', 'every Mon, Wed, Fri 09:00 UTC'],
-    ['0 9,17 * * *', 'Daily 09:00 and 17:00 UTC', 'every day 09:00 and 17:00 UTC'],
-    ['0 6 1 * *', 'Monthly on day 1, 06:00 UTC', 'monthly on day 1, 06:00 UTC'],
+    ['0 9 * * *', 'Every day at 09:00 UTC', 'every day at 09:00 UTC'],
+    ['@daily', 'Every day at 00:00 UTC', 'every day at 00:00 UTC'],
+    ['0 7 * * 1-5', 'Every weekday at 07:00 UTC', 'every weekday at 07:00 UTC'],
+    ['0 10 * * 0,6', 'Every Sat, Sun at 10:00 UTC', 'every Sat, Sun at 10:00 UTC'],
+    ['0 9 * * 1', 'Every Mon at 09:00 UTC', 'every Mon at 09:00 UTC'],
+    ['0 9 * * 7', 'Every Sun at 09:00 UTC', 'every Sun at 09:00 UTC'],
+    ['0 9 * * 1,3,5', 'Every Mon, Wed, Fri at 09:00 UTC', 'every Mon, Wed, Fri at 09:00 UTC'],
+    ['0 9,17 * * *', 'Every day at 09:00 and 17:00 UTC', 'every day at 09:00 and 17:00 UTC'],
+    ['0 6 1 * *', 'Every month on day 1 at 06:00 UTC', 'every month on day 1 at 06:00 UTC'],
   ])('%s reads "%s" in a list and "%s" after Scheduled', (expression, title, phrase) => {
     expect(describeCron(expression)).toBe(title);
     expect(scheduleSentence(expression)).toBe(phrase);
@@ -62,7 +62,7 @@ describe('schedules in words', () => {
 describe('what started a run', () => {
   it('names a scheduled run by its schedule, with the cron in the tooltip', () => {
     expect(runTriggerSummary({ trigger: 'schedule', triggerEvent: null, triggerSource: 'schedule:0 9 * * *' }))
-      .toEqual({ label: 'Scheduled', detail: 'every day 09:00 UTC', tooltip: '0 9 * * * (UTC)' });
+      .toEqual({ label: 'Scheduled', detail: 'every day at 09:00 UTC', tooltip: '0 9 * * * (UTC)' });
   });
 
   it('keeps the recorded source of other triggers', () => {

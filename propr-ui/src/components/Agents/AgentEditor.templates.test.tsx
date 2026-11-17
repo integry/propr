@@ -33,7 +33,10 @@ const expectPrefilled = () => {
   expect(screen.getByLabelText('Name')).toHaveValue(triage.name);
   expect(screen.getByLabelText('Description')).toHaveValue(triage.description);
   expect(screen.getByLabelText('Prompt')).toHaveValue(triage.prompt);
-  expect(screen.getByLabelText('Cron expression')).toHaveValue(triage.schedule);
+  // A suggested schedule the Repeat controls can produce opens in them.
+  expect(screen.getByRole('radio', { name: 'Repeat' })).toBeChecked();
+  expect(screen.getByLabelText('Every')).toHaveValue('weeks');
+  expect(screen.getByLabelText('Hour (UTC)')).toHaveValue('7');
   expect(screen.getByRole('radio', { name: 'Report only' })).toBeChecked();
   const review = screen.getByTestId('agent-template-review');
   for (const label of ['Repositories', 'Schedule', 'Autonomy']) expect(review).toHaveTextContent(`${label}:`);

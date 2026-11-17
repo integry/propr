@@ -33,7 +33,7 @@ const scheduleOfSource = (source: string | null): string | null => {
 };
 
 /**
- * How the run page names what started a run: `Scheduled · every day 09:00 UTC`
+ * How the run page names what started a run: `Scheduled · every day at 09:00 UTC`
  * with the cron in the tooltip, or the trigger and its source as recorded.
  */
 export const runTriggerSummary = (run: Pick<AutomationRunRecord, 'trigger' | 'triggerEvent' | 'triggerSource'>): { label: string; detail: string | null; tooltip: string | null } => {
