@@ -34,6 +34,11 @@ export interface EpicScheduleInput {
   mergedOutside?: ReadonlySet<number> | readonly number[];
   /** Most issues in flight at once; null or undefined is unbounded. */
   limit?: number | null;
+  /**
+   * Issues start in queue order (a sequential chain): an issue is never ready while an earlier issue is
+   * unfinished (neither done nor skipped), even when its own edges are met (say an issue done out of order).
+   */
+  inOrder?: boolean;
 }
 
 export interface EpicSchedule {
@@ -56,13 +61,28 @@ export function satisfiesPrerequisite(issue: Pick<EpicScheduleIssue, 'state' | '
   return issue.state === 'done' || (issue.state === 'skipped' && issue.satisfiesDependents !== false);
 }
 
-/** Prerequisites the issue still waits for: an unsatisfied one in the execution, or an unmerged one outside it. */
+/**
+ * Prerequisites the issue still waits for: an unsatisfied one in the execution, or an unmerged one outside it.
+ * A prerequisite skipped as satisfied stands in for its own prerequisites (transitively), so a dependent never
+ * overtakes an unfinished issue further up the chain: it waits on that unfinished ancestor instead.
+ */
 export function unmetPrerequisites(issue: EpicScheduleIssue, issues: readonly EpicScheduleIssue[],
   mergedOutside: ReadonlySet<number>): number[] {
-  return issue.dependsOn.filter(prerequisite => {
-    const inExecution = issues.find(candidate => candidate.issueNumber === prerequisite);
-    return inExecution ? !satisfiesPrerequisite(inExecution) : !mergedOutside.has(prerequisite);
-  });
+  const byNumber = new Map(issues.map(candidate => [candidate.issueNumber, candidate]));
+  const unmet: number[] = [];
+  const visited = new Set<number>([issue.issueNumber]);
+  const visit = (prerequisites: readonly number[]) => {
+    for (const prerequisite of prerequisites) {
+      if (visited.has(prerequisite)) continue;
+      visited.add(prerequisite);
+      const inExecution = byNumber.get(prerequisite);
+      if (!inExecution) { if (!mergedOutside.has(prerequisite)) unmet.push(prerequisite); continue; }
+      if (!satisfiesPrerequisite(inExecution)) unmet.push(prerequisite);
+      else if (inExecution.state === 'skipped') visit(inExecution.dependsOn);
+    }
+  };
+  visit(issue.dependsOn);
+  return unmet;
 }
 
 /** The prerequisites an issue waits for that were skipped without satisfying their dependents. */
@@ -70,15 +90,19 @@ export function skippedPrerequisites(waitingOn: readonly number[], issues: reado
   return waitingOn.filter(prerequisite => issues.some(candidate => candidate.issueNumber === prerequisite && candidate.state === 'skipped'));
 }
 
-export function scheduleEpicIssues({ issues, mergedOutside = [], limit = null }: EpicScheduleInput): EpicSchedule {
+export function scheduleEpicIssues({ issues, mergedOutside = [], limit = null, inOrder = false }: EpicScheduleInput): EpicSchedule {
   const merged = mergedOutside instanceof Set ? mergedOutside : new Set(mergedOutside as readonly number[]);
   const ordered = [...issues].sort((left, right) => left.position - right.position);
   const inFlight = ordered.filter(issue => issue.inFlight && !settled(issue.state)).map(issue => issue.issueNumber);
   const waiting = new Map<number, number[]>();
   const ready: number[] = [];
+  let unfinishedBefore: number | null = null;
   for (const issue of ordered) {
+    const earlier = unfinishedBefore;
+    if (!settled(issue.state)) unfinishedBefore = issue.issueNumber;
     if (issue.inFlight || issue.state !== 'pending') continue;
     const unmet = unmetPrerequisites(issue, ordered, merged);
+    if (!unmet.length && inOrder && earlier !== null) unmet.push(earlier);
     if (unmet.length) waiting.set(issue.issueNumber, unmet);
     else ready.push(issue.issueNumber);
   }

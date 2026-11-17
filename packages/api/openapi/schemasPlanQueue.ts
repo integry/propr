@@ -44,6 +44,16 @@ export const EpicQueueBlockedEventsQuery = (() => {
   return schema;
 })();
 
+export const PlanIssuesQuery = (() => {
+  const schema = z.object({
+    page: z.number().int().min(0).optional().describe('Zero-based page. With `page` or `limit` the response is a page object; anything but a non-negative integer is a 400.'),
+    limit: z.number().int().min(1).optional().describe('Page size, 1 or more, capped at 100; defaults to 50. Anything else is a 400.'),
+    status: z.string().optional().describe('Paged responses only: keep issues with this plan status (an unknown value is ignored).'),
+  });
+  apiQuerySets.add(schema, { id: 'PlanIssuesQuery' });
+  return schema;
+})();
+
 export const EpicQueueSkipRequest = component('EpicQueueSkipRequest', z.object({
   executionId: z.string().describe('The execution read from the execution queue; a newer or finished one refuses the skip.'),
   expectedState: z.enum(ISSUE_STATES).optional().describe('Refuse with `STATE_CHANGED` unless the issue is still in this state.'),

@@ -30,7 +30,8 @@ async function fetchMetadata(url: URL): Promise<unknown> {
     const req = request(url, {
       signal,
       family: address.family,
-      lookup: (_host, _options, callback) => callback(null, address.address, address.family),
+      // Node asks with `all: true` (expecting a list) when it may race address families.
+      lookup: (_host, options, callback) => options?.all ? callback(null, [address]) : callback(null, address.address, address.family),
       headers: { Accept: 'application/json' }, timeout: 5000,
     }, response => {
       if (response.statusCode !== 200 || !response.headers['content-type']?.includes('application/json')) {
