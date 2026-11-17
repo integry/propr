@@ -96,6 +96,14 @@ function repositoryEventsSummary(result: Args): string {
   return `${count} repository events.${more} Resume with cursor ${result.cursor}.`;
 }
 
+/** Says out loud that granted repositories were left out, so silence is never read as "nothing there". */
+function notScannedNote(result: Args): string {
+  const missing = Number(result.repositoriesNotScanned) || 0;
+  if (missing <= 0) return '';
+  const resume = result.nextRepositoryOffset != null ? ` Continue with repositoryOffset ${result.nextRepositoryOffset}.` : '';
+  return ` ${missing} granted ${missing === 1 ? 'repository was' : 'repositories were'} not scanned; work there may be missing.${resume}`;
+}
+
 /** Digest reads answer a whole-instance question, so they summarize by section. */
 const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   wait_goal: goalWaitSummary,
@@ -104,8 +112,9 @@ const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   get_current_activity: result => `Across ${result.repositories.length} repositories: ${Object
     .entries(result.sections as Record<string, { count: number }>)
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
-    .join(', ')}.`,
-  get_recent_activity: result => `${result.events.length} events between ${result.window.since} and ${result.window.until}.`,
+    .join(', ')}.${notScannedNote(result)}`,
+  get_recent_activity: result => `${result.events.length} events between ${result.window.since} and ${result.window.until}.${notScannedNote(result)}`,
+  list_pull_requests: result => `${result.pullRequests.length} pull requests across ${result.repositories.length} repositories.${notScannedNote(result)}`,
   get_agent_run_admission: admissionSummary,
 };
 
