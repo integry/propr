@@ -164,6 +164,60 @@ describe('MaintenanceSection', () => {
     expect(await screen.findByText('No held follow-ups.')).toBeInTheDocument();
   });
 
+  describe('when a later attempt replaces the one a release was decided for', () => {
+    const later: api.FollowupHandoffStatus = { ...held, taskId: 'pr-comments-batch-integry-propr-3423-b', commitHash: 'fedcba9876543210' };
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+    const poll = () => vi.advanceTimersByTimeAsync(60_000);
+
+    it('drops a ticked force choice, so Release on the later attempt is not forced', async () => {
+      vi.mocked(api.releaseFollowupHandoff).mockResolvedValue({ released: true });
+      vi.mocked(api.listFollowupHandoffs).mockResolvedValueOnce([held]).mockResolvedValue([later]);
+      render(view());
+      fireEvent.click(within(await row('integry/propr#3423')).getByRole('checkbox', { name: 'Also release if it has unpublished work' }));
+      await poll();
+      const item = await row(later.taskId);
+      await waitFor(() => expect(within(item).getByRole('checkbox', { name: 'Also release if it has unpublished work' })).not.toBeChecked());
+      fireEvent.click(within(item).getByRole('button', { name: 'Release' }));
+      expect(screen.getByRole('dialog')).not.toHaveTextContent('Any unpublished commits stay on the branch.');
+      confirmRelease();
+      await screen.findByText(/Released integry\/propr#3423/);
+      expect(api.releaseFollowupHandoff).toHaveBeenCalledTimes(1);
+      expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: false });
+    });
+
+    it.each([
+      ['replaced by a later attempt', [later]],
+      ['released', [{ ...held, status: 'released', statusReason: 'auto_released_stale_hold', nextAction: 'none' }]],
+      ['gone from the list', []],
+    ])('withdraws an open Release confirmation once its attempt is %s', async (_case, read) => {
+      vi.mocked(api.listFollowupHandoffs).mockResolvedValueOnce([held]).mockResolvedValue(read as api.FollowupHandoffStatus[]);
+      render(view());
+      const item = await row('integry/propr#3423');
+      fireEvent.click(within(item).getByRole('checkbox', { name: 'Also release if it has unpublished work' }));
+      fireEvent.click(within(item).getByRole('button', { name: 'Release' }));
+      expect(screen.getByRole('dialog')).toHaveTextContent('Any unpublished commits stay on the branch.');
+      await poll();
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(await screen.findByRole('alert')).toHaveTextContent('integry/propr#3423 changed while you were deciding. Nothing was released');
+      expect(api.releaseFollowupHandoff).not.toHaveBeenCalled();
+    });
+
+    it('keeps an open Release confirmation while its attempt is still the open one', async () => {
+      vi.mocked(api.releaseFollowupHandoff).mockResolvedValue({ released: true });
+      vi.mocked(api.listFollowupHandoffs).mockResolvedValue([held]);
+      render(view());
+      const item = await row('integry/propr#3423');
+      fireEvent.click(within(item).getByRole('checkbox', { name: 'Also release if it has unpublished work' }));
+      fireEvent.click(within(item).getByRole('button', { name: 'Release' }));
+      await poll();
+      await waitFor(() => expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(2));
+      confirmRelease();
+      await screen.findByText(/Released integry\/propr#3423/);
+      expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: true });
+    });
+  });
+
   it('resumes a hold and says what happened', async () => {
     vi.mocked(api.resumeFollowupHandoff).mockResolvedValue({ summary, status: null });
     render(view());

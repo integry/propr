@@ -23,6 +23,9 @@ const keyOf = (handoff: Handoff) => `${handoff.repository}#${handoff.pullRequest
  * different attempt, so a choice made for one must not carry over to the next.
  */
 const attemptOf = (handoff: Handoff) => `${keyOf(handoff)}:${handoff.taskId}`;
+const isOpenAttempt = (handoffs: Handoff[], attempt: string) =>
+  handoffs.some(handoff => isOpenFollowup(handoff) && attemptOf(handoff) === attempt);
+const staleRelease = (id: string) => `${id} changed while you were deciding. Nothing was released; check it and choose again.`;
 const prUrl = (handoff: Handoff) => `https://github.com/${handoff.repository}/pull/${handoff.pullRequest}`;
 
 /**
@@ -41,6 +44,7 @@ function HeldFollowups() {
   const [handoffs, setHandoffs] = useState<Handoff[]>();
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  // Consent to release unpublished work, bound to the attempt it was ticked for.
   const [forceFor, setForceFor] = useState<string | null>(null);
   // Consent to publish cancelled work, bound to the attempt it was ticked for.
   const [publishCancelledFor, setPublishCancelledFor] = useState<string | null>(null);
@@ -49,6 +53,8 @@ function HeldFollowups() {
   const [error, setError] = useState('');
   const alive = useRef(true);
   const loaded = useRef(false);
+  // The rows of the latest successful read; Release is checked against them before it is sent.
+  const latest = useRef<Handoff[]>([]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   // A failed background read keeps the rows on screen; only a failed first read shows an error.
@@ -57,11 +63,13 @@ function HeldFollowups() {
       const next = await api.listFollowupHandoffs();
       if (!alive.current) return;
       loaded.current = true;
+      latest.current = next;
       setHandoffs(next); setLoadError('');
       // Drop consent once its attempt is gone or no longer waits for that choice.
       setPublishCancelledFor(current => (
         current !== null && next.some(handoff => needsCancelledChoice(handoff) && attemptOf(handoff) === current) ? current : null
       ));
+      setForceFor(current => (current !== null && isOpenAttempt(next, current) ? current : null));
     } catch (e) {
       if (alive.current && !loaded.current) setLoadError(e instanceof Error ? e.message : 'Held follow-ups are unavailable.');
     }
@@ -105,6 +113,12 @@ function HeldFollowups() {
   const release = (handoff: Handoff, force: boolean) => {
     const id = keyOf(handoff);
     setConfirmRelease(null);
+    // The server releases whatever attempt is current on the pull request, so only
+    // send the decision while the attempt it was made for is still the open one.
+    if (!isOpenAttempt(latest.current, attemptOf(handoff))) {
+      setError(staleRelease(id));
+      return;
+    }
     void run(id, async () => {
       await api.releaseFollowupHandoff(handoff.repository, handoff.pullRequest, { force });
       setForceFor(null);
@@ -114,6 +128,13 @@ function HeldFollowups() {
 
   const open = handoffs?.filter(isOpenFollowup) ?? [];
   const released = handoffs?.filter(handoff => !isOpenFollowup(handoff)) ?? [];
+  // An open Release confirmation belongs to one attempt; a read that no longer lists it open withdraws it.
+  const confirmable = confirmRelease !== null && handoffs !== undefined && isOpenAttempt(handoffs, attemptOf(confirmRelease.handoff));
+  useEffect(() => {
+    if (confirmRelease === null || confirmable) return;
+    setConfirmRelease(null);
+    setMessage(''); setError(staleRelease(keyOf(confirmRelease.handoff)));
+  }, [confirmRelease, confirmable]);
 
   return (
     <SettingsSection
@@ -136,7 +157,7 @@ function HeldFollowups() {
             {open.map(handoff => {
               const id = keyOf(handoff);
               const held = isHeldFollowup(handoff);
-              const force = forceFor === id;
+              const force = forceFor === attemptOf(handoff);
               const next = nextStep(handoff);
               return (
                 <li key={id} className="py-3">
@@ -157,7 +178,7 @@ function HeldFollowups() {
                     <div className="flex flex-wrap items-center gap-3">
                       <button className={button} disabled={busy !== null} onClick={() => setConfirmRelease({ handoff, force })}>Release</button>
                       <label className="flex items-center gap-2 text-slate-600">
-                        <input type="checkbox" checked={force} onChange={event => setForceFor(event.target.checked ? id : null)} />
+                        <input type="checkbox" checked={force} onChange={event => setForceFor(event.target.checked ? attemptOf(handoff) : null)} />
                         <span>Also release if it has unpublished work</span>
                       </label>
                     </div>
@@ -176,7 +197,7 @@ function HeldFollowups() {
           </details>
         )}
       </div>
-      {confirmRelease && (
+      {confirmRelease && confirmable && (
         <AgentConfirmDialog
           title={`Release ${keyOf(confirmRelease.handoff)}?`}
           confirmLabel="Release"
