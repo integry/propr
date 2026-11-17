@@ -115,14 +115,33 @@ test('a running Ultrafix loop names its cycle once', () => {
 
 // --- 5: cancelled and unexpanded checks ---
 
-test('cancelled runs a newer run replaced, or whose name was never expanded, are neither failed nor counted', async () => {
+const TEMPLATE_CHECK = 'Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package';
+
+test('cancelled runs a newer run replaced are neither failed nor counted', async () => {
     const checks = await checksOf([
-        run('unit', 'success'),
+        runIn(1, 5, 'unit', 'success'),
         runIn(7, 10, 'lint', 'cancelled'), runIn(7, 11, 'lint', null),
-        run('Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package', 'cancelled'),
-    ]);
-    assert.deepEqual({ passed: checks.passed, failed: checks.failed, pending: checks.pending, cancelled: checks.cancelled }, { passed: 1, failed: 0, pending: 1, cancelled: undefined });
-    assert.equal(line({ checks }), '**ProPR** 🔨 Waiting for CI · checks: 1 passed, 1 pending · updated Nov 16 13:59 UTC');
+        // Cancelled before its matrix expanded, superseded by a newer run of the same workflow with expanded job names.
+        runIn(8, 12, TEMPLATE_CHECK, 'cancelled'), runIn(9, 20, 'Validate unsigned linux-x64 package', 'success'),
+    ], [], [{ check_suite_id: 1, workflow_id: 50 }, { check_suite_id: 7, workflow_id: 60 }, { check_suite_id: 8, workflow_id: 100 }, { check_suite_id: 9, workflow_id: 100 }]);
+    assert.deepEqual({ passed: checks.passed, failed: checks.failed, pending: checks.pending, cancelled: checks.cancelled }, { passed: 2, failed: 0, pending: 1, cancelled: undefined });
+    assert.equal(line({ checks }), '**ProPR** 🔨 Waiting for CI · checks: 2 passed, 1 pending · updated Nov 16 13:59 UTC');
+});
+
+test('a run cancelled before its matrix expanded, with no successor, keeps the PR from being ready without naming the template', async () => {
+    const otherwiseReady = (checks: Awaited<ReturnType<typeof checksOf>>) => computePullRequestStatus(facts({ checks }));
+    const alone = await checksOf([runIn(1, 5, 'unit', 'success'), runIn(8, 12, TEMPLATE_CHECK, 'cancelled')]);
+    assert.deepEqual({ passed: alone.passed, failed: alone.failed, pending: alone.pending, cancelled: alone.cancelled }, { passed: 1, failed: 0, pending: 0, cancelled: 1 });
+    const status = otherwiseReady(alone);
+    assert.equal(status.state, 'needs_attention');
+    assert.equal(renderPullRequestStatusLine(status, NOW), '**ProPR** ⚠️ Needs you · checks cancelled · checks: 1 passed, 1 cancelled · updated Nov 16 13:59 UTC');
+    // No identity to order or group runs by: no replacement is established.
+    assert.equal(otherwiseReady(await checksOf([run('unit', 'success'), run(TEMPLATE_CHECK, 'cancelled')])).state, 'needs_attention', 'no run identity');
+    // A newer run of another workflow, an older run of the same workflow, or an unreadable workflow listing replaces nothing.
+    const workflows = [{ check_suite_id: 1, workflow_id: 50 }, { check_suite_id: 8, workflow_id: 100 }, { check_suite_id: 9, workflow_id: 100 }];
+    assert.equal((await checksOf([runIn(1, 30, 'unit', 'success'), runIn(8, 12, TEMPLATE_CHECK, 'cancelled')], [], workflows)).cancelled, 1, 'another workflow');
+    assert.equal((await checksOf([runIn(9, 5, 'Validate unsigned linux-x64 package', 'success'), runIn(8, 12, TEMPLATE_CHECK, 'cancelled')], [], workflows)).cancelled, 1, 'the same-workflow run is older');
+    assert.equal((await checksOf([runIn(9, 20, 'Validate unsigned linux-x64 package', 'success'), runIn(8, 12, TEMPLATE_CHECK, 'cancelled')])).cancelled, 1, 'workflow runs unreadable');
 });
 
 test('a cancelled run nothing replaced is reported as cancelled, not failed, and still needs you', async () => {

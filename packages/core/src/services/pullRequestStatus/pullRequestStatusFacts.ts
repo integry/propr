@@ -359,14 +359,17 @@ function startedAfter(later: CheckRun, earlier: CheckRun): boolean {
 
 /**
  * Separates cancelled check runs from the rest. A cancelled run is no
- * verdict on the head: it is not failed, and not passed. One whose name was
- * never expanded (its workflow run was cancelled before its matrix was read,
- * usually because a newer run superseded it) is left out entirely, and so is
- * one a newer run of the same logical check replaced: the same name, started
- * after it, in the same check suite (a re-run job) or in a suite of the same
- * GitHub Actions workflow (a newer workflow run superseding it). The name
- * alone proves nothing: two workflows may each have a `test` job, and one
- * passing says nothing about the other being cancelled. Any other blocking
+ * verdict on the head: it is not failed, and not passed. One a newer run of
+ * the same logical check replaced is left out: the same name, started after
+ * it, in the same check suite (a re-run job) or in a suite of the same GitHub
+ * Actions workflow (a newer workflow run superseding it). A run whose name was
+ * never expanded (its workflow run was cancelled before its matrix was read)
+ * shares no name with the expanded jobs of its successor, so any newer run in
+ * another suite of the same workflow replaces it; without such a successor it
+ * stays cancelled like any other, and the renderer counts its raw name
+ * without listing it. The name alone proves nothing: two workflows may each
+ * have a `test` job, and one passing says nothing about the other being
+ * cancelled. Any other blocking
  * cancelled run is reported as cancelled; nothing runs it again, so it still
  * keeps the PR from being ready. The workflow of a suite is read only when
  * a replacement in another suite is possible, page by page until those
@@ -377,9 +380,12 @@ async function cancelledCheckRuns(
 ): Promise<{ checkRuns: CheckRun[]; cancelledNames: string[] }> {
     const isCancelled = (run: CheckRun) => run.status === 'completed' && run.conclusion === 'cancelled';
     const kept = runs.filter(run => !isCancelled(run));
-    const reported = runs.filter(run => isCancelled(run) && !isUnexpandedCheckName(run.name) && !isNonBlockingCheck(run.name, patterns));
+    const reported = runs.filter(run => isCancelled(run) && !isNonBlockingCheck(run.name, patterns));
+    // An unexpanded run's successor names its jobs after the expanded matrix: any newer run of another suite may be it (the workflow decides).
+    const sameCheck = (other: CheckRun, cancelled: CheckRun) => (other.name ?? '') === (cancelled.name ?? '')
+        || (isUnexpandedCheckName(cancelled.name) && suiteOf(other) !== suiteOf(cancelled));
     const candidates = (cancelled: CheckRun) => kept.filter(other =>
-        (other.name ?? '') === (cancelled.name ?? '') && suiteOf(other) !== null && suiteOf(cancelled) !== null && startedAfter(other, cancelled));
+        sameCheck(other, cancelled) && suiteOf(other) !== null && suiteOf(cancelled) !== null && startedAfter(other, cancelled));
     let workflows: Map<number, number> | null = null;
     // The suites whose workflow decides a replacement: each cancelled run's and its newer same-name runs' in other suites.
     const wanted = new Set<number>();

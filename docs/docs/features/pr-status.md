@@ -41,7 +41,7 @@ The time is always in UTC and always carries its date, because the line only cha
 The check counts:
 
 - **passed** counts only checks that concluded successfully. Skipped checks are counted separately as **skipped**, and only when there are any. Checks listed in the repository's non-blocking checks are not counted at all.
-- A cancelled check run is not a failure. If another run of the same check replaced it, or its name still contains a workflow expression such as `${{ matrix.os }}` (a superseded workflow run cancelled before its matrix was expanded), it isn't counted at all. A cancelled run that nothing replaced is shown as **cancelled** (for example "cancelled: e2e"). Nothing will run it again, so the pull request still needs you, as it would for a failed check.
+- A cancelled check run is not a failure. If a newer run of the same check replaced it, it isn't counted at all. A run whose name still contains a workflow expression such as `${{ matrix.os }}` was cancelled before its matrix was expanded; it isn't counted only when a newer run of the same workflow followed it. Otherwise it counts as cancelled, but its name is not listed ("checks cancelled"). A cancelled run that nothing replaced is shown as **cancelled** (for example "cancelled: e2e"). Nothing will run it again, so the pull request still needs you, as it would for a failed check.
 - Failed check names whose name still contains `${{` are counted in the "+N" but never listed by name.
 
 How the line behaves:
