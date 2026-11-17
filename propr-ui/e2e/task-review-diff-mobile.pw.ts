@@ -302,25 +302,26 @@ test('390px completed PR: inspect the review, then open and close an added file\
     const back = await swipe(near, 300, 0);
     expect(back.top).toBe(start.bottom);
     expect(back.left).toBeLessThan(across.left);
-    // How far one swipe carries depends on its fling, which depends on how evenly the input lands, so each edge is reached
-    // by swiping on until it is there: every swipe moves toward it along one axis only, and a few are always enough.
-    const swipeTo = async (from: { x: number; y: number }, dx: number, dy: number, reached: (at: { top: number; left: number }) => boolean,
-      still: (at: { top: number; left: number }) => void) => {
-      for (let swipes = 0; swipes < 6; swipes++) {
+    // How far a swipe carries depends on how fast the compositor sees the finger move, which varies with the host's load,
+    // so the way back is swiped until it reaches the end: each swipe moves on towards it and never off the other axis.
+    const swipeTo = async (from: { x: number; y: number }, dx: number, dy: number, end: { top: number; left: number }) => {
+      let last: { top: number; left: number } = await position();
+      for (let swipes = 0; swipes < 8; swipes++) {
         const landed = await swipe(from, dx, dy);
-        still(landed);
-        if (reached(landed)) return landed;
+        if (dx) expect(landed.top).toBe(end.top); else expect(landed.left).toBe(end.left);
+        if (landed.top === end.top && landed.left === end.left) return;
+        if (dx) expect(landed.left).toBeLessThan(last.left); else expect(landed.top).toBeGreaterThan(last.top);
+        last = landed;
       }
-      throw new Error('The diff did not reach its edge after six swipes');
+      expect(await position()).toMatchObject(end);
     };
-    await swipeTo(near, 300, 0, ({ left }) => left === 0, ({ top }) => expect(top).toBe(start.bottom));
+    await swipeTo(near, 300, 0, { top: start.bottom, left: 0 });
     const high = { x: Math.round(centre.x), y: Math.round(diffBox.y + diffBox.height / 4) };
     const up = await swipe(high, 0, 200);
     expect(up.left).toBe(0);
     expect(up.top).toBeLessThan(start.bottom);
     const low = { x: high.x, y: Math.round(diffBox.y + diffBox.height * 3 / 4) };
-    await swipeTo(low, 0, -200, ({ top }) => top === start.bottom, ({ left }) => expect(left).toBe(0));
-    expect((await position()).top).toBe(start.bottom);
+    await swipeTo(low, 0, -200, { top: start.bottom, left: 0 });
   } else {
     // Other engines bring the start of the lines back with the same real wheel input, carried on past it.
     for (let step = 0; step < 12; step++) await page.mouse.wheel(-400, 0);
