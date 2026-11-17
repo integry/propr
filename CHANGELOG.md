@@ -392,6 +392,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned wrangler and verifies the served bundle. Re-running the failed job of
   a tag run reuses the tag's broken workflow, so it cannot fix that release.
 
+### Security
+
+- **picomatch denial of service (GHSA-fc5q-39xc-vjpf)**: every published
+  `picomatch` up to 4.0.7 compiles single-branch repeated extglobs such as
+  `+(*)` or `+(*a)` to regexes that backtrack exponentially, and there is no
+  fixed release. Both picomatch lines now install from reviewed, vendored builds
+  with a guard that matches such extglobs as literal text: `vendor/picomatch`
+  (4.0.7, for `vite`, `vitest`, `tinyglobby` and the other `picomatch@4`
+  users) and `vendor/picomatch-v2` (2.3.2, for `micromatch`, `anymatch` and
+  `readdirp`, which `fast-glob`, Repomix and `chokidar` use). The runtime and
+  desktop packaging audits pass again without an audit exception; see
+  [dependency audit exceptions](docs/dependency-audit-exceptions.md).
+
 ## [0.9.1] - 2026-11-01
 
 ### Added
