@@ -15,11 +15,14 @@ vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
 type EditorCallbacks = import('../components/Agents/useAgentEditor').AgentEditorCallbacks;
 /** The callbacks each mocked editor was last rendered with, by the agent it shows ('new' for creation). */
 const editorCallbacks = new Map<string, EditorCallbacks>();
+/** How often the mocked editor (and so an open run beside the list) was rendered. */
+const editorRenders = { count: 0 };
 
 // The editor has its own suite; here it only has to say which agent it shows and where its controls are.
 vi.mock('../components/Agents/AgentEditor', () => ({
   AgentEditor: ({ definitionId, headerControls, templateId, ...callbacks }: { definitionId: string | null; headerControls?: React.ReactNode; templateId?: string | null } & EditorCallbacks) => {
     editorCallbacks.set(definitionId ?? 'new', callbacks);
+    editorRenders.count += 1;
     return <div data-testid="agent-editor">editor for {definitionId ?? 'new'}{templateId ? ` from ${templateId}` : ''}{headerControls}</div>;
   },
 }));
@@ -79,6 +82,7 @@ describe('AgentsPage', () => {
     vi.clearAllMocks();
     vi.useRealTimers();
     editorCallbacks.clear();
+    editorRenders.count = 0;
   });
 
   it('opens an agent beside the list on wide screens without leaving /automations', async () => {
@@ -326,7 +330,7 @@ describe('AgentsPage', () => {
     const review = await screen.findByRole('link', { name: /Dependency review/ });
     expect(review).toHaveTextContent('Daily 09:00 UTC · next in 1h');
 
-    // The 09:00 run happens while the page stays open; run polling renders the row again at 11:00.
+    // The 09:00 run happens while the page stays open; the list's clock renders the row again at 11:00.
     await act(async () => { await vi.advanceTimersByTimeAsync(3 * 3_600_000); });
     expect(review).toHaveTextContent('Daily 09:00 UTC · next in 22h');
   });
@@ -397,6 +401,26 @@ describe('AgentsPage', () => {
     expect(within(review).getByText('Failed')).toBeInTheDocument();
     expect(within(triage).getByText('Needs review')).toBeInTheDocument();
     expect(within(docs).getByText('Running')).toBeInTheDocument();
+  });
+
+  it('does not re-render the open automation when a background read finds the same run states', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setViewport(true);
+    vi.mocked(listAutomationRuns).mockImplementation(async id => ({
+      runs: [{ id: `r-${id}`, state: id === 'a1' ? 'completed' : 'awaiting_approval' } as never], total: 1, limit: 1, offset: 0, nextOffset: null,
+    }));
+    renderAt('/automations/a1');
+    const triage = await screen.findByRole('link', { name: /Issue triage/ });
+    expect(await within(triage).findByText('Needs review')).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const rendersBefore = editorRenders.count;
+    const readsBefore = vi.mocked(listAutomationRuns).mock.calls.length;
+
+    // Unfinished-run reads every 5s and discovery reads every 30s, all answering with what is shown.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+
+    expect(vi.mocked(listAutomationRuns).mock.calls.length).toBeGreaterThan(readsBefore + 10);
+    expect(editorRenders.count).toBe(rendersBefore);
   });
 
   it('does not let a discovery read sent before a run started overwrite that run', async () => {

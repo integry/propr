@@ -175,9 +175,28 @@ const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?
 /** The saved agents, filterable by repository and searchable, with a launchpad empty state when there are none. */
 const NO_AGENTS: readonly InstanceCatalogAgent[] = [];
 
+/** How often the list's own clock moves on, so "next in …" stays current on a page left open. */
+const LIST_CLOCK_MS = 60_000;
+
+/**
+ * The current time, moved on every LIST_CLOCK_MS. The list keeps its own clock
+ * rather than relying on the page re-rendering it, because the page must not
+ * re-render (and so disturb) the automation or run open beside the list.
+ */
+function useListClock(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), LIST_CLOCK_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
 export const AgentList: React.FC<AgentListProps> = ({
-  definitions, lastRunStates, error, selectedId, readOnly = false, now = Date.now(), agents = NO_AGENTS, creating = false,
+  definitions, lastRunStates, error, selectedId, readOnly = false, now: fixedNow, agents = NO_AGENTS, creating = false,
 }) => {
+  const clock = useListClock();
+  const now = fixedNow ?? clock;
   const filters = useAutomationListFilters();
   const { repository, search, listQuery } = filters;
   const visible = useMemo(() => {
