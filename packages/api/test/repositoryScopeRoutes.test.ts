@@ -98,6 +98,31 @@ test('cost, tasks and pull request scores match a configured repository in any c
   assert.equal(drafts.body.drafts.length, 1);
 });
 
+test('repository media reads and projects a configured repository under its configured spelling', async () => {
+  const configuredAs = createRepositoryScopeResolver({
+    configuredRepositories: async () => [{ name: 'Integry/ProPR', enabled: true }],
+    checksGitHubAccess: () => false,
+  });
+  const policyChecks: string[][] = [];
+  const projected: Array<{ repository: string; prNumbers: number[] }> = [];
+  const reader = {
+    enabledRepositories: async (repositories: string[]) => {
+      policyChecks.push(repositories);
+      return new Set(repositories.map(name => name.toLowerCase()));
+    },
+    project: async (sources: Array<{ repository: string; prNumbers: number[] }>) => {
+      projected.push(...sources);
+      return [{ previews: [{ url: 'https://example.test/preview.png' }] }];
+    },
+  };
+  const media = createRepositoryMediaRoutes({ db, repositoryScope: configuredAs, reader: reader as never });
+  const result = await call(media.getMedia, { repository: 'INTEGRY/propr' });
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.deepEqual(policyChecks, [['Integry/ProPR']], 'the preview policy is checked for the configured repository');
+  assert.deepEqual(projected, [{ repository: 'Integry/ProPR', prNumbers: [3583] }], 'the stored lowercase row is found and projected under the configured name');
+  assert.deepEqual(result.body.previews, [{ url: 'https://example.test/preview.png' }]);
+});
+
 test('an unknown repository is REPOSITORY_NOT_ACCESSIBLE on every repository-filtered read, and `all` still works', async () => {
   const dashboard = createDashboardRoutes({
     db, repositoryScope, now: () => NOW,
