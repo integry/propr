@@ -58,6 +58,8 @@ own tests and as a reference for plugin authors.
 | [Jira Cloud](../plugins/jira.md) (`jira`) | The same hand-off for Jira Cloud: a label on a ticket of a mapped project creates a GitHub issue that starts a task; ProPR comments on the ticket and transitions it as the work progresses. |
 | [Sentry](../plugins/sentry.md) (`sentry`) | An error reported by Sentry for a mapped project creates one GitHub issue with the stack trace attached. Starting a task is off by default, and limited by event count, environment and a daily cap when switched on. ProPR comments on the Sentry issue when the pull request merges. |
 | [Notion](../plugins/notion.md) (`notion`) | Lets the agent read the Notion pages an issue or pull request links to, such as specifications, through Notion's hosted MCP server with read and search tools only. No handlers or commands: a manifest and a skill. |
+| [Cloudflare](../plugins/cloudflare.md) (`cloudflare`) | `/deploy` (or `/deploy-cloudflare`) on a pull request has the agent deploy the branch as a Cloudflare Pages or Workers preview through Cloudflare's API MCP server and reply with the URL. Production only when allowed. No handlers. |
+| [Vercel](../plugins/vercel.md) (`vercel`) | `/deploy` (or `/deploy-vercel`) on a pull request has the agent create a Vercel preview deployment of the head commit through Vercel's MCP server and reply with the URL. Production only when allowed. No handlers. |
 
 ## The manifest
 
@@ -192,7 +194,7 @@ saved before the list was declared.
 | `mcpServers` | MCP servers, in the [extension library](./agent-extensions.md)'s item shapes (below). |
 | `skills` | `{ "name", "path" }`: a skill bundle folder inside the plugin folder. Its `SKILL.md` front matter must use the same `name`. |
 | `automationTemplates` | `{ "id", "path" }`: a template folder in the automation template format. It must pass the same checks as the shipped templates. |
-| `commands` | `{ "name", "description", "where", "kind", "prompt"?, "handler"?, "skills"?, "servers"?, "needsWrite"?, "shared"?, "specific"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
+| `commands` | `{ "name", "description", "where", "kind", "prompt"?, "handler"?, "skills"?, "servers"?, "needsWrite"?, "shared"?, "specific"?, "promptSettings"? }`: a slash command for issue and pull request comments. See [Commands](#commands). |
 | `subscriptions` | `{ "on", "handler", "filter"? }`: deliver a repository event (`<domain>.<type>`, such as `pull_request.merged`) to an exported handler. See [Event subscriptions](#event-subscriptions). Needs the `events.read` permission. |
 | `webhooks` | `{ "name", "description", "handler", "verification", "deliveryIdHeader"?, "respond"? }`: an inbound webhook URL whose verified requests run `handler`. `verification` is a built-in scheme with a `signing_secret` connection. See [Inbound webhooks](#inbound-webhooks). |
 
@@ -237,6 +239,29 @@ extension library's write-authorization path: the run may use the plugin's
 write servers that the command names, and no other write server. The
 authorization is single use, so a retry of the run and later follow-ups get
 read servers only.
+
+```json
+"promptSettings": [
+  { "setting": "projects" },
+  { "setting": "allowProductionDeploys",
+    "on": "Allowed target: preview by default; production only when the argument explicitly asks for production.",
+    "off": "Allowed target: preview only. Refuse a production request and explain how to allow it." }
+]
+```
+
+`promptSettings` (prompt commands only) names plugin settings whose current
+values the task's instruction states, after the prompt and before the argument,
+under a heading that marks them as administrator configuration: a string,
+number or list as `<label>: <value>`, a repository map as the entry of the
+comment's repository (`<label> for owner/repo: "…"` or `not set`), and a boolean
+as `<label>: on` or `off`, or as the `on` and `off` sentences the manifest gives
+(only boolean settings take them). Values come from the installation's saved
+settings, or the setting's default. This is how a deployment plugin's
+`/deploy` states the allowed target: the person's argument can ask for
+production, but only the setting decides whether production is allowed. The
+plugin test kit's `testCommandInstruction(manifest, command, { settings,
+repository, argument })` builds the same instruction, for tests at the
+prompt-construction level.
 
 ```json
 {
@@ -292,6 +317,12 @@ comment.
 `authentication` is `none`, `bearer` or `oauth`. A `bearer` server names a
 `token` connection, an `oauth` server names an `oauth` connection, and a `none`
 server names no connection. The endpoint must be `https://`.
+
+Any server (remote or package) may set `"autoApply": false`: its managed
+library item then starts with automatic apply off, so it reaches only runs
+that add it explicitly, such as a `needsWrite` command's run. Deployment plugins
+use it for their write server. The default is `true`; an administrator's later
+choice in the library is kept.
 
 #### Local package servers
 
@@ -603,7 +634,7 @@ and launch checks.
   still use the item's enabled checkbox, its repository and agent limits, and
   its automatic-apply switch. Every other change through the library API,
   removing the item and replacing its credential are refused.
-- **Defaults:** automatic apply on, enabled, limited to the plugin's repository
+- **Defaults:** automatic apply on (off for a server whose manifest sets `autoApply: false`), enabled, limited to the plugin's repository
   limit (all repositories when it has none). Changing the plugin's repository
   limit sets the managed items' repository limit to it again.
 - **Names:** a managed server keeps its manifest name unless the library

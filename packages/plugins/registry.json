@@ -9,6 +9,8 @@
     { "id": "jira" },
     { "id": "sentry" },
     { "id": "notion" },
+    { "id": "cloudflare" },
+    { "id": "vercel" },
     { "id": "example-pack", "development": true }
   ]
 }

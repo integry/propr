@@ -3,7 +3,7 @@ import { EXTENSION_OAUTH_REGISTRATIONS } from './extensionOAuth.js';
 import { extensionServerNameSchema, remoteMcpSchema } from './extensionProfiles.js';
 import { extensionPackageEnvNameSchema, extensionPackageIntegritySchema, packageServerFields, EXACT_VERSION_PATTERN } from './extensionPackages.js';
 import { isRepositoryEventType } from './repositoryEvents.js';
-import { BUILT_IN_COMMAND_NAMES, COMMAND_NAME_PATTERN, COMMAND_TARGETS, isBuiltInCommandName, type CommandTarget } from './commands.js';
+import { BUILT_IN_COMMAND_NAMES, COMMAND_NAME_PATTERN, COMMAND_TARGETS, isBuiltInCommandName, pluginCommandInstruction, type CommandTarget } from './commands.js';
 
 /** Whether `name` is `<domain>.<type>` of a repository journal event. */
 export function isPluginSubscriptionEvent(name: unknown): boolean {
@@ -263,10 +263,18 @@ export type PluginSettings = z.infer<typeof pluginSettingsSchema>;
  * A remote MCP server: the extension library's remote item without the
  * per-instance fields. Its credential is one of the plugin's connections.
  */
+/**
+ * Whether the managed library item starts with automatic apply on (the
+ * default). A write server a command adds explicitly sets it to false, so it
+ * never reaches a run the command did not authorize; administrators may still
+ * change it in the library.
+ */
+const serverAutoApplySchema = z.boolean().default(true);
 export const pluginRemoteServerSchema = remoteMcpSchema.omit({ enabled: true, scopes: true, clientId: true }).extend({
   url: httpsUrlSchema,
   /** Required unless `authentication` is `none`: a `token` connection for `bearer`, an `oauth` connection for `oauth`. */
   connection: keySchema.optional(),
+  autoApply: serverAutoApplySchema,
 });
 /**
  * A local server from a pinned npm package: the extension library's package
@@ -279,6 +287,7 @@ export const pluginPackageServerSchema = z.strictObject({
   integrity: z.string({ error: issue => (issue.input === undefined ? 'Record the integrity value (sha512-…) of the pinned package version' : undefined) })
     .pipe(extensionPackageIntegritySchema),
   secretEnv: z.array(z.strictObject({ name: extensionPackageEnvNameSchema, connection: keySchema })).max(16).default([]),
+  autoApply: serverAutoApplySchema,
 });
 export const pluginMcpServerSchema = z.discriminatedUnion('kind', [pluginRemoteServerSchema, pluginPackageServerSchema]);
 export type PluginMcpServer = z.infer<typeof pluginMcpServerSchema>;
@@ -293,6 +302,20 @@ export const pluginCommandNameSchema = z.string().regex(COMMAND_NAME_PATTERN, 'C
   .refine(name => !isBuiltInCommandName(name), { error: issue => `/${String(issue.input)} is a built-in ProPR command; built-in commands are ${BUILT_IN_COMMAND_NAMES.map(n => `/${n}`).join(', ')}` });
 export const PLUGIN_COMMAND_KINDS = ['prompt', 'handler'] as const;
 export type PluginCommandKind = typeof PLUGIN_COMMAND_KINDS[number];
+/**
+ * A plugin setting a `prompt` command states in its task's instruction, as an
+ * administrator saved it (or its default): a string, number or list as its
+ * value, a repository map as the entry of the comment's repository. A boolean
+ * setting may give the sentence the instruction states for each value (`on`,
+ * `off`), such as the deploy target a command may use; without them it
+ * states on or off. The comment's argument can never change these lines.
+ */
+export const pluginCommandSettingSchema = z.strictObject({
+  setting: settingKeySchema,
+  on: textSchema().optional(),
+  off: textSchema().optional(),
+});
+export type PluginCommandSetting = z.infer<typeof pluginCommandSettingSchema>;
 /**
  * A slash command used in issue or pull request comments (`where`).
  *
@@ -331,6 +354,8 @@ export const pluginCommandSchema = z.strictObject({
   /** Of a `shared` command: this plugin's commands that perform the same operation under their own name. */
   specific: z.array(pluginCommandNameSchema).max(PLUGIN_LIMITS.commands).default([]),
   permissions: z.array(z.enum(PLUGIN_PERMISSIONS)).max(PLUGIN_LIMITS.permissions).default([]),
+  /** Of a `prompt` command: plugin settings whose current values the task instruction states; see `pluginCommandSettingSchema`. */
+  promptSettings: z.array(pluginCommandSettingSchema).max(16).default([]),
 });
 export type PluginCommand = z.infer<typeof pluginCommandSchema>;
 /** A handler name: an exported function of the plugin's `handlers.ts`. */
@@ -474,6 +499,61 @@ function checkCommands(manifest: z.infer<typeof pluginManifestObjectSchema>, iss
     }
     checkCommandKind(command, issue, at);
     checkSharedCommand(command, contributes.commands, issue, at);
+    checkPromptSettings(command, manifest.settings, issue, at);
+  });
+}
+
+/** Each setting a command states is a defined setting, named once; only a boolean setting has `on` and `off` sentences. */
+function checkPromptSettings(command: PluginCommand, settings: PluginSettings, issue: Issue, at: (string | number)[]) {
+  if (command.promptSettings.length && command.kind !== 'prompt') issue(`Command ${command.name} is a handler command; only prompt commands state settings`, [...at, 'promptSettings']);
+  for (const key of duplicates(command.promptSettings.map(s => s.setting))) issue(`Command ${command.name} states setting ${key} more than once`, [...at, 'promptSettings']);
+  command.promptSettings.forEach((entry, index) => {
+    const setting = Object.hasOwn(settings.properties, entry.setting) ? settings.properties[entry.setting] : undefined;
+    if (!setting) issue(`Command ${command.name} states setting ${entry.setting}, which the plugin does not define`, [...at, 'promptSettings', index, 'setting']);
+    else if (setting.type !== 'boolean' && (entry.on !== undefined || entry.off !== undefined)) issue(`Command ${command.name} gives on and off sentences for setting ${entry.setting}, which is not a boolean setting`, [...at, 'promptSettings', index]);
+  });
+}
+
+/**
+ * The lines a `prompt` command's instruction states for its `promptSettings`,
+ * from the installation's saved values (a missing value falls back to the
+ * manifest default): `<label>: <value>` with the value as a JSON literal, a
+ * repository map's entry for `repository` (compared without letter case),
+ * and a boolean's `on` or `off` sentence when the manifest gives one.
+ */
+export function pluginCommandSettingLines(manifest: Pick<PluginManifest, 'settings'>, command: Pick<PluginCommand, 'promptSettings'>, values: Readonly<Record<string, unknown>>, repository: string): string[] {
+  return command.promptSettings.flatMap(entry => {
+    const setting = Object.hasOwn(manifest.settings.properties, entry.setting) ? manifest.settings.properties[entry.setting] : undefined;
+    if (!setting) return [];
+    const value = Object.hasOwn(values, entry.setting) ? values[entry.setting] : setting.default;
+    const notSet = `${setting.label}: not set`;
+    if (setting.type === 'boolean') {
+      const on = value === true;
+      return [(on ? entry.on : entry.off) ?? `${setting.label}: ${on ? 'on' : 'off'}`];
+    }
+    if (setting.type === 'object') {
+      const map = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      const key = Object.keys(map).find(name => name.toLowerCase() === repository.toLowerCase());
+      const entryValue = key === undefined ? undefined : map[key];
+      return [typeof entryValue === 'string' && entryValue ? `${setting.label} for ${repository}: ${JSON.stringify(entryValue)}` : `${setting.label} for ${repository}: not set`];
+    }
+    if (value === undefined || value === null || value === '' || (Array.isArray(value) && !value.length)) return [notSet];
+    return [`${setting.label}: ${JSON.stringify(value)}`];
+  });
+}
+
+/**
+ * The task instruction of a `prompt` command run, as ProPR queues it: the
+ * manifest prompt, the lines of its `promptSettings` from the installation's
+ * `settings` for the comment's `repository`, then the delimited argument.
+ */
+export function pluginCommandTaskInstruction(
+  manifest: Pick<PluginManifest, 'name' | 'settings'>, command: Pick<PluginCommand, 'name' | 'prompt' | 'promptSettings'>,
+  input: { argument: string; author?: string; settings: Readonly<Record<string, unknown>>; repository: string },
+): string {
+  return pluginCommandInstruction({
+    pluginName: manifest.name, command: command.name, prompt: command.prompt ?? '', argument: input.argument, author: input.author,
+    settings: pluginCommandSettingLines(manifest, command, input.settings, input.repository),
   });
 }
 

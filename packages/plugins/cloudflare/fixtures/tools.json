@@ -1,0 +1,27 @@
+{
+  "description": "The tools of Cloudflare's API MCP server (https://mcp.cloudflare.com/mcp) as its README lists them. search, docs and whoami only read. execute runs JavaScript that calls any Cloudflare API endpoint: what it can change is exactly what the connection's API token permits, so the plugin's read server uses a token with Read permissions only.",
+  "capturedAt": "2026-11-17",
+  "index": "https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/",
+  "tools": [
+    {
+      "name": "docs",
+      "access": "read",
+      "source": "https://github.com/cloudflare/mcp"
+    },
+    {
+      "name": "search",
+      "access": "read",
+      "source": "https://github.com/cloudflare/mcp"
+    },
+    {
+      "name": "execute",
+      "access": "token",
+      "source": "https://github.com/cloudflare/mcp"
+    },
+    {
+      "name": "whoami",
+      "access": "read",
+      "source": "https://github.com/cloudflare/mcp"
+    }
+  ]
+}
