@@ -15,6 +15,7 @@ import {
 } from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
+import { sameStatusSubject } from './pullRequestStatusSubject.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
 import {
     setPullRequestStatusBaseSyncRunner, setPullRequestStatusCommitSyncRunner, setPullRequestStatusRedisProvider, setPullRequestStatusSyncRunner,
@@ -233,23 +234,6 @@ export class PullRequestChangedDuringStatusSyncError extends Error {
         super('The pull request kept changing while its status was read');
         this.name = 'PullRequestChangedDuringStatusSyncError';
     }
-}
-
-function mergeability(pull: PullRequestStatusPull): boolean | null {
-    return typeof pull.mergeable === 'boolean' ? pull.mergeable : null;
-}
-
-/**
- * The facts read for `read` still describe `latest`: same state, head, base
- * and mergeability. A push to the base branch changes neither the head nor
- * the state, but can make the pull request conflict: GitHub then reports a
- * different mergeability (or base tip), and a status computed from the old
- * value, such as ready, must not be written.
- */
-function sameStatusSubject(read: PullRequestStatusPull, latest: PullRequestStatusPull): boolean {
-    return read.state === latest.state && (read.merged === true) === (latest.merged === true) && read.head.sha === latest.head.sha
-        && mergeability(read) === mergeability(latest)
-        && read.base?.ref === latest.base?.ref && read.base?.sha === latest.base?.sha;
 }
 
 /**
