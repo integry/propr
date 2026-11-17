@@ -156,6 +156,17 @@ describe('launcher integration', () => {
         assert.ok(!buildCodexDockerArgs(codexConfig, baseParams).includes('PROPR_EXTENSION_EXCLUSIVE_MCP=1'));
     });
 
+    test('Codex: only runs that load the user configuration ask the entrypoint to trust the workspace', () => {
+        const operatorEnv = { ...codexConfig, envVars: { PROPR_CODEX_TRUST_WORKSPACE: '1' } };
+        const trustValue = (args: string[]) => args.filter(arg => arg.startsWith('PROPR_CODEX_TRUST_WORKSPACE=')).at(-1);
+        assert.equal(trustValue(buildCodexDockerArgs(codexConfig, baseParams)), 'PROPR_CODEX_TRUST_WORKSPACE=1');
+        assert.equal(trustValue(buildCodexDockerArgs(codexConfig, { ...baseParams, toolPolicy: MCP_POLICY })), 'PROPR_CODEX_TRUST_WORKSPACE=1');
+        assert.equal(trustValue(buildCodexDockerArgs(operatorEnv, { ...baseParams, toolPolicy: { ...MCP_POLICY, exclusiveMcp: true } })), 'PROPR_CODEX_TRUST_WORKSPACE=0');
+        assert.equal(trustValue(buildCodexDockerArgs(operatorEnv, { ...baseParams, readOnlyWorkspace: true, repositoryInspection: true })), 'PROPR_CODEX_TRUST_WORKSPACE=0');
+        // The entrypoint adds the flag, and only when the installed CLI offers it: 0.168 rejects `--trust`.
+        assert.ok(!buildCodexDockerArgs(codexConfig, baseParams).includes('--trust'));
+    });
+
     test('Codex: no toolPolicy leaves the arguments unchanged', () => {
         const without = buildCodexDockerArgs(codexConfig, baseParams);
         assert.ok(!without.includes('web_search="disabled"'));

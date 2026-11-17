@@ -1,7 +1,7 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -310,6 +310,110 @@ describe('Codex extension configuration on the pinned CLI', { skip: skipUnlessPi
             assert.match(refused, /Daybreak requires a model provider with Cyber access program support/);
         } finally { server.close(); rmSync(home, { recursive: true, force: true }); }
     });
+});
+
+/**
+ * The upstream behaviour the entrypoint's `--trust` and the goal path rely on,
+ * checked on the pinned CLI with throwaway CODEX_HOME directories. Nothing here
+ * reaches a model: `codex exec` saves trust before it fails to sign in,
+ * `codex mcp list` shows whether project configuration loads, and App Server
+ * starts a thread without a model call.
+ */
+describe('Codex project trust on the pinned CLI', { skip: skipUnlessPinned('codex', 'CODEX_CLI_VERSION') }, () => {
+    const roots: string[] = [];
+    const fixture = (trustLevel?: 'untrusted') => {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), 'codex-project-trust-'))); roots.push(root);
+        const home = join(root, 'home'); const workspace = join(root, 'workspace');
+        mkdirSync(home); mkdirSync(join(workspace, '.codex'), { recursive: true });
+        writeFileSync(join(workspace, '.codex', 'config.toml'), 'model = "project-probe-model"\n[mcp_servers.projectprobe]\ncommand = "true"\n');
+        if (trustLevel) writeFileSync(join(home, 'config.toml'), `[projects."${workspace}"]\ntrust_level = "${trustLevel}"\n`);
+        const env = { PATH: process.env.PATH ?? '', HOME: home, CODEX_HOME: home };
+        const savedTrust = () => (existsSync(join(home, 'config.toml')) ? readFileSync(join(home, 'config.toml'), 'utf8') : '').match(/trust_level = "(\w+)"/)?.[1];
+        const loadsProjectConfig = () => spawnSync('codex', ['mcp', 'list'], { cwd: workspace, env, encoding: 'utf8', timeout: 60_000 }).stdout.includes('projectprobe');
+        const exec = (...flags: string[]) => spawnSync('codex', ['exec', ...flags, '--dangerously-bypass-approvals-and-sandbox', '--skip-git-repo-check', 'hi'],
+            { cwd: workspace, env, encoding: 'utf8', timeout: 60_000, input: '' });
+        return { workspace, env, savedTrust, loadsProjectConfig, exec };
+    };
+    after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
+
+    test('codex exec loads project configuration only after --trust, and --trust keeps an untrusted mark', { timeout: 300_000 }, () => {
+        const plain = fixture();
+        assert.equal(plain.loadsProjectConfig(), false);
+        plain.exec();
+        assert.equal(plain.savedTrust(), undefined, 'a bypass run alone no longer saves trust');
+        assert.equal(plain.loadsProjectConfig(), false);
+        plain.exec('--trust');
+        assert.equal(plain.savedTrust(), 'trusted');
+        assert.equal(plain.loadsProjectConfig(), true);
+
+        const refused = fixture('untrusted');
+        refused.exec('--trust');
+        assert.equal(refused.savedTrust(), 'untrusted');
+        assert.equal(refused.loadsProjectConfig(), false);
+    });
+
+    /** Starts a goal-style thread the way codexAppServerGoalProtocol does and returns the model it resolved. */
+    const startGoalThread = (workspace: string, env: Record<string, string>) => new Promise<string | undefined>((resolve, reject) => {
+        const child = spawn('codex', ['app-server'], { cwd: workspace, env, stdio: ['pipe', 'pipe', 'ignore'] });
+        const timer = setTimeout(() => { child.kill(); reject(new Error('Codex App Server did not answer thread/start')); }, 60_000);
+        let buffer = '';
+        child.stdout.on('data', chunk => {
+            buffer += chunk;
+            for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
+                const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+                let message: { id?: number; result?: { model?: string }; error?: unknown };
+                try { message = JSON.parse(line); } catch { continue; }
+                if (message.id === 1) {
+                    child.stdin.write(`${JSON.stringify({ method: 'initialized' })}\n`);
+                    child.stdin.write(`${JSON.stringify({ id: 2, method: 'thread/start', params: { cwd: workspace, approvalPolicy: 'never', sandbox: 'danger-full-access', serviceName: 'propr' } })}\n`);
+                } else if (message.id === 2) {
+                    clearTimeout(timer); child.kill();
+                    if (message.error) reject(new Error(JSON.stringify(message.error))); else resolve(message.result?.model);
+                }
+            }
+        });
+        child.on('error', reject);
+        child.stdin.write(`${JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'propr', title: 'ProPR', version: '1' } } })}\n`);
+    });
+
+    test('a first goal thread saves trust and reads project configuration without a flag', { timeout: 300_000 }, async () => {
+        const fresh = fixture();
+        assert.equal(await startGoalThread(fresh.workspace, fresh.env), 'project-probe-model');
+        assert.equal(fresh.savedTrust(), 'trusted');
+
+        const refused = fixture('untrusted');
+        assert.notEqual(await startGoalThread(refused.workspace, refused.env), 'project-probe-model');
+        assert.equal(refused.savedTrust(), 'untrusted');
+    });
+});
+
+test('Codex entrypoint adds --trust to codex exec only when asked and the installed CLI offers it', () => {
+    const script = readFileSync(new URL('../scripts/codex-entrypoint.sh', import.meta.url), 'utf8');
+    const block = script.slice(script.indexOf('codex_exec_offers_trust() {'), script.indexOf('# If arguments are provided'));
+    assert.ok(block.includes('set -- codex exec --trust "$@"'));
+    const root = mkdtempSync(join(tmpdir(), 'codex-entrypoint-trust-'));
+    // Help text shapes of Codex 0.168.0 (no --trust) and 0.169.0.
+    const stub = (name: string, helpOptions: string) => {
+        const bin = join(root, name); mkdirSync(bin);
+        writeFileSync(join(bin, 'codex'), `#!/bin/sh\nprintf '%s\\n' 'Options:' ${helpOptions} '      --ephemeral'\n`, { mode: 0o755 });
+        return bin;
+    };
+    const legacy = stub('legacy', "'      --trusted-hosts <HOSTS>'");
+    const current = stub('current', "'      --trust'");
+    const run = (bin: string, env: Record<string, string>, ...args: string[]) => spawnSync('bash', ['-c', `set -e\n${block}\nprintf '%s\\n' "$@"`, 'entrypoint', ...args], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROPR_EXTENSION_EXCLUSIVE_MCP: '0', ...env }, encoding: 'utf8',
+    }).stdout.trim().split('\n');
+    const task = ['codex', 'exec', '--ephemeral', '--json', '-'];
+    try {
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), ['codex', 'exec', '--trust', '--ephemeral', '--json', '-']);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'exec', 'resume', '--json', 'thread', '-'),
+            ['codex', 'exec', '--trust', 'resume', '--json', 'thread', '-']);
+        assert.deepEqual(run(legacy, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), task);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '0' }, ...task), task);
+        assert.deepEqual(run(current, {}, ...task), task);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1', PROPR_EXTENSION_EXCLUSIVE_MCP: '1' }, ...task), task);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'app-server'), ['codex', 'app-server']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('Codex entrypoint rejects container project ancestry after setup and skips ignored user configuration', () => {

@@ -179,6 +179,8 @@ Gemini 4 Carbon is not in the catalog. Antigravity CLI 1.5.8 offers it only to a
 
 From Antigravity CLI 1.5.9, the agent has a `run_workflow` tool that runs a Python script to hand parts of a task to several subagents and combine their results. On large tasks this can use more tokens and take longer than a single agent working alone.
 
+Antigravity CLI 1.5.10 waits longer before it gives up. When the model API asks it to wait before retrying, it now waits up to 4 minutes instead of ending the turn. It also waits up to 10 minutes, instead of 5, before it treats a silent high-effort response as stalled. ProPR's stall watchdog (`AGENT_STALL_TIMEOUT_MS`, default 10 minutes of silence) is not shorter than either wait, and `--print-timeout` follows the task timeout (`ANTIGRAVITY_TIMEOUT_MS`), so neither cuts these waits short. If XHigh runs are stopped as stalled, raise `AGENT_STALL_TIMEOUT_MS`. In 1.5.10 the `--sandbox` terminal sandbox that ProPR uses for repository inspection also blocks reading `~/.config` and `~/.git-credentials`. Repository inspection runs without git credentials, so this changes nothing for ProPR.
+
 :::note[Gemini Enterprise review policy]
 ProPR runs Antigravity tasks with `--dangerously-skip-permissions` and repository inspection with `--sandbox`, so the Auto Agent Mode that Antigravity CLI 1.5.7 made the default for headless runs does not change how ProPR runs approve actions. From Antigravity CLI 1.5.2, when a Gemini Enterprise admin requires review of agent actions, that flag no longer approves actions outside the workspace in headless runs: the CLI denies them. Work inside the task's worktree is unaffected, but a step that needs a path outside it fails instead of running. Ask the admin to relax the review requirement for the account ProPR uses if tasks need such actions.
 :::
@@ -194,6 +196,9 @@ Built-in free models:
 | DeepSeek V4.1 Flash Free | `llm-opencode-deepseek-v41-flash-free` | 200K |
 | Flint 40B Free | `llm-opencode-flint-40b-free` | 262K |
 | GLM 5.3 Flash Free | `llm-opencode-glm53-flash-free` | 200K |
+| Hy4 Flash Free | `llm-opencode-hy4-flash-free` | 1M |
+| Iceman Free | `llm-opencode-iceman-free` | 262K |
+| LongCat 2.5 Free | `llm-opencode-longcat25-free` | 1M |
 | MiMo V2.6 Flash Free | `llm-opencode-mimo-v26-flash-free` | 200K |
 | Nemotron 3.5 Lightning Free | `llm-opencode-nemotron35-lightning-free` | 262K |
 | Nemotron 3.5 Super VL Free | `llm-opencode-nemotron35-super-vl-free` | 1M |

@@ -20,7 +20,7 @@ ProPR is modular. Each stage below is its own entry point, so you can introduce 
 - **Review or fix only** — run [PR slash commands](./pr-commands.md) on any eligible PR, including ones ProPR did not create.
 - **Take over an existing PR** — add the processing label to an open PR and keep working from [PR comments](./pr-followup.md).
 
-Running the full flow end to end is supported, but never required.
+Running the full flow end to end is supported, but never required. [Software Factory](../concepts/software-factory.md) shows these features as loops that agents run on their own, bounded by checks you set, and how much autonomy each loop can get.
 
 ## Plan And Run Work
 

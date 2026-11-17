@@ -209,6 +209,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.326, Codex 0.169.0, Antigravity CLI 1.5.10 and
+  OpenCode CLI 1.19.6**: the `propr/agent` image moves from Claude Code
+  2.1.325, Codex 0.168.0, Antigravity CLI 1.5.9 and OpenCode CLI 1.19.5.
+  Mistral Vibe stays on 2.25.8.
+  - Claude Code 2.1.326 refuses more tool calls in bypass permissions mode
+    when no one can be asked, including file-tool writes to its sign-in files
+    such as `.credentials.json`. Ordinary repository work in ProPR's headless
+    `--dangerously-skip-permissions` runs (edits, git, npm) is unaffected. Its
+    new startup warning for incomplete `--tools`, `--allowedTools` and
+    `--disallowedTools` entries is not triggered by ProPR's values. The
+    bundled model catalog is unchanged.
+  - Antigravity 1.5.10 is release `5253791805734912`, SHA-512 checked against
+    Google's linux_amd64 install manifest, which has moved to
+    `antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`.
+    Its model list for `agy login` accounts is unchanged; the new Orchestrator
+    model is only for Gemini Enterprise and Application Default Credentials
+    and is not added. Rate-limit waits now retry for up to 4 minutes, a silent
+    high-effort response counts as stalled after 10 minutes instead of 5, and
+    the `--sandbox` used for repository inspection no longer reads
+    `~/.config` or `~/.git-credentials`.
+  - OpenCode 1.19.6 adds three free models to the catalog: Hy4 Flash Free
+    (`llm-opencode-hy4-flash-free`, 1M), Iceman Free
+    (`llm-opencode-iceman-free`, 262K) and LongCat 2.5 Free
+    (`llm-opencode-longcat25-free`, 1M). Each passed a live run that included a
+    tool call. Inkling 2 Small Free is also listed but is not added: it
+    refused every run with "This model is not available in your country". The
+    existing eight free models stay.
+  - Codex 0.169.0 stops `codex exec` from loading the repository's
+    `.codex/config.toml` and project MCP servers in an untrusted workspace.
+    Through 0.168.0, every bypass-mode run saved that trust in the mounted
+    `config.toml` without being asked. Codex task runs now pass `--trust`,
+    which saves the same entry and still respects a workspace marked
+    `untrusted`. 0.168.0 rejects the flag, so the entrypoint adds it only when
+    `codex exec --help` lists it and a pinned older CLI keeps working.
+    Repository inspection and exclusive extension MCP runs stay untrusted.
+    Goal runs need no flag: `codex app-server` saves the trust entry when it
+    starts the goal's thread, as it did in 0.168.0, and also leaves a
+    workspace marked `untrusted` alone. The bundled model catalog and the
+    files Codex writes under its home directory are unchanged from 0.168.0.
 - **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the
   `propr/agent` image moves from Claude Code 2.1.323 and Antigravity CLI
   1.5.8. Codex stays on 0.168.0 and Mistral Vibe on 2.25.8.
