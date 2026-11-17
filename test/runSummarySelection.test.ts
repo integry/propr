@@ -438,6 +438,61 @@ describe('run summary selection', () => {
         assert.equal(selectRunSummary({ conversationLog }).summary, fresh);
     });
 
+    test('a declarative summary whose subordinate clause names a notification event replaces the older summary', () => {
+        const fresh = 'The background job now retries requests that timed out.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('background job failed'),
+            toolUse('t2', 'Requests that timed out were dropped; fixing it.'), toolResult('t2'),
+            assistantText(fresh),
+        ];
+        assert.equal(isRunStatusNote(fresh, { afterNotification: true }), false);
+        for (const declarative of [
+            'The background job now skips uploads whose checksum expired.',
+            'The monitor now restarts any worker when its lease expired.',
+            'The requests that background jobs timed out are now retried.',
+            'It was the retry that background jobs needed.',
+        ]) assert.equal(isRunStatusNote(declarative, { afterNotification: true }), false, declarative);
+        // The notifier's own predicate is still a reply to the notification.
+        for (const reply of [
+            'The background job I started earlier timed out.',
+            'The background job, which I started earlier, timed out.',
+            'The watcher I set on the check run finished.',
+        ]) assert.equal(isRunStatusNote(reply, { afterNotification: true }), true, reply);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fresh)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, fresh);
+        assert.equal(response.commitMessage?.split('\n')[0], fresh);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fresh);
+    });
+
+    test('a watcher reply that quotes the task name does not replace the summary', () => {
+        const reply = 'The watcher `full-suite` timed out; nothing else to do.';
+        const { response } = processDockerResult(execution([
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('Watcher "full-suite" timed out'),
+            assistantText(reply), result(reply),
+        ]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, SUMMARY);
+        assert.equal(response.commitMessage?.split('\n')[0], SUMMARY.split('\n')[0]);
+        for (const quoted of [
+            'The watcher "full-suite" timed out; nothing else to do.',
+            'The \u201cfull-suite\u201d watcher timed out.',
+            "The monitor 'full-suite' only expired; it doesn't need re-arming.",
+            'The `full-suite` watcher finished. My summary above still holds.',
+        ]) assert.equal(isRunStatusNote(quoted, { afterNotification: true }), true, quoted);
+        // A quoted task name in a still-waiting note keeps the note one sentence.
+        assert.equal(reportsUnfinishedWork('Waiting for the `full-suite` run to finish.'), true);
+        // Quoted text is still product text, and a quote that ends a sentence still ends it.
+        assert.equal(isRunStatusNote('Changed the label to "Waiting for the notification".', { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('Set the banner to "Done." Summarizing now.'), false);
+        assert.equal(isRunStatusNote('The watcher said "Done." Summarizing now.'), false);
+    });
+
     test('a watcher reply after a second result line without a notification does not replace the summary', () => {
         const reply = 'The watcher timed out after the suites finished; nothing else to do.';
         const lines = [

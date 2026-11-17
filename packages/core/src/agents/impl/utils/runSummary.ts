@@ -43,15 +43,30 @@ const COMPLETION_ONLY = /^(?:(?:the )?(?:verification|validation|work|task|run|e
 /** What reports to the agent from outside its turn: a notification or a background operation. */
 const NOTIFIER = '(?:notification|notice|monitor|watcher|timeout|probe|background (?:task|command|job|run|process|build|suite)|(?:check|test|suite) run)s?';
 /**
+ * A word that opens a subordinate or relative clause. Words like these between
+ * a notifier and an event predicate mean the predicate belongs to another
+ * clause ("The background job now retries requests that timed out").
+ */
+const CLAUSE_OPENER = '(?:that|which|who|whom|whose|where|whereas|when|whenever|while|if|unless|because|since|after|before|until|till|once|whether|though|although)';
+/** One word of a notification's subject or of the words before its predicate; never a clause opener. */
+const SUBJECT_WORD = `(?!${CLAUSE_OPENER}(?![\\w-]))`;
+/**
+ * What may stand between a notifier and its own predicate: words that open no
+ * clause ("The watcher I set on the check run timed out"), or a clause set off
+ * by commas ("The background job, which I started earlier, timed out").
+ */
+const NOTIFIER_TO_PREDICATE = `(?:\\s+${SUBJECT_WORD}\\S+|,\\s+[^,;]+,(?=\\s)){0,8}?`;
+/**
  * A sentence about a notification event itself ("The monitor timed out after
  * the batch finished", "That notification is the probe I started"). Only the
- * event, in the past tense or as an identification, counts: a sentence about
- * what a background job now does ("The background job now retries failed
- * requests") describes the product.
+ * event, in the past tense or as an identification, counts, and only as the
+ * notifier's own predicate: a sentence about what a background job now does
+ * ("The background job now retries failed requests", "...retries requests
+ * that timed out") describes the product.
  */
 const NOTIFICATION_EVENT = new RegExp([
-    `^(?:(?:the|that|this|my|its|a|an|one)\\s+)?(?:[\\w"'\u2019-]+\\s+){0,3}?${NOTIFIER}\\b(?:\\s+\\S+){0,8}?\\s+(?:(?:only|just|also|simply)\\s+)?(?:timed out|expired|fired|finished|completed|ended|stopped|exited|reported|came from|comes from|(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an|from)\\b)`,
-    `^(?:it|that|this)\\s+(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an)\\s+(?:[\\w-]+\\s+){0,4}?${NOTIFIER}\\b`
+    `^(?:(?:the|that|this|my|its|a|an|one)\\s+)?(?:${SUBJECT_WORD}[\\w"'\u2019-]+\\s+){0,3}?${NOTIFIER}\\b${NOTIFIER_TO_PREDICATE}\\s+(?:(?:only|just|also|simply)\\s+)?(?:timed out|expired|fired|finished|completed|ended|stopped|exited|reported|came from|comes from|(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an|from)\\b)`,
+    `^(?:it|that|this)\\s+(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an)\\s+(?:${SUBJECT_WORD}[\\w-]+\\s+){0,4}?${NOTIFIER}\\b`
 ].join('|'), 'i');
 /** A sentence that dismisses a notification as needing nothing from the agent. */
 const DISMISSES_NOTIFICATION = /\b(?:says nothing about|(?:doesn'?t|does not|don'?t|do not) need (?:to )?(?:re-?arm(?:ing)?|restart(?:ing)?|re-?run(?:ning)?)|needs? no (?:re-?arming|restart|re-?run)|no need to (?:re-?arm|restart|re-?run))\b/i;
@@ -198,6 +213,25 @@ function isShort(text: string): boolean {
 }
 
 /**
+ * Stands in for quoted text. A plain word, so it neither ends a sentence nor
+ * breaks the sentence around it ("The watcher `full-suite` timed out" stays one
+ * sentence about the watcher).
+ */
+const QUOTED_PLACEHOLDER = 'quoted';
+const QUOTED_SPAN = /`[^`\n]*`|"[^"\n]*"|\u201c[^\u201d\n]*\u201d|\u2018[^\u2019\n]*\u2019|(?<![\w])'[^'\n]*'(?![\w])/g;
+
+/**
+ * A quoted span replaced by the placeholder. A quote that itself ends a
+ * sentence (`He wrote "Done." Then...`) keeps its closing punctuation, so the
+ * next sentence still starts after it.
+ */
+function replaceQuotedSpan(span: string, offset: number, whole: string): string {
+    const closing = /([.!?])\W*$/.exec(span.slice(1, -1));
+    const endsSentence = !!closing && /^(?:\s+[A-Z]|\s*$)/.test(whole.slice(offset + span.length));
+    return endsSentence ? `${QUOTED_PLACEHOLDER}${closing[1]}` : QUOTED_PLACEHOLDER;
+}
+
+/**
  * The prose of a message without Markdown structure: heading and list markers,
  * emphasis, label-only heading lines, and quoted text (a quoted label is
  * product text, not a statement about the run).
@@ -210,7 +244,7 @@ function plainProse(text: string): string {
             .trim())
         .filter(line => line && !/^(?:summary|status|update|progress)\s*:?$/i.test(line))
         .join('\n')
-        .replace(/`[^`\n]*`|"[^"\n]*"|\u201c[^\u201d\n]*\u201d|\u2018[^\u2019\n]*\u2019|(?<![\w])'[^'\n]*'(?![\w])/g, '\u2026');
+        .replace(QUOTED_SPAN, replaceQuotedSpan);
 }
 
 function sentences(text: string): string[] {
