@@ -11,6 +11,8 @@ interface ListSearchInputProps {
   inputClassName?: string;
   /** Phone sizing: a 16px font (no iOS focus zoom) and 40px input and clear targets. */
   touch?: boolean;
+  /** The longest query the list's API accepts; typing or pasting stops there. */
+  maxLength?: number;
 }
 
 /**
@@ -26,6 +28,7 @@ export const ListSearchInput: React.FC<ListSearchInputProps> = ({
   className = '',
   inputClassName = '',
   touch = false,
+  maxLength,
 }) => {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const clear = () => {
@@ -41,7 +44,8 @@ export const ListSearchInput: React.FC<ListSearchInputProps> = ({
         inputMode="search"
         enterKeyHint="search"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        maxLength={maxLength}
+        onChange={(e) => onChange(maxLength ? e.target.value.slice(0, maxLength) : e.target.value)}
         // The query applies as you type; Enter only dismisses a phone keyboard.
         onKeyDown={(e) => { if (touch && e.key === 'Enter') e.currentTarget.blur(); }}
         aria-label={label}

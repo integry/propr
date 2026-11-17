@@ -21,7 +21,7 @@ test.describe.configure({ mode: 'parallel' });
 
 const forms = [
   { name: 'New task', path: '/tasks/new', close: 'Close task creation', field: 'Prompt', actions: ['Cancel', 'Plan first', 'Run task'] },
-  { name: 'Start a goal', path: '/goals?new=1', close: 'Close goal creation', field: 'Prompt', actions: ['Cancel', 'Start goal'] },
+  { name: 'New goal', path: '/goals?new=1', close: 'Close goal creation', field: 'Prompt', actions: ['Cancel', 'Start goal'] },
 ];
 
 const windows: Array<{ name: string; size: { width: number; height: number }; scale: number; text?: string; header?: 'sticky' | 'scrolls' } & Shell> = [
@@ -36,7 +36,7 @@ const windows: Array<{ name: string; size: { width: number; height: number }; sc
   { name: 'web 370x130', size: { width: 370, height: 130 }, scale: 1, header: 'scrolls' },
   { name: 'web 370x144', size: { width: 370, height: 144 }, scale: 1, header: 'sticky' },
   // The reviewer's enlarged-text probe on eb98095: 150% and 200% root text wrap the title and the action labels,
-  // so a header that stuck at the 7.5rem band covered the actions (at 370x288 and 200%, a 233px Start a goal header
+  // so a header that stuck at the 7.5rem band covered the actions (at 370x288 and 200%, a 233px New goal header
   // left 5px for its 112px action). Whether the header sticks follows what the wrapped contents measure.
   { name: 'web 370x216 150% text', size: { width: 370, height: 216 }, scale: 1, text: '150%' },
   { name: 'web 370x288 200% text', size: { width: 370, height: 288 }, scale: 1, text: '200%' },

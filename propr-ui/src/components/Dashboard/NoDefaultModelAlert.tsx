@@ -10,7 +10,7 @@ export interface NoDefaultModelAlertProps {
 /**
  * Error alert shown on the Dashboard when no AI agent is configured
  * or when agents exist but none has a default model set.
- * Urges the user to go to the AI Agents screen and resolve the configuration.
+ * Urges the user to go to the Coding agents screen and resolve the configuration.
  */
 export const NoDefaultModelAlert: React.FC<NoDefaultModelAlertProps> = ({ hasAgents, hasDefaultModel }) => {
   const navigate = useNavigate();

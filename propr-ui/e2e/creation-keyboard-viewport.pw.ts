@@ -23,7 +23,7 @@ const landscapeKeyboard: Band = { height: 89.333, offsetTop: 208.533 };
 const shells = [
   { name: 'New task', path: '/tasks/new', close: 'Close task creation', actions: ['Cancel', 'Plan first', 'Run task'], preview: 'new-task', agent: 'codex',
     description: 'Describe the change you want. Run task creates an issue and starts implementation.' },
-  { name: 'Start a goal', path: '/goals?new=1', close: 'Close goal creation', actions: ['Cancel', 'Start goal'], preview: 'new-goal', agent: 'agent-1',
+  { name: 'New goal', path: '/goals?new=1', close: 'Close goal creation', actions: ['Cancel', 'Start goal'], preview: 'new-goal', agent: 'agent-1',
     description: 'These settings are remembered for next time.' },
 ];
 

@@ -197,11 +197,11 @@ describe('AIModelSelectionSection', () => {
     expect(within(select).queryByRole('option', { name: new RegExp(fallback) })).not.toBeInTheDocument();
   });
 
-  it('does not put a raw attacker flow on the AI Agents link when no active flow exists', () => {
+  it('does not put a raw attacker flow on the Coding agents link when no active flow exists', () => {
     expect(buildAiAgentsSettingsHref('app.propr.dev')).toBe('/ai-agents');
   });
 
-  it('puts the validated active hosted flow on the AI Agents link href', () => {
+  it('puts the validated active hosted flow on the Coding agents link href', () => {
     const storage = memoryStorage();
     resolveApiBaseUrl(
       'app.propr.dev',

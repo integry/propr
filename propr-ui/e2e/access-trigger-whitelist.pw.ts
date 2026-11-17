@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Instance access offers the matching trigger whitelist change after a user is
+ * Access offers the matching trigger whitelist change after a user is
  * added or removed. With PROPR_CAPTURE_PREVIEWS set the offers are captured.
  */
 

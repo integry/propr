@@ -32,6 +32,8 @@ import { RepositoryChip } from '../components/ui/RepositoryChip';
 import { CreatorMarker } from '../components/CreatorMarker';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { NOT_FOUND_TITLE, NotFound } from '../components/NotFound';
+import { isNotFoundMessage } from '../utils/notFound';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ListSearchInput } from '../components/ListSearchInput';
 import { useLiveResource } from '../hooks/useLiveResource';
@@ -499,7 +501,7 @@ function CreateGoalDialog({ isOpen, onClose, onCreated }: CreateGoalDialogProps)
   }, [isOpen]);
 
   if (!isOpen) return null;
-  return <CreationDialog title="Start a goal" icon={Target} description="These settings are remembered for next time."
+  return <CreationDialog title="New goal" icon={Target} description="These settings are remembered for next time."
     closeLabel="Close goal creation" onClose={requestClose} busy={submitting}>
     <CreateGoalForm onCancel={requestClose} onCreated={onCreated} onDirtyChange={setDirty} onSubmittingChange={setSubmitting} />
   </CreationDialog>;
@@ -821,7 +823,6 @@ function GoalDetails({ goalId }: { goalId: string }) {
     () => mergeGoalTimeline(live.events, goal?.inputs),
     [goal?.inputs, live.events],
   );
-  useDocumentTitle(goal?.title || 'Goal');
 
   /*
     The open goal follows its own transitions instead of a five-second timer.
@@ -838,6 +839,10 @@ function GoalDetails({ goalId }: { goalId: string }) {
     // this read directly; both streams coalesce and neither supplies UI state.
     interest: { domains: ['goal', 'task'], goals: true, taskId: goal?.taskId, repository: goal?.repository },
   });
+  const loadError = error || goalResource.error;
+  // An unknown goal id (or one that is not a valid id at all) is not found.
+  const notFound = !goal && isNotFoundMessage(loadError);
+  useDocumentTitle(notFound ? NOT_FOUND_TITLE : goal?.title || 'Goal');
   useEffect(() => {
     // Another goal's data is not this goal's data, so the console says it is
     // loading rather than showing the goal that was open a moment ago.
@@ -915,7 +920,13 @@ function GoalDetails({ goalId }: { goalId: string }) {
     [goal?.liveSummary.nativeGoal?.tokensUsed, live.tokenUsage],
   );
   if (!goal) {
-    const loadError = error || goalResource.error;
+    if (notFound) {
+      return (
+        <div className="min-h-full bg-white">
+          <NotFound title="Goal not found" message="This goal does not exist, or it has been deleted." backTo="/goals" backLabel="Back to goals" setsDocumentTitle={false} />
+        </div>
+      );
+    }
     return loadError
       ? <div className="p-6 text-slate-600">{loadError}</div>
       : <ListSkeleton layout="card" rows={3} label="Loading goal…" className="min-h-full bg-white p-4 sm:p-6" data-testid="goal-skeleton" />;

@@ -5,6 +5,7 @@ import { formatRelativeTime } from '../TaskList/utils.tsx';
 import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History, ArrowRight, FileText } from 'lucide-react';
 import { AUTOMATION_REPORT_MODE, taskLabelMode } from './taskKind';
 import { RepoIdentity } from './ContextStrip';
+import TaskTitleSkeleton from './TaskTitleSkeleton';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
@@ -162,8 +163,8 @@ const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
         )}
       </div>
       {/* Title */}
-      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words line-clamp-2" title={title.tooltip}>
-        {title.text || 'Loading...'}
+      <h2 className="text-base sm:text-lg font-semibold text-gray-900 leading-tight break-words line-clamp-2" title={title.tooltip} aria-busy={!title.text || undefined}>
+        {title.text || <TaskTitleSkeleton />}
       </h2>
       {/* Subtitle - smaller on mobile */}
       {taskInfo && (

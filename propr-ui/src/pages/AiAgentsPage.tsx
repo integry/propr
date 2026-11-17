@@ -28,7 +28,7 @@ interface AddPoolRequest {
 }
 
 const AiAgentsPage: React.FC = () => {
-  useDocumentTitle('AI Agents');
+  useDocumentTitle('Coding agents');
   const { isDemoMode } = useDemoMode();
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [agentsLoading, setAgentsLoading] = useState<boolean>(true);
@@ -282,7 +282,7 @@ const AiAgentsPage: React.FC = () => {
       {/* Mobile Header with Tabs */}
       <div className="flex-shrink-0 border-b border-slate-200 bg-white">
         <div className="flex items-center justify-between px-4 py-2">
-          <h1 className="text-lg font-bold text-gray-800">AI Agents</h1>
+          <h1 className="text-lg font-bold text-gray-800">Coding agents</h1>
           {mobileTab === 'config' && (
             <button
               onClick={handleAddClick}
