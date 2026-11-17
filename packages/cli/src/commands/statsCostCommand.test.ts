@@ -30,7 +30,7 @@ test("--group-by takes a comma-separated list and rejects an unknown dimension",
 test("stats cost accepts the analytics periods, a repository, groups and either JSON or CSV", async () => {
   const command = createStatsCommand().commands.find(sub => sub.name() === "cost");
   assert.ok(command);
-  assert.deepEqual(command.options.map(option => option.long), ["--period", "--repository", "--group-by", "--json", "--csv"]);
+  assert.deepEqual(command.options.map(option => option.long), ["--period", "--repository", "--project", "--group-by", "--json", "--csv"]);
   assert.deepEqual(command.options[0].argChoices, ["24h", "7d", "30d", "90d", "1y", "all"]);
 
   command.exitOverride().configureOutput({ writeErr: () => {} });

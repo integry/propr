@@ -8,7 +8,7 @@ import { parentExecutionMarker, parentScopeFromCommentJob, parentScopeFromIssueB
  * check_run / check_suite / polling trigger calls `resumeDeferredContinuation`.
  */
 
-import { beforeEach, describe, mock, test } from 'node:test';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createUltrafixRedis, withResumeIndex, type UltrafixRedisDouble } from './fixtures/ultrafixRedisDouble.js';
 
@@ -19,7 +19,7 @@ interface FakeJob {
     name: string;
     data: Record<string, any>;
     opts: Record<string, any>;
-    state: 'waiting' | 'active' | 'delayed' | 'completed' | 'failed';
+    state: 'waiting' | 'active' | 'delayed' | 'prioritized' | 'completed' | 'failed';
 }
 
 const queuedJobs = new Map<string, FakeJob>();
@@ -69,6 +69,7 @@ let prHead = 'red-head-sha';
 const mockGetCheckRunsStatus = mock.fn(async () => ciStatus);
 const mockAreAllChecksPassing = mock.fn(async () => ciStatus.allPassing);
 const mockGetCurrentPRHead = mock.fn(async () => prHead);
+const mockSafeRemoveLabel = mock.fn(async (_target: unknown, _label: string) => undefined);
 
 await mock.module('@propr/core', {
     namedExports: {
@@ -90,9 +91,10 @@ await mock.module('@propr/core', {
         generateCorrelationId: () => 'recovery-correlation-id',
         getAuthenticatedOctokit: async () => ({ request: mockOctokitRequest }),
         getIssueQueue: mockGetIssueQueue,
+        isWorktreeDiskPressureError: (error: unknown) => error instanceof Error && error.name === 'WorktreeDiskPressureError',
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending:${owner}:${repo}:${pr}`,
         retryConfigs: { githubApi: {} },
-        safeRemoveLabel: async () => undefined,
+        safeRemoveLabel: mockSafeRemoveLabel,
         withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation(),
         withRetry: async (operation: () => Promise<unknown>) => operation(),
     },
@@ -148,6 +150,14 @@ const { getUltrafixAutomaticWorkEpochKey } = await import('../src/jobs/ultrafixA
 const { ULTRAFIX_RESUME_SWEEP_LEASE_KEY } = await import('../src/jobs/ultrafixResumeIndex.js');
 const { IN_FLIGHT_STEP_RETRY_DELAY_MS } = await import('../src/jobs/ultrafixStrandedLoopRearm.js');
 const { recordFailedUltrafixStep } = await import('../src/jobs/ultrafixFailedStep.js');
+const { getUltrafixStepEnqueueKey, ULTRAFIX_STEP_ENQUEUE_GRACE_MS } = await import('../src/jobs/ultrafixStepEnqueueMarker.js');
+const { handleExhaustedUltrafixStep } = await import('../src/jobs/ultrafixExhaustedStep.js');
+const {
+    getDiskPressureWait,
+    ULTRAFIX_DISK_PRESSURE_REASON,
+    ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS,
+} = await import('../src/jobs/ultrafixDiskPressureWait.js');
+const { getConsecutiveFailedSteps } = await import('../src/jobs/ultrafixResumeClaim.js');
 
 const createRedis = createUltrafixRedis;
 type FakeRedis = UltrafixRedisDouble;
@@ -275,6 +285,7 @@ describe('Ultrafix recovery after a CI failure', () => {
         mockGetCheckRunsStatus.mock.restore();
         mockOctokitRequest.mock.restore();
         mockOctokitRequest.mock.resetCalls();
+        mockSafeRemoveLabel.mock.resetCalls();
         setCheckRunDeps({
             areAllChecksPassing: mockAreAllChecksPassing,
             getCurrentPRHead: mockGetCurrentPRHead,
@@ -362,27 +373,82 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('a re-arm that misses a pending review in the queue scan supersedes it', async () => {
-        const redis = await strandLoopAfterCiFailure(105);
-        await checksTurnGreen(redis, 105);
-        const [first] = reviewJobs(105);
-        // A retry obligation (e.g. left by a lost process) makes the loop a
-        // candidate again, and the queue scan misses the job (e.g. it moved
-        // between states).
-        await redis.set(getUltrafixRearmRetryKey(OWNER, REPO, 105), JSON.stringify({
-            owner: OWNER, repo: REPO, pr: 105, workEpoch: first.data.ultrafixMeta.workEpoch, reason: 'test', savedAt: new Date().toISOString(),
+    /**
+     * Deferred resume enqueues the review with its pause delay; the sweep then
+     * runs before the job starts (a retry obligation makes the loop a
+     * candidate) and its queue scan misses the job, as in #3642.
+     */
+    async function sweepBeforeReviewStarts(pr: number) {
+        const redis = await strandLoopAfterCiFailure(pr);
+        const resumed = await checksTurnGreen(redis, pr);
+        assert.equal(resumed.continued, true);
+        const [first] = reviewJobs(pr);
+        const epoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, pr);
+        assert.equal(first.data.ultrafixMeta.workEpoch, epoch);
+        await redis.set(getUltrafixRearmRetryKey(OWNER, REPO, pr), JSON.stringify({
+            owner: OWNER, repo: REPO, pr, workEpoch: epoch, reason: 'test', savedAt: new Date().toISOString(),
         }));
         hideQueueScan = true;
+        return { redis, first, epoch };
+    }
 
-        const second = await checksTurnGreen(redis, 105);
+    test('the sweep does not re-arm a loop whose delayed review was just enqueued', async () => {
+        const { redis, first, epoch } = await sweepBeforeReviewStarts(105);
+        assert.equal(first.state, 'delayed');
 
-        // Each re-arm reserves its own epoch, so the earlier review is fenced
-        // and only the latest one passes the execution-time epoch check.
-        assert.equal(second.continued, true);
-        const current = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 105);
-        const runnable = reviewJobs(105).filter(job => job.data.ultrafixMeta.workEpoch === current);
-        assert.equal(runnable.length, 1);
-        assert.notEqual(runnable[0].id, first.id);
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['rearm_not_ready: step_recently_enqueued']);
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 105), epoch, 'the review is not superseded');
+        assert.deepEqual(reviewJobs(105).map(job => job.id), [first.id], 'no second review');
+        const retry = await loadRearmRetry(redis as never, OWNER, REPO, 105);
+        assert.ok(retry?.notBefore && Date.parse(retry.notBefore) > Date.now(), 'the next look is backed off');
+        assert.equal((await loadState(redis as never, OWNER, REPO, 105))?.failedStepStreak, undefined, 'nothing counted as failed');
+
+        // The review starts and runs under its own, still current epoch.
+        first.state = 'active';
+        await redis.del(getUltrafixRearmRetryKey(OWNER, REPO, 105));
+        await redis.set(getUltrafixRearmRetryKey(OWNER, REPO, 105), JSON.stringify({
+            owner: OWNER, repo: REPO, pr: 105, workEpoch: epoch, reason: 'test', savedAt: new Date().toISOString(),
+        }));
+        const again = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.deepEqual(again.map(outcome => outcome.result.continued), [false]);
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 105), epoch);
+    });
+
+    test('the sweep does not re-arm a loop whose review is waiting for agent capacity', async () => {
+        const { redis, first, epoch } = await sweepBeforeReviewStarts(191);
+        // The worker picked the review up, the agent was saturated, and the job moved back to delayed.
+        first.state = 'delayed';
+        first.data.agentCapacityRetryAt = Date.now() + 60_000;
+        first.data.agentCapacityDeferrals = 3;
+
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['rearm_not_ready: step_recently_enqueued']);
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 191), epoch);
+
+        // A prioritized job is just as live, and the queue scan sees it.
+        hideQueueScan = false;
+        first.state = 'prioritized';
+        await redis.set(getUltrafixStepEnqueueKey(OWNER, REPO, 191), 'unreadable');
+        const scanned = await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 191 }, redis as never, logger as never);
+        assert.match(scanned.reason, /follow_up_jobs_active/);
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 191), epoch);
+        assert.equal(reviewJobs(191).length, 1);
+    });
+
+    test('a step whose job is gone is re-armed only once the enqueue grace period has passed', async () => {
+        const { redis, first, epoch } = await sweepBeforeReviewStarts(192);
+        queuedJobs.delete(first.id);
+        const held = await checksTurnGreen(redis, 192);
+        assert.equal(held.reason, 'rearm_not_ready: step_recently_enqueued');
+
+        const markerKey = getUltrafixStepEnqueueKey(OWNER, REPO, 192);
+        const marker = JSON.parse((await redis.get(markerKey))!);
+        await redis.set(markerKey, JSON.stringify({ ...marker, enqueuedAt: Date.now() - marker.delayMs - ULTRAFIX_STEP_ENQUEUE_GRACE_MS - 1 }));
+        const rearmed = await checksTurnGreen(redis, 192);
+        assert.equal(rearmed.reason, 'stranded_loop_rearmed');
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 192), epoch + 1);
     });
 
     test('enforces the max cycles circuit breaker', async () => {
@@ -1449,6 +1515,13 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(state?.active, false);
         assert.equal(state?.completionStatus, 'failed');
         assert.match(state?.completionReason ?? '', /failed 3 times in a row/);
+        const notices = mockOctokitRequest.mock.calls
+            .map(call => (call.arguments as unknown as [string, { body?: string }?])[1]?.body)
+            .filter((body): body is string => typeof body === 'string' && body.includes('Ultrafix stopped before reaching its goal'));
+        assert.equal(notices.length, 1, 'the stop notice is posted');
+        assert.match(notices[0], /failed 3 times in a row/);
+        assert.doesNotMatch(notices[0], /Max cycles/);
+        assert.deepEqual(mockSafeRemoveLabel.mock.calls.map(call => call.arguments[1]), ['ultrafix'], 'the label is removed');
         assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 154), null);
         assert.deepEqual(await sweepUltrafixResumeCandidates(redis as never, () => logger as never), []);
     });
@@ -1510,5 +1583,286 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal((await sweep()).length, 1);
         // A caller without a lease (an event-driven run) is never held back by it.
         assert.equal((await sweepUltrafixResumeCandidates(redis as never, () => logger as never, { fullScan: true })).length, 1);
+    });
+});
+
+/** What worktree admission throws when the disk holding working copies is nearly full. */
+function diskPressureError(): Error {
+    return Object.assign(new Error('Worktree disk pressure: admission reserve unavailable; data retained'), { name: 'WorktreeDiskPressureError' });
+}
+
+describe('Ultrafix steps refused at admission for disk pressure', () => {
+    const WAIT_NOTICE = 'Ultrafix is waiting for free disk space on the worker';
+    const STOP_NOTICE = 'Ultrafix stopped before reaching its goal';
+
+    beforeEach(() => {
+        queuedJobs.clear();
+        hideQueueScan = false;
+        prLabels = ['ultrafix'];
+        ciStatus = RED;
+        prHead = 'red-head-sha';
+        mockOctokitRequest.mock.restore();
+        mockOctokitRequest.mock.resetCalls();
+        // GitHub accepts every comment with an id, as it does in production.
+        mockOctokitRequest.mock.mockImplementation(async (route: string) => (
+            route.startsWith('GET') ? { data: { labels: prLabels.map(name => ({ name })) } } : { data: { id: 9001 } }
+        ));
+        mockSafeRemoveLabel.mock.resetCalls();
+        setCheckRunDeps({
+            areAllChecksPassing: mockAreAllChecksPassing,
+            getCurrentPRHead: mockGetCurrentPRHead,
+            getCheckRunsStatus: mockGetCheckRunsStatus,
+        });
+        mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-17T03:58:00Z') });
+    });
+
+    afterEach(() => mock.timers.reset());
+
+    function postedBodies(): string[] {
+        return mockOctokitRequest.mock.calls
+            .filter(call => String(call.arguments[0]).startsWith('POST'))
+            .map(call => (call.arguments as unknown as [string, { body?: string }])[1].body ?? '');
+    }
+
+    function pendingSteps(pr: number, commandMode: 'review' | 'fix') {
+        return [...queuedJobs.values()].filter(job => job.data.pullRequestNumber === pr
+            && job.data.commandMode === commandMode && job.state !== 'failed' && job.state !== 'completed');
+    }
+
+    /** The worker refuses the one pending step of the loop at admission; its attempts are exhausted. */
+    async function refusePendingStep(redis: FakeRedis, pr: number, commandMode: 'review' | 'fix') {
+        const pending = pendingSteps(pr, commandMode);
+        assert.equal(pending.length, 1, `one pending ${commandMode} to refuse`);
+        pending[0].state = 'failed';
+        return handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never });
+    }
+
+    const sweep = (redis: FakeRedis) => sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+
+    test('two consecutive refusals followed by a successful admission continue the loop', async () => {
+        const redis = await strandLoopAfterCiFailure(170);
+        assert.equal((await checksTurnGreen(redis, 170)).reason, 'stranded_loop_rearmed');
+
+        // 1st refusal: one notice, no refusal counted toward the failed-step breaker.
+        assert.deepEqual(await refusePendingStep(redis, 170, 'review'), { reportedOnPullRequest: true });
+        let state = await loadState(redis as never, OWNER, REPO, 170);
+        assert.equal(getConsecutiveFailedSteps(state!), 0);
+        assert.equal(getDiskPressureWait(state!)?.refusals, 1);
+        assert.equal(Date.parse((await loadRearmRetry(redis as never, OWNER, REPO, 170))!.notBefore!), Date.now() + ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+
+        // Neither the sweep nor a check event retries it before the backoff has passed.
+        assert.deepEqual(await sweep(redis), []);
+        assert.equal((await checksTurnGreen(redis, 170)).reason, 'rearm_not_ready: disk_pressure_wait');
+        assert.equal(pendingSteps(170, 'review').length, 0);
+
+        // 2 minutes later the same step is retried, and refused again: no second notice.
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.deepEqual(await refusePendingStep(redis, 170, 'review'), { reportedOnPullRequest: true });
+        state = await loadState(redis as never, OWNER, REPO, 170);
+        assert.equal(getDiskPressureWait(state!)?.refusals, 2);
+        assert.equal(getConsecutiveFailedSteps(state!), 0, 'refusals never count as failed steps');
+
+        // Space is back after the 5-minute wait: the review is admitted and completes.
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[1]);
+        assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        const [review] = pendingSteps(170, 'review');
+        review.state = 'completed';
+        const result = await continueUltrafixLoop({
+            owner: OWNER, repo: REPO, pullRequestNumber: 170, completedAction: 'review',
+            ultrafixMeta: review.data.ultrafixMeta, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: review.data.correlationId, currentJobId: review.id,
+        });
+
+        assert.equal(result.continued, true);
+        assert.equal(result.nextAction, 'fix');
+        assert.equal(pendingSteps(170, 'fix').length, 1, 'the loop goes on to its fix');
+        state = await loadState(redis as never, OWNER, REPO, 170);
+        assert.equal(state?.active, true);
+        assert.equal(getDiskPressureWait(state!), null, 'the completed step ends the wait');
+        assert.equal(state?.lastScore, 5);
+        const bodies = postedBodies();
+        assert.equal(bodies.filter(body => body.includes(WAIT_NOTICE)).length, 1, 'one waiting notice for both refusals');
+        assert.equal(bodies.filter(body => body.includes('could not start on')).length, 0, 'no refusal comment per attempt');
+        assert.equal(bodies.filter(body => body.includes(STOP_NOTICE)).length, 0);
+        assert.equal(mockSafeRemoveLabel.mock.calls.length, 0);
+    });
+
+    test('persistent refusals end the loop with the real reason, score and cycle, and remove the label', async () => {
+        const redis = await strandLoopAfterCiFailure(171);
+        await checksTurnGreen(redis, 171);
+        // The review runs (score 5/10) and schedules the fix of cycle 2.
+        const [review] = pendingSteps(171, 'review');
+        review.state = 'completed';
+        await continueUltrafixLoop({
+            owner: OWNER, repo: REPO, pullRequestNumber: 171, completedAction: 'review',
+            ultrafixMeta: review.data.ultrafixMeta, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: review.data.correlationId, currentJobId: review.id,
+        });
+
+        // Every retry of that same fix is refused, on the whole backoff schedule.
+        for (const delayMs of ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS) {
+            assert.deepEqual(await refusePendingStep(redis, 171, 'fix'), { reportedOnPullRequest: true });
+            assert.equal(pendingSteps(171, 'review').length, 0, 'the refused fix is retried, not replaced by a review');
+            mock.timers.tick(delayMs);
+            assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        }
+        assert.deepEqual(await refusePendingStep(redis, 171, 'fix'), { reportedOnPullRequest: true });
+        const outcomes = await sweep(redis);
+
+        assert.equal(outcomes.length, 1);
+        assert.equal(outcomes[0].result.continued, false);
+        assert.equal(pendingSteps(171, 'fix').length + pendingSteps(171, 'review').length, 0, 'nothing else is scheduled');
+        const state = await loadState(redis as never, OWNER, REPO, 171);
+        assert.equal(state?.active, false);
+        assert.equal(state?.completionStatus, 'failed');
+        assert.equal(state?.completionReason, ULTRAFIX_DISK_PRESSURE_REASON);
+        assert.equal(state?.finalScore, 5);
+        const bodies = postedBodies();
+        assert.equal(bodies.filter(body => body.includes(WAIT_NOTICE)).length, 1, 'one waiting notice for all refusals');
+        const stops = bodies.filter(body => body.includes(STOP_NOTICE));
+        assert.equal(stops.length, 1, 'the stop notice is posted');
+        assert.match(stops[0], /Last score: 5\./);
+        assert.match(stops[0], /no free disk space/);
+        assert.match(stops[0], /stopped at cycle 1 of 5/);
+        assert.match(stops[0], /refused 6 times/);
+        assert.doesNotMatch(stops[0], /unknown|Max cycles|failed \d+ times in a row/);
+        assert.deepEqual(mockSafeRemoveLabel.mock.calls.map(call => call.arguments[1]), ['ultrafix'], 'the label is removed');
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 171), null);
+    });
+
+    test('a waiting notice GitHub rejected is published on the next refusal, exactly once', async () => {
+        const redis = await strandLoopAfterCiFailure(173);
+        await checksTurnGreen(redis, 173);
+        const failingPost = mock.fn(async () => null);
+        const okPost = mock.fn(async () => 4242);
+
+        // 1st refusal: GitHub rejects the notice. The refusal stays reported, the notice stays pending.
+        let pending = pendingSteps(173, 'review');
+        pending[0].state = 'failed';
+        assert.deepEqual(
+            await handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never, post: failingPost }),
+            { reportedOnPullRequest: true },
+        );
+        assert.equal(failingPost.mock.callCount(), 1);
+        let wait = getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!);
+        assert.equal(wait?.refusals, 1);
+        assert.notEqual(wait?.noticePosted, true, 'a rejected notice is not recorded as given');
+
+        // 2nd refusal: the notice is published now and recorded.
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        pending = pendingSteps(173, 'review');
+        pending[0].state = 'failed';
+        await handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never, post: okPost });
+        assert.equal(okPost.mock.callCount(), 1);
+        assert.match((okPost.mock.calls[0].arguments as unknown as [{ body: string }])[0].body, new RegExp(WAIT_NOTICE));
+        wait = getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!);
+        assert.equal(wait?.refusals, 2);
+        assert.equal(wait?.noticePosted, true);
+
+        // 3rd refusal: stays quiet.
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[1]);
+        assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        pending = pendingSteps(173, 'review');
+        pending[0].state = 'failed';
+        await handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never, post: okPost });
+        assert.equal(okPost.mock.callCount(), 1, 'the published notice is not repeated');
+        assert.equal(failingPost.mock.callCount(), 1);
+        assert.equal(getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!)?.refusals, 3);
+    });
+
+    /** Run the loop's pending review to completion (score 5/10 with findings: the next step is a fix). */
+    async function completePendingReview(redis: FakeRedis, pr: number) {
+        const [review] = pendingSteps(pr, 'review');
+        review.state = 'completed';
+        return continueUltrafixLoop({
+            owner: OWNER, repo: REPO, pullRequestNumber: pr, completedAction: 'review',
+            ultrafixMeta: review.data.ultrafixMeta, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: review.data.correlationId, currentJobId: review.id,
+        });
+    }
+
+    test('a refused final permitted fix is retried at the cycle boundary, not stopped as cycles exhausted', async () => {
+        const redis = await strandLoopAfterCiFailure(174);
+        await checksTurnGreen(redis, 174);
+        // The pending review is the loop's fifth and last; four fixes ran, so the fifth fix is still permitted.
+        const current = await loadState(redis as never, OWNER, REPO, 174);
+        await saveState(redis as never, { ...current!, reviewCount: 4, fixCount: 4, cycleCount: 4 });
+        const continued = await completePendingReview(redis, 174);
+        assert.equal(continued.nextAction, 'fix', 'the normal continuation authorizes the final fix');
+
+        assert.deepEqual(await refusePendingStep(redis, 174, 'fix'), { reportedOnPullRequest: true });
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        const outcomes = await sweep(redis);
+
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.equal(outcomes[0].result.nextAction, 'fix');
+        const [fix] = pendingSteps(174, 'fix');
+        assert.ok(fix, 'the refused final fix is retried');
+        let state = await loadState(redis as never, OWNER, REPO, 174);
+        assert.equal(state?.active, true);
+        assert.equal(state?.completionStatus ?? null, null, 'the loop is not failed as cycles-exhausted');
+        assert.equal(getDiskPressureWait(state!)?.workEpoch, fix.data.ultrafixMeta.workEpoch, 'the wait moves with its retry');
+        assert.doesNotMatch(postedBodies().join('\n'), /Max cycles were exhausted/, 'no cycles-exhausted stop before the final fix');
+
+        // Space is back: the retried fix is admitted and completes the loop's fix budget.
+        fix.state = 'completed';
+        await continueUltrafixLoop({
+            owner: OWNER, repo: REPO, pullRequestNumber: 174, completedAction: 'fix',
+            ultrafixMeta: fix.data.ultrafixMeta, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: fix.data.correlationId, currentJobId: fix.id,
+        });
+        state = await loadState(redis as never, OWNER, REPO, 174);
+        assert.equal(state?.fixCount, 5, 'the final permitted fix completed');
+        assert.equal(getDiskPressureWait(state!), null, 'the completed step ends the wait');
+    });
+
+    test('a manual follow-up push after a refused fix retires the wait: recovery reviews the new head', async () => {
+        const redis = await strandLoopAfterCiFailure(175);
+        await checksTurnGreen(redis, 175);
+        await completePendingReview(redis, 175);
+        assert.deepEqual(await refusePendingStep(redis, 175, 'fix'), { reportedOnPullRequest: true });
+        const refused = await loadState(redis as never, OWNER, REPO, 175);
+        assert.equal(getDiskPressureWait(refused!)?.action, 'fix');
+
+        // A manual follow-up runs and pushes a new head: it fences automatic work but is no Ultrafix step.
+        await invalidateUltrafixAutomaticWork(redis as never, OWNER, REPO, 175);
+        prHead = 'manual-follow-up-sha-175';
+        ciStatus = RED;
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        const deferred = await sweep(redis);
+
+        // The superseded fix is not retried; the new head waits for CI and then gets its review.
+        assert.equal(pendingSteps(175, 'fix').length, 0, 'the superseded fix is not retried');
+        assert.equal(deferred[0]?.result.nextAction, 'review');
+        assert.equal((await loadDeferredContinuation(redis as never, OWNER, REPO, 175))?.nextAction, 'review');
+        let state = await loadState(redis as never, OWNER, REPO, 175);
+        assert.equal(state?.diskPressureWait, undefined, 'the superseded wait is retired');
+
+        const resumed = await checksTurnGreen(redis, 175);
+        assert.equal(resumed.continued, true);
+        assert.equal(resumed.nextAction, 'review');
+        assert.equal(pendingSteps(175, 'review').length, 1, 'the new head is reviewed');
+        assert.equal(pendingSteps(175, 'fix').length, 0);
+        state = await loadState(redis as never, OWNER, REPO, 175);
+        assert.equal(state?.active, true);
+    });
+
+    test('a refusal of a job that is not a current Ultrafix step is left to the ordinary refusal comment', async () => {
+        const redis = await strandLoopAfterCiFailure(172);
+        await checksTurnGreen(redis, 172);
+        const [review] = pendingSteps(172, 'review');
+        await invalidateUltrafixAutomaticWork(redis as never, OWNER, REPO, 172);
+        assert.deepEqual(
+            await handleExhaustedUltrafixStep(redis as never, review.data, diskPressureError(), { correlatedLogger: logger as never }),
+            { reportedOnPullRequest: false },
+        );
+        assert.deepEqual(
+            await handleExhaustedUltrafixStep(redis as never, { repoOwner: OWNER, repoName: REPO, pullRequestNumber: 172, commandMode: 'review' },
+                diskPressureError(), { correlatedLogger: logger as never }),
+            { reportedOnPullRequest: false },
+        );
+        assert.equal(postedBodies().filter(body => body.includes(WAIT_NOTICE)).length, 0);
     });
 });

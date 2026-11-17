@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ExtensionCatalogEntry, ExtensionLibraryRevision, ExtensionLibraryServer, ExtensionLibrarySkill, ExtensionLibraryUsage, ExtensionOAuthInstanceInfo, ExtensionSkillBundle, InstanceCatalogResponse } from '@propr/shared';
 import { disconnectExtensionOAuth, getExtensionLibrary, saveExtensionLibrary, setExtensionItemEnabled, startExtensionOAuth, type ExtensionItemRef } from '../../../api/extensionProfilesApi';
 import { getInstanceCatalog } from '../../../api/proprApi';
@@ -121,7 +121,10 @@ export function useExtensionLibrary() {
       return open.length === Object.keys(names).length ? names : Object.fromEntries(open);
     });
   }, [adopt]);
-  useEffect(() => {
+  // Installed in the commit that shows the "Finish signing in" notice, not in a
+  // later passive effect: a return to this tab right after the notice appears
+  // must already refresh the connection state.
+  useLayoutEffect(() => {
     if (!signingInCount) return;
     const refresh = () => { if (document.visibilityState !== 'hidden') void refreshConnections().catch(() => {}); };
     window.addEventListener('focus', refresh);

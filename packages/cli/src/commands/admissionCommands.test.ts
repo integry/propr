@@ -38,7 +38,7 @@ function report(): AgentRunAdmissionReport {
     ],
     queueWorkers: { label: "Queue worker concurrency: …", inUse: 5, total: 5, workers: 1 },
     repositoryWorkflowSlots: { label: "Repository workflow slots: …", repositories: [{ repository: "acme/app", inUse: 2, limit: 2, waiting: 1 }] },
-    subscriptionUsage: "Subscription usage is not part of this report.",
+    subscriptionUsage: "Subscription usage (provider quota through Agent Tank) is not part of this report; read it with get_provider_usage or the automation capacity routes.",
   };
 }
 
@@ -59,7 +59,8 @@ test("the readable report labels every limit and lists visible tasks", () => {
   assert.match(text, /local-llama {2}waiting \(alias_limit\) {2}task-local/);
   assert.match(text, /Queue workers: 5 of 5 job slots in use across 1 worker\(s\)\./);
   assert.match(text, /acme\/app {2}2\/2 in use, 1 waiting/);
-  assert.match(text, /Subscription usage is not part of this report\./);
+  assert.match(text, /Subscription usage \(provider quota through Agent Tank\) is not part of this report; see 'propr tank'\./);
+  assert.doesNotMatch(text, /get_provider_usage|capacity routes/);
 });
 
 test("a changed limit at an unchanged generation is printed as refused, not as free capacity", () => {

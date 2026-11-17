@@ -26,6 +26,28 @@ export function redactText(value: string): string {
     .replace(/Bearer[ \t]+[A-Za-z0-9._~+/-]+/gi, 'Bearer [redacted]');
 }
 
+/** Keys whose values are never returned, whatever their type. */
+const SENSITIVE_KEY = /(?:secret|password|credential|private.?key|api.?key|access.?key|cookie|authorization|worktree.?path|stored.?path|job_data|container_env)/i;
+/** `token` keys name credentials (access, bearer, instance, refresh tokens, tokenHash, …) but
+ * also token counts and token-threshold settings (`input_tokens`, `token_outlier_multiplier`). */
+const TOKEN_KEY = /token/i;
+
+/** True when `value` cannot carry a credential: a number, boolean or null, or a container holding only those. */
+function holdsNoText(value: unknown, depth: number): boolean {
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return true;
+  if (depth > 16 || typeof value !== 'object') return false;
+  // Only plain containers: a Buffer or typed array of numbers may be a credential's bytes.
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  return Object.values(value).every(item => holdsNoText(item, depth + 1));
+}
+
+/** A `token` key is dropped when its value could be a credential (any string, or a container holding one). */
+function keepEntry(key: string, item: unknown, depth: number): boolean {
+  if (SENSITIVE_KEY.test(key)) return false;
+  return !TOKEN_KEY.test(key) || holdsNoText(item, depth);
+}
+
 export function redact(value: unknown, depth = 0): unknown {
   if (depth > 16) return '[depth limit]';
   if (typeof value === 'string' && (value.trim().startsWith('[') || value.trim().startsWith('{'))) {
@@ -34,7 +56,7 @@ export function redact(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') return redactText(value);
   if (Array.isArray(value)) return value.slice(0, 200).map(item => redact(item, depth + 1));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => key === 'pr_review_max_context_tokens' || !/(?:token|secret|password|credential|private.?key|api.?key|access.?key|cookie|authorization|worktree.?path|stored.?path|job_data|container_env)/i.test(key))
+    .filter(([key, item]) => keepEntry(key, item, depth + 1))
     .map(([key, item]) => [key, redact(item, depth + 1)]));
   return value;
 }

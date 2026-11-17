@@ -26,7 +26,7 @@ import {
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult, UltrafixContinuationParams } from './ultrafixLoopContinuation.js';
-import { postPrComment, updatePrComment } from './ultrafixLoopContinuationHelpers.js';
+import { postPrComment, removeUltrafixLabel, updatePrComment } from './ultrafixLoopContinuationHelpers.js';
 import { stashUltrafixCiWaitNotice } from './ultrafixCiWaitNotice.js';
 import { buildUltrafixStopNoticeHeader } from './ultrafixStopNotice.js';
 
@@ -201,6 +201,7 @@ export async function stopUltrafixLoopForCiTimeout(input: UltrafixCiTimeoutStopI
         if (!replaced) {
             await postPrComment({ owner, repo, pullRequestNumber: pr, body, correlatedLogger });
         }
+        await removeUltrafixLabel(owner, repo, pr, correlatedLogger);
         return true;
     });
     if (stopped) {

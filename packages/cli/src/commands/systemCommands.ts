@@ -18,7 +18,8 @@ import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation
 /**
  * Formats a status value with color-like indicators for terminal display.
  */
-function formatStatusIndicator(status: string): string {
+function formatStatusIndicator(value: string | undefined): string {
+  const status = typeof value === "string" && value ? value : "unknown";
   const normalizedStatus = status.toLowerCase();
 
   if (normalizedStatus === "not_applicable") {
@@ -36,6 +37,7 @@ function formatStatusIndicator(status: string): string {
   if (
     normalizedStatus === "disconnected" ||
     normalizedStatus === "stopped" ||
+    normalizedStatus === "failed" ||
     normalizedStatus === "unknown"
   ) {
     return `[!!] ${status}`;
@@ -44,10 +46,13 @@ function formatStatusIndicator(status: string): string {
   return `[--] ${status}`;
 }
 
+/** Indexing states that mean the component is degraded, not merely busy. */
+const INDEXING_DEGRADED_STATES = new Set(["failed", "disconnected"]);
+
 /**
  * Displays the system status in a formatted table.
  */
-function displaySystemStatus(status: SystemStatus): void {
+export function displaySystemStatus(status: SystemStatus): void {
   console.log("");
   console.log("=".repeat(50));
   console.log("System Status");
@@ -64,6 +69,7 @@ function displaySystemStatus(status: SystemStatus): void {
     "GitHub Auth Mode",
     "GitHub Event Intake",
     "Claude Auth",
+    "Indexing",
     "Routing URL",
     "Routing WebSocket",
     "Last Delivery ID",
@@ -107,6 +113,11 @@ function displaySystemStatus(status: SystemStatus): void {
   console.log(
     `${"Claude Auth".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.claudeAuth)}`
   );
+  if (status.indexing) {
+    console.log(
+      `${"Indexing".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.indexing)}`
+    );
+  }
 
   // Routing WebSocket diagnostics for default (routing_websocket) deployments.
   const routingIntakeActive = status.githubEventIntake === "routing_websocket";
@@ -153,8 +164,18 @@ function displaySystemStatus(status: SystemStatus): void {
   const claudeHealthy = status.claudeAuth === "connected" ||
     status.claudeAuth === "not_applicable";
 
+  // Indexing idle/active/queued is normal work; a failed or unreachable
+  // indexing queue is a degraded component.
+  const indexingHealthy = status.indexing === undefined ||
+    !INDEXING_DEGRADED_STATES.has(status.indexing);
+  const warnings = (Array.isArray(status.warnings) ? status.warnings : [])
+    .map((warning) => warning?.message ?? warning?.type)
+    .filter((message): message is string => typeof message === "string" && message.length > 0);
+
   const allHealthy =
     status.api === "healthy" &&
+    indexingHealthy &&
+    warnings.length === 0 &&
     status.redis === "connected" &&
     status.daemon === "running" &&
     status.worker === "running" &&
@@ -168,6 +189,9 @@ function displaySystemStatus(status: SystemStatus): void {
   } else {
     console.log("Some components require attention.");
 
+    if (status.api !== "healthy") {
+      console.log(`  - API reports ${status.api ?? "unknown"} health.`);
+    }
     if (status.redis !== "connected") {
       console.log("  - Redis is not connected. Check Redis server.");
     }
@@ -186,6 +210,12 @@ function displaySystemStatus(status: SystemStatus): void {
     }
     if (!claudeHealthy) {
       console.log("  - Claude auth status unknown or no recent activity.");
+    }
+    if (!indexingHealthy) {
+      console.log(`  - Repository indexing is ${status.indexing}. Check the indexing worker and recent indexing jobs.`);
+    }
+    for (const warning of warnings) {
+      console.log(`  - ${warning}`);
     }
     if (routingStateMissing) {
       console.log("  - Routing WebSocket state unavailable. routing_websocket is the active intake mode but the daemon published no routing state; ensure the daemon is running and check its logs.");
@@ -265,7 +295,7 @@ function displayQueueStats(stats: QueueStats): void {
 export function createRemoteStatusCommand(invocation = "propr remote-status"): Command {
   return new Command("remote-status")
     .description("Display the health status of a remote ProPR backend (API, Redis, daemon, worker)")
-    .option("--json", "Output raw JSON response")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Components Checked:
   - API health
@@ -327,7 +357,7 @@ Examples:
 export function createQueueCommand(invocation = "propr queue"): Command {
   return new Command("queue")
     .description("Display job queue statistics and counts")
-    .option("--json", "Output raw JSON response")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Statistics Shown:
   - Waiting jobs

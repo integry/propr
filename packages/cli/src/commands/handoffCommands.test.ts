@@ -39,9 +39,9 @@ function handoffStatus(): FollowupHandoffStatus {
 test("human handoff output shows phase, status, liveness, lineage, retained work and next action", () => {
   const text = formatHandoffStatus(handoffStatus()).join("\n");
   assert.match(text, /integry\/propr#42/);
-  assert.match(text, /Phase:\s+pushed/);
-  assert.match(text, /Status:\s+awaiting_operator \(cancelled_by_user\)/);
-  assert.match(text, /Liveness:\s+not_checked/);
+  assert.match(text, /Phase:\s+Pushed/);
+  assert.match(text, /Status:\s+Awaiting operator \(cancelled by user\)/);
+  assert.match(text, /Liveness:\s+Not checked/);
   assert.match(text, /Branch:\s+propr\/fix-42/);
   assert.match(text, /Predecessors:\s+task-0/);
   assert.match(text, /Successor task:\s+\(none\)/);
@@ -56,8 +56,8 @@ test("human handoff output shows the durable settlement beside a later liveness 
     ...handoffStatus(), phase: "cleanup_pending", status: "active",
     statusReason: "liveness_unavailable", settlement: "returned_to_queue",
   }).join("\n");
-  assert.match(text, /Status:\s+active \(liveness_unavailable\)/);
-  assert.match(text, /Settlement:\s+returned_to_queue/);
+  assert.match(text, /Status:\s+Active \(liveness unavailable\)/);
+  assert.match(text, /Settlement:\s+Returned to queue/);
 });
 
 test("recovery summaries render every counter", () => {

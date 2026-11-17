@@ -47,9 +47,12 @@ export {
 
 // --- Interfaces ---
 
+import type { UltrafixLoopWaitFields } from './ultrafixDiskPressureWait.js';
+
 export type UltrafixAction = 'review' | 'fix';
 
-export interface UltrafixLoopState {
+// Its stop-notice fields (`lastScore`, `diskPressureWait`) live in `ultrafixDiskPressureWait.ts`.
+export interface UltrafixLoopState extends UltrafixLoopWaitFields {
     /** Repository owner */
     owner: string;
     /** Repository name */
