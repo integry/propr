@@ -8,10 +8,8 @@ import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
 import {
-    acquireCiFailureCommentLock,
     appendCheckToCiFailureComment,
     buildCiFailureHeadMarker,
-    DEFAULT_COMMENT_LOCK_WAIT_MS,
     editCiFailureComment,
     scanCiFailureComments,
     type CiFailureCommentScan,
@@ -71,8 +69,6 @@ export interface CiFailureFollowupDependencies {
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
-    /** How long to wait for another worker's edit of the same head's comment. */
-    commentLockWaitMs?: number;
 }
 
 export interface CiFailureFollowupResult {
@@ -205,8 +201,8 @@ function buildCheckSection(evidence: CiFailureEvidence, failureExcerpt: string |
  * Redis NX claim closes redelivery races for the same source, while the marker
  * scan makes deduplication survive process restarts and Redis expiry. When a
  * comment for the same head exists, the check is added to it instead of
- * posting. Reading and rewriting that comment happen under a per-head lock,
- * so concurrent checks never overwrite each other's report.
+ * posting (best effort: near-simultaneous deliveries may both post, or the
+ * later edit may drop the earlier check's entry).
  */
 export async function postCiFailureFollowup(
     request: CiFailureFollowupRequest,
@@ -246,12 +242,7 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        const releaseLock = await acquireCiFailureCommentLock(redis, request, dependencies.commentLockWaitMs ?? DEFAULT_COMMENT_LOCK_WAIT_MS, log);
-        try {
-            return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log }, releaseLock !== null);
-        } finally {
-            await releaseLock?.();
-        }
+        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log });
     } catch (error) {
         if (claimed) {
             try {
@@ -264,11 +255,7 @@ export async function postCiFailureFollowup(
     }
 }
 
-/**
- * Lists or posts a claimed failure. `mayEdit` is false when the head's comment
- * lock is not held: a read without it may miss a concurrent check, so writing
- * it back could erase that check, and a new comment is posted instead.
- */
+/** Lists a claimed failure on the same head's comment, or posts a new one. */
 async function reportClaimedFailure(
     { octokit, request, dedupeKey, correlationId, log }: {
         octokit: CiFailureOctokit;
@@ -277,7 +264,6 @@ async function reportClaimedFailure(
         correlationId: string;
         log: ReturnType<typeof logger.withCorrelation>;
     },
-    mayEdit: boolean,
 ): Promise<CiFailureFollowupResult> {
     let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
     try {
@@ -288,7 +274,6 @@ async function reportClaimedFailure(
         // failure from the agent: it is posted as a new comment.
         log.warn({ error: (error as Error).message }, 'Could not scan PR comments for an existing failed-CI follow-up');
     }
-    if (!mayEdit) scan.sameHead = null;
     if (scan.duplicate) {
         log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
         return { posted: false, reason: 'duplicate' };
