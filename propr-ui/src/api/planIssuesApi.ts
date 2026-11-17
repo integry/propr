@@ -35,6 +35,16 @@ export interface PlanIssue {
   run_ultrafix?: boolean | null;
   ultrafix_goal?: number | null;
   ultrafix_max_cycles?: number | null;
+  /**
+   * The issue's standing in the plan's epic execution, as GET …/execution-queue reports it (a skipped issue is
+   * `state: 'skipped'` here while `status` keeps its plan status); `dependsOn` is the execution's edges (the chain
+   * of a sequential execution). Null when the issue is not part of the execution; older servers omit it.
+   */
+  execution?: (Omit<PlanExecutionQueueIssue, 'issue'> & {
+    executionId: string;
+    executionMode: PlanExecutionMode;
+    queueStatus: PlanExecutionQueue['status'];
+  }) | null;
   created_at: string;
   updated_at: string;
 }

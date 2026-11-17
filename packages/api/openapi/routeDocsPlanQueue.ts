@@ -1,5 +1,5 @@
 import { EpicQueueActionError, EpicQueueActionResult, EpicQueueBlockedEventPage, EpicQueueBlockedEventsQuery, EpicQueueRetryRequest,
-  EpicQueueSkipRequest } from './schemasPlanQueue.js';
+  EpicQueueSkipRequest, PlanIssuesQuery } from './schemasPlanQueue.js';
 import type { RouteDoc } from './types.js';
 
 const PLAN_ID = 'The plan (draft) id.';
@@ -11,6 +11,18 @@ const refusals = {
 };
 
 export const PLAN_QUEUE_ROUTE_DOCS: Record<string, RouteDoc> = {
+  'GET /api/planner/drafts/:id/issues': {
+    operationId: 'getApiPlannerDraftsIdIssues',
+    summary: 'List the issues of a plan',
+    description: 'Every published issue of the plan. Without `page` and `limit` the response is a bare array (kept for the released CLI and existing UI clients); with either one it is `{ issues, total, page, limit, hasMore }`. In both forms each issue carries `execution`: its standing in the plan\'s epic execution exactly as `GET …/execution-queue` reports it (`state`, including `skipped`, while `status` keeps the plan status; `schedule`; the execution\'s `dependsOn` edges, the chain of a sequential execution; `waitingOn` naming the unfinished prerequisites, through skipped ones; `waitingOnSkipped`; `skipSatisfiesDependents`; `executionId`, `executionMode`, `queueStatus`), or null when the issue is not in the execution. `depends_on_issues` stays the plan\'s declared dependencies.',
+    tags: ['Planner'],
+    pathParams: { id: PLAN_ID },
+    query: PlanIssuesQuery,
+    responses: {
+      200: { description: 'The issues, as a bare array or a page.' },
+      400: { description: '`page` or `limit` is invalid.' },
+    },
+  },
   'GET /api/planner/drafts/:id/execution-queue/blocked-events': {
     operationId: 'listPlanExecutionBlockedEvents',
     summary: 'List the blocked events of a plan\'s epic execution',
