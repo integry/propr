@@ -1,40 +1,54 @@
 import type { McpConfig } from './config.js';
 import type { Args, McpTool } from './tools.js';
 import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
+import { countOf, genericReadSummary } from './readSummaries.js';
 
 interface ResultTargets { planId?: string; goalId?: string; taskId?: string }
-interface ResultLinkTarget { resource: string; ui: string }
-interface ResultLinkLocations { frontend: string; origin: string }
+/** `ui` is absent when no browser page exists for the result. */
+interface ResultLinkTarget { resource: string; ui?: string }
+/** `frontend` is the configured browser UI base; undefined when FRONTEND_URL is unset. */
+interface ResultLinkLocations { frontend?: string; origin: string }
 
 export interface PresentedResult { summary: string; links: Record<string, string>; data: unknown; content?: ContentBlock[] }
 
-function entityResultLink(targets: ResultTargets & { submissionId?: string }, frontend: string, origin: string): ResultLinkTarget | undefined {
+/** The configured browser UI base, without a trailing slash; the API origin serves no UI. */
+export function configuredFrontendUrl(): string | undefined {
+  const configured = process.env.FRONTEND_URL?.trim().replace(/\/+$/, '');
+  return configured || undefined;
+}
+
+function entityResultLink(targets: ResultTargets & { submissionId?: string }, locations: ResultLinkLocations): ResultLinkTarget | undefined {
   const { submissionId, planId, goalId, taskId } = targets;
+  // Entity pages predate the configured-frontend rule: without FRONTEND_URL they keep the instance origin as their base.
+  const entity = locations.frontend ?? locations.origin;
   if (submissionId) {
     return {
       resource: `submissions/${encodeURIComponent(submissionId)}`,
-      ui: taskId ? `${frontend}/tasks/${encodeURIComponent(taskId)}` : origin,
+      ui: taskId ? `${entity}/tasks/${encodeURIComponent(taskId)}` : locations.frontend,
     };
   }
-  if (planId) return { resource: `plans/${encodeURIComponent(planId)}`, ui: `${frontend}/studio/${encodeURIComponent(planId)}` };
-  if (goalId) return { resource: `goals/${encodeURIComponent(goalId)}`, ui: `${frontend}/goals/${encodeURIComponent(goalId)}` };
-  if (taskId) return { resource: `tasks/${encodeURIComponent(taskId)}`, ui: `${frontend}/tasks/${encodeURIComponent(taskId)}` };
+  if (planId) return { resource: `plans/${encodeURIComponent(planId)}`, ui: `${entity}/studio/${encodeURIComponent(planId)}` };
+  if (goalId) return { resource: `goals/${encodeURIComponent(goalId)}`, ui: `${entity}/goals/${encodeURIComponent(goalId)}` };
+  if (taskId) return { resource: `tasks/${encodeURIComponent(taskId)}`, ui: `${entity}/tasks/${encodeURIComponent(taskId)}` };
   return undefined;
 }
 
 function contextualResultLink(tool: McpTool, args: Args, result: Args, locations: ResultLinkLocations): ResultLinkTarget {
   const { frontend, origin } = locations;
-  if (args.pullRequest) return { resource: `repositories/${args.repository}/pulls/${args.pullRequest}`, ui: `https://github.com/${args.repository}/pull/${args.pullRequest}` };
+  const pullRequest = args.pullRequest ?? (tool.name === 'get_pull_request_readiness' ? args.number : undefined);
+  if (pullRequest) return { resource: `repositories/${args.repository}/pulls/${pullRequest}`, ui: `https://github.com/${args.repository}/pull/${pullRequest}` };
   if (tool.name === 'list_pull_requests' && args.repository) return { resource: `repositories/${args.repository}/pulls`, ui: `https://github.com/${args.repository}/pulls` };
   if (args.artifactId || result.artifactId) {
     const id = args.artifactId || result.artifactId;
+    // The artifact viewer is served by the API itself (`/mcp/artifacts/:id`).
     return { resource: `artifacts/${id}`, ui: `${origin}/mcp/artifacts/${id}` };
   }
-  if (args.notificationId) return { resource: `notifications/${encodeURIComponent(args.notificationId)}`, ui: `${frontend}/inbox` };
-  if (tool.name.includes('notification') && !tool.name.includes('preferences')) return { resource: 'notifications', ui: `${frontend}/inbox` };
-  if (tool.name === 'list_repositories') return { resource: 'repositories', ui: origin };
-  if (tool.name === 'list_models') return { resource: 'models', ui: origin };
-  return { resource: 'connection', ui: origin };
+  const inbox = frontend && `${frontend}/inbox`;
+  if (args.notificationId) return { resource: `notifications/${encodeURIComponent(args.notificationId)}`, ui: inbox };
+  if (tool.name.includes('notification') && !tool.name.includes('preferences')) return { resource: 'notifications', ui: inbox };
+  if (tool.name === 'list_repositories') return { resource: 'repositories', ui: frontend };
+  if (tool.name === 'list_models') return { resource: 'models', ui: frontend };
+  return { resource: 'connection', ui: frontend };
 }
 
 function resultLinks(tool: McpTool, args: Args, result: Args, config: Pick<McpConfig, 'instanceId' | 'origin'>): Record<string, string> {
@@ -46,10 +60,9 @@ function resultLinks(tool: McpTool, args: Args, result: Args, config: Pick<McpCo
     submissionId: args.submissionId || continuation.submissionId || result.submissionId,
   };
   const { origin, instanceId } = config;
-  const frontend = (process.env.FRONTEND_URL || origin).replace(/\/$/, '');
-  const { resource, ui } = entityResultLink(targets, frontend, origin)
-    || contextualResultLink(tool, args, result, { frontend, origin });
-  return { instance: origin, ui, resource: `propr://instances/${instanceId}/${resource}` };
+  const locations = { frontend: configuredFrontendUrl(), origin };
+  const { resource, ui } = entityResultLink(targets, locations) || contextualResultLink(tool, args, result, locations);
+  return { instance: origin, ...(ui ? { ui } : {}), resource: `propr://instances/${instanceId}/${resource}` };
 }
 
 function mutationSummary(tool: McpTool, data: Args, result: Args, targets: ResultTargets): string {
@@ -66,13 +79,13 @@ function mutationSummary(tool: McpTool, data: Args, result: Args, targets: Resul
 
 function agentActivitySummary(args: Args, result: Args): string {
   const target = args.goalId ? `goal ${args.goalId}` : `task ${args.taskId}`;
-  return `${result.activity?.length || 0} recent activity entries for ${target}.`;
+  return `${countOf(result.activity?.length || 0, 'recent activity entry', 'recent activity entries')} for ${target}.`;
 }
 
 const NOTIFICATION_READS = new Set(['get_notification', 'get_notification_unread_count']);
 
 function notificationSummary(tool: McpTool, result: Args): string {
-  if (tool.name === 'get_notification_unread_count') return `${result.unreadCount} unread notifications.`;
+  if (tool.name === 'get_notification_unread_count') return `${countOf(Number(result.unreadCount) || 0, 'unread notification')}.`;
   const { notification } = result;
   const state = notification.dismissedAt ? 'dismissed' : notification.readAt ? 'read' : 'unread';
   return `${notification.title}: ${notification.severity} ${notification.kind}, ${state}.`;
@@ -93,7 +106,7 @@ function repositoryEventsSummary(result: Args): string {
   const count = Array.isArray(result.events) ? result.events.length : 0;
   if (result.outcome === 'timeout') return `No matching repository events within ${result.timeoutSeconds}s. Wait again with cursor ${result.cursor}.`;
   const more = result.truncated ? ' More follow; read again with the cursor.' : '';
-  return `${count} repository events.${more} Resume with cursor ${result.cursor}.`;
+  return `${countOf(count, 'repository event')}.${more} Resume with cursor ${result.cursor}.`;
 }
 
 /** Digest reads answer a whole-instance question, so they summarize by section. */
@@ -101,11 +114,11 @@ const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   wait_goal: goalWaitSummary,
   list_repository_events: repositoryEventsSummary,
   wait_repository_events: repositoryEventsSummary,
-  get_current_activity: result => `Across ${result.repositories.length} repositories: ${Object
+  get_current_activity: result => `Across ${countOf(result.repositories.length, 'repository', 'repositories')}: ${Object
     .entries(result.sections as Record<string, { count: number }>)
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
     .join(', ')}.`,
-  get_recent_activity: result => `${result.events.length} events between ${result.window.since} and ${result.window.until}.`,
+  get_recent_activity: result => `${countOf(result.events.length, 'event')} between ${result.window.since} and ${result.window.until}.`,
   get_agent_run_admission: admissionSummary,
 };
 
@@ -132,9 +145,8 @@ function readSummary(tool: McpTool, args: Args, result: Args): string {
   if (tool.name === 'get_goal') return `${result.goal?.title || 'Goal'}: ${result.goal?.resultState || result.goal?.desiredState || 'state unavailable'}.`;
   if (tool.name === 'get_connection') return `Connected as ${result.identity.username} to ${result.instanceId}. ${result.scopes.join(', ')} permissions.`;
   if (NOTIFICATION_READS.has(tool.name)) return notificationSummary(tool, result);
-  if (tool.name === 'resolve_reference') return result.match === 'ambiguous' || result.match === 'candidates' ? `${result.candidates.length} candidates. Choose an exact handle before acting.` : `${result.match.replaceAll('_', ' ')}: ${result.candidates.length} candidates.`;
-  const list = Object.values(result).find(Array.isArray);
-  return list ? `${tool.name.replaceAll('_', ' ')}: ${list.length} items in this page.` : `${tool.name.replaceAll('_', ' ')}: retrieved.`;
+  if (tool.name === 'resolve_reference') return result.match === 'ambiguous' || result.match === 'candidates' ? `${countOf(result.candidates.length, 'candidate')}. Choose an exact handle before acting.` : `${result.match.replaceAll('_', ' ')}: ${countOf(result.candidates.length, 'candidate')}.`;
+  return genericReadSummary(tool, args, result);
 }
 
 /** Small spoken summaries; the structured result remains authoritative. */

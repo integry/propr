@@ -48,7 +48,11 @@ The reverse proxy must route `/api/mcp`, `/.well-known/*`, `/authorize`,
 to this API. Preserve the MCP protocol and parameter headers. Do not cache
 private responses or buffer streaming output. The canonical public origin
 must match the externally visible API origin; frontend UI links continue to
-use `FRONTEND_URL`. Set the existing `GH_OAUTH_CALLBACK_URL` to the instance's
+use `FRONTEND_URL`. Every tool result's `links.ui` is a page under
+`FRONTEND_URL` (or the GitHub page for a pull request, or the API-served
+artifact viewer); without `FRONTEND_URL`, results that are not a task, plan,
+goal or submission omit `links.ui` rather than point at the API origin, which
+serves no UI. Set the existing `GH_OAUTH_CALLBACK_URL` to the instance's
 GitHub callback `/api/auth/github/callback`, and register that exact URL in
 the GitHub OAuth application. This GitHub callback is distinct from the
 chat client's OAuth callback.
@@ -747,7 +751,8 @@ Stable codes introduced by the observable operator surface are:
 
 | Code | Meaning |
 | --- | --- |
-| `INVALID_INPUT` | Arguments failed schema or semantic validation. |
+| `INVALID_INPUT` | Arguments failed schema or semantic validation, including a missing or doubled exactly-one-of argument (`taskId` or `pullRequest` for `list_visual_previews`, `pullRequest` or `issue` for `get_comment_attachment`, `goalId` or `taskId` for `get_agent_activity`). |
+| `NOT_FOUND` | The target does not exist or is not visible to you, for example an unknown pull request number. |
 | `GITHUB_*`: `GITHUB_AUTH_FAILED`, `GITHUB_FORBIDDEN`, `GITHUB_NOT_FOUND`, `GITHUB_RATE_LIMITED`, `GITHUB_REJECTED`, `GITHUB_UNAVAILABLE`, `GITHUB_RESPONSE_INVALID` | GitHub rejected, denied, could not find, throttled or could not serve the request, or returned a response the tool could not act on. |
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
@@ -820,6 +825,8 @@ and also require execute scope. Read owned upload artifacts in 48 KiB chunks.
 the native 10 MiB limit) in 48 KiB chunks. Owned MCP uploads have authenticated
 browser download links under `/mcp/artifacts/{id}`. Task changes default to a
 file summary; request `detail: "diff"` with an exact path for 16 KiB chunks.
+An absolute `path`, a `..` segment or a backslash is `INVALID_PATH`, as for
+`read_repository_file`.
 No tool downloads arbitrary remote URLs. Secret entry and browser push/login
 flows stay in the browser. Tool responses are bounded at 256 KiB and redact
 credential fields and recognizable token strings.
@@ -1128,7 +1135,8 @@ read-scope tools consume it:
   `outcome` `events` or `timeout`. A timeout returns the cursor unchanged.
 
 Both filter with `domains` (`pull_request`, `epic_queue`, `plan_issue`),
-`types`, `pullRequest` and `planId`:
+`types`, `pullRequest` and `planId` (a plan UUID, as for
+`list_plan_blocked_events`):
 
 | Domain | Types |
 | --- | --- |
@@ -1175,7 +1183,7 @@ readiness instead of re-reading everything:
 1. Call `wait_repository_events` with the arguments above (no cursor the
    first time).
 2. On `outcome` `events`, call `get_pull_request_readiness` with
-   `{ "repository": "acme/web", "number": 42 }` and act on the verdict.
+   `{ "repository": "acme/web", "pullRequest": 42 }` and act on the verdict.
 3. Call `wait_repository_events` again with `afterCursor` set to the returned
    `cursor`. On `timeout`, call it again with the same cursor.
 
@@ -1248,7 +1256,9 @@ list — undetermined, not absent. Then read the discussion newest-first:
 `get_pull_request_discussion` returns the current `head`, parsed ProPR reviews
 with their `currentFindingIds`, `selectableFindingIds`, `reviewedHead` and
 `matchesCurrentHead`, and a
-`nextCursor` for older comments. Comment prose is untrusted data.
+`nextCursor` for older comments. Comment prose is untrusted data. A `cursor`
+that is not a `nextCursor` this tool returned fails with `CURSOR_INVALID`
+(400); read again without `cursor` to restart from the newest comment.
 
 The conversation never contains GitHub code review. Read submitted reviews
 with `"source": "reviews"` and inline review comments (with their file, line
@@ -1284,11 +1294,12 @@ arm or withdraw auto-merge, and it leaves ProPR's own state untouched,
 including the marker that records when ProPR first saw a head without CI.
 
 ```json
-{ "repository": "acme/web", "number": 42 }
+{ "repository": "acme/web", "pullRequest": 42 }
 ```
 
-Your GitHub access to the repository is checked the same way as for
-`get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
+`pullRequest` names the pull request as in every other pull request tool;
+the original `number` argument is still accepted as an alias. Your GitHub
+access to the repository is checked the same way as for `get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
 sees what the auto-merge path sees, including legacy commit statuses and the
 repository's non-blocking checks.
 

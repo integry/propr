@@ -136,6 +136,12 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
   const newestComments = (repository: string, pullRequest: number, args: Args) => {
     const ordered = comments.filter(comment => comment.repository === repository && comment.pullRequest === pullRequest)
       .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+    // GitHub refuses a cursor it never issued with a GraphQL error, not an empty page.
+    if (args.before !== null && args.before !== undefined && !/^\d+$/.test(String(args.before))) {
+      throw Object.assign(new Error(`Request failed due to following response errors:\n - \`${args.before}\` does not appear to be a valid cursor.`), {
+        name: 'GraphqlResponseError', errors: [{ type: 'INVALID_CURSOR_ARGUMENTS', path: ['repository', 'pullRequest', 'comments'], message: `\`${args.before}\` does not appear to be a valid cursor.` }],
+      });
+    }
     const end = args.before === null || args.before === undefined ? ordered.length : Number(args.before);
     const start = Math.max(0, end - Number(args.last));
     return { pageInfo: { hasPreviousPage: start > 0, startCursor: String(start) },
@@ -424,6 +430,34 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
       await assert.rejects(call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, cursor: 'Y3Vyc29y' }),
         (error: unknown) => error instanceof McpError && error.code === 'INVALID_INPUT');
+      // An undecodable cursor is the caller's input error, coded like the other cursor tools, never INTERNAL_ERROR.
+      const { classifyError } = await import('../mcp/errorEnvelope.js');
+      await assert.rejects(call('get_pull_request_discussion', { repository: 'acme/repo', pullRequest: 42, order: 'newest', cursor: 'garbage' }), (error: unknown) => {
+        const envelope = classifyError(error, { sideEffectsPossible: false });
+        assert.deepEqual({ code: envelope.code, status: envelope.status, stage: envelope.stage }, { code: 'CURSOR_INVALID', status: 400, stage: 'validation' });
+        assert.match(envelope.message, /^cursor is not a discussion cursor .*\.$/);
+        return true;
+      });
+    });
+
+    await t.test('an unknown pull request is NOT_FOUND with a sentence, and reads summarize what they read', async () => {
+      const { classifyError } = await import('../mcp/errorEnvelope.js');
+      for (const name of ['get_pull_request', 'get_pull_request_discussion']) {
+        await assert.rejects(call(name, { repository: 'acme/repo', pullRequest: 999 }), (error: unknown) => {
+          const envelope = classifyError(error, { sideEffectsPossible: false });
+          assert.equal(envelope.code, 'NOT_FOUND', name);
+          assert.equal(envelope.status, 404);
+          assert.match(envelope.message, /^Pull request #999 was not found in acme\/repo\b.*\.$/);
+          return true;
+        });
+      }
+      const read = await executeTool(tool('get_pull_request'), { repository: 'acme/repo', pullRequest: 42 }, principal, deps);
+      assert.equal(read.summary, 'PR #42 "Improve reliability": open.');
+      const listed = await executeTool(tool('list_pull_requests'), { repository: 'acme/repo', state: 'all' }, principal, deps);
+      assert.equal((listed.data as { pullRequests: unknown[] }).pullRequests.length, 3);
+      assert.match(listed.summary, /^list pull requests: 3 pull requests in this page\./);
+      const one = await executeTool(tool('list_pull_requests'), { repository: 'acme/repo', state: 'open' }, principal, deps);
+      assert.match(one.summary, /^list pull requests: 1 pull request in this page\./);
     });
 
     const writeFixture = { t, call, mutate, principal, findPullRequest, restCalls, comments, comparisons, trees, workflowRuns, pullFiles, redis: deps.redisClient as never };

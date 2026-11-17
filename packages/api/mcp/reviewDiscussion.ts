@@ -50,6 +50,16 @@ interface GraphCommentPage {
 }
 
 /**
+ * GitHub answers an undecodable `before` cursor with a GraphQL error
+ * (`INVALID_CURSOR_ARGUMENTS`, "`x` does not appear to be a valid cursor.").
+ */
+function isInvalidCursorError(error: unknown): boolean {
+  const value = error as { errors?: Array<{ type?: unknown; message?: unknown }>; message?: unknown } | null;
+  const messages = [value?.message, ...(Array.isArray(value?.errors) ? value.errors.flatMap(item => [item?.type, item?.message]) : [])];
+  return messages.some(message => typeof message === 'string' && (message === 'INVALID_CURSOR_ARGUMENTS' || /\bvalid cursor\b/i.test(message)));
+}
+
+/**
  * The newest `limit` comments, newest first, with the cursor that continues
  * backwards through the discussion. `nextCursor` is null at the first comment.
  */
@@ -57,9 +67,17 @@ export async function readNewestComments(
   principal: McpPrincipal, target: { repository: string; pullRequest: number; limit: number; before?: string },
 ): Promise<{ comments: ReviewComment[]; nextCursor: string | null }> {
   const [owner, repo] = target.repository.split('/');
-  const response = await principal.github.graphql<GraphCommentPage>(NEWEST_COMMENTS_QUERY, {
-    owner, repo, number: target.pullRequest, last: target.limit, before: target.before ?? null,
-  });
+  let response: GraphCommentPage;
+  try {
+    response = await principal.github.graphql<GraphCommentPage>(NEWEST_COMMENTS_QUERY, {
+      owner, repo, number: target.pullRequest, last: target.limit, before: target.before ?? null,
+    });
+  } catch (error) {
+    if (target.before !== undefined && isInvalidCursorError(error)) {
+      throw new McpError('CURSOR_INVALID', 'cursor is not a discussion cursor returned by get_pull_request_discussion. Read again without cursor and continue with the returned nextCursor.', 400, { stage: 'validation' });
+    }
+    throw error;
+  }
   const connection = response.repository?.pullRequest?.comments;
   if (!connection) throw new McpError('NOT_FOUND', 'Pull request discussion is not readable.', 404);
   // A connection window is always returned oldest-first; newest-first is its reverse.

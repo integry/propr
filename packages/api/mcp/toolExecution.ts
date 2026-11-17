@@ -139,6 +139,7 @@ function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] 
 // eslint-disable-next-line complexity -- dispatch keeps authorization, durable mutation handling, content bounds and logging in one auditable path
 async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
+  tool.validate?.(args);
   access.repository = args.repository;
   deps.policy.requireScope(principal, tool.scope);
   if (tool.permission) deps.policy.requirePermission(principal, tool.permission);
