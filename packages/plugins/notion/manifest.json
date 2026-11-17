@@ -1,0 +1,49 @@
+{
+  "manifestVersion": 1,
+  "id": "notion",
+  "name": "Notion",
+  "description": "Lets the agent read the Notion pages an issue or pull request links to, such as specifications, through Notion's hosted MCP server. Read and search tools only: the agent never edits Notion. It sees what the signed-in Notion account can see, so use a dedicated account or a narrowly shared workspace.",
+  "version": "1.0.0",
+  "category": "context",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/notion",
+  "icon": "icon.svg",
+  "permissions": [],
+  "connections": [
+    {
+      "type": "oauth",
+      "name": "notion-account",
+      "label": "Notion account for the agent",
+      "help": "Sign in to Notion with the account the agent should read as. The agent can open every page this account can open, so use a dedicated account that is shared only on the pages and teamspaces the agent needs.",
+      "helpUrl": "https://developers.notion.com/docs/get-started-with-mcp"
+    }
+  ],
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "notion",
+        "url": "https://mcp.notion.com/mcp",
+        "tools": [
+          "notion-search",
+          "notion-fetch",
+          "notion-get-comments",
+          "notion-list-page-backlinks",
+          "notion-query-data-sources",
+          "notion-query-multiple-data-sources",
+          "notion-download-attachment",
+          "notion-get-self",
+          "notion-get-tool-access"
+        ],
+        "capability": "read",
+        "authentication": "oauth",
+        "connection": "notion-account"
+      }
+    ],
+    "skills": [
+      {
+        "name": "notion-context",
+        "path": "skills/notion-context"
+      }
+    ]
+  }
+}

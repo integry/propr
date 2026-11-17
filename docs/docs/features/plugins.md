@@ -57,6 +57,7 @@ own tests and as a reference for plugin authors.
 | [Linear](../plugins/linear.md) (`linear`) | Adding a label to a Linear ticket creates a GitHub issue that starts a task; ProPR then comments on the ticket and moves it through its workflow as the work progresses. |
 | [Jira Cloud](../plugins/jira.md) (`jira`) | The same hand-off for Jira Cloud: a label on a ticket of a mapped project creates a GitHub issue that starts a task; ProPR comments on the ticket and transitions it as the work progresses. |
 | [Sentry](../plugins/sentry.md) (`sentry`) | An error reported by Sentry for a mapped project creates one GitHub issue with the stack trace attached. Starting a task is off by default, and limited by event count, environment and a daily cap when switched on. ProPR comments on the Sentry issue when the pull request merges. |
+| [Notion](../plugins/notion.md) (`notion`) | Lets the agent read the Notion pages an issue or pull request links to, such as specifications, through Notion's hosted MCP server with read and search tools only. No handlers or commands: a manifest and a skill. |
 
 ## The manifest
 

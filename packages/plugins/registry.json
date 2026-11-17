@@ -8,6 +8,7 @@
     { "id": "linear" },
     { "id": "jira" },
     { "id": "sentry" },
+    { "id": "notion" },
     { "id": "example-pack", "development": true }
   ]
 }
