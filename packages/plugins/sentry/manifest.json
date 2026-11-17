@@ -1,0 +1,184 @@
+{
+  "manifestVersion": 1,
+  "id": "sentry",
+  "name": "Sentry",
+  "description": "Turns Sentry errors into GitHub issues for ProPR. An issue or issue-alert webhook for a mapped project creates one GitHub issue with the error's details, a trimmed stack trace and a link to Sentry. Starting a task is off by default; when on, it is limited by event count, environment and a daily cap per repository. On merge, ProPR can comment on the Sentry issue and resolve it. Request bodies, user data and breadcrumbs are never copied.",
+  "version": "1.0.0",
+  "category": "observability",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/sentry",
+  "icon": "icon.svg",
+  "permissions": [
+    "events.read",
+    "issues.create",
+    "issues.read",
+    "pull_requests.read"
+  ],
+  "connections": [
+    {
+      "type": "token",
+      "name": "auth-token",
+      "label": "Internal integration token",
+      "help": "The token of a Sentry internal integration (Settings, Developer Settings, Custom Integrations, Create New Integration, Internal Integration). Give it Project: Read and Issue & Event: Read & Write. ProPR sends it only to the Sentry URL below, as a Bearer token; the handlers never see it.",
+      "helpUrl": "https://docs.sentry.io/organization/integrations/integration-platform/internal-integration/"
+    },
+    {
+      "type": "signing_secret",
+      "name": "client-secret",
+      "label": "Integration client secret",
+      "help": "The Client Secret of the same internal integration. Sentry signs every webhook with it in the Sentry-Hook-Signature header (the hex HMAC-SHA256 of the body); ProPR checks it before the plugin sees the request.",
+      "helpUrl": "https://docs.sentry.io/organization/integrations/integration-platform/webhooks/"
+    },
+    {
+      "type": "oauth",
+      "name": "sentry-account",
+      "label": "Sentry account for the agent",
+      "help": "Optional. Sign in to Sentry so the agent can read the linked issue through Sentry's hosted MCP server (mcp.sentry.dev). Only read tools are offered. Sentry's hosted MCP server serves sentry.io organizations only.",
+      "helpUrl": "https://docs.sentry.io/product/sentry-mcp/"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "format": "https-url",
+        "default": "https://sentry.io",
+        "maxLength": 200,
+        "label": "Sentry URL",
+        "help": "https://sentry.io for Sentry SaaS (https://de.sentry.io for organizations in the EU region), or the address of your self-hosted Sentry. It must be a public https:// host name; the plugin calls Sentry's API on this host only."
+      },
+      "organization": {
+        "type": "string",
+        "maxLength": 50,
+        "label": "Organization slug",
+        "help": "The Sentry organization's slug, as in https://sentry.io/organizations/<slug>/."
+      },
+      "repositoryProjects": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "optionsFrom": "projectOptions",
+        "label": "Repository projects",
+        "help": "Map a repository (owner/repo) to the Sentry project whose errors go there, by project slug (or numeric id). Choices are loaded from Sentry once the organization and token are set. A project mapped to several repositories hands over nothing. Errors of unmapped projects are ignored."
+      },
+      "githubLabel": {
+        "type": "string",
+        "default": "AI",
+        "maxLength": 50,
+        "label": "GitHub trigger label",
+        "help": "ProPR's trigger label for the repository (AI unless your instance uses another). It is put on a created issue only when the task is started automatically; otherwise the issue gets no label and a person decides."
+      },
+      "autoStart": {
+        "type": "boolean",
+        "default": false,
+        "label": "Start a task automatically",
+        "help": "Off: issues are created without the trigger label, so nothing starts until someone adds it. On: the trigger label is added when the error meets the minimum event count and an allowed environment, up to the daily cap."
+      },
+      "minEventCount": {
+        "type": "number",
+        "integer": true,
+        "minimum": 1,
+        "maximum": 1000000,
+        "default": 10,
+        "label": "Minimum event count",
+        "help": "Automatic start only: the Sentry issue must have at least this many events when its webhook arrives. Issue-created webhooks come with the first event, so use an issue alert rule (such as \"seen more than 100 times in one hour\") to start work on frequent errors."
+      },
+      "environments": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 20,
+        "default": ["production"],
+        "label": "Allowed environments",
+        "help": "Automatic start only: the latest event's environment must be one of these (letter case aside). An empty list allows every environment."
+      },
+      "dailyCap": {
+        "type": "number",
+        "integer": true,
+        "minimum": 1,
+        "maximum": 50,
+        "default": 3,
+        "label": "Automatic starts per repository per day",
+        "help": "Automatic start only: at most this many tasks are started automatically per repository per UTC day. Past it, issues are still created, without the trigger label, and say why."
+      },
+      "syncOnMerge": {
+        "type": "boolean",
+        "default": true,
+        "label": "Comment on the Sentry issue when the pull request merges",
+        "help": "Posts one note with the pull request link on the Sentry issue when ProPR's pull request for it merges."
+      },
+      "resolveOnMerge": {
+        "type": "boolean",
+        "default": false,
+        "label": "Mark the Sentry issue resolved when the pull request merges",
+        "help": "Only with the comment above switched on."
+      }
+    },
+    "required": ["baseUrl"]
+  },
+  "outboundHosts": [],
+  "outboundHostsFromSettings": [
+    "baseUrl"
+  ],
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "sentry",
+        "url": "https://mcp.sentry.dev/mcp",
+        "tools": [
+          "whoami",
+          "find_organizations",
+          "find_projects",
+          "find_teams",
+          "find_releases",
+          "get_release_details",
+          "get_issue_details",
+          "get_issue_activity",
+          "get_event_stacktrace",
+          "get_trace_details",
+          "get_span_details",
+          "get_sentry_resource",
+          "find_related_issues",
+          "search_issues",
+          "search_issue_events",
+          "search_errors",
+          "search_events",
+          "search_docs",
+          "get_doc"
+        ],
+        "capability": "read",
+        "authentication": "oauth",
+        "connection": "sentry-account"
+      }
+    ],
+    "skills": [
+      {
+        "name": "sentry-error",
+        "path": "skills/sentry-error"
+      }
+    ],
+    "subscriptions": [
+      { "on": "task.completed", "handler": "syncBack" },
+      { "on": "pull_request.opened", "handler": "syncBack" },
+      { "on": "pull_request.merged", "handler": "syncBack" }
+    ],
+    "webhooks": [
+      {
+        "name": "sentry",
+        "description": "Sentry internal integration webhook for issue and issue-alert events: an error of a mapped project creates one GitHub issue",
+        "handler": "onSentryWebhook",
+        "deliveryIdHeader": "request-id",
+        "verification": {
+          "scheme": "hmac-sha256",
+          "header": "sentry-hook-signature",
+          "encoding": "hex",
+          "connection": "client-secret"
+        }
+      }
+    ]
+  }
+}

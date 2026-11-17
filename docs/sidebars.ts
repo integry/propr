@@ -105,6 +105,7 @@ const sidebars: SidebarsConfig = {
         'plugins/teams',
         'plugins/linear',
         'plugins/jira',
+        'plugins/sentry',
       ],
     },
     {
