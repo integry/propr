@@ -25,7 +25,7 @@ test('without an Acceptance criteria heading the prompt is unchanged', () => {
     assert.ok(!generateClaudePrompt({ issueRef }).includes('ACCEPTANCE CRITERIA'));
 });
 
-test('the digest renders the checklist before the risk tiers; criteria and evidence are code spans', () => {
+test('the digest renders the checklist before the risk tiers; criteria are code spans and evidence keeps only its own code spans', () => {
     const digest = buildReviewDigest([{ path: 'src/pad.ts', linesAdded: 3, linesRemoved: 0 }], null, {}, {
         criteria: [{ id: 'AC1', text: 'Values are padded' }, { id: 'AC2', text: 'Usage is `documented` @team' }, { id: 'AC3', text: 'No CLI' }],
         agentReport: 'Done.\n\n- AC1: met — `src/pad.ts`, `test/pad.test.ts`\n- AC3: not met: left for later',
@@ -36,9 +36,9 @@ test('the digest renders the checklist before the risk tiers; criteria and evide
         '',
         '**Acceptance criteria** (1 of 3 met, as stated by the agent)',
         '',
-        '- ✅ **AC1** (met): `Values are padded` — `` `src/pad.ts`, `test/pad.test.ts` ``',
+        '- ✅ **AC1** (met): `Values are padded` — `src/pad.ts`, `test/pad.test.ts`',
         '- ⚠️ **AC2** (not addressed): ``Usage is `documented` @team``',
-        '- ❌ **AC3** (not met): `No CLI` — `left for later`',
+        '- ❌ **AC3** (not met): `No CLI` — left for later',
         '',
         '',
     ].join('\n'));
