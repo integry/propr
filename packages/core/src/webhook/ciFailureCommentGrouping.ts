@@ -4,10 +4,16 @@
  * Before a new CI-failure comment is posted, the PR's comments are read once:
  * a ProPR-authored CI-failure comment carrying the same head-commit marker is
  * edited to list the new check instead of posting a second comment (which
- * would start a second follow-up run for the same commit). Two deliveries
- * arriving together can still both post; that is accepted. Any read or edit
- * failure falls back to posting, so no failure report is dropped.
+ * would start a second follow-up run for the same commit). Every edit replaces
+ * the whole body, so the read and the write for one head commit are serialized
+ * across workers by a shared Redis lock: a worker reads the comment only after
+ * acquiring it, so it never writes back a snapshot that misses another check.
+ * A worker that cannot get the lock posts a new comment instead of editing.
+ * Any read or edit failure also falls back to posting, so no failure report
+ * is dropped.
  */
+import { randomUUID } from 'node:crypto';
+import type { Redis } from 'ioredis';
 import type logger from '../utils/logger.js';
 import { isDependencyGateFailure, type CancellationProvenanceOctokit } from './ciCancellationProvenance.js';
 import type { CiFailureFollowupRequest } from './ciFailureFollowup.js';
@@ -19,6 +25,13 @@ const MARKER_BLOCK_START = '\n<!-- propr:ci-failure-';
 const ACTIONS_RUN_ID_RE = /\/actions\/runs\/(\d+)/gu;
 const SINGLE_FAILURE_INSTRUCTION = 'Please investigate and fix this CI failure.';
 const MULTIPLE_FAILURES_INSTRUCTION = 'Please investigate and fix these CI failures.';
+/** Longer than one read, annotation load and write (with retries) take, so a held lock does not lapse mid-write. */
+const COMMENT_LOCK_TTL_SECONDS = 120;
+const COMMENT_LOCK_RETRY_MS = 200;
+/** How long a worker waits for another worker's edit of the same head before posting instead. */
+export const DEFAULT_COMMENT_LOCK_WAIT_MS = 20_000;
+
+type LockRedis = Pick<Redis, 'get' | 'set' | 'del'>;
 
 export interface ExistingCiFailureComment {
     id: number;
@@ -123,4 +136,41 @@ export async function editCiFailureComment(
         log.warn({ commentId: target.commentId, error: (error as Error).message }, 'Could not add the failed check to the existing CI-failure comment; posting a new one');
         return false;
     }
+}
+
+/**
+ * Claims the right to read and rewrite the CI-failure comment of one PR head.
+ * Returns a release function, or null when the lock was not obtained within
+ * `waitMs` (or Redis failed): the caller must then post rather than edit,
+ * because its comment read could be overwritten by the lock holder's write.
+ */
+export async function acquireCiFailureCommentLock(
+    redis: LockRedis,
+    { owner, repo, prNumber, evidence }: CiFailureFollowupRequest,
+    waitMs: number,
+    log: Log,
+): Promise<(() => Promise<void>) | null> {
+    const key = `ci-failure-comment-lock:${owner.toLowerCase()}/${repo.toLowerCase()}#${prNumber}@${evidence.sha.toLowerCase()}`;
+    const token = randomUUID();
+    const deadline = Date.now() + waitMs;
+    try {
+        while (await redis.set(key, token, 'EX', COMMENT_LOCK_TTL_SECONDS, 'NX') !== 'OK') {
+            if (Date.now() >= deadline) {
+                log.warn({ prNumber, sha: evidence.sha }, 'Another worker is still editing this head\'s CI-failure comment; posting a new comment instead');
+                return null;
+            }
+            await new Promise(resolve => setTimeout(resolve, Math.min(COMMENT_LOCK_RETRY_MS, Math.max(0, deadline - Date.now()))));
+        }
+    } catch (error) {
+        log.warn({ error: (error as Error).message }, 'Could not lock this head\'s CI-failure comment; posting a new comment instead');
+        return null;
+    }
+    return async () => {
+        try {
+            // Only the holder releases; a lapsed lock now held by another worker is left alone.
+            if (await redis.get(key) === token) await redis.del(key);
+        } catch (error) {
+            log.warn({ error: (error as Error).message }, 'Could not release the CI-failure comment lock; it expires on its own');
+        }
+    };
 }

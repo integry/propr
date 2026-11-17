@@ -8,8 +8,10 @@ import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
 import {
+    acquireCiFailureCommentLock,
     appendCheckToCiFailureComment,
     buildCiFailureHeadMarker,
+    DEFAULT_COMMENT_LOCK_WAIT_MS,
     editCiFailureComment,
     isAggregateOfListedCheck,
     scanCiFailureComments,
@@ -70,6 +72,8 @@ export interface CiFailureFollowupDependencies {
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
+    /** How long to wait for another worker's edit of the same head's comment. */
+    commentLockWaitMs?: number;
 }
 
 export interface CiFailureFollowupResult {
@@ -202,7 +206,8 @@ function buildCheckSection(evidence: CiFailureEvidence, failureExcerpt: string |
  * Redis NX claim closes redelivery races for the same source, while the marker
  * scan makes deduplication survive process restarts and Redis expiry. When a
  * comment for the same head exists, the check is added to it instead of
- * posting (best effort: near-simultaneous deliveries may still both post).
+ * posting. Reading and rewriting that comment happen under a per-head lock,
+ * so concurrent checks never overwrite each other's report.
  */
 export async function postCiFailureFollowup(
     request: CiFailureFollowupRequest,
@@ -242,50 +247,12 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
+        const releaseLock = await acquireCiFailureCommentLock(redis, request, dependencies.commentLockWaitMs ?? DEFAULT_COMMENT_LOCK_WAIT_MS, log);
         try {
-            scan = await scanExistingComments(octokit, request, dedupeKey);
-        } catch (error) {
-            // The atomic Redis claim still protects concurrent/redelivered
-            // events. A transient comment-list failure should not hide a new CI
-            // failure from the agent: it is posted as a new comment.
-            log.warn({ error: (error as Error).message }, 'Could not scan PR comments for an existing failed-CI follow-up');
+            return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log }, releaseLock !== null);
+        } finally {
+            await releaseLock?.();
         }
-        if (scan.duplicate) {
-            log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
-            return { posted: false, reason: 'duplicate' };
-        }
-        if (scan.sameHead && await isAggregateOfListedCheck(octokit, request, scan.sameHead.body, log)) {
-            log.info({ ...failureLogContext(request), commentId: scan.sameHead.id }, 'Failed aggregate job is not listed next to its own failing shard');
-            return { posted: false, reason: 'aggregate_omitted' };
-        }
-
-        const annotationExcerpt = await loadAnnotationExcerpt(octokit, request, log);
-        if (scan.sameHead) {
-            const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
-                title: checkTitle(request.evidence),
-                section: buildCheckSection(request.evidence, annotationExcerpt),
-                marker: buildCiFailureFollowupMarker(dedupeKey),
-            });
-            if (await editCiFailureComment(octokit, { ...request, commentId: scan.sameHead.id, body: updated }, log)) {
-                return { posted: false, reason: 'updated', body: updated };
-            }
-        }
-        const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
-
-        await withRetry(
-            () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: request.owner,
-                repo: request.repo,
-                issue_number: request.prNumber,
-                body,
-            }),
-            { maxAttempts: 3, baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, correlationId },
-            `post_ci_failure_followup_${request.owner}_${request.repo}_${request.prNumber}`,
-        );
-
-        log.info({ ...failureLogContext(request), dedupeKey }, 'Posted automatic failed-CI follow-up comment');
-        return { posted: true, reason: 'posted', body };
     } catch (error) {
         if (claimed) {
             try {
@@ -296,6 +263,68 @@ export async function postCiFailureFollowup(
         }
         throw error;
     }
+}
+
+/**
+ * Lists or posts a claimed failure. `mayEdit` is false when the head's comment
+ * lock is not held: a read without it may miss a concurrent check, so writing
+ * it back could erase that check, and a new comment is posted instead.
+ */
+async function reportClaimedFailure(
+    { octokit, request, dedupeKey, correlationId, log }: {
+        octokit: CiFailureOctokit;
+        request: CiFailureFollowupRequest;
+        dedupeKey: string;
+        correlationId: string;
+        log: ReturnType<typeof logger.withCorrelation>;
+    },
+    mayEdit: boolean,
+): Promise<CiFailureFollowupResult> {
+    let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
+    try {
+        scan = await scanExistingComments(octokit, request, dedupeKey);
+    } catch (error) {
+        // The atomic Redis claim still protects concurrent/redelivered
+        // events. A transient comment-list failure should not hide a new CI
+        // failure from the agent: it is posted as a new comment.
+        log.warn({ error: (error as Error).message }, 'Could not scan PR comments for an existing failed-CI follow-up');
+    }
+    if (!mayEdit) scan.sameHead = null;
+    if (scan.duplicate) {
+        log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
+        return { posted: false, reason: 'duplicate' };
+    }
+    if (scan.sameHead && await isAggregateOfListedCheck(octokit, request, scan.sameHead.body, log)) {
+        log.info({ ...failureLogContext(request), commentId: scan.sameHead.id }, 'Failed aggregate job is not listed next to its own failing shard');
+        return { posted: false, reason: 'aggregate_omitted' };
+    }
+
+    const annotationExcerpt = await loadAnnotationExcerpt(octokit, request, log);
+    if (scan.sameHead) {
+        const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
+            title: checkTitle(request.evidence),
+            section: buildCheckSection(request.evidence, annotationExcerpt),
+            marker: buildCiFailureFollowupMarker(dedupeKey),
+        });
+        if (await editCiFailureComment(octokit, { ...request, commentId: scan.sameHead.id, body: updated }, log)) {
+            return { posted: false, reason: 'updated', body: updated };
+        }
+    }
+    const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
+
+    await withRetry(
+        () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: request.owner,
+            repo: request.repo,
+            issue_number: request.prNumber,
+            body,
+        }),
+        { maxAttempts: 3, baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, correlationId },
+        `post_ci_failure_followup_${request.owner}_${request.repo}_${request.prNumber}`,
+    );
+
+    log.info({ ...failureLogContext(request), dedupeKey }, 'Posted automatic failed-CI follow-up comment');
+    return { posted: true, reason: 'posted', body };
 }
 
 /**

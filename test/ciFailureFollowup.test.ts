@@ -127,7 +127,8 @@ describe('automatic failed-CI follow-up', () => {
         ]);
         assert.strictEqual(results.filter(result => result.posted).length, 1);
         assert.strictEqual(results.filter(result => result.reason === 'duplicate').length, 1);
-        assert.strictEqual(redis.set.mock.callCount(), 2);
+        const claimCalls = redis.set.mock.calls.filter(call => String(call.arguments[0]).startsWith('ci-failure-followup:'));
+        assert.strictEqual(claimCalls.length, 2);
         assert.strictEqual(redis.del.mock.callCount(), 0);
     });
 

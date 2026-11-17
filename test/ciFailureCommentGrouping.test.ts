@@ -45,6 +45,8 @@ interface StoredComment { id: number; body: string; user: { login: string } }
 /** A GitHub stub that keeps the PR's comments, so reads see earlier writes. */
 function fakeGitHub(options: {
     failList?: boolean;
+    /** Resolves before each comment list returns, so a test can interleave concurrent workers there. */
+    beforeListReturns?: () => Promise<void>;
     failEdit?: boolean;
     /** Actions job id → its steps, for the aggregate lookup. */
     jobSteps?: Record<number, Array<{ name: string; conclusion: string }>>;
@@ -57,7 +59,9 @@ function fakeGitHub(options: {
         paginate: mock.fn(async (route: string) => {
             if (route.includes('/comments')) {
                 if (options.failList) throw new Error('HTTP 502 listing comments');
-                return comments.map(comment => ({ ...comment }));
+                const snapshot = comments.map(comment => ({ ...comment }));
+                await options.beforeListReturns?.();
+                return snapshot;
             }
             return [];
         }),
@@ -103,11 +107,11 @@ function createRedis() {
     };
 }
 
-function dependencies(octokit: ReturnType<typeof fakeGitHub>['octokit']) {
+function dependencies(octokit: ReturnType<typeof fakeGitHub>['octokit'], redisClient = createRedis()) {
     return {
         isEnabled: async () => true,
         getOctokit: async () => octokit,
-        redisClient: createRedis() as never,
+        redisClient: redisClient as never,
         loadProprCancelledRuns: async () => [],
     };
 }
@@ -223,6 +227,53 @@ describe('one CI-failure comment per head commit', () => {
 
         assert.strictEqual(result.reason, 'posted');
         assert.strictEqual(github.edits.length, 0);
+    });
+
+    test('two checks failing together on one head both survive on the shared comment', async () => {
+        let listing = 0;
+        let releaseLists: () => void = () => undefined;
+        const bothListed = new Promise<void>(resolve => { releaseLists = resolve; });
+        const github = fakeGitHub({
+            // Holds the B and C reads until both have started, or until the
+            // lock keeps one out: without the lock both read A-only snapshots.
+            beforeListReturns: async () => {
+                listing += 1;
+                if (listing === 3) releaseLists();
+                if (listing >= 2) await Promise.race([bothListed, new Promise(resolve => setTimeout(resolve, 50))]);
+            },
+        });
+        const deps = dependencies(github.octokit);
+        await postCiFailureFollowup(failure('Check A', 11), 'a', deps);
+
+        const results = await Promise.all([
+            postCiFailureFollowup(failure('Check B', 12), 'b', deps),
+            postCiFailureFollowup(failure('Check C', 13), 'c', deps),
+        ]);
+
+        assert.deepStrictEqual(results.map(result => result.reason), ['updated', 'updated']);
+        assert.strictEqual(github.posts.length, 1);
+        const body = github.comments[0].body;
+        assert.ok(body.startsWith('CI failed: **Check A**, **Check B**, **Check C**\n') || body.startsWith('CI failed: **Check A**, **Check C**, **Check B**\n'), body.split('\n')[0]);
+        for (const [name, jobId] of [['Check A', 11], ['Check B', 12], ['Check C', 13]] as const) {
+            assert.ok(body.includes(`- Check: \`${name}\``), name);
+            assert.ok(body.includes(buildCiFailureFollowupMarker(buildCiFailureDedupeKey(failure(name, jobId)))), name);
+        }
+    });
+
+    test('a worker that cannot get the head\'s comment lock posts instead of editing', async () => {
+        const github = fakeGitHub();
+        const redis = createRedis();
+        await postCiFailureFollowup(failure('Check A', 11), 'a', dependencies(github.octokit, redis));
+        // Another worker holds the lock for this head and never finishes in time.
+        await redis.set(`ci-failure-comment-lock:integry/propr#3434@${HEAD}`, 'other-worker');
+
+        const result = await postCiFailureFollowup(failure('Check B', 12), 'b', { ...dependencies(github.octokit, redis), commentLockWaitMs: 0 });
+
+        assert.strictEqual(result.reason, 'posted');
+        assert.strictEqual(github.edits.length, 0);
+        assert.strictEqual(github.posts.length, 2);
+        assert.match(github.posts[1], /^CI failed: \*\*Check B\*\*\n/);
+        assert.strictEqual(await redis.get(`ci-failure-comment-lock:integry/propr#3434@${HEAD}`), 'other-worker', 'a lock held by someone else is not released');
     });
 
     test('five listed checks keep every marker and a readable body', async () => {
