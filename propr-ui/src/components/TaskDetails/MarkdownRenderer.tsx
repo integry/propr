@@ -1,5 +1,5 @@
-import React from 'react';
-import ReactMarkdown from 'react-markdown';
+import React, { useMemo } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { FileText } from 'lucide-react';
@@ -17,12 +17,12 @@ const isCodeBlockDelimiter = (line: string): boolean => {
   return line.startsWith('```') || line.startsWith('~~~');
 };
 
-// Helper to extract file path from markdown and clean the content
+// Helper to extract file path from markdown and clean the content.
+// `filePathMap` maps the line of a code fence to the file it shows.
 const preprocessMarkdown = (text: string): { processedText: string; filePathMap: Map<number, string> } => {
   const filePathMap = new Map<number, string>();
   const lines = text.split('\n');
   const processedLines: string[] = [];
-  let codeBlockIndex = 0;
   let pendingFilePath: string | null = null;
   const linesToSkip = new Set<number>();
 
@@ -78,9 +78,10 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
       ).length;
       const isOpening = countDelimiters % 2 === 0;
       if (isOpening) {
-        codeBlockIndex++;
         if (pendingFilePath) {
-          filePathMap.set(codeBlockIndex, pendingFilePath);
+          // Keyed by the fence's 1-based line in the processed text, which is
+          // where the rendered code element's source position starts.
+          filePathMap.set(processedLines.length + 1, pendingFilePath);
           pendingFilePath = null;
         }
       }
@@ -92,7 +93,180 @@ const preprocessMarkdown = (text: string): { processedText: string; filePathMap:
   return { processedText: processedLines.join('\n'), filePathMap };
 };
 
-const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '', isCodeExpanded = false, darkMode = false }) => {
+const REMARK_PLUGINS = [remarkGfm, remarkBreaks];
+
+/**
+ * File paths of the code blocks being rendered, by fence line. Read through
+ * context so the component overrides below keep one identity across renders.
+ */
+const FilePathContext = React.createContext<ReadonlyMap<number, string>>(new Map());
+
+interface CodeProps {
+  inline?: boolean;
+  className?: string;
+  children?: React.ReactNode;
+  node?: { position?: { start?: { line?: number } } };
+}
+
+/**
+ * The element overrides for one theme. They are built once per theme and
+ * reused: react-markdown renders each override as a component, so a fresh
+ * function per render is a new component type and React would unmount and
+ * re-create every paragraph, heading and list on every re-render, dropping the
+ * reader's text selection whenever a parent refreshed in the background.
+ */
+function buildComponents(darkMode: boolean, isCodeExpanded: boolean): Components {
+  const Code = ({ inline, className, children, node, ...props }: CodeProps) => {
+    const filePaths = React.useContext(FilePathContext);
+    const match = /language-([^\s]+)/.exec(className || '');
+    if (!inline && match) {
+      const fenceLine = node?.position?.start?.line;
+      const filePath = fenceLine !== undefined ? filePaths.get(fenceLine) : undefined;
+      const codeContent = String(children).replace(/\n$/, '');
+
+      // Extract directory path and filename
+      const pathParts = filePath ? filePath.split('/') : [];
+      const fileName = pathParts.length > 0 ? pathParts.pop() : '';
+      const dirPath = pathParts.length > 0 ? pathParts.join('/') : '';
+
+      return (
+        <div className="code-block-container my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
+          {/* VS Code style header bar with path/filename in 2 rows on left, type on right */}
+          <div className="bg-gray-800 px-3 py-2 flex items-center justify-between border-b border-gray-700">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              {filePath && (
+                <>
+                  <FileText size={12} className="text-gray-400 flex-shrink-0 self-start mt-0.5" />
+                  <div className="flex flex-col min-w-0">
+                    {dirPath && (
+                      <span className="text-gray-500 text-xs font-mono truncate">{dirPath}/</span>
+                    )}
+                    <span className="text-gray-200 text-xs font-mono truncate">{fileName}</span>
+                  </div>
+                </>
+              )}
+            </div>
+            <span className="text-gray-500 text-xs font-mono uppercase flex-shrink-0 ml-4">{match[1]}</span>
+          </div>
+          {/* Code body with dark background */}
+          <SyntaxHighlighter
+            {...props}
+            style={vscDarkPlus}
+            language={resolveSyntaxLanguage(match[1])}
+            PreTag="div"
+            showLineNumbers={true}
+            lineNumberStyle={{
+              color: '#6b7280',
+              paddingRight: '0.75em',
+              paddingLeft: '1em',
+              marginLeft: 0,
+              minWidth: '2em',
+              textAlign: 'right',
+            }}
+            customStyle={{
+              borderRadius: 0,
+              fontSize: '0.875rem',
+              border: 'none',
+              margin: 0,
+              padding: '0.75rem 0',
+              backgroundColor: '#1E1E1E',
+              ...(isCodeExpanded ? {} : { maxHeight: '300px', overflowY: 'auto' as const }),
+            }}
+            codeTagProps={{
+              style: {
+                backgroundColor: 'transparent',
+              },
+            }}
+            className="code-block-scrollbar [&_span]:!bg-transparent [&_.linenumber]:!ml-0 [&_.linenumber]:!pl-[1em]"
+          >
+            {codeContent}
+          </SyntaxHighlighter>
+        </div>
+      );
+    }
+    return (
+      <code className={`px-1.5 py-0.5 rounded text-[13px] font-mono break-words whitespace-normal ${
+        darkMode
+          ? 'bg-zinc-700/50 border border-zinc-600 text-zinc-200'
+          : 'bg-slate-100 border border-slate-200 text-slate-800'
+      }`} {...props}>
+        {children}
+      </code>
+    );
+  };
+
+  return {
+    code: Code as Components['code'],
+    // Typography mappings to match original design (with dark mode support)
+    h1: ({ children }) => <h1 className={`text-xl font-bold mt-6 mb-3 break-words ${darkMode ? 'text-zinc-100' : 'text-gray-900'}`}>{children}</h1>,
+    h2: ({ children }) => <h2 className={`text-lg font-bold mt-5 mb-3 break-words ${darkMode ? 'text-zinc-100' : 'text-gray-900'}`}>{children}</h2>,
+    h3: ({ children }) => <h3 className={`text-base font-semibold mt-4 mb-2 break-words ${darkMode ? 'text-zinc-200' : 'text-gray-800'}`}>{children}</h3>,
+    h4: ({ children }) => <h4 className={`text-sm font-semibold mt-3 mb-1 break-words ${darkMode ? 'text-zinc-300' : 'text-gray-700'}`}>{children}</h4>,
+    p: ({ children }) => <p className={`mb-4 leading-relaxed break-words ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</p>,
+    // Markers sit outside the text column so wrapped lines hang under the first word, not under the bullet.
+    ul: ({ children }) => <ul className="list-disc list-outside space-y-2 my-4 pl-5">{children}</ul>,
+    ol: ({ children }) => <ol className="list-decimal list-outside space-y-2 my-4 pl-5">{children}</ol>,
+    li: ({ children }) => <li className={`mb-1 break-words [&>p]:mb-0 ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</li>,
+    a: ({ href, children }) => (
+      <a href={href} className="text-sky-400 hover:text-sky-300 hover:underline" target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    ),
+    blockquote: ({ children }) => (
+      <blockquote className={`border-l-4 pl-4 italic my-4 break-words overflow-hidden ${darkMode ? 'border-zinc-600 text-zinc-300' : 'border-gray-300 text-gray-600'}`}>
+        {children}
+      </blockquote>
+    ),
+    // Table styling with borders, padding, and visual separation
+    table: ({ children }) => (
+      <div className="my-4 overflow-x-auto">
+        <table className="min-w-full border-collapse border border-gray-300 rounded-md">
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ children }) => (
+      <thead className="bg-gray-100">
+        {children}
+      </thead>
+    ),
+    tbody: ({ children }) => (
+      <tbody className="divide-y divide-gray-200">
+        {children}
+      </tbody>
+    ),
+    tr: ({ children }) => (
+      <tr className="hover:bg-gray-50">
+        {children}
+      </tr>
+    ),
+    th: ({ children }) => (
+      <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700 border border-gray-300 bg-gray-100">
+        {children}
+      </th>
+    ),
+    td: ({ children }) => (
+      <td className="px-4 py-2 text-sm text-gray-700 border border-gray-300">
+        {children}
+      </td>
+    ),
+  };
+}
+
+const componentCache = new Map<string, Components>();
+const markdownComponents = (darkMode: boolean, isCodeExpanded: boolean): Components => {
+  const key = `${darkMode}:${isCodeExpanded}`;
+  let components = componentCache.get(key);
+  if (!components) {
+    components = buildComponents(darkMode, isCodeExpanded);
+    componentCache.set(key, components);
+  }
+  return components;
+};
+
+const MarkdownRendererBase: React.FC<MarkdownRendererProps> = ({ text, className = '', isCodeExpanded = false, darkMode = false }) => {
+  // Memoised on the text, so a re-render with the same report skips the parse preparation.
+  const processed = useMemo(() => (typeof text === 'string' && text ? preprocessMarkdown(text) : null), [text]);
   if (!text) return null;
 
   // Handle non-string content (JSON objects)
@@ -112,153 +286,25 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ text, className = '
     return <>{String(text)}</>;
   }
 
-  // Preprocess to extract file paths
-  const { processedText, filePathMap } = preprocessMarkdown(text);
-  let codeBlockCounter = 0;
+  const { processedText, filePathMap } = processed ?? preprocessMarkdown(text);
 
   return (
     <div className={`markdown-body overflow-hidden ${className}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
-        components={{
-          // Code blocks with syntax highlighting - VS Code window style
-          code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode }) {
-            const match = /language-([^\s]+)/.exec(className || '');
-            if (!inline && match) {
-              codeBlockCounter++;
-              const currentIndex = codeBlockCounter;
-              const filePath = filePathMap.get(currentIndex);
-              const codeContent = String(children).replace(/\n$/, '');
-
-              // Extract directory path and filename
-              const pathParts = filePath ? filePath.split('/') : [];
-              const fileName = pathParts.length > 0 ? pathParts.pop() : '';
-              const dirPath = pathParts.length > 0 ? pathParts.join('/') : '';
-
-              return (
-                <div className="code-block-container my-6 rounded-lg border border-gray-700 overflow-hidden shadow-md">
-                  {/* VS Code style header bar with path/filename in 2 rows on left, type on right */}
-                  <div className="bg-gray-800 px-3 py-2 flex items-center justify-between border-b border-gray-700">
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      {filePath && (
-                        <>
-                          <FileText size={12} className="text-gray-400 flex-shrink-0 self-start mt-0.5" />
-                          <div className="flex flex-col min-w-0">
-                            {dirPath && (
-                              <span className="text-gray-500 text-xs font-mono truncate">{dirPath}/</span>
-                            )}
-                            <span className="text-gray-200 text-xs font-mono truncate">{fileName}</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                    <span className="text-gray-500 text-xs font-mono uppercase flex-shrink-0 ml-4">{match[1]}</span>
-                  </div>
-                  {/* Code body with dark background */}
-                  <SyntaxHighlighter
-                    {...props}
-                    style={vscDarkPlus}
-                    language={resolveSyntaxLanguage(match[1])}
-                    PreTag="div"
-                    showLineNumbers={true}
-                    lineNumberStyle={{
-                      color: '#6b7280',
-                      paddingRight: '0.75em',
-                      paddingLeft: '1em',
-                      marginLeft: 0,
-                      minWidth: '2em',
-                      textAlign: 'right',
-                    }}
-                    customStyle={{
-                      borderRadius: 0,
-                      fontSize: '0.875rem',
-                      border: 'none',
-                      margin: 0,
-                      padding: '0.75rem 0',
-                      backgroundColor: '#1E1E1E',
-                      ...(isCodeExpanded ? {} : { maxHeight: '300px', overflowY: 'auto' as const }),
-                    }}
-                    codeTagProps={{
-                      style: {
-                        backgroundColor: 'transparent',
-                      },
-                    }}
-                    className="code-block-scrollbar [&_span]:!bg-transparent [&_.linenumber]:!ml-0 [&_.linenumber]:!pl-[1em]"
-                  >
-                    {codeContent}
-                  </SyntaxHighlighter>
-                </div>
-              );
-            }
-            return (
-              <code className={`px-1.5 py-0.5 rounded text-[13px] font-mono break-words whitespace-normal ${
-                darkMode
-                  ? 'bg-zinc-700/50 border border-zinc-600 text-zinc-200'
-                  : 'bg-slate-100 border border-slate-200 text-slate-800'
-              }`} {...props}>
-                {children}
-              </code>
-            );
-          },
-          // Typography mappings to match original design (with dark mode support)
-          h1: ({ children }) => <h1 className={`text-xl font-bold mt-6 mb-3 break-words ${darkMode ? 'text-zinc-100' : 'text-gray-900'}`}>{children}</h1>,
-          h2: ({ children }) => <h2 className={`text-lg font-bold mt-5 mb-3 break-words ${darkMode ? 'text-zinc-100' : 'text-gray-900'}`}>{children}</h2>,
-          h3: ({ children }) => <h3 className={`text-base font-semibold mt-4 mb-2 break-words ${darkMode ? 'text-zinc-200' : 'text-gray-800'}`}>{children}</h3>,
-          h4: ({ children }) => <h4 className={`text-sm font-semibold mt-3 mb-1 break-words ${darkMode ? 'text-zinc-300' : 'text-gray-700'}`}>{children}</h4>,
-          p: ({ children }) => <p className={`mb-4 leading-relaxed break-words ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</p>,
-          // Markers sit outside the text column so wrapped lines hang under the first word, not under the bullet.
-          ul: ({ children }) => <ul className="list-disc list-outside space-y-2 my-4 pl-5">{children}</ul>,
-          ol: ({ children }) => <ol className="list-decimal list-outside space-y-2 my-4 pl-5">{children}</ol>,
-          li: ({ children }) => <li className={`mb-1 break-words [&>p]:mb-0 ${darkMode ? 'text-zinc-200' : 'text-gray-700'}`}>{children}</li>,
-          a: ({ href, children }) => (
-            <a href={href} className="text-sky-400 hover:text-sky-300 hover:underline" target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
-          blockquote: ({ children }) => (
-            <blockquote className={`border-l-4 pl-4 italic my-4 break-words overflow-hidden ${darkMode ? 'border-zinc-600 text-zinc-300' : 'border-gray-300 text-gray-600'}`}>
-              {children}
-            </blockquote>
-          ),
-          // Table styling with borders, padding, and visual separation
-          table: ({ children }) => (
-            <div className="my-4 overflow-x-auto">
-              <table className="min-w-full border-collapse border border-gray-300 rounded-md">
-                {children}
-              </table>
-            </div>
-          ),
-          thead: ({ children }) => (
-            <thead className="bg-gray-100">
-              {children}
-            </thead>
-          ),
-          tbody: ({ children }) => (
-            <tbody className="divide-y divide-gray-200">
-              {children}
-            </tbody>
-          ),
-          tr: ({ children }) => (
-            <tr className="hover:bg-gray-50">
-              {children}
-            </tr>
-          ),
-          th: ({ children }) => (
-            <th className="px-4 py-2 text-left text-sm font-semibold text-gray-700 border border-gray-300 bg-gray-100">
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td className="px-4 py-2 text-sm text-gray-700 border border-gray-300">
-              {children}
-            </td>
-          ),
-        }}
-      >
-        {processedText}
-      </ReactMarkdown>
+      <FilePathContext.Provider value={filePathMap}>
+        <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents(darkMode, isCodeExpanded)}>
+          {processedText}
+        </ReactMarkdown>
+      </FilePathContext.Provider>
     </div>
   );
 };
+
+/**
+ * Renders Markdown. Re-rendering with the same props does no work, and a
+ * re-render with changed text updates the existing DOM in place rather than
+ * re-creating it, so a selection in unchanged text survives (appended text in
+ * a streaming view only grows the end).
+ */
+const MarkdownRenderer = React.memo(MarkdownRendererBase);
 
 export default MarkdownRenderer;

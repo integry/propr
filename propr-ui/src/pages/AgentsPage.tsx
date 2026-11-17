@@ -102,7 +102,9 @@ function useLastRunStates(definitions: AutomationDefinitionRecord[] | null) {
 
   const record = useCallback((definitionId: string, state: AutomationRunState) => {
     versions.current.set(definitionId, (versions.current.get(definitionId) ?? 0) + 1);
-    setLastRunStates(current => ({ ...current, [definitionId]: state }));
+    // An unchanged state keeps the record, so a background read that changed nothing
+    // does not re-render the page and the open automation or run beside the list.
+    setLastRunStates(current => (current[definitionId] === state ? current : { ...current, [definitionId]: state }));
   }, []);
 
   // A failed read leaves the row as it was until the next discovery read.
