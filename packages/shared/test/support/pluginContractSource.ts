@@ -9,8 +9,10 @@ import { buildPluginContract, type PluginContract } from '../../src/pluginContra
  * than against its own description of them.
  *
  * - Event payloads and the event envelope: each field's type reduced to a
- *   contract descriptor (`string`, `number | null`, `string[]`, …), to compare
- *   with `PLUGIN_EVENT_PAYLOAD_FIELDS` and `PLUGIN_EVENT_ENVELOPE_FIELDS`.
+ *   contract descriptor (`string`, `number | null`, `string[]`, …) that keeps
+ *   literal values (`source: "review" | "ultrafix"`), which the snapshot
+ *   records; and the same descriptor with literals widened (`source: string`),
+ *   to compare with `PLUGIN_EVENT_PAYLOAD_FIELDS` and `PLUGIN_EVENT_ENVELOPE_FIELDS`.
  * - The handler SDK: the declared type of every member of `PluginContext`,
  *   the input envelopes, the signatures of the functions and classes the SDK
  *   module exports (`definePluginHandler`, `PluginDeliveryError`'s constructor
@@ -45,8 +47,14 @@ export const PLUGIN_EVENT_PAYLOAD_INTERFACES: Record<string, string> = {
 const SDK_ROOTS = ['PluginContext', 'PluginEventInput', 'PluginWebhookInput', 'PluginCommandInput', 'PluginInvokeInput', 'PluginSettingOptionsInput'];
 
 export interface PluginContractSource {
+  /** Each payload field's declared type with its literal values (`source: "review" | "ultrafix"`): what the snapshot records. */
   payloads: Record<string, Record<string, string>>;
   envelope: Record<string, string>;
+  /**
+   * The same fields with literal types widened to `string`, `number` or `boolean` (`source: string`), as
+   * `PLUGIN_EVENT_PAYLOAD_FIELDS` and `PLUGIN_EVENT_ENVELOPE_FIELDS` write them for the docs.
+   */
+  widened: { payloads: Record<string, Record<string, string>>; envelope: Record<string, string> };
   sdkTypes: Record<string, string>;
   /** The SDK interfaces plugins supply (see `PluginContract['sdk']['suppliedTypes']`). */
   suppliedTypes: string[];
@@ -68,25 +76,44 @@ function createProgram(overrides: Record<string, string>) {
   return ts.createProgram([PLUGIN_SDK_SOURCE, REPOSITORY_EVENTS_SOURCE], options, host);
 }
 
+interface DescriptorOptions {
+  /** The type is an optional property's: its `?` key already says it may be absent. */
+  optionalProperty?: boolean;
+  /** Keep literal values (`"review" | "ultrafix"`, `1`, `true`) rather than widening them to `string`, `number` or `boolean`. */
+  literals?: boolean;
+}
+
 /**
  * A declaration's type reduced to a contract descriptor, as `PLUGIN_EVENT_PAYLOAD_FIELDS` writes it.
  * `undefined` is kept (after `null`), so `score: number | undefined` is not read as `score: number`; only
  * an optional property drops it (`optionalProperty`), because its `?` key already says it may be absent.
+ * With `literals`, a string literal is written as JSON (`"review"`), a number literal as its value, and a
+ * boolean literal as `true` or `false` (both together are `boolean`), so a renamed or removed value shows.
  */
-function descriptor(checker: ts.TypeChecker, type: ts.Type, { optionalProperty = false } = {}): string {
+function descriptor(checker: ts.TypeChecker, type: ts.Type, { optionalProperty = false, literals = false }: DescriptorOptions = {}): string {
   const parts = type.isUnion() ? type.types : [type];
   const nullable = parts.some(part => part.flags & ts.TypeFlags.Null);
   const undefinable = !optionalProperty && parts.some(part => part.flags & ts.TypeFlags.Undefined);
-  const names = [...new Set(parts.filter(part => !(part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))).map(part => baseDescriptor(checker, part)))].sort();
-  return [...names, ...(nullable ? ['null'] : []), ...(undefinable ? ['undefined'] : [])].join(' | ');
+  const named = new Set(parts.filter(part => !(part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined))).map(part => baseDescriptor(checker, part, literals)));
+  if (named.has('true') && named.has('false')) {
+    named.delete('true');
+    named.delete('false');
+    named.add('boolean');
+  }
+  return [...[...named].sort(), ...(nullable ? ['null'] : []), ...(undefinable ? ['undefined'] : [])].join(' | ');
 }
 
-function baseDescriptor(checker: ts.TypeChecker, type: ts.Type): string {
+function baseDescriptor(checker: ts.TypeChecker, type: ts.Type, literals: boolean): string {
+  if (literals && type.isStringLiteral()) return JSON.stringify(type.value);
+  if (literals && type.isNumberLiteral()) return String(type.value);
+  if (literals && type.flags & ts.TypeFlags.BooleanLiteral) return checker.typeToString(type);
+  // A template literal type (`` `pr-${number}` ``) accepts only some strings, so it is kept as written too.
+  if (literals && type.flags & (ts.TypeFlags.TemplateLiteral | ts.TypeFlags.StringMapping)) return checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation);
   if (type.flags & ts.TypeFlags.StringLike) return 'string';
   if (type.flags & ts.TypeFlags.NumberLike) return 'number';
   if (type.flags & ts.TypeFlags.BooleanLike) return 'boolean';
   if (checker.isArrayType(type)) {
-    const inner = descriptor(checker, checker.getTypeArguments(type as ts.TypeReference)[0]);
+    const inner = descriptor(checker, checker.getTypeArguments(type as ts.TypeReference)[0], { literals });
     return inner.includes(' | ') ? `(${inner})[]` : `${inner}[]`;
   }
   if (type.flags & ts.TypeFlags.Object) return 'object';
@@ -100,11 +127,11 @@ function interfaceIn(file: ts.SourceFile, name: string): ts.InterfaceDeclaration
 }
 
 /** `key: descriptor` of every property of an interface, its inherited ones included; `?` marks an optional key. */
-function fieldDescriptors(checker: ts.TypeChecker, declaration: ts.InterfaceDeclaration): Record<string, string> {
+function fieldDescriptors(checker: ts.TypeChecker, declaration: ts.InterfaceDeclaration, { literals }: { literals: boolean }): Record<string, string> {
   const fields: Record<string, string> = {};
   for (const property of checker.getPropertiesOfType(checker.getTypeAtLocation(declaration))) {
     const optional = (property.flags & ts.SymbolFlags.Optional) !== 0;
-    fields[optional ? `${property.name}?` : property.name] = descriptor(checker, checker.getTypeOfSymbolAtLocation(property, declaration), { optionalProperty: optional });
+    fields[optional ? `${property.name}?` : property.name] = descriptor(checker, checker.getTypeOfSymbolAtLocation(property, declaration), { optionalProperty: optional, literals });
   }
   return fields;
 }
@@ -265,15 +292,19 @@ export function readPluginContractSource({ overrides = {} }: { overrides?: Recor
   const checker = program.getTypeChecker();
   const events = program.getSourceFile(REPOSITORY_EVENTS_SOURCE)!;
   const sdk = program.getSourceFile(PLUGIN_SDK_SOURCE)!;
-  const payloads = Object.fromEntries(Object.entries(PLUGIN_EVENT_PAYLOAD_INTERFACES).map(([event, name]) => [event, fieldDescriptors(checker, interfaceIn(events, name))]));
+  const read = (literals: boolean) => ({
+    payloads: Object.fromEntries(Object.entries(PLUGIN_EVENT_PAYLOAD_INTERFACES).map(([event, name]) => [event, fieldDescriptors(checker, interfaceIn(events, name), { literals })])),
+    envelope: fieldDescriptors(checker, interfaceIn(events, 'RepositoryEvent'), { literals }),
+  });
   const { types, supplied } = sdkTypes(program, checker, sdk);
-  return { payloads, envelope: fieldDescriptors(checker, interfaceIn(events, 'RepositoryEvent')), sdkTypes: types, suppliedTypes: supplied };
+  return { ...read(true), widened: read(false), sdkTypes: types, suppliedTypes: supplied };
 }
 
 /**
  * The plugin contract with what the sources declare: payload and envelope
- * types read from the interfaces (where `buildPluginContract()` has the
- * descriptors written in `pluginContract.ts`), and the SDK's declared types.
+ * types read from the interfaces, literal values included (where
+ * `buildPluginContract()` has the descriptors written in `pluginContract.ts`,
+ * which widen them), and the SDK's declared types.
  * This is what the snapshot records and the contract test compares.
  */
 export function buildSourcePluginContract(source: PluginContractSource = readPluginContractSource()): PluginContract {
@@ -288,7 +319,10 @@ export function buildSourcePluginContract(source: PluginContractSource = readPlu
   return contract;
 }
 
-/** Where the descriptors written in `pluginContract.ts` (which the docs are generated from) differ from the sources. */
+/**
+ * Where the descriptors written in `pluginContract.ts` (which the docs are generated from) differ from the sources.
+ * Those write literal types widened (`source: string`); the literal values are checked against the snapshot instead.
+ */
 export function pluginContractSourceMismatches(source: PluginContractSource = readPluginContractSource()): string[] {
   const written = buildPluginContract();
   const mismatches: string[] = [];
@@ -296,8 +330,8 @@ export function pluginContractSourceMismatches(source: PluginContractSource = re
     if (JSON.stringify(declared) !== JSON.stringify(actual)) mismatches.push(`${what}: pluginContract.ts has ${JSON.stringify(declared)}, the source declares ${JSON.stringify(actual)}`);
   };
   const sorted = (fields: Record<string, string>) => Object.fromEntries(Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  for (const [event, fields] of Object.entries(source.payloads)) compare(`PLUGIN_EVENT_PAYLOAD_FIELDS['${event}']`, sorted(written.events.payloads[event] ?? {}), sorted(fields));
-  compare('PLUGIN_EVENT_ENVELOPE_FIELDS', sorted(written.events.envelope), sorted(source.envelope));
+  for (const [event, fields] of Object.entries(source.widened.payloads)) compare(`PLUGIN_EVENT_PAYLOAD_FIELDS['${event}']`, sorted(written.events.payloads[event] ?? {}), sorted(fields));
+  compare('PLUGIN_EVENT_ENVELOPE_FIELDS', sorted(written.events.envelope), sorted(source.widened.envelope));
   return mismatches;
 }
 

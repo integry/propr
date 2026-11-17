@@ -933,7 +933,7 @@
     "envelope": {
       "seq": "number",
       "repository": "string",
-      "domain": "string",
+      "domain": "\"epic_queue\" | \"plan_issue\" | \"pull_request\" | \"task\"",
       "type": "string",
       "entityId": "string",
       "prNumber": "number | null",
@@ -955,7 +955,7 @@
         "score": "number",
         "goal": "number | null",
         "goalReached": "boolean | null",
-        "source": "string",
+        "source": "\"review\" | \"ultrafix\"",
         "cycle": "number | null",
         "reviewerModel": "string | null"
       },
@@ -965,7 +965,7 @@
         "workEpoch": "number"
       },
       "pull_request.ultrafix_ended": {
-        "outcome": "string",
+        "outcome": "\"cycles_exhausted\" | \"failed\" | \"goal_reached\" | \"stopped\" | \"style_findings_only\"",
         "finalScore": "number | null",
         "reason": "string | null",
         "workEpoch": "number"
@@ -1010,7 +1010,7 @@
       },
       "task.queued": {
         "taskId": "string",
-        "kind": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
         "issueNumber": "number | null",
         "prNumber": "number | null",
         "agent": "string | null",
@@ -1019,7 +1019,7 @@
       },
       "task.started": {
         "taskId": "string",
-        "kind": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
         "issueNumber": "number | null",
         "prNumber": "number | null",
         "agent": "string | null",
@@ -1028,44 +1028,44 @@
       },
       "task.completed": {
         "taskId": "string",
-        "kind": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
         "issueNumber": "number | null",
         "prNumber": "number | null",
         "agent": "string | null",
         "model": "string | null",
         "attempts": "number",
-        "status": "string",
+        "status": "\"cancelled\" | \"completed\" | \"failed\"",
         "terminalReason": "string | null",
         "durationMs": "number | null",
-        "pullRequest": "string | null",
+        "pullRequest": "\"opened\" | \"updated\" | null",
         "failureCategory": "string | null"
       },
       "task.failed": {
         "taskId": "string",
-        "kind": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
         "issueNumber": "number | null",
         "prNumber": "number | null",
         "agent": "string | null",
         "model": "string | null",
         "attempts": "number",
-        "status": "string",
+        "status": "\"cancelled\" | \"completed\" | \"failed\"",
         "terminalReason": "string | null",
         "durationMs": "number | null",
-        "pullRequest": "string | null",
+        "pullRequest": "\"opened\" | \"updated\" | null",
         "failureCategory": "string | null"
       },
       "task.cancelled": {
         "taskId": "string",
-        "kind": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
         "issueNumber": "number | null",
         "prNumber": "number | null",
         "agent": "string | null",
         "model": "string | null",
         "attempts": "number",
-        "status": "string",
+        "status": "\"cancelled\" | \"completed\" | \"failed\"",
         "terminalReason": "string | null",
         "durationMs": "number | null",
-        "pullRequest": "string | null",
+        "pullRequest": "\"opened\" | \"updated\" | null",
         "failureCategory": "string | null"
       }
     }

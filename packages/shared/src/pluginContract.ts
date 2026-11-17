@@ -22,7 +22,8 @@ import {
  *   tightened) needs a new `manifestVersion`, and ProPR keeps reading the old
  *   version for at least one minor release (`PLUGIN_SUPPORTED_MANIFEST_VERSIONS`).
  * - **Event payloads.** Additive only within a domain: a payload key is never
- *   removed or retyped, an event type is never removed.
+ *   removed or retyped, a literal value a field takes (`source: 'review'`) is
+ *   never removed or replaced, an event type is never removed.
  * - **The handler SDK.** `ctx` members, `ctx.propr` operations (and the
  *   permission each needs), `ctx.state` and `ctx.log` methods, input envelope
  *   fields, error codes and the runtime exports of the SDK module are
@@ -45,10 +46,12 @@ export const PLUGIN_SUPPORTED_MANIFEST_VERSIONS: readonly number[] = [PLUGIN_MAN
 /**
  * Payload fields of each journal event, as `key: type`. A key ending in `?`
  * may be absent. Types are `string`, `number`, `boolean`, `string[]`,
- * `number[]`, each optionally `| null`. Keep this in step with the payload
- * interfaces of `repositoryEvents.ts`: the type checks below compare the keys,
- * and the shared package's contract test compares each type with the field's
- * declared type.
+ * `number[]`, each optionally `| null`; a literal type is written as its
+ * primitive (`source: 'review' | 'ultrafix'` as `string`). Keep this in step
+ * with the payload interfaces of `repositoryEvents.ts`: the type checks below
+ * compare the keys, and the shared package's contract test compares each type
+ * with the field's declared type. The snapshot it checks records the literal
+ * values too, read from the interfaces.
  */
 export const PLUGIN_EVENT_PAYLOAD_FIELDS = {
   'pull_request.opened': { baseRef: 'string | null', draft: 'boolean' },
@@ -368,15 +371,72 @@ export interface PluginContractComparison {
 const fieldName = (key: string) => key.replace(/\?$/, '');
 const optional = (key: string) => key.endsWith('?');
 
-/** Compare `key: type` maps where a removed key, a changed type or a required key made optional breaks readers. */
+/** A literal type as the contract writes it: a JSON string, a number, `true` or `false`. */
+const LITERAL = String.raw`(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false)`;
+const LITERAL_UNION_ALIAS = new RegExp(`^(.*?) = (${LITERAL}(?: \\| ${LITERAL})*)$`);
+const LITERALS = new RegExp(LITERAL, 'g');
+const LITERAL_MEMBER = new RegExp(`^${LITERAL}$`);
+
+/** The members of a union descriptor (`"review" | "ultrafix" | null`), not split inside quotes or brackets (`(string | null)[]`). */
+function unionMembers(type: string): string[] {
+  const members: string[] = [];
+  let depth = 0;
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < type.length; i++) {
+    const c = type[i];
+    if (quoted) {
+      if (c === '\\') i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if ('([{<'.includes(c)) depth++;
+    else if (')]}>'.includes(c) && !(c === '>' && type[i - 1] === '=')) depth--;
+    else if (depth === 0 && type.startsWith(' | ', i)) {
+      members.push(type.slice(start, i));
+      start = i + 3;
+      i += 2;
+    }
+  }
+  return [...members, type.slice(start)];
+}
+
+/** A field type's literal values (`boolean` counting as `true | false`), and the rest of the type. */
+function literalMembers(type: string): { literals: string[]; rest: string } {
+  const members = unionMembers(type).flatMap(member => (member === 'boolean' ? ['true', 'false'] : [member]));
+  return { literals: members.filter(member => LITERAL_MEMBER.test(member)), rest: members.filter(member => !LITERAL_MEMBER.test(member)).sort().join(' | ') };
+}
+
+/**
+ * A field whose type changed. A reader may branch on a literal value (`source === 'review'`): one the field no
+ * longer includes breaks it, and a new one is an addition, while the rest of the type stays the same. Any other
+ * change retypes the field. Returns whether the change breaks readers.
+ */
+function compareFieldType(what: string, name: string, previous: string, current: string, result: PluginContractComparison): boolean {
+  const before = literalMembers(previous);
+  const after = literalMembers(current);
+  if (!before.literals.length || before.rest !== after.rest) {
+    result.breaking.push(`${what}: field ${name} changed type from ${previous} to ${current}`);
+    return true;
+  }
+  const removed = before.literals.filter(value => !after.literals.includes(value));
+  for (const value of removed) result.breaking.push(`${what}: field ${name} no longer includes ${value}`);
+  for (const value of after.literals) if (!before.literals.includes(value)) result.additions.push(`${what}: field ${name} now includes ${value}`);
+  return removed.length > 0;
+}
+
+/** Compare `key: type` maps where a removed key, a changed type, a removed literal value or a required key made optional breaks readers. */
 function compareFields(what: string, previous: Record<string, string>, current: Record<string, string>, result: PluginContractComparison) {
   const now = new Map(Object.entries(current).map(([key, type]) => [fieldName(key), { key, type }]));
   const before = new Set(Object.keys(previous).map(fieldName));
   for (const [key, type] of Object.entries(previous)) {
     const match = now.get(fieldName(key));
-    if (!match) result.breaking.push(`${what}: field ${fieldName(key)} was removed`);
-    else if (match.type !== type) result.breaking.push(`${what}: field ${fieldName(key)} changed type from ${type} to ${match.type}`);
-    else if (!optional(key) && optional(match.key)) result.breaking.push(`${what}: field ${fieldName(key)} is no longer always present`);
+    if (!match) {
+      result.breaking.push(`${what}: field ${fieldName(key)} was removed`);
+      continue;
+    }
+    const typeBreaks = match.type !== type && compareFieldType(what, fieldName(key), type, match.type, result);
+    // A field that only gained a literal value can still have been made optional.
+    if (!typeBreaks && !optional(key) && optional(match.key)) result.breaking.push(`${what}: field ${fieldName(key)} is no longer always present`);
   }
   for (const key of Object.keys(current)) if (!before.has(fieldName(key))) result.additions.push(`${what}: field ${fieldName(key)} was added`);
 }
@@ -437,10 +497,6 @@ function compareManifest(previous: PluginContract, current: PluginContract, supp
     else result.additions.push(`manifest: field ${path} was added`);
   }
 }
-
-const LITERAL = String.raw`(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false)`;
-const LITERAL_UNION_ALIAS = new RegExp(`^(.*?) = (${LITERAL}(?: \\| ${LITERAL})*)$`);
-const LITERALS = new RegExp(LITERAL, 'g');
 
 /**
  * The declared text and the literal values of an alias the contract source records expanded, because

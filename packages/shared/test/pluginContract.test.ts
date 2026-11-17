@@ -21,7 +21,7 @@ const CURRENT = buildSourcePluginContract(SOURCE);
 /** The contract after editing one shared source file, compared with the committed snapshot. */
 const breakingAfterEdit = (file: string, search: string, replacement: string) => {
   const source = readPluginContractSource({ overrides: editedSource(file, search, replacement) });
-  return { mismatches: pluginContractSourceMismatches(source), breaking: comparePluginContract(readJson(SNAPSHOT), buildSourcePluginContract(source)).breaking };
+  return { mismatches: pluginContractSourceMismatches(source), ...comparePluginContract(readJson(SNAPSHOT), buildSourcePluginContract(source)) };
 };
 
 test('the plugin interface keeps every promise of the committed snapshot', () => {
@@ -63,6 +63,49 @@ test('allowing undefined in a required payload or envelope field is a breaking c
   const optional = readPluginContractSource({ overrides: editedSource(REPOSITORY_EVENTS_SOURCE, '  score: number;\n', '  score: number;\n  rank?: number | undefined;\n') });
   assert.equal(optional.payloads['pull_request.review_scored']['rank?'], 'number');
   assert.deepEqual(comparePluginContract(readJson(SNAPSHOT), buildSourcePluginContract(optional)).breaking, []);
+});
+
+test('renaming or removing a literal value of a payload field in its interface is a breaking change; adding one is not', () => {
+  const SOURCE_FIELD = "  source: 'review' | 'ultrafix';\n";
+  // The snapshot records the values; the descriptors the docs are generated from widen them to `string`.
+  assert.equal(CURRENT.events.payloads['pull_request.review_scored'].source, '"review" | "ultrafix"');
+  assert.equal(SOURCE.widened.payloads['pull_request.review_scored'].source, 'string');
+  const renamed = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, SOURCE_FIELD, "  source: 'assessment' | 'ultrafix';\n");
+  assert.deepEqual(renamed.mismatches, []);
+  assert.deepEqual(renamed.breaking, ['events: pull_request.review_scored payload: field source no longer includes "review"']);
+  assert.deepEqual(renamed.additions, ['events: pull_request.review_scored payload: field source now includes "assessment"']);
+  const added = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, SOURCE_FIELD, "  source: 'review' | 'ultrafix' | 'manual';\n");
+  assert.deepEqual(added.breaking, []);
+  assert.deepEqual(added.additions, ['events: pull_request.review_scored payload: field source now includes "manual"']);
+  // A new value does not hide that the field was made optional, and widening to the primitive drops every value.
+  const optional = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, SOURCE_FIELD, "  source?: 'review' | 'ultrafix' | 'manual';\n");
+  assert.deepEqual(optional.breaking, ['events: pull_request.review_scored payload: field source is no longer always present']);
+  const widened = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, SOURCE_FIELD, '  source: string;\n');
+  assert.deepEqual(widened.breaking, ['events: pull_request.review_scored payload: field source changed type from "review" | "ultrafix" to string']);
+  // Values from a runtime list, through an alias and an inherited field, and next to null.
+  const kinds = breakingAfterEdit(
+    REPOSITORY_EVENTS_SOURCE, "export const TASK_EVENT_KINDS = ['implementation', 'follow-up', 'review', 'merge-conflict', 'automation'] as const;",
+    "export const TASK_EVENT_KINDS = ['implementation', 'follow-up', 'assessment', 'merge-conflict', 'automation'] as const;",
+  );
+  assert.deepEqual(kinds.mismatches, []);
+  assert.deepEqual(kinds.breaking, ['task.queued', 'task.started', 'task.completed', 'task.failed', 'task.cancelled'].map(event => `events: ${event} payload: field kind no longer includes "review"`));
+  const outcome = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, "export type TaskEventPullRequestOutcome = 'opened' | 'updated' | null;", "export type TaskEventPullRequestOutcome = 'opened' | null;");
+  assert.deepEqual(outcome.breaking, ['task.completed', 'task.failed', 'task.cancelled'].map(event => `events: ${event} payload: field pullRequest no longer includes "updated"`));
+});
+
+test('numeric and boolean literal values of a payload field are recorded and compared too', () => {
+  const fields = "  goalReached: boolean | null;\n  source: 'review' | 'ultrafix';\n  cycle: number | null;\n";
+  const literal = readPluginContractSource({ overrides: editedSource(REPOSITORY_EVENTS_SOURCE, fields, "  goalReached: true | null;\n  source: 'review' | 'ultrafix';\n  cycle: 1 | 2 | null;\n") });
+  assert.equal(literal.payloads['pull_request.review_scored'].goalReached, 'true | null');
+  assert.equal(literal.payloads['pull_request.review_scored'].cycle, '1 | 2 | null');
+  assert.deepEqual(pluginContractSourceMismatches(literal), []);
+  const changed = readPluginContractSource({ overrides: editedSource(REPOSITORY_EVENTS_SOURCE, fields, "  goalReached: boolean | null;\n  source: 'review' | 'ultrafix';\n  cycle: 1 | null;\n") });
+  const { breaking, additions } = comparePluginContract(buildSourcePluginContract(literal), buildSourcePluginContract(changed));
+  assert.deepEqual(breaking, ['events: pull_request.review_scored payload: field cycle no longer includes 2']);
+  assert.deepEqual(additions, ['events: pull_request.review_scored payload: field goalReached now includes false']);
+  // `boolean` is `true | false`: narrowing it to one of them drops the other.
+  const narrowed = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, '  goalReached: boolean | null;\n', '  goalReached: true | null;\n');
+  assert.deepEqual(narrowed.breaking, ['events: pull_request.review_scored payload: field goalReached no longer includes false']);
 });
 
 test('retyping an inherited payload field or an envelope field in the source is a breaking change', () => {
@@ -160,12 +203,12 @@ test('adding an SDK error code or an event domain in the source is an addition; 
   const domain = readPluginContractSource({ overrides: editedSource(REPOSITORY_EVENTS_SOURCE, domains, "export const REPOSITORY_EVENT_DOMAINS = ['pull_request', 'epic_queue', 'plan_issue', 'task', 'deployment'] as const;") });
   const addedDomain = comparePluginContract(snapshot, buildSourcePluginContract(domain));
   assert.deepEqual(addedDomain.breaking, []);
-  assert.deepEqual(addedDomain.additions, ['sdk: type RepositoryEventDomain now includes "deployment"']);
+  assert.deepEqual(addedDomain.additions, ['event envelope: field domain now includes "deployment"', 'sdk: type RepositoryEventDomain now includes "deployment"']);
   // Removals, and changing what the alias is declared as, are still breaking changes.
   const removedCode = breakingAfterEdit(PLUGIN_SDK_SOURCE, "'state_limit',", '');
   assert.deepEqual(removedCode.breaking, ['sdk: type PluginSdkErrorCode no longer includes "state_limit"']);
   const removedDomain = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, domains, "export const REPOSITORY_EVENT_DOMAINS = ['pull_request', 'epic_queue', 'task'] as const;");
-  assert.deepEqual(removedDomain.breaking, ['sdk: type RepositoryEventDomain no longer includes "plan_issue"']);
+  assert.deepEqual(removedDomain.breaking, ['event envelope: field domain no longer includes "plan_issue"', 'sdk: type RepositoryEventDomain no longer includes "plan_issue"']);
   const widened = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export type PluginSdkErrorCode = typeof PLUGIN_SDK_ERROR_CODES[number];', 'export type PluginSdkErrorCode = typeof PLUGIN_SDK_ERROR_CODES[number] | string;');
   assert.equal(widened.breaking.length, 1, widened.breaking.join('\n'));
   assert.match(widened.breaking[0], /^sdk: type PluginSdkErrorCode changed from typeof PLUGIN_SDK_ERROR_CODES\[number\] = .* to typeof PLUGIN_SDK_ERROR_CODES\[number\] \| string = string$/);
@@ -195,6 +238,7 @@ test('the fixture of an earlier interface shows every kind of breaking change', 
     'events: pull_request.opened payload: field legacyTitle was removed',
     'events: event type pull_request.reopened was removed',
     'events: epic_queue.completed payload: field fromIssue is no longer always present',
+    'events: pull_request.review_scored payload: field source no longer includes "legacy"',
     'sdk: ctx member: secrets was removed',
     'sdk: ctx.propr.getTask now needs tasks.read instead of issues.read',
     'sdk: ctx.propr.deleteRepository was removed',

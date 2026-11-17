@@ -461,8 +461,10 @@ breaking change is caught.
    that keeps the version, and on a new version that stops reading the old one.
 2. **Event payloads are additive only within a domain.** A payload key is
    never removed, retyped or made optional; an event type is never removed.
-   New keys and new event types are fine. The contract test snapshots every
-   event type's payload keys and types, and fails on a removal or a type
+   When a field takes fixed values (`source` is `review` or `ultrafix`), a
+   value is never removed or renamed. New keys, new values and new event
+   types are fine. The contract test snapshots every event type's payload
+   keys and types, those values included, and fails on a removal or a type
    change. It reads the types from the payload interfaces in
    `repositoryEvents.ts` with the TypeScript compiler, so retyping a field
    there fails the test even when the field keeps its name.

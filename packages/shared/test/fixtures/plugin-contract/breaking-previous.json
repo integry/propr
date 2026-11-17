@@ -16,6 +16,7 @@
     "payloads": {
       "pull_request.opened": { "baseRef": "string | null", "draft": "string", "legacyTitle": "string" },
       "pull_request.reopened": {},
+      "pull_request.review_scored": { "source": "\"legacy\" | \"review\" | \"ultrafix\"" },
       "epic_queue.completed": { "fromIssue": "number", "cursor": "number" }
     }
   },
