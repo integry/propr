@@ -131,8 +131,14 @@ before(async () => {
         table.string('draft_id').primary(); table.string('repository'); table.json('context_config'); table.string('name'); table.boolean('paused').defaultTo(false);
     });
     await database.schema.createTable('epic_execution_queues', table => {
-        table.string('draft_id').primary(); table.text('issues'); table.integer('cursor'); table.string('status'); table.boolean('ready'); table.boolean('parallel');
-        table.string('blocked_reason');
+        table.string('draft_id').primary(); table.string('execution_id'); table.string('repository'); table.text('issues'); table.integer('cursor');
+        table.string('status'); table.boolean('ready'); table.boolean('parallel'); table.string('mode'); table.integer('max_parallel');
+        table.string('advance_on').defaultTo('merged'); table.string('blocked_reason');
+    });
+    await database.schema.createTable('epic_execution_queue_issues', table => {
+        table.string('draft_id'); table.string('execution_id'); table.integer('issue_number'); table.integer('position'); table.string('state');
+        table.bigInteger('dispatched_at'); table.string('blocked_kind'); table.string('blocked_reason'); table.bigInteger('blocked_at');
+        table.bigInteger('updated_at').defaultTo(0); table.text('depends_on'); table.boolean('skip_satisfies_dependents').defaultTo(false);
     });
     await database.schema.createTable('goals', table => { table.string('goal_id'); table.string('repository'); table.integer('final_pr_number'); });
     await database.schema.createTable('review_scores', table => {
@@ -148,7 +154,7 @@ after(async () => {
 });
 
 beforeEach(async () => {
-    for (const name of ['tasks', 'task_history', 'plan_issues', 'task_drafts', 'epic_execution_queues', 'goals', 'review_scores']) await database(name).del();
+    for (const name of ['tasks', 'task_history', 'plan_issues', 'task_drafts', 'epic_execution_queues', 'epic_execution_queue_issues', 'goals', 'review_scores']) await database(name).del();
     resetPullRequestTitleStateForTests();
     resetEpicChildReadsForTests();
     setPullRequestTitleSettleMsForTests(0);
@@ -167,10 +173,24 @@ beforeEach(async () => {
         { repository: REPOSITORY, issue_number: 801, draft_id: 'draft-1', status: 'under_review', pr_number: 911, created_at: '2' },
         { repository: REPOSITORY, issue_number: 802, draft_id: 'draft-1', status: 'pending', pr_number: null, created_at: '3' },
     ]);
-    await database('epic_execution_queues').insert({ draft_id: 'draft-1', issues: JSON.stringify([800, 801, 802]), cursor: 1, status: 'active', ready: true, parallel: false });
+    // As createEpicExecutionQueue writes it: progress lives in the per-issue rows, and the legacy cursor column stays 0.
+    await database('epic_execution_queues').insert({ draft_id: 'draft-1', execution_id: 'exec-1', repository: REPOSITORY, issues: JSON.stringify([800, 801, 802]), cursor: 0, status: 'active', ready: true, parallel: false, mode: 'sequential' });
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
     await database('tasks').insert({ task_id: 't-911', repository: REPOSITORY, issue_number: 801, task_type: 'issue', created_at: '2026-11-13T08:30:00Z', initial_job_data: '{}', pr_number: 911 });
     await database('task_history').insert({ task_id: 't-911', state: 'completed' });
 });
+
+type QueueIssueState = 'pending' | 'dispatched' | 'done' | 'blocked' | 'skipped';
+
+/** The execution's per-issue rows, in queue (issue number) order; a claimed issue has a dispatch time. */
+async function setQueueIssues(states: Record<number, QueueIssueState>, dependsOn: Record<number, number[]> = {}): Promise<void> {
+    await database('epic_execution_queue_issues').del();
+    const issues = Object.keys(states).map(Number).sort((left, right) => left - right);
+    await database('epic_execution_queue_issues').insert(issues.map((issueNumber, position) => ({
+        draft_id: 'draft-1', execution_id: 'exec-1', issue_number: issueNumber, position, state: states[issueNumber],
+        dispatched_at: states[issueNumber] === 'pending' ? null : 1, depends_on: JSON.stringify(dependsOn[issueNumber] ?? []),
+    })));
+}
 
 function deps(): Partial<PullRequestStatusSyncDeps> {
     return {
@@ -188,7 +208,7 @@ function statusLine(number = EPIC): string {
 async function mergeSubPr911(): Promise<void> {
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
-    await database('epic_execution_queues').update({ cursor: 2 });
+    await setQueueIssues({ 800: 'done', 801: 'done', 802: 'pending' });
     const comment = github.comments.find(candidate => candidate.body.includes(EPIC_PROGRESS_MARKER))!;
     comment.body = buildEpicProgressComment(PROGRESS_AFTER_911, 'Scheduler primitives', undefined, extractEpicProgressActivityLines(comment.body));
 }
@@ -597,7 +617,7 @@ test('a queue head stopped on a reported blocker shows ⚠️, not in progress',
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
     await database('plan_issues').where({ issue_number: 802 }).update({ status: 'processing' });
-    await database('epic_execution_queues').update({ cursor: 2 });
+    await setQueueIssues({ 800: 'done', 801: 'done', 802: 'dispatched' });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 in progress · /, 'a running head is in progress');
     await database('epic_execution_queues').update({ blocked_reason: agentBlockedHeadReason(802) });
@@ -610,7 +630,8 @@ test('a pending queue head stopped on a reported blocker is named in the status,
     // #802's processing webhook was lost: it is the active head, still pending, when its run reports a blocker.
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
-    await database('epic_execution_queues').update({ cursor: 2, blocked_reason: agentBlockedHeadReason(802) });
+    await setQueueIssues({ 800: 'done', 801: 'done', 802: 'dispatched' });
+    await database('epic_execution_queues').update({ blocked_reason: agentBlockedHeadReason(802) });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · #802 stopped on a blocker · /);
     assert.match(github.progressComment(), /\nIn progress: #802 \(Third issue\) - stopped on a blocker\n/);
@@ -625,7 +646,8 @@ test('an active queue that is not ready starts nothing, so the epic is not shown
     await database('epic_execution_queues').update({ ready: false });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /, 'a pending head');
-    await database('epic_execution_queues').update({ cursor: 1 });
+    // #801 merged, but the queue has not advanced past it yet.
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /, 'a merged head with an issue still to start');
     await database('epic_execution_queues').update({ ready: true });
@@ -635,12 +657,92 @@ test('an active queue that is not ready starts nothing, so the epic is not shown
 
 test('an active parallel execution that is not ready is not shown working on its pending issues', async () => {
     await mergeSubPr911();
-    await database('epic_execution_queues').update({ parallel: true, cursor: 0 });
+    await database('epic_execution_queues').update({ parallel: true, mode: 'parallel', cursor: 0 });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /, 'a ready parallel execution has a pending issue to start');
     await database('epic_execution_queues').update({ ready: false });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /);
+});
+
+// --- a sub-PR waiting on a person holds the queue (#3563) ---
+
+/** #911 (issue #801) conflicts with the epic branch: its status needs a person. */
+function subPr911NeedsAttention(): void {
+    Object.assign(github.pulls.get(911)!, { mergeable: false, title: '⚠️ [801 by Claude Opus 5.5] Second issue' });
+}
+
+async function useMode(mode: 'sequential' | 'parallel' | 'graph', maxParallel: number | null = null): Promise<void> {
+    await database('epic_execution_queues').update({ mode, parallel: mode === 'parallel', max_parallel: maxParallel });
+}
+
+async function settledTitle(): Promise<string> {
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    return github.epic().title;
+}
+
+const NEEDS_YOU_911 = /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) /;
+const WAITS_FOR_MERGE_911 = '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated 09:41 UTC';
+
+for (const mode of ['sequential', 'graph'] as const) {
+    test(`${mode}: a sub-PR that needs a person, with an issue behind it, shows ⚠️ naming the sub-PR, not "starts next"`, async () => {
+        await useMode(mode);
+        await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' }, mode === 'graph' ? { 802: [801] } : {});
+        subPr911NeedsAttention();
+        assert.equal(await settledTitle(), '⚠️ 1/3 [Epic] Scheduler primitives');
+        assert.match(statusLine(), NEEDS_YOU_911);
+        assert.doesNotMatch(statusLine(), /starts next/);
+    });
+
+    test(`${mode}: a ready sub-PR waiting for a human merge, with an issue behind it, shows ⚠️ waits to be merged`, async () => {
+        await useMode(mode);
+        await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' }, mode === 'graph' ? { 802: [801] } : {});
+        assert.equal(await settledTitle(), '⚠️ 1/3 [Epic] Scheduler primitives');
+        assert.equal(statusLine(), WAITS_FOR_MERGE_911);
+    });
+}
+
+test('parallel: a sub-PR that needs a person shows ⚠️ while the pending issue cannot be dispatched', async () => {
+    await useMode('parallel');
+    // #802's dispatch failed: it holds no claim and the scheduler does not start a blocked issue.
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'blocked' });
+    subPr911NeedsAttention();
+    assert.equal(await settledTitle(), '⚠️ 1/3 [Epic] Scheduler primitives');
+    assert.match(statusLine(), NEEDS_YOU_911);
+    Object.assign(github.pulls.get(911)!, { mergeable: true });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(statusLine(), WAITS_FOR_MERGE_911, 'and a ready sub-PR waits to be merged');
+});
+
+test('a graph issue whose prerequisites are merged and that has a free slot starts next, whatever its siblings wait on', async () => {
+    await useMode('graph');
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' }, { 802: [800] });
+    subPr911NeedsAttention();
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #802 starts next · /);
+    // With one slot, #801's sub-PR holds it: nothing starts until a person acts on #911.
+    await useMode('graph', 1);
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), NEEDS_YOU_911);
+});
+
+test('a parallel issue that is pending and unclaimed starts next; one the dispatcher claimed is starting', async () => {
+    await useMode('parallel');
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
+    subPr911NeedsAttention();
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 1 of 3 issues merged · #802 starts next · /);
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'dispatched' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 1 of 3 issues merged · #802 starts next · /);
+});
+
+test('a chain starts the issue after a head that merged before the queue advanced', async () => {
+    await mergeSubPr911();
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /);
 });
 
 // --- lists longer than the pages read ---
