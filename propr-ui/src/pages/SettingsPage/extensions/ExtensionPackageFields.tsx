@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { type ExtensionLibraryPackageServer, type ExtensionPackageResolution, type ExtensionSecretAcknowledgement, type ExtensionSecretStatus } from '@propr/shared';
 import { resolveExtensionPackage } from '../../../api/extensionProfilesApi';
 import { buttonClass, fieldErrorClass, hintClass, inputClass, labelClass } from './extensionUi';
+import { usePendingEntry } from './pendingEntries';
 import type { ServerField } from './extensionValidation';
 import { acknowledgementCovers, isExactVersion } from './packageServerUi';
 
@@ -50,6 +51,7 @@ function SecretVariables({ server, status, dropped, values, onValues, onChange }
   server: ExtensionLibraryPackageServer; status?: ExtensionSecretStatus; dropped: boolean; values: Record<string, string>; onValues: (values: Record<string, string>) => void; onChange: Patch;
 }) {
   const [adding, setAdding] = useState('');
+  usePendingEntry(adding);
   const saved = new Set(status && 'configuredEnv' in status ? status.configuredEnv ?? [] : []);
   const configured = dropped ? new Set<string>() : saved;
   const add = () => {

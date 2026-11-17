@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import { usePendingEntry } from './pendingEntries';
 import { buttonClass, controlClass, fieldErrorClass, hintClass } from './extensionUi';
 
 /** Lists longer than this get a filter and a scroll box. */
@@ -27,6 +28,7 @@ export function ExtensionItemPicker({ label, options, selected, onChange, hint, 
   const filterId = useId();
   const errorId = useId();
   const [manual, setManual] = useState('');
+  usePendingEntry(allowManual ? manual : '');
   const [filter, setFilter] = useState('');
   const [unlisted, setUnlisted] = useState(() => selected.filter(item => !options.includes(item)));
   const items = [...new Set([...options, ...unlisted, ...selected])];

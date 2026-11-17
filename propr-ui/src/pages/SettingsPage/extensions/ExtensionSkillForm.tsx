@@ -4,6 +4,7 @@ import { ExtensionItemLimits } from './ExtensionItemLimits';
 import { ExtensionSkillSource, SkillBundleDetails } from './ExtensionSkillImport';
 import { NEW_ITEM_LIMITS, buttonClass, primaryButtonClass, type ExtensionChoices, type ItemLimitFields } from './extensionUi';
 import { useDiscardGuard } from './useDiscardGuard';
+import { PendingEntryProvider, usePendingEntries } from './pendingEntries';
 import { ExtensionFormActions } from './ExtensionFormActions';
 
 /**
@@ -30,7 +31,9 @@ export function ExtensionSkillForm({ initial, bundle: initialBundle, available, 
   const formRef = useRef<HTMLFormElement>(null);
   const [openedLimits] = useState(() => JSON.stringify(limits));
   const [typedSource, setTypedSource] = useState(false);
-  const dirty = bundle?.id !== initialBundle?.id || JSON.stringify(limits) !== openedLimits || (!bundle && typedSource);
+  // Text typed into another repository or agent field but not yet added.
+  const entries = usePendingEntries();
+  const dirty = bundle?.id !== initialBundle?.id || JSON.stringify(limits) !== openedLimits || (!bundle && typedSource) || entries.pending;
   const guard = useDiscardGuard(formRef, dirty && !busy, onCancel);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -44,19 +47,21 @@ export function ExtensionSkillForm({ initial, bundle: initialBundle, available, 
     <form ref={formRef} aria-labelledby={titleId} onSubmit={event => void submit(event)} onKeyDown={guard.onKeyDown} data-testid="extension-skill-form"
       className="space-y-4 rounded-md border border-teal-200 bg-white p-3 sm:p-4">
       <h5 id={titleId} className="text-sm font-semibold">{label}</h5>
-      <fieldset disabled={busy} className="min-w-0 space-y-4">
-        {bundle ? (
-          <div className="rounded-md border border-slate-200 p-3">
-            <p className="text-sm font-semibold">{bundle.name}</p>
-            <SkillBundleDetails bundle={bundle} />
-            {!initial && <button type="button" className={`${buttonClass} mt-2`} onClick={() => setBundle(undefined)}>Choose another bundle</button>}
-          </div>
-        ) : (
-          <ExtensionSkillSource available={available} repositories={choices.repositories} onBusy={setBusy} onError={setError} onInput={setTypedSource}
-            onBundle={next => { onImported(next); setBundle(next); }} />
-        )}
-        <ExtensionItemLimits item={limits} choices={choices} onChange={patch => setLimits(value => ({ ...value, ...patch }))} />
-      </fieldset>
+      <PendingEntryProvider value={entries.report}>
+        <fieldset disabled={busy} className="min-w-0 space-y-4">
+          {bundle ? (
+            <div className="rounded-md border border-slate-200 p-3">
+              <p className="text-sm font-semibold">{bundle.name}</p>
+              <SkillBundleDetails bundle={bundle} />
+              {!initial && <button type="button" className={`${buttonClass} mt-2`} onClick={() => setBundle(undefined)}>Choose another bundle</button>}
+            </div>
+          ) : (
+            <ExtensionSkillSource available={available} repositories={choices.repositories} onBusy={setBusy} onError={setError} onInput={setTypedSource}
+              onBundle={next => { onImported(next); setBundle(next); }} />
+          )}
+          <ExtensionItemLimits item={limits} choices={choices} onChange={patch => setLimits(value => ({ ...value, ...patch }))} />
+        </fieldset>
+      </PendingEntryProvider>
       {error && <p role="alert" className="rounded-md bg-red-50 p-2 text-sm text-red-800">{error}</p>}
       <ExtensionFormActions>
         <button type="submit" className={primaryButtonClass} disabled={busy || !bundle}>{initial ? 'Save skill' : 'Add skill'}</button>

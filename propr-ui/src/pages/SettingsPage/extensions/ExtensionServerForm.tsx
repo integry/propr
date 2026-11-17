@@ -7,6 +7,7 @@ import { CatalogServerDetails, ServerAccessFields, ServerEndpointField, ServerNa
 import { buttonClass, inputClass, labelClass, ownEntry, primaryButtonClass, type ExtensionChoices } from './extensionUi';
 import { serverDraftDirty, useServerFieldChecks } from './extensionValidation';
 import { useDiscardGuard } from './useDiscardGuard';
+import { PendingEntryProvider, usePendingEntries } from './pendingEntries';
 import { ExtensionFormActions } from './ExtensionFormActions';
 import { newHttpsServer, newPackageServer } from './libraryEdits';
 
@@ -110,7 +111,9 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
   const others = servers.filter(server => server.name !== initial?.name);
   const { endpoints, knownTools } = savedEndpoints(servers, draft);
   const { problems, invalid, shownProblem, touch, touchAll } = useServerFieldChecks(draft, others);
-  const guard = useDiscardGuard(formRef, !saving && serverDraftDirty(draft, opened, token, secretValues), onCancel);
+  // Text typed into an entry field (another tool, repository or agent, or a new secret variable name) but not yet added.
+  const entries = usePendingEntries();
+  const guard = useDiscardGuard(formRef, !saving && (serverDraftDirty(draft, opened, token, secretValues) || entries.pending), onCancel);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (invalid) { touchAll(); return; }
@@ -125,28 +128,30 @@ export function ExtensionServerForm({ initial, servers, catalog, secrets, acknow
     <form ref={formRef} aria-labelledby={titleId} onSubmit={event => void submit(event)} onKeyDown={guard.onKeyDown} data-testid="extension-server-form"
       noValidate className="space-y-4 rounded-md border border-teal-200 bg-white p-3 sm:p-4">
       <h5 id={titleId} className="text-sm font-semibold">{initial ? `Edit server ${initial.name}` : 'Add server'}</h5>
-      <fieldset disabled={saving} className="min-w-0 space-y-4">
-        {!initial && (
-          <ServerTypeSelect draft={draft} servers={servers} catalog={catalog} onSelect={next => {
-            setToken(''); setSecretValues({}); setAcknowledged(false); setDraft(next);
-          }} />
-        )}
-        <div className="grid gap-3 sm:grid-cols-2">
-          <ServerNameField name={draft.name} problem={shownProblem('name')} onBlur={() => touch('name')} onChange={name => change({ name })} />
-          <ServerEndpointField server={draft} endpoints={endpoints} problem={shownProblem('url')} onBlur={() => touch('url')} onChange={change} />
-          <CatalogServerDetails server={draft} catalog={catalog} secrets={secrets} />
-        </div>
-        {draft.kind === 'package' && (
-          <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} secretsDropped={packageSecretsDropped(initial, draft)} acknowledgement={draft.name === initial?.name ? savedAcknowledgement : undefined}
-            secretValues={secretValues} onSecretValues={setSecretValues} acknowledged={acknowledged} onAcknowledged={setAcknowledged}
-            problems={{ package: shownProblem('package'), version: shownProblem('version') }} onBlur={touch}
-            onChange={patch => change(patch as Partial<ExtensionLibraryServer>)} />
-        )}
-        <ServerToolsField key={draft.kind === 'catalog' ? draft.catalogId : draft.kind} server={draft} catalog={catalog} knownTools={knownTools} urlValid={!problems.url} onChange={change} />
-        <ServerAccessFields server={draft} configured={httpsSecretConfigured(initial, secrets)} token={token}
-          tokenDropped={tokenDropped} redirectUri={redirectUri} urlValid={!problems.url} onChange={change} onToken={setToken} />
-        <ExtensionItemLimits item={draft} choices={choices} onChange={change} />
-      </fieldset>
+      <PendingEntryProvider value={entries.report}>
+        <fieldset disabled={saving} className="min-w-0 space-y-4">
+          {!initial && (
+            <ServerTypeSelect draft={draft} servers={servers} catalog={catalog} onSelect={next => {
+              setToken(''); setSecretValues({}); setAcknowledged(false); setDraft(next);
+            }} />
+          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ServerNameField name={draft.name} problem={shownProblem('name')} onBlur={() => touch('name')} onChange={name => change({ name })} />
+            <ServerEndpointField server={draft} endpoints={endpoints} problem={shownProblem('url')} onBlur={() => touch('url')} onChange={change} />
+            <CatalogServerDetails server={draft} catalog={catalog} secrets={secrets} />
+          </div>
+          {draft.kind === 'package' && (
+            <PackageServerFields server={draft} status={ownEntry(secrets, initial?.name ?? '')} secretsDropped={packageSecretsDropped(initial, draft)} acknowledgement={draft.name === initial?.name ? savedAcknowledgement : undefined}
+              secretValues={secretValues} onSecretValues={setSecretValues} acknowledged={acknowledged} onAcknowledged={setAcknowledged}
+              problems={{ package: shownProblem('package'), version: shownProblem('version') }} onBlur={touch}
+              onChange={patch => change(patch as Partial<ExtensionLibraryServer>)} />
+          )}
+          <ServerToolsField key={draft.kind === 'catalog' ? draft.catalogId : draft.kind} server={draft} catalog={catalog} knownTools={knownTools} urlValid={!problems.url} onChange={change} />
+          <ServerAccessFields server={draft} configured={httpsSecretConfigured(initial, secrets)} token={token}
+            tokenDropped={tokenDropped} redirectUri={redirectUri} urlValid={!problems.url} onChange={change} onToken={setToken} />
+          <ExtensionItemLimits item={draft} choices={choices} onChange={change} />
+        </fieldset>
+      </PendingEntryProvider>
       {error && <p role="alert" className="rounded-md bg-red-50 p-2 text-sm text-red-800">{error}</p>}
       <ExtensionFormActions>
         <button type="submit" className={primaryButtonClass} disabled={saving || invalid}>{saving ? 'Saving…' : initial ? 'Save server' : 'Add server'}</button>
