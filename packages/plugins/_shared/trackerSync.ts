@@ -1,4 +1,4 @@
-import { PluginDeliveryError, PluginSdkError, type PluginContext, type PluginEventInput, type PluginSettingValues, type RepositoryEvent } from '@propr/shared';
+import { PLUGIN_HANDLER_TIMEOUT_MS, PluginDeliveryError, PluginSdkError, type PluginContext, type PluginEventInput, type PluginSettingValues, type RepositoryEvent } from '@propr/shared';
 import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, withPullRequest, type TicketRecord } from './trackerRecords.js';
 
 /**
@@ -73,9 +73,44 @@ async function ticketOfPullRequest(ctx: PluginContext, repository: string, pr: n
   let head = '';
   try { head = (await ctx.propr.getPullRequest(repository, pr)).headRef; } catch (error) { throw lookupFailure(error, pr); }
   const issue = positive(Number(/^(\d{1,9})\//.exec(head)?.[1]));
-  const ticket = issue ? await findTicketByIssue(ctx, repository, issue) : undefined;
+  const ticket = issue ? await ticketOfIssue(ctx, repository, issue) : undefined;
   if (ticket) await linkPullRequest(ctx, ticket, pr);
   return ticket;
+}
+
+/**
+ * How long after a ticket was reserved its hand-off may still record its
+ * issue: the webhook handler runs at most `PLUGIN_HANDLER_TIMEOUT_MS`, and
+ * this leaves room for clocks of different processes to differ. A pending
+ * record older than this belongs to a hand-off that ended without recording
+ * an issue (one whose creation failed ambiguously), so it explains no miss.
+ */
+export const PENDING_HAND_OFF_MS = 3 * PLUGIN_HANDLER_TIMEOUT_MS;
+/** The wait before an event that may be about a ticket still being handed over is tried again. */
+export const PENDING_RETRY_MS = PLUGIN_HANDLER_TIMEOUT_MS;
+
+/**
+ * The ticket whose GitHub issue is `repository#number`. When none is
+ * recorded but a hand-off in that repository is still under way, the issue
+ * may be the one it just created: GitHub's label-triggered intake can start
+ * the task (and this event arrive) before the hand-off has saved the issue
+ * number. If the issue's title starts with such a ticket's reference (as the
+ * hand-off writes it), or the issue cannot be read, the delivery fails to be
+ * retried once the hand-off has had time to finish, rather than succeed with
+ * the ticket never told. Any other miss is no ticket of this plugin's.
+ */
+async function ticketOfIssue(ctx: PluginContext, repository: string, number: number): Promise<TicketRecord | undefined> {
+  const found = await findTicketByIssue(ctx, repository, number);
+  if (found.ticket) return found.ticket;
+  const now = Date.now();
+  const underWay = found.pending.filter(entry => now - (Number(entry.at) || 0) < PENDING_HAND_OFF_MS);
+  if (!underWay.length) return undefined;
+  let title: string | null = null;
+  try { title = (await ctx.propr.getIssue(repository, number)).title; } catch { /* Unreadable: it may be the ticket's. */ }
+  const ticket = title === null ? underWay[0] : underWay.find(entry => title === entry.k || title!.startsWith(`${entry.k}: `));
+  if (!ticket) return undefined;
+  const left = PENDING_HAND_OFF_MS - (now - (Number(ticket.at) || 0));
+  throw new PluginDeliveryError(`Issue #${number} in ${repository} may be the one being created for ticket ${ticket.k}, whose hand-off has not recorded it yet; it is retried`, { retryAfterMs: Math.max(1_000, Math.min(PENDING_RETRY_MS, left)) });
 }
 
 /**
@@ -105,7 +140,10 @@ async function taskStep(ctx: PluginContext, event: RepositoryEvent): Promise<Ste
   const issue = positive(event.issueNumber ?? payload.issueNumber);
   const pr = positive(event.prNumber ?? payload.prNumber);
   const task = coded(payload.taskId, 64) ?? 'task';
-  const ticket = issue ? await findTicketByIssue(ctx, event.repository, issue) : pr ? await findTicketByPullRequest(ctx, event.repository, pr) : undefined;
+  // Only an event that syncs back looks for its ticket (and waits for a hand-off under way).
+  const syncs = (event.type === 'started' && payload.kind === 'implementation') || event.type === 'failed' || (event.type === 'completed' && payload.pullRequest === 'opened' && !!pr);
+  if (!syncs) return null;
+  const ticket = issue ? await ticketOfIssue(ctx, event.repository, issue) : pr ? await findTicketByPullRequest(ctx, event.repository, pr) : undefined;
   if (!ticket || !ticket.n) return null;
   const number = ticket.n;
   if (event.type === 'started' && payload.kind === 'implementation') {

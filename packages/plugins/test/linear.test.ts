@@ -10,7 +10,8 @@ import {
 import { PLUGINS_ROOT, getOfficialPlugin, loadPluginHandlers } from '../src/index.js';
 import { createTestPluginContext, type ScriptedHttpResponse } from '../testing/index.js';
 import { inertQuote, ticketIssueTitle } from '../_shared/trackerIssue.js';
-import { TICKET_SHARDS } from '../_shared/trackerRecords.js';
+import { TICKET_SHARDS, ticketKey, type TicketRecord } from '../_shared/trackerRecords.js';
+import { PENDING_HAND_OFF_MS, PENDING_RETRY_MS } from '../_shared/trackerSync.js';
 
 /**
  * The Linear plugin's handlers against fixtures: signed Linear webhook bodies
@@ -44,15 +45,23 @@ function settings(values: PluginSettingValues): PluginSettingValues {
 type Gql = { query: string; variables: Record<string, PluginJsonValue> };
 const gqlOf = (init: PluginHttpRequestInit) => init.json as unknown as Gql;
 
-async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; state?: Record<string, PluginJsonValue>; graphql?: (gql: Gql) => Answer | undefined; pullRequestLookup?: () => void; headRefs?: Record<number, string> } = {}) {
+async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; state?: Record<string, PluginJsonValue>; graphql?: (gql: Gql) => Answer | undefined; pullRequestLookup?: () => void; headRefs?: Record<number, string>; issueTitles?: Record<number, string>; issueLookup?: () => void; creating?: () => Promise<void> } = {}) {
   const { manifest } = plugin();
   let issues = 100;
+  // Issues as GitHub has them: one is created when createIssue is called, before its answer reaches the plugin.
+  const titles = new Map<number, string>(Object.entries(options.issueTitles ?? {}).map(([n, t]) => [Number(n), t]));
   const k = createTestPluginContext({
     pluginId: 'linear', settings: settings(values), grantedPermissions: manifest.permissions, outboundHosts: manifest.outboundHosts,
     connections: options.connections ?? manifest.connections.map(c => c.name), connectionDefinitions: manifest.connections, state: options.state,
     propr: {
-      createIssue: repository => { issues += 1; return { repository, number: issues, url: `https://github.com/${repository}/issues/${issues}` }; },
-      getIssue: (repository, number) => ({ repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/issues/${number}`, labels: [], author: null, createdAt: '', updatedAt: '' }),
+      createIssue: async (repository, issue) => {
+        issues += 1;
+        const number = issues;
+        titles.set(number, issue.title);
+        await options.creating?.();
+        return { repository, number, url: `https://github.com/${repository}/issues/${number}` };
+      },
+      getIssue: (repository, number) => (options.issueLookup?.(), { repository, number, title: titles.get(number) ?? 'x', state: 'open', url: `https://github.com/${repository}/issues/${number}`, labels: [], author: null, createdAt: '', updatedAt: '' }),
       getPullRequest: (repository, number) => (options.pullRequestLookup?.(), { repository, number, title: 'x', state: 'open', url: `https://github.com/${repository}/pull/${number}`, labels: [], author: null, createdAt: '', updatedAt: '', draft: false, merged: false, headRef: options.headRefs?.[number] ?? `101/claude-fix-${number}`, baseRef: 'main', headSha: 'abc' }),
     },
   });
@@ -294,6 +303,63 @@ test('a pull request whose opening delivery ran out of retries is still linked f
   // A review short of its goal does nothing, so it reads no pull request.
   refusal = new PluginSdkError('unavailable', 'ProPR could not complete getPullRequest');
   assert.equal((await k.syncBack(pull('review_scored', { goalReached: false }, 82), k.ctx) as { skipped: string }).skipped, 'not_tracked');
+});
+
+test('an event for the issue a hand-off under way just created is retried until the hand-off records it, then syncs back once', async () => {
+  let created!: () => void;
+  const createdCalled = new Promise<void>(resolve => { created = resolve; });
+  let release!: () => void;
+  const answered = new Promise<void>(resolve => { release = resolve; });
+  const k = await kit(BASE_SETTINGS, { creating: () => { created(); return answered; } });
+  // GitHub has created acme/api#101 and its intake started the task; the plugin has not received the issue number yet.
+  const intake = k.onLinearWebhook(webhook('labelAdded'), k.ctx);
+  await createdCalled;
+  const retried = (error: unknown) => error instanceof PluginDeliveryError && !error.permanent && /ENG-123/.test(error.message)
+    && typeof error.retryAfterMs === 'number' && error.retryAfterMs >= 1_000 && error.retryAfterMs <= PENDING_RETRY_MS;
+  const started = task('started');
+  await assert.rejects(k.syncBack(started, k.ctx), retried);
+  // A pull request whose branch names the issue waits too.
+  const opened = pull('opened', {}, 77);
+  await assert.rejects(k.syncBack(opened, k.ctx), retried);
+  assert.equal(k.comments().length, 0);
+  release();
+  assert.equal((await intake as { issue: number }).issue, 101);
+  await k.syncBack({ ...started, attempt: 2 }, k.ctx);
+  await k.syncBack({ ...opened, attempt: 2 }, k.ctx);
+  assert.deepEqual(((await k.syncBack({ ...started, attempt: 3 }, k.ctx)) as { skipped: string }).skipped, 'done');
+  assert.deepEqual(k.comments().map(g => String(g.variables.body).split(' [')[0]), ['ProPR started working on this ticket.', 'ProPR opened a pull request for this ticket.']);
+});
+
+test('while a hand-off is under way, events it cannot explain are still skipped; an unreadable issue waits; a hand-off past its time explains nothing', async () => {
+  let release!: () => void;
+  const answered = new Promise<void>(resolve => { release = resolve; });
+  let created!: () => void;
+  const createdCalled = new Promise<void>(resolve => { created = resolve; });
+  let unreadable = false;
+  const k = await kit(BASE_SETTINGS, {
+    issueTitles: { 150: 'Fix the flaky login test', 151: 'ENG-1234: not this ticket' },
+    issueLookup: () => { if (unreadable) throw new PluginSdkError('unavailable', 'ProPR could not complete getIssue'); },
+    creating: () => { created(); return answered; },
+  });
+  const intake = k.onLinearWebhook(webhook('labelAdded'), k.ctx);
+  await createdCalled;
+  const skipped = async (input: PluginEventInput) => ((await k.syncBack(input, k.ctx)) as { skipped: string }).skipped;
+  // Another issue of the repository, another repository, and an event that never syncs back.
+  assert.equal(await skipped(task('started', {}, 150)), 'not_tracked');
+  assert.equal(await skipped(task('failed', {}, 151)), 'not_tracked');
+  assert.equal(await skipped({ ...task('started'), event: { ...task('started').event, repository: 'acme/web' } }), 'not_tracked');
+  assert.equal(await skipped(task('started', { kind: 'follow-up' })), 'not_tracked');
+  unreadable = true;
+  await assert.rejects(k.syncBack(task('started', {}, 150), k.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent);
+  unreadable = false;
+  release();
+  await intake;
+  assert.equal(k.comments().length, 0);
+
+  // A ticket reserved longer ago than a hand-off can take (its creation failed ambiguously) no longer holds events back.
+  const stale: TicketRecord = { t: 'stale-ticket', k: 'ENG-9', r: 'acme/api', s: 'pending', at: Date.now() - PENDING_HAND_OFF_MS - 1 };
+  const old = await kit(BASE_SETTINGS, { state: { [ticketKey(stale.t)]: [stale] }, issueTitles: { 160: 'ENG-9: the stale one' } });
+  assert.equal(((await old.syncBack(task('started', {}, 160), old.ctx)) as { skipped: string }).skipped, 'not_tracked');
 });
 
 test('a state name the ticket\'s team lacks is reported in Activity and does not block the comment or later events', async () => {

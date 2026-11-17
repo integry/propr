@@ -157,13 +157,22 @@ export async function deleteTicket(ctx: PluginContext, id: string): Promise<void
   await updateList<TicketRecord>(ctx, ticketKey(id), list => (list.some(entry => entry.t === id) ? list.filter(entry => entry.t !== id) : undefined));
 }
 
-/** The created ticket whose GitHub issue is `repository#number`, if any. */
-export async function findTicketByIssue(ctx: PluginContext, repository: string, number: number): Promise<TicketRecord | undefined> {
+/**
+ * The created ticket whose GitHub issue is `repository#number`, if any, and
+ * otherwise the tickets of `repository` still pending: their issue is being
+ * created, or was and is not recorded yet, so one of them may be this issue's
+ * ticket. Each shard is read once and a ticket lives in one shard, so a
+ * record finished during the lookup is seen pending or created, never neither.
+ */
+export async function findTicketByIssue(ctx: PluginContext, repository: string, number: number): Promise<{ ticket?: TicketRecord; pending: TicketRecord[] }> {
+  const pending: TicketRecord[] = [];
   for (let shard = 0; shard < TICKET_SHARDS; shard += 1) {
-    const found = (await loadList<TicketRecord>(ctx, `tickets:${shard}`)).find(entry => entry.s === 'created' && entry.n === number && sameRepository(entry.r, repository));
-    if (found) return found;
+    const list = (await loadList<TicketRecord>(ctx, `tickets:${shard}`)).filter(entry => sameRepository(entry.r, repository));
+    const ticket = list.find(entry => entry.s === 'created' && entry.n === number);
+    if (ticket) return { ticket, pending: [] };
+    pending.push(...list.filter(entry => entry.s === 'pending'));
   }
-  return undefined;
+  return { pending };
 }
 
 export async function readProgress(ctx: PluginContext, id: string): Promise<ProgressRecord> {
