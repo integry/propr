@@ -44,9 +44,15 @@ function codeSpan(text: string): string {
 
 /** Markdown and autolink punctuation, escaped so agent text renders as written: no emphasis, links, HTML, mentions or URLs. */
 const INLINE_TEXT_SPECIALS = /[\\`*_{}[\]()<>#!|~@:&]/g;
+/**
+ * GitHub's extended autolinks also link a bare `www.` address, which holds no
+ * special character; escaping the dot after `www` (in any case) splits the
+ * prefix, so it renders as written and links nothing.
+ */
+const WWW_AUTOLINK_PREFIX = /(www)\./gi;
 
 function inlineText(text: string): string {
-    return text.replace(INLINE_TEXT_SPECIALS, '\\$&');
+    return text.replace(INLINE_TEXT_SPECIALS, '\\$&').replace(WWW_AUTOLINK_PREFIX, '$1\\.');
 }
 
 /**

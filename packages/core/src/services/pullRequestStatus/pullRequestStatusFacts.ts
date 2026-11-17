@@ -227,7 +227,15 @@ async function readCheckPages<T>(read: (page: number) => Promise<{ items: T[]; t
     return { items, complete: false, total: listed };
 }
 
-interface CheckRun { name?: string; status: string; conclusion: string | null }
+interface CheckRun {
+    id?: number;
+    name?: string;
+    status: string;
+    conclusion: string | null;
+    started_at?: string | null;
+    /** The suite the run belongs to: for GitHub Actions, one workflow run (all its attempts). */
+    check_suite?: { id?: number } | null;
+}
 interface CheckRunPage { total_count?: number; check_runs?: CheckRun[] }
 
 /** The head's check runs, at most MAX_CHECK_PAGES pages (readCheckPages). */
@@ -302,20 +310,72 @@ export function isUnexpandedCheckName(name: string | null | undefined): boolean 
     return typeof name === 'string' && name.includes('${{');
 }
 
+/** The listed GitHub Actions workflow runs of a head, as check suite id to workflow id. */
+async function loadSuiteWorkflows(github: PullRequestStatusGitHub, owner: string, repo: string, headSha: string): Promise<Map<number, number>> {
+    const workflows = new Map<number, number>();
+    const { data } = await github.request('GET /repos/{owner}/{repo}/actions/runs', { owner, repo, head_sha: headSha, per_page: CHECK_PAGE }) as {
+        data: { workflow_runs?: Array<{ check_suite_id?: unknown; workflow_id?: unknown }> };
+    };
+    for (const run of data.workflow_runs ?? []) {
+        if (typeof run.check_suite_id === 'number' && typeof run.workflow_id === 'number') workflows.set(run.check_suite_id, run.workflow_id);
+    }
+    return workflows;
+}
+
+const suiteOf = (run: CheckRun): number | null => typeof run.check_suite?.id === 'number' ? run.check_suite.id : null;
+
+/**
+ * Whether `later` ran after `earlier`. Check run ids only grow, so they order
+ * two runs; start times are the fallback. Neither readable is no ordering.
+ */
+function startedAfter(later: CheckRun, earlier: CheckRun): boolean {
+    if (typeof later.id === 'number' && typeof earlier.id === 'number') return later.id > earlier.id;
+    const laterStart = Date.parse(later.started_at ?? '');
+    const earlierStart = Date.parse(earlier.started_at ?? '');
+    return Number.isFinite(laterStart) && Number.isFinite(earlierStart) && laterStart > earlierStart;
+}
+
 /**
  * Separates cancelled check runs from the rest. A cancelled run is no
- * verdict on the head: it is not failed, and not passed. One that another run
- * of the same check replaced, or whose name was never expanded (its workflow
- * run was cancelled before its matrix was read, usually because a newer run
- * superseded it), is left out entirely. Any other blocking one is reported as
- * cancelled; nothing runs it again, so it still keeps the PR from being ready.
+ * verdict on the head: it is not failed, and not passed. One whose name was
+ * never expanded (its workflow run was cancelled before its matrix was read,
+ * usually because a newer run superseded it) is left out entirely, and so is
+ * one a newer run of the same logical check replaced: the same name, started
+ * after it, in the same check suite (a re-run job) or in a suite of the same
+ * GitHub Actions workflow (a newer workflow run superseding it). The name
+ * alone proves nothing: two workflows may each have a `test` job, and one
+ * passing says nothing about the other being cancelled. Any other blocking
+ * cancelled run is reported as cancelled; nothing runs it again, so it still
+ * keeps the PR from being ready. The workflow of a suite is read only when
+ * a replacement in another suite is possible; a failed read establishes none.
  */
-function cancelledCheckRuns(runs: readonly CheckRun[], patterns: readonly string[]): { checkRuns: CheckRun[]; cancelledNames: string[] } {
+async function cancelledCheckRuns(
+    runs: readonly CheckRun[], patterns: readonly string[], workflowsOf: () => Promise<Map<number, number>>,
+): Promise<{ checkRuns: CheckRun[]; cancelledNames: string[] }> {
     const isCancelled = (run: CheckRun) => run.status === 'completed' && run.conclusion === 'cancelled';
-    const replaced = new Set(runs.filter(run => !isCancelled(run)).map(run => run.name ?? ''));
-    const cancelledNames = runs.filter(run => isCancelled(run) && !replaced.has(run.name ?? '') && !isUnexpandedCheckName(run.name)
-        && !isNonBlockingCheck(run.name, patterns)).map(run => run.name || 'check run');
-    return { checkRuns: runs.filter(run => !isCancelled(run)), cancelledNames };
+    const kept = runs.filter(run => !isCancelled(run));
+    const reported = runs.filter(run => isCancelled(run) && !isUnexpandedCheckName(run.name) && !isNonBlockingCheck(run.name, patterns));
+    const candidates = (cancelled: CheckRun) => kept.filter(other =>
+        (other.name ?? '') === (cancelled.name ?? '') && suiteOf(other) !== null && suiteOf(cancelled) !== null && startedAfter(other, cancelled));
+    let workflows: Map<number, number> | null = null;
+    const needsWorkflows = reported.some(cancelled => candidates(cancelled).some(other => suiteOf(other) !== suiteOf(cancelled)));
+    if (needsWorkflows) {
+        try {
+            workflows = await workflowsOf();
+        } catch (error) {
+            logger.warn({ error: (error as Error).message }, 'Could not read the workflow runs of a head; a cancelled check counts as unreplaced');
+        }
+    }
+    const sameWorkflow = (a: number | null, b: number | null): boolean => {
+        if (a === null || b === null) return false;
+        if (a === b) return true;
+        const workflowA = workflows?.get(a);
+        return workflowA !== undefined && workflowA === workflows?.get(b);
+    };
+    const cancelledNames = reported
+        .filter(cancelled => !candidates(cancelled).some(other => sameWorkflow(suiteOf(other), suiteOf(cancelled))))
+        .map(run => run.name || 'check run');
+    return { checkRuns: kept, cancelledNames };
 }
 
 /**
@@ -336,7 +396,7 @@ export async function loadPullRequestStatusChecks(
     const patternList = patterns.status === 'fulfilled' ? patterns.value : [];
     const legacy = classifyLegacyStatuses(statuses.status === 'fulfilled' ? statuses.value : null, patternList);
     // Cancelled runs are no verdict (cancelledCheckRuns); the shared summary reads the rest.
-    const { checkRuns, cancelledNames } = cancelledCheckRuns(listedRuns, patternList);
+    const { checkRuns, cancelledNames } = await cancelledCheckRuns(listedRuns, patternList, () => loadSuiteWorkflows(sources.github, owner, repo, ref));
     // Legacy contexts are classified above; the shared summary reads the check runs.
     const summary = summarizeCheckSignals(checkRuns, { state: 'success', totalCount: 0, statuses: [] }, patternList);
     const runFailed = summary.blockingFailed ?? [];

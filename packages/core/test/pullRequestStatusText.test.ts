@@ -35,15 +35,24 @@ function facts(overrides: Partial<PullRequestStatusFacts> = {}): PullRequestStat
 
 const line = (overrides: Partial<PullRequestStatusFacts>) => renderPullRequestStatusLine(computePullRequestStatus(facts(overrides)), NOW);
 
-type Run = { name: string; status: string; conclusion: string | null };
+type Run = { name: string; status: string; conclusion: string | null; id?: number; check_suite?: { id: number } };
 const run = (name: string, conclusion: string | null, status = conclusion === null ? 'in_progress' : 'completed'): Run => ({ name, status, conclusion });
+/** A check run with its identity: its id (GitHub's order) and its check suite (one workflow run). */
+const runIn = (suite: number, id: number, name: string, conclusion: string | null): Run => ({ ...run(name, conclusion), id, check_suite: { id: suite } });
 
-async function checksOf(runs: Run[], patterns: string[] = []) {
+type WorkflowRuns = Array<{ check_suite_id: number; workflow_id: number }> | Error;
+
+async function checksOf(runs: Run[], patterns: string[] = [], workflowRuns: WorkflowRuns = new Error('unexpected workflow runs read'), reads: string[] = []) {
     return await loadPullRequestStatusChecks({
         github: {
             request: async (route: string) => {
+                reads.push(route);
                 if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') return { data: { total_count: runs.length, check_runs: runs } };
                 if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status') return { data: { state: 'pending', total_count: 0, statuses: [] } };
+                if (route === 'GET /repos/{owner}/{repo}/actions/runs') {
+                    if (workflowRuns instanceof Error) throw workflowRuns;
+                    return { data: { total_count: workflowRuns.length, workflow_runs: workflowRuns } };
+                }
                 throw new Error(`unexpected ${route}`);
             },
         },
@@ -106,7 +115,7 @@ test('a running Ultrafix loop names its cycle once', () => {
 test('cancelled runs a newer run replaced, or whose name was never expanded, are neither failed nor counted', async () => {
     const checks = await checksOf([
         run('unit', 'success'),
-        run('lint', 'cancelled'), run('lint', null),
+        runIn(7, 10, 'lint', 'cancelled'), runIn(7, 11, 'lint', null),
         run('Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package', 'cancelled'),
     ]);
     assert.deepEqual({ passed: checks.passed, failed: checks.failed, pending: checks.pending, cancelled: checks.cancelled }, { passed: 1, failed: 0, pending: 1, cancelled: undefined });
@@ -123,6 +132,37 @@ test('a cancelled run nothing replaced is reported as cancelled, not failed, and
     // A real failure leads; the cancellation is only counted.
     const mixed = await checksOf([run('unit', 'failure'), run('e2e', 'cancelled')]);
     assert.equal(line({ checks: mixed }), '**ProPR** ⚠️ Needs you · failed: unit · checks: 1 failed, 1 cancelled · updated Nov 16 13:59 UTC');
+});
+
+test('a cancelled run is replaced only by a newer run of the same check in the same suite or workflow', async () => {
+    const reads: string[] = [];
+    // A re-run job: the same suite, a newer run. No workflow read is needed.
+    const rerun = await checksOf([runIn(1, 10, 'test', 'cancelled'), runIn(1, 11, 'test', 'success')], [], undefined, reads);
+    assert.equal(rerun.cancelled, undefined);
+    assert.ok(!reads.includes('GET /repos/{owner}/{repo}/actions/runs'));
+    // A newer workflow run of the same workflow superseded it.
+    const superseded = await checksOf([runIn(1, 10, 'test', 'cancelled'), runIn(2, 20, 'test', 'success')], [],
+        [{ check_suite_id: 1, workflow_id: 100 }, { check_suite_id: 2, workflow_id: 100 }]);
+    assert.equal(superseded.cancelled, undefined);
+    assert.equal(superseded.passed, 1);
+});
+
+test('two workflows with a job of the same name: the passing one does not hide the other being cancelled', async () => {
+    const independent = [runIn(2, 20, 'test', 'success'), runIn(1, 10, 'test', 'cancelled')];
+    const reads: string[] = [];
+    const checks = await checksOf(independent, [], [{ check_suite_id: 1, workflow_id: 100 }, { check_suite_id: 2, workflow_id: 200 }], reads);
+    assert.ok(reads.includes('GET /repos/{owner}/{repo}/actions/runs'));
+    assert.deepEqual({ passed: checks.passed, cancelled: checks.cancelled, cancelledNames: checks.cancelledNames }, { passed: 1, cancelled: 1, cancelledNames: ['test'] });
+    const status = computePullRequestStatus(facts({ checks }));
+    assert.equal(status.state, 'needs_attention');
+    assert.equal(renderPullRequestStatusLine(status, NOW), '**ProPR** ⚠️ Needs you · cancelled: test · checks: 1 passed, 1 cancelled · updated Nov 16 13:59 UTC');
+    // Unestablished relationships keep the cancellation: the workflow read failed,
+    // the suite is not among the listed workflow runs, the same-name run is older,
+    // or the runs carry no identity at all.
+    assert.equal((await checksOf(independent)).cancelled, 1, 'workflow runs unreadable');
+    assert.equal((await checksOf(independent, [], [{ check_suite_id: 2, workflow_id: 100 }])).cancelled, 1, 'cancelled suite unlisted');
+    assert.equal((await checksOf([runIn(1, 30, 'test', 'cancelled'), runIn(1, 11, 'test', 'success')])).cancelled, 1, 'the passing run is older');
+    assert.equal((await checksOf([run('test', 'cancelled'), run('test', 'success')])).cancelled, 1, 'no run identity');
 });
 
 test('a failed check name holding a workflow expression is counted, never listed', () => {
