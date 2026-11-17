@@ -246,6 +246,8 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     // Deprecated compatibility alias.
     ['get', '/api/agent-definitions/contract', automationDefinitionRoutes.contract],
     ['get', '/api/automation-definitions/templates', automationDefinitionRoutes.templates],
+    // Deprecated compatibility alias; registered before :id so 'templates' is not read as an id.
+    ['get', '/api/agent-definitions/templates', automationDefinitionRoutes.templates],
     ['post', '/api/automation-definitions', automationDefinitionRoutes.create],
     // Deprecated compatibility alias.
     ['post', '/api/agent-definitions', automationDefinitionRoutes.create],

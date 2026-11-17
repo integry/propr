@@ -48,6 +48,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     pathParams: { taskId: TASK_ID },
     responses: {
       200: { description: 'The task and its events.', schema: TaskHistory },
+      404: { description: 'No task, task history, live worker state or queued job has this id.' },
     },
   },
   'GET /api/task/:taskId/live-details': {
@@ -55,14 +56,21 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     summary: 'Get live agent output of a running task',
     tags: ['Tasks'],
     pathParams: { taskId: TASK_ID },
-    responses: { 200: { description: 'Parsed agent conversation and execution progress.', schema: JsonObject } },
+    responses: {
+      200: { description: 'Parsed agent conversation and execution progress.', schema: JsonObject },
+      400: { description: 'The task id is invalid.' },
+      404: { description: 'No task, task history, live worker state or queued job has this id.' },
+    },
   },
   'GET /api/task/:taskId/file-changes': {
     operationId: 'getTaskFileChanges',
     summary: 'List the files a task changed',
     tags: ['Tasks'],
     pathParams: { taskId: TASK_ID },
-    responses: { 200: { description: 'Changed files with their diffs.', schema: JsonObject } },
+    responses: {
+      200: { description: 'Changed files with their diffs.', schema: JsonObject },
+      404: { description: 'No task, task history, live worker state or queued job has this id.' },
+    },
   },
   'GET /api/task/:taskId/assignees': {
     operationId: 'getTaskAssignees',

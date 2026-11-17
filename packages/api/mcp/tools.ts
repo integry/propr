@@ -142,7 +142,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const goals = createGoalRoutes({ ...deps.goalServices, db, taskQueue, redisClient });
   const tasks = createTaskRoutes({ db, taskQueue });
   const docker = createDockerRoutes({ redisClient, stopTaskExecution: (id, options) => stopTaskExecution(id, { ...options, exactTaskId: true }) });
-  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false });
+  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false, redisClient, taskQueue });
   const todos = createRepoTodoRoutes();
   const notifications = createNotificationRoutes({ webPushDispatcherConfigured: false });
   const config = createConfigRoutes({ redisClient });

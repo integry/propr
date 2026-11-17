@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 326
+    total: 327
     documented: 88
-    undocumented: 238
+    undocumented: 239
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -739,6 +739,27 @@ paths:
     get:
       operationId: getApiAgentDefinitionsContract
       summary: GET /api/agent-definitions/contract
+      description: This route is registered but not documented yet.
+      tags:
+        - Automations
+      deprecated: true
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/templates:
+    get:
+      operationId: getApiAgentDefinitionsTemplates
+      summary: GET /api/agent-definitions/templates
       description: This route is registered but not documented yet.
       tags:
         - Automations
@@ -8607,7 +8628,7 @@ paths:
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "404":
-          description: Not found, or the task belongs to another user's goal.
+          description: No task, task history, live worker state or queued job has this id.
           content:
             application/json:
               schema:
@@ -8646,7 +8667,7 @@ paths:
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "404":
-          description: Not found, or the task belongs to another user's goal.
+          description: No task, task history, live worker state or queued job has this id.
           content:
             application/json:
               schema:
@@ -8679,10 +8700,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JsonObject"
+        "400":
+          description: The task id is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "404":
-          description: Not found, or the task belongs to another user's goal.
+          description: No task, task history, live worker state or queued job has this id.
           content:
             application/json:
               schema:

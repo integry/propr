@@ -288,6 +288,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **API errors are JSON, with basic security headers**: a malformed,
+  undecodable, oversized or wrongly encoded request body, an unknown route and
+  any unhandled error now get a JSON `{ "error", "code" }` response with the
+  right status (400, 413, 415, 404, 500) instead of Express's HTML page, which
+  outside production included a stack trace and container paths. Responses no
+  longer send `X-Powered-By`, carry `X-Content-Type-Options: nosniff`, send
+  `Access-Control-Allow-Credentials` only to an allowed `Origin`, and 401s
+  carry `WWW-Authenticate: Bearer`. `GET /api/activity` answers 400 for a
+  `limit` outside 1–200 or a negative or non-integer `offset` instead of
+  returning the whole log or a 500; the GitHub branch and workflow proxies
+  answer 400 for an invalid owner or repository name; `GET
+  /api/agent-definitions/templates` serves the template catalog like
+  `/api/automation-definitions/templates`; and `GET /api/task/{id}/history`,
+  `/live-details` and `/file-changes` answer 404 for a task id ProPR does not
+  know instead of an empty, pending-looking task.
 - **Connected apps page shows a full page of apps**: `/mcp/apps` counted
   revoked and expired grants towards each page of 50 and hid them afterwards,
   so an account that had reconnected apps many times saw one or two apps per
