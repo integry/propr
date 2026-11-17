@@ -96,6 +96,8 @@ export interface AutomationRun {
   actingMutations?: number | null;
   /** Derived by the server: why the run produced nothing, or null. */
   noChangeReason?: AutomationRunNoChangeReason | null;
+  /** Run lists only: the report's first meaningful line as plain text, when the run has a report. */
+  reportPreview?: string;
   createdAt: number;
   startedAt: number | null;
   reportedAt: number | null;

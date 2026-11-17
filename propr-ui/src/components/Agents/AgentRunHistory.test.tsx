@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AGENT_RUN_PAGE_SIZE, AgentRunHistory } from './AgentRunHistory';
-import { forgetReportPreviews } from './agentRunPresentation';
 import { getAutomationRun, listAutomationRuns, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
 
 vi.mock('../../api/automationDefinitionsApi', () => ({
@@ -37,7 +36,6 @@ describe('AgentRunHistory', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
-    forgetReportPreviews();
   });
 
   it('shows a skeleton, then rows newest first with trigger, state and duration', async () => {
@@ -113,16 +111,17 @@ describe('AgentRunHistory', () => {
     expect(screen.getByText('run detail')).toBeInTheDocument();
   });
 
-  it('reads the report preview once, on first hover', async () => {
-    vi.mocked(listAutomationRuns).mockResolvedValue({ runs: [run('r1')], total: 1, limit: AGENT_RUN_PAGE_SIZE, offset: 0, nextOffset: null });
-    vi.mocked(getAutomationRun).mockResolvedValue({ ...run('r1'), report: '\n\n## Three outdated packages\n\nDetails…' });
+  it('shows each report preview on first render, without pointer events or run reads', async () => {
+    vi.mocked(listAutomationRuns).mockResolvedValue({
+      runs: [run('r2', { reportPreview: 'Three outdated packages' }), run('r1', { reportedAt: null, finishedAt: null, state: 'running' })],
+      total: 2, limit: AGENT_RUN_PAGE_SIZE, offset: 0, nextOffset: null,
+    });
     renderHistory();
 
-    const row = await screen.findByTestId('agent-run-row');
-    fireEvent.mouseEnter(row);
-    expect(await within(row).findByText('Three outdated packages')).toBeInTheDocument();
-    fireEvent.mouseEnter(row);
-    expect(getAutomationRun).toHaveBeenCalledTimes(1);
+    const rows = await screen.findAllByTestId('agent-run-row');
+    expect(within(rows[0]).getByTestId('agent-run-preview')).toHaveTextContent('Three outdated packages');
+    expect(within(rows[1]).getByTestId('agent-run-preview')).toBeEmptyDOMElement();
+    expect(getAutomationRun).not.toHaveBeenCalled();
   });
 
   it('explains an empty history', async () => {

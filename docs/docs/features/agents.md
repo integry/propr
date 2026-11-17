@@ -283,6 +283,8 @@ A report is the agent's final message, as Markdown. Open a run from the automati
 - for `preview` and `auto` runs, the acting step's summary of what it did, with the links and ids its tools returned;
 - links to the report and acting tasks, with their full logs, prompts and costs.
 
+The **Runs** list shows each reported run's preview: the report's first line with words in it, as plain text without Markdown markers, cut at about 160 characters. The run list over REST (`GET /api/automation-definitions/:id/runs`), MCP `list_automation_runs` and the CLI's JSON output carry it as `reportPreview`; runs without a report have no `reportPreview`. The full report is only in the run itself.
+
 Limits and truncation:
 
 - A stored report is at most 100,000 characters. A longer final message is cut with a `[truncated]` marker. The full output stays in the report task's execution logs.
