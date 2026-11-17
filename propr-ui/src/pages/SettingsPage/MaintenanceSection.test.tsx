@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AuthProvider } from '../../contexts/AuthContext';
@@ -289,6 +289,84 @@ describe('MaintenanceSection', () => {
     fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
     await screen.findByText(/Resumed integry\/propr#3500/);
     expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true });
+  });
+
+  describe('when an older read answers after a newer one', () => {
+    beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+    afterEach(() => { vi.useRealTimers(); });
+    const deferred = () => {
+      let resolve!: (value: api.FollowupHandoffStatus[]) => void;
+      const promise = new Promise<api.FollowupHandoffStatus[]>(done => { resolve = done; });
+      return { promise, resolve };
+    };
+    // Answer the held read, then let its handler and any re-render run to completion.
+    const settle = (answer: () => void) => act(async () => { answer(); await vi.advanceTimersByTimeAsync(50); });
+
+    it('does not bring back a released attempt from a poll that started before Release', async () => {
+      const stalePoll = deferred();
+      vi.mocked(api.releaseFollowupHandoff).mockResolvedValue({ released: true });
+      vi.mocked(api.listFollowupHandoffs)
+        .mockResolvedValueOnce([held])
+        .mockReturnValueOnce(stalePoll.promise)
+        .mockResolvedValue([{ ...held, status: 'released', statusReason: 'auto_released_stale_hold', nextAction: 'none' }]);
+      render(view());
+      const item = await row('integry/propr#3423');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(2);
+      // Background reads leave Release usable while the poll is still out.
+      fireEvent.click(within(item).getByRole('button', { name: 'Release' }));
+      confirmRelease();
+      await screen.findByText(/Released integry\/propr#3423/);
+      expect(await screen.findByText('No held follow-ups.')).toBeInTheDocument();
+      expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(3);
+      await settle(() => stalePoll.resolve([held]));
+      expect(screen.getByText('No held follow-ups.')).toBeInTheDocument();
+      expect(screen.queryByRole('list', { name: 'Held follow-ups' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Release' })).toBeNull();
+      expect(api.releaseFollowupHandoff).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not let a read from before a category switch replace the attempt a newer read shows', async () => {
+      const laterCancelled = { ...cancelled, taskId: 'pr-comments-batch-integry-propr-3500-b' };
+      const stalePoll = deferred();
+      vi.mocked(api.resumeFollowupHandoff).mockResolvedValue({ summary, status: null });
+      vi.mocked(api.listFollowupHandoffs)
+        .mockResolvedValueOnce([cancelled])
+        .mockReturnValueOnce(stalePoll.promise)
+        .mockResolvedValue([laterCancelled]);
+      const { rerender } = render(view());
+      await row(cancelled.taskId);
+      await vi.advanceTimersByTimeAsync(60_000);
+      // Switch to another category and back while the poll is still out.
+      rerender(view(admin, false));
+      rerender(view(admin, true));
+      const item = await row(laterCancelled.taskId);
+      expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(3);
+      await settle(() => stalePoll.resolve([cancelled]));
+      expect(screen.queryByRole('link', { name: cancelled.taskId })).toBeNull();
+      expect(within(item).getByRole('link', { name: laterCancelled.taskId })).toBeInTheDocument();
+      // The publish choice offered is for the attempt the server holds, not the obsolete one.
+      expect(within(item).getByRole('checkbox', { name: 'Publish the cancelled work' })).not.toBeChecked();
+      fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
+      await screen.findByText(/Resumed integry\/propr#3500/);
+      expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500);
+    });
+
+    it('does not show a first-read error from a read a newer one replaced', async () => {
+      const staleFirst = deferred();
+      const newerFirst = deferred();
+      vi.mocked(api.listFollowupHandoffs).mockReturnValueOnce(staleFirst.promise).mockReturnValueOnce(newerFirst.promise);
+      const { rerender } = render(view());
+      rerender(view(admin, false));
+      rerender(view(admin, true));
+      expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(2);
+      await settle(() => staleFirst.resolve(Promise.reject(new Error('Old failure.')) as never));
+      expect(screen.queryByText('Old failure.')).toBeNull();
+      expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true');
+      newerFirst.resolve([held]);
+      await row('integry/propr#3423');
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
   });
 
   it('keeps the last rows when a background read fails', async () => {

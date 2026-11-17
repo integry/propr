@@ -55,13 +55,20 @@ function HeldFollowups() {
   const loaded = useRef(false);
   // The rows of the latest successful read; Release is checked against them before it is sent.
   const latest = useRef<Handoff[]>([]);
+  // Generation of the newest list read. Reads resolve in any order, so only the newest
+  // may write rows, `latest`, consent or the load error; an action bumps it so a read
+  // that started before the action cannot bring back what the action changed.
+  const generation = useRef(0);
+  const dropPendingReads = useCallback(() => { generation.current++; }, []);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   // A failed background read keeps the rows on screen; only a failed first read shows an error.
   const load = useCallback(async () => {
+    const request = ++generation.current;
+    const isNewest = () => alive.current && request === generation.current;
     try {
       const next = await api.listFollowupHandoffs();
-      if (!alive.current) return;
+      if (!isNewest()) return;
       loaded.current = true;
       latest.current = next;
       setHandoffs(next); setLoadError('');
@@ -71,7 +78,7 @@ function HeldFollowups() {
       ));
       setForceFor(current => (current !== null && isOpenAttempt(next, current) ? current : null));
     } catch (e) {
-      if (alive.current && !loaded.current) setLoadError(e instanceof Error ? e.message : 'Held follow-ups are unavailable.');
+      if (isNewest() && !loaded.current) setLoadError(e instanceof Error ? e.message : 'Held follow-ups are unavailable.');
     }
   }, []);
 
@@ -80,11 +87,12 @@ function HeldFollowups() {
     if (!visible) return;
     void load();
     const timer = setInterval(() => { if (document.visibilityState !== 'hidden') void load(); }, REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [visible, load]);
+    return () => { clearInterval(timer); dropPendingReads(); };
+  }, [visible, load, dropPendingReads]);
 
   const run = useCallback(async (id: string, action: () => Promise<string>) => {
     setBusy(id); setError(''); setMessage('');
+    dropPendingReads();
     try {
       const outcome = await action();
       if (alive.current) setMessage(outcome);
@@ -94,7 +102,7 @@ function HeldFollowups() {
       await load();
       if (alive.current) setBusy(null);
     }
-  }, [load]);
+  }, [load, dropPendingReads]);
 
   const resume = (handoff: Handoff) => {
     const id = keyOf(handoff);
