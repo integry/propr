@@ -384,6 +384,8 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(formatted.includes('Review output was invalid and could not be displayed safely.'));
+        assert.ok(!formatted.includes('**Next step:**'));
+        assert.match(formatted, /<!-- propr:ai-review model="claude-sonnet" error="true" -->/);
         assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
         assert.strictEqual(getNextActionableFindingNumber([formatted]), 1);
     });

@@ -12,6 +12,7 @@
 
 import { getModelName, type AnalysisResult } from '@propr/core';
 import { formatFixCommand } from '@propr/shared';
+import { stripUpstreamPageTitles } from './upstreamPageTitle.js';
 import type { ReviewAssignment } from './prReviewRunner.js';
 import { countFindingsByCategory, type ReviewFindingCategoryCounts } from './reviewFindingCategory.js';
 import {
@@ -354,7 +355,8 @@ export const UNKNOWN_REVIEW_FAILURE = 'The reviewer stopped without reporting an
  * container paths, no upstream HTML, bounded length, never empty.
  */
 export function summarizeReviewFailure(errorMessage: string | null | undefined): string {
-    const firstLine = (errorMessage ?? '')
+    // Upstream page titles ("403 Attention Required! | Cloudflare") become the status code.
+    const firstLine = stripUpstreamPageTitles(errorMessage ?? '')
         .replace(/<[^>]*>/g, ' ')
         .replace(/(?:\/usr\/src\/app|\/app|\/tmp|\/home\/[^/\s]+)\/\S*/g, '[path]')
         .split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? '';

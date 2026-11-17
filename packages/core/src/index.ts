@@ -99,7 +99,7 @@ export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_C
 export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
-export { applyDatabaseMigrations, type MigrationDatabase, type MigrationGateOptions } from './db/migrationGate.js';
+export { applyDatabaseMigrations, assertDatabaseNotNewerThanCode, DatabaseNewerThanCodeError, findNewerMigrations, type AppliedMigrationSource, type MigrationDatabase, type MigrationGateOptions } from './db/migrationGate.js';
 export { installSqliteRetry, retryOnSqliteContention, replayableTransaction, isSqliteContentionError, isSqliteSnapshotConflict, sqliteRetryDelayMs } from './db/sqliteRetry.js';
 export type { SqliteRetryOptions } from './db/sqliteRetry.js';
 

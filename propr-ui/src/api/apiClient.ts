@@ -4,6 +4,7 @@ import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
 import { getRuntimeApiBaseUrlState, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
 import { DESKTOP_ACCESS_INVALID_EVENT, DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, GITHUB_REAUTH_REASON_MESSAGES, knownGitHubReauthReason } from '../desktop/types';
+import { demoModeUnavailableResponse } from './demoModeRequestGate';
 
 export interface DesktopConnectionScope {
   bridge: DesktopBridge;
@@ -370,6 +371,8 @@ export const apiFetch = async (
   init?: RequestInit,
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
+  const demoRefusal = demoModeUnavailableResponse(input, init);
+  if (demoRefusal) return demoRefusal;
   const requestScope = desktopConnectionScope;
   if (isDesktopRuntime() && !requestScope) throw new Error('Desktop authentication is required.');
   const requestClient = getProprClient();
@@ -415,10 +418,7 @@ export const apiFetch = async (
   const retry = isReplayableApiRequest(input, init, options)
     && await shouldRetryAfterTokenRefresh(response);
   checkCurrent();
-  if (retry && isCurrentDesktopScope(requestScope)) {
-    const retried = guardResponse(await requestClient.fetch(input, requestInit));
-    return retried;
-  }
+  if (retry && isCurrentDesktopScope(requestScope)) return guardResponse(await requestClient.fetch(input, requestInit));
   checkCurrent();
   return response;
 };

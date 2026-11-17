@@ -102,10 +102,13 @@ type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 're
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { id?: number; login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
 
-export function getCommentRevisionIdentity(comment: Pick<PRComment, 'updated_at' | 'body'>, eventType: CommentEventType): string {
+/**
+ * Identifies one revision of a comment: its edit time and a digest of its body.
+ * A comment without an edit time (some polled and synthetic comments) is
+ * identified by the digest alone, so job and task ids never carry `undefined`.
+ */
+export function getCommentRevisionIdentity(comment: Pick<PRComment, 'body'> & { updated_at?: string | null }, eventType: CommentEventType): string {
     const contentDigest = createHash('sha256').update(`${eventType}\0${comment.body}`).digest('hex').slice(0, 12);
-    // Polled and synthesized comments may carry no updated_at; the identity
-    // (and the job/task id built from it) must never read "undefined".
     return comment.updated_at ? `${comment.updated_at}:${contentDigest}` : contentDigest;
 }
 

@@ -25,12 +25,13 @@ import { prepareProviderReplacement } from './providerReplacement.js';
 import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
 import { retryPRCreationViaAPI } from './issueJobPRRetry.js';
 import { completeIssueLabelsBestEffort } from './issueJobCompletionLabels.js';
+import { stripUpstreamPageTitles } from './upstreamPageTitle.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
 
 function formatErrorBlock(title: string, message: string): string {
-    const redacted = redactSecrets(message || 'Unknown error').slice(0, 4000);
+    const redacted = stripUpstreamPageTitles(redactSecrets(message || 'Unknown error')).slice(0, 4000);
     return `**${title}:**\n${redacted}\n\n`;
 }
 
@@ -178,7 +179,7 @@ async function handlePostProcessingFailure(
         const completionComment = await generateCompletionComment(
             claudeResult,
             { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-            { publishedAs: 'issue_comment' },
+            { publishedAs: 'issue_comment', ...taskLinkOption(options.taskId) },
         );
         const fallbackHeading = canMarkDone
             ? '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**'

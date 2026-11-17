@@ -17,6 +17,8 @@ import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
 import { getNextAuthenticatedReviewRecordNumbers } from './reviewCommentFormatter.js';
 import { routeReviewAssignments, runReviewRoutingOutcomes, type ReviewResult, type RunReviewsContext } from './prReviewRunner.js';
 import { recordReviewMetrics } from './reviewResultMetrics.js';
+import { buildReviewCompletionCommentBody, countReviewOutcomes } from './reviewCompletionComment.js';
+import { taskPageUrl } from './taskPageUrl.js';
 import { persistReviewScores } from './reviewScorePersistence.js';
 import { generateSummaryTitle } from './prCommentAgentUtils.js';
 import { admitAgentCapacity } from './agentCapacityDeferral.js';
@@ -97,31 +99,22 @@ async function updateReviewCompletionComment(
     const { repoOwner, repoName, taskUrl, correlatedLogger } = options;
     if (!state.startingWorkComment) return;
 
-    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
-    const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
+    // Evidence keeps its provider-outcome meaning; only the visible count excludes error reviews.
+    const providerFailures = reviewResults.filter(result => !result.analysisResult.success).length;
 
     try {
-        const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${getModelName(r.assignment.model)}](${r.commentUrl})${r.analysisResult.success ? '' : ' (failed)'}`).join('\n');
-        const statusEmoji = failCount === 0 ? '✅' : '⚠️';
-        const posted = `Posted ${successCount} review${successCount === 1 ? '' : 's'}`;
-        const statusText = failCount === 0 ? posted : `${posted}, ${failCount} failed`;
         const completedEvidence = buildWorkEvidenceMarker(
-            reviewResults.length > 0 && failCount === reviewResults.length ? 'failed' : 'completed',
+            reviewResults.length > 0 && providerFailures === reviewResults.length ? 'failed' : 'completed',
             filterRealComments(state.unprocessedComments).map(comment => comment.id),
         );
 
         await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id,
-            body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})${completedEvidence ? `\n${completedEvidence}` : ''}`,
+            body: buildReviewCompletionCommentBody(reviewResults, { authorsText: state.authorsText, taskUrl, evidence: completedEvidence }),
         });
     } catch (updateError) {
         correlatedLogger.warn({ error: (updateError as Error).message }, 'Failed to update starting review comment');
     }
-}
-
-function getWebUiTaskUrl(taskId: string): string {
-    const webUiUrl = process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
-    return `${webUiUrl}/tasks/${encodeURIComponent(taskId)}`;
 }
 
 async function handleUltrafixContinuation(
@@ -214,7 +207,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     state.repositoryWorkflow = await prepareReviewRepositoryWorkflow(state.octokit, prData!, context);
     const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
-    const taskUrl = getWebUiTaskUrl(taskId);
+    const taskUrl = taskPageUrl(taskId);
 
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting review processing',
@@ -383,8 +376,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
     await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger });
 
-    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
-    const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
+    const { posted: successCount, failed: failCount } = countReviewOutcomes(reviewResults);
 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, redisClient, { repoOwner, repoName, pullRequestNumber });
     await persistReviewScores(reviewResults, { repository: `${repoOwner}/${repoName}`, pullRequestNumber, taskId,

@@ -301,8 +301,11 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
         `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}`,
         `- Status: ${status}`,
         `- Execution Time: ${executionTimeStr}`,
-        `- Tokens used: ${formatTokens(totalTokens)} tokens [${formatTokens(inputTokens)} input + ${formatTokens(outputTokens)} output]`,
-        `- API cost: $${cost.toFixed(2)}`,
+        // A run that never called a model has no usage to report.
+        ...(totalTokens > 0 || cost > 0 ? [
+            `- Tokens used: ${formatTokens(totalTokens)} tokens [${formatTokens(inputTokens)} input + ${formatTokens(outputTokens)} output]`,
+            `- API cost: $${cost.toFixed(2)}`,
+        ] : []),
         `- Timestamp: ${formattedTimestamp}`,
         ...buildOptionalDetails(claudeResult)
     ];

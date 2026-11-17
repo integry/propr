@@ -14,6 +14,7 @@ import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeC
 import { describeUsageLimitKind, formatTimeUntil } from '@propr/shared';
 import { postNoticeOnce } from './failureCommentDedupe.js';
 import { issueCommentLockKey, withIssueCommentLock, type IssueCommentLease } from './issueCommentLock.js';
+import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { completeProviderReplacement, isAgentExecutionFailure, prepareProviderReplacement } from './providerReplacement.js';
 
 type Octokit = {
@@ -266,50 +267,6 @@ async function scheduleUsageLimitRetry(
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state for rate limit wait');
     }
     if (await issueRetryWasStopped(stateManager, taskId)) await persistedRetry.remove();
-}
-
-function parseGitHubHtmlError(html: string): string {
-    // Try to extract the title
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].replace(/&middot;/g, '-').replace(/&#\d+;/g, '').trim() : null;
-
-    // Common GitHub error patterns
-    if (html.includes('Unicorn')) {
-        return `GitHub API server error (5xx): ${title || 'Unicorn page'}`;
-    }
-    if (html.includes('rate limit') || html.includes('Rate limit')) {
-        return 'GitHub API rate limit exceeded (HTML response)';
-    }
-    if (html.includes('Not Found') || html.includes('404')) {
-        return `GitHub API resource not found: ${title || '404'}`;
-    }
-    if (html.includes('Bad credentials') || html.includes('401')) {
-        return 'GitHub API authentication failed (401)';
-    }
-    if (html.includes('Forbidden') || html.includes('403')) {
-        return `GitHub API forbidden: ${title || '403'}`;
-    }
-    if (title) {
-        return `GitHub API error: ${title}`;
-    }
-    return 'GitHub API returned an HTML error page instead of JSON';
-}
-
-function sanitizeErrorMessage(message: string | undefined): string {
-    if (!message) return 'Unknown error';
-    const sanitized = message
-        .replace(/https:\/\/x-access-token:[^@\s'"]+@github\.com\//g, 'https://x-access-token:[REDACTED]@github.com/')
-        .replace(/https:\/\/[^:\s'"]+:[^@\s'"]+@github\.com\//g, 'https://[REDACTED]@github.com/')
-        .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED_GITHUB_TOKEN]');
-    // Detect GitHub HTML error pages
-    if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
-        return parseGitHubHtmlError(sanitized);
-    }
-    // Truncate very long messages
-    if (sanitized.length > 500) {
-        return sanitized.slice(0, 500) + '... [truncated]';
-    }
-    return sanitized;
 }
 
 function categorizeError(errorMessage: string | undefined): string {
