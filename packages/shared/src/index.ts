@@ -596,6 +596,7 @@ export * from './plugins.js';
 export * from './pluginInstallations.js';
 export * from './pluginSdk.js';
 export * from './pluginDeliveries.js';
+export * from './pluginContract.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';

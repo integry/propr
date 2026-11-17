@@ -12,6 +12,14 @@ with ProPR. Nothing is downloaded when a plugin is installed, except the pinned
 npm package of a local MCP server, which goes through the same package cache and
 integrity check as the [extension library's local package servers](./agent-extensions.md#local-package-servers).
 
+:::tip Writing a plugin
+The [official plugin catalog](../plugins/catalog.md) lists the plugins that
+ship with ProPR. To add one, start with `npm run plugins:new -- <id>` and
+[Writing an official plugin](../plugins/authoring.md), which has the generated
+manifest reference, the event payloads, the SDK surface and the compatibility
+rules.
+:::
+
 :::note Work in progress
 This page describes the plugin **manifest**, the official plugin registry, the
 [Plugins page](#the-plugins-page), the installation API and the
@@ -333,6 +341,18 @@ npm run plugins:check -- --online [--registry https://registry.npmjs.org]
 
 also asks the npm registry for each package server's version and compares the
 recorded `integrity` value. It needs network access and is not run in CI.
+
+```bash
+npm run plugins:docs:check
+```
+
+fails when the generated plugin docs are out of date: the manifest reference,
+event payload table and SDK surface in [Writing an official plugin](../plugins/authoring.md),
+the [catalog](../plugins/catalog.md), the published manifest JSON Schema and
+the sidebar's plugin pages. CI runs it on every pull request;
+`npm run plugins:docs` regenerates them. The plugin interface's
+[compatibility rules](../plugins/authoring.md#compatibility-rules) are enforced
+by the contract test in `packages/shared/test/pluginContract.test.ts`.
 
 ## The Plugins page
 

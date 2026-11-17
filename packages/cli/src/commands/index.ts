@@ -20,6 +20,7 @@ export { createStatsCommand } from "./statsCommands.js";
 export { createAdmissionCommand } from "./admissionCommands.js";
 export { createPrCommand } from "./prCommands.js";
 export { createEventsCommand } from "./eventCommands.js";
+export { createPluginCommand } from "./pluginCommands.js";
 export { createInitCommand } from "./initCommands.js";
 export { createSetupCommand } from "./setupCommand.js";
 export { createAgentSkillCommand } from "./agentSkillCommands.js";

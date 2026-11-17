@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "manifest": {
+    "manifestVersion": { "type": "1", "required": true },
+    "id": { "type": "string", "required": true },
+    "name": { "type": "number", "required": true },
+    "homepage": { "type": "string", "required": false },
+    "legacyIcon": { "type": "string", "required": false },
+    "category": { "type": "string", "required": true, "enum": ["messaging", "chat"] }
+  },
+  "events": {
+    "envelope": { "seq": "number", "legacyCursor": "string" },
+    "payloads": {
+      "pull_request.opened": { "baseRef": "string | null", "draft": "string", "legacyTitle": "string" },
+      "pull_request.reopened": {},
+      "epic_queue.completed": { "fromIssue": "number", "cursor": "number" }
+    }
+  },
+  "sdk": {
+    "context": ["pluginId", "settings", "secrets"],
+    "propr": { "getIssue": "issues.read", "getTask": "issues.read", "deleteRepository": "repositories.read" },
+    "state": ["get", "clear"],
+    "log": ["info", "trace"],
+    "inputs": { "event": ["kind", "event", "deliveryId", "attempt", "legacyId"], "cron": ["kind"] },
+    "errorCodes": ["permission_denied", "rate_limited"],
+    "exports": ["definePluginHandler", "legacyHelper"]
+  }
+}

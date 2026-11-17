@@ -1,4 +1,5 @@
 import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
+import officialPluginPages from './plugin-pages.json';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -99,14 +100,11 @@ const sidebars: SidebarsConfig = {
       label: 'Plugins',
       items: [
         'features/plugins',
-        'plugins/webhooks',
-        'plugins/slack',
-        'plugins/discord',
-        'plugins/teams',
-        'plugins/linear',
-        'plugins/jira',
-        'plugins/sentry',
-        'plugins/notion',
+        'plugins/catalog',
+        // One page per official plugin, in catalog order: generated from
+        // packages/plugins/registry.json by `npm run plugins:docs`.
+        ...officialPluginPages,
+        'plugins/authoring',
       ],
     },
     {
