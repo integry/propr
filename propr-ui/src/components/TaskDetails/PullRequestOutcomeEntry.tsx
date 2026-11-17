@@ -1,10 +1,11 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React from 'react';
 import { GitMerge, GitPullRequestClosed } from 'lucide-react';
 import { formatRelativeTime } from '../TaskList/utils.tsx';
 import type { PullRequestOutcome } from './pullRequestScores';
 
 const OUTCOME_VIEW = {
-  merged: { label: 'Merged', Icon: GitMerge, tone: 'text-violet-700', node: 'border-violet-600 bg-violet-600' },
+  merged: { label: 'Merged', Icon: GitMerge, tone: 'text-slate-600', node: 'border-slate-500 bg-slate-500' },
   closed: { label: 'Closed unmerged', Icon: GitPullRequestClosed, tone: 'text-red-700', node: 'border-red-600 bg-red-600' },
 } as const;
 
@@ -29,7 +30,7 @@ const PullRequestOutcomeEntry: React.FC<PullRequestOutcomeEntryProps> = ({ outco
       <span className={`flex-none font-semibold ${tone}`}>{label}</span>
       <span className="min-w-0 flex-1 truncate text-slate-600">PR #{outcome.prNumber}</span>
       {outcome.at && (
-        <time dateTime={outcome.at} title={new Date(outcome.at).toLocaleString()} className="ml-auto flex-none whitespace-nowrap tabular-nums text-slate-400">
+        <time dateTime={outcome.at} title={formatDateTime(outcome.at)} className="ml-auto flex-none whitespace-nowrap tabular-nums text-slate-400">
           {formatRelativeTime(outcome.at)}
         </time>
       )}

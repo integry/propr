@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, Star, ChevronDown, X, Github, Loader2 } from 'lucide-react';
 import { fetchEnabledRepos } from '../utils/repoHelpers';
 import { RepositoryIcon } from './RepositoryIcon';
+import { formatCount } from '../utils/dateFormat';
 import { RepositoryGroups, RepositoryRow, isPinnedRepository, repositoryListStyles, repositoryKey as repoKey, sortRepositories as sortRepos } from '@propr/shared/dist/repositoryPresentation.js';
 
 export interface RepoOption {
@@ -84,7 +85,7 @@ const RepoLabel: React.FC<{ repo: RepoOption; labelLayout: 'inline' | 'stacked' 
     : (repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>)
 );
 
-const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span data-repo-count className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count.toLocaleString('en-US')}</span>;
+const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span data-repo-count className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{formatCount(count)}</span>;
 
 const RepoItem: React.FC<{
   repo: RepoOption;

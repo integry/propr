@@ -1,3 +1,4 @@
+import { formatDateTime, formatTimeOfDay, toDateTimeAttribute } from '../../utils/dateFormat';
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { User, Bot, Send, Loader2, Clock, Trash2, X } from 'lucide-react';
 import ModelContextSelector from './ModelContextSelector';
@@ -418,12 +419,9 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
                 )}
               </div>
               <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-400">
-                <span>
-                  {new Date(msg.timestamp).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
+                <time dateTime={toDateTimeAttribute(msg.timestamp)} title={formatDateTime(msg.timestamp)}>
+                  {formatTimeOfDay(msg.timestamp)}
+                </time>
                 {/* Show timing metadata for assistant messages */}
                 {msg.role === 'assistant' && msg.metadata?.actualDurationMs && (
                   <span className="flex items-center gap-1 text-slate-400">

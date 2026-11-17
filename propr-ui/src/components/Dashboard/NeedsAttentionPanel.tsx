@@ -16,6 +16,7 @@
  * heading, holding the same geometry as four rows would.
  */
 
+import { formatDateTime } from '../../utils/dateFormat';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { getDashboardAttention, type AttentionItem, type DashboardAttentionResponse } from '../../api/dashboardApi';
@@ -159,7 +160,7 @@ const AttentionRow: React.FC<{ item: AttentionItem }> = ({ item }) => {
         </span>
         <time
           dateTime={item.since}
-          title={new Date(item.since).toLocaleString()}
+          title={formatDateTime(item.since)}
           className="min-w-0 justify-self-end truncate whitespace-nowrap text-gray-500 lg:col-start-1 lg:row-start-3 lg:justify-self-start"
         >
           Waiting {elapsedLabel(item.since)}

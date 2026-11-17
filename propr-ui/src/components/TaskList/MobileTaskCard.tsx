@@ -1,8 +1,10 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React from 'react';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { PreviewCountBadge, RunCountChip, TaskAgent, TaskPrimaryChip, TaskTitleLink } from './TaskRows';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { AssigneeList } from '../AssigneeList';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import type { Task } from './types';
 import { rowContainsTask, SELECTED_ROW_CLASSES, type TaskRowView } from './rowModel';
 
@@ -76,7 +78,8 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
   const { task } = row;
   const selected = rowContainsTask(row, selectedTaskId);
   const summary = row.detail ?? row.outcome;
-  const repositoryMin = `${Math.min(row.repositoryName.length, REPOSITORY_MIN_CHARS)}ch`;
+  // The chip's padding and border ride on top of the characters it must keep.
+  const repositoryMin = `calc(${Math.min(row.repositoryName.length, REPOSITORY_MIN_CHARS)}ch + 0.75rem + 2px)`;
   return (
     <div
       data-testid="task-card"
@@ -92,9 +95,9 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
           <div data-testid="task-card-heading" className="flex min-h-5 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
             <span data-testid="task-card-entity" className={CHIP_SLOT}><TaskPrimaryChip task={task} prNumber={prNumber} /></span>
             {row.previewCount > 0 && <span className={CHIP_SLOT}><PreviewCountBadge count={row.previewCount} compact /></span>}
-            <span data-testid="task-card-repository" className="max-w-max grow truncate font-mono text-[11px]" style={{ minWidth: repositoryMin, flexBasis: repositoryMin }} title={row.repository}>{row.repositoryName}</span>
+            <span data-testid="task-card-repository" className="flex h-5 min-w-0 max-w-max grow items-center font-mono text-[12px]" style={{ minWidth: repositoryMin, flexBasis: repositoryMin }}><RepositoryChip repository={row.repository} label={row.repositoryName} className="min-w-0" /></span>
             <span data-testid="task-card-status" className={CHIP_SLOT}>{getStatusPill(getDisplayStatus(task), row.type)}</span>
-            <span data-testid="task-card-age" className="ml-auto flex-none whitespace-nowrap pl-2 tabular-nums" title={`Started ${new Date(task.createdAt).toLocaleString()}`}>
+            <span data-testid="task-card-age" className="ml-auto flex-none whitespace-nowrap pl-2 tabular-nums" title={`Started ${formatDateTime(task.createdAt)}`}>
               <time dateTime={task.createdAt}>{formatRelativeTime(task.createdAt)}</time>
               <span className="ml-1 font-mono text-[11px] text-slate-400 max-sm:hidden" title="Run time">({taskDuration(task)})</span>
             </span>

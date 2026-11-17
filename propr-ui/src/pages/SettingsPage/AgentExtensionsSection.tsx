@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime, toDateTimeAttribute } from '../../utils/dateFormat';
 import { useState } from 'react';
 import type { ExtensionLibraryRevision } from '@propr/shared';
 import { extensionLibraryHistory, validateExtensionLibrary } from '../../api/extensionProfilesApi';
@@ -11,11 +12,10 @@ import { useExtensionLibrary, type ExtensionLibraryState } from './extensions/us
 const describeValidation = (results: Awaited<ReturnType<typeof validateExtensionLibrary>>['results']) =>
   results.map(r => `${r.name}: ${r.status === 'not_validated' || r.reachable === null ? 'not tested' : r.reachable ? 'reachable' : 'not reachable'}`)
     .join(' · ') || 'No enabled MCP servers.';
-const formatDate = (at: string | number) => new Date(at).toLocaleString();
 
 /** Placeholder rows while the library loads. */
 const LibrarySkeleton = () => (
-  <div data-testid="extension-library-skeleton" aria-busy="true" aria-label="Loading skills and MCP servers" className="space-y-3 rounded-lg border border-slate-200 p-3 sm:p-5">
+  <div data-testid="extension-library-skeleton" aria-busy="true" aria-label="Loading skills and MCP servers" className="space-y-3 border-t border-slate-200 py-4">
     {['h-4 w-2/5', 'h-12 w-full', 'h-12 w-full', 'h-4 w-1/3', 'h-12 w-full'].map((size, index) => (
       <div key={index} className={`animate-pulse rounded bg-slate-200/70 ${size}`} />
     ))}
@@ -46,7 +46,7 @@ function LibraryTools({ state, library }: { state: ExtensionLibraryState; librar
       {history.length > 0 && (
         <ul aria-label="Revision history" className="space-y-1 text-[12px] leading-5 text-slate-600">
           {history.map(revision => (
-            <li key={revision.revision}>{formatDate(revision.updatedAt)} · {revision.auditActor}</li>
+            <li key={revision.revision}><time dateTime={toDateTimeAttribute(revision.updatedAt)} title={formatDateTime(revision.updatedAt)}>{formatRelativeTime(revision.updatedAt)}</time> · {revision.auditActor}</li>
           ))}
         </ul>
       )}
@@ -65,9 +65,10 @@ export default function AgentExtensionsSection() {
         {state.notice && <p role="status" className="text-sm text-teal-800">{state.notice}</p>}
         {!library && !state.error && <LibrarySkeleton />}
         {library && (
-          <div className="space-y-6 rounded-lg border border-slate-200 bg-slate-50/50 p-3 sm:p-5">
+          // One pane divided by rules, not a box: status, servers, skills and the library tools each own a band.
+          <div data-testid="extension-library" className="divide-y divide-slate-200 border-y border-slate-200 [&>*]:py-4">
             <p data-testid="extension-library-status" data-revision={library.revision} className="text-[12px] leading-5 text-slate-500">
-              {library.revision > 0 && `Last changed ${formatDate(library.updatedAt)}. `}Changes apply to new runs.
+              {library.revision > 0 && `Last changed ${formatRelativeTime(library.updatedAt)}. `}Changes apply to new runs.
             </p>
             {/* Reloading remounts the lists, closing forms opened on the earlier settings. */}
             <ExtensionServersList key={`servers-${state.loads}`} state={state} />

@@ -1,7 +1,6 @@
 import React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-
-const formatCount = (value: number): string => value.toLocaleString('en-US');
+import { formatCount } from '../../utils/dateFormat';
 
 interface PaginationProps {
   hideFilters?: boolean;

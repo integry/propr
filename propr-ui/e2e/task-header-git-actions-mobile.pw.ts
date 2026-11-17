@@ -128,10 +128,10 @@ for (const layout of phoneLayouts) {
     await completedPullRequest(page);
     await page.goto(`/tasks/${followupRun}`);
 
-    // The owner-above-name repository identity still leads the header in full.
+    // The repository chip still leads the header: short name, full slug in its tooltip.
     const identity = page.getByTestId('task-repository').filter({ visible: true });
-    await expect(identity.getByTestId('task-repository-owner')).toHaveText(`${owner}/`);
-    await expect(identity.getByTestId('task-repository-name')).toHaveText(repo);
+    await expect(identity.getByTestId('repository-chip')).toHaveAttribute('title', `${owner}/${repo}`);
+    await expect(identity.getByTestId('repository-chip-name')).toHaveText(repo);
     await expect(identity).toHaveAttribute('href', `https://github.com/${owner}/${repo}`);
     await expectSeparateGitAndActions(page, layout.width);
     await capture(page, `task-header-git-actions-${layout.name.replace(/\s+/g, '-')}`);
@@ -155,7 +155,7 @@ test('enlarged text and native zoom: the PR and issue badges still clear the rev
   await completedPullRequest(page);
   await page.addInitScript(() => document.addEventListener('DOMContentLoaded', () => { document.documentElement.style.fontSize = '125%'; }));
   await page.goto(`/tasks/${followupRun}`);
-  await expect(page.getByTestId('task-repository-name').filter({ visible: true })).toHaveText(repo);
+  await expect(page.getByTestId('task-repository').filter({ visible: true }).getByTestId('repository-chip-name')).toHaveText(repo);
   await expectSeparateGitAndActions(page, 320);
   await capture(page, 'task-header-git-actions-enlarged-text');
   await context.close();
@@ -167,7 +167,7 @@ test('desktop: the header keeps the repository, PR and issue beside the review a
   await page.goto(`/tasks/${followupRun}`);
   await expect(page.getByTestId('task-mobile-metadata')).toBeHidden();
   const header = page.getByTestId('task-header-tiers');
-  await expect(header.getByTestId('task-repository-name')).toHaveText(repo);
+  await expect(header.getByTestId('task-repository').getByTestId('repository-chip-name')).toHaveText(repo);
   const review = header.getByRole('button', { name: '/review' });
   await expect(review).toBeVisible();
   const links = [header.getByRole('link', { name: new RegExp(`#${issueNumber}\\b`) }), header.getByRole('link', { name: new RegExp(`PR\\s*${prNumber}\\b`) })];

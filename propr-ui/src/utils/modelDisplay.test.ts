@@ -13,6 +13,11 @@ describe('formatModelName', () => {
     expect(humanizeModelId('claude-sonnet-9-1-20990101')).toBe('Claude Sonnet 9.1');
     expect(humanizeModelId('kimi-k3')).toBe('Kimi K3');
   });
+
+  it('reads a placeholder id such as `<synthetic>` as its word, never with the brackets', () => {
+    expect(formatModelName('<synthetic>')).toBe('Synthetic');
+    expect(getModelDisplayName('<synthetic>')).toBe('Synthetic');
+  });
 });
 
 describe('getModelDisplayName', () => {

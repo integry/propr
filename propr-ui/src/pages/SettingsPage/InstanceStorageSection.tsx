@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../../utils/dateFormat';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DatabaseExportStatus, RepositoryStorageInventory, StorageCapabilities, StorageCategory, StorageCleanupPreview, StorageProtection } from '@propr/shared';
 import { useCurrentUser } from '../../contexts/AuthContext';
@@ -100,7 +101,7 @@ function StorageControls({ actor }: { actor: string }) {
           await checkInstance(); const value = await api.startDatabaseExport(capabilities!); if (alive.current) { setPollFailures(0); setJob(value); }
         })}>Create database export</button>
         {job && <div className="mt-3 space-y-2" role="status">
-          <p>{EXPORT_STATES[job.state] ?? job.state} · expires {new Date(job.expiresAt).toLocaleTimeString(undefined, { timeStyle: 'short' })}</p>
+          <p>{EXPORT_STATES[job.state] ?? job.state} · expires {formatRelativeTime(job.expiresAt)}</p>
           {job.state === 'ready' && <>
             <p>{bytes(job.sizeBytes)} · SQLite schema {job.schemaVersion} · {job.migration || 'No migration recorded'}</p>
             <p className="break-all text-slate-500">SHA-256: {job.sha256}</p>
@@ -119,7 +120,7 @@ function StorageControls({ actor }: { actor: string }) {
       </div>
       <div>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h5 className="font-semibold text-slate-900">Repository inventory</h5><button className={button} disabled={busy} onClick={() => void refresh()}>Refresh inventory</button></div>
-        <p className="mb-3 leading-5 text-slate-500">{inventory ? 'Showing part of the storage. Refresh to scan more.' : 'Inventory unavailable until the runtime responds.'} Last used: {inventory?.lastUseAt ? new Date(inventory.lastUseAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'unknown'}.</p>
+        <p className="mb-3 leading-5 text-slate-500">{inventory ? 'Showing part of the storage. Refresh to scan more.' : 'Inventory unavailable until the runtime responds.'} Last used: {inventory?.lastUseAt ? formatRelativeTime(inventory.lastUseAt) : 'unknown'}.</p>
         {inventory && <div role="region" aria-label="Repository storage inventory">
           {/* Phones read one stacked row per cache; the header row only appears where four columns fit. */}
           <table className="w-full text-left [overflow-wrap:normal]"><thead className="hidden sm:table-header-group"><tr className="border-b"><th className="py-2">Repository</th><th>Category</th><th>Size</th><th>Protection</th></tr></thead><tbody>

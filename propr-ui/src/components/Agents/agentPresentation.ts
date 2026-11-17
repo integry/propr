@@ -33,8 +33,8 @@ export const RUN_STATE_LABELS: Record<AutomationRunState, string> = {
 
 /**
  * Run state badges: waiting to start is gray, active work is teal, a waiting
- * human is amber, success is green, failure is red, and runs that ended
- * without a result recede to slate.
+ * human is amber, failure is red, and finished runs recede to slate: success
+ * is quiet, a completed run reads as neutral gray with a checkmark.
  */
 export const RUN_STATE_BADGE_CLASSES: Record<AutomationRunState, string> = {
   queued: 'border-slate-200 bg-slate-100 text-slate-600',
@@ -43,7 +43,7 @@ export const RUN_STATE_BADGE_CLASSES: Record<AutomationRunState, string> = {
   report_ready: 'border-teal-200 bg-teal-50 text-teal-700',
   awaiting_approval: 'border-amber-300 bg-amber-50 text-amber-800',
   acting: 'border-teal-200 bg-teal-50 text-teal-700',
-  completed: 'border-green-200 bg-green-50 text-green-700',
+  completed: 'border-slate-200 bg-slate-100 text-slate-600',
   failed: 'border-red-200 bg-red-50 text-red-700',
   skipped: 'border-slate-200 bg-white text-slate-500',
   rejected: 'border-slate-200 bg-white text-slate-500',

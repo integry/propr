@@ -9,6 +9,7 @@
  * output and leaves the judgement to the person reading it.
  */
 
+import { formatDateTime } from '../../utils/dateFormat';
 import React, { useCallback, useMemo, useState } from 'react';
 import { Terminal } from 'lucide-react';
 import { getDashboardActive, type ActiveItem, type DashboardActiveResponse } from '../../api/dashboardApi';
@@ -126,7 +127,7 @@ const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
             </>
           )}
           trailing={(
-            <span title={`Started ${new Date(item.createdAt).toLocaleString()}${item.phase ? ` · ${item.phase}` : ''}`}>
+            <span title={`Started ${formatDateTime(item.createdAt)}${item.phase ? ` · ${item.phase}` : ''}`}>
               {elapsedRunning(item.createdAt)}
             </span>
           )}
@@ -157,7 +158,7 @@ const ActiveRow: React.FC<{ item: ActiveItem }> = ({ item }) => {
                 </span>
               )}
               {lastOutputAt && (
-                <span data-testid="running-last-output" title={`Last agent output ${new Date(lastOutputAt).toLocaleString()}`}>
+                <span data-testid="running-last-output" title={`Last agent output ${formatDateTime(lastOutputAt)}`}>
                   <span className="hidden sm:inline">last output </span>
                   {lastOutputLabel(lastOutputAt)}
                 </span>

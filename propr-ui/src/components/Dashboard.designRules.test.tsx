@@ -162,14 +162,15 @@ describe('Dashboard studio design rules', () => {
     expect(screen.queryByText('#2481')).toBeNull();
   });
 
-  it('draws the repository as a muted chip and the entity id as bare monospace text', async () => {
+  it('draws the repository as the shared repository chip and the entity id as bare monospace text', async () => {
     renderDashboard();
     await waitForSections();
 
     const repoChip = (await screen.findAllByTitle('acme/app'))[0];
+    expect(repoChip).toHaveAttribute('data-testid', 'repository-chip');
+    expect(repoChip).toHaveTextContent(/^app$/);
     expect(repoChip.className).toMatch(/font-mono/);
     expect(repoChip.className).toMatch(/bg-slate-100/);
-    expect(repoChip.className).not.toMatch(/\bborder\b/);
 
     // Two identical boxes side by side read as one wall of gray bricks; the
     // identifier is text, not a second chip.

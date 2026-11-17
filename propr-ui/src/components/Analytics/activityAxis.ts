@@ -18,6 +18,8 @@
  * so it can be tested without laying out a chart.
  */
 
+import { formatMonth, formatShortDate, formatWeekday } from '../../utils/dateFormat';
+
 export interface ActivityAxisLabel {
   /** The weekday, the day of the month, the month, the year, or the hour. */
   primary: string;
@@ -51,8 +53,9 @@ const DAYS_PER_MONTH = 30.4;
 const DAYS_PER_YEAR = 365.25;
 
 const dateOf = (key: string): Date => new Date(isHourKey(key) ? key : `${key}T00:00:00Z`);
-const format = (key: string, options: Intl.DateTimeFormatOptions): string =>
-  dateOf(key).toLocaleDateString('en-US', { ...options, timeZone: 'UTC' });
+/** Bucket keys are UTC, so every label is read in UTC, never shifted into the viewer's zone. */
+const UTC = { timeZone: 'UTC' };
+const shortDate = (key: string): string => formatShortDate(dateOf(key), UTC);
 const clockTime = (key: string): string => `${key.slice(11, 13)}:00`;
 
 /**
@@ -60,7 +63,7 @@ const clockTime = (key: string): string => `${key.slice(11, 13)}:00`;
  * for an hour, since a clock time without its zone would be read as local.
  */
 export const formatActivityDate = (key: string): string => {
-  const day = format(key, { month: 'short', day: 'numeric' });
+  const day = shortDate(key);
   return isHourKey(key) ? `${day}, ${clockTime(key)} UTC` : day;
 };
 
@@ -75,14 +78,14 @@ function planHourAxis(keys: string[], slotPx: number): Map<string, ActivityAxisL
     const day = key.slice(0, 10);
     labels.set(key, {
       primary: clockTime(key),
-      ...(day !== previousDay ? { secondary: format(key, { month: 'short', day: 'numeric' }) } : {}),
+      ...(day !== previousDay ? { secondary: shortDate(key) } : {}),
     });
     previousDay = day;
   });
   return labels;
 }
 
-const month = (key: string) => format(key, { month: 'short' });
+const month = (key: string) => formatMonth(dateOf(key), UTC);
 const year = (key: string) => key.slice(0, 4);
 
 /**
@@ -101,7 +104,7 @@ export function planActivityAxis(dates: string[], slotPx: number): Map<string, A
     for (const key of dates) {
       const current = month(key);
       const day = String(dateOf(key).getUTCDate());
-      labels.set(key, { primary: format(key, { weekday: 'short' }), secondary: current !== previousMonth ? `${current} ${day}` : day });
+      labels.set(key, { primary: formatWeekday(dateOf(key), UTC), secondary: current !== previousMonth ? `${current} ${day}` : day });
       previousMonth = current;
     }
     return labels;

@@ -6,11 +6,10 @@ import { useSocket } from '../contexts/useSocket';
 import { TaskUpdatePayload } from '@propr/shared';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
+import { formatShortDate } from '../utils/dateFormat';
 
-const formatDate = (dateStr: string): string => {
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
+/** Day keys are UTC dates (`2026-11-02`), so they are read in UTC: `Nov 2`. */
+const formatDate = (dateStr: string): string => formatShortDate(dateStr, { timeZone: 'UTC' });
 
 interface TaskStatsChartProps {
   data?: TaskStatsResponse | null;

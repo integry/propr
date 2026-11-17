@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime as formatSharedRelativeTime } from '../../utils/dateFormat';
 import {
   TERMINAL_AUTOMATION_RUN_STATES,
   automationRunNoChangeReason,
@@ -60,12 +61,8 @@ export const runNoChangeReason = (
 
 export const runStartedAt = (run: Pick<AutomationRunRecord, 'startedAt' | 'createdAt'>): number => run.startedAt ?? run.createdAt;
 
-/** `just now`, `5m ago`, `3h ago`, `2d ago`. */
-export const formatRelativeTime = (timestamp: number, now: number): string => {
-  const elapsed = now - timestamp;
-  if (elapsed < 60_000) return 'just now';
-  return `${formatDuration(elapsed)} ago`;
-};
+/** `just now`, `5m ago`, `3h ago`, `2d ago`, then `Nov 2, 2026` (the shared format). */
+export const formatRelativeTime = (timestamp: number, now: number): string => formatSharedRelativeTime(timestamp, now);
 
 /** `45s`, `12m`, `2h`: how long a run took, or has taken so far; `—` before it starts. */
 export const runDuration = (run: Pick<AutomationRunRecord, 'startedAt' | 'finishedAt' | 'state'>, now: number): string => {
@@ -76,9 +73,9 @@ export const runDuration = (run: Pick<AutomationRunRecord, 'startedAt' | 'finish
   return elapsed < 60_000 ? `${Math.round(elapsed / 1_000)}s` : formatDuration(elapsed);
 };
 
-/** A timestamp in the viewer's locale, or `—`. */
+/** The full local date and time (`Nov 2, 2026, 10:12:47 AM`), or `—`. */
 export const formatTimestamp = (timestamp: number | null): string =>
-  timestamp === null ? '—' : new Date(timestamp).toLocaleString();
+  timestamp === null ? '—' : formatDateTime(timestamp);
 
 /**
  * "Claude is at 94% of its session window (pause threshold 90%). Run anyway?",

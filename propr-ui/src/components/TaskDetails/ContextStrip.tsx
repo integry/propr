@@ -5,6 +5,7 @@ import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { getDisplayTitle } from './taskHeaderText';
 import { ProviderLogo } from '../ui/ProviderLogo';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import AttemptLineage from './AttemptLineage';
 import AssignmentControl from './AssignmentControl';
 import type { TaskAssignment } from './useTaskAssignment';
@@ -62,15 +63,11 @@ const ContextGroup: React.FC<{ label: string; children: React.ReactNode }> = ({ 
   );
 };
 
-/** Lets a long repository name break after `-`, `_` or `.` before it breaks anywhere else. */
-const withNameBreaks = (name: string) =>
-  name.split(/(?<=[-_.])/).map((part, index) => <React.Fragment key={index}>{index > 0 && <wbr />}{part}</React.Fragment>);
-
 /**
- * Where the task lives: its owner on one line, its repository's name on the
- * next, rather than one `owner/name` string broken wherever it runs out of
- * room. A name too long for its width still wraps inside it. A task without
- * both (an automation report, say) has no repository to show or link to.
+ * Where the task lives, as the app's one repository chip: the short name, the
+ * full `owner/name` slug in its tooltip and accessible name, linking to GitHub.
+ * On a phone the name wraps inside the chip rather than truncating. A task
+ * without both (an automation report, say) has no repository to show or link to.
  */
 export const RepoIdentity: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
   const { repoOwner, repoName } = taskInfo;
@@ -82,17 +79,10 @@ export const RepoIdentity: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => 
       target="_blank"
       rel="noopener noreferrer"
       aria-label={repo}
-      title={repo}
       data-testid="task-repository"
-      className="group flex w-fit min-w-0 max-w-full flex-col rounded text-gray-700 transition-colors hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      className="group flex min-h-6 w-fit min-w-0 max-w-full items-center rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
     >
-      <span data-testid="task-repository-owner" className="flex min-w-0 items-center gap-1 text-xs leading-4 text-slate-500 group-hover:text-blue-600">
-        <GitHubIcon size={12} className="shrink-0" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">{repoOwner}<span aria-hidden="true" className="text-slate-400">/</span></span>
-      </span>
-      <span data-testid="task-repository-name" className="min-w-0 text-sm font-semibold leading-5 text-gray-900 [overflow-wrap:anywhere] group-hover:text-blue-600">
-        {withNameBreaks(repoName)}
-      </span>
+      <RepositoryChip repository={repo} stackOnNarrow className="group-hover:border-slate-300 group-hover:text-blue-600" />
     </a>
   );
 };

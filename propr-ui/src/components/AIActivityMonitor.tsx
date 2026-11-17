@@ -1,17 +1,9 @@
+import { formatRelativeTime } from '../utils/dateFormat';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bot, ScrollText, ListTodo, ChevronRight, RefreshCw, WifiOff } from 'lucide-react';
 import { RunningItem } from '../hooks/useHeaderStats';
 
-// Utility function for formatting time ago
-const formatTimeAgo = (dateString: string): string => {
-  const diffMins = Math.floor((Date.now() - new Date(dateString).getTime()) / 60000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  return `${Math.floor(diffHours / 24)}d ago`;
-};
 
 // Extract repo name from full path
 const getRepoName = (repository: string): string => {
@@ -158,7 +150,7 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
                         {item.status}
                       </span>
                       <span className="text-xs text-slate-400 ml-auto">
-                        {formatTimeAgo(item.createdAt)}
+                        {formatRelativeTime(item.createdAt)}
                       </span>
                       {isNavigable && <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />}
                     </div>

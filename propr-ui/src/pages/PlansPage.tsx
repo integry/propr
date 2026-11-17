@@ -15,6 +15,7 @@ import { useSocket } from '../contexts/useSocket';
 import type { ActivityUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import { matchesInterest } from '../hooks/useLiveResource';
+import { PageHeading } from '../components/ui/PageHeading';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -387,7 +388,7 @@ const PlansPage: React.FC = () => {
       {/* Anchored Header - compact on mobile */}
       <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
         <div className="flex items-center justify-between gap-2 sm:gap-4">
-          <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
+          <PageHeading className="flex-shrink-0">Plans</PageHeading>
           <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
             {!isMobile && (
               <ListSearchInput

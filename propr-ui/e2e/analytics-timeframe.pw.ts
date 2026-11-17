@@ -305,7 +305,7 @@ test('the agent efficacy matrix shows one figure per cell, denominators on hover
   await expect(rows.first().getByTestId('review-quality-final')).toHaveAttribute('title', 'Mean over 40 PRs');
   await expect(rows.nth(1).getByTestId('review-quality-runs')).toHaveText('—');
   // Effort is the secondary grouping: a row per level under a model with several, a tag on one with a single level.
-  await expect(pane.getByTestId('review-quality-effort-row')).toHaveText([/^High effort/, /^XHigh effort/, /^Unknown effort/]);
+  await expect(pane.getByTestId('review-quality-effort-row')).toHaveText([/^High effort/, /^XHigh effort/, /^Effort not recorded/]);
   await expect(rows.nth(1).getByTestId('review-quality-effort-tag')).toHaveText('Medium effort');
   await expect(pane.getByText(/n=\d/)).toHaveCount(0);
   // Every column fits the pane: nothing scrolls sideways.

@@ -6,17 +6,18 @@ import type { AutomationDefinitionRecord } from '../../api/automationDefinitions
 import { ListSearchInput } from '../ListSearchInput';
 import { ListSkeleton } from '../ui/Skeleton';
 import { CodeChip } from '../ui/CodeChip';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import { CreatorMarker } from '../CreatorMarker';
 import {
   AUTONOMY_BADGE_CLASSES,
   AUTONOMY_LABELS,
-  repoShortName,
   runnerLabel,
   scheduleSummary,
   scheduleTooltip,
 } from './agentPresentation';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import { AgentTemplateLinks } from './AgentTemplates';
+import { PageHeading } from '../ui/PageHeading';
 
 interface AgentListProps {
   definitions: AutomationDefinitionRecord[] | null;
@@ -70,7 +71,7 @@ const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-slate-500">
           {definition.repositories.slice(0, MAX_REPO_CHIPS).map(repository => (
-            <CodeChip key={repository} title={repository}>{repoShortName(repository)}</CodeChip>
+            <RepositoryChip key={repository} repository={repository} />
           ))}
           {extraRepos > 0 && <span>+{extraRepos}</span>}
           <CodeChip>{runnerLabel(definition, agents)}</CodeChip>
@@ -105,7 +106,7 @@ export const AgentList: React.FC<AgentListProps> = ({
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <header className="flex flex-none items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
-        <h1 className="text-base font-semibold text-slate-900">Automations</h1>
+        <PageHeading className="flex-none">Automations</PageHeading>
         <ListSearchInput value={query} onChange={setQuery} onClear={() => setQuery('')} label="Search automations" className="min-w-0 flex-1" />
       </header>
 

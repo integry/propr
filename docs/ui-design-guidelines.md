@@ -30,6 +30,12 @@ This document establishes the **"Studio Aesthetic"** for the ProPR platform. It 
 Any text representing a technical object must be styled as a chip:
 *   **Entities:** Repository names, Issue IDs (`#732`), PR numbers, Branch names, File paths.
 *   **Style:** `font-mono`, `text-xs`, `bg-slate-100`, `text-slate-700`, `rounded-sm`.
+*   **Repositories:** always `RepositoryChip` (`propr-ui/src/components/ui/RepositoryChip.tsx`): the short name on the chip, `owner/name` in the tooltip, in lists and details alike.
+
+### A2. Times, Counts and Page Titles
+*   **Timestamps:** only through `propr-ui/src/utils/dateFormat.ts` (or `<RelativeTime>`): `just now`, `5m ago`, `2h ago`, `3d ago` for the last 7 days, then `Nov 2, 2026`; the full local date and time goes in the tooltip. No raw ISO strings and no direct `toLocaleString()` / `toLocaleDateString()` / `toLocaleTimeString()` on dates — `dateFormat.guard.test.ts` fails on them.
+*   **Counts:** `formatCount` (locale thousands separator: `165,297`).
+*   **Page titles:** `PageHeading` (`propr-ui/src/components/ui/PageHeading.tsx`), one size and weight on every page.
 
 ### B. Status & Color Logic
 *   **Implementing/Active:** Solid **Brand Teal** or **Blue**. Indicates the machine is working.

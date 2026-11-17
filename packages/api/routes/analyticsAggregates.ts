@@ -55,7 +55,7 @@ export const excludeGoalTasks = <T extends Knex.QueryBuilder>(query: T, column: 
     this.whereNull(column).orWhereNot(column, 'goal');
   }) as T;
 
-interface TaskRunRow {
+export interface TaskRunRow {
   task_id: string;
   repository: string | null;
   issue_number: number | string | null;
@@ -106,7 +106,7 @@ export function groupTaskRuns<T extends TaskRunRow>(rows: T[], linkageRows: Task
 }
 
 /** Counted runs and their linkage metadata, goal tasks aside, oldest first. */
-async function loadTaskRuns(
+export async function loadTaskRuns(
   db: Knex, window: AnalyticsWindow | null, repository: string, bucketKey?: string,
 ): Promise<{ runs: TaskRunRow[]; linkageRows: TaskRunRow[] }> {
   const [hasJobData, hasFinalResult] = await Promise.all([
