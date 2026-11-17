@@ -20,17 +20,14 @@ import {
 } from '@propr/core';
 export { localizeContentImages, cleanupIssueAssets, type LocalizeContentImagesOptions } from './contentUtils.js';
 export {
-    calculateUsageLimitDelay,
-    handleSimpleUsageLimitError,
-    handleUsageLimitError,
-    handleGenericError,
-    type UsageLimitError,
-    type GenericErrorOptions
+    calculateUsageLimitDelay, handleSimpleUsageLimitError, handleUsageLimitError, handleGenericError,
+    type UsageLimitError, type GenericErrorOptions
 } from './errorHandlers.js';
 import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts, PushFailureRecord, ReviewConfig } from '@propr/core';
 import { PR_BODY_MAX_LENGTH, extractAcceptanceCriteria, stripStatusSlot, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import { readReviewDigestChanges, recordReviewDigest } from './reviewDigestLazy.js';
+import { taskPageUrl } from './taskPageUrl.js';
 import { isVisualPreviewUploadAuthenticationError, publishPullRequestVisualPreviews } from '../github/visualPreviewAttachments.js';
 
 export type RepoValidation = RepoValidationResult;
@@ -238,7 +235,7 @@ export async function createPullRequest(
     const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
     const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-        { review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger),
+        { taskUrl: taskPageUrl(options.taskId), review: { changes: await readReviewDigestChanges(worktreeInfo.worktreePath, options.diffBase, commitResult !== null, correlatedLogger),
             config: options.review, acceptanceCriteria: extractAcceptanceCriteria(options.issueBody) } });
     await recordReviewDigest(options.taskId, completion.reviewDigest, correlatedLogger, options.stateManager);
     const visualPreviewSection = visualPreview && commitResult
