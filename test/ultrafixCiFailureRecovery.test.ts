@@ -1722,9 +1722,10 @@ describe('Ultrafix steps refused at admission for disk pressure', () => {
         assert.equal(bodies.filter(body => body.includes(WAIT_NOTICE)).length, 1, 'one waiting notice for all refusals');
         const stops = bodies.filter(body => body.includes(STOP_NOTICE));
         assert.equal(stops.length, 1, 'the stop notice is posted');
-        assert.match(stops[0], /Last score: 5\./);
+        assert.match(stops[0], /Last score: 5\/10\./);
         assert.match(stops[0], /no free disk space/);
-        assert.match(stops[0], /stopped at cycle 1 of 5/);
+        assert.match(stops[0], /Stopped in cycle 2 of 5\./);
+        assert.equal(stops[0].match(/cycle \d+ of \d+/g)?.length, 1, 'the notice names one cycle');
         assert.match(stops[0], /refused 6 times/);
         assert.doesNotMatch(stops[0], /unknown|Max cycles|failed \d+ times in a row/);
         assert.deepEqual(mockSafeRemoveLabel.mock.calls.map(call => call.arguments[1]), ['ultrafix'], 'the label is removed');

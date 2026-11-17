@@ -198,7 +198,8 @@ export function explainDiskPressureStop(state: UltrafixLoopState, now = Date.now
     const waited = wait ? ` for ${formatMinutes(now - Date.parse(wait.since))}` : '';
     const refusals = wait ? `, refused ${wait.refusals} times` : '';
     return `${ULTRAFIX_DISK_PRESSURE_REASON} for its working copies: the next ${commandName(action)} could not start${waited}${refusals}. `
-        + `The loop stopped at cycle ${state.cycleCount} of ${state.maxCycles}; nothing was changed on this pull request by the refused step. `
+        // The stop notice header already names the cycle (counted as on the status line), so it is not repeated here.
+        + 'Nothing was changed on this pull request by the refused step. '
         + 'Free space on the worker host, then restart the loop with `/ultrafix`.';
 }
 
