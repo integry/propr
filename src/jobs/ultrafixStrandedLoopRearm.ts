@@ -41,9 +41,11 @@ import {
     DISK_PRESSURE_WAIT_REASON,
     diskPressureRetryDelayMs,
     explainDiskPressureStop,
-    getDiskPressureWait,
+    getCurrentDiskPressureWait,
+    handOverDiskPressureWait,
     ULTRAFIX_DISK_PRESSURE_REASON,
 } from './ultrafixDiskPressureWait.js';
+import type { UltrafixDiskPressureWait } from './ultrafixDiskPressureWait.js';
 
 /** Bound on re-evaluations when the loop state changes underneath a re-arm. */
 const MAX_REARM_ATTEMPTS = 3;
@@ -116,6 +118,8 @@ interface RearmAttempt {
     snapshot: UltrafixStateSnapshot;
     currentEpoch: number;
     ownHandoff: OwnHandoff;
+    /** The disk-pressure wait this attempt retries, read against `currentEpoch`; null: resume with a review. */
+    diskPressureWait: UltrafixDiskPressureWait | null;
 }
 
 /**
@@ -148,8 +152,16 @@ async function rearmFromSnapshot(
     const { owner, repo, pr } = prId;
     const { redisClient, correlatedLogger } = ctx;
     const snapshot = await loadStateSnapshot(redisClient, owner, repo, pr);
-    const decision = evaluateStrandedLoopRearm(snapshot?.state ?? null);
-    if (!snapshot || decision.action === 'skip') return { continued: false, reason: 'no_active_loop' };
+    if (!snapshot?.state.active) return { continued: false, reason: 'no_active_loop' };
+    // Read before any decision and used for the reservation, so the wait
+    // judged current here is exactly the one handed to the re-armed step.
+    const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr);
+    // A disk-pressure wait is only the loop's own while no other work advanced
+    // the epoch; a superseded wait gives way to an ordinary recovery review.
+    const diskPressureWait = getCurrentDiskPressureWait(snapshot.state, currentEpoch);
+    const recoveryState = diskPressureWait ? snapshot.state : handOverDiskPressureWait(snapshot.state, null, currentEpoch);
+    const decision = evaluateStrandedLoopRearm(recoveryState);
+    if (decision.action === 'skip') return { continued: false, reason: 'no_active_loop' };
     // Re-checked on every snapshot, not only by the candidate check made
     // before the claim: the loop may have been (re)started since.
     if (await isOwnedByCurrentEpoch(prId, redisClient, snapshot.state, ownHandoff)) {
@@ -158,7 +170,7 @@ async function rearmFromSnapshot(
     }
     // A step refused for disk pressure is retried on its backoff, never sooner,
     // whichever trigger (sweep or check event) gets here first.
-    const diskPressureDelayMs = diskPressureRetryDelayMs(snapshot.state);
+    const diskPressureDelayMs = diskPressureRetryDelayMs(diskPressureWait);
     if (diskPressureDelayMs > 0) {
         correlatedLogger.info({ pr, retryDelayMs: diskPressureDelayMs }, 'Ultrafix re-arm: waiting for free disk space on the worker');
         return { continued: false, reason: `rearm_not_ready: ${DISK_PRESSURE_WAIT_REASON}`, retryDelayMs: diskPressureDelayMs };
@@ -176,7 +188,6 @@ async function rearmFromSnapshot(
         };
     }
 
-    const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr);
     // The step this epoch last enqueued may be delayed, waiting for capacity or
     // running without the scan above seeing it: re-arming would supersede it.
     const liveStep = await findLiveCurrentEpochStep(redisClient, prId, currentEpoch);
@@ -186,7 +197,7 @@ async function rearmFromSnapshot(
         return { continued: false, reason: `rearm_not_ready: ${STEP_RECENTLY_ENQUEUED_REASON}`, retryDelayMs: liveStep.retryDelayMs };
     }
 
-    const attempt: RearmAttempt = { prId, ctx, snapshot, ownHandoff, currentEpoch };
+    const attempt: RearmAttempt = { prId, ctx, snapshot, ownHandoff, currentEpoch, diskPressureWait };
     const label = await getUltrafixLabelState(owner, repo, pr, correlatedLogger);
     // A failed lookup is not a removed label: keep the loop and retry later.
     if (label === 'unverified') return { continued: false, reason: `rearm_not_ready: ${LABEL_UNVERIFIED_REASON}` };
@@ -209,7 +220,7 @@ export const REARM_HANDOFF_RETRY_REASON = 'rearm_handoff_pending';
  * so a process lost in between leaves the sweep something to resume. The
  * resume caller releases it once the attempt settles.
  */
-function takeOwnership({ prId, ctx, snapshot, currentEpoch, ownHandoff }: RearmAttempt) {
+function takeOwnership({ prId, ctx, snapshot, currentEpoch, ownHandoff, diskPressureWait }: RearmAttempt) {
     return withUltrafixLabelTransition(
         ctx.redisClient,
         prId,
@@ -225,7 +236,9 @@ function takeOwnership({ prId, ctx, snapshot, currentEpoch, ownHandoff }: RearmA
             // and not a failure notification that replaces it meanwhile.
             if (!await ctx.claim.saveRetry(retry)) return CLAIM_LOST;
             ownHandoff.raw = JSON.stringify(retry);
-            return reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch);
+            // The retried wait moves to the new epoch; a superseded one is retired.
+            return reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch,
+                (state, reserved) => handOverDiskPressureWait(state, diskPressureWait, reserved));
         },
     );
 }
@@ -311,9 +324,9 @@ export function explainStrandedLoopStop(reason: string, state?: UltrafixStateSna
 }
 
 async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptResult> {
-    const { prId: { pr }, ctx, snapshot, currentEpoch } = attempt;
+    const { prId: { pr }, ctx, snapshot, currentEpoch, diskPressureWait } = attempt;
     // A step refused for disk pressure is retried as the same step; anything else resumes with a review.
-    const action = getDiskPressureWait(snapshot.state)?.action ?? 'review';
+    const action = diskPressureWait?.action ?? 'review';
     const readiness = await evaluateReadiness(buildRearmParams(attempt, currentEpoch), action, ctx.checkRunDeps);
     ctx.correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },

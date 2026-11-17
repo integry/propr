@@ -1772,6 +1772,83 @@ describe('Ultrafix steps refused at admission for disk pressure', () => {
         assert.equal(getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!)?.refusals, 3);
     });
 
+    /** Run the loop's pending review to completion (score 5/10 with findings: the next step is a fix). */
+    async function completePendingReview(redis: FakeRedis, pr: number) {
+        const [review] = pendingSteps(pr, 'review');
+        review.state = 'completed';
+        return continueUltrafixLoop({
+            owner: OWNER, repo: REPO, pullRequestNumber: pr, completedAction: 'review',
+            ultrafixMeta: review.data.ultrafixMeta, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: review.data.correlationId, currentJobId: review.id,
+        });
+    }
+
+    test('a refused final permitted fix is retried at the cycle boundary, not stopped as cycles exhausted', async () => {
+        const redis = await strandLoopAfterCiFailure(174);
+        await checksTurnGreen(redis, 174);
+        // The pending review is the loop's fifth and last; four fixes ran, so the fifth fix is still permitted.
+        const current = await loadState(redis as never, OWNER, REPO, 174);
+        await saveState(redis as never, { ...current!, reviewCount: 4, fixCount: 4, cycleCount: 4 });
+        const continued = await completePendingReview(redis, 174);
+        assert.equal(continued.nextAction, 'fix', 'the normal continuation authorizes the final fix');
+
+        assert.deepEqual(await refusePendingStep(redis, 174, 'fix'), { reportedOnPullRequest: true });
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        const outcomes = await sweep(redis);
+
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.equal(outcomes[0].result.nextAction, 'fix');
+        const [fix] = pendingSteps(174, 'fix');
+        assert.ok(fix, 'the refused final fix is retried');
+        let state = await loadState(redis as never, OWNER, REPO, 174);
+        assert.equal(state?.active, true);
+        assert.equal(state?.completionStatus ?? null, null, 'the loop is not failed as cycles-exhausted');
+        assert.equal(getDiskPressureWait(state!)?.workEpoch, fix.data.ultrafixMeta.workEpoch, 'the wait moves with its retry');
+        assert.doesNotMatch(postedBodies().join('\n'), /Max cycles were exhausted/, 'no cycles-exhausted stop before the final fix');
+
+        // Space is back: the retried fix is admitted and completes the loop's fix budget.
+        fix.state = 'completed';
+        await continueUltrafixLoop({
+            owner: OWNER, repo: REPO, pullRequestNumber: 174, completedAction: 'fix',
+            ultrafixMeta: fix.data.ultrafixMeta, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: fix.data.correlationId, currentJobId: fix.id,
+        });
+        state = await loadState(redis as never, OWNER, REPO, 174);
+        assert.equal(state?.fixCount, 5, 'the final permitted fix completed');
+        assert.equal(getDiskPressureWait(state!), null, 'the completed step ends the wait');
+    });
+
+    test('a manual follow-up push after a refused fix retires the wait: recovery reviews the new head', async () => {
+        const redis = await strandLoopAfterCiFailure(175);
+        await checksTurnGreen(redis, 175);
+        await completePendingReview(redis, 175);
+        assert.deepEqual(await refusePendingStep(redis, 175, 'fix'), { reportedOnPullRequest: true });
+        const refused = await loadState(redis as never, OWNER, REPO, 175);
+        assert.equal(getDiskPressureWait(refused!)?.action, 'fix');
+
+        // A manual follow-up runs and pushes a new head: it fences automatic work but is no Ultrafix step.
+        await invalidateUltrafixAutomaticWork(redis as never, OWNER, REPO, 175);
+        prHead = 'manual-follow-up-sha-175';
+        ciStatus = RED;
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        const deferred = await sweep(redis);
+
+        // The superseded fix is not retried; the new head waits for CI and then gets its review.
+        assert.equal(pendingSteps(175, 'fix').length, 0, 'the superseded fix is not retried');
+        assert.equal(deferred[0]?.result.nextAction, 'review');
+        assert.equal((await loadDeferredContinuation(redis as never, OWNER, REPO, 175))?.nextAction, 'review');
+        let state = await loadState(redis as never, OWNER, REPO, 175);
+        assert.equal(state?.diskPressureWait, undefined, 'the superseded wait is retired');
+
+        const resumed = await checksTurnGreen(redis, 175);
+        assert.equal(resumed.continued, true);
+        assert.equal(resumed.nextAction, 'review');
+        assert.equal(pendingSteps(175, 'review').length, 1, 'the new head is reviewed');
+        assert.equal(pendingSteps(175, 'fix').length, 0);
+        state = await loadState(redis as never, OWNER, REPO, 175);
+        assert.equal(state?.active, true);
+    });
+
     test('a refusal of a job that is not a current Ultrafix step is left to the ordinary refusal comment', async () => {
         const redis = await strandLoopAfterCiFailure(172);
         await checksTurnGreen(redis, 172);

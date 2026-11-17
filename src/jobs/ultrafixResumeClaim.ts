@@ -181,9 +181,15 @@ export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): Stra
     // fix only the review count is capped, so the final permitted fix still
     // gets its verifying review; after a review, an exhausted fix budget ends
     // the loop because the next step would have been a fix.
+    // A step refused for disk pressure was already authorized by that budget
+    // (e.g. the final permitted fix right after the final review): its retry is
+    // capped only by its own action's count, like the continuation that chose it.
     const { reviewCount, fixCount } = getActionCounts(state);
-    const fixBudgetSpent = state.lastAction !== 'fix' && fixCount >= state.maxCycles;
-    if (reviewCount >= state.maxCycles || fixBudgetSpent) {
+    const wait = getDiskPressureWait(state);
+    const budgetSpent = wait
+        ? (wait.action === 'fix' ? fixCount : reviewCount) >= state.maxCycles
+        : reviewCount >= state.maxCycles || (state.lastAction !== 'fix' && fixCount >= state.maxCycles);
+    if (budgetSpent) {
         return {
             action: 'complete',
             completionStatus: 'failed',
@@ -192,7 +198,7 @@ export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): Stra
     }
 
     // Disk-pressure refusals never count as failed steps; only running out of retries ends the loop.
-    if (getDiskPressureWait(state)?.exhausted) {
+    if (wait?.exhausted) {
         return { action: 'complete', completionStatus: 'failed', reason: ULTRAFIX_DISK_PRESSURE_REASON };
     }
 
@@ -236,15 +242,17 @@ export async function reserveStateWorkEpoch(
     redis: Redis,
     snapshot: UltrafixStateSnapshot,
     currentEpoch: number,
+    handOver: (state: UltrafixLoopState, reservedEpoch: number) => UltrafixLoopState = state => state,
 ): Promise<UltrafixLoopState | null> {
     const { state } = snapshot;
+    const build = (reserved: number): UltrafixLoopState => ({ ...handOver(state, reserved), workEpoch: reserved });
     const workEpoch = await reserveEpochAndReplaceStateIfUnchanged(
         redis,
         { owner: state.owner, repo: state.repo, pr: state.pr },
         { workEpoch: currentEpoch, rawState: snapshot.raw },
-        reserved => JSON.stringify({ ...state, workEpoch: reserved }),
+        reserved => JSON.stringify(build(reserved)),
     );
-    return workEpoch === null ? null : { ...state, workEpoch };
+    return workEpoch === null ? null : build(workEpoch);
 }
 
 /**

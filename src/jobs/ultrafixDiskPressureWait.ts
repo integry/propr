@@ -30,6 +30,12 @@ export interface UltrafixLoopWaitFields {
 export interface UltrafixDiskPressureWait {
     /** Completed steps when the refusals began; a step completed since ends the wait. */
     completedSteps: number;
+    /**
+     * Work epoch that owns the wait: the refused step's epoch, re-stamped when
+     * the re-arm hands the retry to a fresh epoch. Any other epoch change (a
+     * manual command or follow-up) supersedes the refused step and retires it.
+     */
+    workEpoch: number;
     /** The refused step, retried as is. */
     action: UltrafixAction;
     refusals: number;
@@ -62,10 +68,39 @@ function completedStepsOf(state: UltrafixLoopState): number {
     return reviewCount + fixCount;
 }
 
-/** The loop's current wait for disk space; a step completed since it began ends it. */
+/**
+ * The loop's current wait for disk space; a step completed since it began, or
+ * an epoch change the wait was not handed over by, ends it.
+ */
 export function getDiskPressureWait(state: UltrafixLoopState): UltrafixDiskPressureWait | null {
     const wait = state.diskPressureWait;
-    return wait && wait.completedSteps === completedStepsOf(state) ? wait : null;
+    if (!wait || wait.completedSteps !== completedStepsOf(state)) return null;
+    return wait.workEpoch === (state.workEpoch ?? 0) ? wait : null;
+}
+
+/**
+ * The wait as seen by recovery, given the automatic-work epoch read for it:
+ * work that advanced the epoch without taking the loop over (a manual
+ * follow-up push, for instance) superseded the refused step, so recovery
+ * reviews the new head instead of retrying it.
+ */
+export function getCurrentDiskPressureWait(state: UltrafixLoopState, currentEpoch: number): UltrafixDiskPressureWait | null {
+    return (state.workEpoch ?? 0) === currentEpoch ? getDiskPressureWait(state) : null;
+}
+
+/**
+ * The loop state handed to `reservedEpoch` by a re-arm: a wait it retries
+ * moves to the new epoch with it; any other wait is retired.
+ */
+export function handOverDiskPressureWait(
+    state: UltrafixLoopState,
+    retried: UltrafixDiskPressureWait | null,
+    reservedEpoch: number,
+): UltrafixLoopState {
+    if (retried) return { ...state, diskPressureWait: { ...retried, workEpoch: reservedEpoch } };
+    const retired = { ...state };
+    delete retired.diskPressureWait;
+    return retired;
 }
 
 /** The state after one more refusal of `action` for disk pressure at `now`. */
@@ -79,6 +114,7 @@ export function recordDiskPressureRefusalInState(
     const delayMs = ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[refusals - 1];
     const wait: UltrafixDiskPressureWait = {
         completedSteps: completedStepsOf(state),
+        workEpoch: state.workEpoch ?? 0,
         action,
         refusals,
         since: previous?.since ?? new Date(now).toISOString(),
@@ -126,8 +162,7 @@ export async function markDiskPressureNoticePosted(
 }
 
 /** How long the re-arm must still hold the loop for disk space (0: retry or stop now). */
-export function diskPressureRetryDelayMs(state: UltrafixLoopState, now = Date.now()): number {
-    const wait = getDiskPressureWait(state);
+export function diskPressureRetryDelayMs(wait: UltrafixDiskPressureWait | null, now = Date.now()): number {
     if (!wait || wait.exhausted) return 0;
     return Math.max(0, Date.parse(wait.retryAt) - now);
 }
