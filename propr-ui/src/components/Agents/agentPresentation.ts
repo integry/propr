@@ -141,7 +141,8 @@ const validMinute = (minute: string) => NUMBER.test(minute) && +minute <= 59;
 /** Every few minutes (a step in the minute part). */
 const describeMinutes = ([minute, ...rest]: string[]): ScheduleWords | null => {
   const step = minute.match(STEP);
-  return step && isEvery(...rest) ? words(`Every ${plural(+step[1], 'minute')}`) : null;
+  // `*/22` runs at :00, :22 and :44, then again 16 minutes later: only a step dividing the hour is an even interval.
+  return step && 60 % +step[1] === 0 && isEvery(...rest) ? words(`Every ${plural(+step[1], 'minute')}`) : null;
 };
 
 /** `0 6 1 * *`: one day a month. */
@@ -158,7 +159,8 @@ const describeHours = ([minute, hour, , , dayOfWeek]: string[]): ScheduleWords |
   const past = +minute === 0 ? '' : ` at :${pad(+minute)}`;
   const step = hour.match(STEP);
   if (hour === '*' || step?.[1] === '1') return { title: `Hourly${past}`, phrase: `every hour${past}` };
-  return step ? words(`Every ${plural(+step[1], 'hour')}${past}`) : null;
+  // `*/5` runs at 00, 05, 10, 15 and 20, then 4 hours later at midnight: only a step dividing the day is an even interval.
+  return step && 24 % +step[1] === 0 ? words(`Every ${plural(+step[1], 'hour')}${past}`) : null;
 };
 
 /** Words for a preset or a simple pattern; null for an expression that does not read as one. */

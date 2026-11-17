@@ -26,8 +26,8 @@ const saved: AutomationDefinitionRecord = {
   autonomyMode: 'dry_run', enabled: true, revision: 1, createdAt: 0, updatedAt: 0,
 };
 
-const renderEditor = (props: { definitionId?: string | null; templateId?: string | null } = {}) =>
-  render(<AgentEditor definitionId={props.definitionId ?? null} templateId={props.templateId} onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
+const renderEditor = (props: { definitionId?: string | null; templateId?: string | null; onUnsavedChange?: (unsaved: boolean) => void } = {}) =>
+  render(<AgentEditor definitionId={props.definitionId ?? null} templateId={props.templateId} onUnsavedChange={props.onUnsavedChange} onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
 
 const expectPrefilled = () => {
   expect(screen.getByLabelText('Name')).toHaveValue(triage.name);
@@ -90,6 +90,33 @@ describe('AgentEditor templates', () => {
     // Filled from the template and not edited since: another template applies without asking.
     fireEvent.click(option());
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['a repository', async () => {
+      fireEvent.click(await screen.findByRole('button', { name: /Add repository/ }));
+      fireEvent.click(await screen.findByTestId('repo-item'));
+      expect(within(screen.getByRole('list', { name: 'Selected repositories' })).getByText('integry/propr')).toBeInTheDocument();
+    }],
+    ['a coding agent', async () => {
+      const agentSelect = await screen.findByTitle('Select AI agent');
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Claude' })).toBeInTheDocument());
+      fireEvent.change(agentSelect, { target: { value: 'claude-main' } });
+    }],
+  ])('still counts %s chosen before a template as unsaved input', async (_label, choose) => {
+    const onUnsavedChange = vi.fn();
+    renderEditor({ onUnsavedChange });
+    await choose();
+    await waitFor(() => expect(onUnsavedChange).toHaveBeenLastCalledWith(true));
+    onUnsavedChange.mockClear();
+
+    // The template keeps the choice and replaces nothing typed, so it applies without asking.
+    fireEvent.click(within(screen.getByTestId('agent-template-picker')).getByRole('button', { name: new RegExp(triage.name) }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expectPrefilled();
+    // Closing now must still ask: the kept choice would be lost.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(onUnsavedChange).not.toHaveBeenCalledWith(false);
   });
 
   it('opens prefilled from the template named in the link', () => {

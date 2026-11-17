@@ -29,6 +29,28 @@ describe('schedules in words', () => {
     expect(describeCron('5-10 9 * 1-6 *')).toBe('5-10 9 * 1-6 * (UTC)');
   });
 
+  it.each([
+    // 00, 05, 10, 15, 20, then midnight after 4 hours.
+    '0 */5 * * *',
+    // :00, :22, :44, then :00 after 16 minutes.
+    '*/22 * * * *',
+    '30 */7 * * *',
+    '*/45 * * * *',
+  ])('does not call %s an even interval, since its step does not divide the period', expression => {
+    expect(describeSchedule(expression)).toBeNull();
+    expect(describeCron(expression)).toBe(`${expression} (UTC)`);
+    expect(scheduleSentence(expression)).toBe(`${expression} (UTC)`);
+  });
+
+  it.each([
+    ['*/20 * * * *', 'Every 20 minutes'],
+    ['*/30 * * * *', 'Every 30 minutes'],
+    ['0 */8 * * *', 'Every 8 hours'],
+    ['0 */12 * * *', 'Every 12 hours'],
+  ])('reads %s, whose step divides the period, as "%s"', (expression, title) => {
+    expect(describeCron(expression)).toBe(title);
+  });
+
   it('puts the cron in the tooltip of a list row', () => {
     const definition = { scheduleCron: '0 */3 * * *', scheduleEnabled: true, nextRunAt: 2 * 3_600_000, enabled: true, eventTriggers: [] };
     expect(scheduleSummary(definition, 0)).toBe('Every 3 hours · next in 2h');

@@ -194,16 +194,19 @@ export function useAgentEditor(
     setForm(current => ({ ...current, ...patch }));
   }, []);
 
-  /** Fills an unsaved form from a template, keeping the repositories and coding agent already chosen. */
+  /**
+   * Fills an unsaved form from a template, keeping the repositories and coding
+   * agent already chosen. The baseline takes only the template's own fields,
+   * so what the template keeps from the user's input still counts as unsaved.
+   */
   const applyTemplate = useCallback((next: AutomationTemplate) => {
     if (definition) return;
-    const filled = formFromTemplate(next, form);
     setTemplate(next);
     setError(null);
     setSubmitted(false);
-    setForm(filled);
-    setBaseline(filled);
-  }, [definition, form]);
+    setForm(formFromTemplate(next, form));
+    setBaseline(formFromTemplate(next, baseline));
+  }, [baseline, definition, form]);
 
   /**
    * Whether closing or replacing the form would lose something the user
