@@ -106,6 +106,7 @@ const sidebars: SidebarsConfig = {
         'plugins/linear',
         'plugins/jira',
         'plugins/sentry',
+        'plugins/notion',
       ],
     },
     {

@@ -91,7 +91,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     projection = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: server.name, version: '1' } };
   } else if (rpc.method === 'tools/list') {
     const tools = (projection as { tools?: unknown[] })?.tools;
-    if (!Array.isArray(tools) || tools.length > 64) throw new ExtensionError(502, 'MCP tool catalog unavailable');
+    if (!Array.isArray(tools) || tools.length > EXTENSION_LIMITS.upstreamTools) throw new ExtensionError(502, 'MCP tool catalog unavailable');
     projection = { tools: tools.filter(t => t && typeof t === 'object' && server.tools.includes(String((t as { name?: unknown }).name))) };
   }
   const redacted = redactExtensionOutput({ jsonrpc: '2.0', id: rpc.id, result: projection }, [...Object.values(secrets), ...oauthTokens, token]);
