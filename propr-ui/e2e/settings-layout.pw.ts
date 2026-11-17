@@ -94,7 +94,7 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   // A newly opened category starts at its top, not at the previous one's scroll offset.
   await expect.poll(() => page.locator('[data-settings-scroll]').evaluate(element => element.scrollTop)).toBe(0);
   await expect(page.getByLabel('Target review score')).toHaveValue('7');
-  await expect(page.getByLabel('Target review score').locator('option:checked')).toHaveText('7/10 (Default)');
+  await expect(page.getByLabel('Target review score').locator('option:checked')).toHaveText('7/10 (default)');
   await expect(page.getByRole('region', { name: 'Agent watchdog' })).toBeHidden();
   await capture(page, 'settings-ultrafix');
 
