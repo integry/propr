@@ -179,6 +179,13 @@ test('MCP list summaries bound natural-language fields and tolerate legacy task 
   assert.equal((plan.agent_models as unknown[]).length, 8);
   assert.equal(plan.pull_request_count, 12);
   assert.equal((plan.pull_requests as unknown[]).length, 8);
+  assert.equal(plan.pull_requests_truncated, true, 'a bounded pull request list says it is incomplete');
+  const complete = summarizePlan({ draft_id: 'plan-2', repository: 'acme/repo', status: 'pr_created' }, issues.slice(0, 8));
+  assert.equal(complete.pull_request_count, 8);
+  assert.equal((complete.pull_requests as unknown[]).length, 8);
+  assert.equal(complete.pull_requests_truncated, false);
+  const narrow = summarizePlan({ draft_id: 'plan-3', repository: 'acme/repo', status: 'pr_created' }, issues.slice(0, 3), Date.now(), 1);
+  assert.deepEqual([narrow.pull_request_count, (narrow.pull_requests as unknown[]).length, narrow.pull_requests_truncated], [3, 1, true]);
 
   assert.equal(planRelationLimit(10), 8);
   assert.equal(planRelationLimit(20), 8);

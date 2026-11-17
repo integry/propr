@@ -365,6 +365,9 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'blocked_stop', 'goal_task', 'unsupported_task', 'replacement_not_started',
     // Tool the worker injects into Claude goal sessions, and the setting that bounds its wait.
     'ask_operator', 'goal_question_max_wait_ms',
+    // List-summary fields, paging and the submission/artifact states the list guidance names.
+    'pull_request_count', 'pull_requests', 'pull_requests_truncated', 'agent_alias', 'offset', 'limit',
+    'state', 'queued', 'merged',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)
