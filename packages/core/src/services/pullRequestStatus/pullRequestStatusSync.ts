@@ -163,13 +163,11 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
 /**
  * The status to write, whether a GitHub check read rejected while its facts
  * were read (PullRequestStatusChecks.readFailed), and whether ProPR created the
- * pull request (only its title is ever changed).
+ * pull request (only its title is ever changed). checksAwaitedForMs: the status
+ * waits this long for a new head's checks to appear; no webhook ends that wait
+ * in a repository without CI.
  */
-interface DesiredStatus {
-    status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null;
-    /** The status waits this long for a new head's checks to appear; no webhook ends that wait in a repository without CI. */
-    checksAwaitedForMs?: number | null;
-}
+interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null; checksAwaitedForMs: number | null }
 
 async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
@@ -178,12 +176,11 @@ async function desiredStatus(
     if (pull.state !== 'open' || pull.merged) {
         // Ownership decides only whether a slot left in the title is removed; a title without one is never read for it.
         const isPropr = hasStatusSlot(pull.title) && await isProprCreatedPullRequest(deps.sources.db, repository, { number: prNumber, head: pull.head });
-        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null };
+        return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null, checksAwaitedForMs: null };
     }
     const facts = await loadPullRequestStatusFacts(repository, prNumber, { now: () => deps.now().getTime(), ...deps.sources, github: deps.github }, pull);
     return {
-        status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest, epic: facts.epic,
-        checksAwaitedForMs: facts.checksAwaitedForMs ?? null,
+        status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest, epic: facts.epic, checksAwaitedForMs: facts.checksAwaitedForMs ?? null,
     };
 }
 
@@ -202,9 +199,7 @@ function bodyWithStatus(current: string, status: PullRequestStatus | null, now: 
     return applyPullRequestStatusBlock(current, null);
 }
 
-function earliest(a: number | null, b: number | null): number | null {
-    return a === null ? b : b === null ? a : Math.min(a, b);
-}
+const earliest = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : Math.min(a, b);
 
 /** GitHub is still computing mergeability, so the status cannot settle yet. */
 function awaitsMergeability(status: PullRequestStatus | null): boolean {
@@ -309,7 +304,7 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
         const bodyChanged = !(next === current || sameRenderedStatus(next, current));
         const read = {
             awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
-            titleSettleInMs: withEpicChildReadContinuation(earliest(title.settleInMs, desired.checksAwaitedForMs ?? null), desired),
+            titleSettleInMs: withEpicChildReadContinuation(earliest(title.settleInMs, desired.checksAwaitedForMs), desired),
             notes: await epicSyncNotes(deps.redis, { repository, prNumber, lease }, desired, bodyChanged || title.title !== null),
         };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };
