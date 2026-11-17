@@ -80,7 +80,7 @@ test('default Claude Code and Codex versions match the bundled agent image pins'
     const versions = getDefaultAgentCliVersionMatrix();
 
     assert.equal(versions.claude, '2.1.326');
-    assert.equal(versions.codex, '0.168.0');
+    assert.equal(versions.codex, '0.169.0');
     for (const [arg, version] of [['CLAUDE_CLI_VERSION', versions.claude], ['CODEX_CLI_VERSION', versions.codex]] as const) {
         const dockerPins = [...dockerfile.matchAll(new RegExp(`^ARG ${arg}=(.+)$`, 'gm'))].map(match => match[1]);
         assert.ok(dockerPins.length > 0, `${arg} pin in Dockerfile.agent`);

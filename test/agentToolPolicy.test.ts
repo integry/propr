@@ -163,7 +163,7 @@ describe('launcher integration', () => {
         assert.equal(trustValue(buildCodexDockerArgs(codexConfig, { ...baseParams, toolPolicy: MCP_POLICY })), 'PROPR_CODEX_TRUST_WORKSPACE=1');
         assert.equal(trustValue(buildCodexDockerArgs(operatorEnv, { ...baseParams, toolPolicy: { ...MCP_POLICY, exclusiveMcp: true } })), 'PROPR_CODEX_TRUST_WORKSPACE=0');
         assert.equal(trustValue(buildCodexDockerArgs(operatorEnv, { ...baseParams, readOnlyWorkspace: true, repositoryInspection: true })), 'PROPR_CODEX_TRUST_WORKSPACE=0');
-        // The flag itself is version-gated in the entrypoint: 0.168 rejects `--trust`.
+        // The entrypoint adds the flag, and only when the installed CLI offers it: 0.168 rejects `--trust`.
         assert.ok(!buildCodexDockerArgs(codexConfig, baseParams).includes('--trust'));
     });
 
