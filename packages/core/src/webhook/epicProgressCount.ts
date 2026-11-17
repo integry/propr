@@ -52,32 +52,27 @@ export function epicChildBranchIssue(headRef: string | undefined): number | null
  * merged. A pull request into the epic branch without a plan issue (a human
  * PR) changes neither, and two PRs for one issue count once. The triggering
  * PR is always merged, even if GitHub's list has not caught up with the
- * merge yet. Without plan issues (an epic without a plan), every
- * non-abandoned pull request into the epic branch counts once instead.
+ * merge yet. Only an epic without a plan (`planIssues` absent) counts
+ * every non-abandoned pull request into the epic branch once instead; a
+ * plan whose issues were all filtered out (e.g. shipped by a predecessor
+ * epic) still counts issues, so it reads 0 of 0 rather than its human PRs.
  */
 export function computeEpicMergeProgress(
     childPullRequests: EpicChildPullRequest[],
     mergedChildPrNumber: number | null,
-    planIssues: PlanIssue[] = [],
+    planIssues?: PlanIssue[],
 ): EpicMergeProgress {
-    const mergedNumbers = new Set(childPullRequests.filter(pr => pr.merged).map(pr => pr.number));
-    if (mergedChildPrNumber !== null) mergedNumbers.add(mergedChildPrNumber);
+    const mergedNumbers = mergedChildNumbers(childPullRequests, mergedChildPrNumber);
     const mergedPullRequests = [...mergedNumbers].sort((a, b) => a - b);
 
-    if (planIssues.length === 0) {
+    if (!planIssues) {
         const childNumbers = new Set(childPullRequests.filter(pr => !pr.abandoned).map(pr => pr.number));
         if (mergedChildPrNumber !== null) childNumbers.add(mergedChildPrNumber);
         const merged = [...childNumbers].filter(number => mergedNumbers.has(number)).length;
         return { merged, total: childNumbers.size, excluded: 0, mergedPullRequests, unit: 'pullRequests' };
     }
 
-    // Issues with merged work in the epic branch, by their linked PR or a PR from a branch cut for them.
-    const mergedIssues = new Set<number>();
-    const planIssueNumbers = new Set(planIssues.map(issue => issue.issue_number));
-    for (const pr of childPullRequests) {
-        const issue = epicChildBranchIssue(pr.headRef);
-        if (issue !== null && planIssueNumbers.has(issue) && mergedNumbers.has(pr.number)) mergedIssues.add(issue);
-    }
+    const mergedIssues = epicIssuesWithMergedWork(childPullRequests, mergedChildPrNumber, planIssues);
 
     let merged = 0;
     let total = 0;
@@ -86,9 +81,7 @@ export function computeEpicMergeProgress(
     for (const issue of planIssues) {
         if (counted.has(issue.issue_number)) continue;
         counted.add(issue.issue_number);
-        const issueMerged = issue.status === PlanIssueStatus.MERGED
-            || mergedIssues.has(issue.issue_number)
-            || (issue.pr_number != null && mergedNumbers.has(issue.pr_number));
+        const issueMerged = mergedIssues.has(issue.issue_number);
         if (!issueMerged && issue.status === PlanIssueStatus.CLOSED) {
             excluded++;
             continue;
@@ -98,6 +91,39 @@ export function computeEpicMergeProgress(
     }
 
     return { merged, total, excluded, mergedPullRequests };
+}
+
+function mergedChildNumbers(childPullRequests: EpicChildPullRequest[], mergedChildPrNumber: number | null): Set<number> {
+    const mergedNumbers = new Set(childPullRequests.filter(pr => pr.merged).map(pr => pr.number));
+    if (mergedChildPrNumber !== null) mergedNumbers.add(mergedChildPrNumber);
+    return mergedNumbers;
+}
+
+/**
+ * The plan issues whose work is merged into the epic branch: the issue is
+ * recorded as merged, its linked PR merged, or a PR from a branch cut for it
+ * merged (the triggering PR always counts as merged). An issue in this set
+ * stays part of the epic even when its status is closed, e.g. after its
+ * linked PR was abandoned and an alternate PR merged.
+ */
+export function epicIssuesWithMergedWork(
+    childPullRequests: EpicChildPullRequest[],
+    mergedChildPrNumber: number | null,
+    planIssues: PlanIssue[],
+): Set<number> {
+    const mergedNumbers = mergedChildNumbers(childPullRequests, mergedChildPrNumber);
+    const planIssueNumbers = new Set(planIssues.map(issue => issue.issue_number));
+    const mergedIssues = new Set<number>();
+    for (const pr of childPullRequests) {
+        const issue = epicChildBranchIssue(pr.headRef);
+        if (issue !== null && planIssueNumbers.has(issue) && mergedNumbers.has(pr.number)) mergedIssues.add(issue);
+    }
+    for (const issue of planIssues) {
+        if (issue.status === PlanIssueStatus.MERGED || (issue.pr_number != null && mergedNumbers.has(issue.pr_number))) {
+            mergedIssues.add(issue.issue_number);
+        }
+    }
+    return mergedIssues;
 }
 
 export function isEpicMergeComplete(progress: EpicMergeProgress): boolean {

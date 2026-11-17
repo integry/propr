@@ -2,6 +2,9 @@
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { PlanIssueStatus, type PlanIssue } from '../config/planIssueManager.js';
 import type logger from '../utils/logger.js';
+import type { EpicProgressOctokit } from './epicMergeEvidence.js';
+import { listChildPullRequests } from './epicMergeProgress.js';
+import { epicIssuesWithMergedWork } from './epicProgressCount.js';
 
 export interface IssueDetails {
     number: number;
@@ -48,10 +51,29 @@ export async function fetchIssueDetails(
  * The plan issues an epic body lists and closes: those still counted towards
  * the epic (computeEpicMergeProgress). An issue closed without a merge, or
  * closed on GitHub as not planned, is left out of both the list and its
- * `Fixes` line.
+ * `Fixes` line. `mergedIssues` (epicIssuesWithMergedWork) keeps a closed
+ * issue whose work did merge, e.g. through an alternate PR after its linked
+ * PR was abandoned.
  */
-export function epicBodyIssueNumbers(issues: PlanIssue[]): number[] {
-    return issues.filter(issue => issue.status !== PlanIssueStatus.CLOSED).map(issue => issue.issue_number);
+export function epicBodyIssueNumbers(issues: PlanIssue[], mergedIssues: ReadonlySet<number> = new Set()): number[] {
+    return issues
+        .filter(issue => issue.status !== PlanIssueStatus.CLOSED || mergedIssues.has(issue.issue_number))
+        .map(issue => issue.issue_number);
+}
+
+/**
+ * epicBodyIssueNumbers with the merged work read from the pull requests into
+ * the epic branch. They are only listed when a plan issue is closed, the
+ * only case they decide.
+ */
+export async function loadEpicBodyIssueNumbers(
+    octokit: EpicProgressOctokit,
+    { owner, repo, baseBranch, mergedChildPrNumber }: { owner: string; repo: string; baseBranch: string; mergedChildPrNumber: number | null },
+    issues: PlanIssue[],
+): Promise<number[]> {
+    if (!issues.some(issue => issue.status === PlanIssueStatus.CLOSED)) return epicBodyIssueNumbers(issues);
+    const children = await listChildPullRequests(octokit, owner, repo, baseBranch);
+    return epicBodyIssueNumbers(issues, epicIssuesWithMergedWork(children, mergedChildPrNumber, issues));
 }
 
 /**

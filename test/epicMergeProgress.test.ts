@@ -198,6 +198,21 @@ describe('computeEpicMergeProgress', () => {
         assert.deepStrictEqual({ merged: progress.merged, total: progress.total }, { merged: 1, total: 2 });
     });
 
+    test('a plan whose issues were all filtered out still counts issues, not the PRs into the branch', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 204, merged: true, abandoned: false, headRef: 'fix-ci-cache' },
+        ], 204, []);
+        assert.deepStrictEqual(progress, { merged: 0, total: 0, excluded: 0, mergedPullRequests: [204] });
+    });
+
+    test('a closed issue whose alternate PR merged after its linked PR was abandoned counts as merged', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 202, merged: false, abandoned: true, headRef: '101/claude-second' },
+            { number: 203, merged: true, abandoned: false, headRef: '101/codex-second' },
+        ], 203, [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.CLOSED, 202)]);
+        assert.deepStrictEqual({ merged: progress.merged, total: progress.total, excluded: progress.excluded }, { merged: 2, total: 2, excluded: 0 });
+    });
+
     test('an issue closed as not planned leaves the total', () => {
         const issues = [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.UNDER_REVIEW, 202), planIssue(102, PlanIssueStatus.PENDING)];
         const before = computeEpicMergeProgress([{ number: 201, merged: true, abandoned: false }], null, issues);
@@ -570,6 +585,25 @@ for (const mergedChildPrNumber of [201, 202, null]) {
         assert.deepEqual(result.progress, { merged: 1, total: 3, excluded: 0, mergedPullRequests: [202] });
         assert.ok(!octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
         assert.ok(!octokit.comments.some(c => c.body.includes('All planned epic work')));
+    });
+}
+
+for (const mergedChildPrNumber of [204, null]) {
+    test(`a successor whose plan issues all shipped through its predecessor does not count a human PR (trigger ${mergedChildPrNumber})`, async () => {
+        const octokit = createOctokit([
+            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z', head: { ref: '100/claude-first' } },
+            { number: 202, state: 'closed', merged_at: '2026-10-09T00:30:00Z', head: { ref: '101/claude-second' } },
+            { number: 204, state: 'closed', merged_at: '2026-10-09T02:00:00Z', head: { ref: 'fix-ci-cache' } },
+        ]);
+        octokit.history = [{ number: 500, merged_at: '2026-10-09T01:00:00Z' }];
+        octokit.epicMerged = mergedChildPrNumber === null;
+        const result = await updateEpicMergeProgress({
+            ...baseRequest, epicPrNumber: 501, mergedChildPrNumber,
+            planIssues: [planIssue(100, PlanIssueStatus.MERGED, 201), planIssue(101, PlanIssueStatus.MERGED, 202)],
+        }, 'test', { getOctokit: async () => octokit });
+        assert.deepEqual(result.progress, { merged: 0, total: 0, excluded: 0, mergedPullRequests: [204] });
+        assert.ok(!octokit.comments.some(c => c.body.includes('pull request')));
+        assert.ok(!octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
     });
 }
 

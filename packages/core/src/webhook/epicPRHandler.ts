@@ -7,7 +7,7 @@ import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
 import { epicProgressAfterMerge, updateEpicMergeProgress } from './epicMergeProgress.js';
 import {
     canCarryChild, findEpicPRNumber, findLatestMergedEpicPRNumber, readChildMergeEvidence,
-    type ChildMergeEvidence, type ChildMergeEvidenceSource,
+    type ChildMergeEvidence, type ChildMergeEvidenceSource, type EpicProgressOctokit,
 } from './epicMergeEvidence.js';
 import {
     runEpicProgressUpdate, sweepEpicProgressRetries,
@@ -16,7 +16,7 @@ import {
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { db } from '../db/connection.js';
 import type { PlanIssue } from '../config/planIssueManager.js';
-import { buildEpicPRBody, epicBodyIssueNumbers, fetchIssueDetails } from './epicPRBody.js';
+import { buildEpicPRBody, fetchIssueDetails, loadEpicBodyIssueNumbers } from './epicPRBody.js';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
 
 interface PlanDetails {
@@ -241,15 +241,16 @@ async function ensureEpicPR(
 /** Rewrites an existing Epic PR's body to include every issue of its plan. */
 async function updateEpicPRBody(
     octokit: Octokit,
-    { owner, repo, repository, baseBranch }: EpicBranchContext,
+    context: EpicBranchContext,
     { epicPrNumber, lease }: { epicPrNumber: number; lease: EpicProgressLease },
     correlatedLogger: ReturnType<typeof logger.withCorrelation>,
 ): Promise<void> {
+    const { owner, repo, repository, baseBranch } = context;
     const planLookup = await loadPlanDetails(baseBranch, repository, correlatedLogger);
     if (planLookup.status !== 'found') return;
 
     const planDetails = planLookup.details;
-    const issueNumbers = epicBodyIssueNumbers(planDetails.issues);
+    const issueNumbers = await loadEpicBodyIssueNumbers(octokit as unknown as EpicProgressOctokit, context, planDetails.issues);
     const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
     const newBody = buildEpicPRBody(planDetails.planName, issueDetails);
 
@@ -400,7 +401,7 @@ async function createEpicPR(
     let body: string;
 
     if (planDetails) {
-        const issueNumbers = epicBodyIssueNumbers(planDetails.issues);
+        const issueNumbers = await loadEpicBodyIssueNumbers(octokit as unknown as EpicProgressOctokit, context, planDetails.issues);
         const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
 
         title = `[Epic] ${planDetails.planName}`;

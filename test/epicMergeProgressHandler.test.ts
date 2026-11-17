@@ -48,6 +48,10 @@ const epicPRCreations: Array<Record<string, unknown>> = [];
 let onIssueFetch: () => void | Promise<void> = () => {};
 // GitHub's view of an issue, by number, beyond its title (e.g. closed as not planned).
 let issueData: Record<number, Record<string, unknown>> = {};
+// The pull requests into the epic branch, as the epic PR body reads them for merged work.
+let epicBranchChildren: Array<Record<string, unknown>> = [];
+// Every body written to a pull request.
+const bodyWrites: string[] = [];
 
 function fakeQuery(table: string) {
     let filter: Record<string, unknown> = {};
@@ -92,6 +96,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
                 failingEpicLookups--;
                 throw new Error('GitHub unavailable');
             }
+            if (parameters.base === EPIC_BRANCH) return epicBranchChildren;
             return [
                 ...Array.from({ length: closedHistoryCount }, (_, i) => ({ number: 600 + i, state: 'closed', merged_at: null })),
                 ...(epicPrExists ? [epicPullRequest()] : []),
@@ -120,6 +125,8 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
         }
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') {
             bodyUpdates.push(parameters.pull_number!);
+            const { body } = parameters as { body?: unknown };
+            if (typeof body === 'string') bodyWrites.push(body);
             return { data: {} };
         }
         throw new Error(`Unexpected request ${route}`);
@@ -267,6 +274,8 @@ beforeEach(() => {
     epicPRCreations.length = 0;
     onIssueFetch = () => {};
     issueData = {};
+    epicBranchChildren = [];
+    bodyWrites.length = 0;
     failingProgressUpdates = 0;
     completionNotices = 0;
     useRealProgress = false;
@@ -457,6 +466,28 @@ test('the epic PR body leaves out issues closed without a merge or as not planne
     assert.match(body, /^- #100: Issue$/m);
     assert.doesNotMatch(body, /#101|#102/);
 });
+
+for (const epicExists of [false, true]) {
+    test(`the epic PR body keeps a closed issue whose alternate PR merged after its linked PR was abandoned (${epicExists ? 'body rewrite' : 'creation'})`, async () => {
+        // #101's linked PR #202 closed without merging (status closed); the alternate #203 from its branch merges now.
+        planIssueRows[1] = { ...planIssueRows[1], status: 'closed', pr_number: 202 };
+        planIssueRows[2] = { ...planIssueRows[2], status: 'closed' };
+        epicBranchChildren = [
+            { number: 201, state: 'closed', merged_at: '2026-10-10T18:00:00Z', head: { ref: '100/claude-first' } },
+            { number: 202, state: 'closed', merged_at: null, head: { ref: '101/claude-second' } },
+            { number: 203, state: 'closed', merged_at: '2026-10-10T19:00:00Z', head: { ref: '101/codex-second' } },
+        ];
+        epicPrExists = epicExists;
+        const alternate = { ...payload, pull_request: { ...payload.pull_request, number: 203 } } as unknown as PullRequestEvent;
+        await handleEpicPRCreationOnMerge(alternate, 'test', logger.withCorrelation('test'));
+        const body = epicExists ? bodyWrites.at(-1)! : epicPRCreations[0].body as string;
+        assert.match(body, /^- #101: Issue$/m);
+        assert.match(body, /^Fixes #101$/m);
+        assert.match(body, /^Fixes #100$/m);
+        // #102 was closed without any merged work: still left out.
+        assert.doesNotMatch(body, /#102/);
+    });
+}
 
 test('creates the epic PR on the first child merge and tracks progress on it', async () => {
     epicPrExists = false;

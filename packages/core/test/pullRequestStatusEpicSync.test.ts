@@ -210,6 +210,21 @@ test('a second sub-PR for the same issue, and a human sub-PR, change neither cou
     assert.match(github.epic().title, / 2\/3 \[Epic\]/);
 });
 
+test('a successor whose plan issues all shipped through its predecessor does not count a human PR as an issue', async () => {
+    // Every plan issue's PR merged before predecessor #899 merged the epic branch; a human PR (#913) merged after it.
+    Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T08:10:00Z' });
+    github.pulls.set(914, pull(914, { state: 'closed', merged: true, merged_at: '2026-11-13T08:20:00Z', head: { sha: 'h914', ref: '802/claude-third', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    github.pulls.set(899, pull(899, { state: 'closed', merged: true, merged_at: '2026-11-13T08:30:00Z', head: { sha: 'p899', ref: EPIC_BRANCH, repo: { full_name: REPOSITORY } } }));
+    github.pulls.set(913, pull(913, { title: 'Fix CI cache', state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z', head: { sha: 'h913', ref: 'fix-ci-cache', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    await database('plan_issues').update({ status: 'merged' });
+    await database('plan_issues').where({ issue_number: 802 }).update({ pr_number: 914 });
+    await database('epic_execution_queues').update({ cursor: 3, status: 'completed' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.doesNotMatch(statusLine(), /issues merged/);
+    assert.doesNotMatch(github.epic().title, / \d+\/\d+ \[Epic\]/);
+});
+
 test('a ready sub-PR waiting to be merged shows ⚠️ with the count, and the block names it', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(statusLine(), '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated 09:41 UTC');
