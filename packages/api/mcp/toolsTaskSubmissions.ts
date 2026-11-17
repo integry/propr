@@ -65,7 +65,7 @@ export function addTaskSubmissionTools(tools: McpTool[], deps: ToolDeps): void {
   tools.push({ name: 'get_task_submission', description: 'Read your direct task submission with its current issue, latest task state, failure reason and pull request. Does not retry or start work.', scope: 'read', readOnly: true,
     schema: z.object(shape).strict(), target, run: async ({ principal, args }) => {
       const row = await ownedSubmission(deps, principal, args.repository, args.submissionId);
-      return ok(await projectSubmission(deps, row));
+      return ok(await readSubmission(deps, row));
     } });
   tools.push({ name: 'retry_task_submission', description: 'Recover your existing direct task submission: reconcile uncertain issue creation or retry dispatch of the same issue. Does not create a replacement task for an already queued submission. Use a new mutation idempotencyKey for this retry.', scope: 'execute',
     schema: z.object({ ...mutationShape, ...shape }).strict(), target, run: async ({ principal, args }) => {
@@ -88,10 +88,10 @@ export function addTaskSubmissionTools(tools: McpTool[], deps: ToolDeps): void {
       const ordered = query.orderBy('created_at', 'desc').orderBy('id', 'desc');
       if (!args.stage) {
         const rows = await ordered.offset(args.offset).limit(args.limit + 1);
-        return ok({ submissions: await Promise.all(rows.slice(0, args.limit).map(row => projectSubmission(deps, row))),
+        return ok({ submissions: await Promise.all(rows.slice(0, args.limit).map(row => readSubmission(deps, row))),
           nextOffset: rows.length > args.limit ? args.offset + args.limit : null });
       }
-      const matching: Awaited<ReturnType<typeof projectSubmission>>[] = [];
+      const matching: Awaited<ReturnType<typeof readSubmission>>[] = [];
       const wanted = args.offset + args.limit + 1;
       const batchSize = Math.max(50, args.limit);
       let databaseOffset = 0;
@@ -99,7 +99,7 @@ export function addTaskSubmissionTools(tools: McpTool[], deps: ToolDeps): void {
         const rows = await ordered.clone().offset(databaseOffset).limit(batchSize);
         if (!rows.length) break;
         databaseOffset += rows.length;
-        const projected = await Promise.all(rows.map(row => projectSubmission(deps, row)));
+        const projected = await Promise.all(rows.map(row => readSubmission(deps, row)));
         matching.push(...projected.filter(item => stageMatches(item.progress.stage, args.stage)));
         if (rows.length < batchSize) break;
       }
@@ -129,6 +129,21 @@ async function projectSubmission(deps: ToolDeps, row: TaskSubmission, pointers: 
   return submissionResult({ id: row.id, state: row.state, issueNumber: row.issue_number,
     issueUrl: row.issue_url, taskId, firstTaskId: pointers.task_id ?? null,
     latestTaskId: pointers.latest_task_id ?? pointers.task_id ?? null, error: row.error, progress });
+}
+
+/** Task stages a dispatched submission moves on to; the stored row stops at `queued` once dispatched. */
+const DISPATCHED_STAGES = new Set<SubmissionProgressStage>(['running', 'completed', 'failed', 'cancelled']);
+
+/**
+ * A submission read: once the stored submission is dispatched (`queued`) its own lifecycle is over,
+ * so `state` and `submissionState` follow the task the progress reports. A running, completed,
+ * failed or cancelled task is never reported as a queued submission next to that progress.
+ */
+async function readSubmission(deps: ToolDeps, row: TaskSubmission) {
+  const projected = await projectSubmission(deps, row);
+  const { stage } = projected.progress;
+  if (row.state !== 'queued' || !DISPATCHED_STAGES.has(stage)) return projected;
+  return { ...projected, state: stage, submissionState: stage };
 }
 
 function resolvedTaskId(result: Record<string, unknown>): string | undefined {

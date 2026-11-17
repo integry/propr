@@ -18,6 +18,8 @@ import type { McpPrincipal } from './policy.js';
  */
 
 const permission = 'instance.manage_runtime' as const;
+/** A released handoff no longer owes publication or blocks its pull request. */
+const RELEASED_STATUS = 'released';
 
 /**
  * The admin routes' projection without the retained worktree's host path: MCP
@@ -82,11 +84,18 @@ export function addMaintenanceTools(tools: McpTool[], deps: ToolDeps): void {
     return handoffPayload(status);
   };
 
-  tools.push({ name: 'list_followup_handoffs', description: 'List every tracked pull request follow-up handoff in the repositories this client may access: the attempts whose publication is still owed, including holds awaiting an operator that block new commands on their pull request. Requires instance.manage_runtime.', scope: 'manage', permission, readOnly: true, schema: z.object({}).strict(), run: async ({ principal }) => {
-    const statuses = await handoffs.inspectFollowupHandoffs({});
+  tools.push({ name: 'list_followup_handoffs', description: 'List the pull request follow-up handoffs in the repositories this client may access whose publication is still owed: handoffs in automatic recovery and holds awaiting an operator that block new commands on their pull request. Released handoffs are left out unless includeReleased is true. Page with offset and limit. Requires instance.manage_runtime.', scope: 'manage', permission, readOnly: true, schema: z.object({
+    includeReleased: z.boolean().default(false).describe('Also list released handoffs, which no longer block anything (nextAction none).'),
+    offset: z.number().int().min(0).max(100000).default(0),
+    limit: z.number().int().min(1).max(100).default(20),
+  }).strict(), run: async ({ principal, args }) => {
+    const statuses = (await handoffs.inspectFollowupHandoffs({}))
+      .filter(status => args.includeReleased === true || status.record.status !== RELEASED_STATUS);
     const visible = repositoryAccess(deps, principal);
     const allowed = await Promise.all(statuses.map(status => visible(status.record.repository)));
-    return ok({ handoffs: statuses.filter((_status, index) => allowed[index]).map(handoffPayload) });
+    const listed = statuses.filter((_status, index) => allowed[index]);
+    const end = args.offset + args.limit;
+    return ok({ handoffs: listed.slice(args.offset, end).map(handoffPayload), nextOffset: listed.length > end ? end : null });
   } });
   tools.push({ name: 'get_followup_handoff', description: 'Show one pull request follow-up handoff: phase, status and the reason it is held, agent liveness, retained worktree and the next operator action.', scope: 'manage', permission, readOnly: true, schema: z.object(targetShape).strict(), run: async ({ args }) => {
     return ok({ status: await inspectOne(targetKey(args as { repository: string; pullRequest: number })) });

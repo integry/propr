@@ -357,8 +357,11 @@ native goal tasks remain private and can only be mutated through goal controls.
 
 Instance administrators with `instance.manage_runtime` also get the
 maintenance tools: `list_followup_handoffs` and `get_followup_handoff` show the
-pull request follow-ups whose publication is still owed, including holds that
-wait for an operator and block every later command on their pull request;
+pull request follow-ups whose publication is still owed: handoffs in automatic
+recovery and holds that wait for an operator and block every later command on
+their pull request. Released handoffs are left out of the list unless
+`includeReleased` is true; page it with `offset` and `limit` (default 20, at
+most 100) and the returned `nextOffset`;
 `resume_followup_handoff` re-arms one and runs its recovery pass, and
 `release_followup_handoff` stops tracking it so the next command can run (the
 branch is freed, files and commits are never deleted; a worktree that still
@@ -841,9 +844,25 @@ List tools return bounded summaries rather than requiring one read per item.
 Task and goal entries include a concise title/summary, agent and model, linked
 pull request state, lifecycle timestamps, elapsed milliseconds, and a failure
 reason when applicable. Plan entries aggregate issue progress, agent/model
-assignments, and pull requests; TODO entries include their category and linked
+assignments, and pull requests; `pull_request_count` counts every pull request
+and `pull_requests_truncated` is true when the bounded `pull_requests` list
+leaves some out (`get_plan` lists every issue with its pull request). A task's
+`agent_alias` falls back to the agent its execution recorded when submission
+routing named none. TODO entries include their category and linked
 plan. Full objectives, prompts, and TODO bodies remain available from the
 corresponding `get_*` tool without inflating large list pages.
+
+Every timestamp in an MCP result is ISO 8601 UTC ending in `Z`, whichever store
+wrote it (SQLite `YYYY-MM-DD HH:MM:SS` text, zone-less ISO text and epoch
+milliseconds are converted at the MCP boundary; field names do not change).
+Stored values and the REST API keep their own formats.
+
+Submission reads (`get_task_submission`, `list_task_submissions`) report
+`state` and `submissionState` from the task the submission follows once it was
+dispatched: a submission whose task is running, completed, failed or cancelled
+reports that stage rather than `queued`. A goal's pull request artifact whose
+merge ProPR has observed is reported as `merged` (not draft) and is not counted
+in `artifactStats.openPullRequests`.
 
 `get_agent_activity` reads exactly one authorized `goalId` or `taskId`. It
 defaults to the 20 most recent entries and returns newest-first, timestamped

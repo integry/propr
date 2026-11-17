@@ -230,6 +230,8 @@ export function summarizePlan(row: JsonObject, issues: JsonObject[], now = Date.
     agent_models: [...agentModels.values()].slice(0, boundedRelationLimit),
     pull_request_count: pullRequests.size,
     pull_requests: [...pullRequests].slice(0, boundedRelationLimit).map(([number, state]) => ({ number, state })),
+    // The list is bounded per plan; get_plan lists every issue with its pull request.
+    pull_requests_truncated: pullRequests.size > boundedRelationLimit,
     created_at: row.created_at,
     updated_at: row.updated_at,
     started_at: row.created_at,

@@ -1,5 +1,6 @@
 import type { Knex } from 'knex';
-import { summarizeTask } from './listSummaries.js';
+import { compactText, summarizeTask } from './listSummaries.js';
+import { loadTaskModelIdentities } from '../routes/taskModelIdentity.js';
 import { TERMINAL_TASK_STATES } from './goalTaskDetail.js';
 import { applyAssigneeSelection, type AssigneeSelection } from '../routes/taskAssignees.js';
 
@@ -86,6 +87,22 @@ async function markMergedTaskSummaries(db: Knex, tasks: TaskSummary[]): Promise<
 }
 
 /**
+ * Submission-time routing does not name the agent of every task (PR follow-ups, label-routed and
+ * automation runs pick it at execution time). Fill the gap from the same execution evidence the
+ * REST task status and CLI report, so a running task's agent is never shown as unknown here.
+ */
+async function fillExecutionAgents(db: Knex, rows: Record<string, unknown>[], summaries: TaskSummary[]): Promise<void> {
+  const missing = rows.filter((_row, index) => summaries[index].agent_alias == null);
+  if (!missing.length) return;
+  const identities = await loadTaskModelIdentities(db, missing);
+  for (const summary of summaries) {
+    if (summary.agent_alias != null) continue;
+    const alias = identities.get(String(summary.task_id))?.agentAlias;
+    if (alias) summary.agent_alias = compactText(alias, 100);
+  }
+}
+
+/**
  * Query the compact summaries used by list_tasks and task-centric joined views.
  * Repository scoping, lifecycle selection and private-goal visibility live here
  * so consumers cannot accidentally expose a different task set.
@@ -128,6 +145,6 @@ export async function queryTaskSummaries(db: Knex, options: TaskSummaryQuery): P
   }
   const rows = await rowsQuery;
   const summaries = rows.map(row => summarizeTask(row));
-  await markMergedTaskSummaries(db, summaries);
+  await Promise.all([markMergedTaskSummaries(db, summaries), fillExecutionAgents(db, rows, summaries)]);
   return summaries;
 }
