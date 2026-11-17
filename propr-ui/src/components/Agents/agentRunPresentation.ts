@@ -80,28 +80,6 @@ export const runDuration = (run: Pick<AutomationRunRecord, 'startedAt' | 'finish
 export const formatTimestamp = (timestamp: number | null): string =>
   timestamp === null ? '—' : new Date(timestamp).toLocaleString();
 
-/** The first non-empty line of a report with leading Markdown markers removed, for one-line previews. */
-export const firstReportLine = (report: string | null | undefined): string | null => {
-  const line = report?.split('\n').map(candidate => candidate.trim()).find(Boolean);
-  if (!line) return null;
-  return line.replace(/^(?:#{1,6}\s+|[-*+]\s+|>\s*|\d+[.)]\s+)/, '').replace(/[*_`]/g, '').trim() || null;
-};
-
-/**
- * Report previews by run id. The history list does not carry reports, so a
- * row's preview is read on hover, and a run detail that has the report records
- * it here so returning to the history shows it without another read.
- */
-const reportPreviews = new Map<string, string | null>();
-
-export const rememberReportPreview = (runId: string, report: string | null | undefined): void => {
-  reportPreviews.set(runId, firstReportLine(report));
-};
-
-export const recalledReportPreview = (runId: string): string | null | undefined => reportPreviews.get(runId);
-
-export const forgetReportPreviews = (): void => reportPreviews.clear();
-
 /**
  * "Claude is at 94% of its session window (pause threshold 90%). Run anyway?",
  * or null when the agent's subscription is not near its limit.

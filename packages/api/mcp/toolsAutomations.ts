@@ -257,7 +257,7 @@ export function addAutomationRunTools(tools: McpTool[], deps: ToolDeps): void {
   tools.push({ name: 'list_automation_templates', description: 'List the shipped automation templates (for example daily issue triage): id, name, description, category, prompt, capabilities, suggested schedule, autonomy (always dry_run) and what to review before saving. A template creates nothing; the user starts one from New automation in the Web UI and saves it.', scope: 'read', readOnly: true,
     schema: z.object({}).strict(), run: async () => ok(AUTOMATION_TEMPLATE_CATALOG) });
 
-  tools.push({ name: 'list_automation_runs', description: `List the runs of one of your automations newest first: trigger (with triggerEvent, the event that started an event run), state, timing and skip or failure reasons. Report bodies are omitted; read one with get_automation_run. ${NO_CHANGE_NOTE}`, scope: 'read', readOnly: true,
+  tools.push({ name: 'list_automation_runs', description: `List the runs of one of your automations newest first: trigger (with triggerEvent, the event that started an event run), state, timing and skip or failure reasons. Report bodies are omitted (a run with a report carries reportPreview, its first line as plain text); read one with get_automation_run. ${NO_CHANGE_NOTE}`, scope: 'read', readOnly: true,
     schema: z.object({ ...definitionShape, offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) }).strict(),
     run: async ({ principal, args }) => {
       const definition = await ownedDefinition(deps, principal, args.definitionId, false);

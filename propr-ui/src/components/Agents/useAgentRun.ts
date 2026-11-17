@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { approveAutomationRun, cancelAutomationRun, getAutomationRun, rejectAutomationRun, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { useOptionalSocket } from '../../contexts/useSocket';
-import { isTerminalRunState, rememberReportPreview } from './agentRunPresentation';
+import { isTerminalRunState } from './agentRunPresentation';
 
 /** How often a run that has not finished is read again. */
 export const AGENT_RUN_REFRESH_MS = 10_000;
@@ -39,7 +39,6 @@ export function useAgentRun(definitionId: string, runId: string) {
       setForeignDefinitionId(next.definitionId);
       return;
     }
-    if (next.report !== undefined && next.reportedAt !== null) rememberReportPreview(next.id, next.report);
     setRun(next);
   }, [definitionId]);
 

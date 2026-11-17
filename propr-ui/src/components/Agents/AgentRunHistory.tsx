@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { History, Loader2, Timer } from 'lucide-react';
-import { getAutomationRun, listAutomationRuns, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
+import { listAutomationRuns, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { AgentRunNoChangeBadge } from './AgentRunNoChangeBadge';
@@ -10,8 +10,6 @@ import {
   runTriggerLabel,
   formatRelativeTime,
   formatTimestamp,
-  recalledReportPreview,
-  rememberReportPreview,
   runDuration,
   runStartedAt,
 } from './agentRunPresentation';
@@ -35,51 +33,13 @@ const ROW_GRID = 'grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)_auto] items-
 const runPath = (definitionId: string, runId: string) =>
   `/automations/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}`;
 
-/** Whether a run has a report worth reading for its preview. */
-const hasReport = (run: AutomationRunRecord) => run.reportedAt !== null;
-
-/**
- * A run's one-line report preview. The list carries no reports, so the run is
- * read the first time its row is hovered or focused; previews already known
- * (from an earlier hover or from the run detail) show straight away.
- */
-function useReportPreviews() {
-  const [, setVersion] = useState(0);
-  const inFlight = useRef(new Set<string>());
-  const activeRef = useRef(true);
-  useEffect(() => {
-    activeRef.current = true;
-    return () => { activeRef.current = false; };
-  }, []);
-
-  const load = useCallback((run: AutomationRunRecord) => {
-    if (!hasReport(run) || recalledReportPreview(run.id) !== undefined || inFlight.current.has(run.id)) return;
-    inFlight.current.add(run.id);
-    void getAutomationRun(run.id)
-      .then(detail => {
-        rememberReportPreview(run.id, detail.report);
-        if (activeRef.current) setVersion(version => version + 1);
-      })
-      .catch(() => undefined)
-      .finally(() => { inFlight.current.delete(run.id); });
-  }, []);
-
-  return load;
-}
-
-const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; now: number; onPreview: (run: AutomationRunRecord) => void }> = ({
-  definitionId, run, now, onPreview,
-}) => {
-  const preview = recalledReportPreview(run.id);
+const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; now: number }> = ({ definitionId, run, now }) => {
   const started = runStartedAt(run);
   return (
     <li>
       <Link
         to={runPath(definitionId, run.id)}
         data-testid="agent-run-row"
-        onMouseEnter={() => onPreview(run)}
-        onFocus={() => onPreview(run)}
-        onTouchStart={() => onPreview(run)}
         className={`${ROW_GRID} border-b border-slate-100 px-4 py-2 text-sm hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500`}
       >
         <time dateTime={new Date(started).toISOString()} title={formatTimestamp(started)} className="whitespace-nowrap text-slate-700">
@@ -95,7 +55,7 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
           {runDuration(run, now)}
         </span>
         <span className="col-span-2 truncate text-xs text-slate-500 [@container(min-width:36rem)]:col-span-1" data-testid="agent-run-preview">
-          {preview}
+          {run.reportPreview}
         </span>
       </Link>
     </li>
@@ -109,7 +69,6 @@ export const AgentRunHistory: React.FC<AgentRunHistoryProps> = ({ definitionId, 
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const loadPreview = useReportPreviews();
   const activeRef = useRef(true);
   useEffect(() => {
     activeRef.current = true;
@@ -173,7 +132,7 @@ export const AgentRunHistory: React.FC<AgentRunHistoryProps> = ({ definitionId, 
         <span>Started</span><span>Trigger</span><span>State</span><span>Duration</span><span>Report</span>
       </div>
       <ul aria-label="Runs">
-        {runs.map(run => <AgentRunRow key={run.id} definitionId={definitionId} run={run} now={now} onPreview={loadPreview} />)}
+        {runs.map(run => <AgentRunRow key={run.id} definitionId={definitionId} run={run} now={now} />)}
       </ul>
       {error && <div className="px-4 pt-3"><SystemAlert>{error}</SystemAlert></div>}
       {nextOffset !== null && (
