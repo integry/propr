@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { keepIfEqual } from '../../utils/keepIfEqual';
 import { Link } from 'react-router-dom';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import { canManageHeldFollowups } from './settingsPermissions';
@@ -71,7 +72,8 @@ function HeldFollowups() {
       if (!isNewest()) return;
       loaded.current = true;
       latest.current = next;
-      setHandoffs(next); setLoadError('');
+      // Polled; an equal read keeps the rows, so nothing on screen is re-rendered.
+      setHandoffs(current => keepIfEqual(current, next)); setLoadError('');
       // Drop consent once its attempt is gone or no longer waits for that choice.
       setPublishCancelledFor(current => (
         current !== null && next.some(handoff => needsCancelledChoice(handoff) && attemptOf(handoff) === current) ? current : null
