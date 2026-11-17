@@ -309,7 +309,8 @@ test('MCP result redaction keeps the token columns of get_cost_breakdown, matchi
   const args = { repository: 'acme/alpha', period: '7d', groupBy: ['outcome'] };
   const data = redact((await tool.run({ principal: {} as McpPrincipal, args: tool.schema.parse(args) })).data) as CostExport;
   const { res, response } = fakeResponse();
-  await createCostExportRoutes({ db, now: () => NOW }).getCost({ query: { period: '7d', repository: 'acme/alpha', group_by: 'outcome' } } as unknown as Request, res);
+  await createCostExportRoutes({ repositoryScope: unscopedRepositoryResolver, db, now: () => NOW }).getCost({ query: { period: '7d', repository: 'acme/alpha', group_by: 'outcome' } } as unknown as Request, res);
+  assert.equal(response.statusCode, 200, JSON.stringify(response.body));
   const api = response.body as CostExport;
   assert.deepEqual(data.rows, api.rows);
   assert.deepEqual(data.totals, api.totals);
