@@ -65,25 +65,29 @@ async function rememberChecks(store: CheckWaitStore | null | undefined, head: Ch
     }
 }
 
-function localObservation(head: CheckWaitHead, now: number, record: boolean): number {
+function localObservation(head: CheckWaitHead, now: number): number {
     const key = headKey(head.repository, head.prNumber);
     const local = localObservations.get(key);
     if (local?.sha === head.headSha) return local.observedAt;
-    if (record) localObservations.set(key, { sha: head.headSha, observedAt: now });
+    localObservations.set(key, { sha: head.headSha, observedAt: now });
     return now;
 }
 
-/** When ProPR first saw the head without checks; a read-only store never records it, so an unseen head reads as seen now. */
+/**
+ * When ProPR first saw the head without checks. A read-only store (the MCP
+ * reads) never records it in Redis: a head it has no record of is recorded in
+ * this process instead, so repeated reads still see the wait run out.
+ */
 async function observedWithoutChecks(store: CheckWaitStore | null | undefined, head: CheckWaitHead, now: number): Promise<number> {
-    if (!store) return localObservation(head, now, true);
+    if (!store) return localObservation(head, now);
     const [owner, repoName] = head.repository.split('/');
     const target = { owner, repoName, prNumber: head.prNumber, headSha: head.headSha };
     try {
         if (writable(store)) return await observePRHead(store, target, now);
-        return await readPRHeadObservation(store, target) ?? localObservation(head, now, false);
+        return await readPRHeadObservation(store, target) ?? localObservation(head, now);
     } catch (error) {
         logger.debug({ repository: head.repository, prNumber: head.prNumber, error: (error as Error).message }, 'Could not read the head observation; this process keeps its own');
-        return localObservation(head, now, true);
+        return localObservation(head, now);
     }
 }
 

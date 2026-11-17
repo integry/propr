@@ -1616,3 +1616,53 @@ test('the wait for a head\'s checks: longer once the repository reported checks,
         'GET /repos/{owner}/{repo}/pulls/{pull_number}', 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}',
     ]);
 });
+
+test('repeated read-only status reads of a head without checks see its wait run out, without writing Redis', async () => {
+    const { headChecksWaitMs } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
+    const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
+    const head = { repository: REPOSITORY, prNumber: PR, headSha: 'head-1', reported: false };
+    const now = Date.parse('2026-11-16T13:34:42Z');
+    // The MCP reads pass a get-only store, and no writable status observation exists for the head.
+    const readOnly = { get: async (key: string) => await redis.get(key) };
+    assert.equal(await headChecksWaitMs(readOnly as never, head, now), NO_CI_GRACE_MS);
+    assert.equal(await headChecksWaitMs(readOnly as never, head, now + 60_000), NO_CI_GRACE_MS - 60_000, 'the wait counts from the first read');
+    assert.equal(await headChecksWaitMs(readOnly as never, head, now + NO_CI_GRACE_MS), null, 'a read past the bound waits no longer');
+    assert.equal(await headChecksWaitMs(readOnly as never, { ...head, headSha: 'head-2' }, now + NO_CI_GRACE_MS), NO_CI_GRACE_MS, 'a new head waits afresh');
+    assert.equal(redis.values.size, 0, 'nothing was written to Redis');
+});
+
+for (const failure of ['pull', 'checks'] as const) {
+    test(`a ${failure} read rejected when a head's wait for checks ends is retried without another webhook`, async () => {
+        const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
+        await addTask('issue', 'completed');
+        github.checkRuns = [];
+        github.commitStatus = { state: 'pending', total_count: 0, statuses: [] };
+        redis.values.set(`auto-merge:head-observed:integry:propr:${PR}`, JSON.stringify({ sha: 'head-1', observedAt: Date.now() - NO_CI_GRACE_MS + 1_500 }));
+        const request = github.request.bind(github);
+        let rejectPullReads = 0;
+        github.request = async (route: string, params: Record<string, unknown>) => {
+            if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}' && rejectPullReads > 0) { rejectPullReads--; throw new Error('GitHub unavailable'); }
+            return await request(route, params);
+        };
+        setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+        enablePullRequestStatusSync({ ...deps(), now: () => new Date() });
+        try {
+            requestPullRequestStatusSync(REPOSITORY, PR);
+            const deadline = Date.now() + 5_000;
+            while (!/Waiting for CI/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+            assert.match(statusLine(), /🔨 Waiting for CI/);
+            // The re-read at the end of the wait fails once.
+            if (failure === 'pull') rejectPullReads = 1;
+            else github.checkFailures = 1;
+            const calls = github.calls.length;
+            while (!/✅ Ready/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+            assert.match(statusLine(), /✅ Ready/, 'the bounded refresh retries the failed deadline read');
+            assert.ok(github.calls.length > calls);
+            if (failure === 'pull') assert.equal(rejectPullReads, 0, 'the deadline read was rejected');
+            else assert.equal(github.checkFailures, 0, 'the deadline check read was rejected');
+        } finally {
+            disablePullRequestStatusSync();
+            setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+        }
+    });
+}
