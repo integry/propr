@@ -76,6 +76,23 @@ test('changing a ctx.propr operation, or the type it returns, in the source is a
   assert.ok(removed.breaking.includes('sdk: type PluginStateStore.keys was removed'), removed.breaking.join('\n'));
 });
 
+test('a required property added to an SDK input plugins build is a breaking change; an optional one is not', () => {
+  assert.ok(SOURCE.suppliedTypes.includes('PluginListEventsInput'), SOURCE.suppliedTypes.join(', '));
+  // Received interfaces are not supplied: a new member of a summary or of ctx breaks no plugin.
+  for (const received of ['PluginContext', 'PluginPullRequestSummary', 'PluginEventInput']) assert.ok(!SOURCE.suppliedTypes.includes(received), received);
+  const search = 'export interface PluginListEventsInput { repository: string;';
+  const required = breakingAfterEdit(PLUGIN_SDK_SOURCE, search, `${search} cursor: number;`);
+  assert.deepEqual(required.breaking, ['sdk: type PluginListEventsInput.cursor was added as a required member of PluginListEventsInput, which plugins supply']);
+  const optional = breakingAfterEdit(PLUGIN_SDK_SOURCE, search, `${search} cursor?: number;`);
+  assert.deepEqual(optional.breaking, []);
+  // Reached through a parameter of a function ctx returns: ctx.http(...)'s init.
+  const nested = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export interface PluginHttpRequestInit {', 'export interface PluginHttpRequestInit {\n  mode: string;');
+  assert.deepEqual(nested.breaking, ['sdk: type PluginHttpRequestInit.mode was added as a required member of PluginHttpRequestInit, which plugins supply']);
+  // A required member of an interface plugins only receive stays an addition.
+  const output = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export interface PluginCreatedIssue { repository: string;', 'export interface PluginCreatedIssue { repository: string; title: string;');
+  assert.deepEqual(output.breaking, []);
+});
+
 test('every journal event type has a payload contract, and nothing else does', () => {
   assert.deepEqual(Object.keys(PLUGIN_EVENT_PAYLOAD_FIELDS).sort(), pluginEventNames().sort());
 });
@@ -153,6 +170,23 @@ test('additive changes are compatible', () => {
     // A new union variant with required fields, and a required field inside a new optional object, break no existing manifest.
     'manifest: field connections[]{type=signing_secret}.name was added', 'manifest: field connections[]{type=token}.secretUrl.hosts was added',
   ]) assert.ok(additions.includes(message), `expected "${message}" in\n${additions.join('\n')}`);
+});
+
+test('restricting an unrestricted manifest field or list item to an enum is a breaking change; dropping an enum is not', () => {
+  const snapshot = readJson(SNAPSHOT);
+  const list = 'connections[]{type=oauth}.scopes';
+  for (const path of ['name', list]) assert.equal(snapshot.manifest[path].enum, undefined, path);
+  assert.equal(snapshot.manifest[list].type, 'string[]');
+  const restricted = structuredClone(snapshot);
+  restricted.manifest.name.enum = ['github', 'slack'];
+  restricted.manifest[list].enum = ['repo'];
+  assert.deepEqual(comparePluginContract(snapshot, restricted).breaking, [
+    'manifest: field name now only accepts "github", "slack" (a breaking manifest change needs a new manifestVersion)',
+    `manifest: field ${list} now only accepts "repo" (a breaking manifest change needs a new manifestVersion)`,
+  ]);
+  // The reverse, an enum lifted, accepts every value it accepted before.
+  const lifted = comparePluginContract(restricted, snapshot);
+  assert.deepEqual(lifted.breaking, []);
 });
 
 test('a new manifest version may change the manifest, while the old version is still read', () => {

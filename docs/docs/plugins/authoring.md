@@ -452,8 +452,8 @@ breaking change is caught.
 1. **The manifest.** Additive changes (a new optional field, a new union
    variant, a new enum value, a looser limit) keep `manifestVersion`. A
    breaking change (removing or retyping a field, making a field required,
-   adding a required field to an existing object, dropping an enum value)
-   adds a new `manifestVersion`, and ProPR keeps reading the old version for
+   adding a required field to an existing object, dropping an enum value,
+   restricting a free-form field or list to an enum) adds a new `manifestVersion`, and ProPR keeps reading the old version for
    at least one minor release: the old version stays in
    `PLUGIN_SUPPORTED_MANIFEST_VERSIONS` and the official manifests are
    migrated before it is dropped. The contract test fails on a breaking change
@@ -473,6 +473,8 @@ breaking change is caught.
    `ctx.state` and `ctx.propr` method's parameters and result, every input
    envelope field and the shared types they reach (read from `pluginSdk.ts`
    with the TypeScript compiler); changing any of them is a breaking change.
+   So is a new required property of an object plugins pass in, such as the
+   input of `ctx.propr.listEvents`; a new optional one is fine.
 
 After an additive change, record it with `npm run plugins:contract:update`
 (the test reports that the snapshot is out of date until you do). The script

@@ -46,6 +46,8 @@ export interface PluginContractSource {
   payloads: Record<string, Record<string, string>>;
   envelope: Record<string, string>;
   sdkTypes: Record<string, string>;
+  /** The SDK interfaces plugins supply (see `PluginContract['sdk']['suppliedTypes']`). */
+  suppliedTypes: string[];
 }
 
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
@@ -106,30 +108,40 @@ const signatureText = (node: ts.SignatureDeclarationBase, file: ts.SourceFile) =
   return `${typeParameters}(${node.parameters.map(p => print(p, file)).join(', ')}) => ${node.type ? print(node.type, file) : 'void'}`;
 };
 
-/** The declared type text of every member of the SDK interfaces, following references into shared sources. */
-function sdkTypes(program: ts.Program, checker: ts.TypeChecker, sdk: ts.SourceFile): Record<string, string> {
+/**
+ * The declared type text of every member of the SDK interfaces, following references into shared sources,
+ * and the interfaces plugins supply: those reached through a parameter (an odd number of them, so the
+ * argument of a callback ProPR passes to a plugin is received again).
+ */
+function sdkTypes(program: ts.Program, checker: ts.TypeChecker, sdk: ts.SourceFile): { types: Record<string, string>; supplied: string[] } {
   const types: Record<string, string> = {};
-  const seen = new Set<ts.Declaration>();
-  const queue: ts.Declaration[] = SDK_ROOTS.map(name => interfaceIn(sdk, name));
-  const follow = (node: ts.Node) => {
-    const visit = (child: ts.Node) => {
+  const supplied = new Set<string>();
+  const seen = new Set<string>();
+  const declarations = new Map<ts.Declaration, number>();
+  const queue: { declaration: ts.Declaration; supplies: boolean }[] = SDK_ROOTS.map(name => ({ declaration: interfaceIn(sdk, name), supplies: false }));
+  const follow = (node: ts.Node, supplies: boolean) => {
+    const visit = (child: ts.Node, polarity: boolean) => {
       const name = ts.isTypeReferenceNode(child) ? child.typeName : ts.isExpressionWithTypeArguments(child) ? child.expression : undefined;
       if (name) {
         let symbol = checker.getSymbolAtLocation(name);
         if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
         for (const declaration of symbol?.declarations ?? []) {
           const inShared = declaration.getSourceFile().fileName.startsWith(SOURCE) && !program.isSourceFileDefaultLibrary(declaration.getSourceFile());
-          if (inShared && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)) && !seen.has(declaration)) queue.push(declaration);
+          if (inShared && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration))) queue.push({ declaration, supplies: polarity });
         }
       }
-      ts.forEachChild(child, visit);
+      // A parameter's type is what the other side supplies.
+      const inner = ts.isParameter(child) ? !polarity : polarity;
+      ts.forEachChild(child, grandchild => visit(grandchild, inner));
     };
-    visit(node);
+    visit(node, supplies);
   };
   while (queue.length) {
-    const declaration = queue.shift()!;
-    if (seen.has(declaration)) continue;
-    seen.add(declaration);
+    const { declaration, supplies } = queue.shift()!;
+    if (!declarations.has(declaration)) declarations.set(declaration, declarations.size);
+    const key = `${declarations.get(declaration)}:${supplies}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const file = declaration.getSourceFile();
     if (ts.isTypeAliasDeclaration(declaration)) {
       const name = declaration.name.text;
@@ -137,14 +149,15 @@ function sdkTypes(program: ts.Program, checker: ts.TypeChecker, sdk: ts.SourceFi
       // An alias like `(typeof LIST)[number]` changes with LIST's values, which its text does not show.
       if (/\btypeof\b/.test(text)) text += ` = ${checker.typeToString(checker.getTypeAtLocation(declaration.type), undefined, ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.InTypeAlias)}`;
       types[name] = text;
-      follow(declaration.type);
+      follow(declaration.type, supplies);
       continue;
     }
     if (!ts.isInterfaceDeclaration(declaration)) continue;
     const name = declaration.name.text;
+    if (supplies) supplied.add(name);
     for (const clause of declaration.heritageClauses ?? []) {
       types[`${name} extends`] = clause.types.map(t => print(t, file)).join(', ');
-      follow(clause);
+      follow(clause, supplies);
     }
     for (const member of declaration.members) {
       const optional = 'questionToken' in member && member.questionToken ? '?' : '';
@@ -153,10 +166,10 @@ function sdkTypes(program: ts.Program, checker: ts.TypeChecker, sdk: ts.SourceFi
       else if (ts.isIndexSignatureDeclaration(member)) types[`${name}[${member.parameters.map(p => print(p, file)).join(', ')}]`] = member.type ? print(member.type, file) : 'any';
       else if (ts.isCallSignatureDeclaration(member)) types[`${name}()`] = signatureText(member, file);
       else throw new Error(`${name}: member kind ${ts.SyntaxKind[member.kind]} is not recorded in the plugin contract`);
-      follow(member);
+      follow(member, supplies);
     }
   }
-  return Object.fromEntries(Object.entries(types).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return { types: Object.fromEntries(Object.entries(types).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))), supplied: [...supplied].sort() };
 }
 
 /** Read the plugin interface from the sources (with `overrides` replacing file text). */
@@ -166,7 +179,8 @@ export function readPluginContractSource({ overrides = {} }: { overrides?: Recor
   const events = program.getSourceFile(REPOSITORY_EVENTS_SOURCE)!;
   const sdk = program.getSourceFile(PLUGIN_SDK_SOURCE)!;
   const payloads = Object.fromEntries(Object.entries(PLUGIN_EVENT_PAYLOAD_INTERFACES).map(([event, name]) => [event, fieldDescriptors(checker, interfaceIn(events, name))]));
-  return { payloads, envelope: fieldDescriptors(checker, interfaceIn(events, 'RepositoryEvent')), sdkTypes: sdkTypes(program, checker, sdk) };
+  const { types, supplied } = sdkTypes(program, checker, sdk);
+  return { payloads, envelope: fieldDescriptors(checker, interfaceIn(events, 'RepositoryEvent')), sdkTypes: types, suppliedTypes: supplied };
 }
 
 /**
@@ -183,6 +197,7 @@ export function buildSourcePluginContract(source: PluginContractSource = readPlu
   for (const [event, fields] of Object.entries(source.payloads)) contract.events.payloads[event] = ordered(contract.events.payloads[event], fields);
   contract.events.envelope = ordered(contract.events.envelope, source.envelope);
   contract.sdk.types = { ...source.sdkTypes };
+  contract.sdk.suppliedTypes = [...source.suppliedTypes];
   return contract;
 }
 

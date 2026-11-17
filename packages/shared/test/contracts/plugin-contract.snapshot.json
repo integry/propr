@@ -1012,6 +1012,11 @@
       "RepositoryEvent.seq": "number",
       "RepositoryEvent.type": "string",
       "RepositoryEventDomain": "(typeof REPOSITORY_EVENT_DOMAINS)[number] = \"pull_request\" | \"epic_queue\" | \"plan_issue\" | \"task\""
-    }
+    },
+    "suppliedTypes": [
+      "PluginHttpRequestInit",
+      "PluginHttpSignature",
+      "PluginListEventsInput"
+    ]
   }
 }

@@ -17,15 +17,15 @@ import {
  * written against them:
  *
  * - **The manifest.** Additive changes keep `manifestVersion`. A breaking
- *   change (a field removed, retyped, made required, or an enum value
- *   dropped) needs a new `manifestVersion`, and ProPR keeps reading the old
+ *   change (a field removed, retyped, made required, restricted to an enum,
+ *   or an enum value dropped) needs a new `manifestVersion`, and ProPR keeps reading the old
  *   version for at least one minor release (`PLUGIN_SUPPORTED_MANIFEST_VERSIONS`).
  * - **Event payloads.** Additive only within a domain: a payload key is never
  *   removed or retyped, an event type is never removed.
  * - **The handler SDK.** `ctx` members, `ctx.propr` operations (and the
  *   permission each needs), `ctx.state` and `ctx.log` methods, input envelope
  *   fields, error codes and the runtime exports of the SDK module are
- *   additive only.
+ *   additive only. An object plugins pass in gains optional members only.
  *
  * `buildPluginContract()` describes the current interface. The shared
  * package's contract test reads the TypeScript sources with the compiler
@@ -146,6 +146,13 @@ export interface PluginContract {
      * Absent from `buildPluginContract()`, which runs without the compiler.
      */
     types?: Record<string, string>;
+    /**
+     * The interfaces in `types` that plugins supply rather than receive: the
+     * ones reached through a parameter, such as `PluginListEventsInput` of
+     * `ctx.propr.listEvents`. A new required member of one breaks the plugins
+     * that already build it. Absent from `buildPluginContract()`, like `types`.
+     */
+    suppliedTypes?: string[];
   };
 }
 
@@ -293,6 +300,8 @@ function compareManifest(previous: PluginContract, current: PluginContract, supp
     if (!now) { result.breaking.push(`manifest: field ${path} was removed ${bump}`); continue; }
     if (now.type !== field.type) result.breaking.push(`manifest: field ${path} changed type from ${field.type} to ${now.type} ${bump}`);
     if (now.required && !field.required) result.breaking.push(`manifest: field ${path} became required ${bump}`);
+    // An unrestricted field (or list item) that gains an enum rejects every value outside it; dropping an enum is compatible.
+    if (now.enum && !field.enum) result.breaking.push(`manifest: field ${path} now only accepts ${now.enum.map(value => JSON.stringify(value)).join(', ')} ${bump}`);
     for (const value of field.enum ?? []) if (now.enum && !now.enum.includes(value)) result.breaking.push(`manifest: field ${path} no longer accepts ${JSON.stringify(value)} ${bump}`);
     for (const value of now.enum ?? []) if (field.enum && !field.enum.includes(value)) result.additions.push(`manifest: field ${path} accepts ${JSON.stringify(value)}`);
   }
@@ -347,7 +356,16 @@ export function comparePluginContract(previous: PluginContract, current: PluginC
       if (!(member in now)) result.breaking.push(`sdk: type ${member} was removed`);
       else if (now[member] !== type) result.breaking.push(`sdk: type ${member} changed from ${type} to ${now[member]}`);
     }
-    for (const member of Object.keys(now)) if (!(member in sdk.types)) result.additions.push(`sdk: type ${member} was added`);
+    // A required member added to an interface plugins supply (a parameter of an SDK call) breaks the plugins that build it.
+    const supplied = new Set([...(sdk.suppliedTypes ?? []), ...(current.sdk.suppliedTypes ?? [])]);
+    const owner = (member: string) => /^([^.[(\s]+)(?:\.|\[|\(| extends$)/.exec(member)?.[1];
+    const existing = new Set(Object.keys(sdk.types).map(owner).filter((name): name is string => name !== undefined));
+    for (const member of Object.keys(now)) {
+      if (member in sdk.types) continue;
+      const name = owner(member);
+      if (name && supplied.has(name) && existing.has(name) && !optional(member)) result.breaking.push(`sdk: type ${member} was added as a required member of ${name}, which plugins supply`);
+      else result.additions.push(`sdk: type ${member} was added`);
+    }
   }
   return result;
 }
