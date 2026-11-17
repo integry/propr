@@ -3,7 +3,7 @@ import { runWithNetworkPolicy } from './networkEgress.js';
 import { runRepositoryWorkflow } from './repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '@propr/core';
 import type { Logger } from 'pino';
-import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
+import { AgentRegistry, applyRunSummarySelection, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
 import type { AgentExtensionRequest, AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
@@ -353,6 +353,10 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
     }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
     // One id for this execution, so the success path and a later failure handler record it once.
     agentResult.executionId ??= randomUUID();
+    // Implementation follow-ups publish a summary and commit subject: one small call picks it.
+    const published = params.applyRepositoryWorkflow
+        ? await applyRunSummarySelection(agentResult, { taskId, issueRef: { number: pullRequestNumber, repoOwner, repoName }, prNumber: pullRequestNumber })
+        : agentResult;
 
-    return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
+    return { claudeResult: agentResultToClaudeResponse(published), agentType: agent.config.type };
 }

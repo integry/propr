@@ -135,7 +135,8 @@ async function commitAndPush(
     completionInputs: Omit<PublicationCompletion, 'commitResult' | 'changesSummary' | 'commitMessage'>,
 ) {
     if (!state.worktreeInfo) throw new Error('Cannot commit PR comment changes without a worktree');
-    const changesSummary = sanitizeAgentReport(state.claudeResult.summary || state.claudeResult.finalResult?.result || '');
+    // No summary chosen: the commit subject falls back to the request title.
+    const changesSummary = state.claudeResult.summarySelection === 'none' ? '' : sanitizeAgentReport(state.claudeResult.summary || state.claudeResult.finalResult?.result || '');
     const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: context.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: context.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
