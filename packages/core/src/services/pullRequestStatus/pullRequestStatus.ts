@@ -9,6 +9,7 @@
  * Redis or a database.
  */
 
+import { ultrafixActiveCycle } from '@propr/shared';
 import type { EpicMergeProgress } from '../../webhook/epicMergeProgress.js';
 
 export type PullRequestStatusState = 'working' | 'needs_attention' | 'ready' | 'none';
@@ -72,6 +73,8 @@ export interface PullRequestStatusUltrafix {
     completionStatus: 'succeeded' | 'failed' | null;
     completionReason: string | null;
     finalScore: number | null;
+    /** Cycle the loop stopped in (ultrafixStepCycle); null for state written before it was recorded. */
+    finalCycle?: number | null;
     completedAt: string | null;
     /** The loop holds its next step back until checks on the head settle. */
     waitingForCi: boolean;
@@ -280,7 +283,7 @@ function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: Pul
     const { passed, failed, pending } = facts.checks;
     const detail: PullRequestStatusDetail = { ...base, checks: { passed, failed, pending }, failedChecks: [...facts.checks.failedNames] };
     const loop = facts.ultrafix;
-    if (loop?.active) detail.ultrafix = { cycle: Math.min(loop.cycleCount + 1, Math.max(loop.maxCycles, 1)), maxCycles: loop.maxCycles };
+    if (loop?.active) detail.ultrafix = { cycle: ultrafixActiveCycle(loop.cycleCount, loop.maxCycles), maxCycles: loop.maxCycles };
 
     const activity = activeProprWork(facts);
     if (activity) return { state: 'working', detail: { ...detail, activity } };
@@ -288,7 +291,7 @@ function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: Pul
     const reason = confirmedAttentionReason(facts);
     if (reason) {
         const stopped = reason === 'ultrafix_stopped' && loop
-            ? { cycles: loop.cycleCount, finalScore: loop.finalScore, reason: loop.completionReason }
+            ? { cycles: loop.finalCycle ?? loop.cycleCount, finalScore: loop.finalScore, reason: loop.completionReason }
             : null;
         return { state: 'needs_attention', detail: { ...detail, reason, ultrafixStopped: stopped } };
     }

@@ -419,6 +419,74 @@ describe('Ultrafix continuation entry point', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 1);
     });
 
+    const completeFix = (redis: ReturnType<typeof createMockRedis>, pullRequestNumber: number, blockedStep = false) =>
+        continueUltrafixLoop({
+            owner: 'acme',
+            repo: 'web',
+            pullRequestNumber,
+            completedAction: 'fix',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' },
+            redisClient: redis as never,
+            correlatedLogger: logger as never,
+            correlationId: `fix-${pullRequestNumber}`,
+            currentJobId: `completed-fix-${pullRequestNumber}`,
+            ...(blockedStep ? { blockedStep } : {}),
+        });
+
+    const stopNotice = (): string => mockOctokitRequest.mock.calls
+        .map(call => (call.arguments as unknown[])[1] as { body?: string } | undefined)
+        .find(request => request?.body?.includes('Ultrafix stopped before reaching its goal'))?.body ?? '';
+
+    test('a loop that stops after its final fix reports the score of its last review, not "unknown"', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 48, goal: 8, maxCycles: 2 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => reviewWithBlockers(311, ['correctness']));
+        await completeReview(redis, 48, 311);
+        await completeFix(redis, 48);
+        await completeReview(redis, 48, 312);
+
+        const result = await completeFix(redis, 48);
+
+        assert.equal(result.continued, false);
+        assert.equal(result.outcome, 'cycles_exhausted');
+        assert.equal(result.score, 6);
+        assert.match(stopNotice(), /Requested goal: 8\/10\. Last score: 6\/10\. Stopped in cycle 2 of 2\./);
+        const state = await loadState(redis as never, 'acme', 'web', 48);
+        assert.equal(state?.finalScore, 6);
+        assert.equal(state?.finalCycle, 2);
+    });
+
+    test('the stop notice names the cycle the status line showed while the loop ran', async () => {
+        const { ultrafixActiveCycle } = await import('@propr/shared');
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 49, goal: 8, maxCycles: 10 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => reviewWithBlockers(321, ['correctness']));
+        await completeReview(redis, 49, 321);
+        await completeFix(redis, 49);
+        const running = await loadState(redis as never, 'acme', 'web', 49);
+        // The status line while the second review runs: "Ultrafix cycle 2 of 10".
+        assert.equal(ultrafixActiveCycle(running!.cycleCount, running!.maxCycles), 2);
+
+        // That review stops the loop before its fix (the #3588 case, which then said "after 1 cycle").
+        mockGetPendingReviewState.mock.mockImplementation(async () => reviewWithBlockers(322, ['style']));
+        await completeReview(redis, 49, 322);
+
+        assert.match(stopNotice(), /Last score: 6\/10\. Stopped in cycle 2 of 10\./);
+        const stopped = await loadState(redis as never, 'acme', 'web', 49);
+        assert.equal(stopped?.finalCycle, 2);
+    });
+
+    test('a loop that ends before any review scored still reports "unknown"', async () => {
+        const redis = createMockRedis();
+        // Pending reviews: the loop starts with a fix, which stops on a blocker.
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 50, goal: 8, maxCycles: 10 }, true);
+
+        const result = await completeFix(redis, 50, true);
+
+        assert.equal(result.outcome, 'stopped');
+        assert.match(stopNotice(), /Last score: unknown\. Stopped in cycle 1 of 10\./);
+    });
+
     test('state lost after record decides reason and outcome from one epoch read', async () => {
         const { getUltrafixStateKey } = await import('../src/jobs/ultrafixOrchestrationService.js');
         const { getUltrafixAutomaticWorkEpochKey } = await import('../src/jobs/ultrafixAutomaticWorkEpoch.js');

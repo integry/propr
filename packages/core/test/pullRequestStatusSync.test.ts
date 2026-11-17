@@ -66,6 +66,7 @@ class FakeRedis {
 interface FakePull {
     state: string; merged: boolean; mergeable: boolean | null; body: string;
     head: { sha: string; ref: string; repo: { full_name: string } | null }; base: { ref: string; sha: string };
+    labels?: Array<{ name: string }>;
 }
 
 class FakeGitHub {
@@ -98,6 +99,12 @@ class FakeGitHub {
             this.pull.body = String(params.body);
             this.patches.push(this.pull.body);
             return { data: { body: this.pull.body } };
+        }
+        if (route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+            const before = this.pull.labels ?? [];
+            this.pull.labels = before.filter(label => label.name !== params.name);
+            if (this.pull.labels.length === before.length) throw Object.assign(new Error('Label does not exist'), { status: 404 });
+            return { data: this.pull.labels };
         }
         if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') {
             if (this.checkFailures > 0) { this.checkFailures--; throw new Error('GitHub unavailable'); }
@@ -260,6 +267,56 @@ test('the block follows a pull request through its transitions and keeps the res
 
     assert.equal(new Set(lines).size, lines.length, 'every transition changed the block');
     assert.equal(github.patches.length, lines.length);
+});
+
+test('the cycle a stopped Ultrafix loop reports is the one the status line showed while it ran', async () => {
+    await addTask('issue', 'completed');
+    await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score: 6, created_at: '2026-11-13T09:10:00Z' });
+    // Four cycles done, the fifth review running.
+    const state = { goal: 8, maxCycles: 10, cycleCount: 4, reviewCount: 4, fixCount: 4, lastAction: 'fix', active: true,
+        completionStatus: null, completionReason: null, finalScore: null, completedAt: null };
+    redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify(state));
+    const review = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'review' }] });
+    await sync();
+    assert.match(statusLine(), /Ultrafix cycle 5 of 10/);
+    await setTaskState(review, 'completed');
+
+    // That review stopped the loop before its fix: it stopped in cycle 5 (#3588 said "after 4 cycles").
+    redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify({
+        ...state, reviewCount: 5, lastAction: 'review', active: false, completionStatus: 'failed',
+        completionReason: 'style_findings_only', finalScore: 6, finalCycle: 5, completedAt: '2026-11-13T23:00:00Z',
+    }));
+    await sync();
+    assert.match(statusLine(), /⚠️ Needs you · Ultrafix stopped after 5 cycles at 6\/10/);
+});
+
+test('a leftover ultrafix label is removed once the pull request is merged or closed', async () => {
+    await addTask('issue', 'completed');
+    github.pull.labels = [{ name: 'AI' }, { name: 'ultrafix' }];
+    await sync();
+    assert.deepEqual(github.pull.labels.map(label => label.name), ['AI', 'ultrafix'], 'an open pull request keeps its label');
+
+    github.pull.state = 'closed';
+    github.pull.merged = true;
+    assert.equal(await sync(), 'removed');
+    assert.deepEqual(github.pull.labels.map(label => label.name), ['AI']);
+    const deletes = () => github.calls.filter(call => call.route.startsWith('DELETE ')).length;
+    assert.equal(deletes(), 1);
+    await sync();
+    assert.equal(deletes(), 1, 'no label left, no further removal');
+
+    // Closed without merging, and the removal failing once: the next update removes it.
+    github.pull = { ...github.pull, merged: false, labels: [{ name: 'ultrafix' }] };
+    const request = github.request.bind(github);
+    let failures = 1;
+    github.request = async (route, params) => {
+        if (route.startsWith('DELETE ') && failures-- > 0) throw Object.assign(new Error('GitHub unavailable'), { status: 502 });
+        return await request(route, params);
+    };
+    await sync();
+    assert.deepEqual(github.pull.labels, [{ name: 'ultrafix' }]);
+    await sync();
+    assert.deepEqual(github.pull.labels, []);
 });
 
 test('no PATCH is sent when the rendered status is unchanged, even as time passes', async () => {

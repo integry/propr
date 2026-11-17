@@ -1,5 +1,6 @@
 import type { Knex } from 'knex';
 import type { Redis } from 'ioredis';
+import logger from '../../utils/logger.js';
 import { summarizeCheckSignals } from '../../webhook/checkRunHelpers.js';
 import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
@@ -32,6 +33,7 @@ export interface PullRequestStatusPull {
     head: { sha: string; ref: string; repo?: { full_name?: string | null } | null };
     /** The branch the pull request merges into; `sha` is its tip as GitHub last compared it. */
     base?: { ref?: string; sha?: string };
+    labels?: Array<{ name?: string | null } | null> | null;
 }
 
 export interface PullRequestStatusSources {
@@ -189,6 +191,7 @@ async function loadUltrafix(redis: Pick<Redis, 'get'> | null | undefined, owner:
         completionStatus: state.completionStatus === 'succeeded' || state.completionStatus === 'failed' ? state.completionStatus : null,
         completionReason: text(state.completionReason),
         finalScore: typeof state.finalScore === 'number' ? state.finalScore : null,
+        finalCycle: typeof state.finalCycle === 'number' && Number.isFinite(state.finalCycle) ? state.finalCycle : null,
         completedAt: text(state.completedAt),
         waitingForCi: state.active === true && Boolean(rawWait),
     };
@@ -386,4 +389,33 @@ export async function loadPullRequestStatus(
     repository: string, prNumber: number, sources: PullRequestStatusSources, pull?: PullRequestStatusPull,
 ): Promise<PullRequestStatus> {
     return computePullRequestStatus(await loadPullRequestStatusFacts(repository, prNumber, sources, pull));
+}
+
+/** The circuit-breaker label of an Ultrafix loop. */
+export const ULTRAFIX_LABEL = 'ultrafix';
+
+/**
+ * Removes an `ultrafix` label left on a merged or closed pull request: no loop
+ * runs on it any more, so the label only misreports one. Best-effort: a failed
+ * removal is logged and retried by the next status update of the pull request.
+ * Returns whether a label was removed.
+ */
+export async function removeLeftoverUltrafixLabel(
+    github: PullRequestStatusGitHub, repository: string, prNumber: number, pull: PullRequestStatusPull,
+): Promise<boolean> {
+    if (pull.state === 'open' && !pull.merged) return false;
+    if (!(pull.labels ?? []).some(label => label?.name === ULTRAFIX_LABEL)) return false;
+    const [owner, repo] = repository.split('/');
+    try {
+        await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}', {
+            owner, repo, issue_number: prNumber, name: ULTRAFIX_LABEL,
+        });
+        logger.info({ repository, prNumber }, 'Removed the leftover ultrafix label from a closed pull request');
+        return true;
+    } catch (error) {
+        // Already gone: someone removed it meanwhile.
+        if ((error as { status?: number }).status === 404) return false;
+        logger.warn({ repository, prNumber, error: (error as Error).message }, 'Could not remove the leftover ultrafix label from a closed pull request');
+        return false;
+    }
 }

@@ -46,7 +46,7 @@ import {
 } from './pullRequestStatusBlock.js';
 import {
     countQueuedPullRequestJobs,
-    isProprCreatedPullRequest,
+    isProprCreatedPullRequest, removeLeftoverUltrafixLabel,
     loadPullRequestStatusFacts,
     type PullRequestStatusGitHub,
     type PullRequestStatusPull,
@@ -172,6 +172,7 @@ async function desiredStatus(
 ): Promise<DesiredStatus> {
     const { repository, prNumber, pull } = target;
     if (pull.state !== 'open' || pull.merged) {
+        await removeLeftoverUltrafixLabel(deps.github, repository, prNumber, pull);
         // Ownership decides only whether a slot left in the title is removed; a title without one is never read for it.
         const isPropr = hasStatusSlot(pull.title) && await isProprCreatedPullRequest(deps.sources.db, repository, { number: prNumber, head: pull.head });
         return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null };
