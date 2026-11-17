@@ -48,10 +48,6 @@ function fakeGitHub(options: {
     /** Resolves before each comment list returns, so a test can interleave concurrent workers there. */
     beforeListReturns?: () => Promise<void>;
     failEdit?: boolean;
-    /** Actions job id → its steps, for the aggregate lookup. */
-    jobSteps?: Record<number, Array<{ name: string; conclusion: string }>>;
-    /** Check run id → its failure annotation messages. */
-    jobFailures?: Record<number, string[]>;
     comments?: StoredComment[];
 } = {}) {
     const comments: StoredComment[] = options.comments ?? [];
@@ -85,11 +81,10 @@ function fakeGitHub(options: {
             if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
                 const jobId = parameters.job_id as number;
                 // Nothing is cancelled here, so the provenance check stops at the job's conclusion.
-                return { data: { id: jobId, run_id: RUN_ID, run_attempt: 1, conclusion: 'failure', completed_at: '2026-11-17T10:00:00Z', steps: options.jobSteps?.[jobId] ?? [] } };
+                return { data: { id: jobId, run_id: RUN_ID, run_attempt: 1, conclusion: 'failure', completed_at: '2026-11-17T10:00:00Z', steps: [] } };
             }
             if (route === 'GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations') {
-                const messages = options.jobFailures?.[parameters.check_run_id as number] ?? [];
-                return { data: parameters.page === 1 ? messages.map(message => ({ annotation_level: 'failure', message })) : [] };
+                return { data: [] };
             }
             if (route.includes('/actions/runs/')) {
                 return { data: { status: 'completed', conclusion: 'failure', total_count: 0, jobs: [] } };
@@ -121,14 +116,6 @@ function dependencies(octokit: ReturnType<typeof fakeGitHub>['octokit'], redisCl
         loadProprCancelledRuns: async () => [],
     };
 }
-
-const AGGREGATE_STEPS = [
-    { name: 'Set up job', conclusion: 'success' },
-    { name: 'Enforce shard and docs results', conclusion: 'failure' },
-];
-const SHARDS_FAILED = 'Full test suite shards finished with result \'failure\'.';
-const EXIT_NOTICE = 'Process completed with exit code 1.';
-const AGGREGATE_FAILURES = [SHARDS_FAILED, EXIT_NOTICE];
 
 describe('one CI-failure comment per head commit', () => {
     test('a second failing check of the same head edits the first comment instead of posting', async () => {
@@ -170,84 +157,16 @@ describe('one CI-failure comment per head commit', () => {
         assert.ok(!github.posts[1].includes(buildCiFailureHeadMarker(HEAD)));
     });
 
-    test('the aggregate job is not listed when its own shard already is', async () => {
-        const github = fakeGitHub({ jobSteps: { 99: AGGREGATE_STEPS }, jobFailures: { 99: AGGREGATE_FAILURES } });
+    test('a failing aggregate job is listed next to its own shard like any other check', async () => {
+        const github = fakeGitHub();
         const deps = dependencies(github.octokit);
 
         await postCiFailureFollowup(failure('Full Test Suite Shard 2/4', 11), 'shard', deps);
         const aggregate = await postCiFailureFollowup(failure('Run Full Test Suite', 99), 'aggregate', deps);
 
-        assert.strictEqual(aggregate.reason, 'aggregate_omitted');
+        assert.strictEqual(aggregate.reason, 'updated');
         assert.strictEqual(github.posts.length, 1);
-        assert.strictEqual(github.edits.length, 0);
-        assert.doesNotMatch(github.comments[0].body, /Run Full Test Suite/);
-    });
-
-    test('the aggregate job is still listed next to a check from another workflow run', async () => {
-        const github = fakeGitHub({ jobSteps: { 99: AGGREGATE_STEPS }, jobFailures: { 99: AGGREGATE_FAILURES } });
-        const deps = dependencies(github.octokit);
-
-        await postCiFailureFollowup(failure('Docs', 31, { url: 'https://github.com/integry/propr/actions/runs/777/job/31' }), 'other-run', deps);
-        const aggregate = await postCiFailureFollowup(failure('Run Full Test Suite', 99), 'aggregate', deps);
-
-        assert.strictEqual(aggregate.reason, 'updated');
-        assert.match(github.comments[0].body, /Run Full Test Suite/);
-    });
-
-    test('a run link inside a listed check\'s failure evidence does not list that run', async () => {
-        const github = fakeGitHub({ jobSteps: { 99: AGGREGATE_STEPS }, jobFailures: { 99: AGGREGATE_FAILURES } });
-        const deps = dependencies(github.octokit);
-
-        await postCiFailureFollowup(failure('Full Test Suite Shard 1/4', 31, {
-            url: 'https://github.com/integry/propr/actions/runs/777/job/31',
-            fallbackExcerpt: `Reproduce with https://github.com/integry/propr/actions/runs/${RUN_ID}/job/11\n- Run: [View CI failure](https://github.com/integry/propr/actions/runs/${RUN_ID})`,
-        }), 'other-run', deps);
-        const aggregate = await postCiFailureFollowup(failure('Run Full Test Suite', 99), 'aggregate', deps);
-
-        assert.strictEqual(aggregate.reason, 'updated');
-        assert.match(github.comments[0].body, /Run Full Test Suite/);
-    });
-
-    test('an aggregate failing shard coverage verification as well stays listed next to its shard', async () => {
-        const coverageFailed = 'Shard coverage verification finished with result \'failure\'.';
-        for (const [label, steps, failures] of [
-            ['gate reports coverage', AGGREGATE_STEPS, [SHARDS_FAILED, coverageFailed, EXIT_NOTICE]],
-            ['coverage step failed', [{ name: 'Verify shards ran every discovered test exactly once', conclusion: 'failure' }, ...AGGREGATE_STEPS], AGGREGATE_FAILURES],
-            ['unrecognized failure annotation', AGGREGATE_STEPS, [SHARDS_FAILED, 'Duplicate test execution detected', EXIT_NOTICE]],
-            ['unlisted needed job failed', AGGREGATE_STEPS, [SHARDS_FAILED, 'Docs site validation finished with result \'failure\'.', EXIT_NOTICE]],
-            ['no annotations', AGGREGATE_STEPS, []],
-        ] as const) {
-            const github = fakeGitHub({ jobSteps: { 99: [...steps] }, jobFailures: { 99: [...failures] } });
-            const deps = dependencies(github.octokit);
-
-            await postCiFailureFollowup(failure('Full Test Suite Shard 2/4', 11), 'shard', deps);
-            const aggregate = await postCiFailureFollowup(failure('Run Full Test Suite', 99), 'aggregate', deps);
-
-            assert.strictEqual(aggregate.reason, 'updated', label);
-            assert.match(github.comments[0].body, /Run Full Test Suite/, label);
-        }
-    });
-
-    test('the aggregate is left out when every needed job it reports is listed from its run', async () => {
-        const docsFailed = 'Docs site validation finished with result \'failure\'.';
-        const github = fakeGitHub({ jobSteps: { 99: AGGREGATE_STEPS }, jobFailures: { 99: [SHARDS_FAILED, docsFailed, EXIT_NOTICE] } });
-        const deps = dependencies(github.octokit);
-
-        await postCiFailureFollowup(failure('Full Test Suite Shard 2/4', 11), 'shard', deps);
-        await postCiFailureFollowup(failure('Validate Docs Site', 12), 'docs', deps);
-        const aggregate = await postCiFailureFollowup(failure('Run Full Test Suite', 99), 'aggregate', deps);
-
-        assert.strictEqual(aggregate.reason, 'aggregate_omitted');
-    });
-
-    test('a failed sibling job of the same run is listed: only the dependency gate marks an aggregate', async () => {
-        const github = fakeGitHub({ jobSteps: { 12: [{ name: 'Run shard', conclusion: 'failure' }] } });
-        const deps = dependencies(github.octokit);
-
-        await postCiFailureFollowup(failure('Full Test Suite Shard 1/4', 11), 'shard-1', deps);
-        const second = await postCiFailureFollowup(failure('Full Test Suite Shard 2/4', 12), 'shard-2', deps);
-
-        assert.strictEqual(second.reason, 'updated');
+        assert.ok(github.comments[0].body.startsWith('CI failed: **Full Test Suite Shard 2/4**, **Run Full Test Suite**\n'));
     });
 
     test('a comment-list failure falls back to posting a new comment', async () => {

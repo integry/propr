@@ -13,7 +13,6 @@ import {
     buildCiFailureHeadMarker,
     DEFAULT_COMMENT_LOCK_WAIT_MS,
     editCiFailureComment,
-    isAggregateOfListedCheck,
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
@@ -78,8 +77,8 @@ export interface CiFailureFollowupDependencies {
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    /** `updated`: listed on the same head's comment; `aggregate_omitted`: one of its shards is already listed there. */
-    reason: 'posted' | 'updated' | 'aggregate_omitted' | 'disabled' | 'duplicate' | 'cancellation_induced';
+    /** `updated`: listed on the same head's comment. */
+    reason: 'posted' | 'updated' | 'disabled' | 'duplicate' | 'cancellation_induced';
     body?: string;
 }
 
@@ -293,10 +292,6 @@ async function reportClaimedFailure(
     if (scan.duplicate) {
         log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
         return { posted: false, reason: 'duplicate' };
-    }
-    if (scan.sameHead && await isAggregateOfListedCheck(octokit, request, scan.sameHead.body, log)) {
-        log.info({ ...failureLogContext(request), commentId: scan.sameHead.id }, 'Failed aggregate job is not listed next to its own failing shard');
-        return { posted: false, reason: 'aggregate_omitted' };
     }
 
     const annotationExcerpt = await loadAnnotationExcerpt(octokit, request, log);

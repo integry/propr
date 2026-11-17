@@ -55,8 +55,6 @@ const ANNOTATIONS_PAGE_SIZE = 100;
 const MAX_ANNOTATION_PAGES = 5;
 /** The aggregate's `::error::` for a needed job the cancellation stopped. */
 const CANCELLED_DEPENDENCY_RE = /^.+ finished with result 'cancelled'\.$/u;
-/** The gate's `::error::` for a needed job that failed; the label names the job, not why it failed. */
-const FAILED_DEPENDENCY_RE = /^(.+) finished with result 'failure'\.$/u;
 /** The runner's notice for the failing step; it says nothing about why. */
 const STEP_EXIT_RE = /^Process completed with exit code \d+\.$/u;
 /**
@@ -169,59 +167,6 @@ export async function findCancellationProvenance(
     if (!await failedOnCancelledDependencies(octokit, target, jobId, gateSteps)) return null;
 
     return { cancelledBy, runId, runAttempt };
-}
-
-/** A failed aggregate whose failure is, provably, only its gate reporting failed needed jobs. */
-export interface DependencyGateFailure {
-    runId: number;
-    /** The gate's labels of the needed jobs it reported as `failure`, e.g. `Full test suite shards`. */
-    failedDependencies: string[];
-}
-
-/**
- * Reads whether a failed job is an aggregate that failed only because needed
- * jobs failed: every failed step is the recognized dependency gate (which
- * failed), and every failure annotation is the gate's report of a needed job
- * that finished with `failure`, or the runner's exit-code notice for the gate.
- * Any other failed step or failure evidence (such as the gate reporting shard
- * coverage verification) is independent of the needed jobs, and unreadable
- * steps or annotations are not proof: both return null.
- */
-export async function loadDependencyGateFailure(
-    octokit: CancellationProvenanceOctokit,
-    target: { owner: string; repo: string; jobId: number },
-): Promise<DependencyGateFailure | null> {
-    const job = asRecord((await octokit.request('GET /repos/{owner}/{repo}/actions/jobs/{job_id}', {
-        owner: target.owner, repo: target.repo, job_id: target.jobId,
-    })).data) as ActionsJob | null;
-    if (!job || typeof job.run_id !== 'number' || !onlyGateStepFailed(job.steps)) return null;
-    // An Actions job's check run id is its job id.
-    const failures = await loadFailureAnnotationMessages(octokit, target, target.jobId);
-    if (!failures) return null;
-    const failedDependencies: string[] = [];
-    let exitNotices = 0;
-    for (const message of failures) {
-        const dependency = FAILED_DEPENDENCY_RE.exec(message);
-        if (dependency) failedDependencies.push(dependency[1]);
-        else if (STEP_EXIT_RE.test(message) && exitNotices === 0) exitNotices += 1;
-        else return null;
-    }
-    return failedDependencies.length > 0 ? { runId: job.run_id, failedDependencies } : null;
-}
-
-/** Whether the dependency gate failed and is the only step that did not pass. */
-function onlyGateStepFailed(steps: unknown): boolean {
-    if (!Array.isArray(steps)) return false;
-    let gateFailed = false;
-    for (const entry of steps) {
-        const step = asRecord(entry) as ActionsStep | null;
-        if (!step || typeof step.name !== 'string' || typeof step.conclusion !== 'string') return false;
-        const conclusion = step.conclusion.toLowerCase();
-        if (PASSING_STEP_CONCLUSIONS.has(conclusion)) continue;
-        if (!DEPENDENCY_GATE_STEPS.has(step.name) || conclusion !== 'failure') return false;
-        gateFailed = true;
-    }
-    return gateFailed;
 }
 
 interface TargetJob {
@@ -339,35 +284,25 @@ async function failedOnCancelledDependencies(
     checkRunId: number,
     gateStepsRan: number,
 ): Promise<boolean> {
-    const failures = await loadFailureAnnotationMessages(octokit, target, checkRunId);
-    if (!failures) return false;
-    if (failures.filter(message => STEP_EXIT_RE.test(message)).length > gateStepsRan) return false;
-    return failures.some(message => CANCELLED_DEPENDENCY_RE.test(message))
-        && failures.every(message => CANCELLED_DEPENDENCY_RE.test(message)
-            || STEP_EXIT_RE.test(message)
-            || CANCELLATION_CONSEQUENCES.has(message));
-}
-
-/** The check's failure-level annotation messages; null when missing or more than GitHub keeps for one job. */
-async function loadFailureAnnotationMessages(
-    octokit: CancellationProvenanceOctokit,
-    target: { owner: string; repo: string },
-    checkRunId: number,
-): Promise<string[] | null> {
     const failures: string[] = [];
     for (let page = 1; ; page += 1) {
-        if (page > MAX_ANNOTATION_PAGES) return null;
+        if (page > MAX_ANNOTATION_PAGES) return false;
         const { data } = await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', {
             owner: target.owner, repo: target.repo, check_run_id: checkRunId, per_page: ANNOTATIONS_PAGE_SIZE, page,
         });
-        if (!Array.isArray(data)) return null;
+        if (!Array.isArray(data)) return false;
         for (const annotation of data) {
             const record = asRecord(annotation);
             if (record?.annotation_level !== 'failure') continue;
             failures.push(typeof record.message === 'string' ? record.message.trim() : '');
         }
-        if (data.length < ANNOTATIONS_PAGE_SIZE) return failures;
+        if (data.length < ANNOTATIONS_PAGE_SIZE) break;
     }
+    if (failures.filter(message => STEP_EXIT_RE.test(message)).length > gateStepsRan) return false;
+    return failures.some(message => CANCELLED_DEPENDENCY_RE.test(message))
+        && failures.every(message => CANCELLED_DEPENDENCY_RE.test(message)
+            || STEP_EXIT_RE.test(message)
+            || CANCELLATION_CONSEQUENCES.has(message));
 }
 
 function isEligibleTargetConclusion(conclusion: string | null | undefined): boolean {
