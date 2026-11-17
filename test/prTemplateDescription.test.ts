@@ -265,7 +265,7 @@ test('a new issue pull request opens with the status block first, with no settin
         disablePullRequestStatusSync();
     }
     const body = String(published[0].body);
-    assert.match(body, /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 Implementing · updated \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n/);
+    assert.match(body, /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 Implementing · updated [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n/);
 
     // A process that does not maintain the status (library use) writes the body as before.
     await create();

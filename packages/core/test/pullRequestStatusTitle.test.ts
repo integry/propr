@@ -9,6 +9,7 @@ const { closeConnection } = await import('../src/db/connection.js');
 const { disablePullRequestStatusSync, enablePullRequestStatusSync, syncPullRequestStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { setPullRequestStatusSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
+const { resetPullRequestStatusEditPacingForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const {
     initialPullRequestTitle, resetPullRequestTitleStateForTests, setPullRequestTitleSettleMsForTests,
 } = await import('../src/services/pullRequestStatus/pullRequestStatusTitle.js');
@@ -116,6 +117,7 @@ beforeEach(async () => {
     queuedJobs = 0;
     clock = Date.parse('2026-11-16T13:30:00Z');
     resetPullRequestStatusProvenanceForTests();
+    resetPullRequestStatusEditPacingForTests();
     resetPullRequestTitleStateForTests();
     resetPullRequestCheckWaitForTests();
 });
@@ -516,7 +518,7 @@ test('a review below the goal for the current head still needs you while its che
     await addScore(6, 'head-1');
     github.checkRuns = [{ name: 'unit', status: 'in_progress', conclusion: null }];
     await syncSettled();
-    assert.match(statusLine(), /⚠️ Needs you · review below goal/);
+    assert.match(statusLine(), /⚠️ Needs you · review 6\/10, goal 7 · /);
     assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
 });
 
@@ -558,7 +560,7 @@ for (const order of ['blocked review first', 'blocked review last'] as const) {
         const reviews = [{ score: 6, blockers: 1 }, { score: 8, blockers: 0 }];
         await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
         await syncSettled();
-        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review below goal 7\/10 · review 6\/10/);
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review 6\/10, goal 7 · /);
         assert.equal(github.pull.title, `⚠️❻ ${TITLE}`);
     });
 

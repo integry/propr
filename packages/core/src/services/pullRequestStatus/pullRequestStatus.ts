@@ -101,7 +101,17 @@ export interface PullRequestStatusChecks {
     passed: number;
     failed: number;
     pending: number;
+    /** Blocking check runs that concluded skipped: neither passed nor failed. Absent: none. */
+    skipped?: number;
+    /**
+     * Blocking check runs that were cancelled and not run again: no verdict,
+     * so neither passed nor failed, but they keep the PR from being ready as a
+     * failure does. Absent: none.
+     */
+    cancelled?: number;
     failedNames: string[];
+    /** Names of the `cancelled` check runs. */
+    cancelledNames?: string[];
 }
 
 /** An open sub-PR of an epic: a pull request into the epic branch. */
@@ -211,6 +221,18 @@ export interface PullRequestStatusFacts {
     epic: EpicStatusFacts | null;
 }
 
+/** The counts the status line shows; skipped and cancelled checks are counted apart from passed ones, and only when there are any. */
+export interface PullRequestStatusCheckCounts { passed: number; failed: number; pending: number; skipped?: number; cancelled?: number }
+
+function checkCounts(checks: PullRequestStatusChecks): PullRequestStatusCheckCounts {
+    const { passed, failed, pending, skipped, cancelled } = checks;
+    return { passed, failed, pending, ...(skipped ? { skipped } : {}), ...(cancelled ? { cancelled } : {}) };
+}
+
+function cancelledChecks(checks: PullRequestStatusChecks): Pick<PullRequestStatusDetail, 'cancelledChecks'> {
+    return checks.cancelledNames?.length ? { cancelledChecks: [...checks.cancelledNames] } : {};
+}
+
 export interface PullRequestStatusDetail {
     activity: PullRequestActivity | null;
     /** Present while an Ultrafix loop is active. */
@@ -219,10 +241,12 @@ export interface PullRequestStatusDetail {
     ultrafixStopped: { cycles: number; finalScore: number | null; reason: string | null } | null;
     reviewScore: number | null;
     ratingGoal: number;
-    checks: { passed: number; failed: number; pending: number } | null;
+    checks: PullRequestStatusCheckCounts | null;
     reason: PullRequestAttentionReason | null;
     /** Failed blocking check names, for `check_failed`. */
     failedChecks: string[];
+    /** Cancelled blocking check names, for `check_failed` (PullRequestStatusChecks.cancelled); absent: none. */
+    cancelledChecks?: string[];
     epic: EpicStatusDetail | null;
 }
 
@@ -299,7 +323,7 @@ function confirmedAttentionReason(facts: PullRequestStatusFacts): PullRequestAtt
     const latest = facts.tasks[0];
     if (latest?.state === 'failed') return latest.type === 'merge_conflict' ? 'conflict_resolution_failed' : 'last_run_failed';
     if (stoppedUltrafix(facts)) return 'ultrafix_stopped';
-    if (facts.checks.failed > 0) return 'check_failed';
+    if (facts.checks.failed > 0 || (facts.checks.cancelled ?? 0) > 0) return 'check_failed';
     if (facts.pullRequest.mergeable === false) return 'merge_conflict';
     const reviewEstablished = !(reviewForOlderHead(facts) && checksOutstanding(facts));
     if (reviewBelowGoal(facts) && reviewEstablished) return 'review_below_goal';
@@ -334,8 +358,7 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
 }
 
 function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: PullRequestStatusDetail): PullRequestStatus {
-    const { passed, failed, pending } = facts.checks;
-    const detail: PullRequestStatusDetail = { ...base, checks: { passed, failed, pending }, failedChecks: [...facts.checks.failedNames] };
+    const detail: PullRequestStatusDetail = { ...base, checks: checkCounts(facts.checks), failedChecks: [...facts.checks.failedNames], ...cancelledChecks(facts.checks) };
     const loop = facts.ultrafix;
     if (loop?.active) detail.ultrafix = { cycle: ultrafixActiveCycle(loop.cycleCount, loop.maxCycles), maxCycles: loop.maxCycles };
 
@@ -380,8 +403,7 @@ function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts)
     const base: PullRequestStatusDetail = { ...emptyDetail(own), epic: { merged: epic.merged, total: epic.total, focus: null } };
     if (epic.merged >= epic.total) return computeSinglePullRequestStatus(own, base);
 
-    const { passed, failed, pending } = facts.checks;
-    const detail: PullRequestStatusDetail = { ...base, checks: { passed, failed, pending }, failedChecks: [...facts.checks.failedNames] };
+    const detail: PullRequestStatusDetail = { ...base, checks: checkCounts(facts.checks), failedChecks: [...facts.checks.failedNames], ...cancelledChecks(facts.checks) };
     const children = (epic.children ?? []).filter(child => child.status !== null && child.status.state !== 'none');
     const withFocus = (state: PullRequestStatusState, focus: EpicStatusFocus | null, extra: Partial<PullRequestStatusDetail>): PullRequestStatus =>
         ({ state, detail: { ...detail, ...extra, epic: { merged: epic.merged, total: epic.total, focus } } });

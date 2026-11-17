@@ -20,6 +20,7 @@ const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = a
 const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { isRecordedPullRequestStatusWrite, recordPullRequestStatusWrite, resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
+const { resetPullRequestStatusEditPacingForTests, setPullRequestStatusEditCoalesceMsForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const { classifyPullRequestStatusEdit, signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 const { resolveRepositoryPrTitleStatus } = await import('../src/config/repositoryPrTitleStatusSetting.js');
@@ -169,6 +170,7 @@ beforeEach(async () => {
     redis = new FakeRedis();
     clock = new Date('2026-11-13T09:00:00Z');
     resetPullRequestStatusProvenanceForTests();
+    resetPullRequestStatusEditPacingForTests();
     resetPullRequestCheckWaitForTests();
 });
 
@@ -248,7 +250,7 @@ test('the block follows a pull request through its transitions and keeps the res
     await record(/🔨 Review in progress/);
     await setTaskState(review, 'completed');
     await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score: 6, created_at: '2026-11-13T09:10:00Z' });
-    await record(/⚠️ Needs you · review below goal 7\/10 · review 6\/10/);
+    await record(/⚠️ Needs you · review 6\/10, goal 7 · /);
 
     const state = { goal: 7, maxCycles: 5, cycleCount: 1, active: true, completionStatus: null, completionReason: null, finalScore: null, completedAt: null };
     redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify(state));
@@ -713,7 +715,7 @@ test('the block a pull request was created with is confirmed without a PATCH, th
 async function assertUnavailableKeepsBlock(breakRead: () => Promise<void> | void, label: string): Promise<void> {
     await sync();
     const before = github.pull.body;
-    assert.match(statusLine(), /⚠️ Needs you · review below goal|🔨 Ultrafix|🔨 Queued/, `${label}: baseline`);
+    assert.match(statusLine(), /⚠️ Needs you · review \d+\/10, goal|🔨 Ultrafix|🔨 Queued/, `${label}: baseline`);
     await breakRead();
     await assert.rejects(loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github }), undefined, `${label}: the read failure is not erased`);
     await assert.rejects(sync(), undefined, `${label}: the sync fails instead of computing a status`);
@@ -809,7 +811,7 @@ test('a body close to the limit gets the compact block, and none when even that 
     assert.equal(await sync(), 'updated');
     assert.ok(github.pull.body.length <= PR_BODY_MAX_LENGTH);
     assert.equal(stripPullRequestStatusBlock(github.pull.body), human, 'the text outside the block is never shortened');
-    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · updated \d{2}:\d{2} UTC$/);
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · updated [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2} UTC$/);
 
     github.pull.body = filler(10);
     const writes = github.writes().length;
@@ -1757,3 +1759,57 @@ for (const failure of ['pull', 'checks'] as const) {
         }
     });
 }
+
+// --- edit pacing: a burst of check completions ---
+
+test('a burst of check completions edits the body at most once per window; a state change is written at once', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = ['unit', 'lint', 'e2e', 'docs'].map(name => ({ name, status: 'in_progress', conclusion: null }));
+    const at = (seconds: number) => { clock = new Date(Date.parse('2026-11-13T09:10:00Z') + seconds * 1000); };
+    const complete = (name: string, conclusion: string) => {
+        github.checkRuns = github.checkRuns.map(run => run.name === name ? { ...run, status: 'completed', conclusion } : run);
+    };
+    at(0);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated');
+    assert.match(statusLine(), /🔨 Waiting for CI · checks: 4 pending · updated Nov 13 09:10 UTC$/);
+    const edits = () => github.patches.length;
+    const first = edits();
+
+    complete('unit', 'success');
+    at(5);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'unchanged', 'counts alone wait for the window');
+    complete('lint', 'success');
+    at(20);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'unchanged');
+    assert.equal(edits(), first);
+    assert.match(statusLine(), /checks: 4 pending/);
+
+    at(31);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated', 'the window passed: the counts of this moment are written');
+    assert.match(statusLine(), /🔨 Waiting for CI · checks: 2 passed, 2 pending/);
+
+    // A failure ends the wait for CI: needs you, written at once although the window has not passed.
+    complete('e2e', 'failure');
+    at(33);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated');
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · failed: e2e · checks: 2 passed, 1 failed, 1 pending/);
+    assert.equal(edits(), first + 2);
+});
+
+test('a deferred count update is written by the scheduled re-read once the window passes', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = [{ name: 'unit', status: 'in_progress', conclusion: null }, { name: 'lint', status: 'in_progress', conclusion: null }];
+    setPullRequestStatusEditCoalesceMsForTests(300);
+    enablePullRequestStatusSync({ ...deps(), now: () => new Date() });
+    try {
+        assert.equal(await syncPullRequestStatus(REPOSITORY, PR, { ...deps(), now: () => new Date() }), 'updated');
+        const first = github.patches.length;
+        github.checkRuns[0] = { name: 'unit', status: 'completed', conclusion: 'success' };
+        requestPullRequestStatusSync(REPOSITORY, PR);
+        await until(() => /checks: 1 passed, 1 pending/.test(statusLine()), 10_000);
+        assert.equal(github.patches.length, first + 1, 'one edit, after the window');
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusEditCoalesceMsForTests(null);
+    }
+});

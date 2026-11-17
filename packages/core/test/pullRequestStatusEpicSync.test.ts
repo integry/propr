@@ -6,6 +6,7 @@ import type { PullRequestStatusSyncDeps } from '../src/services/pullRequestStatu
 process.env.PROPR_DEMO_MODE = 'true';
 
 const { closeConnection } = await import('../src/db/connection.js');
+const { resetPullRequestStatusEditPacingForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const { extractPullRequestStatusBlock } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
 const { disablePullRequestStatusSync, enablePullRequestStatusSync, syncPullRequestStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { requestPullRequestStatusSync } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
@@ -157,6 +158,7 @@ beforeEach(async () => {
     for (const name of ['tasks', 'task_history', 'plan_issues', 'task_drafts', 'epic_execution_queues', 'epic_execution_queue_issues', 'goals', 'review_scores']) await database(name).del();
     resetPullRequestTitleStateForTests();
     resetEpicChildReadsForTests();
+    resetPullRequestStatusEditPacingForTests();
     setPullRequestTitleSettleMsForTests(0);
     titleSetting = true;
     github = new FakeGitHub();
@@ -261,7 +263,7 @@ test('a successor drops an issue whose alternate PR shipped through its predeces
 
 test('a ready sub-PR waiting to be merged shows ⚠️ with the count, and the block names it', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.equal(statusLine(), '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated 09:41 UTC');
+    assert.equal(statusLine(), '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated Nov 13 09:41 UTC');
     assert.equal(github.epic().title, '[Epic] Scheduler primitives', '⚠️ waits to settle before the title shows it');
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(github.epic().title, '⚠️ 1/3 [Epic] Scheduler primitives');
@@ -303,7 +305,7 @@ test('every issue merged with passing checks shows ✅ N/N', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(github.epic().title, '✅ 3/3 [Epic] Scheduler primitives');
-    assert.equal(statusLine(), '**ProPR** ✅ 3 of 3 issues merged · checks: 1 passed · updated 09:41 UTC');
+    assert.equal(statusLine(), '**ProPR** ✅ 3 of 3 issues merged · checks: 1 passed · updated Nov 13 09:41 UTC');
 });
 
 test('with prTitleStatus off the title is left alone; the block and the comment are still written', async () => {
@@ -729,7 +731,7 @@ async function settledTitle(): Promise<string> {
 }
 
 const NEEDS_YOU_911 = /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) /;
-const WAITS_FOR_MERGE_911 = '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated 09:41 UTC';
+const WAITS_FOR_MERGE_911 = '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated Nov 13 09:41 UTC';
 
 for (const mode of ['sequential', 'graph'] as const) {
     test(`${mode}: a sub-PR that needs a person, with an issue behind it, shows ⚠️ naming the sub-PR, not "starts next"`, async () => {

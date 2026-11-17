@@ -1,8 +1,9 @@
 /**
  * Markdown for the review digest section of pull request descriptions and
  * completion comments. Bounded, and every repository- or agent-controlled
- * string is a code span: paths, dependency names, validation commands,
- * acceptance criteria and the agent's statements about them.
+ * string is a code span (paths, dependency names, validation commands,
+ * acceptance criteria) or, for the agent's evidence, escaped text whose own
+ * inline code spans stay code spans.
  */
 import { ACCEPTANCE_CRITERION_STATUS_LABEL, type AcceptanceCriterionStatus } from '@propr/shared';
 import { describeRepositoryValidationStatus } from './repositoryValidationResult.js';
@@ -39,6 +40,67 @@ function codeSpan(text: string): string {
     const fence = '`'.repeat(longest + 1);
     const pad = /^[` ]|[` ]$/.test(clean) ? ' ' : '';
     return `${fence}${pad}${clean}${pad}${fence}`;
+}
+
+/** Markdown and autolink punctuation, escaped so agent text renders as written: no emphasis, links, HTML, mentions or URLs. */
+const INLINE_TEXT_SPECIALS = /[\\`*_{}[\]()<>#!|~@:&]/g;
+/**
+ * GitHub's extended autolinks also link a bare `www.` address, which holds no
+ * special character; escaping the dot after `www` (in any case) splits the
+ * prefix, so it renders as written and links nothing.
+ */
+const WWW_AUTOLINK_PREFIX = /(www)\./gi;
+
+function inlineText(text: string): string {
+    return text.replace(INLINE_TEXT_SPECIALS, '\\$&').replace(WWW_AUTOLINK_PREFIX, '$1\\.');
+}
+
+/**
+ * Agent-written text that may contain inline code, such as "`a.test.ts` covers
+ * it": its code spans (a backtick run closed by a run of the same length) stay
+ * code spans, the rest is escaped text. Wrapping the whole text in one code
+ * span would show the inner backticks literally.
+ */
+function inlineMarkdown(text: string): string {
+    // eslint-disable-next-line no-control-regex
+    const clean = text.replace(/[\r\n\t]+/g, ' ').replace(/[\u0000-\u001f\u007f]/g, '');
+    const parts: string[] = [];
+    let textStart = 0;
+    let index = 0;
+    while (index < clean.length) {
+        const open = clean.indexOf('`', index);
+        if (open === -1) break;
+        let length = 1;
+        while (clean[open + length] === '`') length++;
+        const close = findClosingRun(clean, open + length, length);
+        if (close === -1) {
+            index = open + length;
+            continue;
+        }
+        let content = clean.slice(open + length, close);
+        // CommonMark strips one space from each side of a span that is not all spaces.
+        if (/^ .*[^ ].* $/.test(content)) content = content.slice(1, -1);
+        parts.push(inlineText(clean.slice(textStart, open)));
+        if (content.trim()) parts.push(codeSpan(content));
+        index = close + length;
+        textStart = index;
+    }
+    parts.push(inlineText(clean.slice(textStart)));
+    return parts.join('');
+}
+
+/** The start of the next backtick run of exactly `length` at or after `from`, or -1. */
+function findClosingRun(text: string, from: number, length: number): number {
+    let index = from;
+    while (index < text.length) {
+        const start = text.indexOf('`', index);
+        if (start === -1) return -1;
+        let end = start;
+        while (text[end] === '`') end++;
+        if (end - start === length) return start;
+        index = end;
+    }
+    return -1;
 }
 
 function plural(value: number, noun: string): string {
@@ -86,11 +148,12 @@ function commandLabel(command: string): string {
 
 function validationSection(digest: ReviewDigest): string[] {
     const validation = digest.validation;
-    if (!validation?.commands.length) return ['**Validation evidence**', '', '- No repository validation commands ran.'];
+    // Nothing to show where no validation command is configured or none ran.
+    if (!validation?.commands.length) return [];
     const listed = validation.commands.slice(0, MAX_LISTED_COMMANDS)
         .map(entry => `- [${entry.index + 1}] ${codeSpan(commandLabel(entry.command))}: ${describeRepositoryValidationStatus(entry)}`);
     const more = validation.commands.length - listed.length;
-    return [`**Validation evidence** (${validation.overall})`, '', ...listed, ...(more > 0 ? [`- …and ${more} more`] : [])];
+    return ['', `**Validation evidence** (${validation.overall})`, '', ...listed, ...(more > 0 ? [`- …and ${more} more`] : [])];
 }
 
 const STATUS_MARK: Record<AcceptanceCriterionStatus, string> = { met: '✅', not_met: '❌', not_applicable: '➖', not_addressed: '⚠️' };
@@ -100,7 +163,7 @@ function acceptanceSection(digest: ReviewDigest): string[] {
     if (!results?.length) return [];
     const met = results.filter(result => result.status === 'met').length;
     const lines = results.map(result => {
-        const evidence = result.evidence ? ` — ${codeSpan(result.evidence)}` : '';
+        const evidence = result.evidence ? ` — ${inlineMarkdown(result.evidence)}` : '';
         return `- ${STATUS_MARK[result.status]} **${result.id}** (${ACCEPTANCE_CRITERION_STATUS_LABEL[result.status]}): ${codeSpan(result.text)}${evidence}`;
     });
     return [`**Acceptance criteria** (${met} of ${results.length} met, as stated by the agent)`, '', ...lines, ''];
@@ -115,7 +178,6 @@ export function renderReviewDigest(digest: ReviewDigest | null | undefined): str
         '',
         ...acceptanceSection(digest),
         ...riskSection(digest),
-        '',
         ...validationSection(digest),
         '',
         `**Diff size:** ${plural(files, 'file')} changed, ${lineCounts({ linesAdded, linesRemoved })} lines`,
