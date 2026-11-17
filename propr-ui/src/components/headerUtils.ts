@@ -42,7 +42,7 @@ export const formatRelativeTime = (dateString: string): string => {
 
 /**
  * A task title for the header's task list: without the `Followup:` prefix, a
- * PR status slot (`🔨 `, `✅➇ `) or the leading `[N by Model]` tag.
+ * PR status slot (`🔨 `, `✅❽ `) or the leading `[N by Model]` tag.
  */
 export function cleanHeaderTaskTitle(title?: string): string {
   if (!title) return '';

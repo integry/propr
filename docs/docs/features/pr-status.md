@@ -67,16 +67,16 @@ GitHub's pull request list shows only titles, labels and a check icon, so ProPR 
 | State | Title |
 | --- | --- |
 | `working` | `🔨 [3475 by Claude Opus 5.5] Let an automation run when a plan issue is blocked` |
-| `needs_attention` | `⚠️➅ [3475 by Claude Opus 5.5] …`, with the latest review score (➀ to ➉) when there is one |
-| `ready` | `✅➇ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
+| `needs_attention` | `⚠️❻ [3475 by Claude Opus 5.5] …`, with the latest review score (❶ to ❿) when there is one |
+| `ready` | `✅❽ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
 
-The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. The score uses the Dingbats circled digits ➀ to ➉. A title still showing an older ① to ⑩ score is recognised and gets the new digit on its next rename. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
+The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. The score uses the solid circled digits ❶ to ❿, a white digit on a filled circle that stays readable at title size. A title still showing an older ① to ⑩ or ❶ to ❿ score is recognised and gets the new digit on its next rename, so it never shows two scores. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
 
 Every title change adds a "changed the title" entry to the timeline, so the title changes far less often than the body line:
 
 - A new pull request is created with `🔨` already in its title, so creation costs no rename.
 - The title changes only when the state changes, or when the score beside ⚠️ or ✅ changes. Activity inside `working` (a review starting, the next Ultrafix cycle, waiting for CI) never renames the pull request; that detail is in the body line.
-- ProPR writes ⚠️ or ✅ only once the state has held for about 30 seconds and nothing for the pull request is queued or about to start. The short gap between an Ultrafix review and its fix, or between a failed check and its CI follow-up, costs no rename. Going back to `🔨` (for example when you post a follow-up on a `✅➇` pull request) is immediate.
+- ProPR writes ⚠️ or ✅ only once the state has held for about 30 seconds and nothing for the pull request is queued or about to start. The short gap between an Ultrafix review and its fix, or between a failed check and its CI follow-up, costs no rename. Going back to `🔨` (for example when you post a follow-up on a `✅❽` pull request) is immediate.
 - No change is sent when the title is already right. When ProPR changes both the body line and the title, it does so in one update.
 - ProPR only ever replaces the slot it recognises at the start of the title. Your edits to the rest of the title are kept. If you remove the slot, it stays off until the state changes. ProPR also leaves the title alone when adding the slot would take it past GitHub's 256-character limit.
 - When the pull request is merged or closed, ProPR removes the slot: one final rename, so closed pull request lists and release notes stay clean.
