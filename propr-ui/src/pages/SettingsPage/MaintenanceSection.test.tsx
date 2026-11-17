@@ -245,7 +245,27 @@ describe('MaintenanceSection', () => {
     fireEvent.click(within(item).getByRole('checkbox', { name: 'Publish the cancelled work' }));
     fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
     expect(await screen.findByText('Resumed integry/propr#3500. Its work is published.')).toBeInTheDocument();
-    expect(api.resumeFollowupHandoff).toHaveBeenLastCalledWith('integry/propr', 3500, { authorizeCancelled: true });
+    expect(api.resumeFollowupHandoff).toHaveBeenLastCalledWith('integry/propr', 3500, { authorizeCancelled: true, taskId: cancelled.taskId });
+  });
+
+  const superseded = () => new api.FollowupHandoffRefusedError('This follow-up changed in the meantime. Check the list and try again.', 'superseded');
+  it.each([
+    ['the re-read shows the replacement', [{ ...cancelled, taskId: 'pr-comments-batch-integry-propr-3500-b' }]],
+    ['the re-read fails', new Error('offline')],
+  ])('names the ticked attempt and asks again when the server says a newer one replaced it (%s)', async (_case, reread) => {
+    const lists = vi.mocked(api.listFollowupHandoffs).mockResolvedValueOnce([cancelled]);
+    if (reread instanceof Error) lists.mockRejectedValue(reread); else lists.mockResolvedValue(reread);
+    vi.mocked(api.resumeFollowupHandoff).mockRejectedValueOnce(superseded()).mockResolvedValue({ summary, status: null });
+    render(view());
+    fireEvent.click(within(await row('integry/propr#3500')).getByRole('checkbox', { name: 'Publish the cancelled work' }));
+    fireEvent.click(within(await row('integry/propr#3500')).getByRole('button', { name: 'Resume' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('This follow-up changed in the meantime.');
+    expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true, taskId: cancelled.taskId });
+    await waitFor(() => expect(within(screen.getByRole('list', { name: 'Held follow-ups' })).getByRole('button', { name: 'Resume' })).toBeEnabled());
+    const item = await row('integry/propr#3500');
+    expect(within(item).getByRole('checkbox', { name: 'Publish the cancelled work' })).not.toBeChecked();
+    fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(api.resumeFollowupHandoff).toHaveBeenLastCalledWith('integry/propr', 3500));
   });
 
   it.each([
@@ -271,7 +291,7 @@ describe('MaintenanceSection', () => {
     fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
     await screen.findByText(/Resumed integry\/propr#3500/);
     expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500);
-    expect(api.resumeFollowupHandoff).not.toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true });
+    expect(api.resumeFollowupHandoff).not.toHaveBeenCalledWith('integry/propr', 3500, expect.objectContaining({ authorizeCancelled: true }));
   });
 
   it('keeps a ticked publish choice while the same attempt stays held', async () => {
@@ -288,7 +308,7 @@ describe('MaintenanceSection', () => {
     expect(within(item).getByRole('checkbox', { name: 'Publish the cancelled work' })).toBeChecked();
     fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
     await screen.findByText(/Resumed integry\/propr#3500/);
-    expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true });
+    expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true, taskId: cancelled.taskId });
   });
 
   describe('when an older read answers after a newer one', () => {

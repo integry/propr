@@ -435,7 +435,7 @@ export const FollowupHandoffRecoverySummary = component('FollowupHandoffRecovery
   errors: z.number().int().nonnegative().describe('Records whose recovery failed (for example unreachable remote evidence); retained for the next pass.'),
 }), 'Counts of one recovery pass. Keyed passes inspect at most the addressed pull request.');
 
-export const FollowupHandoffResumeRequest = component('FollowupHandoffResumeRequest', z.object({
+export const FollowupHandoffResumeRequest = component('FollowupHandoffResumeRequest', z.object({ taskId: z.string().min(1).max(200).optional().describe('Task id of the attempt the caller decided about. With `authorizeCancelled`, the authorization applies only while that attempt is the current handoff on the pull request; otherwise it is refused with code `superseded` and nothing is authorized.'),
   authorizeCancelled: z.boolean().optional().describe('Set `true` to explicitly authorize publishing work the user cancelled. Without it, resume re-arms the operator-held record and refuses cancelled work with code `requires_cancellation_authorization`.'),
 }));
 

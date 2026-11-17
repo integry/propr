@@ -367,7 +367,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FollowupHandoffResumeResult"
         "400":
-          description: Invalid target or non-boolean flag.
+          description: Invalid target, non-boolean flag or invalid `taskId`.
           content:
             application/json:
               schema:
@@ -383,7 +383,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LegacyError"
         "409":
-          description: "The handoff cannot be resumed. `code` names why: `requires_cancellation_authorization`, `cancellation_authorization_unavailable` (also returned while another writer holds the PR lease), `lease_held_by_live_writer`, `released` or `superseded`."
+          description: "The handoff cannot be resumed. `code` names why: `requires_cancellation_authorization`, `cancellation_authorization_unavailable` (also returned while another writer holds the PR lease), `lease_held_by_live_writer`, `released` or `superseded` (also returned when `taskId` no longer names the current attempt)."
           content:
             application/json:
               schema:
@@ -11496,6 +11496,11 @@ components:
     FollowupHandoffResumeRequest:
       type: object
       properties:
+        taskId:
+          description: Task id of the attempt the caller decided about. With `authorizeCancelled`, the authorization applies only while that attempt is the current handoff on the pull request; otherwise it is refused with code `superseded` and nothing is authorized.
+          type: string
+          minLength: 1
+          maxLength: 200
         authorizeCancelled:
           description: Set `true` to explicitly authorize publishing work the user cancelled. Without it, resume re-arms the operator-held record and refuses cancelled work with code `requires_cancellation_authorization`.
           type: boolean

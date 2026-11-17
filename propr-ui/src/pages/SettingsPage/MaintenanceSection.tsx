@@ -106,11 +106,20 @@ function HeldFollowups() {
 
   const resume = (handoff: Handoff) => {
     const id = keyOf(handoff);
-    const authorizeCancelled = needsCancelledChoice(handoff) && publishCancelledFor === attemptOf(handoff);
+    const attempt = attemptOf(handoff);
+    const authorizeCancelled = needsCancelledChoice(handoff) && publishCancelledFor === attempt;
     void run(id, async () => {
-      const { summary } = authorizeCancelled
-        ? await api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest, { authorizeCancelled: true })
-        : await api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest);
+      // The consent names the attempt it was given for; the server refuses it for any other.
+      const resumed = authorizeCancelled
+        ? api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest, { authorizeCancelled: true, taskId: handoff.taskId })
+        : api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest);
+      const { summary } = await resumed.catch((e: unknown) => {
+        // A newer attempt replaced this one: the refreshed list needs a new choice.
+        if (e instanceof api.FollowupHandoffRefusedError && e.reason === 'superseded') {
+          setPublishCancelledFor(current => (current === attempt ? null : current));
+        }
+        throw e;
+      });
       setPublishCancelledFor(null);
       if (summary.awaitingOperator > 0) return `Resumed ${id}, but it is still held.`;
       if (summary.published > 0) return `Resumed ${id}. Its work is published.`;

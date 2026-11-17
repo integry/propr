@@ -128,7 +128,7 @@ for (const { width, height, name } of [{ width: 1440, height: 1100, name: 'deskt
     await cancelled.getByRole('checkbox', { name: 'Publish the cancelled work' }).check();
     await cancelled.getByRole('button', { name: 'Resume' }).click();
     await expect(section.getByText('Resumed sample/website#412. Its work is published.')).toBeVisible();
-    expect(calls.resume).toEqual([{ path: '/api/admin/followup-handoffs/sample/website/412/resume', body: { authorizeCancelled: true } }]);
+    expect(calls.resume).toEqual([{ path: '/api/admin/followup-handoffs/sample/website/412/resume', body: { authorizeCancelled: true, taskId: 'pr-comments-batch-sample-website-412' } }]);
     await expect(open.getByRole('listitem')).toHaveCount(1);
   });
 }

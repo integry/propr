@@ -688,6 +688,8 @@ export interface FollowupHandoffReleaseResult {
 }
 
 export interface FollowupHandoffResumeRequest {
+  /** Task id of the attempt the caller decided about. With `authorizeCancelled`, the authorization applies only while that attempt is the current handoff on the pull request; otherwise it is refused with code `superseded` and nothing is authorized. */
+  taskId?: string;
   /** Set `true` to explicitly authorize publishing work the user cancelled. Without it, resume re-arms the operator-held record and refuses cancelled work with code `requires_cancellation_authorization`. */
   authorizeCancelled?: boolean;
 }

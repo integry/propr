@@ -75,16 +75,26 @@ async function withOperatorRedis<T>(
  * authorized request to the queue is never dropped at admission. A
  * scheduled usage-limit retry owns its request, so authorizing its hold only
  * re-arms recovery to hand the request to that retry, never to publish.
+ *
+ * `expectedTaskId` binds the authorization to the attempt the operator chose:
+ * when the pull request's current handoff belongs to another task (a newer
+ * command replaced the attempt they saw), nothing is authorized. The check is
+ * made on the row re-read under the lease, so a replacement that lands
+ * between the operator's read and this call can never inherit the consent.
  */
 export async function authorizeCancelledFollowupHandoff(
     key: FollowupHandoffKey,
     deps: FollowupHandoffRecoveryDeps = {},
+    options: { expectedTaskId?: string } = {},
 ): Promise<FollowupHandoffRecord | null> {
     const store = deps.store ?? {};
     const record = await loadFollowupHandoff(store, key);
     if (!record || record.status !== HANDOFF_AWAITING_OPERATOR) return null;
+    const isExpectedAttempt = (row: FollowupHandoffRecord) =>
+        options.expectedTaskId === undefined || row.task_id === options.expectedTaskId;
+    if (!isExpectedAttempt(record)) return null;
     const result = await withOperatorRedis(deps, redis => underOperatorLease(record, { store, redis }, 'authorize',
-        fresh => inFollowupHandoffTransaction(store, async transactional => {
+        async fresh => !isExpectedAttempt(fresh) ? null : inFollowupHandoffTransaction(store, async transactional => {
             const authorized = await advanceFollowupHandoff(transactional, fresh, retryOwnsClaims(fresh)
                 ? { status: HANDOFF_ACTIVE, status_reason: 'usage_limit_retry' }
                 : { status: HANDOFF_ACTIVE, status_reason: 'operator_authorized', operator_authorized: 1 });

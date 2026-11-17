@@ -95,5 +95,13 @@ export const listFollowupHandoffs = async (): Promise<FollowupHandoffStatus[]> =
 export const releaseFollowupHandoff = (repository: string, pullRequest: number, options: { force?: boolean } = {}) =>
   request<{ released: true }>(`${target(repository, pullRequest)}/release`, { force: options.force === true });
 
-export const resumeFollowupHandoff = (repository: string, pullRequest: number, options: { authorizeCancelled?: boolean } = {}) =>
-  request<{ summary: FollowupHandoffRecoverySummary; status: FollowupHandoffStatus | null }>(`${target(repository, pullRequest)}/resume`, { authorizeCancelled: options.authorizeCancelled === true });
+/**
+ * `taskId` names the attempt the administrator decided about. The server
+ * authorizes cancelled work only while that attempt is still the current one on
+ * the pull request, and refuses with `superseded` otherwise.
+ */
+export const resumeFollowupHandoff = (repository: string, pullRequest: number, options: { authorizeCancelled?: boolean; taskId?: string } = {}) =>
+  request<{ summary: FollowupHandoffRecoverySummary; status: FollowupHandoffStatus | null }>(`${target(repository, pullRequest)}/resume`, {
+    authorizeCancelled: options.authorizeCancelled === true,
+    ...(options.taskId === undefined ? {} : { taskId: options.taskId }),
+  });

@@ -69,7 +69,7 @@ function stubDeps(calls: Call[], overrides: Partial<FollowupHandoffRouteDeps> = 
   return {
     inspectFollowupHandoffs: async (deps, key) => { record('inspect')(deps, key); return [status()]; },
     recoverInterruptedFollowupHandoffs: async (deps, key) => { record('recover')(deps, key); return summary; },
-    authorizeCancelledFollowupHandoff: async (key, deps) => { record('authorize')(key, deps); return status().record; },
+    authorizeCancelledFollowupHandoff: async (key, deps, options) => { record('authorize')(key, deps, options); return status().record; },
     resumeOperatorHeldFollowupHandoff: async (key, deps) => { record('resume')(key, deps); return { resumed: true }; },
     releaseFollowupHandoffRecord: async (key, options, deps) => { record('release')(key, options, deps); return { released: true }; },
     ...overrides,
@@ -221,6 +221,37 @@ test('resume surfaces cancellation authorization and refusal outcomes', async ()
     assert.equal(authorized.status, 200);
     const authorize = calls.find(call => call.name === 'authorize');
     assert.deepEqual(authorize?.args[0], { repository: 'integry/propr', pull_request: 42 });
+  });
+});
+
+test('F5: resume forwards the selected attempt and refuses a replaced one as superseded without recovering', async () => {
+  const calls: Call[] = [];
+  // The current handoff on the PR is task-1; the operator authorizes only when it is the attempt they saw.
+  const deps = stubDeps(calls, {
+    authorizeCancelledFollowupHandoff: async (key, deps, options) => {
+      calls.push({ name: 'authorize', args: [key, deps, options] });
+      return options?.expectedTaskId === undefined || options.expectedTaskId === 'task-1' ? status().record : null;
+    },
+  });
+  await withServer(deps, async origin => {
+    const resume = (body: unknown) => fetch(`${origin}/api/admin/followup-handoffs/integry/propr/42/resume`, {
+      method: 'POST', headers: asAdmin, body: JSON.stringify(body),
+    });
+    const stale = await resume({ authorizeCancelled: true, taskId: 'task-0' });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json() as { code: string }).code, 'superseded');
+    assert.deepEqual(calls.find(call => call.name === 'authorize')?.args[2], { expectedTaskId: 'task-0' });
+    assert.equal(calls.some(call => call.name === 'recover'), false, 'no recovery pass for a refused authorization');
+
+    const current = await resume({ authorizeCancelled: true, taskId: 'task-1' });
+    assert.equal(current.status, 200);
+    assert.equal(calls.filter(call => call.name === 'recover').length, 1);
+
+    for (const taskId of ['', 7, 'x'.repeat(201)]) {
+      const invalid = await resume({ authorizeCancelled: true, taskId });
+      assert.equal(invalid.status, 400, `taskId ${JSON.stringify(taskId)}`);
+    }
+    assert.equal(calls.filter(call => call.name === 'authorize').length, 2, 'invalid attempt ids never reach authorization');
   });
 });
 
