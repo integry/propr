@@ -109,6 +109,14 @@ function repositoryEventsSummary(result: Args): string {
   return `${countOf(count, 'repository event')}.${more} Resume with cursor ${result.cursor}.`;
 }
 
+/** Says out loud that granted repositories were left out, so silence is never read as "nothing there". */
+function notScannedNote(result: Args): string {
+  const missing = Number(result.repositoriesNotScanned) || 0;
+  if (missing <= 0) return '';
+  const resume = result.nextRepositoryOffset != null ? ` Continue with repositoryOffset ${result.nextRepositoryOffset}.` : '';
+  return ` ${missing} granted ${missing === 1 ? 'repository was' : 'repositories were'} not scanned; work there may be missing.${resume}`;
+}
+
 /** Digest reads answer a whole-instance question, so they summarize by section. */
 const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   wait_goal: goalWaitSummary,
@@ -117,8 +125,8 @@ const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
   get_current_activity: result => `Across ${countOf(result.repositories.length, 'repository', 'repositories')}: ${Object
     .entries(result.sections as Record<string, { count: number }>)
     .map(([name, section]) => `${section.count} ${name.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}`)
-    .join(', ')}.`,
-  get_recent_activity: result => `${countOf(result.events.length, 'event')} between ${result.window.since} and ${result.window.until}.`,
+    .join(', ')}.${notScannedNote(result)}`,
+  get_recent_activity: result => `${countOf(result.events.length, 'event')} between ${result.window.since} and ${result.window.until}.${notScannedNote(result)}`,
   get_agent_run_admission: admissionSummary,
 };
 
@@ -145,6 +153,8 @@ function readSummary(tool: McpTool, args: Args, result: Args): string {
   if (tool.name === 'get_goal') return `${result.goal?.title || 'Goal'}: ${result.goal?.resultState || result.goal?.desiredState || 'state unavailable'}.`;
   if (tool.name === 'get_connection') return `Connected as ${result.identity.username} to ${result.instanceId}. ${result.scopes.join(', ')} permissions.`;
   if (NOTIFICATION_READS.has(tool.name)) return notificationSummary(tool, result);
+  // The page summary counts what was listed; the note says which granted repositories this call left out.
+  if (tool.name === 'list_pull_requests') return `${genericReadSummary(tool, args, result)}${notScannedNote(result)}`;
   if (tool.name === 'resolve_reference') return result.match === 'ambiguous' || result.match === 'candidates' ? `${countOf(result.candidates.length, 'candidate')}. Choose an exact handle before acting.` : `${result.match.replaceAll('_', ' ')}: ${countOf(result.candidates.length, 'candidate')}.`;
   return genericReadSummary(tool, args, result);
 }

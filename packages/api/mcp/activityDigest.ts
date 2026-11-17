@@ -13,8 +13,15 @@ import { compactText } from './listSummaries.js';
  * `toolsActivity.ts`, next to the tool definitions that own them.
  */
 
-/** Repositories one cross-repository digest call will scan. */
-export const MAX_DIGEST_REPOSITORIES = 20;
+/**
+ * Repositories one cross-repository digest call will scan. A grant carries at
+ * most 100 repositories, so a digest covers every one of them; the database
+ * reads take the whole set in one query, and only the live access check is
+ * per repository, exactly as `list_tasks` and `list_repositories` pay it.
+ */
+export const MAX_DIGEST_REPOSITORIES = 100;
+/** In-flight live access checks while resolving the digest's repositories. */
+export const DIGEST_ACCESS_CONCURRENCY = 8;
 /** Goals whose narration is resolved per call; narration costs a live read. */
 export const MAX_NARRATION_LOOKUPS = 10;
 /**

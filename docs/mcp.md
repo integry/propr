@@ -973,8 +973,11 @@ It answers with `asOf`, the `repositories` it actually read, and five sections:
 section carries `count`, `items` and `truncated`. Blockers are the work waiting
 on a human: failed tasks, a goal paused with no result, and blocking Inbox
 cards. Routine notification noise is filtered out; `includeRoutine: true` keeps
-it. A repository the credential can no longer read is skipped, and
-`repositoriesTruncated` reports that the fan-out hit its 20-repository bound.
+it. A repository the credential can no longer read is skipped. Running, queued
+and blocked work is read with one query across every granted repository, up to
+100 (the largest grant); past that bound `repositoriesTruncated` is true,
+`repositoriesNotScanned` counts the repositories left out, and the summary says
+so. `get_recent_activity` covers the same repositories.
 
 When the question is specifically about implementation work and the pull
 requests it produced, `get_work_overview` is the shorter starting point. It
@@ -1247,7 +1250,10 @@ Each result carries `head`, `reviewDecision`, `checksSummary`, `labels` and a
 `propr` block correlating it back to the `taskId`, `goalId`, `planIssueId`,
 `issueNumber`, `agentAlias` and `modelName` that produced it, plus
 `ultrafixActive`. `ultrafixActive` is `null` when GitHub truncated the label
-list — undetermined, not absent. Then read the discussion newest-first:
+list — undetermined, not absent. Each GraphQL scan is per repository, so one
+call covers at most 20 granted repositories: when `repositoriesNotScanned` is
+above zero, call again with `repositoryOffset` set to `nextRepositoryOffset`
+(and `offset` 0) to reach the rest. Then read the discussion newest-first:
 
 ```json
 { "repository": "acme/web", "pullRequest": 42, "order": "newest", "limit": 10 }

@@ -5,6 +5,7 @@ import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { costExportCsv, createCostExportRoutes, loadCostExport, parseCostGroupBy, type CostExport } from '../routes/costExport.js';
 import { addStatsTools } from '../mcp/toolsStats.js';
+import { redact } from '../mcp/adapter.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
 
@@ -298,4 +299,24 @@ test('the MCP tool scopes to the grant without a repository, and to the exact re
   assert.deepEqual((await run({})).group_by, ['day']);
   assert.throws(() => tool.schema.parse({ groupBy: ['cost'] }));
   assert.throws(() => tool.schema.parse({ extra: true }));
+});
+
+test('MCP result redaction keeps the token columns of get_cost_breakdown, matching GET /api/stats/cost', async () => {
+  const tools: McpTool[] = [];
+  addStatsTools(tools, { db } as ToolDeps, async () => ['acme/alpha'], () => NOW);
+  const tool = tools.find(candidate => candidate.name === 'get_cost_breakdown')!;
+  const args = { repository: 'acme/alpha', period: '7d', groupBy: ['outcome'] };
+  const data = redact((await tool.run({ principal: {} as McpPrincipal, args: tool.schema.parse(args) })).data) as CostExport;
+  const { res, response } = fakeResponse();
+  await createCostExportRoutes({ db, now: () => NOW }).getCost({ query: { period: '7d', repository: 'acme/alpha', group_by: 'outcome' } } as unknown as Request, res);
+  const api = response.body as CostExport;
+  assert.deepEqual(data.rows, api.rows);
+  assert.deepEqual(data.totals, api.totals);
+  const failed = data.rows.find(row => row.outcome === 'failed')!;
+  assert.equal(failed.input_tokens, 50);
+  assert.equal(failed.output_tokens, 5);
+  for (const key of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) {
+    assert.ok(data.rows.every(row => key in row), key);
+    assert.ok(key in data.totals, key);
+  }
 });

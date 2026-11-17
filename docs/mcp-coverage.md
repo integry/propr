@@ -296,12 +296,15 @@ Every tool name, argument, resource URI and prompt named above exists in `tools.
 
 What this surface deliberately does **not** claim:
 
-- **Bounded scans, not exhaustive ones.** The digest fans out over at most 20
-  configured repositories in the grant, resolves live narration for at most 10
+- **Bounded scans, not exhaustive ones.** The digest reads at most 100
+  configured repositories in the grant (every repository of the largest grant)
+  in one query per section, resolves live narration for at most 10
   goals, and the recent-activity timeline merges at most 500 collected rows
   within a window of at most seven days. `repositoriesTruncated`, a section's
   `truncated`, and `scanTruncated` say a scan stopped early; they never mean the
-  remainder is empty. The inventory scans at most four GraphQL pages of 50 pull
+  remainder is empty; `repositoriesNotScanned` counts the repositories left out.
+  The inventory scans at most 20 granted repositories per call — continue with
+  `repositoryOffset` set to `nextRepositoryOffset` — and at most four GraphQL pages of 50 pull
   requests per repository and attaches the newest comment to at most 10 results.
 - **A repository the credential lost access to is skipped, not failed.** The
   cross-repository fan-outs drop a repository that answers 403, exactly as
