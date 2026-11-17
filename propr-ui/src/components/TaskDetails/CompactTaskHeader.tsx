@@ -17,11 +17,11 @@ export const MOBILE_COMPACT_BAR_HEIGHT = 44;
  * the overflow (and Stop, while the task works) on the right; the overflow
  * opens as a bottom action sheet.
  */
-export const CompactHeaderLine: React.FC<Omit<MobileHeaderProps, 'todos'> & { children?: React.ReactNode }> = ({ contextStripProps, actionBarProps, children }) => (
+export const CompactHeaderLine: React.FC<Omit<MobileHeaderProps, 'todos'> & { heading?: boolean; children?: React.ReactNode }> = ({ contextStripProps, actionBarProps, heading, children }) => (
   <div className="flex items-center justify-between gap-2 px-3" style={{ height: MOBILE_COMPACT_BAR_HEIGHT - 1 }}>
     {/* Only the left side clips, so the 44px overflow button keeps its full touch target. */}
     <div className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
-      <ContextStrip {...contextStripProps} mobileCompact={true} />
+      <ContextStrip {...contextStripProps} mobileCompact={true} compactHeading={heading} />
     </div>
     <ActionBar {...actionBarProps} compact={true} />
     {children}
@@ -36,7 +36,8 @@ export const ShortTaskHeader: React.FC<MobileHeaderProps & { visible: boolean; p
   if (!visible) return null;
   return (
     <header data-testid="task-short-header" className="hidden sm:block flex-shrink-0 border-b border-slate-200 bg-white">
-      <CompactHeaderLine contextStripProps={contextStripProps} actionBarProps={actionBarProps}>
+      {/* The full header (and its heading) is hidden meanwhile, so the task's title stays the page's heading here. */}
+      <CompactHeaderLine contextStripProps={contextStripProps} actionBarProps={actionBarProps} heading={true}>
         {paneControls && <div className="flex flex-none items-center gap-0.5">{paneControls}</div>}
       </CompactHeaderLine>
       <ProgressBar todos={todos} />
