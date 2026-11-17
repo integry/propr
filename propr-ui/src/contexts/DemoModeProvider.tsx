@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getDemoModeStatus } from '../api/proprApi';
+import { setDemoModeRequestGate } from '../api/demoModeRequestGate';
 import { DemoModeContext } from './DemoModeContext';
 
 export const DemoModeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -12,10 +13,13 @@ export const DemoModeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     getDemoModeStatus()
       .then((status) => {
         if (cancelled) return;
+        // Before the re-render that mounts the pages, so their first reads are already gated.
+        setDemoModeRequestGate(status.demoMode);
         setIsDemoMode(status.demoMode);
       })
       .catch(() => {
         if (cancelled) return;
+        setDemoModeRequestGate(false);
         setIsDemoMode(false);
       })
       .finally(() => {
