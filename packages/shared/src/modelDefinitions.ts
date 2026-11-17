@@ -103,8 +103,8 @@ export const ANTIGRAVITY_RETAINED_MODELS: ModelInfo[] = [
 // OpenCode built-in free models. IDs are namespaced for ProPR and converted
 // back to OpenCode's provider/model syntax at CLI execution time.
 // These are available from `opencode models` without provider login.
-// Verified against `opencode models` and live runs with OpenCode CLI 1.19.5
-// (2026-10-29). OpenCode rotates these server-side; retired IDs route to a
+// Verified against `opencode models` and live runs with OpenCode CLI 1.19.6
+// (2026-11-17). OpenCode rotates these server-side; retired IDs route to a
 // current model through openCodeCompatibility.ts.
 export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
@@ -112,6 +112,9 @@ export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-deepseek-v4.1-flash-free', name: 'DeepSeek V4.1 Flash Free', shortName: 'DeepSeek V4.1 Flash Free', shortAlias: 'deepseek-v41-flash-free', githubLabel: 'llm-opencode-deepseek-v41-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4.1-flash' },
   { id: 'opencode-flint-40b-free', name: 'Flint 40B Free', shortName: 'Flint 40B Free', shortAlias: 'flint-40b-free', githubLabel: 'llm-opencode-flint-40b-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'recursive/flint-v1.0:free' },
   { id: 'opencode-glm-5.3-flash-free', name: 'GLM 5.3 Flash Free', shortName: 'GLM 5.3 Flash Free', shortAlias: 'glm53-flash-free', githubLabel: 'llm-opencode-glm53-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'z-ai/glm-5.3-flash' },
+  { id: 'opencode-hy4-flash-free', name: 'Hy4 Flash Free', shortName: 'Hy4 Flash Free', shortAlias: 'hy4-flash-free', githubLabel: 'llm-opencode-hy4-flash-free', contextWindow: '1M', maxTokens: 1048576, openRouterId: 'tencent/hy4-flash' },
+  { id: 'opencode-iceman-free', name: 'Iceman Free', shortName: 'Iceman Free', shortAlias: 'iceman-free', githubLabel: 'llm-opencode-iceman-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'opencode/iceman-free' },
+  { id: 'opencode-longcat-2.5-free', name: 'LongCat 2.5 Free', shortName: 'LongCat 2.5 Free', shortAlias: 'longcat25-free', githubLabel: 'llm-opencode-longcat25-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'meituan/longcat-2.5' },
   { id: 'opencode-mimo-v2.6-flash-free', name: 'MiMo V2.6 Flash Free', shortName: 'MiMo V2.6 Flash Free', shortAlias: 'mimo-v26-flash-free', githubLabel: 'llm-opencode-mimo-v26-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.6-flash' },
   { id: 'opencode-nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning Free', shortName: 'Nemotron 3.5 Lightning Free', shortAlias: 'nemotron35-lightning-free', githubLabel: 'llm-opencode-nemotron35-lightning-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'nvidia/nemotron-3.5-lightning:free' },
   { id: 'opencode-nemotron-3.5-super-vl-free', name: 'Nemotron 3.5 Super VL Free', shortName: 'Nemotron 3.5 Super VL Free', shortAlias: 'nemotron35-super-vl-free', githubLabel: 'llm-opencode-nemotron35-super-vl-free', contextWindow: '1M', maxTokens: 1048576, openRouterId: 'nvidia/nemotron-3.5-super-vl:free' },
@@ -176,7 +179,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.325'
+    defaultCliVersion: '2.1.326'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -192,7 +195,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.9'
+    defaultCliVersion: '1.5.10'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',
@@ -200,7 +203,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: OPENCODE_MODELS.map(m => m.id),
     defaultAlias: 'opencode',
     npmPackage: 'opencode-ai',
-    defaultCliVersion: '1.19.5'
+    defaultCliVersion: '1.19.6'
   },
   vibe: {
     dockerImage: 'propr/agent:latest',
