@@ -288,6 +288,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Epic progress counts plan issues, and every epic comment shows the same
+  count**: "N of M issues merged" now counts the plan's issues whose pull
+  request is merged into the epic branch. A pull request without a plan issue
+  (a fix opened by hand into the epic branch) no longer changes N or M, two
+  pull requests for one issue count it once, and an issue closed as not
+  planned leaves M and, on the next update, the epic body's issue list and
+  `Fixes` lines. The progress comment, the "Epic ready for final merge"
+  comment (`All N issues have been merged`), the status line and the title
+  use the same numbers, and a merged epic's progress comment no longer shows
+  a progress bar and `⏳ 75%` next to "merged".
+
 - **Connected apps page shows a full page of apps**: `/mcp/apps` counted
   revoked and expired grants towards each page of 50 and hid them afterwards,
   so an account that had reconnected apps many times saw one or two apps per

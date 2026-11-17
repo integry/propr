@@ -4,37 +4,19 @@ import { PlanIssueStatus, type PlanIssue } from '../config/planIssueManager.js';
 import logger from '../utils/logger.js';
 import { epicHeadSha, isMergeContained, isRecord, type EpicProgressOctokit } from './epicMergeEvidence.js';
 import { extractEpicProgressActivityLines, insertEpicProgressActivityLines, replaceEpicProgressActivityLines } from './epicProgressActivity.js';
+import {
+    computeEpicMergeProgress, epicProgressCountText, isEpicMergeComplete, progressNoun, type EpicChildPullRequest, type EpicMergeProgress,
+} from './epicProgressCount.js';
+
+export {
+    computeEpicMergeProgress, epicChildBranchIssue, epicProgressCountText, isEpicMergeComplete, type EpicChildPullRequest, type EpicMergeProgress,
+} from './epicProgressCount.js';
 
 export const EPIC_PROGRESS_MARKER = '<!-- propr:epic-merge-progress -->';
 export const EPIC_FINAL_MERGE_MARKER = '<!-- propr:epic-final-merge -->';
 export const EPIC_COMPLETE_MARKER = '<!-- propr:epic-merge-complete -->';
 /** Starts the line a progress comment carries once its epic PR merged (buildEpicProgressComment). */
 const EPIC_MERGED_LINE_PREFIX = '✅ This epic PR has been merged into';
-
-export interface EpicChildPullRequest {
-    number: number;
-    merged: boolean;
-    mergedAt?: string;
-    /** Resolves a merge that shares its second with an epic boundary. */
-    mergeCommitSha?: string | null;
-    /** Closed without being merged; such PRs are not counted towards the epic. */
-    abandoned: boolean;
-    /** Still open: in progress towards the epic. */
-    open?: boolean;
-    title?: string;
-    /** The branch the child PR comes from. */
-    headRef?: string;
-    /** Open child PRs: the head commit and GitHub's last update, which any status write to the child changes. */
-    headSha?: string; updatedAt?: string;
-}
-
-export interface EpicMergeProgress {
-    merged: number;
-    total: number;
-    /** Plan issues that were closed without a merge and are excluded from the total. */
-    excluded: number;
-    mergedPullRequests: number[];
-}
 
 export interface EpicMergeProgressRequest {
     owner: string;
@@ -64,51 +46,6 @@ export interface EpicMergeProgressResult {
     completionPosted: boolean;
 }
 
-/**
- * Counts merged children of an epic. Every non-abandoned child PR targeting
- * the epic branch counts once; plan issues add a placeholder for planned work
- * that has no such PR yet, so the total covers both unstarted plan issues and
- * child PRs outside the plan. The triggering PR is always merged, even if
- * GitHub's list has not caught up with the merge yet.
- */
-export function computeEpicMergeProgress(
-    childPullRequests: EpicChildPullRequest[],
-    mergedChildPrNumber: number | null,
-    planIssues: PlanIssue[] = [],
-): EpicMergeProgress {
-    const mergedNumbers = new Set(childPullRequests.filter(pr => pr.merged).map(pr => pr.number));
-    if (mergedChildPrNumber !== null) mergedNumbers.add(mergedChildPrNumber);
-    const childNumbers = new Set(childPullRequests.filter(pr => !pr.abandoned).map(pr => pr.number));
-    if (mergedChildPrNumber !== null) childNumbers.add(mergedChildPrNumber);
-
-    let merged = [...childNumbers].filter(number => mergedNumbers.has(number)).length;
-    let total = childNumbers.size;
-    let excluded = 0;
-    const placeholderPrNumbers = new Set<number>();
-    for (const issue of planIssues) {
-        if (issue.pr_number != null && (childNumbers.has(issue.pr_number) || placeholderPrNumbers.has(issue.pr_number))) continue;
-        const issueMerged = issue.status === PlanIssueStatus.MERGED;
-        if (!issueMerged && issue.status === PlanIssueStatus.CLOSED) {
-            excluded++;
-            continue;
-        }
-        if (issue.pr_number != null) placeholderPrNumbers.add(issue.pr_number);
-        total++;
-        if (issueMerged) merged++;
-    }
-
-    return {
-        merged,
-        total,
-        excluded,
-        mergedPullRequests: [...mergedNumbers].sort((a, b) => a - b),
-    };
-}
-
-export function isEpicMergeComplete(progress: EpicMergeProgress): boolean {
-    return progress.total > 0 && progress.merged >= progress.total;
-}
-
 function renderProgressBar(merged: number, total: number, width = 10): string {
     const filled = total > 0 ? Math.min(width, Math.round((merged / total) * width)) : 0;
     return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
@@ -127,10 +64,12 @@ export function epicProgressAfterMerge(mergedChildPrNumber: number | null, planI
 
 /**
  * `mergedInto` names the branch the epic PR has merged into, once it has; a
- * merged epic shows no activity. `activity` is the open epic's "In progress"
- * and "Up next" lines (renderEpicProgressActivity), fitted to the space the
- * rest of the comment leaves within GitHub's limit (fitEpicProgressActivityLines),
- * so the counts, the merged child PRs and the marker are always written.
+ * merged epic shows no activity and no progress bar: it reads as merged,
+ * with the issues it did not carry counted instead. `activity` is the open
+ * epic's "In progress" and "Up next" lines (renderEpicProgressActivity),
+ * fitted to the space the rest of the comment leaves within GitHub's limit
+ * (fitEpicProgressActivityLines), so the counts, the merged child PRs and
+ * the marker are always written.
  */
 export function buildEpicProgressComment(progress: EpicMergeProgress, planName?: string, mergedInto?: string, activity: string[] = []): string {
     const complete = isEpicMergeComplete(progress);
@@ -138,10 +77,20 @@ export function buildEpicProgressComment(progress: EpicMergeProgress, planName?:
     const lines = [
         `### Epic progress${planName ? `: ${planName}` : ''}`,
         '',
-        `**${progress.merged} out of ${progress.total} PRs merged** ${complete ? '✅' : '⏳'}`,
-        '',
-        `\`${renderProgressBar(progress.merged, progress.total)}\` ${percent}%`,
     ];
+    if (mergedInto) {
+        lines.push(`**${epicProgressCountText(progress)}**${complete ? ' ✅' : ''}`);
+        const outstanding = progress.total - progress.merged;
+        if (outstanding > 0) {
+            lines.push('', `_${outstanding} ${progressNoun(progress, outstanding)} ${outstanding === 1 ? 'was' : 'were'} not merged into this epic branch before the epic PR merged._`);
+        }
+    } else {
+        lines.push(
+            `**${epicProgressCountText(progress)}** ${complete ? '✅' : '⏳'}`,
+            '',
+            `\`${renderProgressBar(progress.merged, progress.total)}\` ${percent}%`,
+        );
+    }
     if (progress.mergedPullRequests.length > 0) {
         lines.push('', `Merged child PRs: ${progress.mergedPullRequests.map(n => `#${n}`).join(', ')}`);
     }
@@ -156,10 +105,15 @@ export function buildEpicProgressComment(progress: EpicMergeProgress, planName?:
 }
 
 export function buildEpicCompleteComment(progress: EpicMergeProgress, planName?: string): string {
+    const subject = progress.unit === 'pullRequests'
+        ? `All ${progress.total} child ${progressNoun(progress, progress.total)}`
+        : `All ${progress.total} ${progressNoun(progress, progress.total)}`;
     return [
         `### ✅ Epic ready for final merge${planName ? `: ${planName}` : ''}`,
         '',
-        `All ${progress.total} child PR${progress.total === 1 ? ' has' : 's have'} been merged into this epic branch. This epic PR is ready for final review and merge.`,
+        `**${epicProgressCountText(progress)}**`,
+        '',
+        `${subject} ${progress.total === 1 ? 'has' : 'have'} been merged into this epic branch. This epic PR is ready for final review and merge.`,
         '',
         '---',
         '*Posted automatically by ProPR*',
@@ -178,7 +132,7 @@ export function buildEpicFinalMergeComment(
         '',
         progress.total === 0
             ? 'No child PRs or planned issues were tracked for this epic.'
-            : `**${progress.merged} out of ${progress.total} PRs merged** into ${baseBranch} through this epic PR.`,
+            : `**${epicProgressCountText(progress)}** into ${baseBranch} through this epic PR.`,
         ...(isEpicMergeComplete(progress) ? ['', 'All planned epic work is now merged.'] : []),
         '', '*Posted automatically by ProPR*', EPIC_FINAL_MERGE_MARKER,
     ].join('\n');
@@ -218,7 +172,8 @@ export async function listChildPullRequests(octokit: EpicProgressOctokit, owner:
             abandoned: pr.state === 'closed' && !merged,
             ...(open ? { open } : {}),
             ...(open && typeof pr.title === 'string' ? { title: pr.title } : {}),
-            ...(open && isRecord(pr.head) && typeof pr.head.ref === 'string' ? { headRef: pr.head.ref } : {}),
+            // Every child's branch: it names the plan issue a PR without a recorded link was cut for (computeEpicMergeProgress).
+            ...(isRecord(pr.head) && typeof pr.head.ref === 'string' ? { headRef: pr.head.ref } : {}),
             ...(open && isRecord(pr.head) && typeof pr.head.sha === 'string' ? { headSha: pr.head.sha } : {}),
             ...(open && typeof pr.updated_at === 'string' ? { updatedAt: pr.updated_at } : {}),
         }];
@@ -336,7 +291,10 @@ async function readMergedChild(
     const mergedAt = typeof pr.merged_at === 'string' && Number.isFinite(Date.parse(pr.merged_at)) ? pr.merged_at : undefined;
     const base = isRecord(pr.base) && typeof pr.base.ref === 'string' ? pr.base.ref : epicBranch;
     if (!mergedAt || base !== epicBranch) return null;
-    return { number, merged: true, mergedAt, abandoned: false, mergeCommitSha: typeof pr.merge_commit_sha === 'string' ? pr.merge_commit_sha : null };
+    return {
+        number, merged: true, mergedAt, abandoned: false, mergeCommitSha: typeof pr.merge_commit_sha === 'string' ? pr.merge_commit_sha : null,
+        ...(isRecord(pr.head) && typeof pr.head.ref === 'string' ? { headRef: pr.head.ref } : {}),
+    };
 }
 
 /**
@@ -391,9 +349,9 @@ function reportablePlanIssues(
 }
 
 /**
- * Creates or updates the "x out of y" tracking comment. A first comment is
+ * Creates or updates the "N of M issues merged" tracking comment. A first comment is
  * skipped while there is nothing to track (e.g. a successor whose only child
- * shipped through its predecessor), as "0 out of 0" would only confuse.
+ * shipped through its predecessor), as "0 of 0" would only confuse.
  */
 async function syncTrackingComment(
     octokit: EpicProgressOctokit,
@@ -419,7 +377,7 @@ async function syncTrackingComment(
 }
 
 /**
- * Keeps a single "x out of y PRs merged" tracking comment on the epic PR up to
+ * Keeps a single "N of M issues merged" tracking comment on the epic PR up to
  * date, posts a readiness notice once every child PR has merged, and
  * confirms completion separately when the aggregate epic PR merges.
  * Progress, readiness, and final-merge comments each have a hidden marker,

@@ -16,17 +16,13 @@ import {
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { db } from '../db/connection.js';
 import type { PlanIssue } from '../config/planIssueManager.js';
+import { buildEpicPRBody, epicBodyIssueNumbers, fetchIssueDetails } from './epicPRBody.js';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
 
 interface PlanDetails {
     planName: string;
     draftId: string;
     issues: PlanIssue[];
-}
-
-interface IssueDetails {
-    number: number;
-    title: string;
 }
 
 /**
@@ -131,71 +127,6 @@ async function loadPlanDetails(
         lookup = await getPlanDetailsFromBranch(epicBranchName, repository, log);
     }
     return lookup;
-}
-
-/**
- * Fetch issue details from GitHub.
- */
-async function fetchIssueDetails(
-    owner: string,
-    repo: string,
-    issueNumbers: number[],
-    log: ReturnType<typeof logger.withCorrelation>
-): Promise<IssueDetails[]> {
-    const octokit = await getAuthenticatedOctokit();
-    const details: IssueDetails[] = [];
-
-    for (const issueNumber of issueNumbers) {
-        try {
-            const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-                owner,
-                repo,
-                issue_number: issueNumber
-            });
-            details.push({
-                number: issueNumber, title: response.data.title
-            });
-        } catch (error) {
-            log.debug({ issueNumber, error: (error as Error).message }, 'Failed to fetch issue details');
-            // Still include the issue, just without title
-            details.push({ number: issueNumber, title: '' });
-        }
-    }
-
-    return details;
-}
-
-/**
- * Build the Epic PR body with issue links and descriptions.
- */
-function buildEpicPRBody(
-    planName: string,
-    issueDetails: IssueDetails[]
-): string {
-    const issueList = issueDetails
-        .map(issue => issue.title
-            ? `- #${issue.number}: ${issue.title}`
-            : `- #${issue.number}`)
-        .join('\n');
-
-    const fixesLine = issueDetails
-        .map(issue => `Fixes #${issue.number}`)
-        .join('\n');
-
-    return `## ${planName}
-
-This Epic PR aggregates all changes for the plan: **${planName}**
-
-### Issues in this Epic
-${issueList}
-
-### Auto-close
-When this PR is merged, the following issues will be automatically closed:
-
-${fixesLine}
-
----
-*Created automatically by ProPR*`;
 }
 
 /**
@@ -318,7 +249,7 @@ async function updateEpicPRBody(
     if (planLookup.status !== 'found') return;
 
     const planDetails = planLookup.details;
-    const issueNumbers = planDetails.issues.map(i => i.issue_number);
+    const issueNumbers = epicBodyIssueNumbers(planDetails.issues);
     const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
     const newBody = buildEpicPRBody(planDetails.planName, issueDetails);
 
@@ -469,7 +400,7 @@ async function createEpicPR(
     let body: string;
 
     if (planDetails) {
-        const issueNumbers = planDetails.issues.map(i => i.issue_number);
+        const issueNumbers = epicBodyIssueNumbers(planDetails.issues);
         const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
 
         title = `[Epic] ${planDetails.planName}`;

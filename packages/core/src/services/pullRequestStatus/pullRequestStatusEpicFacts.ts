@@ -4,7 +4,7 @@ import type { PlanIssue } from '../../config/planIssueManager.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { agentBlockedIssueNumber, isAgentBlockedReason } from '../taskPlanning/epicQueueBlockedHead.js';
 import {
-    computeEpicMergeProgress, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
+    computeEpicMergeProgress, epicChildBranchIssue, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
 } from '../../webhook/epicMergeProgress.js';
 import type { EpicProgressOctokit } from '../../webhook/epicMergeEvidence.js';
 import { pullRequestBodyKey } from './pullRequestBodyLock.js';
@@ -161,8 +161,8 @@ async function childStatuses(
     const issueOf = (child: EpicChildPullRequest): number | null => {
         const linked = context.plan.issues.find(issue => issue.pr_number === child.number);
         if (linked) return linked.issue_number;
-        const fromBranch = Number(child.headRef?.match(/^(\d+)[/-]/)?.[1]);
-        return planIssueNumbers.has(fromBranch) ? fromBranch : null;
+        const fromBranch = epicChildBranchIssue(child.headRef);
+        return fromBranch !== null && planIssueNumbers.has(fromBranch) ? fromBranch : null;
     };
     // A pull request from another epic branch into this one is not a sub-PR whose status is read (no epic reads another).
     const readable = open.filter(child => !EPIC_BRANCH_PATTERN.test(child.headRef ?? ''));

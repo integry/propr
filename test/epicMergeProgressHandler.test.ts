@@ -46,6 +46,8 @@ let createdEpicPRs = 0;
 const epicPRCreations: Array<Record<string, unknown>> = [];
 // Runs while the handler fetches issue details for the epic PR body.
 let onIssueFetch: () => void | Promise<void> = () => {};
+// GitHub's view of an issue, by number, beyond its title (e.g. closed as not planned).
+let issueData: Record<number, Record<string, unknown>> = {};
 
 function fakeQuery(table: string) {
     let filter: Record<string, unknown> = {};
@@ -96,7 +98,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
                 ...(createdEpicPRs ? [{ number: 501, state: 'open', merged_at: null }] : []),
             ];
         },
-        request: async (route: string, parameters: { pull_number?: number }) => {
+        request: async (route: string, parameters: { pull_number?: number; issue_number?: number }) => {
         githubRequests.push(parameters.pull_number ? `${route}:${parameters.pull_number}` : route);
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
             if (parameters.pull_number === 500) return { data: epicPullRequest() };
@@ -114,7 +116,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
         if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') return { data: { ahead_by: compareAheadBy } };
         if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
             await onIssueFetch();
-            return { data: { title: 'Issue' } };
+            return { data: { title: 'Issue', ...issueData[parameters.issue_number!] } };
         }
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') {
             bodyUpdates.push(parameters.pull_number!);
@@ -264,6 +266,7 @@ beforeEach(() => {
     createdEpicPRs = 0;
     epicPRCreations.length = 0;
     onIssueFetch = () => {};
+    issueData = {};
     failingProgressUpdates = 0;
     completionNotices = 0;
     useRealProgress = false;
@@ -441,6 +444,18 @@ test('keeps the obligation while the epic PR can be neither found nor created', 
     assert.equal(createdEpicPRs, 1);
     assert.equal(completionNotices, 1);
     assert.equal(redis.hash.size, 0);
+});
+
+test('the epic PR body leaves out issues closed without a merge or as not planned, from its list and its Fixes lines', async () => {
+    planIssueRows[1] = { ...planIssueRows[1], status: 'closed' };
+    issueData[102] = { state: 'closed', state_reason: 'not_planned' };
+    issueData[100] = { state: 'open', state_reason: null };
+    epicPrExists = false;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    const body = epicPRCreations[0].body as string;
+    assert.match(body, /^Fixes #100$/m);
+    assert.match(body, /^- #100: Issue$/m);
+    assert.doesNotMatch(body, /#101|#102/);
 });
 
 test('creates the epic PR on the first child merge and tracks progress on it', async () => {
@@ -872,7 +887,7 @@ test('history failure retains the successor obligation until scoped progress is 
     elapseRetryBackoff();
     assert.equal(await retryPendingEpicMergeProgress(), 1);
     assert.equal(redis.hash.size, 0);
-    assert.ok(comments.some(c => c.issue_number === 501 && c.body.includes('1 out of 3 PRs merged')));
+    assert.ok(comments.some(c => c.issue_number === 501 && c.body.includes('1 of 3 issues merged')));
 });
 
 for (const savedRetry of [false, true]) {
@@ -926,7 +941,7 @@ test('original aggregate retry keeps successor child work outstanding until its 
     elapseRetryBackoff();
     assert.equal(await retryPendingEpicMergeProgress(), 1);
     const final = comments.find(c => c.issue_number === 500 && c.body.includes(actualProgress.EPIC_FINAL_MERGE_MARKER))!;
-    assert.match(final.body, /1 out of 2 PRs merged/);
+    assert.match(final.body, /1 of 2 issues merged/);
     assert.ok(!final.body.includes('All planned epic work'));
     assert.ok(!comments.some(c => c.issue_number === 501 && c.body.includes(actualProgress.EPIC_FINAL_MERGE_MARKER)));
     assert.equal(redis.hash.size, 0);
