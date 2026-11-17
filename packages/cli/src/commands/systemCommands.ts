@@ -295,7 +295,7 @@ function displayQueueStats(stats: QueueStats): void {
 export function createRemoteStatusCommand(invocation = "propr remote-status"): Command {
   return new Command("remote-status")
     .description("Display the health status of a remote ProPR backend (API, Redis, daemon, worker)")
-    .option("--json", "Output raw JSON response")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Components Checked:
   - API health
@@ -357,7 +357,7 @@ Examples:
 export function createQueueCommand(invocation = "propr queue"): Command {
   return new Command("queue")
     .description("Display job queue statistics and counts")
-    .option("--json", "Output raw JSON response")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Statistics Shown:
   - Waiting jobs

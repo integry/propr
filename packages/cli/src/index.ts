@@ -8,6 +8,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
 import { completionScript } from "./completion.js";
+import { installNestedHelpCommand, renderCommandGroups } from "./rootHelp.js";
 import { isValidRemoteUrl } from "./commands/configCommands.js";
 import {
   configureProjectOptionInheritance,
@@ -208,7 +209,7 @@ ProPR CLI - AI-Powered GitHub Issue Implementation
 Run a local ProPR Docker stack (check / init / start / status / stop) and
 drive the backend (plans, issues, goals, tasks, repos, agents).
 `)
-  .addHelpText("after", `
+  .addHelpText("after", () => `
 Quick Start (local stack):
   $ propr                           Verify the environment (same as 'propr check')
   $ propr init stack                Scaffold .env + data/logs/repos, detect agents
@@ -243,27 +244,11 @@ Examples:
   $ propr automation run <agent-id> --wait   # Run a saved agent and print its report
   $ propr remote-status
 
-Command Groups:
-  Control Plane:  check, images, init [repo|stack], start, status, stop, ui, docs, tunnel, tank, runtime
-  GitHub Relay:   relay [enroll|list|revoke]
-  Configuration:  config, remote, use, login, logout
-  Plans:          plan [create|list|get|delete|abort]
-  Implementation: issue [implement]
-  Goals:          goal [capabilities|create|list|inspect|input|inputs|pause|resume|cancel|model]
-  Automations:    automation [list|show|run|runs|report|approve|reject|cancel]   (Agents: saved automations)
-  Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
-  Handoffs:       handoffs [list|inspect|resume|release]   (admin recovery for PR follow-up publications)
-  Repositories:   repo [list|add|remove|toggle|index|status]
-  Agents:         agent [list|add|enable|disable|delete|pool]   (coding-agent configurations)
-  Settings:       setting [get|update|reindex-summaries]
-  To-Dos:         todo [list|get|add|complete|delete]
-  Logs:           log [list]
-  Backend:        backend [status|queue], remote-status, queue, admission
-  Agent Skills:   skill [install|status|remove]
-  Shell:          completion [bash|zsh|fish]
+${renderCommandGroups(program)}
 
 For more information on a command, run:
   $ propr <command> --help
+  $ propr help <command> [subcommand]
 `);
 
 configureProjectOptionInheritance(program);
@@ -411,6 +396,16 @@ Example:
 program
   .command("completion <shell>")
   .description("Generate shell completion script for bash, zsh, or fish")
+  .addHelpText("after", `
+Argument:
+  shell    One of: bash, zsh, fish
+
+Examples:
+  $ source <(propr completion bash)                  # Current bash session
+  $ propr completion bash >> ~/.bashrc               # Every new bash session
+  $ propr completion zsh > "\${fpath[1]}/_propr"      # zsh (restart the shell)
+  $ propr completion fish > ~/.config/fish/completions/propr.fish
+`)
   .action((shell: string) => {
     if (shell !== "bash" && shell !== "zsh" && shell !== "fish") {
       console.error("Error: shell must be one of: bash, zsh, fish");
@@ -457,6 +452,10 @@ program.addCommand(createStatsCommand());
 program.addCommand(createAdmissionCommand());
 program.addCommand(createPrCommand());
 program.addCommand(createEventsCommand());
+installNestedHelpCommand(program);
+
+/** The fully registered command tree (for help and completion tests). */
+export { program as cliProgram };
 
 function isCliEntryPoint(): boolean {
   const invocation = process.argv[1];

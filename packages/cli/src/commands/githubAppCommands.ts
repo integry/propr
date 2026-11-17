@@ -388,7 +388,7 @@ export function createGithubAppCommand(dependencies: GithubAppDependencies = {})
       .option('--root <dir>', 'Stack root directory')
       .option('--no-browser', 'Use a portable HTML form and paste GitHub redirect URLs (SSH)')
       .option('--force', 'Replace existing credentials or manifest output files')
-      .option('--json', 'Print field names and file paths only to stdout; progress goes to stderr')
+      .option('-j, --json', 'Print field names and file paths only to stdout; progress goes to stderr')
       .action(async (options: GithubAppOptions) => {
         try {
           if (name === 'create') {
