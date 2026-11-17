@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { automationReportPreview } from '@propr/shared';
 import { user } from './dashboard-sections.fixture';
 
 const now = Date.parse('2026-10-17T21:00:00.000Z');
@@ -22,7 +23,7 @@ const baseRun = {
 
 const completed = {
   ...baseRun, id: 'c0a1d2e3-0000-4000-8000-000000000001', trigger: 'schedule', state: 'completed',
-  report: '## Validation passed on every Linux target with no regressions in the final report',
+  report: '## Validation passed on every Linux target with no regressions in the final report, including the arm64 and riscv64 cross builds and the long-running storage soak\n\n- amd64: passed\n- arm64: passed',
   createdAt: now - minutes(95), startedAt: now - minutes(94), reportedAt: now - minutes(80), finishedAt: now - minutes(80), updatedAt: now - minutes(80),
 };
 const cancelled = {
@@ -40,6 +41,12 @@ const older = {
 const firstPage = [running, cancelled, completed];
 const runs = [...firstPage, older];
 
+/** A run as the run list sends it: no report, its one-line preview instead. */
+const listed = ({ report, ...run }: (typeof runs)[number]) => {
+  const reportPreview = automationReportPreview(report);
+  return reportPreview ? { ...run, reportPreview } : run;
+};
+
 async function runsFixture(page: Page) {
   await page.clock.install({ time: now });
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
@@ -49,7 +56,7 @@ async function runsFixture(page: Page) {
     if (pathname === `/api/automation-definitions/${definition.id}/runs`) {
       const offset = Number(url.searchParams.get('offset') ?? 0);
       const pageRuns = offset === 0 ? firstPage : [older];
-      return route.fulfill({ json: { runs: pageRuns, total: runs.length, limit: 20, offset } });
+      return route.fulfill({ json: { runs: pageRuns.map(listed), total: runs.length, limit: 20, offset } });
     }
     const run = runs.find(candidate => pathname === `/api/automation-runs/${candidate.id}`);
     if (run) return route.fulfill({ json: { run } });
@@ -113,6 +120,22 @@ const expectNoInnerHorizontalScroll = async (locator: Locator) => {
     })
     .map(element => `${element.tagName.toLowerCase()}[data-testid=${element.getAttribute('data-testid')}] ${element.scrollWidth}>${element.clientWidth}`));
   expect(scrolling).toEqual([]);
+};
+
+/** The preview stays on one line, clipped with an ellipsis, inside its row. */
+const expectOneLinePreview = async (row: Locator) => {
+  const preview = row.getByTestId('agent-run-preview');
+  const metrics = await preview.evaluate(element => ({
+    clipped: element.scrollWidth > element.clientWidth,
+    lineHeight: parseFloat(getComputedStyle(element).lineHeight),
+    height: element.getBoundingClientRect().height,
+    textOverflow: getComputedStyle(element).textOverflow,
+    whiteSpace: getComputedStyle(element).whiteSpace,
+  }));
+  expect(metrics.clipped).toBe(true);
+  expect(metrics.textOverflow).toBe('ellipsis');
+  expect(metrics.whiteSpace).toBe('nowrap');
+  expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight + 1);
 };
 
 test.describe('automation runs on a phone', () => {
@@ -191,12 +214,11 @@ test.describe('automation runs on a phone', () => {
       await expect(rows.nth(0).getByText('Running', { exact: true })).toBeVisible();
       await expect(rows.nth(1).getByText('Cancelled', { exact: true })).toBeVisible();
       await expect(rows.nth(2).getByText('Completed', { exact: true })).toBeVisible();
-      // No hover hint: touch has no hover, and the row opens the run with its report.
-      await expect(rows.nth(2).getByTestId('agent-run-preview')).toHaveText('');
-
-      // Focusing a row (as a keyboard or switch user does) reads its report preview.
-      await rows.nth(2).focus();
+      // The list carries each report's preview: no hover, focus or run read needed, and runs without a report show none.
       await expect(rows.nth(2).getByTestId('agent-run-preview')).toHaveText(/^Validation passed on every Linux target/);
+      await expect(rows.nth(0).getByTestId('agent-run-preview')).toHaveText('');
+      await expect(rows.nth(1).getByTestId('agent-run-preview')).toHaveText('');
+      await expectOneLinePreview(rows.nth(2));
 
       const pane = page.getByTestId('agent-runs-pane');
       await expectNoInnerHorizontalScroll(pane);
@@ -251,6 +273,21 @@ test('the run history keeps its columns where they fit, and unsaved edits surviv
   // Desktop: one line per run, every column header on that line.
   const row = await elementBox(page.getByTestId('agent-run-row').first());
   expect(row.bottom - row.top).toBeLessThan(48);
+  // A long preview truncates in the Report column without pushing state, duration or start time.
+  const reported = page.getByTestId('agent-run-row').nth(2);
+  await expect(reported.getByTestId('agent-run-preview')).toHaveText(/^Validation passed on every Linux target/);
+  await expectOneLinePreview(reported);
+  const reportedBox = await elementBox(reported);
+  expect(reportedBox.bottom - reportedBox.top).toBeLessThan(48);
+  const previewBox = await elementBox(reported.getByTestId('agent-run-preview'));
+  const durationBox = await elementBox(reported.getByTestId('agent-run-duration'));
+  expect(previewBox.left).toBeGreaterThanOrEqual(durationBox.right);
+  expect(previewBox.right).toBeLessThanOrEqual(reportedBox.right);
+  for (const other of [page.getByTestId('agent-run-row').nth(0), page.getByTestId('agent-run-row').nth(1)]) {
+    const otherDuration = await elementBox(other.getByTestId('agent-run-duration'));
+    expect(Math.round(otherDuration.left)).toBe(Math.round(durationBox.left));
+  }
+  await capture(page, 'automation-run-history-1440');
   const labels = header.locator(':scope > span');
   await expect(labels).toHaveText(['Started', 'Trigger', 'State', 'Duration', 'Report']);
   const tops = await labels.evaluateAll(spans => spans.map(span => Math.round(span.getBoundingClientRect().top)));

@@ -78,6 +78,8 @@ export interface AutomationRunRecord {
   actionTaskId: string | null;
   /** Only in the run detail. */
   report?: string | null;
+  /** Only in the run list: the report's first meaningful line as plain text, when the run has a report. */
+  reportPreview?: string;
   reportTruncated: boolean;
   actionSummary: string | null;
   skipReason: string | null;

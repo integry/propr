@@ -41,6 +41,7 @@ import {
   AUTOMATION_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AUTOMATION_DEFINITION_CONTRACT,
   AUTOMATION_TEMPLATE_CATALOG,
+  automationReportPreview,
   automationRunNoChangeReason,
   hasAutomationExtensions,
   type AutomationExtensions,
@@ -279,6 +280,8 @@ async function attributedAgentDefinition(definition: StoredAgentDefinition) {
  * A run as clients see it. `reportHash`, `reportNovelty` and `actingMutations`
  * are stored flags; `noChangeReason` derives from them (null when the run
  * produced something or has no flags) so every client shows the same badge.
+ * The list form drops the report and carries `reportPreview`, its first
+ * meaningful line in plain text, when the run has one.
  */
 export function publicAutomationRun(run: StoredAgentRun, { includeReport }: { includeReport: boolean }) {
   const snapshot = run.definitionSnapshot ? publicAutomationDefinition(run.definitionSnapshot) : null;
@@ -287,8 +290,12 @@ export function publicAutomationRun(run: StoredAgentRun, { includeReport }: { in
   const visible: Partial<StoredAgentRun> = { ...run };
   delete visible.actingMutationsPending;
   if (includeReport) return { ...visible, noChangeReason, definitionSnapshot: snapshot };
-  // History rows stay light: the report and the definition snapshot are only in the run detail.
-  const summary: Partial<StoredAgentRun> & { noChangeReason: typeof noChangeReason } = { ...visible, noChangeReason };
+  // History rows stay light: the report and the definition snapshot are only in the run detail;
+  // a one-line preview of the report stands in for it.
+  const reportPreview = automationReportPreview(run.report);
+  const summary: Partial<StoredAgentRun> & { noChangeReason: typeof noChangeReason; reportPreview?: string } = {
+    ...visible, noChangeReason, ...(reportPreview ? { reportPreview } : {}),
+  };
   delete summary.report;
   delete summary.definitionSnapshot;
   return summary;
