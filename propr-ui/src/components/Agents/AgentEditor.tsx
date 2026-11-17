@@ -11,6 +11,7 @@ import { AgentConfirmDialog } from './AgentConfirmDialog';
 import { AgentRunsPane } from './AgentRunsPane';
 import { AgentConflictBanner, AgentDetailTabs, AgentEditorHeader, AgentRunBreadcrumb, type AgentDetailSection } from './AgentEditorHeader';
 import { AgentSettingsForm } from './AgentSettingsForm';
+import { useAutomationListQuery } from './automationListQuery';
 import { runAvailability, useAgentEditor, type AgentEditorCallbacks, type AgentEditorNotify } from './useAgentEditor';
 import type { AutomationRunRecord } from '../../api/automationDefinitionsApi';
 
@@ -103,9 +104,10 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({
 }) => {
   const { isDemoMode } = useDemoMode();
   const navigate = useNavigate();
+  const listQuery = useAutomationListQuery();
   const openRun = useCallback((run: AutomationRunRecord) => {
-    navigate(`/automations/${encodeURIComponent(run.definitionId)}/runs/${encodeURIComponent(run.id)}`);
-  }, [navigate]);
+    navigate(`/automations/${encodeURIComponent(run.definitionId)}/runs/${encodeURIComponent(run.id)}${listQuery}`);
+  }, [listQuery, navigate]);
   const toast = useOptionalToast();
   const addToast = toast?.addToast;
   const notify = useCallback<AgentEditorNotify>((message, type) => { addToast?.({ type, message, duration: 3_000 }); }, [addToast]);

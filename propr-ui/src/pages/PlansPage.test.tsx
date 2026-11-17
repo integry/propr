@@ -145,7 +145,7 @@ describe('PlansPage', () => {
     // The header intentionally uses the inline layout (PR #1462 follow-up
     // rolled back the stacked w-full variant): a search capped at 16rem that
     // gives up width first, a width-capped status select, and a shrinkable repo selector.
-    expect(searchInput.parentElement).toHaveClass('min-w-0', 'flex-1', 'sm:max-w-64');
+    expect(searchInput.parentElement).toHaveClass('min-w-0', 'flex-1', 'max-w-64');
     expect(statusSelect).toHaveClass('w-[120px]');
     expect(repoTrigger.parentElement).toHaveClass('min-w-0');
   });
