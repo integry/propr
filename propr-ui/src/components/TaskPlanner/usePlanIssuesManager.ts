@@ -180,7 +180,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const queueRowProps = useCallback((issue: PlanIssue, readOnly: boolean) => {
     const props = queueActionRowProps(issue.issue_number, readOnly);
     const skipped = new Set(props.queueState?.waitingOnSkipped ?? []);
-    const dependsOn = issue.depends_on_issues ?? props.queueState?.dependsOn ?? [];
+    // The active execution's edges win, even when empty (parallel); persisted edges only when it supplies none.
+    const dependsOn = props.queueState?.dependsOn ?? issue.depends_on_issues ?? [];
     const unmerged = props.queueState?.waitingOn
       ?? dependsOn.filter(prerequisite => statusByIssue.has(prerequisite) && statusByIssue.get(prerequisite) !== 'merged');
     return {

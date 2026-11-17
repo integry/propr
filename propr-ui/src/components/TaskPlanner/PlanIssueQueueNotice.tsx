@@ -22,11 +22,12 @@ const ActionButton: React.FC<{ label: string; icon: React.ReactNode; busy: boole
     data-testid={testId}
     disabled={disabled}
     onClick={(event) => { event.stopPropagation(); onClick(); }}
-    className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+    className={`inline-flex max-w-full items-center gap-1 rounded-md text-left border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
       tone === 'primary' ? 'border-amber-300 bg-white text-amber-800 hover:bg-amber-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
   >
-    {busy ? <Loader2 size={12} className="animate-spin" /> : icon}
-    {label}
+    <span className="flex-shrink-0">{busy ? <Loader2 size={12} className="animate-spin" /> : icon}</span>
+    {/* Labels that list issues ("Skip (keep #12, #13 waiting)") wrap within the row instead of being clipped. */}
+    <span className="min-w-0 break-words">{label}</span>
   </button>
 );
 

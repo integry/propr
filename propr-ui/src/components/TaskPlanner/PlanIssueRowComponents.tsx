@@ -419,8 +419,12 @@ const MultiAgentInfo: React.FC<{ selectedModels: AgentModelPair[] }> = ({ select
   </span>
 );
 
+/** "After #9, #10" with each "#N" kept whole, so a long list wraps only between references. */
+const IssueRefs: React.FC<{ prefix: string; issues: number[] }> = ({ prefix, issues }) => <>{prefix}{issues.map((issue, index) =>
+  <React.Fragment key={issue}>{' '}<span className="whitespace-nowrap">#{issue}{index < issues.length - 1 ? ',' : ''}</span></React.Fragment>)}</>;
+
 /** Secondary row facts (prerequisites, PR link, follow-ups, review scores). Agent and action live in RowActions' fixed columns. */
-/** `dependsOn`: issues this one starts after; `waitingOn`: prerequisites not merged yet that a pending issue still waits for. */
+/** `dependsOn`: issues this one starts after; `waitingOn`: prerequisites not merged yet that a pending issue still waits for. Both lists are unbounded, so they wrap. */
 export interface IssueMetadataProps { issue: PlanIssue; dependsOn?: number[]; waitingOn?: number[]; className?: string }
 export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, dependsOn = [], waitingOn = [], className = '' }) => {
   const prUrl = issue.pr_number ? `https://github.com/${issue.repository}/pull/${issue.pr_number}` : null;
@@ -430,8 +434,9 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, dependsOn =
 
   return (
     <div className={`flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs sm:gap-x-3 ${className}`}>
-      {after && <span data-testid="plan-issue-prerequisites" className="whitespace-nowrap text-slate-500" title={`Starts after ${issueList(dependsOn)}`}>
-        {after}{waitingOn.length > 0 && <span data-testid="plan-issue-waiting-on" className="text-amber-700"> · waiting on {issueList(waitingOn)}</span>}
+      {after && <span data-testid="plan-issue-prerequisites" className="min-w-0 max-w-full text-right text-slate-500" title={`Starts after ${issueList(dependsOn)}`}>
+        <IssueRefs prefix="After" issues={dependsOn} />
+        {waitingOn.length > 0 && <span data-testid="plan-issue-waiting-on" className="text-amber-700"> · <IssueRefs prefix="waiting on" issues={waitingOn} /></span>}
       </span>}
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {issue.followup_count > 0 && <span className="hidden whitespace-nowrap sm:block"><FollowupCount count={issue.followup_count} /></span>}

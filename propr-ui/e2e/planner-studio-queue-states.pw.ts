@@ -55,14 +55,14 @@ const draft = {
 };
 const listDraft = { ...draft, plan_json: undefined, issue_summary: { total: 20, pending: 5, processing: 1, in_review: 1, merged: 13, closed: 0 } };
 
-async function linearPlan(page: Page, viewport: { width: number; height: number }) {
+async function linearPlan(page: Page, viewport: { width: number; height: number }, data: { issues: unknown[]; queue: unknown } = { issues, queue }) {
   await fixture(page);
   await page.setViewportSize(viewport);
   await page.route(`**/api/planner/drafts/${draftId}**`, route => {
     const suffix = new URL(route.request().url()).pathname.replace(`/api/planner/drafts/${draftId}`, '');
     if (suffix === '') return route.fulfill({ json: draft });
-    if (suffix === '/issues') return route.fulfill({ json: issues });
-    if (suffix === '/execution-queue') return route.fulfill({ json: { queue } });
+    if (suffix === '/issues') return route.fulfill({ json: data.issues });
+    if (suffix === '/execution-queue') return route.fulfill({ json: { queue: data.queue } });
     return route.fallback();
   });
   await page.route('**/api/planner/drafts?**', route => route.fulfill({ json: { drafts: [listDraft], total: 1, page: 1, limit: 20, hasMore: false } }));
@@ -195,5 +195,55 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 720 }
     if (viewport.width >= 390) expect(await repoTrigger.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await expectNoSidewaysScroll(page);
     await capture(page, `plans-list-${viewport.width}`);
+  });
+}
+
+// Dependency lists are unbounded: six merged prerequisites plus two unmerged ones, and a blocked issue four others wait on.
+const manyPrerequisites = [3548, 3549, 3550, 3551, 3552, 3553, 3556, 3555];
+const manyDependsOn: Record<number, number[]> = { ...dependsOn, 3557: [3554, 3556], 3558: [3557, 3556], 3560: manyPrerequisites };
+const manyEdges = {
+  issues: issues.map(entry => ({ ...entry, depends_on_issues: manyDependsOn[entry.issue_number] ?? [] })),
+  queue: { ...queue, issueStates: queue.issueStates.map(entry => ({ ...entry, dependsOn: manyDependsOn[entry.issue] ?? [] })) },
+};
+
+/** Nothing inside the row is cut off by its hidden overflow: the element fits the row and does not overflow itself. */
+async function expectNotClipped(row: Locator, target: Locator) {
+  const fit = await target.evaluate((element, rowElement) => {
+    const rowBox = rowElement.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    return { inside: box.left >= rowBox.left - 0.5 && box.right <= rowBox.right + 0.5, fits: element.scrollWidth <= element.clientWidth + 1 };
+  }, await row.elementHandle());
+  expect(fit).toEqual({ inside: true, fits: true });
+}
+
+for (const viewport of [{ width: 320, height: 720 }, { width: 390, height: 844 }]) {
+  test(`long dependency text and queue action labels wrap instead of being clipped at ${viewport.width}px`, async ({ page }) => {
+    await linearPlan(page, viewport, manyEdges);
+    const rows = await openExecution(page);
+
+    const waiting = rowFor(rows, 3560);
+    const prerequisites = waiting.getByTestId('plan-issue-prerequisites');
+    await expect(prerequisites).toHaveText(`After ${manyPrerequisites.map(n => `#${n}`).join(', ')} · waiting on #3556, #3555`);
+    await expectNotClipped(waiting, prerequisites);
+    // It wraps between references, never inside one.
+    const lineHeight = await prerequisites.evaluate(element => parseFloat(getComputedStyle(element).lineHeight));
+    expect((await prerequisites.boundingBox())!.height).toBeGreaterThan(lineHeight * 1.5);
+    for (const reference of await prerequisites.locator('span.whitespace-nowrap').all()) {
+      expect((await reference.boundingBox())!.height).toBeLessThanOrEqual(lineHeight + 1);
+    }
+
+    const blocked = rowFor(rows, 3556);
+    for (const action of ['plan-queue-skip', 'plan-queue-skip_release']) {
+      const button = blocked.getByTestId(action);
+      await expect(button).toContainText('#3557, #3558, #3559, #3560');
+      await expectNotClipped(blocked, button);
+    }
+
+    for (const row of await rows.all()) await expectReadableRow(row, { ownLine: true });
+    await expectNoSidewaysScroll(page);
+    await blocked.scrollIntoViewIfNeeded();
+    await capture(page, `studio-long-dependencies-${viewport.width}`);
+    await waiting.scrollIntoViewIfNeeded();
+    await capture(page, `studio-long-prerequisites-${viewport.width}`);
   });
 }
