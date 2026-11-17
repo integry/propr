@@ -303,3 +303,29 @@ test('release maps refusals to 409, missing records to 404 and forwards force', 
       [{ force: false }, { force: false }, { force: true }]);
   });
 });
+
+test('F6: release forwards the confirmed attempt, refuses a replaced one and rejects invalid attempt ids', async () => {
+  const calls: Call[] = [];
+  // The current handoff on the PR is task-1; the operator releases only the attempt that was confirmed.
+  const deps = stubDeps(calls, {
+    releaseFollowupHandoffRecord: async (key, options) => {
+      calls.push({ name: 'release', args: [key, options] });
+      return options.expectedTaskId === undefined || options.expectedTaskId === 'task-1'
+        ? { released: true } : { released: false, reason: 'superseded' };
+    },
+  });
+  await withServer(deps, async origin => {
+    const release = (body: unknown) => fetch(`${origin}/api/admin/followup-handoffs/integry/propr/42/release`, {
+      method: 'POST', headers: asAdmin, body: JSON.stringify(body),
+    });
+    const stale = await release({ force: true, taskId: 'task-0' });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), { released: false, reason: 'superseded' });
+    assert.equal((await release({ force: true, taskId: 'task-1' })).status, 200);
+    for (const taskId of ['', 7, 'x'.repeat(201)]) {
+      assert.equal((await release({ force: true, taskId })).status, 400, `taskId ${JSON.stringify(taskId)}`);
+    }
+    assert.deepEqual(calls.filter(call => call.name === 'release').map(call => call.args[1]),
+      [{ force: true, expectedTaskId: 'task-0' }, { force: true, expectedTaskId: 'task-1' }], 'invalid attempt ids never reach release');
+  });
+});

@@ -676,6 +676,8 @@ export interface FollowupHandoffRecoverySummary {
 }
 
 export interface FollowupHandoffReleaseRequest {
+  /** Task id of the attempt the caller decided about. The release (and `force`) applies only while that attempt is the current handoff on the pull request; otherwise it is refused with reason `superseded` and nothing is released. */
+  taskId?: string;
   /** Also release a branch whose retained worktree still holds unpublished work. Never deletes worktree files, and never overrides a live or unverifiable agent. */
   force?: boolean;
 }

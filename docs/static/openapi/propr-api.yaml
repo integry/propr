@@ -288,7 +288,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FollowupHandoffReleaseResult"
         "400":
-          description: Invalid target or non-boolean flag.
+          description: Invalid target, non-boolean flag or invalid `taskId`.
           content:
             application/json:
               schema:
@@ -304,7 +304,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LegacyError"
         "409":
-          description: "Refused; `reason` names why: `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered`, `worktree_registrations_unavailable`, `cancelled_claims_withdrawal_failed` or `superseded` (the handoff changed concurrently, for example an operator re-armed it)."
+          description: "Refused; `reason` names why: `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered`, `worktree_registrations_unavailable`, `cancelled_claims_withdrawal_failed` or `superseded` (the handoff changed concurrently, for example an operator re-armed it, or `taskId` no longer names the current attempt)."
           content:
             application/json:
               schema:
@@ -11477,6 +11477,11 @@ components:
     FollowupHandoffReleaseRequest:
       type: object
       properties:
+        taskId:
+          description: Task id of the attempt the caller decided about. The release (and `force`) applies only while that attempt is the current handoff on the pull request; otherwise it is refused with reason `superseded` and nothing is released.
+          type: string
+          minLength: 1
+          maxLength: 200
         force:
           description: Also release a branch whose retained worktree still holds unpublished work. Never deletes worktree files, and never overrides a live or unverifiable agent.
           type: boolean

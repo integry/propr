@@ -122,7 +122,7 @@ for (const { width, height, name } of [{ width: 1440, height: 1100, name: 'deskt
     await cancelled.getByRole('button', { name: 'Release' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Release' }).click();
     await expect(section.getByRole('alert')).toHaveText('This follow-up still has unpublished work. Tick the box to release it anyway; the commits are kept.');
-    expect(calls.release).toEqual([{ path: '/api/admin/followup-handoffs/sample/website/412/release', body: { force: false } }]);
+    expect(calls.release).toEqual([{ path: '/api/admin/followup-handoffs/sample/website/412/release', body: { force: false, taskId: 'pr-comments-batch-sample-website-412' } }]);
 
     // Publishing cancelled work is an explicit choice beside Resume.
     await cancelled.getByRole('checkbox', { name: 'Publish the cancelled work' }).check();

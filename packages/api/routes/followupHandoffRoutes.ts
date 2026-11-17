@@ -56,7 +56,7 @@ export interface FollowupHandoffRouteDeps {
   inspectFollowupHandoffs(deps?: object, key?: FollowupHandoffKey): Promise<FollowupHandoffStatus[]>;
   authorizeCancelledFollowupHandoff(key: FollowupHandoffKey, deps?: object, options?: { expectedTaskId?: string }): Promise<FollowupHandoffRecordFields | null>;
   resumeOperatorHeldFollowupHandoff(key: FollowupHandoffKey, deps?: object): Promise<{ resumed: boolean; reason?: string }>;
-  releaseFollowupHandoffRecord(key: FollowupHandoffKey, options: { force?: boolean }, deps?: object): Promise<{ released: boolean; reason?: string }>;
+  releaseFollowupHandoffRecord(key: FollowupHandoffKey, options: { force?: boolean; expectedTaskId?: string }, deps?: object): Promise<{ released: boolean; reason?: string }>;
 }
 
 /**
@@ -222,7 +222,10 @@ export function createFollowupHandoffRoutes(deps: FollowupHandoffRouteDeps) {
       if (!key) return;
       const force = flag(req, res, 'force');
       if (force === undefined) return;
-      const result = await deps.releaseFollowupHandoffRecord(key, { force });
+      const expectedTaskId = attempt(req, res);
+      if (expectedTaskId === undefined) return;
+      // With a taskId the release (and its force) covers only that attempt; the operator re-checks it under the PR lease.
+      const result = await deps.releaseFollowupHandoffRecord(key, expectedTaskId === null ? { force } : { force, expectedTaskId });
       if (result.released) { res.json({ released: true }); return; }
       if (result.reason === 'not_found') { res.status(404).json({ error: 'Follow-up handoff not found', code: 'not_found' }); return; }
       res.status(409).json({ released: false, reason: result.reason });

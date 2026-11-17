@@ -147,7 +147,7 @@ describe('MaintenanceSection', () => {
     fireEvent.click(within(item).getByRole('button', { name: 'Release' }));
     confirmRelease();
     expect(await screen.findByRole('alert')).toHaveTextContent('This follow-up still has unpublished work. Tick the box to release it anyway; the commits are kept.');
-    expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: false });
+    expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: false, taskId: held.taskId });
   });
 
   it('forces a release only after its box is ticked, then refreshes the list', async () => {
@@ -160,7 +160,7 @@ describe('MaintenanceSection', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('Any unpublished commits stay on the branch.');
     confirmRelease();
     expect(await screen.findByText(/Released integry\/propr#3423/)).toBeInTheDocument();
-    expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: true });
+    expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: true, taskId: held.taskId });
     expect(await screen.findByText('No held follow-ups.')).toBeInTheDocument();
   });
 
@@ -183,7 +183,7 @@ describe('MaintenanceSection', () => {
       confirmRelease();
       await screen.findByText(/Released integry\/propr#3423/);
       expect(api.releaseFollowupHandoff).toHaveBeenCalledTimes(1);
-      expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: false });
+      expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: false, taskId: later.taskId });
     });
 
     it.each([
@@ -214,7 +214,7 @@ describe('MaintenanceSection', () => {
       await waitFor(() => expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(2));
       confirmRelease();
       await screen.findByText(/Released integry\/propr#3423/);
-      expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: true });
+      expect(api.releaseFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3423, { force: true, taskId: held.taskId });
     });
   });
 

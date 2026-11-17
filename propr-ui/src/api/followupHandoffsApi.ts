@@ -92,8 +92,16 @@ async function request<T>(url: string, body?: Record<string, unknown>): Promise<
 export const listFollowupHandoffs = async (): Promise<FollowupHandoffStatus[]> =>
   (await request<{ handoffs: FollowupHandoffStatus[] }>(base())).handoffs;
 
-export const releaseFollowupHandoff = (repository: string, pullRequest: number, options: { force?: boolean } = {}) =>
-  request<{ released: true }>(`${target(repository, pullRequest)}/release`, { force: options.force === true });
+/**
+ * `taskId` names the attempt the administrator confirmed. The server releases
+ * (and forces) only while that attempt is still the current one on the pull
+ * request, and refuses with `superseded` otherwise.
+ */
+export const releaseFollowupHandoff = (repository: string, pullRequest: number, options: { force?: boolean; taskId?: string } = {}) =>
+  request<{ released: true }>(`${target(repository, pullRequest)}/release`, {
+    force: options.force === true,
+    ...(options.taskId === undefined ? {} : { taskId: options.taskId }),
+  });
 
 /**
  * `taskId` names the attempt the administrator decided about. The server

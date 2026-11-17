@@ -241,13 +241,23 @@ export async function releaseFollowupHandoffRecord(
          * next worktree does not inherit them; refused when that cannot be ensured.
          */
         restartBranch?: boolean;
+        /**
+         * Task id of the attempt the operator confirmed. When the pull request's
+         * current handoff belongs to another task, nothing is released (refused as
+         * `superseded`), checked before any side effect and on the row re-read
+         * under the lease, so consent for one attempt never retires another's.
+         */
+        expectedTaskId?: string;
     },
     deps: FollowupHandoffRecoveryDeps = {},
 ): Promise<{ released: boolean; reason?: string }> {
+    const isExpectedAttempt = (row: FollowupHandoffRecord) =>
+        options.expectedTaskId === undefined || row.task_id === options.expectedTaskId;
     const resolved = await resolveRecoveryDeps(deps);
     try {
         const record = await loadFollowupHandoff(resolved.store, key);
         if (!record) return { released: false, reason: 'not_found' };
+        if (!isExpectedAttempt(record)) return { released: false, reason: 'superseded' };
         if (record.status === HANDOFF_RELEASED) return { released: true };
         const inspection = await resolved.inspectLiveness(record.task_id);
         const identityConflict = containerIdentityConflict(record, inspection);
@@ -265,6 +275,7 @@ export async function releaseFollowupHandoffRecord(
         // authorization or resume may re-arm the handoff before this lease is
         // taken, so every worktree mutation acts on the row re-read under it.
         const result = await underOperatorLease(record, resolved, 'release', async read => {
+            if (!isExpectedAttempt(read)) return { released: false, reason: 'superseded' };
             const fresh = await confirmUnconfirmedRetryOwnership(read, resolved.store);
             if (!fresh) return { released: false, reason: 'superseded' };
             const claimsRefusal = await cancelledClaimsRefusal(fresh, resolved);

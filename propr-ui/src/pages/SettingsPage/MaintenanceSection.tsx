@@ -130,14 +130,22 @@ function HeldFollowups() {
   const release = (handoff: Handoff, force: boolean) => {
     const id = keyOf(handoff);
     setConfirmRelease(null);
-    // The server releases whatever attempt is current on the pull request, so only
-    // send the decision while the attempt it was made for is still the open one.
-    if (!isOpenAttempt(latest.current, attemptOf(handoff))) {
+    const attempt = attemptOf(handoff);
+    // Only send the decision while the attempt it was made for is still the open one.
+    if (!isOpenAttempt(latest.current, attempt)) {
       setError(staleRelease(id));
       return;
     }
     void run(id, async () => {
-      await api.releaseFollowupHandoff(handoff.repository, handoff.pullRequest, { force });
+      // A replacement this browser has not read yet is caught by the server: the
+      // request names the confirmed attempt and is refused for any other.
+      await api.releaseFollowupHandoff(handoff.repository, handoff.pullRequest, { force, taskId: handoff.taskId }).catch((e: unknown) => {
+        if (e instanceof api.FollowupHandoffRefusedError && e.reason === 'superseded') {
+          setForceFor(current => (current === attempt ? null : current));
+          throw new Error(staleRelease(id));
+        }
+        throw e;
+      });
       setForceFor(null);
       return `Released ${id}. Post the command on the pull request again to redo it.`;
     });
