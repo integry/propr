@@ -1,72 +1,81 @@
 ---
 sidebar_position: 4
 sidebar_label: "Software Factory"
-title: "Software factory: how ProPR turns requests into merged pull requests"
-description: "See how intake, isolated builds, pull request verification loops and autonomy settings fit together as one line from request to merged pull request."
+title: "Software factory: agent loops bounded by checks you set"
+description: "See how ProPR runs loops that agents run on their own, bounded by checks you set: review and fix, CI repair, conflicts, epic queues, goals and automations, and how much autonomy each one gets."
 ---
 
 # Software Factory
 
-In these docs, a **software factory** is a repeatable line that takes a request and turns it into a merged pull request. ProPR runs each step of that line the same way every time. A person decides how much of it runs without them, from reviewing and merging every pull request to letting a planned chain of pull requests merge on green CI.
+A **software factory** is a set of loops that agents run without someone driving each step. Work is found or handed in, built, checked and repaired, again and again, until a check passes or a limit stops the loop. The person sets the objective, the checks and the limits, and decides how much autonomy each loop gets, instead of steering each change. ProPR runs with a person in the loop by default: every pull request waits for someone to merge it. You can set individual loops to run further on their own.
 
-This page shows how the parts fit together. Each section links to the feature page that describes the details. When this page and a feature page differ, the feature page is correct.
+Delivering one issue as one pull request is a single loop in that picture. This page shows the loops ProPR runs, what caps them, and how they run side by side. Each section links to the feature page with the details. When this page and a feature page differ, the feature page is correct.
+
+## The Loops ProPR Runs
+
+Each entry says what starts the loop, what stops it and what it leaves behind.
+
+- **Review and fix.** `/ultrafix` alternates review and fix cycles until the latest review score reaches its goal (default 7) or the cycle limit (default 5) runs out, and waits for CI between cycles. It leaves scored review comments and fix commits on the pull request. See [`/ultrafix`](../features/pr-commands.md#ultrafix).
+- **CI repair.** With **Auto CI follow-up** on (off by default), a failing check on the pull request head makes ProPR post a comment with the failure, and that comment starts a fix on the same branch. Each failing check is reported at most once per commit. See [Automatic Follow-Up For Failed CI](../features/pr-followup.md#automatic-follow-up-for-failed-ci).
+- **Conflicts.** With **Auto-resolve merge conflicts** on (off by default), ProPR merges the moved base into a conflicted pull request and has an agent resolve the conflicts, at most 3 automatic attempts per pull request in 24 hours. With `auto_merge.require_up_to_date`, ProPR also brings a behind branch up to date and merges it only after CI passes on the updated head. See [Automatic Merge-Conflict Resolution](../features/pr-followup.md#automatic-merge-conflict-resolution) and [Up-to-date branches](../features/repository-workflow.md#up-to-date-branches).
+- **Epic queue.** A plan's issues run in order. Each pull request merges into the epic branch before the next issue starts, and the epic pull request keeps one progress comment. A blocked issue stops the queue and shows why (for example *Waiting for human merge*), and it can trigger an automation. See [Work Splitting](../features/work-splitting.md) and [Event trigger](../features/agents.md#event-trigger).
+- **Goals.** A goal keeps a coding-agent session working toward a continuing objective across many steps. When it needs a decision it asks and shows **Needs you**. You can pause, resume and cancel it, and continue it after it ends. It finishes with a draft pull request. See [Goals](../features/goals.md).
+- **Automations.** A saved prompt runs on demand, on a schedule, from a trigger, or when an epic queue issue becomes blocked, and writes a report. In `preview` or `auto` mode, an acting step turns the report into tasks, plans, goals, to-dos or comments, and with the `merge` capability it may merge pull requests that are ready. This is the loop that finds its own work. See [Automations](../features/agents.md).
+- **Outside drivers.** An MCP client or the `propr` CLI runs the same operations as the Web UI, so another agent or a script can run its own loop on top of ProPR: create tasks and goals, wait for them, review and fix pull requests. See [MCP](../features/mcp.md) and [ProPR CLI](../features/propr-cli.md).
+
+## What Caps Each Loop
+
+A loop gets as much autonomy as its check deserves. ProPR does not decide that a change is good. Your checks do, and the limits stop a loop that does not converge.
+
+- **Your CI is the merge gate.** ProPR does not run your test suite as a merge gate. CI repair and `require_up_to_date` only help when CI failures are trustworthy. See [Repository Best Practices](./repository-best-practices.md).
+- **Scored reviews and the rating goal.** `/review` posts merge blockers, suggestions and a `Score: N/10` line. `/ultrafix` stops at the score goal. See [`/review`](../features/pr-commands.md#review).
+- **PR status.** The body and title show **Working**, **Needs you** or **Ready**. Ready means nothing is running, every check passed, there is no conflict and the latest score meets the rating goal. See [PR Status](../features/pr-status.md).
+- **Protected paths and branch protection.** Auto-merge is not armed when a change touches a protected path (`.propr/**` always is). GitHub's branch protection, required checks and required reviews still apply. See [Auto-merge policy](../features/repository-workflow.md#auto-merge-policy).
+- **Cycle and attempt limits.** The Ultrafix cycle limit, one CI report per check and commit, 3 conflict attempts a day, and at most 3 automation runs for the same blocked issue. See [Event trigger](../features/agents.md#event-trigger).
+- **Spend limits.** A per-run spend cap stops a run whose estimated cost reaches the limit. Unattended automation runs are also cost-gated. See [Spend Caps](../features/execution-safety.md#spend-caps) and [Cost control](../features/agents.md#cost-control).
+- **Capabilities and approval.** An automation starts with `repository_read` only, and `merge` is off by default. In `preview` mode each run waits for your approval before it acts. See [Capabilities](../features/agents.md#capabilities) and [Autonomy](../features/agents.md#autonomy).
+- **Restricted network mode.** A container can reach only allowlisted hosts. See [Restricted Network Mode](../features/execution-safety.md#restricted-network-mode).
+
+## Running In Parallel
+
+- **One boundary per task.** Each task gets its own git worktree, branch and Docker container. The agent edits files. ProPR commits, pushes and opens the pull request. See [Isolated And Safe Execution](../features/execution-safety.md).
+- **Several models on one issue.** Several `llm-*` labels give one branch and pull request per model, so you can compare them. See [Agents and Models](../features/agents-and-models.md).
+- **Concurrency limits.** `limits.max_parallel_tasks` caps concurrent work per repository, within the instance's worker concurrency. A goal has its own limit on parallel tasks. See [Instance defaults and hard limits](../features/repository-workflow.md#instance-defaults-and-hard-limits).
+
+Because every task has its own branch and container, many loops can run at once without touching each other's checkout.
 
 ## Where Work Comes From
 
-Every entry point ends in the same place: a task with its own record, and usually a pull request.
+Every entry point creates a task with its own record, and usually a pull request.
 
-- **Issues and labels.** Add a processing label such as `AI` to a GitHub issue; an optional `llm-*` label picks the model. See [Daily Use](../tutorials/usage.md#run-work-from-an-issue).
-- **Plans and epics.** Draft, refine and approve a set of issues in Planner Studio, then run them one at a time or as an epic. See [Planning Before Execution](../features/planning.md) and [Work Splitting](../features/work-splitting.md).
-- **Tasks and repository to-dos.** Start one bounded change from **New Task**, or from a to-do in the repository workspace. See [Launching Work](../features/launching-work.md).
-- **Improvement suggestions.** The **Improve** tab suggests changes that you can turn into to-dos or a plan. See [Repository Knowledge](../features/repository-knowledge.md#improvement-suggestions).
-- **Pull request comments.** A plain comment or a slash command on a pull request starts follow-up work on the same branch, also on pull requests ProPR did not open. See [PR Follow-up](../features/pr-followup.md).
-- **Goals.** A goal keeps a coding-agent session working toward a continuing objective. See [Goals](../features/goals.md).
-- **Automations.** A saved prompt runs on demand, on a schedule, from the API, CLI or MCP (for example called from GitHub Actions or a crontab), or when an epic queue issue becomes blocked, and writes a report. [Templates](../features/agents.md#templates) fill in common ones. In `preview` or `auto` mode, an [acting step](../features/agents.md#acting-on-a-report) turns the report into tasks, plans, to-dos or comments. See [Automations](../features/agents.md).
-- **MCP and CLI clients.** A connected MCP client or the `propr` CLI can create tasks, plans and goals through the same API as the Web UI. See [MCP](../features/mcp.md) and [ProPR CLI](../features/propr-cli.md).
-
-## How A Change Is Built
-
-- **One boundary per task.** Each task gets its own git worktree, its own branch and its own Docker container. The agent edits files. ProPR commits, pushes and opens the pull request after the agent finishes. See [Isolated And Safe Execution](../features/execution-safety.md).
-- **Agent and model per task.** ProPR uses the configured default agent and model unless you choose another one for the task: in **New Task**, in the plan's execution step, or with an `llm-*` label. Several `llm-*` labels on one issue give one branch and pull request per model. See [Agents and Models](../features/agents-and-models.md).
-- **Network access.** Agent containers run with open network access by default. In restricted mode, a container can reach only allowlisted hosts. An administrator can set it per instance and can enforce it; a repository can choose it in `.propr/workflow.yml`. See [Restricted Network Mode](../features/execution-safety.md#restricted-network-mode).
-
-## How A Change Is Verified
-
-ProPR does not run your test suite as a merge gate. Your CI is that gate. See [Repository Best Practices](./repository-best-practices.md).
-
-- **The pull request.** ProPR opens it linked to the source issue, with its implementation summary in the body. The task that produced it keeps its full record in the Web UI. See [PR Follow-up](../features/pr-followup.md#automatic-pull-request-creation).
-- **The pull request status.** The first line of the body, and one emoji in the title, show **Working**, **Needs you** or **Ready**. Ready means nothing is running, every check passed, there is no conflict with the base, and the latest review score (if any) meets the rating goal. See [PR Status](../features/pr-status.md).
-- **Scored reviews.** `/review` posts merge blockers (`F1`, `F2`, …), suggestions (`S1`, `S2`, …) and a `Score: N/10` line. It does not change code. See [`/review`](../features/pr-commands.md#review).
-- **`/fix`.** Applies every pending merge blocker, all suggestions with `/fix all`, or only the records you name, such as `/fix F1 S2`. See [`/fix`](../features/pr-commands.md#fix).
-- **Ultrafix.** `/ultrafix` repeats review and fix cycles until the score reaches its goal (default 7) or the cycle limit (default 5) runs out. It waits for CI between cycles. See [`/ultrafix`](../features/pr-commands.md#ultrafix).
-- **CI failures.** With **Auto CI follow-up** on (off by default), ProPR posts a failing check on the pull request head as a comment, and that comment starts follow-up work. See [Automatic Follow-Up For Failed CI](../features/pr-followup.md#automatic-follow-up-for-failed-ci).
-- **Merge conflicts.** `/merge` brings the base branch into the pull request branch and resolves conflicts with an agent. With **Auto-resolve merge conflicts** on (off by default), ProPR does this when the base moves on. See [Automatic Merge-Conflict Resolution](../features/pr-followup.md#automatic-merge-conflict-resolution).
-- **Visual previews.** When a repository turns them on, a change that users can see gets image or video evidence in the pull request. See [Visual Previews](../features/visual-previews.md).
+- **Issues and labels**: a processing label such as `AI`, with an optional `llm-*` model label. See [Daily Use](../tutorials/usage.md#run-work-from-an-issue).
+- **Plans and epics** from Planner Studio. See [Planning Before Execution](../features/planning.md).
+- **Tasks, to-dos and improvement suggestions** from **New Task**, the repository workspace and the **Improve** tab. See [Launching Work](../features/launching-work.md) and [Improvement suggestions](../features/repository-knowledge.md#improvement-suggestions).
+- **Pull request comments**: a plain comment or slash command, also on pull requests ProPR did not open. See [PR Follow-up](../features/pr-followup.md).
+- **Goals, automations, MCP and CLI**, described in [the loops above](#the-loops-propr-runs).
 
 ## How Much Runs On Its Own
 
-Rows go from least to most autonomy. Branch protection, required checks and required reviews in GitHub still apply on every row: auto-merge does not bypass them.
+Rows go from least to most autonomy. Branch protection, required checks and required reviews in GitHub still apply on every row.
 
 | Setting | What ProPR does | What still needs a person | Controlled by |
 | --- | --- | --- | --- |
 | Every pull request waits for a person (default) | Builds the change, opens the pull request and keeps its status current. | Reviewing and merging every pull request. | No `auto-merge` label on the issue. |
-| Review and repair loops | Runs review and fix cycles toward a score goal, fixes failing CI and resolves merge conflicts. | Merging. | `/ultrafix` (or **Run ultrafix** in a plan); **Auto CI follow-up** and **Auto-resolve merge conflicts** per repository. |
-| Auto-merge on green | Arms GitHub's auto-merge, which merges once required checks and approvals pass. With `auto_merge.require_up_to_date`, ProPR updates a behind branch from its base and merges it itself only after CI passes on the updated head. | Pull requests that touch a protected path (`.propr/**` always is), and anything branch protection requires. ProPR comments and leaves the merge to a person. | The `auto-merge` label (**Auto-merge if checks pass** in Planner Studio, `--auto-merge`, or MCP `autoMerge`); `auto_merge` in [`.propr/workflow.yml`](../features/repository-workflow.md#auto-merge-policy). |
-| Epic chain | Runs a plan's issues in order. Each pull request merges into the epic branch before the next issue starts. | A pull request auto-merge declines: the queue shows *Waiting for human merge* until a person merges it. The final review of the epic pull request. | Epic mode with auto-merge in Planner Studio, or `propr issue implement … --epic --auto-merge`. See [Work Splitting](../features/work-splitting.md). |
-| Automation that may merge | The acting step reads the report and acts through ProPR's MCP tools. With the `merge` capability it may merge a pull request, but only the exact head it examined, with passing checks and satisfied review and protection rules. | Approving each run in `preview` mode. The acting step never deploys, publishes or changes settings, never touches repositories outside the automation, never edits files, commits, pushes or opens pull requests itself, and never starts or approves automation runs. | Autonomy mode (`dry_run`, `preview`, `auto`) and the `merge` capability (off by default) on the automation; the instance's MCP scope ceiling must include `merge`. See [Acting on a report](../features/agents.md#acting-on-a-report). |
+| Review and repair loops | Runs the review and fix, CI repair and conflict loops. | Merging. | `/ultrafix` (or **Run ultrafix** in a plan); **Auto CI follow-up** and **Auto-resolve merge conflicts** per repository. |
+| Auto-merge on green | Arms GitHub's auto-merge, or with `require_up_to_date` merges itself after CI passes on an up-to-date head. | Pull requests that touch a protected path, and anything branch protection requires. | The `auto-merge` label (**Auto-merge if checks pass** in Planner Studio, `--auto-merge`, or MCP `autoMerge`); `auto_merge` in [`.propr/workflow.yml`](../features/repository-workflow.md#auto-merge-policy). |
+| Epic chain | Runs the epic queue, merging each pull request into the epic branch. | Pull requests auto-merge declines, and the final review of the epic pull request. | Epic mode with auto-merge in Planner Studio, or `propr issue implement … --epic --auto-merge`. |
+| Automation that may merge | The acting step acts through ProPR's MCP tools and, with `merge`, merges only the exact head it examined, with passing checks and satisfied review and protection rules. | Approving each run in `preview` mode. The acting step never deploys, publishes, changes settings or edits files itself. | Autonomy mode (`dry_run`, `preview`, `auto`) and the `merge` capability on the automation, within the instance's MCP scope ceiling. See [Acting on a report](../features/agents.md#acting-on-a-report). |
 
 ## What You Can See
 
-- **Task records.** Each run keeps what triggered it, the repository, branch, agent and model, the prompt, logs, commits and outcome. See [Observability And Control](../features/observability.md).
-- **LLM Log and MCP Log.** Every model call is recorded with cost, tokens and duration. Administrators can see MCP tool calls with their outcome and timing. See [Metrics](../operations/metrics.md#the-llm-log-page) and [MCP](../features/mcp.md).
-- **Analytics and cost export.** The Analytics page reports activity, repository and model results. Recorded cost exports as JSON or CSV, or with `propr stats cost`. See [Cost export](../operations/metrics.md#cost-export).
-- **Notifications and Inbox.** Inbox collects plan, task, review, pull request and system events, with optional push notifications. See [Inbox](../features/inbox.md).
+- **Task records**: trigger, repository, branch, agent and model, prompt, logs, commits and outcome. See [Observability And Control](../features/observability.md).
+- **LLM Log and MCP Log**: every model call with cost, tokens and duration, and MCP tool calls for administrators. See [Metrics](../operations/metrics.md#the-llm-log-page).
+- **Analytics and cost export** as JSON, CSV or `propr stats cost`. See [Cost export](../operations/metrics.md#cost-export).
+- **Inbox**: plan, task, review, pull request and system events, including goals that need you. See [Inbox](../features/inbox.md).
 
 ## A Starting Path
 
-To run the line on one repository:
-
-1. Install ProPR and connect the repository: [Setup Guide](../tutorials/setup.md).
-2. Make CI the quality gate and decide which paths always need a person: [Repository Best Practices](./repository-best-practices.md).
-3. Label one issue and review the pull request it produces: [Issue To Pull Request Walkthrough](../tutorials/end-to-end-workflow.md).
-4. Plan a larger change and run it as an epic: [Planner Studio Walkthrough](../tutorials/planner-studio.md).
+1. Install ProPR and connect a repository: [Setup Guide](../tutorials/setup.md).
+2. Make CI the check you trust and decide which paths always need a person: [Repository Best Practices](./repository-best-practices.md).
+3. Run one loop by hand: label an issue, then run `/ultrafix` on its pull request: [Issue To Pull Request Walkthrough](../tutorials/end-to-end-workflow.md).
+4. Let more run on its own: an epic with auto-merge ([Planner Studio Walkthrough](../tutorials/planner-studio.md)), then an automation in `preview` mode ([Automations](../features/agents.md)).
