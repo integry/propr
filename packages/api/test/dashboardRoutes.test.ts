@@ -9,6 +9,7 @@ import {
   NOW, call, clearDashboardTestDatabase, createDashboardTestDatabase, createTestDashboardRoutes,
   daysAgo, minutesAgo, seedTask as seedTaskInto, type QueueStub, type TaskSeed,
 } from './dashboardTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 let database: Knex;
 
@@ -329,7 +330,7 @@ test('the recent-completion row limit never hides running work or shrinks a coun
 
 test('every dashboard endpoint rejects a malformed repository filter with HTTP 400', async () => {
   const dashboard = routes();
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const handlers = [dashboard.getSummary, dashboard.getAttention, dashboard.getActive, dashboard.getOutcomes, stats.getDashboardStats];
   for (const handler of handlers) {
     const rejected = await call(handler, { repository: 'not a repository' });
@@ -352,7 +353,7 @@ test('narrative route returns idle prose and validates the repository filter', a
 
 
 test('disabled narrative short-circuits data reads and model resolution', async () => {
-  const routes = createDashboardRoutes({
+  const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: (() => { throw new Error('Must not query'); }) as unknown as Knex,
     redisClient: {} as never, taskQueue: {} as never,
     isSummaryEnabled: async () => false,
@@ -369,7 +370,7 @@ test('narrative route degrades a live-detail projection failure to lifecycle pro
     states: [{ state: 'post_processing', timestamp: minutesAgo(1) }],
   });
   let prompt = '';
-  const route = createDashboardRoutes({
+  const route = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: database,
     redisClient: {} as never,
     taskQueue: {} as never,
@@ -395,7 +396,7 @@ test('narrative route uses injected model, bypasses cache on refresh and degrade
   let count = 0;
   let fail = false;
   let prompt = '';
-  const routes = createDashboardRoutes({
+  const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: database, redisClient: {} as never, taskQueue: {} as never, now: () => NOW,
     liveDetails: async () => ({
       currentTask: 'Running tests',

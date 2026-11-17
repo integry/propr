@@ -19,6 +19,7 @@ import type { PlanIssueStatus } from '@propr/core';
 import type { GoalBlockerAction, GoalBlockerCategory } from '@propr/shared';
 import { goalBlockerHeadline } from '@propr/shared';
 import { listGoalsNeedingAttention } from '../services/goalAttention.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 import {
   ATTENTION_TASK_STATES,
   chunk,
@@ -195,7 +196,7 @@ export async function loadPlanIssueDecisions(db: Knex, repository: string): Prom
     .select('id', 'repository', 'issue_number', 'pr_number', 'status', 'task_id', 'updated_at')
     .orderBy('updated_at', 'desc')
     .limit(MAX_WORK_ROWS);
-  if (repository && repository !== 'all') query.where('repository', repository);
+  if (repository && repository !== 'all') whereRepositoryMatches(query, 'repository', repository);
 
   const rows = await query as Array<Record<string, unknown>>;
   const decisions = rows.map(row => ({
@@ -482,7 +483,7 @@ export async function loadRunningDashboardGoals(
     .whereNull('g.result_state')
     .select('g.goal_id', 'g.current_task_id', 'g.repository', 'g.title', 'g.objective',
       'g.created_at', 'g.updated_at', 'h.state', 'h.timestamp as state_timestamp');
-  if (repository && repository !== 'all') query.where('g.repository', repository);
+  if (repository && repository !== 'all') whereRepositoryMatches(query, 'g.repository', repository);
   const rows = await query;
   return rows.map(row => ({
     goalId: String(row.goal_id),

@@ -8,6 +8,7 @@ import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { getCurrentPlanCause, listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { runBackgroundRefinement } from '../routes/plannerHelpers/refineBackground.js';
 import type { McpPolicy, McpPrincipal } from '../mcp/policy.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 after(async () => closeConnection());
 
@@ -44,7 +45,7 @@ for (const cause of ['generation', 'refinement', 'restore'] as const) {
     const db = await setup(t);
     await prepareCurrentCause(db, cause);
     const historyBefore = await listPlanRevisions(db, draftId);
-    const routes = createPlannerRoutes({ db });
+    const routes = createPlannerRoutes({ repositoryScope: unscopedRepositoryResolver, db });
     const call = async (body: Record<string, unknown>) => {
       const response = { statusCode: 200 };
       const res = { status(code: number) { response.statusCode = code; return res; }, json() { return res; } };

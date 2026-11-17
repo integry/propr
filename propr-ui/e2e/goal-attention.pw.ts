@@ -24,7 +24,7 @@ const goal = {
   title: 'Add audit logging to the admin API',
   objective: 'Record every admin mutation in an append-only audit log and expose it in the admin console.',
   launchStrategy: 'direct', initialPrompt: '/goal Add audit logging', attachments: [],
-  baseBranch: 'main', branchName: 'goal/audit-log', worktreePath: null,
+  baseBranch: 'main', branchName: 'goal/audit-log',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' },
   requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: null, ultrafix: false, desiredState: 'running', resultState: null,

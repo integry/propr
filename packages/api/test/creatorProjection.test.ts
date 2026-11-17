@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import type { RedisClientType } from 'redis';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDbFilename = process.env.DB_FILENAME;
@@ -163,7 +164,7 @@ describe('creator projection', () => {
 
   describe('plans', () => {
     test('listDrafts and getDraft carry created_by, null when the creator is unknown', async () => {
-      const routes = createPlannerRoutes({ db });
+      const routes = createPlannerRoutes({ repositoryScope: unscopedRepositoryResolver, db });
       const knownDraft = randomUUID();
       const unknownDraft = randomUUID();
       await db('task_drafts').insert([
@@ -184,7 +185,7 @@ describe('creator projection', () => {
     });
 
     test('a page of 50 drafts issues one profile query', async () => {
-      const routes = createPlannerRoutes({ db });
+      const routes = createPlannerRoutes({ repositoryScope: unscopedRepositoryResolver, db });
       await db('task_drafts').insert(Array.from({ length: 50 }, (_, index) => ({
         draft_id: randomUUID(), user_id: KNOWN.id, repository: 'acme/repo', initial_prompt: `p${index}`, name: `Plan ${index}`,
       })));
@@ -200,7 +201,7 @@ describe('creator projection', () => {
     });
 
     test('creating a plan warms the profile cache for its creator', async () => {
-      const routes = createPlannerRoutes({ db });
+      const routes = createPlannerRoutes({ repositoryScope: unscopedRepositoryResolver, db });
       const creator = { id: '505', login: 'planner', username: 'planner', avatarUrl: 'https://avatars.example/u/505', accessToken: 'token' };
       const created = await call(routes.createDraft, request(creator, { body: { repository: 'acme/repo', prompt: 'Plan' } }));
       assert.equal(created.status, 201);
@@ -246,7 +247,7 @@ describe('creator projection', () => {
 
   describe('to-dos', () => {
     test('list, detail, create and categories carry createdBy, scoped to the owner', async () => {
-      const routes = createRepoTodoRoutes();
+      const routes = createRepoTodoRoutes({ repositoryScope: unscopedRepositoryResolver });
       const creator = { id: '707', login: 'listmaker', username: 'listmaker', avatarUrl: 'https://avatars.example/u/707', accessToken: 'token' };
       const created = await call(routes.createTodo, request(creator, { body: { repository: 'acme/repo', content: 'Do it' } }));
       assert.equal(created.status, 201);
@@ -274,7 +275,7 @@ describe('creator projection', () => {
     });
 
     test('updating another owner\'s to-do or category returns 404, never the caller as creator', async () => {
-      const routes = createRepoTodoRoutes();
+      const routes = createRepoTodoRoutes({ repositoryScope: unscopedRepositoryResolver });
       const owner = { id: '808', login: 'owner', username: 'owner', avatarUrl: 'https://avatars.example/u/808', accessToken: 'token' };
       const todo = await call(routes.createTodo, request(owner, { body: { repository: 'acme/repo', content: 'Mine' } }));
       const category = await call(routes.createCategory, request(owner, { body: { repository: 'acme/repo', name: 'Mine' } }));
@@ -303,7 +304,7 @@ describe('creator projection', () => {
       })));
       const counter = countProfileQueries();
       try {
-        const listed = await call(createRepoTodoRoutes().getTodos, request(knownUser, { query: { repository: 'acme/repo' } }));
+        const listed = await call(createRepoTodoRoutes({ repositoryScope: unscopedRepositoryResolver }).getTodos, request(knownUser, { query: { repository: 'acme/repo' } }));
         assert.equal(listed.body.todos.length, 50);
         assert.equal(counter.count(), 1);
         assert.deepEqual(listed.body.todos[49].createdBy, KNOWN);

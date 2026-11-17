@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bounded goal and task pages**: `GET /api/goals` without a `limit` now
+  returns one page of 50 goals (at most 200 per request; follow
+  `nextOffset`). Every goal page, including that first one, is now newest
+  created first, so following `nextOffset` neither skips nor repeats a goal;
+  the read without paging parameters no longer sorts by latest update.
+  `GET /api/tasks` accepts at most `limit=200`. The web
+  console walks the goal pages, and `propr task list --limit` rejects values
+  above 200.
 - **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the
   `propr/agent` image moves from Claude Code 2.1.323 and Antigravity CLI
   1.5.8. Codex stays on 0.168.0 and Mistral Vibe on 2.25.8.
@@ -288,6 +296,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Repository filters only reach repositories this instance configures**:
+  `GET /api/pull-requests/:number/readiness` is served only for an enabled
+  configured repository the caller can read on GitHub, so a member can no
+  longer spend the instance's GitHub quota on arbitrary public repositories,
+  and it echoes the configured repository name. The `repository` filter of
+  the stats, cost, review-score, dashboard, task, pull request score, to-do,
+  media, planner draft and goal list routes matches a configured repository
+  in any capitalization (`integry/PROPR` finds `integry/propr`) and answers
+  404 `REPOSITORY_NOT_ACCESSIBLE` for one that is not configured or that the
+  caller cannot read, instead of an empty 200. `all` keeps working.
+- **Goals no longer expose host paths**: goal responses no longer carry
+  `worktreePath`, the goal's worktree path on the API host.
 - **API errors are JSON, with basic security headers**: a malformed,
   undecodable, oversized or wrongly encoded request body, an unknown route and
   any unhandled error now get a JSON `{ "error", "code" }` response with the

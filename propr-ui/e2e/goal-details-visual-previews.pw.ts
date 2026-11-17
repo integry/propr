@@ -15,7 +15,7 @@ const goal = {
   title: 'Launch Customer Analytics Dashboard',
   objective: 'Ship the dashboard with published visual evidence on the goal PR.',
   launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard', attachments: [],
-  baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/goal-dashboard',
+  baseBranch: null, branchName: 'goal/dashboard',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' },
   requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,

@@ -47,7 +47,7 @@ const goal: goalsApi.Goal = {
   id: 'goal-1', owner: 'owner', repository: 'acme/web', title: 'Launch Customer Analytics Dashboard', objective: 'Ship the dashboard',
   launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard\n\nLaunch strategy — Agent orchestrates through ProPR',
   attachments: [],
-  baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
+  baseBranch: null, branchName: 'goal/dashboard',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
   control: { requestGeneration: 0, acknowledgedGeneration: 0, pending: false },

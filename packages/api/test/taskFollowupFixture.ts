@@ -10,6 +10,7 @@ import type { JobsOptions } from 'bullmq';
 import type { IssueCommentEvent } from '@octokit/webhooks-types';
 import type { CommentJobData } from '../../core/src/queue/taskQueue.js';
 import type { UltrafixDeps } from '../../core/src/webhook/commentEventHandler.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDbFilename = process.env.DB_FILENAME;
@@ -293,7 +294,7 @@ export async function postFollowup(body: Record<string, unknown>, taskId = 'task
     status(code: number) { result.status = code; return this; },
     json(payload: unknown) { result.json = payload as Record<string, unknown>; return this; },
   } as unknown as Response;
-  await createTaskRoutes({
+  await createTaskRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: database, processingLabels: async () => state.processingLabels,
     now: () => state.now, sleep: async ms => { state.sleeps.push(ms); state.now += ms; },
     retryLater: attempt => { state.outcomeRetries.push(attempt); },

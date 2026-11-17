@@ -2,7 +2,8 @@ import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { analyticsTimeframeStart } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
-import { validateEnum, validateRepositoryFilter } from './validation.js';
+import { validateEnum } from './validation.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import { successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { executionTokenSums, loadModelUsage } from './analyticsModelUsage.js';
@@ -36,6 +37,8 @@ interface StatsRoutesDeps {
    * short while; shared with the review score routes so both read one copy.
    */
   analyticsCache?: AnalyticsCache;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
 }
 
 interface DailyCountRow {
@@ -103,6 +106,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
   const now = deps.now ?? (() => new Date());
   const cachePrice: CachePriceLookup = deps.cachePrice ?? (() => null);
   const aggregationCache = deps.analyticsCache ?? createAnalyticsCache();
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
 
   async function getTaskStats(req: Request, res: Response): Promise<void> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
@@ -425,19 +429,14 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
    * contribute to it.
    */
   async function getDashboardStats(req: Request, res: Response): Promise<void> {
-    const repository = typeof req.query.repository === 'string' ? req.query.repository : 'all';
-    const repoValidation = validateRepositoryFilter(repository);
-    if (!repoValidation.valid) {
-      res.status(400).json({ error: repoValidation.error });
-      return;
-    }
-
     const periodValidation = validateEnum(req.query.period, DASHBOARD_STATS_PERIODS, 'Period');
     if (!periodValidation.valid) {
       res.status(400).json({ error: periodValidation.error });
       return;
     }
     const period: DashboardStatsPeriod = periodValidation.value ?? '7d';
+    const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: '/api/stats/dashboard' });
+    if (repository === null) return;
 
     try {
       const to = now();

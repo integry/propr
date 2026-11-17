@@ -53,7 +53,7 @@ export async function fixture(page: Page, failDispatch = false) {
 }
 /** One goal-capable agent and no goals yet, for the Start a goal shell. */
 export async function stubGoals(page: Page) {
-  await page.route('**/api/goals', route => route.request().method() === 'GET' ? route.fulfill({ json: { goals: [] } }) : route.fallback());
+  await page.route(url => url.pathname === '/api/goals', route => route.request().method() === 'GET' ? route.fulfill({ json: { goals: [] } }) : route.fallback());
   await page.route('**/api/goals/capabilities', route => route.fulfill({ json: { agents: [{
     agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
     lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' },

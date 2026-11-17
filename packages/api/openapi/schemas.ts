@@ -322,9 +322,9 @@ export function querySet<T extends z.ZodObject>(id: string, schema: T): T {
 
 export const ListTasksQuery = querySet('ListTasksQuery', z.object({
   status: z.string().optional().describe('`all` (default), `active`, `waiting`, `attention`, or a worker state.'),
-  repository: z.string().optional().describe('`owner/name`, or `all` (default).'),
+  repository: z.string().optional().describe('`owner/name` of a configured repository (any capitalization), or `all` (default).'),
   search: z.string().max(500).optional(),
-  limit: z.number().int().min(1).max(1000).optional().describe('Page size; defaults to 50.'),
+  limit: z.number().int().min(1).max(200).optional().describe('Page size; defaults to 50, at most 200.'),
   offset: z.number().int().min(0).max(1_000_000).optional(),
   forReview: z.enum(['true', 'false']).optional().describe('Only runs whose pull request awaits review.'),
   excludeMerged: z.enum(['true', 'false']).optional(),
