@@ -114,9 +114,9 @@ function addFilterOptions(command: Command): Command {
     .option("--type <types>", "Only these event types")
     .option("--pr <number>", "Only events of this pull request")
     .option("--plan <planId>", "Only events of this plan")
-    .option("--limit <n>", `Most events per request (max ${REPOSITORY_EVENT_LIST_MAX_LIMIT})`)
+    .option("-l, --limit <n>", `Most events per request (max ${REPOSITORY_EVENT_LIST_MAX_LIMIT})`)
     .option("--follow", "Keep reading on the returned cursor until interrupted")
-    .option("--json", "Output raw JSON");
+    .option("-j, --json", "Output raw JSON");
 }
 
 function reportError(error: unknown, json: boolean | undefined): void {

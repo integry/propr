@@ -380,7 +380,7 @@ Examples:
   $ propr setting update worker_concurrency 10
   $ propr setting update github_user_whitelist "user1,user2,user3"
   $ propr setting update followup-keywords "!propr,propr"
-  $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022
+  $ propr setting update analysis_model_fast claude-haiku-5-5
 `
     )
     .action(async (key: string, value: string) => {

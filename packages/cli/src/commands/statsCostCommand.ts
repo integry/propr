@@ -60,24 +60,28 @@ function displayCost(costExport: CostExport): void {
   console.log("Input includes cache reads and writes. Unrecorded values show — .");
 }
 
-interface CostOptions { period?: string; repository?: string; groupBy?: CostGroupKey[]; json?: boolean; csv?: boolean }
+interface CostOptions { period?: string; repository?: string; project?: string; groupBy?: CostGroupKey[]; json?: boolean; csv?: boolean }
 
 export function createStatsCostCommand(): Command {
   return new Command("cost")
     .description("Recorded LLM cost by day, repository, agent, model, effort, execution type or outcome")
-    .addOption(new Option("--period <period>", "Timeframe").choices([...ANALYTICS_TIMEFRAMES]))
-    .option("--repository <owner/repo>", "Limit to one repository")
-    .option("--group-by <keys>", `Comma-separated dimensions: ${COST_GROUP_KEYS.join(", ")} (default: day)`, parseGroupBy)
-    .addOption(new Option("--json", "Output raw JSON response").conflicts("csv"))
+    .addOption(new Option("--period <period>", "Timeframe (default: all time)").choices([...ANALYTICS_TIMEFRAMES]))
+    .option("--repository <owner/repo>", "Limit to one repository (default: all repositories)")
+    .option("-p, --project <owner/repo>", "Same as --repository")
+    .option("--group-by <keys>", `Comma-separated dimensions: ${COST_GROUP_KEYS.join(", ")} (default: day; an empty list also groups by day)`, parseGroupBy)
+    .addOption(new Option("-j, --json", "Output raw JSON response").conflicts("csv"))
     .addOption(new Option("--csv", "Output CSV, as GET /api/stats/cost.csv returns it").conflicts("json"))
     .addHelpText("after", `
 Examples:
   $ propr stats cost --period 30d
   $ propr stats cost --group-by day,model,outcome --csv > cost.csv
   $ propr stats cost --repository acme/app --group-by model,reasoning_level --json
+
+Without --period the report covers all recorded time (the MCP tool
+get_cost_breakdown defaults to the last 30 days instead).
 `)
     .action(async (options: CostOptions) => {
-      const query = { period: options.period, repository: options.repository, groupBy: options.groupBy };
+      const query = { period: options.period, repository: options.repository ?? options.project, groupBy: options.groupBy };
       try {
         if (options.csv) {
           process.stdout.write(await getCostExportCsv(query));

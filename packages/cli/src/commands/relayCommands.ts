@@ -177,7 +177,7 @@ Examples:
     .option("--root <dir>", "Stack root directory")
     .option("--url <url>", "Relay base URL")
     .option("--installation <id>", "GitHub App installation id")
-    .option("--json", "Output raw JSON")
+    .option("-j, --json", "Output raw JSON")
     .action(async (options: { root?: string; url?: string; installation?: string; json?: boolean }) => {
       try {
         const ctx = await resolveContext(options);

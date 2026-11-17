@@ -170,7 +170,7 @@ To use a Personal Access Token instead:
 |--------|-------------|
 | `-p, --project <project>` | Specify the target project (owner/repo) |
 | `-V, --version` | Output the version number |
-| `-h, --help` | Display help information |
+| `-h, --help` | Display help information; `propr help <command> [subcommand]` prints the same |
 
 Project may be supplied globally (`propr -p owner/repo plan list`) or on a
 command that advertises the option (`propr plan list -p owner/repo`). If both
@@ -237,6 +237,46 @@ The issue ID format is `<draft-id>/<issue-number>` or `<draft-id>:<issue-number>
 
 ---
 
+### Goals
+
+Run [goals](../../docs/docs/features/goals.md) end to end: an agent pursues the objective autonomously until it opens a pull request.
+
+```bash
+propr goal capabilities                                   # Agents that can run goals, and why others cannot
+propr goal create "Add rate limiting" --agent codex       # Create a goal and start work at once
+propr goal list --state active
+propr goal attention                                      # Goals waiting on you (pauses, questions, approvals)
+propr goal inspect <goal-id>                              # State, progress, checkpoints, inputs and PRs
+propr goal input <goal-id> "Also cover the admin endpoints"
+propr goal inputs <goal-id>                               # Delivery history of inputs
+propr goal wait <goal-id> --until terminal --timeout 3600 # Exit 0 matched, 2 timed out
+propr goal pause|resume|cancel <goal-id>                  # Requests; the worker confirms them
+propr goal model <goal-id> <model>                        # Applied at the next provider boundary
+propr goal continue <goal-id> "Now add the VIN decoder pages"
+```
+
+Every goal command accepts `--json` and prints a `{ "version": 1, "kind": ... }` document; mutations accept `--idempotency-key`.
+
+---
+
+### Automations
+
+Saved automations ("Automations" in the Web UI) are reusable prompts that run on demand or on a schedule and produce a report. This group is separate from `propr agent`, which manages coding-agent configurations.
+
+```bash
+propr automation list
+propr automation templates                     # Shipped templates to start a new automation from
+propr automation show <automation-id>
+propr automation run <automation-id> --wait    # Idempotent with --idempotency-key
+propr automation runs <automation-id> --limit 5
+propr automation report <run-id> > report.md   # Report Markdown on stdout, metadata on stderr
+propr automation approve <run-id> --note "Only the top two findings"
+propr automation reject <run-id>
+propr automation cancel <run-id>
+```
+
+---
+
 ### Tasks
 
 View and manage implementation tasks. For a new instruction without an existing issue, use [New Task](../../docs/docs/features/launching-work.md) in the UI or MCP `create_task`; these create an ordinary issue implementation task.
@@ -293,6 +333,43 @@ are ISO 8601 strings and durations are integer milliseconds.
 
 ---
 
+### Follow-up Handoffs
+
+Instance administrators can settle a held PR follow-up publication that blocks new follow-ups on a pull request.
+
+```bash
+propr handoffs list [--json]                                  # Every tracked handoff
+propr handoffs inspect owner/repo 42                          # Phase, status, liveness and retained work
+propr handoffs resume owner/repo 42 [--authorize-cancelled]   # Re-arm and run recovery for this PR only
+propr handoffs release owner/repo 42 [--force]                # Stop tracking; never deletes files or commits
+```
+
+---
+
+### Pull Requests
+
+```bash
+propr pr readiness 42                     # Ready to integrate? One coded reason per gate (read-only)
+propr pr readiness 42 -p owner/repo -j
+```
+
+---
+
+### Repository Events
+
+Read the repository change journal after a cursor; delivery is at-least-once and ordered.
+
+```bash
+propr events list -p owner/repo --from-start -l 20
+propr events list --after-cursor <cursor> --domain pull_request --json
+propr events wait --after-cursor <cursor> --pr 42 --timeout 15   # Exit 2 on timeout
+propr events wait --follow --json                                # One JSON line per event
+```
+
+Filters: `--domain`, `--type`, `--pr`, `--plan`, `-l, --limit`. Run `propr events list --help` for the domain and type lists.
+
+---
+
 ### Repositories
 
 Manage monitored repositories and their indexing.
@@ -323,15 +400,29 @@ Manage AI agent configurations for code implementation.
 propr agent list                                         # List configured agents
 propr agent add my-claude -t claude -m model1,model2     # Add an agent
 propr agent add my-agent -t claude -m model -d model     # With default model
-propr agent add test -t antigravity -m antigravity-gemini-3-pro-preview --disabled   # Add in disabled state
+propr agent add test -t antigravity -m antigravity-gemini-4-argon --disabled   # Add in disabled state
 propr agent add opencode -t opencode -m opencode-big-pickle -d opencode-big-pickle --config-path /home/your-user/.config/opencode
 propr agent add --file agent-config.json                 # From JSON file
 cat config.json | propr agent add --file -               # From stdin
 propr agent delete my-agent                              # Delete (with confirmation)
 propr agent delete my-agent --force                      # Delete without confirmation
+propr agent enable my-agent                              # Enable / disable without deleting
+propr agent disable my-agent
+propr agent login antigravity                            # Log in through the agent's own Docker image
 ```
 
-**Agent types:** `claude`, `codex`, `antigravity`, `opencode`
+**Agent types:** `claude`, `codex`, `antigravity`, `opencode`, `vibe`
+
+#### Synthetic pools
+
+`propr agent pool` replaces the complete, nested synthetic pool configuration in one document; JSON from `pool list --json` can be passed unchanged to `pool apply`.
+
+```bash
+propr agent pool list
+propr agent pool list --json > pools.json
+propr agent pool apply pools.json          # Or '-' for stdin
+propr agent pool delete balanced-pool      # By ID or alias
+```
 
 For OpenCode agents, install and authenticate OpenCode on the host before adding the agent:
 
@@ -411,9 +502,10 @@ propr setting get                                    # View all settings
 propr setting get -k worker_concurrency              # View specific setting
 propr setting update worker_concurrency 4            # Update a setting
 propr setting update github_user_whitelist "a,b,c"   # Update whitelist
+propr setting reindex-summaries [--ignore-cooldown]  # Queue summarization reindexing for every repository
 ```
 
-**Available settings:** `worker_concurrency`, `github_user_whitelist`, `analysis_model_fast`, `planner_context_model`, `planner_generation_model`
+Run `propr setting get --help` for every key with its description; the [CLI reference](../../docs/docs/features/propr-cli.md#settings-logs-and-system) has the same table.
 
 ---
 
@@ -433,10 +525,37 @@ propr log list --page 2 -l 100      # Pagination
 ### System
 
 ```bash
-propr status             # System health check
-propr status --json      # JSON output
-propr queue              # Queue statistics
+propr backend status     # Remote backend health (API, Redis, daemon, worker); same as remote-status
+propr backend queue      # Queue statistics; same as queue
 propr queue --json       # JSON output
+propr admission [-j]     # Agent-run admission: global limit, per-agent ceilings, running/waiting/deferred work
+propr status             # Local Docker stack status, not the backend
+```
+
+`propr admission` is not subscription usage; see `propr tank` for provider quota.
+
+---
+
+### Statistics
+
+```bash
+propr stats review-scores --period 30d           # Review quality per implementer model and effort
+propr stats cost --group-by day,model --csv > cost.csv
+propr stats cost -p owner/repo --period 7d -j
+```
+
+Without `--period` both cover all recorded time (MCP `get_cost_breakdown` defaults to 30 days). `--repository` and its alias `-p, --project` limit the report to one repository; `--group-by` defaults to `day`.
+
+---
+
+### CLI Configuration and Shell Completion
+
+```bash
+propr config list                                  # Active profile, remote, default project (token redacted)
+propr config get defaultProject
+propr config profile set staging --remote https://api.staging.example.com
+propr config profile use staging
+source <(propr completion bash)                    # Or: zsh > "${fpath[1]}/_propr", fish > ~/.config/fish/completions/propr.fish
 ```
 
 ---

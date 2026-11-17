@@ -1542,7 +1542,7 @@ export function createCheckCommand(
     .option("--verify", "Also verify GitHub App access and run an image/CLI smoke test for each agent (slower)")
     .option("--agents <list>", "Comma-separated agent types to validate (default: configured stack agents)")
     .option("--skip-remote-image-check", "Skip registry image freshness checks (also set by PROPR_SKIP_REMOTE_IMAGE_CHECK=1)")
-    .option("--json", "Output raw JSON")
+    .option("-j, --json", "Output raw JSON")
     .option("--fix", "Offer interactive remediation prompts for actionable issues")
     .option("--validate-agents", "Append live agent validation to a system check (makes billable LLM calls; same as `check all`)")
     .addHelpText("after", `

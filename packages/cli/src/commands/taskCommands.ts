@@ -974,18 +974,19 @@ Example:
   task
     .command("delete <task-id>")
     .description("Delete a task from the system permanently")
-    .option("-f, --force", "Force deletion even for active tasks")
+    .option("-f, --force", "Skip the confirmation prompt and allow deleting active tasks")
     .addHelpText("after", `
 Argument:
   task-id    The unique identifier of the task to delete
 
 Note:
+  Without --force, the CLI asks for confirmation before deleting.
   Active tasks require --force flag to delete.
   Consider using 'propr task stop' first for running tasks.
 
 Examples:
-  $ propr task delete abc123-task-id           # With confirmation
-  $ propr task delete abc123-task-id --force   # Force delete active task
+  $ propr task delete abc123-task-id           # Prompts for confirmation
+  $ propr task delete abc123-task-id --force   # No prompt; also deletes an active task
 `)
     .action(async (taskId: string, options: { force?: boolean }) => {
       try {

@@ -261,7 +261,7 @@ Examples:
     .command("create <prompt>")
     .description("Create a new implementation plan from a natural language prompt")
     .option("-p, --project <project>", "Target project (owner/repo)")
-    .option("-b, --branch <branch>", "Target branch (default: main)", "main")
+    .option("-b, --branch <branch>", "Target branch", "main")
     .option("-w, --wait", "Wait for plan generation to complete")
     .addHelpText("after", `
 Argument:

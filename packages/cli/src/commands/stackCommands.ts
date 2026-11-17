@@ -15,7 +15,7 @@ export function createStackStatusCommand(): Command {
   return new Command("status")
     .description("Show the status of the local ProPR stack")
     .option("--root <dir>", "Stack root directory")
-    .option("--json", "Output raw JSON")
+    .option("-j, --json", "Output raw JSON")
     .addHelpText("after", `
 Examples:
   $ propr status

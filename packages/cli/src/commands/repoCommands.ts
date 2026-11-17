@@ -449,7 +449,7 @@ Examples:
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
-            console.log("Example: propr repo add integry/gitfix");
+            console.log("Example: propr repo add myorg/myrepo");
             process.exit(1);
           }
 
@@ -572,7 +572,7 @@ Example:
             "Error: Repository name must be in 'owner/repo' format."
           );
           console.log("");
-          console.log("Example: propr repo remove integry/gitfix");
+          console.log("Example: propr repo remove myorg/myrepo");
           process.exit(1);
         }
 
@@ -696,7 +696,7 @@ Examples:
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
-            console.log("Example: propr repo toggle integry/gitfix --enable");
+            console.log("Example: propr repo toggle myorg/myrepo --enable");
             process.exit(1);
           }
 
@@ -833,7 +833,7 @@ Examples:
               "Error: Repository name must be in 'owner/repo' format."
             );
             console.log("");
-            console.log("Example: propr repo index integry/gitfix");
+            console.log("Example: propr repo index myorg/myrepo");
             process.exit(1);
           }
 
