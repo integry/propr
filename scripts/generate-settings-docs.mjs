@@ -17,6 +17,12 @@ const tools = entry => [
   entry.mcp?.write && `write: \`${entry.mcp.write}\``,
 ].filter(Boolean).join('<br />') || entry.mcpStatus.replaceAll('_', ' ');
 
+// The generated page lives in docs/docs/operations/, so catalog doc paths
+// (relative to docs/docs/) are linked relative to that directory.
+const docsLink = docs => docs.startsWith('operations/')
+  ? `./${docs.slice('operations/'.length)}.md`
+  : `../${docs}.md`;
+
 export function renderSettingsLocations(catalog = SETTINGS_CATALOG) {
   const lines = [
     '---',
@@ -42,7 +48,7 @@ export function renderSettingsLocations(catalog = SETTINGS_CATALOG) {
     for (const entry of entries) {
       const label = `**${cell(entry.label)}**<br />${code(entry.id)}`;
       const environment = entry.env?.map(code).join('<br />') || '—';
-      const reference = entry.docs ? ` [Reference](./${entry.docs.split('/').at(-1)}.md).` : '';
+      const reference = entry.docs ? ` [Reference](${docsLink(entry.docs)}).` : '';
       lines.push(`| ${label} | ${cell(entry.ui)} | ${tools(entry)} | ${code(entry.cli)} | ${environment} | ${entry.restartRequired ? 'Yes' : 'No'} | ${cell(entry.reason ?? '')}${reference} |`);
     }
     lines.push('');
