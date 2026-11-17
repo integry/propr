@@ -71,7 +71,7 @@ describe('LlmLogTable', () => {
     expect(row).toHaveClass('flex', 'lg:table-row');
     // Type, model, usage and duration are table columns from lg and a second line below it.
     expect(within(row).getAllByText('1m 30s')).toHaveLength(2);
-    expect(within(row).getAllByTitle('Plan Generation With Refinement')).toHaveLength(2);
+    expect(within(row).getAllByTitle('Plan generation with refinement')).toHaveLength(2);
   });
 
   it('shows the human-readable model name, never the raw ID, in every model tooltip', () => {
