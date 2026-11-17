@@ -17,6 +17,7 @@ import { SETTINGS_BLOCK, SETTINGS_CONTAINER } from './settingsStyles';
 import SettingsInspector from './SettingsInspector';
 import { MobileCategoryHeader, SettingsSearchField } from './SettingsNavigationParts';
 import { useDesktopLayout } from '../../hooks/useDesktopLayout';
+import { SettingsSectionVisibleContext } from './settingsSectionVisibility';
 
 export type SettingsCategoryId =
   | 'models'
@@ -222,7 +223,9 @@ const SettingsCategoryPanel: React.FC<SettingsCategoryPanelProps> = ({
           >
             {/* Override the fieldset default so tables cannot widen the reading pane. */}
             <fieldset disabled={isReadOnly} className={`min-w-0 ${isReadOnly ? 'opacity-70' : ''}`}>
-              {section.content}
+              <SettingsSectionVisibleContext.Provider value={categoryIsVisible && visibleSections.includes(section)}>
+                {section.content}
+              </SettingsSectionVisibleContext.Provider>
             </fieldset>
           </div>
         ))}
