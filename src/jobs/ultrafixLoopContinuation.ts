@@ -44,6 +44,7 @@ import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 import { getCheckRunDeps } from './ultrafixCheckRunDeps.js';
 import { NEXT_STEP_ALREADY_QUEUED_REASON } from './ultrafixDeferredResume.js';
 import { getNextStepNumber } from './ultrafixResumeClaim.js';
+import { recordLatestReviewScore } from './ultrafixDiskPressureWait.js';
 
 export interface UltrafixContinuationParams {
     owner: string;
@@ -200,6 +201,7 @@ async function collectReviewOutput(
                 repo,
                 pr: pullRequestNumber,
                 workEpoch: params.ultrafixMeta?.workEpoch ?? 0,
+                score: pendingState.latestScore,
                 findings: pendingState.unprocessedComments.flatMap(comment =>
                     comment.actionableFindings.map(finding => ({
                         id: finding.id,
@@ -351,6 +353,9 @@ export async function continueUltrafixLoop(
     // 4. Get the latest review score
     const review = await collectReviewOutput(params, updatedState.goal);
     const { latestScore, reviewStatus, isPartial } = review;
+    if (completedAction === 'review') {
+        await recordLatestReviewScore(redisClient, { owner, repo, pr: pullRequestNumber }, workEpoch, latestScore);
+    }
 
     // 5. Determine next action
     const decision = determineNextAction(updatedState, latestScore, reviewStatus, {

@@ -20,9 +20,11 @@ const { PullRequestBodyLockLostError, setPullRequestBodyLockTimingForTests } = a
 const otherProcessLock = await import('../src/services/pullRequestStatus/pullRequestBodyLock.ts?process=other') as typeof import('../src/services/pullRequestStatus/pullRequestBodyLock.js');
 const { requestPullRequestStatusSync, requestPullRequestStatusSyncForCommit, setPullRequestStatusCommitSyncRunner, setPullRequestStatusSyncRunner } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
 const { isRecordedPullRequestStatusWrite, recordPullRequestStatusWrite, resetPullRequestStatusProvenanceForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusProvenance.js');
+const { resetPullRequestStatusEditPacingForTests, setPullRequestStatusEditCoalesceMsForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const { classifyPullRequestStatusEdit, signalPullRequestStatusFromWebhook } = await import('../src/webhook/pullRequestStatusWebhook.js');
 const { processWebhookEvent } = await import('../src/webhook/webhookHandler.js');
 const { resolveRepositoryPrTitleStatus } = await import('../src/config/repositoryPrTitleStatusSetting.js');
+const { resetPullRequestCheckWaitForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
 
 const REPOSITORY = 'integry/propr';
 const PR = 42;
@@ -66,6 +68,7 @@ class FakeRedis {
 interface FakePull {
     state: string; merged: boolean; mergeable: boolean | null; body: string;
     head: { sha: string; ref: string; repo: { full_name: string } | null }; base: { ref: string; sha: string };
+    labels?: Array<{ name: string }>;
 }
 
 class FakeGitHub {
@@ -98,6 +101,12 @@ class FakeGitHub {
             this.pull.body = String(params.body);
             this.patches.push(this.pull.body);
             return { data: { body: this.pull.body } };
+        }
+        if (route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+            const before = this.pull.labels ?? [];
+            this.pull.labels = before.filter(label => label.name !== params.name);
+            if (this.pull.labels.length === before.length) throw Object.assign(new Error('Label does not exist'), { status: 404 });
+            return { data: this.pull.labels };
         }
         if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/check-runs') {
             if (this.checkFailures > 0) { this.checkFailures--; throw new Error('GitHub unavailable'); }
@@ -161,6 +170,8 @@ beforeEach(async () => {
     redis = new FakeRedis();
     clock = new Date('2026-11-13T09:00:00Z');
     resetPullRequestStatusProvenanceForTests();
+    resetPullRequestStatusEditPacingForTests();
+    resetPullRequestCheckWaitForTests();
 });
 
 function deps(): Partial<PullRequestStatusSyncDeps> {
@@ -239,7 +250,7 @@ test('the block follows a pull request through its transitions and keeps the res
     await record(/🔨 Review in progress/);
     await setTaskState(review, 'completed');
     await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score: 6, created_at: '2026-11-13T09:10:00Z' });
-    await record(/⚠️ Needs you · review below goal 7\/10 · review 6\/10/);
+    await record(/⚠️ Needs you · review 6\/10, goal 7 · /);
 
     const state = { goal: 7, maxCycles: 5, cycleCount: 1, active: true, completionStatus: null, completionReason: null, finalScore: null, completedAt: null };
     redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify(state));
@@ -260,6 +271,56 @@ test('the block follows a pull request through its transitions and keeps the res
 
     assert.equal(new Set(lines).size, lines.length, 'every transition changed the block');
     assert.equal(github.patches.length, lines.length);
+});
+
+test('the cycle a stopped Ultrafix loop reports is the one the status line showed while it ran', async () => {
+    await addTask('issue', 'completed');
+    await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score: 6, created_at: '2026-11-13T09:10:00Z' });
+    // Four cycles done, the fifth review running.
+    const state = { goal: 8, maxCycles: 10, cycleCount: 4, reviewCount: 4, fixCount: 4, lastAction: 'fix', active: true,
+        completionStatus: null, completionReason: null, finalScore: null, completedAt: null };
+    redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify(state));
+    const review = await addTask('pr-comment', 'processing', { comments: [{ commandMode: 'review' }] });
+    await sync();
+    assert.match(statusLine(), /Ultrafix cycle 5 of 10/);
+    await setTaskState(review, 'completed');
+
+    // That review stopped the loop before its fix: it stopped in cycle 5 (#3588 said "after 4 cycles").
+    redis.values.set(`ultrafix:state:integry:propr:${PR}`, JSON.stringify({
+        ...state, reviewCount: 5, lastAction: 'review', active: false, completionStatus: 'failed',
+        completionReason: 'style_findings_only', finalScore: 6, finalCycle: 5, completedAt: '2026-11-13T23:00:00Z',
+    }));
+    await sync();
+    assert.match(statusLine(), /⚠️ Needs you · Ultrafix stopped after 5 cycles at 6\/10/);
+});
+
+test('a leftover ultrafix label is removed once the pull request is merged or closed', async () => {
+    await addTask('issue', 'completed');
+    github.pull.labels = [{ name: 'AI' }, { name: 'ultrafix' }];
+    await sync();
+    assert.deepEqual(github.pull.labels.map(label => label.name), ['AI', 'ultrafix'], 'an open pull request keeps its label');
+
+    github.pull.state = 'closed';
+    github.pull.merged = true;
+    assert.equal(await sync(), 'removed');
+    assert.deepEqual(github.pull.labels.map(label => label.name), ['AI']);
+    const deletes = () => github.calls.filter(call => call.route.startsWith('DELETE ')).length;
+    assert.equal(deletes(), 1);
+    await sync();
+    assert.equal(deletes(), 1, 'no label left, no further removal');
+
+    // Closed without merging, and the removal failing once: the next update removes it.
+    github.pull = { ...github.pull, merged: false, labels: [{ name: 'ultrafix' }] };
+    const request = github.request.bind(github);
+    let failures = 1;
+    github.request = async (route, params) => {
+        if (route.startsWith('DELETE ') && failures-- > 0) throw Object.assign(new Error('GitHub unavailable'), { status: 502 });
+        return await request(route, params);
+    };
+    await sync();
+    assert.deepEqual(github.pull.labels, [{ name: 'ultrafix' }]);
+    await sync();
+    assert.deepEqual(github.pull.labels, []);
 });
 
 test('no PATCH is sent when the rendered status is unchanged, even as time passes', async () => {
@@ -547,6 +608,40 @@ test('check runs past the page budget are not complete, so the pull request is n
     assert.match(statusLine(), /✅ Ready · checks: 300 passed/);
 });
 
+for (const incomplete of ['page budget', 'rejected status read'] as const) {
+    test(`checks listed by an incomplete read (${incomplete}) still mark the repository, so a new head without checks waits the longer bound`, async () => {
+        const { CHECKS_EXPECTED_WAIT_MS } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
+        await addTask('issue', 'completed');
+        const request = github.request.bind(github);
+        if (incomplete === 'page budget') {
+            github.checkRuns = Array.from({ length: 301 }, (_, index) => ({ name: `unit-${index}`, status: 'completed', conclusion: 'success' }));
+        } else {
+            github.request = async (route: string, params: Record<string, unknown>) => {
+                if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status' && github.pull.head.sha === 'head-1') throw new Error('GitHub unavailable');
+                return await request(route, params);
+            };
+        }
+        const now = Date.parse('2026-11-16T13:34:42Z');
+        const sources = { ...deps().sources!, github, now: () => now };
+        const first = await loadPullRequestStatusFacts(REPOSITORY, PR, sources);
+        assert.equal(first.checks.complete, false);
+        assert.equal(first.checks.reported, true);
+
+        // A fix pushes a new head whose checks have not appeared yet: a complete, empty read.
+        github.pull.head.sha = 'head-2';
+        github.checkRuns = [];
+        github.commitStatus = { state: 'pending', total_count: 0, statuses: [] };
+        const next = await loadPullRequestStatusFacts(REPOSITORY, PR, sources);
+        assert.equal(next.checks.complete, true);
+        assert.equal(next.checksAwaitedForMs, CHECKS_EXPECTED_WAIT_MS, 'the repository reported checks, so not the two-minute no-CI grace');
+
+        // Another process sees the record in Redis, not only this one.
+        resetPullRequestCheckWaitForTests();
+        const shared = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...sources, now: () => now + 60_000 });
+        assert.equal(shared.checksAwaitedForMs, CHECKS_EXPECTED_WAIT_MS - 60_000);
+    });
+}
+
 test('reviewing or following up on a pull request a person opened does not make it a ProPR pull request', async () => {
     await addTask('pr-comment', 'completed', { comments: [{ commandMode: 'review' }] });
     await addTask('review', 'completed');
@@ -607,6 +702,9 @@ test('the block a pull request was created with is confirmed without a PATCH, th
     assert.equal(await sync(), 'unchanged', 'the synchronization confirms the initial block without a PATCH');
     assert.equal(github.writes().length, 0);
     await setTaskState(implementation, 'completed');
+    // No check has appeared on the head: it waits out the no-CI grace from when it was first seen (09:01), then is ready.
+    assert.equal(await sync(), 'updated');
+    assert.match(statusLine(), /🔨 Waiting for CI/);
     assert.equal(await sync(), 'updated');
     assert.match(statusLine(), /✅ Ready/);
     assert.equal(stripPullRequestStatusBlock(github.pull.body), HUMAN_BODY);
@@ -617,7 +715,7 @@ test('the block a pull request was created with is confirmed without a PATCH, th
 async function assertUnavailableKeepsBlock(breakRead: () => Promise<void> | void, label: string): Promise<void> {
     await sync();
     const before = github.pull.body;
-    assert.match(statusLine(), /⚠️ Needs you · review below goal|🔨 Ultrafix|🔨 Queued/, `${label}: baseline`);
+    assert.match(statusLine(), /⚠️ Needs you · review \d+\/10, goal|🔨 Ultrafix|🔨 Queued/, `${label}: baseline`);
     await breakRead();
     await assert.rejects(loadPullRequestStatusFacts(REPOSITORY, PR, { ...deps().sources!, github }), undefined, `${label}: the read failure is not erased`);
     await assert.rejects(sync(), undefined, `${label}: the sync fails instead of computing a status`);
@@ -713,7 +811,7 @@ test('a body close to the limit gets the compact block, and none when even that 
     assert.equal(await sync(), 'updated');
     assert.ok(github.pull.body.length <= PR_BODY_MAX_LENGTH);
     assert.equal(stripPullRequestStatusBlock(github.pull.body), human, 'the text outside the block is never shortened');
-    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · updated \d{2}:\d{2} UTC$/);
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · updated [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2} UTC$/);
 
     github.pull.body = filler(10);
     const writes = github.writes().length;
@@ -1473,7 +1571,7 @@ test('a failed and a pending legacy context are one failed and one pending, neve
         state: 'failure', total_count: 2,
         statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }],
     }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, reported: true, readFailed: false, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
 });
 
 test('each listed legacy context counts on its own alongside check runs', async () => {
@@ -1481,7 +1579,7 @@ test('each listed legacy context counts on its own alongside check runs', async 
         { state: 'failure', total_count: 3, statuses: [{ context: 'ci/lint', state: 'error' }, { context: 'ci/build', state: 'pending' }, { context: 'ci/docs', state: 'success' }] },
         [{ name: 'unit', status: 'completed', conclusion: 'success' }, { name: 'e2e', status: 'in_progress', conclusion: null }],
     ), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 2, failed: 1, pending: 2, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, reported: true, readFailed: false, passed: 2, failed: 1, pending: 2, failedNames: ['ci/lint'] });
 });
 
 test('a non-blocking legacy context neither fails nor holds the status, and does not count as passed', async () => {
@@ -1489,7 +1587,7 @@ test('a non-blocking legacy context neither fails nor holds the status, and does
         { state: 'failure', total_count: 3, statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'pending' }, { context: 'coverage/optional', state: 'failure' }] },
         [], ['coverage/*'],
     ), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, reported: true, readFailed: false, passed: 0, failed: 1, pending: 1, failedNames: ['ci/lint'] });
 });
 
 // --- check loader: legacy contexts beyond one page (F20) ---
@@ -1507,7 +1605,7 @@ test('legacy contexts beyond the first page are read, so a pending context is ne
     const request = sources.github.request;
     sources.github.request = async (route: string, params: Record<string, unknown>) => { routes.push(route); return await request(route, params); };
     const checks = await loadPullRequestStatusChecks(sources, 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: true, readFailed: false, passed: 99, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: true, reported: true, readFailed: false, passed: 99, failed: 1, pending: 1, failedNames: ['ci/lint'] });
     assert.equal(checkReads(routes, 'GET /repos/{owner}/{repo}/commits/{ref}/status'), 2, 'two pages list every context');
 });
 
@@ -1516,7 +1614,7 @@ test('legacy contexts past the page budget keep their known states, and the unre
     const checks = await loadPullRequestStatusChecks(checkSources({
         state: 'failure', total_count: 301, statuses: [...listed, { context: 'ci/unread', state: 'pending' }],
     }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(checks, { complete: false, readFailed: false, passed: 298, failed: 1, pending: 1, failedNames: ['ci/lint'] });
+    assert.deepEqual(checks, { complete: false, reported: true, readFailed: false, passed: 298, failed: 1, pending: 1, failedNames: ['ci/lint'] });
 });
 
 test('a combined state no listed legacy context accounts for is an unlisted context, never a pass', async () => {
@@ -1526,17 +1624,17 @@ test('a combined state no listed legacy context accounts for is an unlisted cont
         state: 'failure', total_count: 3,
         statuses: [{ context: 'ci/lint', state: 'success' }, { context: 'ci/build', state: 'success' }],
     }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(failed, { complete: false, readFailed: false, passed: 2, failed: 1, pending: 0, failedNames: ['commit status'] });
+    assert.deepEqual(failed, { complete: false, reported: true, readFailed: false, passed: 2, failed: 1, pending: 0, failedNames: ['commit status'] });
 
     // A listed failure accounts for the combined failure: the unlisted context is only unread.
     const accounted = await loadPullRequestStatusChecks(checkSources({
         state: 'failure', total_count: 3,
         statuses: [{ context: 'ci/lint', state: 'failure' }, { context: 'ci/build', state: 'success' }],
     }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(accounted, { complete: false, readFailed: false, passed: 1, failed: 1, pending: 0, failedNames: ['ci/lint'] });
+    assert.deepEqual(accounted, { complete: false, reported: true, readFailed: false, passed: 1, failed: 1, pending: 0, failedNames: ['ci/lint'] });
 
     const pending = await loadPullRequestStatusChecks(checkSources({ state: 'pending', total_count: 2, statuses: [] }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(pending, { complete: false, readFailed: false, passed: 0, failed: 0, pending: 1, failedNames: [] });
+    assert.deepEqual(pending, { complete: false, reported: true, readFailed: false, passed: 0, failed: 0, pending: 1, failedNames: [] });
 });
 
 test('a rejected check read is incomplete and marked as a failed read; the page budget is not', async () => {
@@ -1547,8 +1645,171 @@ test('a rejected check read is incomplete and marked as a failed read; the page 
         return await request(route, params);
     };
     const failed = await loadPullRequestStatusChecks(rejecting, 'acme', 'widgets', 'abc');
-    assert.deepEqual(failed, { complete: false, readFailed: true, passed: 1, failed: 0, pending: 0, failedNames: [] });
+    assert.deepEqual(failed, { complete: false, reported: true, readFailed: true, passed: 1, failed: 0, pending: 0, failedNames: [] });
 
     const budget = await loadPullRequestStatusChecks(checkSources({ state: 'success', total_count: 301, statuses: legacyContexts(301) }), 'acme', 'widgets', 'abc');
-    assert.deepEqual(budget, { complete: false, readFailed: false, passed: 300, failed: 0, pending: 0, failedNames: [] });
+    assert.deepEqual(budget, { complete: false, reported: true, readFailed: false, passed: 300, failed: 0, pending: 0, failedNames: [] });
+});
+
+// --- A new head whose checks have not appeared yet (#3590) ---
+
+test('a head without checks is re-read when its wait ends, since no webhook comes in a repository without CI', async () => {
+    const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
+    await addTask('issue', 'completed');
+    github.checkRuns = [];
+    github.commitStatus = { state: 'pending', total_count: 0, statuses: [] };
+    // The head was first seen without checks almost a grace ago: 1.5 s of the wait are left, past the 1 s debounce of the first update.
+    redis.values.set(`auto-merge:head-observed:integry:propr:${PR}`, JSON.stringify({ sha: 'head-1', observedAt: Date.now() - NO_CI_GRACE_MS + 1_500 }));
+    enablePullRequestStatusSync({ ...deps(), now: () => new Date() });
+    try {
+        requestPullRequestStatusSync(REPOSITORY, PR);
+        const deadline = Date.now() + 5_000;
+        while (!/Waiting for CI/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.match(statusLine(), /🔨 Waiting for CI/);
+        while (!/✅ Ready/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.match(statusLine(), /✅ Ready/, 'the scheduled re-read, not a transition, ends the wait');
+    } finally {
+        disablePullRequestStatusSync();
+    }
+});
+
+test('the wait for a head\'s checks: longer once the repository reported checks, read-only for MCP reads, and no extra GitHub request', async () => {
+    const { CHECKS_EXPECTED_WAIT_MS, headChecksWaitMs } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
+    const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
+    const head = (headSha: string, reported: boolean | null) => ({ repository: REPOSITORY, prNumber: PR, headSha, reported });
+    const now = Date.parse('2026-11-16T13:34:42Z');
+
+    // Never reported checks: the no-CI grace, from when the head was first seen.
+    assert.equal(await headChecksWaitMs(redis as never, head('head-1', false), now), NO_CI_GRACE_MS);
+    assert.equal(await headChecksWaitMs(redis as never, head('head-1', false), now + 60_000), NO_CI_GRACE_MS - 60_000);
+    assert.equal(await headChecksWaitMs(redis as never, head('head-1', false), now + NO_CI_GRACE_MS), null);
+    // Checks unreadable: no wait is decided here (checks_unavailable is).
+    assert.equal(await headChecksWaitMs(redis as never, head('head-1', null), now), null);
+
+    // A head with checks marks the repository; the next head waits the longer bound.
+    assert.equal(await headChecksWaitMs(redis as never, head('head-2', true), now), null);
+    assert.equal(await headChecksWaitMs(redis as never, head('head-3', false), now), CHECKS_EXPECTED_WAIT_MS);
+    assert.equal(await headChecksWaitMs(redis as never, head('head-3', false), now + CHECKS_EXPECTED_WAIT_MS), null);
+
+    // Another process (the MCP read) shares the record through Redis but never writes it.
+    resetPullRequestCheckWaitForTests();
+    const readOnly = { get: async (key: string) => await redis.get(key) };
+    const before = new Map(redis.values);
+    assert.equal(await headChecksWaitMs(readOnly as never, head('head-3', false), now + 60_000), CHECKS_EXPECTED_WAIT_MS - 60_000);
+    assert.equal(await headChecksWaitMs(readOnly as never, head('head-4', false), now), CHECKS_EXPECTED_WAIT_MS, 'an unseen head reads as seen now');
+    assert.deepEqual(redis.values, before);
+
+    // The status read itself makes no GitHub request beyond the check reads it already made.
+    await addTask('issue', 'completed');
+    github.checkRuns = [];
+    github.calls = [];
+    await sync();
+    assert.deepEqual([...new Set(github.calls.map(call => call.route))].sort(), [
+        'GET /repos/{owner}/{repo}/commits/{ref}/check-runs', 'GET /repos/{owner}/{repo}/commits/{ref}/status',
+        'GET /repos/{owner}/{repo}/pulls/{pull_number}', 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}',
+    ]);
+});
+
+test('repeated read-only status reads of a head without checks see its wait run out, without writing Redis', async () => {
+    const { headChecksWaitMs } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
+    const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
+    const head = { repository: REPOSITORY, prNumber: PR, headSha: 'head-1', reported: false };
+    const now = Date.parse('2026-11-16T13:34:42Z');
+    // The MCP reads pass a get-only store, and no writable status observation exists for the head.
+    const readOnly = { get: async (key: string) => await redis.get(key) };
+    assert.equal(await headChecksWaitMs(readOnly as never, head, now), NO_CI_GRACE_MS);
+    assert.equal(await headChecksWaitMs(readOnly as never, head, now + 60_000), NO_CI_GRACE_MS - 60_000, 'the wait counts from the first read');
+    assert.equal(await headChecksWaitMs(readOnly as never, head, now + NO_CI_GRACE_MS), null, 'a read past the bound waits no longer');
+    assert.equal(await headChecksWaitMs(readOnly as never, { ...head, headSha: 'head-2' }, now + NO_CI_GRACE_MS), NO_CI_GRACE_MS, 'a new head waits afresh');
+    assert.equal(redis.values.size, 0, 'nothing was written to Redis');
+});
+
+for (const failure of ['pull', 'checks'] as const) {
+    test(`a ${failure} read rejected when a head's wait for checks ends is retried without another webhook`, async () => {
+        const { NO_CI_GRACE_MS } = await import('../src/webhook/checkRunHelpers.js');
+        await addTask('issue', 'completed');
+        github.checkRuns = [];
+        github.commitStatus = { state: 'pending', total_count: 0, statuses: [] };
+        redis.values.set(`auto-merge:head-observed:integry:propr:${PR}`, JSON.stringify({ sha: 'head-1', observedAt: Date.now() - NO_CI_GRACE_MS + 1_500 }));
+        const request = github.request.bind(github);
+        let rejectPullReads = 0;
+        github.request = async (route: string, params: Record<string, unknown>) => {
+            if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}' && rejectPullReads > 0) { rejectPullReads--; throw new Error('GitHub unavailable'); }
+            return await request(route, params);
+        };
+        setPullRequestStatusMergeabilityRefreshDelaysForTests([20, 20]);
+        enablePullRequestStatusSync({ ...deps(), now: () => new Date() });
+        try {
+            requestPullRequestStatusSync(REPOSITORY, PR);
+            const deadline = Date.now() + 5_000;
+            while (!/Waiting for CI/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+            assert.match(statusLine(), /🔨 Waiting for CI/);
+            // The re-read at the end of the wait fails once.
+            if (failure === 'pull') rejectPullReads = 1;
+            else github.checkFailures = 1;
+            const calls = github.calls.length;
+            while (!/✅ Ready/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+            assert.match(statusLine(), /✅ Ready/, 'the bounded refresh retries the failed deadline read');
+            assert.ok(github.calls.length > calls);
+            if (failure === 'pull') assert.equal(rejectPullReads, 0, 'the deadline read was rejected');
+            else assert.equal(github.checkFailures, 0, 'the deadline check read was rejected');
+        } finally {
+            disablePullRequestStatusSync();
+            setPullRequestStatusMergeabilityRefreshDelaysForTests(null);
+        }
+    });
+}
+
+// --- edit pacing: a burst of check completions ---
+
+test('a burst of check completions edits the body at most once per window; a state change is written at once', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = ['unit', 'lint', 'e2e', 'docs'].map(name => ({ name, status: 'in_progress', conclusion: null }));
+    const at = (seconds: number) => { clock = new Date(Date.parse('2026-11-13T09:10:00Z') + seconds * 1000); };
+    const complete = (name: string, conclusion: string) => {
+        github.checkRuns = github.checkRuns.map(run => run.name === name ? { ...run, status: 'completed', conclusion } : run);
+    };
+    at(0);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated');
+    assert.match(statusLine(), /🔨 Waiting for CI · checks: 4 pending · updated Nov 13 09:10 UTC$/);
+    const edits = () => github.patches.length;
+    const first = edits();
+
+    complete('unit', 'success');
+    at(5);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'unchanged', 'counts alone wait for the window');
+    complete('lint', 'success');
+    at(20);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'unchanged');
+    assert.equal(edits(), first);
+    assert.match(statusLine(), /checks: 4 pending/);
+
+    at(31);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated', 'the window passed: the counts of this moment are written');
+    assert.match(statusLine(), /🔨 Waiting for CI · checks: 2 passed, 2 pending/);
+
+    // A failure ends the wait for CI: needs you, written at once although the window has not passed.
+    complete('e2e', 'failure');
+    at(33);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated');
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · failed: e2e · checks: 2 passed, 1 failed, 1 pending/);
+    assert.equal(edits(), first + 2);
+});
+
+test('a deferred count update is written by the scheduled re-read once the window passes', async () => {
+    await addTask('issue', 'completed');
+    github.checkRuns = [{ name: 'unit', status: 'in_progress', conclusion: null }, { name: 'lint', status: 'in_progress', conclusion: null }];
+    setPullRequestStatusEditCoalesceMsForTests(300);
+    enablePullRequestStatusSync({ ...deps(), now: () => new Date() });
+    try {
+        assert.equal(await syncPullRequestStatus(REPOSITORY, PR, { ...deps(), now: () => new Date() }), 'updated');
+        const first = github.patches.length;
+        github.checkRuns[0] = { name: 'unit', status: 'completed', conclusion: 'success' };
+        requestPullRequestStatusSync(REPOSITORY, PR);
+        await until(() => /checks: 1 passed, 1 pending/.test(statusLine()), 10_000);
+        assert.equal(github.patches.length, first + 1, 'one edit, after the window');
+    } finally {
+        disablePullRequestStatusSync();
+        setPullRequestStatusEditCoalesceMsForTests(null);
+    }
 });

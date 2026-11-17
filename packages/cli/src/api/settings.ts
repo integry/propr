@@ -1,4 +1,4 @@
-import { MAX_PROVIDER_REPLACEMENTS_LIMIT, TOKEN_OUTLIER_SETTING_NAMES, describeTokenOutlierSettingRange, isTokenOutlierSettingName, parseMaxProviderReplacements, parseTokenOutlierSetting, type TokenOutlierSettings } from '@propr/shared';
+import { AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN, MAX_PROVIDER_REPLACEMENTS_LIMIT, TOKEN_OUTLIER_SETTING_NAMES, describeTokenOutlierSettingRange, isTokenOutlierSettingName, parseMaxProviderReplacements, parseTokenOutlierSetting, type TokenOutlierSettings } from '@propr/shared';
 /**
  * System Settings API
  *
@@ -23,6 +23,13 @@ import {
  * Mirrors the server-side limit enforced in the config routes.
  */
 const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
+
+/**
+ * Range of `agent_run_usage_pause_percent`. Mirrors AGENT_RUN_USAGE_PAUSE_PERCENT_MIN/MAX
+ * in @propr/core, which the config routes validate against.
+ */
+export const AGENT_RUN_USAGE_PAUSE_PERCENT_MIN = 50;
+export const AGENT_RUN_USAGE_PAUSE_PERCENT_MAX = 100;
 
 /**
  * System settings configuration object.
@@ -146,6 +153,12 @@ export interface SystemSettings extends Partial<TokenOutlierSettings> {
 
   /** Milliseconds a Claude goal's ask_operator question waits for an answer (default 24 hours). */
   goal_question_max_wait_ms?: number;
+
+  /** Defer or skip unattended agent runs at or above this % of provider subscription usage (50-100, default 90). */
+  agent_run_usage_pause_percent?: number;
+
+  /** Consecutive unproductive scheduled automation runs before the owner is notified (1-50, default 3). */
+  automation_unproductive_run_threshold?: number;
 
   /** Agent network policy overrides; null uses the environment default. */
   agent_network_mode?: "open" | "restricted" | null;
@@ -316,6 +329,12 @@ export interface UpdateSettingsOptions extends Partial<TokenOutlierSettings> {
   /** Milliseconds a Claude goal's ask_operator question waits for an answer (at least 60000). */
   goal_question_max_wait_ms?: number;
 
+  /** Usage pause threshold for unattended agent runs (50-100). */
+  agent_run_usage_pause_percent?: number;
+
+  /** Unproductive scheduled runs before the owner is notified (1-50). */
+  automation_unproductive_run_threshold?: number;
+
   /** Agent watchdog overrides; null restores the environment default. */
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
@@ -385,6 +404,8 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "default_max_cost_usd",
   "ultrafix_ci_wait_timeout_ms",
   "goal_question_max_wait_ms",
+  "agent_run_usage_pause_percent",
+  "automation_unproductive_run_threshold",
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
   "agent_degenerate_output_limit",
@@ -483,6 +504,19 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be an integer of at least 60000 (one minute)`);
       }
       return Number(value);
+    }
+    case "agent_run_usage_pause_percent":
+    case "automation_unproductive_run_threshold": {
+      // Same rule as the config routes (validateStrictInt): an integer within the range.
+      const [min, max] = key === "agent_run_usage_pause_percent"
+        ? [AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, AGENT_RUN_USAGE_PAUSE_PERCENT_MAX]
+        : [AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MIN, AUTOMATION_UNPRODUCTIVE_RUN_THRESHOLD_MAX];
+      const trimmed = value.trim();
+      const parsed = /^-?\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+      if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+        throw new Error(`Invalid value for ${key}: must be an integer from ${min} to ${max}`);
+      }
+      return parsed;
     }
     case "ultrafix_escalation_patience":
     case "ultrafix_ci_wait_timeout_ms":

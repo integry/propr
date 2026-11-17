@@ -12,7 +12,7 @@ import {
     type EpicActivityFenceRedis, type EpicActivitySnapshot,
 } from './pullRequestStatusEpicActivityFence.js';
 import type { PullRequestBodyLease } from './pullRequestBodyLock.js';
-import { applyPullRequestStatusBlock, describeChildStatus, extractPullRequestStatusBlock } from './pullRequestStatusBlock.js';
+import { applyPullRequestStatusBlock, describeChildStatus, extractPullRequestStatusBlock, STATUS_TIMESTAMP_PATTERN, statusTimestamp } from './pullRequestStatusBlock.js';
 import { recordEpicChildStatus } from './pullRequestStatusEpicChildRecord.js';
 import { paginatingGitHub } from './pullRequestStatusEpicFacts.js';
 import type { PullRequestStatusGitHub, PullRequestStatusPull } from './pullRequestStatusFacts.js';
@@ -237,11 +237,6 @@ export function setEpicChildReadContinueMsForTests(ms: number | null): void {
 
 const TITLE_SLOT_STATE: Array<[RegExp, PullRequestStatus['state']]> = [[/^(?:\u{1F528}|[\u25CB\u25D4\u25D1\u25D5])/u, 'working'], [/^⚠/u, 'needs_attention'], [/^✅/u, 'ready']];
 const BLOCK_COUNT_PATTERN = /^(\*\*ProPR\*\* (?:\u{1F528}|⚠️?|✅) )\d+ of \d+( issues merged)/mu;
-const BLOCK_STAMP_PATTERN = / · updated \d{2}:\d{2} UTC/;
-
-function utcTime(now: Date): string {
-    return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
-}
 
 /**
  * The update of an epic whose status is undetermined (isUndeterminedPullRequestStatus):
@@ -264,7 +259,7 @@ export async function undeterminedEpicUpdate(
     const block = extractPullRequestStatusBlock(current);
     if (epic && block && BLOCK_COUNT_PATTERN.test(block)) {
         const recounted = block.replace(BLOCK_COUNT_PATTERN, `$1${epic.merged} of ${epic.total}$2`);
-        const stamped = recounted === block ? block : recounted.replace(BLOCK_STAMP_PATTERN, ` · updated ${utcTime(now)}`);
+        const stamped = recounted === block ? block : recounted.replace(STATUS_TIMESTAMP_PATTERN, ` · updated ${statusTimestamp(now)}`);
         const next = applyPullRequestStatusBlock(current, stamped);
         if (next.length <= PR_BODY_MAX_LENGTH) body = next;
     }

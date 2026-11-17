@@ -69,7 +69,7 @@ function line(status: PullRequestStatus): string {
 test('an epic with a working sub-PR is working and names the issue in progress', () => {
     const status = computePullRequestStatus(epic({ children: [child(ULTRAFIX_CHILD)] }));
     assert.equal(status.state, 'working');
-    assert.equal(line(status), '**ProPR** 🔨 3 of 5 issues merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10) · updated 09:41 UTC');
+    assert.equal(line(status), '**ProPR** 🔨 3 of 5 issues merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10) · updated Nov 13 09:41 UTC');
     assert.equal(status.detail.reviewScore, null, 'an epic shows no review score');
 });
 
@@ -94,7 +94,7 @@ test('a ready sub-PR waiting to be merged makes the epic need attention and name
     const status = computePullRequestStatus(epic({ children: [child(READY_CHILD)] }));
     assert.equal(status.state, 'needs_attention');
     assert.equal(status.detail.reason, 'epic_child_ready');
-    assert.equal(line(status), '**ProPR** ⚠️ 3 of 5 issues merged · #3523 (issue #3475) waits to be merged into the epic branch · updated 09:41 UTC');
+    assert.equal(line(status), '**ProPR** ⚠️ 3 of 5 issues merged · #3523 (issue #3475) waits to be merged into the epic branch · updated Nov 13 09:41 UTC');
 });
 
 test('a sub-PR that needs a person makes the epic need attention, with its reason', () => {
@@ -122,7 +122,7 @@ test('sub-PRs people opened (no ProPR status) do not decide the epic', () => {
 test('every issue merged with passing checks is ready; a failed check or a conflict needs attention', () => {
     const ready = computePullRequestStatus(epic({ merged: 5, total: 5 }));
     assert.equal(ready.state, 'ready');
-    assert.equal(line(ready), '**ProPR** ✅ 5 of 5 issues merged · checks: 12 passed · updated 09:41 UTC');
+    assert.equal(line(ready), '**ProPR** ✅ 5 of 5 issues merged · checks: 12 passed · updated Nov 13 09:41 UTC');
     const failed = computePullRequestStatus(facts({ ...epic({ merged: 5, total: 5 }), checks: { complete: true, passed: 2, failed: 1, pending: 0, failedNames: ['build'] } }));
     assert.equal(failed.state, 'needs_attention');
     assert.match(line(failed), /⚠️ 5 of 5 issues merged · failed: build/);
@@ -143,15 +143,15 @@ test('an epic whose remaining issues were all closed without a merge shows no re
     assert.equal(status.state, 'ready');
     assert.equal(status.detail.reason, null);
     assert.equal(status.detail.reviewScore, null);
-    assert.equal(line(status), '**ProPR** ✅ Ready · checks: 12 passed · updated 09:41 UTC', 'no empty progress count, no score');
+    assert.equal(line(status), '**ProPR** ✅ Ready · checks: 12 passed · updated Nov 13 09:41 UTC', 'no empty progress count, no score');
     assert.equal(renderStatusSlot(titleStatusOf(status)), '✅', 'the title slot shows neither a count nor a score');
     const conflict = computePullRequestStatus(facts({ ...epic({ merged: 0, total: 0 }), latestReviewScore: 3, pullRequest: { state: 'open', merged: false, headSha: 'a', mergeable: false } }));
     assert.equal(conflict.detail.reason, 'merge_conflict', 'its own facts still decide');
-    assert.equal(line(conflict), '**ProPR** ⚠️ Needs you · conflicts with base · checks: 12 passed · updated 09:41 UTC');
+    assert.equal(line(conflict), '**ProPR** ⚠️ Needs you · conflicts with base · checks: 12 passed · updated Nov 13 09:41 UTC');
 });
 
 test('the compact block keeps the progress', () => {
-    assert.match(renderCompactPullRequestStatusBlock(computePullRequestStatus(epic({ nextIssueQueued: true })), NOW)!, /\*\*ProPR\*\* 🔨 3 of 5 issues merged · updated 09:41 UTC/);
+    assert.match(renderCompactPullRequestStatusBlock(computePullRequestStatus(epic({ nextIssueQueued: true })), NOW)!, /\*\*ProPR\*\* 🔨 3 of 5 issues merged · updated Nov 13 09:41 UTC/);
 });
 
 // --- title slot ---

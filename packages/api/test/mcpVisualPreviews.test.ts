@@ -171,6 +171,23 @@ test('visual preview tools list task-scoped media and return bounded image block
       const resource = await client.readResource({ uri: 'propr://instances/test-instance/repositories/acme/repo/previews/pull:49:image-asset' });
       assert.equal(resource.contents[0].mimeType, 'image/webp');
       assert.ok('blob' in resource.contents[0]);
+
+      // A missing or doubled one-of argument is the standard error envelope with a sentence, not SDK plain text.
+      for (const [name, args, message] of [
+        ['list_visual_previews', { repository }, 'Provide exactly one of taskId or pullRequest.'],
+        ['list_visual_previews', { repository, taskId: 'follow-up', pullRequest: 49 }, 'Provide exactly one of taskId or pullRequest.'],
+        ['get_comment_attachment', { repository }, 'Provide exactly one of pullRequest or issue.'],
+        ['get_comment_attachment', { repository, pullRequest: 49, attachmentIndex: 0, attachmentId: 'abc' }, 'Provide at most one of attachmentIndex or attachmentId.'],
+        ['get_agent_activity', { repository }, 'Provide exactly one of goalId or taskId.'],
+      ] as const) {
+        const refused = await client.callTool({ name, arguments: args });
+        assert.equal(refused.isError, true, name);
+        const text = (refused.content[0] as { text: string }).text;
+        assert.doesNotMatch(text, /Input validation error/);
+        const { error } = JSON.parse(text);
+        assert.deepEqual({ code: error.code, status: error.status, stage: error.stage, message: error.message },
+          { code: 'INVALID_INPUT', status: 400, stage: 'validation', message }, name);
+      }
     } finally { await client.close(); }
   }
 

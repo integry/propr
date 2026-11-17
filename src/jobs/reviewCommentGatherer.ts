@@ -243,8 +243,9 @@ export function extractReviewScore(body: string): number | null {
  *
  * This is a convenience wrapper around `gatherUnprocessedReviewComments` that
  * also validates the completed job's entire result set when comment IDs are
- * supplied. The newest member supplies the score only after every expected
- * result is present and valid; blockers from any member remain authoritative.
+ * supplied. Once every expected result is present and valid, the set scores
+ * as its lowest member, whichever posted last; blockers from any member remain
+ * authoritative.
  */
 export async function getPendingReviewState(
     allComments: PRComment[],
@@ -281,9 +282,17 @@ export async function getPendingReviewState(
             ? 'valid_with_blockers'
             : 'valid_clean';
 
+    // A known result set (one multi-model job) scores as its lowest reviewer,
+    // as the PR status shows it; without one, the newest review scores.
+    // A member without a score leaves the set unscored.
+    const roundScores = unprocessedComments.map(comment => comment.score);
+    const roundScore = expectedIds === null || roundScores.length === 0
+        ? latestReview?.score ?? null
+        : roundScores.every(score => typeof score === 'number') ? Math.min(...roundScores as number[]) : null;
+
     return {
         unprocessedComments,
-        latestScore: reviewStatus === 'invalid' ? null : latestReview?.score ?? null,
+        latestScore: reviewStatus === 'invalid' ? null : roundScore,
         hasPendingReview: unprocessedComments.some(comment => comment.actionableFindings.length > 0),
         reviewStatus,
         isPartial: unprocessedComments.some(comment => comment.isPartial),

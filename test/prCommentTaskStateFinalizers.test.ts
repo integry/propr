@@ -151,6 +151,25 @@ test('failed hook reports an exhausted job that never started on the pull reques
     assert.equal(postUnstartedPRCommentFailure.mock.calls[0].arguments[1], error);
 });
 
+test('failed hook leaves the refusal comment to an exhaustion hook that reported on the pull request', async (t) => {
+    const originalImplementation = finalizeFailedPRCommentTask.mock.mockImplementation;
+    t.after(() => finalizeFailedPRCommentTask.mock.mockImplementation(originalImplementation));
+    finalizeFailedPRCommentTask.mock.mockImplementation(async () => ({ outcome: 'task_missing' as const, stateChanged: false }));
+    postUnstartedPRCommentFailure.mock.resetCalls();
+    const onExhaustedFailure = mock.fn(async (_job: Job<MainJobData>, _error: Error) => ({ reportedOnPullRequest: true }));
+    const harness = createWorkerHarness();
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager, { onExhaustedFailure });
+    const error = new Error('Worktree disk pressure: admission reserve unavailable; data retained');
+
+    harness.emit('failed', makeJob(async () => 'failed'), error);
+    await finalizers.close();
+
+    assert.equal(onExhaustedFailure.mock.calls.length, 1);
+    assert.equal(onExhaustedFailure.mock.calls[0].arguments[1], error, 'the hook sees why the job failed');
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length > 0, true, 'the task is still finalized');
+    assert.equal(postUnstartedPRCommentFailure.mock.calls.length, 0, 'an Ultrafix loop waiting for disk space posts its own notice');
+});
+
 test('failed hook does not report a job whose own failure handling ran', async () => {
     postUnstartedPRCommentFailure.mock.resetCalls();
     const harness = createWorkerHarness();

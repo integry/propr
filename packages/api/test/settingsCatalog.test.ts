@@ -157,3 +157,52 @@ test('find_setting returns the instance default and the repository override for 
   const instance = SETTINGS_CATALOG.find(entry => entry.id === 'automation.auto_resolve_merge_conflicts');
   assert.match(instance?.label ?? '', /default/i);
 });
+
+test('find_setting finds held follow-ups, the extension library and the 0.9.2 settings with their locations', async () => {
+  const first = async (query: string) => (await findSetting(query)).matches[0];
+
+  for (const query of ['held follow-up', 'Held follow-ups', 'maintenance', 'handoff']) {
+    const held = await first(query);
+    assert.equal(held?.id, 'maintenance.held_followups', query);
+    assert.equal(held.ui, 'Settings → Maintenance → Held follow-ups');
+    assert.equal(held.mcp.read, 'list_followup_handoffs');
+  }
+
+  for (const query of ['extensions library', 'mcp servers skills extensions', 'Skills & MCP servers']) {
+    const library = await first(query);
+    assert.equal(library?.id, 'agents.extension_library', query);
+    assert.equal(library.ui, 'Settings → Agent extensions & packages → Skills & MCP servers');
+    assert.match(library.howToChange, /Settings → Agent extensions & packages → Skills & MCP servers/);
+  }
+
+  const pause = await first('pause when unproductive');
+  assert.equal(pause?.id, 'automations.pause_when_unproductive');
+  assert.match(pause.ui, /^Automations → .* → Schedule/);
+
+  const ceilings = await first('per-agent concurrency ceilings');
+  assert.equal(ceilings?.id, 'agents.run_admission');
+  assert.ok(ceilings.env.includes('PROPR_AGENT_RUN_ALIAS_LIMITS'));
+
+  const expectations: Array<[string, string, string]> = [
+    ['cost anomaly alerts', 'cost.token_outlier_multiplier', 'token_outlier_multiplier'],
+    ['usage pause percent', 'agents.usage_pause_percent', 'agent_run_usage_pause_percent'],
+    ['unproductive run threshold', 'agents.unproductive_run_threshold', 'automation_unproductive_run_threshold'],
+  ];
+  for (const [query, id, key] of expectations) {
+    const match = await first(query);
+    assert.equal(match?.id, id, query);
+    // No Settings page control exists for these; the match says so instead of omitting a location.
+    assert.equal(match.ui, undefined);
+    assert.match(match.reason, /Not in the Settings UI/);
+    assert.equal(match.cli, `propr setting update ${key} <value>`);
+    assert.match(match.howToChange, /update_execution_settings/);
+  }
+});
+
+test('find_setting returns nothing for queries without a matchable term', async () => {
+  for (const query of ['%%', '--', '?!', '日本語？！', 'настройка...', '設定 worker', 'zzzzqqqq', 'worker zzzzqqqq']) {
+    assert.deepEqual((await findSetting(query)).matches, [], query);
+  }
+  assert.equal((await findSetting('worker')).matches[0]?.id, 'automation.worker_concurrency');
+  assert.equal((await findSetting('Wörker concurrency')).matches[0]?.id, 'automation.worker_concurrency');
+});

@@ -182,15 +182,39 @@ Configuration is stored in `~/.propr/config.json`.
 - Interactive `propr login` reuses an existing `gh` session, or launches `gh auth login` if none exists.
 - For a Personal Access Token, create a classic token at `https://github.com/settings/tokens` with the `repo` and `read:org` scopes.
 - `propr logout` clears the stored token.
+- When a remote is configured, `propr login` checks the token against that remote's API before reporting success. A token the remote rejects is not saved (exit 1). If the remote cannot be reached, the token is saved and the CLI says it could not be verified.
+- If the remote URL points at something other than a ProPR API, such as the Web UI host, backend commands print one line, "The remote did not return a ProPR API response. Check the URL with `propr remote`.", and exit 1.
+
+### CLI configuration and profiles
+
+```bash
+propr config list                            # Active profile, remote URL, default project (token redacted)
+propr config get remoteUrl                   # One key: activeProfile, remoteUrl, defaultProject, githubToken
+propr config profile set staging --remote https://api.staging.example.com --project owner/repo
+propr config profile use staging             # Switch profiles (created if missing)
+propr config profile set staging --clear-project
+```
+
+Profiles keep a remote URL, token and default project per backend; `propr remote`, `propr login` and `propr use` write to the active profile. Token values are always redacted, including in `--json` output. Prefer `propr login` on the target profile over `config profile set --token`, which puts the secret in shell history.
+
+### Shell completion
+
+```bash
+source <(propr completion bash)                              # Current bash session
+propr completion zsh > "${fpath[1]}/_propr"                  # zsh, then restart the shell
+propr completion fish > ~/.config/fish/completions/propr.fish
+```
+
+The script is generated from the installed CLI's commands, subcommands and options; regenerate it after upgrading.
 
 ## Global Options
 
 | Option | Description |
 |--------|-------------|
 | `-p, --project <owner/repo>` | Target project for this invocation (overrides `propr use`) |
-| `-j, --json` | Machine-readable output (a per-command flag supported by most commands; a few accept only `--json`) |
+| `-j, --json` | Machine-readable output (a per-command flag supported by most commands) |
 | `-V, --version` | Print the CLI version |
-| `-h, --help` | Help for any command or subcommand |
+| `-h, --help` | Help for any command or subcommand; `propr help <command> [subcommand]` prints the same |
 
 ## Repository Setup Files
 
@@ -228,6 +252,7 @@ Run `propr runtime packages verify` after replacing or pulling an agent base ima
 
 ```bash
 propr plan list                                  # List plans for the default project
+propr plan list -l 50 --offset 50                # Page through plans (max 100 per page)
 propr plan create "Add dark mode" --wait         # Create a plan and wait for generation
 propr plan create "Fix bug" -b develop           # Target a specific branch
 propr plan get <draft-id>                        # Plan details (--json for JSON)
@@ -442,6 +467,19 @@ and timing fields plus status flags, failure/PR data, `details`, and the full
 `history`. Missing scalar values are `null`, timestamps are ISO 8601, and
 durations are integer milliseconds.
 
+## Follow-up Handoffs
+
+Instance administrators (`instance.manage_runtime`) can settle a [held follow-up publication](../operations/maintenance.md#stuck-follow-ups-settle-themselves) that blocks new follow-ups on a pull request:
+
+```bash
+propr handoffs list [--json]                                  # Every tracked handoff
+propr handoffs inspect owner/repo 42 [--json]                 # Phase, status, liveness and retained work
+propr handoffs resume owner/repo 42 [--authorize-cancelled]   # Re-arm a held handoff and recover this PR only
+propr handoffs release owner/repo 42 [--force]                # Stop tracking; never deletes files or commits
+```
+
+`--authorize-cancelled` explicitly allows publishing work the user cancelled. `release --force` detaches the worktree even while it holds unpublished work; the commits stay reachable in the worktree and under `refs/propr/superseded/`.
+
 ## Repositories
 
 ```bash
@@ -487,6 +525,7 @@ propr agent add --file agent-config.json     # From a JSON file (or `-` for stdi
 propr agent enable my-agent                  # Enable / disable without deleting
 propr agent disable my-agent
 propr agent delete my-agent --force
+propr agent login antigravity                # Log in through the agent's own Docker image (--root <dir>)
 
 propr agent pool list --json > pools.json
 propr agent pool apply pools.json       # Also accepts '-' for stdin
@@ -494,6 +533,8 @@ propr agent pool delete balanced-pool
 ```
 
 Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
+
+`propr agent login [type]` runs the agent's pinned CLI inside its image with the host credential directory mounted, so the stored credentials match what runs jobs. Use it when no host login exists or after a failed image check (`propr check agents`).
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
 
@@ -524,20 +565,26 @@ propr setting get -k worker_concurrency
 propr setting update worker_concurrency 4
 propr setting update github_user_whitelist "a,b,c"
 propr setting update followup_requires_assignment true   # Turn on the assignment gate (default false)
+propr setting reindex-summaries                    # Queue summarization reindexing for every configured repository
+propr setting reindex-summaries --ignore-cooldown  # Also queue repositories in summarization cooldown
 
 propr log list                       # Recent LLM logs
 propr log list -m <model> --failed   # Filter by model, failures only
 propr log list --agent my-claude --draft <draft-id> --page 2 -l 100
 
-propr remote-status     # Backend health check (daemon, workers, Redis, GitHub auth)
-propr queue             # Queue statistics
-propr admission [--json]  # Agent-run admission: global limit, per-agent ceilings, running/waiting/deferred work (not subscription usage)
-propr stats review-scores --period 30d [--repository owner/repo] [--json]  # Review quality per implementer model and effort
-propr stats cost --period 30d [--repository owner/repo] [--group-by day,model] [--json|--csv]  # Recorded LLM cost export
+propr backend status    # Backend health check (daemon, workers, Redis, GitHub auth); same as remote-status
+propr backend queue     # Queue statistics; same as queue
+propr remote-status
+propr queue
+propr admission [--json]  # Agent-run admission: global limit, per-agent ceilings, running/waiting/deferred work (not subscription usage; see propr tank)
+propr stats review-scores --period 30d [-p owner/repo] [--json]  # Review quality per implementer model and effort
+propr stats cost --period 30d [-p owner/repo] [--group-by day,model] [--json|--csv]  # Recorded LLM cost export
 propr pr readiness <number> [-p owner/repo] [--json]  # Read-only readiness verdict with a reason code per gate
-propr events list [-p owner/repo] [--after-cursor <c>] [--from-start] [--domain d] [--type t] [--pr n] [--plan id] [--json] [--follow]  # Repository change events after a cursor
-propr events wait [same filters] [--timeout 15] [--json] [--follow]  # Wait (max 30s per request) for a matching event; exit 2 on timeout
+propr events list [-p owner/repo] [--after-cursor <c>] [--from-start] [--domain d] [--type t] [--pr n] [--plan id] [-l n] [--json] [--follow]  # Repository change events after a cursor
+propr events wait [same filters] [--timeout 15] [--json] [--follow]  # Wait (max 30s per request) for a matching event; exit 2 on timeout. With --follow, waits start at least 1 s apart
 ```
+
+`propr stats` covers all recorded time unless `--period` is given (the MCP `get_cost_breakdown` tool defaults to `30d`), and every repository unless `--repository` (or its alias `-p, --project`) is given. `--group-by` defaults to `day`. All `--json` flags also accept `-j`.
 
 Settings keys:
 
@@ -545,6 +592,7 @@ Settings keys:
 |-----|-------------|
 | `default_agent_alias` | Alias of the default implementation agent |
 | `worker_concurrency` | Number of concurrent workers for processing tasks |
+| `max_provider_replacements` | Replacement attempts after a run ends with a transient provider failure (0 disables, max 10; overrides `MAX_PROVIDER_REPLACEMENTS`, default 2) |
 | `github_user_whitelist` | GitHub usernames allowed to use the system |
 | `analysis_model_fast` | Used by `/review` to gather repository context before the review |
 | `planner_context_model` | Model for planner context generation |
@@ -563,11 +611,27 @@ Settings keys:
 | `ultrafix_rating_goal` | Target quality rating for ultrafix cycles |
 | `ultrafix_max_cycles` | Maximum number of ultrafix cycles |
 | `ultrafix_pause_seconds` | Pause duration between ultrafix cycles |
+| `ultrafix_escalation_enabled` | Enable [automatic Ultrafix escalation](./pr-commands.md#automatic-escalation) of reasoning level and model (`true`/`false`) |
+| `ultrafix_escalation_models` | Ordered escalation models, a JSON array of model IDs or `agent:model` pairs |
+| `ultrafix_escalation_patience` | Stalled reviews before each escalation step (positive integer) |
+| `ultrafix_escalation_max_reasoning_levels` | Maximum reasoning increases per model (0 hands off directly to the next model) |
+| `ultrafix_ci_wait_timeout_ms` | How long an Ultrafix review waits for blocking CI before stopping, in ms (default 7200000) |
 | `default_max_cost_usd` | Default per-run [spend cap](./execution-safety.md#spend-caps) in USD (0 = no cap) |
 | `goal_question_max_wait_ms` | How long a Claude goal's [`ask_operator` question](./goals.md#claude-questions) waits for an answer, in ms (at least 60000, default 86400000; never longer than the agent timeout) |
 | `agent_stall_timeout_ms` | Stop an agent run silent this long, in ms (0 disables; `default` restores `AGENT_STALL_TIMEOUT_MS`) |
 | `agent_tool_stall_timeout_ms` | Silence allowed while a tool call runs, in ms (0 disables; `default` restores `AGENT_TOOL_STALL_TIMEOUT_MS`) |
+| `agent_run_usage_pause_percent` | Defer or skip unattended agent runs at or above this % of provider subscription usage (50–100, default 90) |
+| `automation_unproductive_run_threshold` | Consecutive unproductive scheduled automation runs before the owner is notified (1–50, default 3) |
 | `agent_degenerate_output_limit` | Consecutive whitespace-only deltas that stop a run (0 disables; `default` restores `AGENT_DEGENERATE_OUTPUT_LIMIT`) |
+| `agent_network_mode` | Agent container network, `open` or `restricted` (`default` restores `AGENT_NETWORK_MODE`). See [Restricted Network Mode](./execution-safety.md#restricted-network-mode). |
+| `agent_network_mode_enforced` | With restricted mode, stop repositories choosing `open` (`true`/`false`; `default` restores `AGENT_NETWORK_MODE_ENFORCED`) |
+| `agent_network_allow` | Comma-separated hosts every restricted run may reach (`default` restores `AGENT_NETWORK_ALLOW`) |
+| `agent_network_ignore_repository_allow` | With enforced restricted mode, ignore hosts repositories add in `network.allow` (`true`/`false`; `default` restores `AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW`) |
+| `token_outlier_multiplier` | [Token alert](../operations/metrics.md#token-outlier-alerts) when a run uses more than this multiple of its baseline median tokens (1.5–100, default 4) |
+| `token_outlier_min_tokens` | Runs at or below this many total tokens never raise a token alert (default 500000) |
+| `token_outlier_baseline_runs` | Successful runs (same repository, model and execution type) in the baseline median (8–200, default 20) |
+| `token_outlier_pause_alerts` | Skip a repository's scheduled automations after this many token alerts in the window (0 = off) |
+| `token_outlier_pause_window_hours` | Hours over which token alerts count toward the automation pause (1–720, default 24) |
 
 `propr setting update` also accepts `pr-label`, `ai-primary-tag`, `primary-processing-labels`, and `followup-keywords` (comma-separated for the list keys).
 

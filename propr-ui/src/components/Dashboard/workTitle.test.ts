@@ -3,7 +3,7 @@ import { splitWorkTitle } from './workTitle';
 
 describe('splitWorkTitle', () => {
   it('parses titles with and without the PR status slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️➅ ', '\u26A0➅ ', '✅➇ ', '✅ ']) {
+    for (const slot of ['', '🔨 ', '⚠️❻ ', '\u26A0❻ ', '✅❽ ', '✅ ', '✅➇ ', '⚠️⑥ ']) {
       expect(splitWorkTitle(`${slot}[3475 by Claude Opus 5.5] Let an automation run`, 'issue'))
         .toEqual({ type: 'Implement', title: 'Let an automation run' });
       expect(splitWorkTitle(`Fix PR #3510: ${slot}[3510 by Claude Opus 5.5] Apply library extensions`, 'pr-comment'))

@@ -269,15 +269,15 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
     assert.doesNotMatch(JSON.stringify(goal.currentActivity), /Hidden goal reasoning/);
     assert.deepEqual(goal.progress.tasks, { total: 3, active: 1, completed: 1, failed: 1, cancelled: 0 });
     assert.deepEqual(goal.progress.recentTerminalTransitions, [
-      { taskId: 'goal-child-failed', state: 'failed', at: '2026-09-01 12:02:21', reason: 'Fixture agent stopped' },
-      { taskId: 'goal-child-merged', state: 'completed', at: '2026-09-01 12:01:41', reason: null },
+      { taskId: 'goal-child-failed', state: 'failed', at: '2026-09-01T12:02:21.000Z', reason: 'Fixture agent stopped' },
+      { taskId: 'goal-child-merged', state: 'completed', at: '2026-09-01T12:01:41.000Z', reason: null },
     ]);
-    assert.equal(goal.progress.startedAt, '2026-09-01 12:00:00');
+    assert.equal(goal.progress.startedAt, '2026-09-01T12:00:00.000Z');
     assert.ok(Number.isSafeInteger(goal.progress.elapsedSeconds) && goal.progress.elapsedSeconds > 0);
-    assert.deepEqual(goal.progress.checkpoint, { intervalMinutes: 15, count: 2, lastAt: '2026-09-01 12:00:10',
+    assert.deepEqual(goal.progress.checkpoint, { intervalMinutes: 15, count: 2, lastAt: '2026-09-01T12:00:10.000Z',
       lastCommitSha: 'abc1234', error: null });
     assert.deepEqual(goal.pendingInput, { waitingForOperator: false, reason: null, undeliveredInputs: 2,
-      lastInputAt: '2026-09-01 12:00:08', lastInputDeliveredAt: null });
+      lastInputAt: '2026-09-01T12:00:08.000Z', lastInputDeliveredAt: null });
     assert.deepEqual(goal.pullRequests, [
       { number: 41, state: 'merged', role: 'final' },
       { number: 77, state: 'merged', role: 'task', taskId: 'goal-child-merged' },
@@ -298,15 +298,15 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
     const failedTask = await call('get_task', { repository, taskId: 'goal-child-failed' });
     assert.equal(failedTask.latestEvent.state, 'failed');
     assert.deepEqual(failedTask.latestEvents, [
-      { state: 'failed', reason: 'Fixture agent stopped', timestamp: '2026-09-01 12:02:21' },
-      { state: 'claude_execution', reason: null, timestamp: '2026-09-01 12:02:11' },
-      { state: 'processing', reason: 'Started work', timestamp: '2026-09-01 12:02:01' },
+      { state: 'failed', reason: 'Fixture agent stopped', timestamp: '2026-09-01T12:02:21.000Z' },
+      { state: 'claude_execution', reason: null, timestamp: '2026-09-01T12:02:11.000Z' },
+      { state: 'processing', reason: 'Started work', timestamp: '2026-09-01T12:02:01.000Z' },
     ]);
     assert.deepEqual(failedTask.currentActivity.entries,
       [{ timestamp: '2026-09-01T12:02:15.000Z', message: 'Inspecting the failing fixture before giving up.' }]);
     assert.doesNotMatch(JSON.stringify(failedTask.currentActivity), /Hidden task reasoning/);
-    assert.deepEqual(failedTask.timing, { startedAt: '2026-09-01 12:02:01', updatedAt: '2026-09-01 12:02:21',
-      completedAt: '2026-09-01 12:02:21', elapsedSeconds: 20 });
+    assert.deepEqual(failedTask.timing, { startedAt: '2026-09-01T12:02:01.000Z', updatedAt: '2026-09-01T12:02:21.000Z',
+      completedAt: '2026-09-01T12:02:21.000Z', elapsedSeconds: 20 });
     assert.equal(failedTask.changesSummary, null, 'unpersisted file changes never read as zero changes');
     assert.equal(failedTask.pullRequest, null);
 
@@ -340,7 +340,7 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
     assert.equal(firstInputs.nextOffset, 2);
     const secondInputs = await call('list_goal_inputs', { repository, goalId: runningGoalId, limit: 2, offset: 2 });
     assert.deepEqual(secondInputs.inputs, [{ id: 'input-1', message: 'First correction', attachmentCount: 0,
-      state: 'delivered', createdAt: '2026-09-01 12:00:05', deliveredAt: '2026-09-01 12:00:06' }]);
+      state: 'delivered', createdAt: '2026-09-01T12:00:05.000Z', deliveredAt: '2026-09-01T12:00:06.000Z' }]);
     assert.equal(secondInputs.nextOffset, null);
     assert.doesNotMatch(JSON.stringify(firstInputs), /ProPR delivery policy/);
 

@@ -114,14 +114,19 @@ export function formatAdmissionReport(report: AgentRunAdmissionReport): string[]
   lines.push("", `Repository workflow slots: ${slotSummary}`.trimEnd());
   for (const slot of slots.repositories) lines.push(`  ${slot.repository}  ${slot.inUse}/${slot.limit} in use, ${slot.waiting} waiting`);
   lines.push(`  ${slots.label}`);
-  lines.push("", report.subscriptionUsage);
+  // The server's note names MCP tools and API routes; point a CLI reader at the CLI command instead.
+  lines.push("", ADMISSION_SUBSCRIPTION_USAGE_NOTE);
   return lines;
 }
+
+/** Text-output pointer to provider quota, which this report deliberately omits. */
+export const ADMISSION_SUBSCRIPTION_USAGE_NOTE =
+  "Subscription usage (provider quota through Agent Tank) is not part of this report; see 'propr tank'.";
 
 export function createAdmissionCommand(): Command {
   return new Command("admission")
     .description("Show agent-run admission: the global limit, per-agent ceilings, and what is running, waiting and deferred")
-    .option("--json", "Output raw JSON response")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Examples:
   $ propr admission

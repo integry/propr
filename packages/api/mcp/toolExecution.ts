@@ -5,6 +5,7 @@ import { McpOperations } from './operations.js';
 import { cancellationTarget } from './operationTracking.js';
 import { redact, redactText } from './adapter.js';
 import { presentResult, type PresentedResult } from './presentation.js';
+import { normalizeResultTimestamps } from './resultTimestamps.js';
 import type { Args, McpTool, ToolDeps } from './tools.js';
 import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
 
@@ -139,6 +140,7 @@ function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] 
 // eslint-disable-next-line complexity -- dispatch keeps authorization, durable mutation handling, content bounds and logging in one auditable path
 async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvocation): Promise<PresentedResult> {
   const args = tool.schema.parse(raw) as Args;
+  tool.validate?.(args);
   access.repository = args.repository;
   deps.policy.requireScope(principal, tool.scope);
   if (tool.permission) deps.policy.requirePermission(principal, tool.permission);
@@ -177,7 +179,8 @@ async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvoc
     // counted) admits nothing more.
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository, admit: tx => deps.policy.admit(principal, tx) },
       operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
-  const data = redactToolResult(tool, result);
+  // Timestamps are normalized here, once, so every tool reports ISO 8601 UTC whatever its store wrote.
+  const data = normalizeResultTimestamps(redactToolResult(tool, result));
   const content = redactToolContent(readContent);
   const jsonBytes = Buffer.byteLength(JSON.stringify(data));
   // Binary content has its own tool-specific bound and is intentionally not

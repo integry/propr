@@ -24,7 +24,7 @@ import { createRepoTodoRoutes } from '../routes/repoTodoRoutes.js';
 import { createNotificationRoutes } from '../routes/notificationRoutes.js';
 import { createConfigRoutes } from '../routes/configRoutes.js';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
-import { McpError, type McpScope } from './config.js';
+import { McpError, requireExactlyOne, type McpScope } from './config.js';
 import type { McpErrorEnvelope } from './errorEnvelope.js';
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations, type OperationResult, type Operation } from './operations.js';
@@ -34,7 +34,7 @@ import { addTaskSubmissionTools, trackTaskSubmission } from './toolsTaskSubmissi
 import { addPlanningTools } from './toolsPlanning.js';
 import { planEpicDispatch, type EpicDispatch } from './epicDispatchPolicy.js';
 import { addPullRequestTools } from './toolsPullRequests.js';
-import { addContextTools } from './toolsContext.js';
+import { addContextTools, assertRelativePath } from './toolsContext.js';
 import { addAdministrationTools } from './toolsAdministration.js';
 import { addMaintenanceTools } from './toolsMaintenance.js';
 import { addArtifactTools } from './toolsArtifacts.js';
@@ -91,10 +91,7 @@ const agentActivitySchema = z.object({
   taskId: idSchema.optional(),
   includeReasoningSummaries: z.boolean().default(false).describe('Include Codex app-server reasoning summaries as compact narration. Raw reasoning remains excluded.'),
   ...pageShape,
-}).strict().refine(
-  args => Number(Boolean(args.goalId)) + Number(Boolean(args.taskId)) === 1,
-  { message: 'Provide exactly one of goalId or taskId.' },
-);
+}).strict();
 export type Args = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- Zod validates each concrete tool schema before dispatch
 /** `signal` aborts when the MCP request is cancelled or its HTTP connection closes. */
 export interface ToolContext { principal: McpPrincipal; args: Args; operationId?: string; signal?: AbortSignal }
@@ -103,6 +100,12 @@ export interface McpTool {
   permission?: InstancePermission;
   /** `optional` opts one arm of an exactly-one-of schema out of the target check; the default fails closed. */
   target?: { table: string; column: string; arg: string; owner?: string; optional?: boolean };
+  /**
+   * Cross-argument rules (exactly one of two arguments). Kept out of `schema`:
+   * the protocol SDK answers its own schema failures with plain text, while a
+   * rule raised here gets the INVALID_INPUT error envelope like any tool error.
+   */
+  validate?: (args: Args) => void;
   /** Tool-specific authorization checked before dispatch, so a denial never records a mutation receipt. */
   authorize?: (context: Pick<ToolContext, 'principal' | 'args'>) => Promise<void>;
   run:  (context: ToolContext) => Promise<OperationResult>;
@@ -278,6 +281,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     scope: 'read',
     readOnly: true,
     schema: agentActivitySchema,
+    validate: args => requireExactlyOne(args, ['goalId', 'taskId']),
     run: async ({ principal, args }) => ok(await getAgentActivity(
       { db, redisClient },
       args as z.infer<typeof agentActivitySchema>,
@@ -291,6 +295,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   tools.push({ name: 'get_task_changes', description: 'List changed files or read one exact file diff in bounded chunks. Task handles are exact, without job-alias normalization.', scope: 'read', readOnly: true,
     schema: z.object({ ...taskShape, ...pageShape, path: z.string().max(1024).optional(), detail: z.enum(['summary', 'diff']).default('summary'), diffOffset: z.number().int().min(0).max(10000000).default(0) }).strict(), target: taskTarget, run: async ({ principal, args }) => {
       if (args.detail === 'diff' && !args.path) throw new McpError('MISSING_INPUT', 'Choose an exact changed-file path to read its diff.');
+      if (args.path !== undefined) assertRelativePath(args.path);
       return callWorkflow(changes.getFileChanges, principal, { params: { taskId: args.taskId }, projectResult: value => {
         const data = value as FileChangesData;
         if (data.taskId !== args.taskId) throw new McpError('INVALID_TASK_REFERENCE', 'Stored changes do not match this exact task.', 409);

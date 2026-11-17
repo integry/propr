@@ -114,9 +114,9 @@ function addFilterOptions(command: Command): Command {
     .option("--type <types>", "Only these event types")
     .option("--pr <number>", "Only events of this pull request")
     .option("--plan <planId>", "Only events of this plan")
-    .option("--limit <n>", `Most events per request (max ${REPOSITORY_EVENT_LIST_MAX_LIMIT})`)
+    .option("-l, --limit <n>", `Most events per request (max ${REPOSITORY_EVENT_LIST_MAX_LIMIT})`)
     .option("--follow", "Keep reading on the returned cursor until interrupted")
-    .option("--json", "Output raw JSON");
+    .option("-j, --json", "Output raw JSON");
 }
 
 function reportError(error: unknown, json: boolean | undefined): void {
@@ -140,15 +140,40 @@ function reportError(error: unknown, json: boolean | undefined): void {
 interface RunState { cursor?: string; signal: AbortSignal }
 
 /** Injected in tests; the configured API client and configuration otherwise. */
-export interface EventsRunDeps { client?: ApiClient; configManager?: ConfigManager }
+export interface EventsRunDeps { client?: ApiClient; configManager?: ConfigManager; followIntervalMs?: number }
+
+/**
+ * Least time between the starts of two consecutive followed waits. A wait
+ * that returns at once (`--timeout 0`, or a busy journal) must not turn
+ * `--follow` into a request loop that exhausts the API rate limit.
+ */
+export const FOLLOW_MIN_INTERVAL_MS = 1000;
+
+/** Resolves after `ms`, or at once when `signal` aborts. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (ms <= 0 || signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 /**
  * Follow the journal from a cursor: wait, print, repeat. Returns when
  * interrupted; the caller reports the last processed cursor.
  */
-async function follow(query: RepositoryEventQuery, timeoutSeconds: number, json: boolean, state: RunState, client: ApiClient | undefined): Promise<void> {
+async function follow(query: RepositoryEventQuery, timeoutSeconds: number, json: boolean, state: RunState, client: ApiClient | undefined, intervalMs: number): Promise<void> {
   let first = state.cursor === undefined;
+  let lastStart: number | undefined;
   while (!state.signal.aborted) {
+    if (lastStart !== undefined) await pause(lastStart + intervalMs - Date.now(), state.signal);
+    if (state.signal.aborted) break;
+    lastStart = Date.now();
     const result = await waitRepositoryEvents({ ...query, afterCursor: state.cursor, fromStart: first && query.fromStart, timeoutSeconds }, { client, signal: state.signal });
     first = false;
     printEvents(result.events, json);
@@ -185,7 +210,7 @@ export async function runEventsCommand(options: EventOptions, wait: boolean, dep
         }
         start = { ...query, fromStart: false };
       }
-      await follow(start, timeoutSeconds, options.json ?? false, state, client);
+      await follow(start, timeoutSeconds, options.json ?? false, state, client, deps.followIntervalMs ?? FOLLOW_MIN_INTERVAL_MS);
       return interrupted(state);
     }
     const result = wait

@@ -388,3 +388,33 @@ for (const timezone of ['UTC', 'Europe/London']) {
     }
   });
 }
+
+test('goal projection reports an observed merge on its pull request artifact and drops it from the open count', async () => {
+  const database = await inputProjectionDatabase();
+  try {
+    await database.schema.createTable('notification_pull_request_state', table => {
+      table.text('repository'); table.integer('pr_number'); table.text('merged_at');
+    });
+    await database('notification_pull_request_state').insert({ repository: 'acme/repo', pr_number: 96, merged_at: '2026-11-02 10:12:51' });
+    const artifacts = [
+      { type: 'pull_request', number: 96, url: 'https://github.com/acme/repo/pull/96', state: 'open', draft: true },
+      { type: 'pull_request', number: 97, url: 'https://github.com/acme/repo/pull/97', state: 'open', draft: false },
+      { type: 'issue', number: 12, url: 'https://github.com/acme/repo/issues/12', state: 'open' },
+    ];
+    const row = {
+      ...inputGoalRow, final_pr_number: 96, final_pr_url: 'https://github.com/acme/repo/pull/96',
+      artifact_refs: JSON.stringify(artifacts),
+      artifact_stats: JSON.stringify({ issues: 1, openIssues: 1, pullRequests: 2, openPullRequests: 2 }),
+    };
+    const projected = await serializeGoal(database, emptyRedis, row, { includeInputs: false });
+    assert.deepEqual(projected.artifacts.map(artifact => [artifact.number, artifact.state, artifact.draft]),
+      [[96, 'merged', false], [97, 'open', false], [12, 'open', undefined]]);
+    assert.deepEqual(projected.artifactStats, { issues: 1, openIssues: 1, pullRequests: 2, openPullRequests: 1 });
+
+    const unmerged = await serializeGoal(database, emptyRedis, { ...row, repository: 'acme/other' }, { includeInputs: false });
+    assert.deepEqual(unmerged.artifacts, artifacts, 'merges are matched per repository');
+    assert.equal(unmerged.artifactStats.openPullRequests, 2);
+  } finally {
+    await database.destroy();
+  }
+});

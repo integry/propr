@@ -96,6 +96,18 @@ export class McpError extends Error {
   }
 }
 
+const present = (value: unknown) => value !== undefined && value !== null && value !== '';
+
+/** Reject anything but exactly one of `keys` (at most one when `optional`) with an INVALID_INPUT envelope. */
+export function requireExactlyOne(args: Record<string, unknown>, keys: [string, string], options: { optional?: boolean } = {}): void {
+  const given = keys.filter(key => present(args[key])).length;
+  if (given === 1 || (given === 0 && options.optional)) return;
+  const [first, second] = keys;
+  throw new McpError('INVALID_INPUT', options.optional ? `Provide at most one of ${first} or ${second}.` : `Provide exactly one of ${first} or ${second}.`, 400, {
+    stage: 'validation', details: { arguments: keys },
+  });
+}
+
 function loadConnectConfig(env: NodeJS.ProcessEnv, instanceId: string, options: LoadMcpConfigOptions): McpConfig['connect'] {
   const installationId = Number(env.GH_INSTALLATION_ID);
   // Existing tunnel setup stores the registry UUID in PROPR_INSTANCE_ID. It

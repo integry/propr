@@ -9,7 +9,7 @@ import { GOAL_ATTENTION_COLUMNS, loadGoalAttention, whereGoalNeedsAttention } fr
 import { compactText, summarizeGoal, summarizeTask } from './listSummaries.js';
 import { applyTaskVisibility, ok, repositorySchema, type McpTool, type ToolDeps } from './tools.js';
 import {
-  ACTIVE_TASK_LOOKBACK_DAYS, DIGEST_TEXT_LIMIT, MAX_DIGEST_REPOSITORIES, MAX_NARRATION_LOOKUPS,
+  ACTIVE_TASK_LOOKBACK_DAYS, DIGEST_ACCESS_CONCURRENCY, DIGEST_TEXT_LIMIT, MAX_DIGEST_REPOSITORIES, MAX_NARRATION_LOOKUPS,
   QUEUED_TASK_STATES, TASK_COLUMNS, TERMINAL_TASK_STATES,
   compareNewestFirst, elapsedSeconds, githubUrl, inboxReference, isOperatorRelevant,
   isoTimestamp, latestPlanIssue, line, lowerBound, normalizedTimestamp, orderByNewest,
@@ -22,6 +22,7 @@ import {
   inboxEntries, isTimelineNotification,
   type TimelineScope,
 } from './activityTimeline.js';
+import { mapConcurrent } from './pullRequestInventory.js';
 
 interface CurrentActivityArgs { repository?: string; limit: number; includeRoutine: boolean }
 interface RecentActivityArgs extends WindowArguments {
@@ -53,12 +54,14 @@ const recentActivitySchema = () => z.object({
  * Repositories this call may read: the grant intersected with the currently
  * enabled configuration, each re-verified against live GitHub access. A
  * repository that answers 403 is skipped rather than failing the whole digest,
- * exactly as `list_repositories` does.
+ * exactly as `list_repositories` does. `notScanned` counts the granted,
+ * enabled repositories past the scan bound, so a caller can tell a quiet
+ * instance from one this read did not fully cover.
  */
 async function digestRepositories(
   deps: ToolDeps, principal: McpPrincipal, repository?: string,
-): Promise<{ repositories: string[]; truncated: boolean }> {
-  if (repository) return { repositories: [repository], truncated: false };
+): Promise<{ repositories: string[]; truncated: boolean; notScanned: number }> {
+  if (repository) return { repositories: [repository], truncated: false, notScanned: 0 };
   const granted = new Set(principal.grant.repositories.map(name => name.toLowerCase()));
   // One repository can be configured once per base branch; it counts once
   // against the cap and is read once.
@@ -66,16 +69,22 @@ async function digestRepositories(
   const configured = (await loadMonitoredReposRaw())
     .filter(repo => repo.enabled && granted.has(repo.name.toLowerCase())
       && !seen.has(repo.name.toLowerCase()) && !!seen.add(repo.name.toLowerCase()));
-  const repositories: string[] = [];
-  for (const repo of configured.slice(0, MAX_DIGEST_REPOSITORIES)) {
+  const scanned = configured.slice(0, MAX_DIGEST_REPOSITORIES);
+  const verified = await mapConcurrent(scanned, DIGEST_ACCESS_CONCURRENCY, async repo => {
     try {
       await deps.policy.repository(principal, repo.name);
-      repositories.push(repo.name);
+      return repo.name;
     } catch (error) {
       if (!(error instanceof McpError) || error.status !== 403) throw error;
+      return null;
     }
-  }
-  return { repositories, truncated: configured.length > MAX_DIGEST_REPOSITORIES };
+  });
+  const notScanned = configured.length - scanned.length;
+  return {
+    repositories: verified.filter((name): name is string => name !== null),
+    truncated: notScanned > 0,
+    notScanned,
+  };
 }
 
 /**
@@ -268,7 +277,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
     run: async ({ principal, args }) => {
       const { limit, includeRoutine } = args as CurrentActivityArgs;
       const now = Date.now();
-      const { repositories, truncated } = await digestRepositories(deps, principal, args.repository);
+      const { repositories, truncated, notScanned } = await digestRepositories(deps, principal, args.repository);
       const owner = principal.user.id;
       const page = limit + 1;
       const active = db('goals').where({ owner_id: owner }).whereIn('repository', repositories);
@@ -313,6 +322,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
         window: null,
         repositories,
         repositoriesTruncated: truncated,
+        repositoriesNotScanned: notScanned,
         sections: {
           runningTasks: section(running.map(row =>
             projectTask(row, now, taskNarration.get(String(row.task_id)) ?? null)), limit),
@@ -336,7 +346,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
       const { limit, offset, includeRoutine } = args as RecentActivityArgs;
       const now = Date.now();
       const window = resolveWindow(args as RecentActivityArgs, now);
-      const { repositories, truncated } = await digestRepositories(deps, principal, args.repository);
+      const { repositories, truncated, notScanned } = await digestRepositories(deps, principal, args.repository);
       const owner = principal.user.id;
       const budget = Math.min(offset + limit + 1, MAX_TIMELINE_ROWS);
       const scope: TimelineScope = {
@@ -367,6 +377,7 @@ export function addActivityTools(tools: McpTool[], deps: ToolDeps): void {
         window,
         repositories,
         repositoriesTruncated: truncated,
+        repositoriesNotScanned: notScanned,
         events: entries.slice(offset, offset + limit).map(entry => ({
           occurredAt: entry.occurredAt, kind: entry.kind, repository: entry.repository,
           summary: entry.summary, outcome: entry.outcome, reference: entry.reference,
