@@ -66,8 +66,12 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
 
   async function getActivity(req: Request, res: Response): Promise<void> {
     try {
-      const limit = parseInt(req.query.limit as string) || 50;
-      const offset = parseInt(req.query.offset as string) || 0;
+      const paging = parseActivityPaging(req.query);
+      if ('error' in paging) {
+        res.status(400).json({ error: paging.error, code: 'INVALID_PAGINATION' });
+        return;
+      }
+      const { limit, offset } = paging;
       const activities = await redisClient.lRange('system:activity:log', offset, offset + limit - 1);
       const parsedActivities = activities.map((activity, index) => parseActivityLog(activity, index));
       res.json(parsedActivities);
@@ -218,6 +222,28 @@ function getJobTitle(jobName: string, data: Record<string, unknown>): string {
   if (issueNumber) return `Issue #${issueNumber}`;
 
   return jobName;
+}
+
+export const ACTIVITY_DEFAULT_LIMIT = 50;
+export const ACTIVITY_MAX_LIMIT = 200;
+// Redis list indexes are signed 64-bit; keep offset + limit well inside the
+// range JavaScript represents exactly so lRange never sees an invalid index.
+const ACTIVITY_MAX_OFFSET = 1_000_000_000;
+
+function parseActivityInteger(value: unknown, { name, min, max, fallback }: { name: string; min: number; max: number; fallback: number }): number | { error: string } {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string' || !/^\d{1,10}$/.test(value)) return { error: `${name} must be an integer between ${min} and ${max}` };
+  const parsed = Number(value);
+  return parsed < min || parsed > max ? { error: `${name} must be an integer between ${min} and ${max}` } : parsed;
+}
+
+/** Validates /api/activity paging: limit 1–200 (default 50), offset ≥ 0 (default 0). */
+export function parseActivityPaging(query: Record<string, unknown>): { limit: number; offset: number } | { error: string } {
+  const limit = parseActivityInteger(query.limit, { name: 'limit', min: 1, max: ACTIVITY_MAX_LIMIT, fallback: ACTIVITY_DEFAULT_LIMIT });
+  if (typeof limit !== 'number') return limit;
+  const offset = parseActivityInteger(query.offset, { name: 'offset', min: 0, max: ACTIVITY_MAX_OFFSET, fallback: 0 });
+  if (typeof offset !== 'number') return offset;
+  return { limit, offset };
 }
 
 function parseActivityLog(activity: string, index: number): Record<string, unknown> {

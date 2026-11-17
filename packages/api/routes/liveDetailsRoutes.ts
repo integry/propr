@@ -3,11 +3,13 @@ import { redactVisualPreviewValue } from '@propr/core';
 import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
+import type { Queue } from 'bullmq';
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { validateTaskId } from './validation.js';
 import { isLiveTask } from './liveDetailsTaskState.js';
+import { sendTaskNotFound, taskReferenceExists } from './taskExistence.js';
 import {
   isConversationResultEmpty, parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult, type ConversationResult
@@ -26,7 +28,7 @@ import { withStableLiveEventIds, type LiveEventSource } from '../services/liveEv
 
 export { detectStoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
 
-interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; }
+interface LiveDetailsRoutesDeps { redisClient: RedisClientType; db: Knex; taskQueue?: Pick<Queue, 'getJob'>; }
 interface HistoryEntryWithSessionMetadata { state?: string; timestamp?: string; metadata?: { sessionId?: string }; }
 const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'opencode_execution']);
 const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution']);
@@ -53,6 +55,7 @@ export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
         const persistedGoalResult = await parsePersistedGoalOutput(db, taskId, () => isLiveTask(redisClient, db, taskId));
         if (persistedGoalResult) { send(res, withStableResultEventIds(taskId, 'stored', taskId, persistedGoalResult)); return; }
         console.log('[live-details] No sessionId found in either SQLite or Redis');
+        if (!await taskReferenceExists(deps, taskId, jobId)) { sendTaskNotFound(res); return; }
         send(res, { events: [], todos: [], currentTask: null });
         return;
       }

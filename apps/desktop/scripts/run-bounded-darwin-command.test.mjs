@@ -292,16 +292,22 @@ test('nonzero exit escalates against a TERM-ignoring descendant before releasing
         '  "setInterval(() => {}, 1000);",',
         '].join(" "), process.argv[1]], { stdio: "ignore" });',
         'const waitState = new Int32Array(new SharedArrayBuffer(4));',
-        'const deadline = Date.now() + 1000;',
+        // A loaded macOS runner can take over a second to start the descendant
+        // Node process, so allow it ample time to record its pid before exiting.
+        'const deadline = Date.now() + 10000;',
         'while (!existsSync(process.argv[1]) && Date.now() < deadline) Atomics.wait(waitState, 0, 0, 10);',
         'process.exit(existsSync(process.argv[1]) ? 23 : 24);',
       ].join(' '), descendantPidPath],
-      timeoutMs: 2_000,
+      timeoutMs: 20_000,
       terminationGraceMs: 150,
       maxOutputBytes: 1_024,
-    }), error => error instanceof BoundedProcessError
-      && error.reason === 'exit'
-      && error.result.exitCode === 23);
+    }), error => {
+      assert.ok(error instanceof BoundedProcessError);
+      assert.equal(error.reason, 'exit');
+      // 24 means the descendant never recorded its pid within the deadline.
+      assert.equal(error.result.exitCode, 23);
+      return true;
+    });
     const descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
     assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
     await waitForProcessExit(descendantPid);
