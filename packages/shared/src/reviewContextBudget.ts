@@ -112,7 +112,7 @@ const CLAUDE_CODE_DEFAULT_WINDOW = 200000;
 // window before auto-compacting a session.
 const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 
-// Codex CLI 0.168.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
+// Codex CLI 0.169.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
 // models.json: every listed model except GPT-6.1 Terra (500,000) has a default
 // `context_window` of 272,000, even where the provider advertises a larger
 // model maximum (GPT-6 Astra lists `max_context_window` 872,000 and the ProPR

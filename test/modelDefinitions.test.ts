@@ -210,7 +210,7 @@ test('Claude Code CLI default supports every catalog model', () => {
 });
 
 test('Codex CLI defaults agree and support every catalog model', () => {
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.168.0');
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.169.0');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
     for (const { id, minAgentVersion } of CODEX_MODELS) {
         if (!minAgentVersion) continue;
