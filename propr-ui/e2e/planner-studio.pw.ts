@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
 });
 
-test('plans index keeps every row to one plain-text line with quiet status and unboxed repo', async ({ page }) => {
+test('plans index keeps every row to one plain-text line with quiet status and the shared repo chip', async ({ page }) => {
   await page.goto('/plans');
   const title = page.getByText(/^Expose the repository retrieval/);
   await expect(title).toBeVisible();
@@ -18,8 +18,13 @@ test('plans index keeps every row to one plain-text line with quiet status and u
   await expect(page.locator('span.rounded-full', { hasText: 'Merged' }).first()).toHaveClass(/bg-purple-50/);
   await expect(page.locator('span.rounded-full', { hasText: 'Failed' }).first()).toHaveClass(/bg-red-50/);
   await expect(page.getByText('3 issues • 1 running • 2 merged')).toBeVisible();
-  await expect(page.locator('a.font-mono', { hasText: /^propr$/ }).first()).not.toHaveClass(/bg-/);
-  await expect(page.locator('a.font-mono', { hasText: 'integry/' })).toHaveCount(0);
+  // Plans use the shared repository chip (#3607): short name, full owner/name slug in the tooltip.
+  const repoChip = page.getByTestId('repository-chip')
+    .filter({ visible: true, has: page.getByTestId('repository-chip-name').filter({ hasText: /^propr$/ }) })
+    .first();
+  await expect(repoChip).toBeVisible();
+  await expect(repoChip).toHaveAttribute('title', /^integry\/propr$/);
+  await expect(page.getByTestId('repository-chip-name').filter({ hasText: 'integry/' })).toHaveCount(0);
   await capture(page, 'plans-index');
 });
 

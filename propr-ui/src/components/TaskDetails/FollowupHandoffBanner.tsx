@@ -40,7 +40,7 @@ function detail(handoff: FollowupHandoff): string {
 
 const StatusIcon: React.FC<{ handoff: FollowupHandoff }> = ({ handoff }) => {
   const outcome = handoff.phase === 'starting' ? 'working' : runOutcome(handoff.runs);
-  if (outcome === 'completed') return <CheckCircle2 size={16} className="mt-0.5 flex-none text-emerald-600" aria-hidden="true" />;
+  if (outcome === 'completed') return <CheckCircle2 size={16} className="mt-0.5 flex-none text-slate-500" aria-hidden="true" />;
   if (outcome === 'failed' || outcome === 'cancelled') return <XCircle size={16} className="mt-0.5 flex-none text-red-600" aria-hidden="true" />;
   return <Loader2 size={16} className="mt-0.5 flex-none animate-spin text-teal-700 motion-reduce:animate-none" aria-hidden="true" />;
 };

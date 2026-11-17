@@ -163,6 +163,24 @@ test('groups the log destinations in the sidebar and lists MCP requests', async 
   await expect(panel.getByRole('link', { name: 'MCP Log' })).toBeHidden();
 });
 
+test('fits the table to the pane at laptop and desktop widths', async ({ page }) => {
+  await installFixture(page);
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/mcp-logs');
+    const table = page.getByTestId('mcp-log-table');
+    await expect(table).toBeVisible();
+    // Every column, the last included, is inside the pane: no scrolling sideways to reach it.
+    const fit = await table.evaluate(element => {
+      const pane = element.parentElement!;
+      const last = element.querySelector('thead th:last-child')!.getBoundingClientRect();
+      return { overflow: pane.scrollWidth - pane.clientWidth, lastRight: last.right, paneRight: pane.getBoundingClientRect().right };
+    });
+    expect(fit.overflow).toBeLessThanOrEqual(0);
+    expect(fit.lastRight).toBeLessThanOrEqual(fit.paneRight + 0.5);
+  }
+});
+
 test('summarises the widest window and recovers from a rejected filter', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await installFixture(page);

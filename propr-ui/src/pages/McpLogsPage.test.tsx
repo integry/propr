@@ -241,6 +241,36 @@ describe('McpLogsPage', () => {
     ));
   });
 
+  it('fits the pane: a fixed-layout table whose long values truncate with a tooltip', async () => {
+    const longName = 'propr_list_repository_files_with_a_very_long_tool_name';
+    mockGetLogs.mockResolvedValue({ data: [entry({ name: longName })], pagination: pagination(), filters: {} });
+    renderPage();
+
+    const table = await screen.findByRole('table');
+    expect(table).toHaveClass('lg:table-fixed', 'w-full');
+    const name = within(table).getByText(longName);
+    expect(name).toHaveClass('truncate');
+    expect(name).toHaveAttribute('title', longName);
+    // The time is the shared relative age, with the full local date and time in its tooltip.
+    const time = table.querySelector('time');
+    expect(time).toHaveAttribute('dateTime', '2026-09-24T10:00:00.000Z');
+    expect(time?.getAttribute('title')).toMatch(/2026/);
+  });
+
+  it('states the page range and total with thousands separators', async () => {
+    mockGetLogs.mockResolvedValue({
+      data: [entry()],
+      pagination: pagination({ total: 165297, totalPages: 3306, hasNextPage: true }),
+      filters: {},
+    });
+    renderPage();
+    await screen.findByRole('table');
+
+    const total = (165297).toLocaleString();
+    expect(screen.getByTestId('log-pagination-summary')).toHaveTextContent(`Showing 1–50 of ${total} entries`);
+    expect(screen.getByTestId('log-pagination-summary')).toHaveTextContent(/165\D297/);
+  });
+
   it('pages through the log', async () => {
     mockGetLogs.mockResolvedValue({
       data: [entry()],

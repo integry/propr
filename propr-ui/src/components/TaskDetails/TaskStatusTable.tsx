@@ -139,10 +139,10 @@ const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boo
   if (stateUpper === 'PROCESSING') return <Timer className="h-5 w-5 text-blue-500" />;
   if (stateUpper === 'POST_PROCESSING' && isReport) return <FileText className="h-5 w-5 text-purple-500" />;
   if (stateUpper === 'POST_PROCESSING') return <GitPullRequest className="h-5 w-5 text-purple-500" />;
-  if (stateUpper === 'COMPLETED') return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+  if (stateUpper === 'COMPLETED') return <CheckCircle2 className="h-5 w-5 text-slate-500" />;
   if (stateUpper.includes('CLAUDE_EXECUTION')) return <CircleDot className="h-5 w-5 text-blue-500" />;
 
-  return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+  return <CheckCircle2 className="h-5 w-5 text-slate-500" />;
 };
 
 const TimelineDateDivider: React.FC<{

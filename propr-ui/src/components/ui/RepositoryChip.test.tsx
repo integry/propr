@@ -10,8 +10,9 @@ describe('RepositoryChip', () => {
     expect(chip).toHaveClass('inline-flex', 'font-mono', 'text-[12px]', 'bg-slate-100', 'border', 'border-slate-200', 'text-slate-800', 'rounded-sm', 'px-1.5', 'py-0.5');
     // A fixed or full width would stretch the background past the text.
     expect(chip).not.toHaveClass('block', 'w-full');
+    // The short name on the chip, the owner in the tooltip.
     expect(chip).toHaveAttribute('title', 'integry/propr');
-    expect(chip).toHaveTextContent('integry/propr');
+    expect(chip).toHaveTextContent(/^propr$/);
     // A wall of identical GitHub logos is noise in a dense list: the slug stands alone.
     expect(screen.queryByTestId('repository-icon-fallback')).not.toBeInTheDocument();
   });
@@ -33,15 +34,13 @@ describe('RepositoryChip', () => {
     expect(screen.getByTestId('repository-icon-image')).toHaveClass('self-center');
   });
 
-  it('opts a primary identity into an owner-above-name layout that wraps on phones', () => {
+  it('opts a primary identity into a name that wraps on phones', () => {
     render(<RepositoryChip repository="integry/propr-desktop-acceptance" stackOnNarrow />);
 
     const chip = screen.getByTestId('repository-chip');
-    // The whole slug stays the chip's text and tooltip; the slash is only hidden visually on phones.
-    expect(chip).toHaveTextContent('integry/propr-desktop-acceptance');
+    expect(chip).toHaveTextContent(/^propr-desktop-acceptance$/);
     expect(chip).toHaveAttribute('title', 'integry/propr-desktop-acceptance');
     expect(chip).toHaveClass('min-w-0', 'max-sm:text-xs');
-    expect(screen.getByTestId('repository-chip-owner')).toHaveClass('max-sm:block', 'max-sm:[overflow-wrap:anywhere]');
     expect(screen.getByTestId('repository-chip-name')).toHaveClass('max-sm:block', 'max-sm:[overflow-wrap:anywhere]');
     // From `sm` up it is the usual one-line truncated chip.
     expect(screen.getByTestId('repository-chip-name').parentElement).toHaveClass('sm:truncate');
@@ -50,7 +49,6 @@ describe('RepositoryChip', () => {
   it('keeps compact chips on one truncated line unless they opt in', () => {
     render(<RepositoryChip repository="integry/propr" />);
 
-    expect(screen.queryByTestId('repository-chip-owner')).not.toBeInTheDocument();
-    expect(screen.getByText('integry/propr')).toHaveClass('truncate');
+    expect(screen.getByText('propr')).toHaveClass('truncate');
   });
 });

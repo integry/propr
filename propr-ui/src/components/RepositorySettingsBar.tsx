@@ -1,3 +1,4 @@
+import { RelativeTime } from './ui/RelativeTime';
 import { formatWorkflowInput, parseWorkflowInput, toggleWorkflowSelection, workflowMatchesEntry } from './workflowSelectionInput';
 import { useRepoWorkflows, type RepoWorkflowsState } from '../hooks/useRepoWorkflows';
 import { useDemoMode } from '../contexts/DemoModeContext';
@@ -333,9 +334,7 @@ export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
                   </a>
                 )}
                 {indexingStatus?.last_indexed_at ? (
-                  <time dateTime={indexingStatus.last_indexed_at} className="text-slate-500">
-                    {new Date(indexingStatus.last_indexed_at).toLocaleString()}
-                  </time>
+                  <RelativeTime value={indexingStatus.last_indexed_at} className="text-slate-500" />
                 ) : <span className="text-slate-500">Never</span>}
               </dd>
             </div>

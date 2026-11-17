@@ -1,6 +1,7 @@
 import React from 'react';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ListSearchInput } from './ListSearchInput';
+import { PageHeading } from './ui/PageHeading';
 
 export interface ListPageHeaderSearch {
   value: string;
@@ -50,7 +51,7 @@ export const ListPageHeader: React.FC<ListPageHeaderProps> = ({
   return (
     <header data-testid={testId} className="flex-none border-b border-gray-200 bg-slate-50 px-4 py-2 [container-type:inline-size] sm:px-6 sm:py-4">
       <div className={`flex items-center justify-between gap-2 sm:gap-4 ${narrow(NARROW_ROW)}`}>
-        <h1 id={titleId} className="flex-none text-lg font-bold text-gray-800 sm:text-2xl">{title}</h1>
+        <PageHeading id={titleId} className="flex-none">{title}</PageHeading>
         {showControls && (search || filters) && (
           <div className={`flex min-w-0 flex-1 items-center justify-end gap-2 sm:gap-4 ${narrow(NARROW_CONTROLS)}`}>
             {search && !isMobile && (

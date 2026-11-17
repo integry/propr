@@ -24,21 +24,8 @@ export const getStatusBadgeStyle = (status: string): string => {
   }
 };
 
-// Format date to relative time
-export const formatRelativeTime = (dateString: string): string => {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-};
+// The shared relative age (`5m ago`, `Nov 2, 2026`); see `utils/dateFormat.ts`.
+export { formatRelativeTime } from '../utils/dateFormat';
 
 /**
  * A task title for the header's task list: without the `Followup:` prefix, a

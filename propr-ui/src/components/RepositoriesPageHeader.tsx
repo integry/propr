@@ -1,6 +1,7 @@
 import React from 'react';
 import { Panel, PanelGroup } from 'react-resizable-panels';
 import { EyeOff } from 'lucide-react';
+import { PageHeading } from './ui/PageHeading';
 
 interface RepositoriesPageHeaderProps {
   selectedRepoName?: string;
@@ -23,7 +24,7 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
     <div className="flex-shrink-0 bg-white">
       {/* Mobile header - simple single row */}
       <div className="lg:hidden h-12 px-4 flex items-center justify-between border-b border-slate-200">
-        <h2 className="text-slate-900 text-sm font-semibold leading-none">Repositories</h2>
+        <PageHeading>Repositories</PageHeading>
         <div className="flex items-center gap-2">
           {hiddenCount > 0 && (
             <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-500 hover:text-slate-700">
@@ -56,7 +57,7 @@ export const RepositoriesPageHeader: React.FC<RepositoriesPageHeaderProps> = ({
           {/* Left Header - Repository Library */}
           <Panel defaultSize={40} minSize={25}>
             <div className="h-12 px-4 flex items-center justify-between">
-              <h2 className="text-slate-900 text-sm font-semibold leading-none">Repositories</h2>
+              <PageHeading>Repositories</PageHeading>
               <div className="flex items-center gap-3">
                 {hiddenCount > 0 && (
                   <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-500 hover:text-slate-700">

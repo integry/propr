@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import TaskHeader, { TaskStatusBadge } from './TaskHeader';
 import type { TaskInfo } from './types';
@@ -57,13 +57,13 @@ describe('TaskHeader for an automation report', () => {
 });
 
 describe('TaskHeader repository identity', () => {
-  it('leads with the repository, owner above name, when both are known', () => {
+  it('leads with the shared repository chip, short name with the full slug as tooltip, when both are known', () => {
     render(<TaskHeader taskInfo={{ type: 'issue', number: 12, title: 'Fix it', repoOwner: 'integry', repoName: 'propr' } as TaskInfo} currentStatus="completed" />);
     const link = screen.getByRole('link', { name: 'integry/propr' });
     expect(link).toHaveAttribute('href', 'https://github.com/integry/propr');
-    expect(link).toHaveAttribute('title', 'integry/propr');
-    expect(screen.getByTestId('task-repository-owner')).toHaveTextContent('integry/');
-    expect(screen.getByTestId('task-repository-name')).toHaveTextContent(/^propr$/);
+    const chip = within(link).getByTestId('repository-chip');
+    expect(chip).toHaveAttribute('title', 'integry/propr');
+    expect(within(chip).getByTestId('repository-chip-name')).toHaveTextContent(/^propr$/);
   });
 
   it.each([

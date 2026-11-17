@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React, { useId, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { ProviderLogo } from '../ui/ProviderLogo';
@@ -54,13 +55,13 @@ export const McpConnectedAppRow: React.FC<McpConnectedAppRowProps> = ({ app, onR
       </div>
 
       <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-[38px] text-xs text-slate-500">
-        <span title={new Date(app.connectedAt).toLocaleString()}>Connected {formatRelativeTime(app.connectedAt)}</span>
+        <span title={formatDateTime(app.connectedAt)}>Connected {formatRelativeTime(app.connectedAt)}</span>
         {app.lastUsedAt !== undefined && (
           <>
             <span aria-hidden="true">·</span>
             {app.lastUsedAt === null
               ? <span>Never used</span>
-              : <span title={new Date(app.lastUsedAt).toLocaleString()}>Last used {formatRelativeTime(app.lastUsedAt)}</span>}
+              : <span title={formatDateTime(app.lastUsedAt)}>Last used {formatRelativeTime(app.lastUsedAt)}</span>}
           </>
         )}
         <span aria-hidden="true">·</span>

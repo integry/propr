@@ -37,9 +37,12 @@ const TemplateSummary: React.FC<{ template: AutomationTemplate }> = ({ template 
   </>
 );
 
-/** A template is a row of a divided list, not a card: each reads at its own height and none looks taller than the next. */
-const ROW_CLASSES = 'block w-full px-3 py-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500';
-const LIST_CLASSES = 'divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white';
+/**
+ * A template is a row of a divided list, not a card: each reads at its own height and none looks taller
+ * than the next. The list is part of the pane, ruled above and below, with no box or rounded frame.
+ */
+const ROW_CLASSES = 'block w-full px-4 py-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500';
+const LIST_CLASSES = 'divide-y divide-slate-100 border-y border-slate-200 bg-white';
 
 interface AgentTemplatePickerProps {
   /** The template the form was last filled from. */
@@ -53,12 +56,13 @@ interface AgentTemplatePickerProps {
 export const AgentTemplatePicker: React.FC<AgentTemplatePickerProps> = ({ selectedId, onSelect, disabled, templates = AUTOMATION_TEMPLATES }) => {
   if (templates.length === 0) return null;
   return (
-    <section aria-labelledby="agent-template-picker-heading" className="border-b border-slate-100 px-4 py-4" data-testid="agent-template-picker">
-      <h2 id="agent-template-picker-heading" className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
+    <section aria-labelledby="agent-template-picker-heading" className="border-b border-slate-200 pt-4" data-testid="agent-template-picker">
+      <h2 id="agent-template-picker-heading" className="flex items-center gap-1.5 px-4 text-sm font-medium text-slate-900">
         <LayoutTemplate className="h-4 w-4 text-slate-400" aria-hidden="true" />Start from a template
       </h2>
-      <p className="mt-0.5 text-xs text-slate-500">Fills in the form below. Nothing is created until you choose Create automation.</p>
-      <ul className={`mt-3 ${LIST_CLASSES}`}>
+      <p className="mt-0.5 px-4 text-xs text-slate-500">Fills in the form below. Nothing is created until you choose Create automation.</p>
+      {/* The rows run edge to edge; the section's own bottom rule closes the list. */}
+      <ul className={`mt-3 ${LIST_CLASSES} border-b-0`}>
         {templates.map(template => {
           const selected = template.id === selectedId;
           return (

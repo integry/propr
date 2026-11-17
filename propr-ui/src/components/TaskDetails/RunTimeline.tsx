@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronRight, GitCommit } from 'lucide-react';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
@@ -151,7 +152,7 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
                   {/* Fixed and right-aligned, so the results before it line up down the list. */}
                   <time
                     dateTime={run.task.createdAt}
-                    title={new Date(run.task.createdAt).toLocaleString()}
+                    title={formatDateTime(run.task.createdAt)}
                     className={`${RUN_TIME_COLUMN} flex-none whitespace-nowrap text-right tabular-nums text-slate-400 max-sm:w-auto max-sm:text-left`}
                   >
                     {formatRelativeTime(run.task.createdAt)}

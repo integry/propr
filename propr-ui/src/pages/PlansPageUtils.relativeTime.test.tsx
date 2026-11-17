@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DraftListItem } from '../api/plannerTypes';
 import { PlansList } from './PlansPageComponents';
 import { formatRelativeTime, parseApiTimestamp } from './PlansPageUtils';
+import { formatDate } from '../utils/dateFormat';
 
 // Observed in issue #3272: screenshot at 21:44:43Z, drafts written by SQLite at 21:35:43 and 21:40:37 UTC.
 const NOW = Date.parse('2026-10-19T21:44:43.516Z');
@@ -32,8 +33,8 @@ describe.each(ZONES)('Plans timestamps in $zone', ({ zone, offsetMinutes }) => {
     expect(parseApiTimestamp('2026-10-19 21:35:43')?.toISOString()).toBe('2026-10-19T21:35:43.000Z');
     expect(parseApiTimestamp('2026-10-19T21:35:43')?.toISOString()).toBe('2026-10-19T21:35:43.000Z');
     expect(parseApiTimestamp('2026-10-19 21:35:43.250')?.toISOString()).toBe('2026-10-19T21:35:43.250Z');
-    expect(formatRelativeTime('2026-10-19 21:35:43', NOW)).toBe('9 minutes ago');
-    expect(formatRelativeTime('2026-10-19 21:40:37', NOW)).toBe('4 minutes ago');
+    expect(formatRelativeTime('2026-10-19 21:35:43', NOW)).toBe('9m ago');
+    expect(formatRelativeTime('2026-10-19 21:40:37', NOW)).toBe('4m ago');
   });
 
   it('keeps explicit UTC and numeric offsets', () => {
@@ -41,11 +42,11 @@ describe.each(ZONES)('Plans timestamps in $zone', ({ zone, offsetMinutes }) => {
     expect(parseApiTimestamp('2026-10-19T21:35:43.000Z')?.toISOString()).toBe('2026-10-19T21:35:43.000Z');
     expect(parseApiTimestamp('2026-10-19T22:35:43+01:00')?.toISOString()).toBe('2026-10-19T21:35:43.000Z');
     expect(parseApiTimestamp('2026-10-19T17:35:43-04:00')?.toISOString()).toBe('2026-10-19T21:35:43.000Z');
-    expect(formatRelativeTime('2026-10-19T22:40:37+01:00', NOW)).toBe('4 minutes ago');
-    expect(formatRelativeTime('2026-10-19T19:44:43.516Z', NOW)).toBe('2 hours ago');
+    expect(formatRelativeTime('2026-10-19T22:40:37+01:00', NOW)).toBe('4m ago');
+    expect(formatRelativeTime('2026-10-19T19:44:43.516Z', NOW)).toBe('2h ago');
   });
 
-  it('preserves the minute, hour and day boundaries and plurals', () => {
+  it('preserves the minute, hour and day boundaries of the shared format', () => {
     const ago = (ms: number) => new Date(NOW - ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     const at = (ms: number) => formatRelativeTime(ago(ms), Math.floor(NOW / 1000) * 1000);
     const second = 1000;
@@ -55,20 +56,20 @@ describe.each(ZONES)('Plans timestamps in $zone', ({ zone, offsetMinutes }) => {
 
     expect(at(0)).toBe('just now');
     expect(at(59 * second)).toBe('just now');
-    expect(at(minute)).toBe('1 minute ago');
-    expect(at(2 * minute)).toBe('2 minutes ago');
-    expect(at(hour - second)).toBe('59 minutes ago');
-    expect(at(hour)).toBe('1 hour ago');
-    expect(at(2 * hour)).toBe('2 hours ago');
-    expect(at(day - second)).toBe('23 hours ago');
-    expect(at(day)).toBe('1 day ago');
-    expect(at(2 * day)).toBe('2 days ago');
-    expect(at(30 * day - second)).toBe('29 days ago');
+    expect(at(minute)).toBe('1m ago');
+    expect(at(2 * minute)).toBe('2m ago');
+    expect(at(hour - second)).toBe('59m ago');
+    expect(at(hour)).toBe('1h ago');
+    expect(at(2 * hour)).toBe('2h ago');
+    expect(at(day - second)).toBe('23h ago');
+    expect(at(day)).toBe('1d ago');
+    expect(at(2 * day)).toBe('2d ago');
+    expect(at(7 * day - second)).toBe('6d ago');
   });
 
-  it('falls back to a locale date for the UTC instant after 30 days', () => {
+  it('falls back to the shared date for the UTC instant after 7 days', () => {
     // 23:30 UTC is already the next calendar day in London but not in New York.
-    const expected = new Date('2026-08-01T23:30:00Z').toLocaleDateString();
+    const expected = formatDate(new Date('2026-08-01T23:30:00Z'));
     expect(formatRelativeTime('2026-08-01 23:30:00', NOW)).toBe(expected);
   });
 
@@ -88,8 +89,8 @@ describe.each(ZONES)('Plans timestamps in $zone', ({ zone, offsetMinutes }) => {
         <PlansList drafts={[draft]} abortingId={null} onDelete={vi.fn()} onAbort={vi.fn()} />
       </MemoryRouter>,
     );
-    expect(screen.getByText('4 minutes ago')).toBeInTheDocument();
-    expect(screen.queryByText(/hour/)).not.toBeInTheDocument();
+    expect(screen.getByText('4m ago')).toBeInTheDocument();
+    expect(screen.queryByText(/\dh ago/)).not.toBeInTheDocument();
   });
 });
 

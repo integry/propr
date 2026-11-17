@@ -1,3 +1,4 @@
+import { formatRelativeTime as formatSharedRelativeTime } from '../utils/dateFormat';
 import { Fragment } from 'react';
 import { Loader2 } from 'lucide-react';
 import { IssueSummary } from '../api/proprApi';
@@ -29,22 +30,12 @@ export const parseApiTimestamp = (value: string | null | undefined): Date | null
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-/** Missing or unparseable timestamps render as an empty label rather than "NaN days ago". */
-export const formatRelativeTime = (dateString: string | null | undefined, now: number = Date.now()): string => {
-  const date = parseApiTimestamp(dateString);
-  if (!date) return '';
-  const diffMs = now - date.getTime();
-  const diffSeconds = Math.floor(diffMs / 1000);
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  const diffHours = Math.floor(diffMinutes / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffSeconds < 60) return 'just now';
-  if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? '' : 's'} ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
-  if (diffDays < 30) return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
-  return date.toLocaleDateString();
-};
+/**
+ * The shared relative age (`5m ago`, `Nov 2, 2026`) for an API timestamp, reading zone-less date-times as UTC.
+ * Missing or unparseable timestamps render as an empty label rather than "NaN days ago".
+ */
+export const formatRelativeTime = (dateString: string | null | undefined, now: number = Date.now()): string =>
+  formatSharedRelativeTime(parseApiTimestamp(dateString), now);
 
 // "Success is Quiet": the same pill architecture as the Task list. Review-stage
 // states share one neutral slate pill; color marks active work, merges and failures.

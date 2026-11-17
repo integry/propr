@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../utils/dateFormat';
 import TextareaAutosize from 'react-textarea-autosize';
 import { CreationDialog } from '../components/CreationDialog';
 import { PreviewThumbnails } from '../components/PreviewMedia';
@@ -44,6 +45,7 @@ import { mergeGoalTimeline } from '../components/Goals/goalTimeline';
 import { GoalAttentionPanel, GoalNeedsYouBadge } from '../components/Goals/GoalAttentionPanel';
 import { resizeImage } from '../components/TaskPlanner/imageUtils';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { PageHeading } from '../components/ui/PageHeading';
 
 const buttonClass = 'inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50';
 const checkpointIntervalOptions = [5, 10, 15, 30, 60, 120];
@@ -254,7 +256,7 @@ function CheckpointDeclaration({ checkpoint, active }: { checkpoint: NonNullable
   const latest = checkpoint.latest;
   if (!latest || latest.kind !== 'agent') return null;
   const badgeClass = latest.state === 'completed'
-    ? 'bg-green-100 text-green-800'
+    ? 'bg-slate-100 text-slate-600'
     : latest.state === 'rejected' || latest.state === 'failed'
       ? 'bg-red-100 text-red-800'
       : 'bg-amber-100 text-amber-800';
@@ -942,7 +944,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
           <Link to="/goals" className="text-sm font-medium text-slate-600 transition hover:text-primary-700">← All goals</Link>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">{goal.title}</h1>
+          <PageHeading className="[overflow-wrap:anywhere]">{goal.title}</PageHeading>
           <GoalState goal={goal} quietCompleted />
           {correctionsNote && <span className="text-xs text-slate-500">{correctionsNote}</span>}
         </div>
@@ -1031,7 +1033,7 @@ function GoalDetails({ goalId }: { goalId: string }) {
           <div className="flex items-start gap-3">
             <CircleDot className={`mt-0.5 h-4 w-4 flex-none ${mutable ? 'text-blue-600' : 'text-slate-400'}`} />
             <div className="min-w-0">
-              <p className={`font-medium ${mutable ? '' : 'text-slate-800'}`}>{goal.checkpoint.count} checkpoint commit{goal.checkpoint.count === 1 ? '' : 's'}{goal.checkpoint.lastAt ? ` · last ${new Date(goal.checkpoint.lastAt).toLocaleString()}` : ''}</p>
+              <p className={`font-medium ${mutable ? '' : 'text-slate-800'}`}>{goal.checkpoint.count} checkpoint commit{goal.checkpoint.count === 1 ? '' : 's'}{goal.checkpoint.lastAt ? ` · last ${formatRelativeTime(goal.checkpoint.lastAt)}` : ''}</p>
               <p className={`mt-1 ${mutable ? 'text-blue-800' : 'text-slate-500'}`}>Target cadence: about every {goal.checkpoint.intervalMinutes || 15} minutes. <span className="text-xs">The agent declares when coherent work is ready.</span></p>
               {goal.checkpoint.error && !goal.checkpoint.latest?.error && <p className="mt-2 text-red-700">Checkpoint error: {goal.checkpoint.error}</p>}
               <CheckpointDeclaration checkpoint={goal.checkpoint} active={mutable} />

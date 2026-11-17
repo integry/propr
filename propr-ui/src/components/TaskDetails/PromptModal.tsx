@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React from 'react';
 import { PromptData } from './types';
 import { formatModelName } from './utils';
@@ -67,7 +68,7 @@ const MetadataSection: React.FC<MetadataSectionProps> = ({ prompt }) => (
         {prompt.timestamp && (
           <tr className="block border-b border-gray-200 sm:table-row">
             <td className="block pt-2 sm:table-cell sm:py-2 sm:pr-4 text-gray-600 font-medium align-top sm:w-1/3">Timestamp:</td>
-            <td className="block pb-2 sm:table-cell sm:py-2 text-gray-700 [overflow-wrap:anywhere]">{new Date(prompt.timestamp).toLocaleString()}</td>
+            <td className="block pb-2 sm:table-cell sm:py-2 text-gray-700 [overflow-wrap:anywhere]">{formatDateTime(prompt.timestamp)}</td>
           </tr>
         )}
         {prompt.isRetry !== undefined && (

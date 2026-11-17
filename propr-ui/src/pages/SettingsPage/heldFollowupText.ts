@@ -1,5 +1,5 @@
 import type { FollowupHandoffStatus } from '../../api/followupHandoffsApi';
-import { formatRelativeTime } from '../../components/TaskList/utils.tsx';
+import { formatDateTime, formatRelativeTime } from '../../utils/dateFormat';
 
 /**
  * Plain words for held follow-ups. The API and CLI report raw phases, reasons
@@ -99,5 +99,5 @@ export const nextStep = (handoff: FollowupHandoffStatus): string | null => {
 export const updatedLabel = (updatedAt: number): { relative: string; absolute: string; iso: string } => {
   const date = new Date(updatedAt);
   const iso = date.toISOString();
-  return { relative: formatRelativeTime(iso), absolute: date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }), iso };
+  return { relative: formatRelativeTime(iso), absolute: formatDateTime(date), iso };
 };

@@ -678,7 +678,8 @@ describe('GoalsPage', () => {
     expect(screen.getByText('Implement API')).toBeInTheDocument();
     expect(screen.getByText(goal.title)).toHaveClass('truncate');
     expect(screen.getByText(goal.objective)).toHaveClass('truncate');
-    expect(screen.getByText('acme/web')).toHaveClass('font-mono');
+    expect(screen.getByTitle('acme/web')).toHaveTextContent(/^web$/);
+    expect(screen.getByText('web')).toHaveClass('font-mono');
     expect(screen.getByText('Codex')).toHaveClass('sr-only');
     expect(screen.getByText('GPT-5.6 Sol')).toBeInTheDocument();
   });
@@ -727,7 +728,9 @@ describe('GoalsPage', () => {
     const chip = await screen.findByTestId('repository-chip');
     expect(chip).toHaveClass('inline-flex', 'font-mono', 'bg-slate-100', 'border', 'border-slate-200', 'rounded-sm');
     expect(chip).not.toHaveClass('block', 'w-full');
-    expect(chip).toHaveTextContent('acme/web');
+    // The short name, with the owner kept in the tooltip.
+    expect(chip).toHaveTextContent(/^web$/);
+    expect(chip).toHaveAttribute('title', 'acme/web');
     // Repositories without their own icon leave the slug alone instead of repeating the GitHub logo.
     expect(within(chip).queryByTestId('repository-icon-fallback')).not.toBeInTheDocument();
   });

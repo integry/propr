@@ -9,11 +9,11 @@ import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 import { useListSearchParams } from '../TaskList/hooks';
 import { ListSkeleton } from '../ui/Skeleton';
 import { CodeChip } from '../ui/CodeChip';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import { CreatorMarker } from '../CreatorMarker';
 import {
   AUTONOMY_BADGE_CLASSES,
   AUTONOMY_LABELS,
-  repoShortName,
   runnerLabel,
   scheduleSummary,
   scheduleTooltip,
@@ -160,7 +160,7 @@ const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-slate-500">
           {definition.repositories.slice(0, MAX_REPO_CHIPS).map(repository => (
-            <CodeChip key={repository} title={repository}>{repoShortName(repository)}</CodeChip>
+            <RepositoryChip key={repository} repository={repository} />
           ))}
           {extraRepos > 0 && <span>+{extraRepos}</span>}
           <CodeChip>{runnerLabel(definition, agents)}</CodeChip>
