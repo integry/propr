@@ -18,7 +18,8 @@ import {
  *
  * - **The manifest.** Additive changes keep `manifestVersion`. A breaking
  *   change (a field removed, retyped, made required, restricted to an enum,
- *   or an enum value dropped) needs a new `manifestVersion`, and ProPR keeps reading the old
+ *   an enum value dropped, or a length, entry-count or value limit added or
+ *   tightened) needs a new `manifestVersion`, and ProPR keeps reading the old
  *   version for at least one minor release (`PLUGIN_SUPPORTED_MANIFEST_VERSIONS`).
  * - **Event payloads.** Additive only within a domain: a payload key is never
  *   removed or retyped, an event type is never removed.
@@ -123,8 +124,16 @@ assertExact<Exact<FieldKey<PlanIssueStatusChangedEventPayload>, PayloadKeys<'pla
 assertExact<Exact<FieldKey<TaskEventPayload>, PayloadKeys<'task.queued'>>>();
 assertExact<Exact<FieldKey<TaskTerminalEventPayload>, PayloadKeys<'task.completed'>>>();
 
-/** One manifest field: its JSON type, whether it must be present, and its allowed values when it is an enum. */
-export interface PluginManifestContractField { type: string; required: boolean; enum?: (string | number | boolean)[] }
+/** One manifest field: its JSON type, whether it must be present, its allowed values when it is an enum, and its limits. */
+export interface PluginManifestContractField {
+  type: string; required: boolean; enum?: (string | number | boolean)[];
+  /**
+   * Length, entry-count and value limits by JSON Schema keyword (`minLength`, `maxLength`, `minItems`, `maxItems`,
+   * `minimum` or `exclusiveMinimum`, `maximum` or `exclusiveMaximum`). `items.` prefixes a limit on a list's entries,
+   * as in `items.maxLength`. Where variants of a union disagree, the loosest limit any of them allows.
+   */
+  bounds?: Record<string, number>;
+}
 export interface PluginContract {
   manifestVersion: number;
   /** Manifest fields by path: `.` between properties, `[]` for list items, `<key>` for map values, `{type=token}` for one variant of a union. */
@@ -229,12 +238,103 @@ function enumOf(node: JsonSchema): (string | number | boolean)[] | undefined {
   return values ? (values as (string | number | boolean)[]) : undefined;
 }
 
-/** The current plugin interface. */
-export function buildPluginContract(): PluginContract {
+type LimitSide = 'lower' | 'upper';
+interface LimitKind { types: string[]; keywords: Record<LimitSide, string>; exclusive?: Record<LimitSide, string> }
+/**
+ * The limits a manifest field can have, by kind and the JSON types they apply to. Each kind has a lower and an upper
+ * side; `exclusive` names the keyword that excludes the limit itself.
+ */
+const LIMIT_KINDS: Record<string, LimitKind> = {
+  length: { types: ['string'], keywords: { lower: 'minLength', upper: 'maxLength' } },
+  'entry count': { types: ['array'], keywords: { lower: 'minItems', upper: 'maxItems' } },
+  value: { types: ['number', 'integer'], keywords: { lower: 'minimum', upper: 'maximum' }, exclusive: { lower: 'exclusiveMinimum', upper: 'exclusiveMaximum' } },
+};
+const SIDES: LimitSide[] = ['lower', 'upper'];
+interface Limit { value: number; exclusive: boolean }
+/** A field's limits by `<items. prefix><kind>`: a kind is present when the field takes values of it, a side when it is limited. */
+type Limits = Map<string, Partial<Record<LimitSide, Limit>>>;
+/** What each recorded keyword limits. */
+const LIMIT_KEYWORDS = new Map<string, { kind: string; side: LimitSide; exclusive: boolean }>();
+for (const [kind, { keywords, exclusive }] of Object.entries(LIMIT_KINDS)) {
+  for (const side of SIDES) {
+    LIMIT_KEYWORDS.set(keywords[side], { kind, side, exclusive: false });
+    if (exclusive) LIMIT_KEYWORDS.set(exclusive[side], { kind, side, exclusive: true });
+  }
+}
+
+/** Whether limit `a` accepts fewer values than `b` (no limit accepts every value). */
+function stricter(side: LimitSide, a: Limit | undefined, b: Limit | undefined): boolean {
+  if (!a) return false;
+  if (!b) return true;
+  if (a.value !== b.value) return side === 'lower' ? a.value > b.value : a.value < b.value;
+  return a.exclusive && !b.exclusive;
+}
+
+/** Add a recorded limit; JSON Schema applies both keywords of a side (`minimum` and `exclusiveMinimum`), so the stricter one counts. */
+function addLimit(limits: Limits, key: string, side: LimitSide, limit: Limit) {
+  const sides = limits.get(key) ?? {};
+  if (stricter(side, limit, sides[side])) sides[side] = limit;
+  limits.set(key, sides);
+}
+
+/** The limits a JSON Schema node puts on a value; `prefix` is `items.` once per list the node is the entries of. */
+function schemaLimits(node: JsonSchema, prefix = ''): Limits {
+  const variants = node.oneOf ?? node.anyOf;
+  if (variants) {
+    // A union accepts a value any variant accepts: a side stays limited only while every variant taking that kind limits it, to the loosest of their limits.
+    const merged: Limits = new Map();
+    for (const limits of variants.map(variant => schemaLimits(variant, prefix))) {
+      for (const [key, sides] of limits) {
+        const known = merged.get(key);
+        if (!known) { merged.set(key, { ...sides }); continue; }
+        for (const side of SIDES) if (known[side] && (!sides[side] || stricter(side, known[side], sides[side]))) known[side] = sides[side];
+      }
+    }
+    return merged;
+  }
+  const types = 'const' in node ? [] : Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
+  const limits: Limits = new Map();
+  for (const [kind, { types: takes }] of Object.entries(LIMIT_KINDS)) if (takes.some(type => types.includes(type))) limits.set(`${prefix}${kind}`, {});
+  for (const [keyword, { kind, side, exclusive }] of LIMIT_KEYWORDS) {
+    const value = node[keyword];
+    if (typeof value === 'number' && limits.has(`${prefix}${kind}`)) addLimit(limits, `${prefix}${kind}`, side, { value, exclusive });
+  }
+  if (types.includes('array') && node.items) for (const [key, sides] of schemaLimits(node.items, `${prefix}items.`)) limits.set(key, sides);
+  return limits;
+}
+
+/** The limits as the contract records them: one keyword for each limited side. */
+function boundsOf(node: JsonSchema): Record<string, number> | undefined {
+  const bounds: Record<string, number> = {};
+  for (const [key, sides] of schemaLimits(node)) {
+    const at = key.lastIndexOf('.') + 1;
+    const { keywords, exclusive } = LIMIT_KINDS[key.slice(at)];
+    for (const side of SIDES) {
+      const limit = sides[side];
+      if (limit) bounds[`${key.slice(0, at)}${limit.exclusive ? exclusive![side] : keywords[side]}`] = limit.value;
+    }
+  }
+  return Object.keys(bounds).length ? bounds : undefined;
+}
+
+/** A field's recorded `bounds`, read back as limits. */
+function recordedLimits(bounds: Record<string, number> = {}): Limits {
+  const limits: Limits = new Map();
+  for (const [key, value] of Object.entries(bounds)) {
+    const at = key.lastIndexOf('.') + 1;
+    const limit = LIMIT_KEYWORDS.get(key.slice(at));
+    if (limit) addLimit(limits, `${key.slice(0, at)}${limit.kind}`, limit.side, { value, exclusive: limit.exclusive });
+  }
+  return limits;
+}
+
+/** The current plugin interface; `manifestSchema` is the manifest's JSON Schema (`pluginManifestJsonSchema()`). */
+export function buildPluginContract(manifestSchema: JsonSchema = pluginManifestJsonSchema()): PluginContract {
   const manifest: Record<string, PluginManifestContractField> = {};
-  for (const { path, node, required } of walkPluginManifestSchema()) {
+  for (const { path, node, required } of walkPluginManifestSchema(manifestSchema)) {
     const values = enumOf(node);
-    manifest[path] = { type: jsonSchemaTypeName(node), required, ...(values ? { enum: [...values] } : {}) };
+    const bounds = boundsOf(node);
+    manifest[path] = { type: jsonSchemaTypeName(node), required, ...(values ? { enum: [...values] } : {}), ...(bounds ? { bounds } : {}) };
   }
   const payloads = Object.fromEntries(Object.entries(PLUGIN_EVENT_PAYLOAD_FIELDS).map(([name, fields]) => [name, { ...fields }]));
   return {
@@ -289,6 +389,26 @@ function compareList(what: string, previous: readonly string[], current: readonl
 /** The object a manifest field belongs to: `connections[]{type=token}.secretUrl.hosts` → `connections[]{type=token}.secretUrl`; `''` for the top level. */
 const objectPath = (path: string) => path.replace(/(?:^|\.)(?:[^.]+)$/, '');
 
+const describeLimit = (side: LimitSide, { value, exclusive }: Limit) => `${side === 'lower' ? (exclusive ? 'more than' : 'at least') : (exclusive ? 'less than' : 'at most')} ${value}`;
+
+/** A new or stricter limit rejects manifests that met the old one; a looser or lifted limit accepts every one of them. */
+function compareLimits(path: string, previous: PluginManifestContractField, current: PluginManifestContractField, bump: string, result: PluginContractComparison) {
+  const before = recordedLimits(previous.bounds);
+  const now = recordedLimits(current.bounds);
+  for (const key of new Set([...before.keys(), ...now.keys()])) {
+    const at = key.lastIndexOf('.') + 1;
+    // `items.maxLength` limits each entry of the list: `outboundHosts[] length`.
+    const what = `${path}${'[]'.repeat(key.slice(0, at).match(/items\./g)?.length ?? 0)} ${key.slice(at)}`;
+    for (const side of SIDES) {
+      const was = before.get(key)?.[side];
+      const is = now.get(key)?.[side];
+      const instead = was ? ` instead of ${describeLimit(side, was)}` : '';
+      if (is && stricter(side, is, was)) result.breaking.push(`manifest: field ${what} is now limited to ${describeLimit(side, is)}${instead} ${bump}`);
+      else if (was && stricter(side, was, is)) result.additions.push(is ? `manifest: field ${what} is now limited to ${describeLimit(side, is)}${instead}` : `manifest: field ${what} is no longer limited to ${describeLimit(side, was)}`);
+    }
+  }
+}
+
 function compareManifest(previous: PluginContract, current: PluginContract, supported: readonly number[], result: PluginContractComparison) {
   if (current.manifestVersion !== previous.manifestVersion) {
     // A new manifest version may change anything, but the previous one must still be read.
@@ -306,6 +426,7 @@ function compareManifest(previous: PluginContract, current: PluginContract, supp
     if (now.enum && !field.enum) result.breaking.push(`manifest: field ${path} now only accepts ${now.enum.map(value => JSON.stringify(value)).join(', ')} ${bump}`);
     for (const value of field.enum ?? []) if (now.enum && !now.enum.includes(value)) result.breaking.push(`manifest: field ${path} no longer accepts ${JSON.stringify(value)} ${bump}`);
     for (const value of now.enum ?? []) if (field.enum && !field.enum.includes(value)) result.additions.push(`manifest: field ${path} accepts ${JSON.stringify(value)}`);
+    compareLimits(path, field, now, bump, result);
   }
   for (const [path, field] of Object.entries(current.manifest)) {
     if (previous.manifest[path]) continue;

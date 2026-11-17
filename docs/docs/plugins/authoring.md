@@ -453,7 +453,8 @@ breaking change is caught.
    variant, a new enum value, a looser limit) keep `manifestVersion`. A
    breaking change (removing or retyping a field, making a field required,
    adding a required field to an existing object, dropping an enum value,
-   restricting a free-form field or list to an enum) adds a new `manifestVersion`, and ProPR keeps reading the old version for
+   restricting a free-form field or list to an enum, adding or tightening a
+   length, entry-count or value limit) adds a new `manifestVersion`, and ProPR keeps reading the old version for
    at least one minor release: the old version stays in
    `PLUGIN_SUPPORTED_MANIFEST_VERSIONS` and the official manifests are
    migrated before it is dropped. The contract test fails on a breaking change

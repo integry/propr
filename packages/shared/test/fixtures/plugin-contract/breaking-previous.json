@@ -2,11 +2,14 @@
   "manifestVersion": 1,
   "manifest": {
     "manifestVersion": { "type": "1", "required": true },
-    "id": { "type": "string", "required": true },
+    "id": { "type": "string", "required": true, "bounds": { "maxLength": 48 } },
     "name": { "type": "number", "required": true },
     "homepage": { "type": "string", "required": false },
     "legacyIcon": { "type": "string", "required": false },
-    "category": { "type": "string", "required": true, "enum": ["messaging", "chat"] }
+    "category": { "type": "string", "required": true, "enum": ["messaging", "chat"] },
+    "icon": { "type": "string", "required": true, "bounds": { "maxLength": 512 } },
+    "connections": { "type": "object[]", "required": false, "bounds": { "maxItems": 32 } },
+    "outboundHosts": { "type": "string[]", "required": false, "bounds": { "maxItems": 32, "items.maxLength": 300 } }
   },
   "events": {
     "envelope": { "seq": "number", "legacyCursor": "string" },

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
-  PLUGIN_EVENT_PAYLOAD_FIELDS, PLUGIN_SUPPORTED_MANIFEST_VERSIONS, buildPluginContract, comparePluginContract, pluginEventNames, type PluginContract,
+  PLUGIN_EVENT_PAYLOAD_FIELDS, PLUGIN_SUPPORTED_MANIFEST_VERSIONS, buildPluginContract, comparePluginContract, pluginEventNames, pluginManifestJsonSchema,
+  walkPluginManifestSchema, type PluginContract,
 } from '../src/pluginContract.js';
 import { PLUGIN_MANIFEST_VERSION } from '../src/plugins.js';
 import {
@@ -186,6 +187,9 @@ test('the fixture of an earlier interface shows every kind of breaking change', 
     'manifest: field legacyIcon was removed (a breaking manifest change needs a new manifestVersion)',
     'manifest: field category no longer accepts "chat" (a breaking manifest change needs a new manifestVersion)',
     'manifest: new field description is required (a breaking manifest change needs a new manifestVersion)',
+    'manifest: field icon length is now limited to at most 256 instead of at most 512 (a breaking manifest change needs a new manifestVersion)',
+    'manifest: field connections entry count is now limited to at most 16 instead of at most 32 (a breaking manifest change needs a new manifestVersion)',
+    'manifest: field outboundHosts[] length is now limited to at most 253 instead of at most 300 (a breaking manifest change needs a new manifestVersion)',
     'event envelope: field legacyCursor was removed',
     'events: pull_request.opened payload: field draft changed type from string to boolean',
     'events: pull_request.opened payload: field legacyTitle was removed',
@@ -264,6 +268,86 @@ test('restricting an unrestricted manifest field or list item to an enum is a br
   // The reverse, an enum lifted, accepts every value it accepted before.
   const lifted = comparePluginContract(restricted, snapshot);
   assert.deepEqual(lifted.breaking, []);
+});
+
+type ManifestSchemaNode = ReturnType<typeof pluginManifestJsonSchema>;
+/** The contract after editing the manifest's JSON Schema (as a changed zod limit would), by field path. */
+const contractAfterSchemaEdit = (edits: Record<string, (node: ManifestSchemaNode) => void>) => {
+  const schema = pluginManifestJsonSchema();
+  const nodes = new Map(walkPluginManifestSchema(schema).map(({ path, node }) => [path, node]));
+  for (const [path, edit] of Object.entries(edits)) edit(nodes.get(path)!);
+  return { ...CURRENT, manifest: buildPluginContract(schema).manifest };
+};
+const NUMERIC = 'settings.properties.<key>{type=string}.maxLength';
+const NUMBER_DEFAULT = 'settings.properties.<key>{type=number}.default';
+const FILTER = 'contributes.subscriptions[].filter.<key>';
+/** The variants of a subscription filter value: a scalar (itself a union, the string first) or a list of scalars. */
+const filterVariants = (node: ManifestSchemaNode) => {
+  const [scalar, list] = node.anyOf!;
+  return { string: scalar.anyOf![0], list, listString: list.items!.anyOf![0] };
+};
+
+test('the manifest contract records the length, entry-count and value limits of the schema', () => {
+  const snapshot = readJson(SNAPSHOT);
+  assert.deepEqual(snapshot.manifest.name.bounds, { minLength: 1, maxLength: 80 });
+  assert.deepEqual(snapshot.manifest.permissions.bounds, { maxItems: 11 });
+  // `items.` is a limit on each entry of a list.
+  assert.deepEqual(snapshot.manifest.outboundHosts.bounds, { maxItems: 32, 'items.maxLength': 253 });
+  assert.deepEqual(snapshot.manifest[NUMERIC].bounds, { exclusiveMinimum: 0, maximum: 500 });
+  // The variants of a union contribute the limits of their own kind.
+  assert.deepEqual(snapshot.manifest[FILTER].bounds, { maxLength: 500, minItems: 1, maxItems: 32, 'items.maxLength': 500 });
+  assert.equal(snapshot.manifest[NUMBER_DEFAULT].bounds, undefined);
+  assert.deepEqual(contractAfterSchemaEdit({}).manifest, snapshot.manifest);
+});
+
+test('adding or tightening a manifest limit within a manifest version is a breaking change', () => {
+  const bump = '(a breaking manifest change needs a new manifestVersion)';
+  const tightened = contractAfterSchemaEdit({
+    name: node => { node.maxLength = 40; node.minLength = 2; },
+    permissions: node => { node.maxItems = 5; },
+    outboundHosts: node => { node.items!.maxLength = 100; },
+    [NUMERIC]: node => { node.exclusiveMaximum = 500; },
+    [NUMBER_DEFAULT]: node => { node.minimum = 0; },
+    [FILTER]: node => { filterVariants(node).string.maxLength = 100; filterVariants(node).list.maxItems = 8; },
+  });
+  assert.deepEqual(comparePluginContract(readJson(SNAPSHOT), tightened).breaking, [
+    `manifest: field name length is now limited to at least 2 instead of at least 1 ${bump}`,
+    `manifest: field name length is now limited to at most 40 instead of at most 80 ${bump}`,
+    `manifest: field permissions entry count is now limited to at most 5 instead of at most 11 ${bump}`,
+    // Both keywords of a side apply: an exclusive limit at the old inclusive one no longer accepts that value.
+    `manifest: field ${NUMERIC} value is now limited to less than 500 instead of at most 500 ${bump}`,
+    `manifest: field ${NUMBER_DEFAULT} value is now limited to at least 0 ${bump}`,
+    `manifest: field outboundHosts[] length is now limited to at most 100 instead of at most 253 ${bump}`,
+    `manifest: field ${FILTER} length is now limited to at most 100 instead of at most 500 ${bump}`,
+    `manifest: field ${FILTER} entry count is now limited to at most 8 instead of at most 32 ${bump}`,
+  ]);
+  // The same edits as a new manifest version, with the old one still read, are allowed.
+  const bumped = { ...tightened, manifestVersion: PLUGIN_MANIFEST_VERSION + 1 };
+  assert.ok(!comparePluginContract(readJson(SNAPSHOT), bumped, { supportedManifestVersions: [PLUGIN_MANIFEST_VERSION, PLUGIN_MANIFEST_VERSION + 1] }).breaking.some(message => message.startsWith('manifest:')));
+});
+
+test('loosening or lifting a manifest limit is compatible and recorded as an addition', () => {
+  const loosened = contractAfterSchemaEdit({
+    name: node => { node.maxLength = 120; delete node.minLength; },
+    permissions: node => { node.maxItems = 20; },
+    outboundHosts: node => { delete node.items!.maxLength; },
+    [NUMERIC]: node => { delete node.exclusiveMinimum; node.minimum = 0; },
+    // A union stays limited only while every variant of the kind is: a list entry without a length limit lifts it.
+    [FILTER]: node => { delete filterVariants(node).listString.maxLength; },
+  });
+  const { breaking, additions } = comparePluginContract(readJson(SNAPSHOT), loosened);
+  assert.deepEqual(breaking, []);
+  for (const message of [
+    'manifest: field name length is no longer limited to at least 1', 'manifest: field name length is now limited to at most 120 instead of at most 80',
+    'manifest: field permissions entry count is now limited to at most 20 instead of at most 11', 'manifest: field outboundHosts[] length is no longer limited to at most 253',
+    `manifest: field ${NUMERIC} value is now limited to at least 0 instead of more than 0`, `manifest: field ${FILTER}[] length is no longer limited to at most 500`,
+  ]) assert.ok(additions.includes(message), `expected "${message}" in\n${additions.join('\n')}`);
+  // A second string variant without a limit lifts the length limit of the whole union, whichever variant comes first.
+  for (const add of ['push', 'unshift'] as const) {
+    const widened = contractAfterSchemaEdit({ [FILTER]: node => { node.anyOf![add]({ type: 'string', format: 'uri' }); } });
+    assert.deepEqual(widened.manifest[FILTER].bounds, { minItems: 1, maxItems: 32, 'items.maxLength': 500 }, add);
+    assert.deepEqual(comparePluginContract(readJson(SNAPSHOT), widened).breaking, [], add);
+  }
 });
 
 test('a new manifest version may change the manifest, while the old version is still read', () => {

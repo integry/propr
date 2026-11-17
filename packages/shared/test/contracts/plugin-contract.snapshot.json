@@ -7,15 +7,26 @@
     },
     "id": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 48
+      }
     },
     "name": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 80
+      }
     },
     "description": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "version": {
       "type": "string",
@@ -35,11 +46,17 @@
     },
     "homepage": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
     },
     "icon": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
     },
     "permissions": {
       "type": "string[]",
@@ -56,11 +73,17 @@
         "labels.write",
         "repositories.read",
         "notifications.send"
-      ]
+      ],
+      "bounds": {
+        "maxItems": 11
+      }
     },
     "connections": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "connections[]{type=oauth}.type": {
       "type": "\"oauth\"",
@@ -72,15 +95,26 @@
     },
     "connections[]{type=oauth}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "connections[]{type=oauth}.help": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "connections[]{type=oauth}.helpUrl": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
     },
     "connections[]{type=oauth}.registrations": {
       "type": "string[]",
@@ -89,11 +123,18 @@
         "metadata_document",
         "dynamic",
         "preregistered"
-      ]
+      ],
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 3
+      }
     },
     "connections[]{type=oauth}.scopes": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
     },
     "connections[]{type=token}.type": {
       "type": "\"token\"",
@@ -105,15 +146,26 @@
     },
     "connections[]{type=token}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "connections[]{type=token}.help": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "connections[]{type=token}.helpUrl": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
     },
     "connections[]{type=token}.secretUrl": {
       "type": "object",
@@ -121,11 +173,21 @@
     },
     "connections[]{type=token}.secretUrl.hosts": {
       "type": "string[]",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 8,
+        "items.maxLength": 253
+      }
     },
     "connections[]{type=token}.secretUrl.pathPrefixes": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 8,
+        "items.maxLength": 200
+      }
     },
     "connections[]{type=token}.authorization": {
       "type": "string",
@@ -146,15 +208,26 @@
     },
     "connections[]{type=signing_secret}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "connections[]{type=signing_secret}.help": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "connections[]{type=signing_secret}.helpUrl": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
     },
     "settings": {
       "type": "object",
@@ -178,23 +251,44 @@
     },
     "settings.properties.<key>{type=string}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "settings.properties.<key>{type=string}.help": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "settings.properties.<key>{type=string}.default": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxLength": 500
+      }
     },
     "settings.properties.<key>{type=string}.enum": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 64,
+        "items.minLength": 1,
+        "items.maxLength": 100
+      }
     },
     "settings.properties.<key>{type=string}.maxLength": {
       "type": "integer",
-      "required": false
+      "required": false,
+      "bounds": {
+        "exclusiveMinimum": 0,
+        "maximum": 500
+      }
     },
     "settings.properties.<key>{type=string}.format": {
       "type": "string",
@@ -205,7 +299,12 @@
     },
     "settings.properties.<key>{type=string}.hosts": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 8,
+        "items.maxLength": 253
+      }
     },
     "settings.properties.<key>{type=string}.optionsFrom": {
       "type": "string",
@@ -217,11 +316,19 @@
     },
     "settings.properties.<key>{type=number}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "settings.properties.<key>{type=number}.help": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "settings.properties.<key>{type=number}.default": {
       "type": "number",
@@ -245,11 +352,19 @@
     },
     "settings.properties.<key>{type=boolean}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "settings.properties.<key>{type=boolean}.help": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "settings.properties.<key>{type=boolean}.default": {
       "type": "boolean",
@@ -261,11 +376,19 @@
     },
     "settings.properties.<key>{type=array}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "settings.properties.<key>{type=array}.help": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "settings.properties.<key>{type=array}.items": {
       "type": "object",
@@ -277,15 +400,29 @@
     },
     "settings.properties.<key>{type=array}.items.enum": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 64,
+        "items.minLength": 1,
+        "items.maxLength": 100
+      }
     },
     "settings.properties.<key>{type=array}.default": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 256,
+        "items.maxLength": 500
+      }
     },
     "settings.properties.<key>{type=array}.maxItems": {
       "type": "integer",
-      "required": false
+      "required": false,
+      "bounds": {
+        "exclusiveMinimum": 0,
+        "maximum": 256
+      }
     },
     "settings.properties.<key>{type=object}.type": {
       "type": "\"object\"",
@@ -293,11 +430,19 @@
     },
     "settings.properties.<key>{type=object}.label": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
     },
     "settings.properties.<key>{type=object}.help": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "settings.properties.<key>{type=object}.format": {
       "type": "\"repository-map\"",
@@ -321,7 +466,10 @@
     },
     "settings.properties.<key>{type=object}.default.<key>": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxLength": 500
+      }
     },
     "settings.required": {
       "type": "string[]",
@@ -329,11 +477,18 @@
     },
     "outboundHosts": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 32,
+        "items.maxLength": 253
+      }
     },
     "outboundHostsFromSettings": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 64
+      }
     },
     "contributes": {
       "type": "object",
@@ -341,7 +496,10 @@
     },
     "contributes.mcpServers": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.mcpServers[]{kind=https}.kind": {
       "type": "\"https\"",
@@ -353,11 +511,17 @@
     },
     "contributes.mcpServers[]{kind=https}.url": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
     },
     "contributes.mcpServers[]{kind=https}.tools": {
       "type": "string[]",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxItems": 64
+      }
     },
     "contributes.mcpServers[]{kind=https}.capability": {
       "type": "string",
@@ -390,7 +554,10 @@
     },
     "contributes.mcpServers[]{kind=package}.tools": {
       "type": "string[]",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxItems": 64
+      }
     },
     "contributes.mcpServers[]{kind=package}.capability": {
       "type": "string",
@@ -413,11 +580,17 @@
     },
     "contributes.mcpServers[]{kind=package}.package": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 214
+      }
     },
     "contributes.mcpServers[]{kind=package}.version": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
     },
     "contributes.mcpServers[]{kind=package}.integrity": {
       "type": "string",
@@ -429,11 +602,18 @@
     },
     "contributes.mcpServers[]{kind=package}.args": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 64,
+        "items.maxLength": 2048
+      }
     },
     "contributes.mcpServers[]{kind=package}.env": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
     },
     "contributes.mcpServers[]{kind=package}.env[].name": {
       "type": "string",
@@ -441,11 +621,17 @@
     },
     "contributes.mcpServers[]{kind=package}.env[].value": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 4096
+      }
     },
     "contributes.mcpServers[]{kind=package}.secretEnv": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.mcpServers[]{kind=package}.secretEnv[].name": {
       "type": "string",
@@ -461,7 +647,10 @@
     },
     "contributes.skills": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.skills[].name": {
       "type": "string",
@@ -469,11 +658,17 @@
     },
     "contributes.skills[].path": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
     },
     "contributes.automationTemplates": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.automationTemplates[].id": {
       "type": "string",
@@ -481,11 +676,17 @@
     },
     "contributes.automationTemplates[].path": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
     },
     "contributes.commands": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
     },
     "contributes.commands[].name": {
       "type": "string",
@@ -493,7 +694,11 @@
     },
     "contributes.commands[].description": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 200
+      }
     },
     "contributes.commands[].where": {
       "type": "string[]",
@@ -501,7 +706,11 @@
       "enum": [
         "pull_request",
         "issue"
-      ]
+      ],
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 2
+      }
     },
     "contributes.commands[].kind": {
       "type": "string",
@@ -513,7 +722,11 @@
     },
     "contributes.commands[].prompt": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 4000
+      }
     },
     "contributes.commands[].handler": {
       "type": "string",
@@ -521,11 +734,17 @@
     },
     "contributes.commands[].skills": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.commands[].servers": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.commands[].needsWrite": {
       "type": "boolean",
@@ -537,7 +756,10 @@
     },
     "contributes.commands[].specific": {
       "type": "string[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
     },
     "contributes.commands[].permissions": {
       "type": "string[]",
@@ -554,11 +776,17 @@
         "labels.write",
         "repositories.read",
         "notifications.send"
-      ]
+      ],
+      "bounds": {
+        "maxItems": 11
+      }
     },
     "contributes.commands[].promptSettings": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.commands[].promptSettings[].setting": {
       "type": "string",
@@ -566,15 +794,26 @@
     },
     "contributes.commands[].promptSettings[].on": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "contributes.commands[].promptSettings[].off": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
     },
     "contributes.subscriptions": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 64
+      }
     },
     "contributes.subscriptions[].on": {
       "type": "string",
@@ -590,11 +829,20 @@
     },
     "contributes.subscriptions[].filter.<key>": {
       "type": "string | number | boolean | null | (string | number | boolean | null)[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxLength": 500,
+        "minItems": 1,
+        "maxItems": 32,
+        "items.maxLength": 500
+      }
     },
     "contributes.webhooks": {
       "type": "object[]",
-      "required": false
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
     },
     "contributes.webhooks[].name": {
       "type": "string",
@@ -602,7 +850,11 @@
     },
     "contributes.webhooks[].description": {
       "type": "string",
-      "required": true
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 200
+      }
     },
     "contributes.webhooks[].handler": {
       "type": "string",
@@ -622,7 +874,11 @@
     },
     "contributes.webhooks[].verification{scheme=hmac-sha256}.prefix": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 32
+      }
     },
     "contributes.webhooks[].verification{scheme=hmac-sha256}.encoding": {
       "type": "string",
@@ -654,7 +910,11 @@
     },
     "contributes.webhooks[].verification{scheme=token-header}.prefix": {
       "type": "string",
-      "required": false
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 32
+      }
     },
     "contributes.webhooks[].verification{scheme=token-header}.connection": {
       "type": "string",
