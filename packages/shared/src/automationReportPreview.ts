@@ -5,8 +5,14 @@ export const AUTOMATION_REPORT_PREVIEW_MAX_CHARS = 160;
 
 /** Leading Markdown block markers: headings, quotes, list bullets, numbers and task boxes. */
 const BLOCK_MARKERS = /^(?:(?:#{1,6}(?=\s|$)|>|[-*+](?=\s)|\d+[.)](?=\s)|\[[ xX]\](?=\s))\s*)+/u;
-/** A fence, a rule or a table divider: lines that carry no words. */
-const STRUCTURE_ONLY = /^(?:`{3,}|~{3,}|[-*_=\s]{3,}|[|:\-\s]+)$/u;
+/** A rule or a table divider: lines that carry no words. */
+const STRUCTURE_ONLY = /^(?:[-*_=\s]{3,}|[|:\-\s]+)$/u;
+/**
+ * A code fence, bare or with an info string such as a language label. A
+ * backtick fence's info string has no backticks, so inline code that merely
+ * starts with three backticks is not mistaken for a fence.
+ */
+const FENCE = /^(?:`{3,}[^`]*|~{3,}.*)$/u;
 
 /** Markdown inline syntax reduced to its text. */
 const stripInline = (line: string): string => line
@@ -26,7 +32,7 @@ export function automationReportPreview(report: string | null | undefined, max =
   if (!report) return null;
   for (const raw of report.split(/\r?\n/u)) {
     const line = raw.trim();
-    if (!line || STRUCTURE_ONLY.test(line)) continue;
+    if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line)) continue;
     const text = stripInline(line.replace(BLOCK_MARKERS, ''));
     if (text) return truncateAtWord(text, max);
   }

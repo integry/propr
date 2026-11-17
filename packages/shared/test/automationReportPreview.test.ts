@@ -9,6 +9,16 @@ test('automationReportPreview takes the first line with words and strips Markdow
   assert.equal(automationReportPreview('#\n| --- | --- |\nPlain text'), 'Plain text');
 });
 
+test('automationReportPreview skips opening fences that carry an info string', () => {
+  assert.equal(automationReportPreview('```json\n{"status":"passed"}'), '{"status":"passed"}');
+  assert.equal(automationReportPreview('```ts title="report.ts"\nconst ok = true;'), 'const ok = true;');
+  assert.equal(automationReportPreview('~~~json\n{"status":"passed"}'), '{"status":"passed"}');
+  assert.equal(automationReportPreview('~~~ python `fenced`\nprint("ok")'), 'print("ok")');
+  assert.equal(automationReportPreview('  ````markdown\n# Inner heading'), 'Inner heading');
+  assert.equal(automationReportPreview('```json\n```'), null);
+  assert.equal(automationReportPreview('```inline code``` after'), 'inline code after');
+});
+
 test('automationReportPreview is null without a report or without words', () => {
   assert.equal(automationReportPreview(null), null);
   assert.equal(automationReportPreview(undefined), null);
