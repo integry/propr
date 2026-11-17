@@ -341,9 +341,9 @@ test("login verifies the token against the configured remote and says when it co
       return response();
     }) as typeof fetch;
   };
-  const report = async (remote: string | undefined, alreadySaved = false) => {
+  const report = async (remote: string | undefined) => {
     const lines: string[] = [];
-    const outcome = await reportLoginVerification(loginConfig(remote), "ghp_new", { log: line => lines.push(line), error: line => lines.push(line), alreadySaved });
+    const outcome = await reportLoginVerification(loginConfig(remote), "ghp_new", { log: line => lines.push(line), error: line => lines.push(line) });
     return { ...outcome, lines };
   };
 

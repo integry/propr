@@ -83,8 +83,9 @@ async function readSuccessBody(response: Response, responseType: "json" | "csv")
 }
 
 /**
- * Reads the body of an error response. JSON becomes the structured error; an
- * HTML page means the remote is not a ProPR API at all.
+ * Reads the body of an error response. A JSON object becomes the structured
+ * error and an empty body stays `undefined`. Any other body (an HTML page,
+ * plain text, malformed JSON) means the remote is not a ProPR API at all.
  */
 async function readErrorBody(response: Response): Promise<ApiErrorResponse | undefined> {
   const contentType = response.headers.get("content-type") ?? "";
@@ -94,15 +95,17 @@ async function readErrorBody(response: Response): Promise<ApiErrorResponse | und
   } catch {
     return undefined;
   }
-  if (/^text\/html\b/i.test(contentType.trim()) || looksLikeHtml(text)) {
-    throw new InvalidApiResponseError(response.status, contentType || undefined);
-  }
+  if (text.trim().length === 0) return undefined;
+  const invalid = () => new InvalidApiResponseError(response.status, contentType || undefined);
+  if (/^text\/html\b/i.test(contentType.trim()) || looksLikeHtml(text)) throw invalid();
+  let parsed: unknown;
   try {
-    return text ? JSON.parse(text) as ApiErrorResponse : undefined;
+    parsed = JSON.parse(text);
   } catch {
-    // Response body is not JSON or empty
-    return undefined;
+    throw invalid();
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw invalid();
+  return parsed as ApiErrorResponse;
 }
 
 /**

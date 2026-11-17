@@ -71,8 +71,8 @@ export async function reportLoginVerification(
   configManager: ConfigManager,
   token: string,
   options: VerifyTokenOptions & {
-    /** The token is already stored (the gh CLI flow), so a rejection cannot keep it out. */
-    alreadySaved?: boolean;
+    /** The caller prints its own success line (the gh CLI flow), so omit the "Authentication successful!" prefix. */
+    successReportedSeparately?: boolean;
     log?: (line: string) => void;
     error?: (line: string) => void;
   } = {},
@@ -82,10 +82,10 @@ export async function reportLoginVerification(
   const verification = await verifyTokenWithRemote(configManager, token, options);
   switch (verification.status) {
     case "verified":
-      log(`${options.alreadySaved ? "" : "Authentication successful! "}Verified against ${verification.remoteUrl}${verification.login ? ` as ${verification.login}` : ""}.`);
+      log(`${options.successReportedSeparately ? "" : "Authentication successful! "}Verified against ${verification.remoteUrl}${verification.login ? ` as ${verification.login}` : ""}.`);
       return { exitCode: 0, save: true, verification };
     case "rejected":
-      error(`Error: ${verification.remoteUrl} rejected this token.${options.alreadySaved ? "" : " It was not saved."}`);
+      error(`Error: ${verification.remoteUrl} rejected this token. It was not saved.`);
       return { exitCode: 1, save: false, verification };
     case "forbidden":
       log(`Token saved. ${verification.remoteUrl} accepted the token but denied access to this account: ${verification.message}`);
@@ -97,4 +97,35 @@ export async function reportLoginVerification(
       log("Token saved. It was not verified because no remote is configured; set one with `propr remote`.");
       return { exitCode: 0, save: true, verification };
   }
+}
+
+/**
+ * Verify an obtained, not yet stored token and persist it only when the
+ * verification allows it. A rejected token never reaches the config, so a
+ * previously stored token survives. Success lines print after the save.
+ * Returns the process exit code.
+ */
+export async function completeLogin(
+  configManager: ConfigManager,
+  token: string,
+  options: VerifyTokenOptions & {
+    /** Summary from the gh CLI flow, printed once the token is stored. */
+    successMessage?: string;
+    log?: (line: string) => void;
+    error?: (line: string) => void;
+  } = {},
+): Promise<number> {
+  const log = options.log ?? ((line: string) => console.log(line));
+  const outcome = await reportLoginVerification(configManager, token, {
+    ...options,
+    successReportedSeparately: options.successMessage !== undefined,
+  });
+  if (!outcome.save) return outcome.exitCode;
+  await configManager.setGithubToken(token);
+  if (options.successMessage !== undefined) {
+    log("");
+    log(options.successMessage);
+  }
+  log(`Token saved to: ${configManager.getConfigFilePath()}`);
+  return outcome.exitCode;
 }

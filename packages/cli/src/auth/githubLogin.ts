@@ -48,19 +48,24 @@ export interface GithubLoginOptions {
   signal?: AbortSignal;
   /** Start an account-changing login even when gh already has a session. */
   force?: boolean;
+  /**
+   * Store the obtained token on the config manager (default true). `propr
+   * login` passes false so it can verify the token before anything is saved.
+   */
+  persist?: boolean;
 }
 
 export interface GithubLoginResult {
-  /** True when a token was obtained and stored on the config manager. */
+  /** True when a token was obtained (and, unless `persist: false`, stored). */
   ok: boolean;
-  /** The stored token, when `ok`. */
+  /** The obtained token, when `ok`. */
   token?: string;
   /** Human-facing summary (success note or the reason it could not proceed). */
   message: string;
 }
 
 /**
- * Authenticate with GitHub through the `gh` CLI and persist the token.
+ * Authenticate with GitHub through the `gh` CLI and (by default) persist the token.
  *
  * Order: confirm `gh` is installed → reuse an existing `gh auth token` →
  * (interactive only) run `gh auth login` and read the token back.
@@ -69,7 +74,8 @@ export async function loginWithGithubCli(
   configManager: ConfigManager,
   options: GithubLoginOptions = {}
 ): Promise<GithubLoginResult> {
-  const { interactive = false, onLog, authenticationHandoff, signal, force = false } = options;
+  const { interactive = false, onLog, authenticationHandoff, signal, force = false, persist = true } = options;
+  const store = async (token: string) => { if (persist) await configManager.setGithubToken(token); };
   const { execSync, spawnSync } = await import("child_process");
 
   if (authenticationHandoff) {
@@ -91,7 +97,7 @@ export async function loginWithGithubCli(
     const existing = force ? null : await readGhTokenAsync(capture, signal);
     if (existing) {
       signal?.throwIfAborted();
-      await configManager.setGithubToken(existing);
+      await store(existing);
       return { ok: true, token: existing, message: "Authenticated using your existing gh CLI session." };
     }
     if (!interactive) {
@@ -107,7 +113,7 @@ export async function loginWithGithubCli(
     const token = await readGhTokenAsync(capture, signal);
     if (!token) return { ok: false, message: "Could not retrieve a token after login." };
     signal?.throwIfAborted();
-    await configManager.setGithubToken(token);
+    await store(token);
     return { ok: true, token, message: "Authentication successful." };
   }
 
@@ -125,7 +131,7 @@ export async function loginWithGithubCli(
   // Reuse an existing gh session when one is already authenticated.
   const existing = force ? null : readGhToken(execSync);
   if (existing) {
-    await configManager.setGithubToken(existing);
+    await store(existing);
     return { ok: true, token: existing, message: "Authenticated using your existing gh CLI session." };
   }
 
@@ -148,7 +154,7 @@ export async function loginWithGithubCli(
   if (!token) {
     return { ok: false, message: "Could not retrieve a token after login." };
   }
-  await configManager.setGithubToken(token);
+  await store(token);
   return { ok: true, token, message: "Authentication successful." };
 }
 

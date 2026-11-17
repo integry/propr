@@ -353,32 +353,28 @@ Examples:
           console.log("");
         }
 
-        const { reportLoginVerification } = await import("./auth/verifyToken.js");
-        const outcome = await reportLoginVerification(configManager, token);
-        if (!outcome.save) process.exit(outcome.exitCode);
-        await configManager.setGithubToken(token);
-        console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
+        const { completeLogin } = await import("./auth/verifyToken.js");
+        const exitCode = await completeLogin(configManager, token);
+        if (exitCode !== 0) process.exit(exitCode);
         return;
       }
 
       // Interactive flow via the gh CLI (shared with `propr setup`).
       const { loginWithGithubCli } = await import("./auth/githubLogin.js");
+      // Obtain the token without saving it, verify it, and only then store it,
+      // so a token the remote rejects never replaces the stored one.
       const result = await loginWithGithubCli(configManager, {
         interactive: true,
+        persist: false,
         onLog: (line) => console.log(line),
       });
-      if (!result.ok) {
-        console.error(`Error: ${result.message}`);
+      if (!result.ok || !result.token) {
+        console.error(`Error: ${result.ok ? "Could not retrieve a token after login." : result.message}`);
         process.exit(1);
       }
-      console.log("");
-      console.log(result.message);
-      console.log(`Token saved to: ${configManager.getConfigFilePath()}`);
-      if (result.token) {
-        const { reportLoginVerification } = await import("./auth/verifyToken.js");
-        const outcome = await reportLoginVerification(configManager, result.token, { alreadySaved: true });
-        if (outcome.exitCode !== 0) process.exit(outcome.exitCode);
-      }
+      const { completeLogin } = await import("./auth/verifyToken.js");
+      const exitCode = await completeLogin(configManager, result.token, { successMessage: result.message });
+      if (exitCode !== 0) process.exit(exitCode);
     } catch (error) {
       console.error(`Error during login: ${(error as Error).message}`);
       process.exit(1);
