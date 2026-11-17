@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   TaskStates, AgentRegistry, findIssueSubmission, submissionExtensionsForRun, generateClaudePrompt, updateFileChangesFromWorktree, recordLLMMetrics,
-  resolveAgentTerminationReason, repositoryWorkflowPrompt
+  resolveAgentTerminationReason, repositoryWorkflowPrompt, applyRunSummarySelection
 } from '@propr/core';
 import type { AgentExecutionResult, ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import { taskRunExtensionRequest } from '@propr/shared';
@@ -60,6 +60,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     terminationReason,
     modifiedFiles: result.modifiedFiles,
     commitMessage: result.commitMessage || null,
+    ...(result.summarySelection && { summarySelection: result.summarySelection }),
     conversationLog: result.conversationLog,
     resultLogIndexes: result.resultLogIndexes,
     tokenUsage: result.tokenUsage,
@@ -168,9 +169,6 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   // failure handler (when a later step throws) leaves one execution row.
   agentResult.executionId ??= randomUUID();
 
-  // Convert to ClaudeCodeResponse for backwards compatibility
-  const claudeResult = agentResultToClaudeResponse(agentResult);
-
   // The run's spend is recorded whatever happens next, a cancellation included.
   await recordLLMMetrics(toClaudeResult(agentResult), { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { jobType: 'issue', correlationId, taskId, reasoningLevel: agentResult.reasoningLevel });
 
@@ -184,6 +182,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     }
     throw new Error(`Task already in terminal state: ${currentState.state}`);
   }
+
+  // One small call picks the summary when the last message may not be one; the
+  // comment, PR body and commit subject all read it from this result.
+  const claudeResult = agentResultToClaudeResponse(await applyRunSummarySelection(agentResult, { taskId, correlationId, issueRef: agentIssueRef }));
 
   await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
     reason: `${agent.config.type} agent execution completed`,

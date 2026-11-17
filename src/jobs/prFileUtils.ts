@@ -150,6 +150,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         terminationReason,
         modifiedFiles: result.modifiedFiles,
         commitMessage: result.commitMessage || null,
+        ...(result.summarySelection && { summarySelection: result.summarySelection }),
         conversationLog: result.conversationLog,
         resultLogIndexes: result.resultLogIndexes,
         tokenUsage: result.tokenUsage,

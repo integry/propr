@@ -87,6 +87,8 @@ export interface ClaudeCodeResponse {
     modifiedFiles: string[];
     commitMessage: string | null;
     summary: string | null;
+    /** Set when the small summary-selection call decided the published summary. */
+    summarySelection?: 'selected' | 'none';
     prompt?: string;
     error?: string;
     terminationReason?: AgentTerminationReason;
