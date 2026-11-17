@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AGENT_INPUT_CLASSES, AGENT_INVALID_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
 import { agentFieldErrorId, scheduleErrorMessage, SCHEDULE_FIVE_PARTS_MESSAGE } from './agentFormValidation';
 import { SCHEDULE_PRESETS, formatUtc, nextScheduledRun } from './agentPresentation';
+import { AgentScheduleRepeatControls } from './AgentScheduleRepeatControls';
+import { DEFAULT_REPEAT, type RepeatSettings, cronToRepeat, repeatToCron } from './agentScheduleRepeat';
 
 interface AgentScheduleSectionProps {
   enabled: boolean;
@@ -28,63 +30,133 @@ function useMinuteClock(): Date {
   return now;
 }
 
-/** Off, or a UTC cron expression with presets, a live next-run preview and inline validation. */
+type ScheduleMode = 'off' | 'repeat' | 'custom';
+const MODES: readonly { mode: ScheduleMode; label: string }[] = [
+  { mode: 'off', label: 'Off' },
+  { mode: 'repeat', label: 'Repeat' },
+  { mode: 'custom', label: 'Custom (cron)' },
+];
+
+const normalize = (expression: string) => expression.trim().split(/\s+/).join(' ');
+/** Repeat for an expression its controls produce (or none yet), Custom for anything else. */
+const modeOf = (expression: string): 'repeat' | 'custom' => (!expression.trim() || cronToRepeat(expression) ? 'repeat' : 'custom');
+
+/**
+ * Off, Repeat (plain controls that write the cron) or Custom (the cron itself,
+ * with presets), with a live next-run preview and inline validation in UTC.
+ */
 export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
   enabled, expression, pauseWhenUnproductive = false, onChange, disabled, unproductiveRunThreshold, error: submitError = null,
 }) => {
   const now = useMinuteClock();
+  const [onMode, setOnMode] = useState<'repeat' | 'custom'>(() => modeOf(expression));
+  const [settings, setSettings] = useState<RepeatSettings>(() => cronToRepeat(expression) ?? DEFAULT_REPEAT);
+  // The last expression this section wrote; any other value came from outside (a loaded automation, a template).
+  const written = useRef(expression);
+  useEffect(() => {
+    if (expression === written.current) return;
+    written.current = expression;
+    const parsed = cronToRepeat(expression);
+    if (parsed) setSettings(parsed);
+    setOnMode(modeOf(expression));
+  }, [expression]);
+
+  const mode: ScheduleMode = enabled ? onMode : 'off';
   const error = enabled ? (expression.trim() ? scheduleErrorMessage(expression) : submitError) : null;
   const next = enabled && !error && expression.trim() ? nextScheduledRun(expression.trim(), now) : null;
+  const feedbackId = error ? agentFieldErrorId('schedule') : 'agent-schedule-feedback';
+  // Repeat chosen on an expression it cannot show: the expression stays until a control changes.
+  const keeping = mode === 'repeat' && expression.trim() !== '' && normalize(expression) !== repeatToCron(settings);
+
+  const write = (schedule: string, change: { scheduleEnabled?: boolean } = {}) => {
+    written.current = schedule;
+    onChange({ ...change, schedule });
+  };
+
+  const choose = (choice: ScheduleMode) => {
+    if (choice === 'off') {
+      onChange({ scheduleEnabled: false });
+      return;
+    }
+    setOnMode(choice);
+    if (choice === 'repeat') {
+      const parsed = cronToRepeat(expression);
+      if (parsed) setSettings(parsed);
+      if (!expression.trim()) {
+        write(repeatToCron(settings), { scheduleEnabled: true });
+        return;
+      }
+    }
+    if (!enabled) onChange({ scheduleEnabled: true });
+  };
+
+  const changeRepeat = (changed: RepeatSettings) => {
+    setSettings(changed);
+    write(repeatToCron(changed));
+  };
 
   return (
-    <AgentFormRow label="Schedule" hint="Runs on a cron schedule in UTC. Off: it runs only when started.">
+    <AgentFormRow label="Schedule" hint="Times are UTC. Off: it runs only when started.">
       <div role="radiogroup" aria-label="Schedule" className="inline-flex overflow-hidden rounded-md border border-slate-300">
-        {([false, true] as const).map(value => (
+        {MODES.map(({ mode: value, label }, index) => (
           <button
-            key={String(value)}
+            key={value}
             type="button"
             role="radio"
-            aria-checked={enabled === value}
+            aria-checked={mode === value}
             disabled={disabled}
-            onClick={() => onChange({ scheduleEnabled: value })}
-            className={`${SEGMENT_CLASSES} ${value ? 'border-l border-slate-300' : ''} ${enabled === value ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+            onClick={() => choose(value)}
+            className={`${SEGMENT_CLASSES} ${index ? 'border-l border-slate-300' : ''} ${mode === value ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
           >
-            {value ? 'Cron' : 'Off'}
+            {label}
           </button>
         ))}
       </div>
 
       {enabled && (
         <div className="mt-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <input
-              id="agent-schedule"
-              aria-label="Cron expression"
-              value={expression}
-              disabled={disabled}
-              onChange={event => onChange({ schedule: event.target.value })}
-              placeholder="0 9 * * 1-5"
-              spellCheck={false}
-              aria-invalid={Boolean(error)}
-              aria-describedby={error ? agentFieldErrorId('schedule') : 'agent-schedule-feedback'}
-              className={`${error ? AGENT_INVALID_INPUT_CLASSES : AGENT_INPUT_CLASSES} font-mono`}
-            />
-            <span className="rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">UTC</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {SCHEDULE_PRESETS.map(preset => (
-              <button
-                key={preset.expression}
-                type="button"
-                disabled={disabled}
-                onClick={() => onChange({ schedule: preset.expression })}
-                className={`rounded-full border px-2.5 py-0.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${expression.trim() === preset.expression ? 'border-teal-600 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-          <p id={error ? agentFieldErrorId('schedule') : 'agent-schedule-feedback'} className="text-xs" data-testid="agent-schedule-feedback">
+          {mode === 'repeat' ? (
+            <>
+              <AgentScheduleRepeatControls settings={settings} onChange={changeRepeat} disabled={disabled} invalid={Boolean(error)} describedBy={feedbackId} />
+              {keeping && (
+                <p className="text-xs text-slate-500" data-testid="agent-schedule-kept">
+                  Keeps <span className="font-mono text-slate-700">{expression.trim()}</span> until you change a control.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <input
+                  id="agent-schedule"
+                  aria-label="Cron expression"
+                  value={expression}
+                  disabled={disabled}
+                  onChange={event => write(event.target.value)}
+                  placeholder="0 9 * * 1-5"
+                  spellCheck={false}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={feedbackId}
+                  className={`${error ? AGENT_INVALID_INPUT_CLASSES : AGENT_INPUT_CLASSES} font-mono`}
+                />
+                <span className="rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">UTC</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {SCHEDULE_PRESETS.map(preset => (
+                  <button
+                    key={preset.expression}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => write(preset.expression)}
+                    className={`rounded-full border px-2.5 py-0.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${expression.trim() === preset.expression ? 'border-teal-600 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          <p id={feedbackId} className="text-xs" data-testid="agent-schedule-feedback">
             {error
               ? <span className="font-medium text-red-700">{error}</span>
               : next

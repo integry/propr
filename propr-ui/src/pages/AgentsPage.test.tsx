@@ -86,7 +86,7 @@ describe('AgentsPage', () => {
     renderAt('/automations');
 
     const row = await screen.findByRole('link', { name: /Dependency review/ });
-    expect(row).toHaveTextContent('Daily 09:00 UTC · next in 3h');
+    expect(row).toHaveTextContent('Every day at 09:00 UTC · next in 3h');
     expect(row).toHaveTextContent('Preview');
     expect(await within(row).findByText('Completed')).toBeInTheDocument();
     expect(screen.queryByTestId('agent-editor')).not.toBeInTheDocument();
@@ -322,11 +322,11 @@ describe('AgentsPage', () => {
     });
     renderAt('/automations');
     const review = await screen.findByRole('link', { name: /Dependency review/ });
-    expect(review).toHaveTextContent('Daily 09:00 UTC · next in 1h');
+    expect(review).toHaveTextContent('Every day at 09:00 UTC · next in 1h');
 
     // The 09:00 run happens while the page stays open; run polling renders the row again at 11:00.
     await act(async () => { await vi.advanceTimersByTimeAsync(3 * 3_600_000); });
-    expect(review).toHaveTextContent('Daily 09:00 UTC · next in 22h');
+    expect(review).toHaveTextContent('Every day at 09:00 UTC · next in 22h');
   });
 
   it('explains what an agent is when there are none', async () => {

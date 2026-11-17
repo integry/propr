@@ -99,7 +99,7 @@ describe('AgentEditor', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-07T10:00:00Z'));
     renderEditor();
-    fireEvent.click(screen.getByRole('radio', { name: 'Cron' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom (cron)' }));
     fireEvent.click(screen.getByRole('button', { name: 'Weekdays 09:00' }));
 
     expect(screen.getByLabelText('Cron expression')).toHaveValue('0 9 * * 1-5');

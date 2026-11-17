@@ -82,7 +82,10 @@ In the automation editor, **Additional extensions** shows two lists, MCP servers
 
 ### Schedule
 
-**Schedule** is off by default: the automation then runs only when triggered. To run it automatically, enter a standard 5-field cron expression (`minute hour day-of-month month day-of-week`) or pick a preset:
+**Schedule** is off by default: the automation then runs only when triggered. To run it automatically, choose one of:
+
+- **Repeat** (the default when you turn a schedule on): `Every [N] [minutes | hours | day | week]`, with a time for days and weeks and the days of the week for weeks. Only rhythms a cron expression repeats exactly are offered: every 15, 20 or 30 minutes; every 1, 2, 3, 4, 6, 8 or 12 hours; every day at a time; chosen weekdays at a time. The editor saves the matching cron expression, for example `0 */3 * * *` for every 3 hours or `0 9 * * 1-5` for Monday to Friday at 09:00.
+- **Custom (cron)**: a standard 5-field cron expression (`minute hour day-of-month month day-of-week`), or one of the presets:
 
 | Preset | Expression |
 | --- | --- |
@@ -91,12 +94,14 @@ In the automation editor, **Additional extensions** shows two lists, MCP servers
 | Weekdays 09:00 | `0 9 * * 1-5` |
 | Weekly Mon 09:00 | `0 9 * * 1` |
 
+An automation opens in **Repeat** when its expression is one the Repeat controls produce, and in **Custom (cron)** otherwise; its expression is never rewritten unless you change a control. Switching from Repeat to Custom shows the generated expression.
+
 The rules:
 
 - Times are **UTC**. Time zones are not supported in v1: for 09:00 in New York (UTC−4 in summer), write `0 13 * * *`.
 - Lists (`1,15`), ranges (`1-5`), steps (`*/30`) and the macros `@hourly`, `@daily`, `@weekly` and `@monthly` are accepted. Day-of-week is 0–7, where 0 and 7 are Sunday. If both day-of-month and day-of-week are restricted, either one matching is enough (standard cron behavior).
 - A schedule may not fire more often than every **15 minutes**. `*/5 * * * *` is refused when you save.
-- The form previews the next run time, and the automation list shows each schedule with when it fires next. Automations without a schedule show **Manual**.
+- The form previews the next run time, and the automation list shows each schedule in words ("Every 3 hours", "Every weekday at 09:00 UTC") with when it fires next. Automations without a schedule show **Manual**.
 - Each slot fires once, even with several daemons. If the daemon was down across several slots, they coalesce into one run for the latest slot; missed slots are not replayed.
 - Scheduled runs are [cost-gated](#cost-control).
 
