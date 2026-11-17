@@ -170,12 +170,21 @@ export function getItemGithubUrl(item: SearchItem): string | null {
   }
 }
 
+/** The first non-empty line of a prompt, without a leading Markdown heading or list marker. */
+const firstPromptLine = (prompt: string | null | undefined): string => {
+  const line = (prompt ?? '').split(/\r?\n/).map(text => text.trim()).find(Boolean) ?? '';
+  return line.replace(/^#{1,6}\s+/, '').replace(/^(?:[-*+]|\d+\.)\s+/, '').trim();
+};
+
+/** A plan without a name reads as the first line of its prompt; its row shows that on one truncated line. */
+export const isPromptTitledPlan = (item: SearchItem): boolean => item.kind === 'plan' && !item.plan.name?.trim();
+
 export function getItemTitle(item: SearchItem): string {
   switch (item.kind) {
     case 'repository':
       return item.repo.name;
     case 'plan':
-      return item.plan.name || item.plan.initial_prompt;
+      return item.plan.name?.trim() || firstPromptLine(item.plan.initial_prompt);
     case 'task':
       return item.task.title || `Task ${item.task.id.slice(0, 8)}…`;
   }

@@ -7,6 +7,8 @@ import { DraftUpdatePayload, type InstanceCatalogAgent } from '@propr/shared';
 import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, withCreatedIssues, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
 import { usePlanQueueActions } from './usePlanQueueActions';
+import { getRowQueueStatus } from './planQueueLabels';
+import { buildFooterStats } from './approvedPlanFooterStats';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 
 interface UsePlanIssuesManagerProps {
@@ -106,9 +108,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   }, [issuesWithDefaults, autoMerge, useEpic]);
 
   // Pending issues behind the queue's cursor wait for a running predecessor; the server starts them in turn.
+  // An issue the queue holds as pending, blocked or skipped is the queue's too, wherever the cursor is.
   const queuedIssueNumbers = useMemo(() => {
     if (executionQueue?.status !== 'active') return new Set<number>();
     const waiting = new Set(executionQueue.issues.slice(executionQueue.cursor));
+    for (const state of executionQueue.issueStates ?? []) {
+      if (state.state === 'pending' || state.state === 'blocked' || state.state === 'skipped') waiting.add(state.issue);
+    }
     return new Set(issues.filter(issue => issue.status === 'pending' && waiting.has(issue.issue_number)).map(issue => issue.issue_number));
   }, [executionQueue, issues]);
 
@@ -157,6 +163,34 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   }, []);
 
   const queueActions = usePlanQueueActions({ draftId, executionQueue, setExecutionQueue, refresh: fetchIssues, setError });
+  const { queueStates, rowProps: queueActionRowProps } = queueActions;
+
+  const queueStatusOf = useCallback((issue: PlanIssue) => getRowQueueStatus(issue.status, queueStates.get(issue.issue_number),
+    queuedIssueNumbers.has(issue.issue_number)), [queueStates, queuedIssueNumbers]);
+
+  /** Queued, skipped, blocked, in review, running and merged, each issue counted once. */
+  const issueCounts = useMemo(() => buildFooterStats(issues, queueStatusOf), [issues, queueStatusOf]);
+
+  const statusByIssue = useMemo(() => new Map(issues.map(issue => [issue.issue_number, issue.status])), [issues]);
+
+  /**
+   * Row props for one issue: its queue state, status pill and actions, and the prerequisites a pending
+   * issue still waits for. A skipped prerequisite has its own notice, so it is not listed again.
+   */
+  const queueRowProps = useCallback((issue: PlanIssue, readOnly: boolean) => {
+    const props = queueActionRowProps(issue.issue_number, readOnly);
+    const skipped = new Set(props.queueState?.waitingOnSkipped ?? []);
+    // The active execution's edges win, even when empty (parallel); persisted edges only when it supplies none.
+    const dependsOn = props.queueState?.dependsOn ?? issue.depends_on_issues ?? [];
+    const unmerged = props.queueState?.waitingOn
+      ?? dependsOn.filter(prerequisite => statusByIssue.has(prerequisite) && statusByIssue.get(prerequisite) !== 'merged');
+    return {
+      ...props,
+      queueStatus: queueStatusOf(issue),
+      dependsOn,
+      waitingOn: issue.status === 'pending' ? unmerged.filter(prerequisite => !skipped.has(prerequisite)) : [],
+    };
+  }, [queueActionRowProps, queueStatusOf, statusByIssue]);
 
   useEffect(() => {
     const load = async () => {
@@ -426,7 +460,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   return {
     issues, agents, loading, error, clearError, implementingIssue,
     queuedIssueNumbers, queueingRemaining, handleQueueRemaining, chainExecution, executionQueue,
-    queueRowProps: queueActions.rowProps,
+    queueRowProps, issueCounts,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, hasActiveIssues, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,

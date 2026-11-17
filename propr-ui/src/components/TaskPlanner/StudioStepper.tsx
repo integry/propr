@@ -35,14 +35,21 @@ interface StudioPhaseSwitcherProps {
   /** Never wider than its row: in a narrow column or with enlarged text the phases wrap inside the pill instead of
    *  running under whatever sits beside the row. */
   wrap?: boolean;
+  /** Below which width the breadcrumb collapses to the `Step 2/3` badge; a crowded title row passes `xl`. */
+  compactBelow?: 'md' | 'xl';
 }
+
+const COMPACT_CLASSES = {
+  md: { badge: 'md:hidden', list: 'hidden md:flex' },
+  xl: { badge: 'xl:hidden', list: 'hidden xl:flex' },
+} as const;
 
 /**
  * Compact phase indicator for every studio title row: `✓ Define › 2 Review (17) › 3 Execute`.
  * Below `md` the breadcrumb collapses to a `Step 2/3` badge so it fits next to the scope pill
  * on a phone. Renders nothing outside a studio page (no stage in context).
  */
-export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts, className = '', wrap = false }) => {
+export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts, className = '', wrap = false, compactBelow = 'md' }) => {
   const currentStage = useContext(StudioStageContext);
   if (!currentStage) return null;
   const current = STEPS.find((step) => step.id === currentStage)!;
@@ -52,11 +59,11 @@ export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts
       <span
         data-testid="phase-step-badge"
         aria-label={`Step ${current.number} of ${STEPS.length}: ${current.shortLabel}`}
-        className="inline-flex items-center whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium tabular-nums text-slate-700 md:hidden"
+        className={`inline-flex items-center whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium tabular-nums text-slate-700 ${COMPACT_CLASSES[compactBelow].badge}`}
       >
         Step {current.number}/{STEPS.length}
       </span>
-      <ol className={`hidden md:flex ${wrap ? 'md:flex-wrap min-h-8' : 'h-8'} items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5 text-xs`}>
+      <ol className={`${COMPACT_CLASSES[compactBelow].list} ${wrap ? 'md:flex-wrap min-h-8' : 'h-8'} items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5 text-xs`}>
         {STEPS.map((step, index) => {
           const state = getStepState(step.id, currentStage);
           const count = counts?.[step.id];

@@ -15,6 +15,7 @@ import { getOutlineTitle } from './planDisplayName';
 import type { PlanIssueDefaultSelection } from './planIssueDefaultSelection';
 import { PlanIssueQueueNotice } from './PlanIssueQueueNotice';
 import type { PlanQueueAction } from './usePlanQueueActions';
+import type { RowQueueStatus } from './planQueueLabels';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
@@ -48,6 +49,12 @@ interface PlanIssueRowProps {
   implementButtonLabel?: string;
   /** The issue's state in the plan's active execution queue, when it is part of one. */
   queueState?: PlanExecutionQueueIssue;
+  /** Queued, Skipped or Blocked: how a pending issue stands in the queue, for its status pill. */
+  queueStatus?: RowQueueStatus | null;
+  /** Issues this one starts after. */
+  dependsOn?: number[];
+  /** Prerequisites not merged yet that this pending issue waits for. */
+  waitingOn?: number[];
   /** Graph issues that depend on this one. */
   queueDependents?: number[];
   /** The queue action in progress for this issue. */
@@ -94,6 +101,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   showImplementButton = true,
   implementButtonLabel = 'Implement',
   queueState,
+  queueStatus,
+  dependsOn,
+  waitingOn,
   queueDependents,
   queueAction,
   onQueueAction,
@@ -158,10 +168,14 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
         className={`px-4 py-2 ${hasExpandableContent ? 'cursor-pointer' : ''}`}
         onClick={handleRowClick}
       >
-        {/* Mobile: Stack layout, Desktop: Single line */}
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
-          {/* Top row (mobile) / Left side (desktop): Issue Number + Status Badge + Title */}
-          <div className="flex items-center gap-3 flex-1 min-w-0">
+        {/*
+          One wrapping line: number and status, the title, then metadata and actions. Below lg the title
+          always takes its own full-width line under the number and status; from lg it shares the line
+          while it keeps at least 18rem, and the metadata and actions wrap under it otherwise. The title
+          wraps to two lines, then ends in an ellipsis (full title in the tooltip and the expanded section).
+        */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <div className="order-1 flex flex-shrink-0 items-center gap-3">
             <a
               href={issueUrl}
               target="_blank"
@@ -172,18 +186,18 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               #{issue.issue_number}
               <ExternalLink size={10} className="opacity-50" />
             </a>
-            <span className="w-24 flex-shrink-0"><StatusBadge status={issue.status} queued={isQueued} /></span>
-            {issueTitle && (
-              // The plan name and step counter ("Agents v1 (6/17):") repeat on every row, so rows lead with the step itself.
-              <span className={`text-sm ${getTitleClassName(isMerged)} truncate`} title={issueTitle}>
-                {getOutlineTitle(issueTitle)}
-              </span>
-            )}
+            <span className="w-24 flex-shrink-0"><StatusBadge status={issue.status} queued={isQueued} queueStatus={queueStatus} /></span>
           </div>
-
-          {/* Bottom row (mobile) / Right side (desktop): Metadata + Actions */}
-          <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 lg:w-auto lg:flex-none lg:justify-end lg:gap-3">
-            <IssueMetadata issue={issue} />
+          {issueTitle && (
+            // The plan name and step counter ("Agents v1 (6/17):") repeat on every row, so rows lead with the step itself.
+            <span data-testid="plan-issue-title"
+              className={`order-3 min-w-0 basis-full break-words text-sm leading-5 line-clamp-2 lg:order-2 lg:flex-1 lg:basis-[18rem] ${getTitleClassName(isMerged)}`}
+              title={issueTitle}>
+              {getOutlineTitle(issueTitle)}
+            </span>
+          )}
+          <IssueMetadata issue={issue} dependsOn={dependsOn} waitingOn={waitingOn} className="order-2 ml-auto lg:order-3" />
+          <div className="order-4 ml-auto flex min-w-0 items-center">
             <RowActions
               isPending={isPending}
               hasExpandableContent={hasExpandableContent}
@@ -223,7 +237,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <ExpandedContent task={task} draftId={draftId} />
+            <ExpandedContent task={task} draftId={draftId} title={issueTitle} />
           </motion.div>
         )}
       </AnimatePresence>

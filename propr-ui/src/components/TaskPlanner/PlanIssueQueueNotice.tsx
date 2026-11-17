@@ -1,7 +1,7 @@
 import React from 'react';
-import { AlertTriangle, Loader2, RotateCcw, SkipForward } from 'lucide-react';
+import { AlertTriangle, Loader2, Play, RotateCcw, SkipForward } from 'lucide-react';
 import type { PlanExecutionQueueIssue } from '../../api/planIssuesApi';
-import { BLOCKED_KIND_LABELS } from './planQueueLabels';
+import { describeBlocked, issueList, skipLabel } from './planQueueLabels';
 import type { PlanQueueAction } from './usePlanQueueActions';
 
 interface PlanIssueQueueNoticeProps {
@@ -14,8 +14,6 @@ interface PlanIssueQueueNoticeProps {
   onAction?: (action: PlanQueueAction) => void;
 }
 
-const issueList = (issues: number[]) => issues.map(issue => `#${issue}`).join(', ');
-
 const ActionButton: React.FC<{ label: string; icon: React.ReactNode; busy: boolean; disabled: boolean; onClick: () => void; testId: string; tone?: 'primary' | 'quiet' }> = ({
   label, icon, busy, disabled, onClick, testId, tone = 'quiet',
 }) => (
@@ -24,24 +22,27 @@ const ActionButton: React.FC<{ label: string; icon: React.ReactNode; busy: boole
     data-testid={testId}
     disabled={disabled}
     onClick={(event) => { event.stopPropagation(); onClick(); }}
-    className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+    className={`inline-flex max-w-full items-center gap-1 rounded-md text-left border px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
       tone === 'primary' ? 'border-amber-300 bg-white text-amber-800 hover:bg-amber-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
   >
-    {busy ? <Loader2 size={12} className="animate-spin" /> : icon}
-    {label}
+    <span className="flex-shrink-0">{busy ? <Loader2 size={12} className="animate-spin" /> : icon}</span>
+    {/* Labels that list issues ("Skip (keep #12, #13 waiting)") wrap within the row instead of being clipped. */}
+    <span className="min-w-0 break-words">{label}</span>
   </button>
 );
 
 /** Which blocker holds the issue and why; `actions` is absent for a read-only plan. */
 const BlockedNotice: React.FC<{ state: PlanExecutionQueueIssue; actions: React.ReactNode }> = ({ state, actions }) => {
-  const kind = state.blockedKind;
+  const { title, detail, inProgress } = describeBlocked(state);
   return (
-    <div role="status" data-testid="plan-queue-blocked" className="mt-2 flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 sm:flex-row sm:items-start sm:justify-between">
+    <div role="status" data-testid="plan-queue-blocked" className="mt-2 flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 xl:flex-row xl:items-start xl:justify-between">
       <div className="flex min-w-0 items-start gap-2 text-xs text-amber-900">
-        <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-amber-600" aria-hidden />
+        {inProgress
+          ? <Loader2 size={14} className="mt-0.5 flex-shrink-0 animate-spin text-amber-600" aria-hidden />
+          : <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-amber-600" aria-hidden />}
         <div className="min-w-0">
-          <p className="font-semibold">Blocked{kind ? ` · ${BLOCKED_KIND_LABELS[kind] ?? kind}` : ''}</p>
-          {state.blockedReason && <p className="mt-0.5 break-words text-amber-800">{state.blockedReason}</p>}
+          <p className="font-semibold">{title}</p>
+          {detail && <p className="mt-0.5 break-words text-amber-800">{detail}</p>}
         </div>
       </div>
       {actions}
@@ -51,9 +52,10 @@ const BlockedNotice: React.FC<{ state: PlanExecutionQueueIssue; actions: React.R
 
 /**
  * How an issue stands in the plan's execution queue when a person may need to act:
- * which blocker holds it and why (with Retry and Skip), a skipped issue whose graph
- * dependents still wait, or a pending issue waiting on a skipped prerequisite.
- * Without `onAction` (a read-only plan) only the blocker explanation is shown.
+ * which blocker holds it and why (with Retry and Skip), a skipped issue (which the queue
+ * does not run again, and whose graph dependents may still wait on it), or a pending issue
+ * waiting on a skipped prerequisite. Without `onAction` (a read-only plan) only the blocker
+ * explanation is shown.
  */
 export const PlanIssueQueueNotice: React.FC<PlanIssueQueueNoticeProps> = ({ state, dependents = [], pendingAction = null, disabled = false, onAction }) => {
   const busy = pendingAction !== null;
@@ -65,18 +67,23 @@ export const PlanIssueQueueNotice: React.FC<PlanIssueQueueNoticeProps> = ({ stat
     return <BlockedNotice state={state} actions={onAction ? (
       <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5">
         {state.blockedKind !== 'setup_not_ready' && button('retry', 'Retry', <RotateCcw size={12} />, 'primary')}
-        {button('skip', 'Skip', <SkipForward size={12} />)}
+        {button('skip', skipLabel(dependents), <SkipForward size={12} />)}
         {dependents.length > 0 && button('skip_release', `Skip and start ${issueList(dependents)}`, <SkipForward size={12} />)}
       </div>
     ) : null} />;
   }
   // The other notices are offers to act; a read-only plan has none.
   if (!onAction) return null;
-  if (state.state === 'skipped' && dependents.length > 0 && state.skipSatisfiesDependents === false) {
+  if (state.state === 'skipped') {
+    // The queue has no un-skip: a skipped issue stays out of this execution.
+    const waiting = state.skipSatisfiesDependents === false ? dependents : [];
     return (
       <div data-testid="plan-queue-skipped" className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-        <span>Skipped. {issueList(dependents)} {dependents.length === 1 ? 'waits' : 'wait'} on it until you release {dependents.length === 1 ? 'it' : 'them'}.</span>
-        {button('skip_release', 'Release dependents', <SkipForward size={12} />)}
+        <span className="min-w-0">
+          Skipped. The queue does not run it again in this execution.
+          {waiting.length > 0 && ` ${issueList(waiting)} ${waiting.length === 1 ? 'waits' : 'wait'} on it.`}
+        </span>
+        {waiting.length > 0 && button('skip_release', `Start ${issueList(waiting)}`, <Play size={12} />)}
       </div>
     );
   }
@@ -87,10 +94,10 @@ export const PlanIssueQueueNotice: React.FC<PlanIssueQueueNoticeProps> = ({ stat
       <div data-testid="plan-queue-pending" className="mt-1 flex flex-wrap items-center justify-end gap-2 text-xs text-slate-600">
         {waitingOnSkipped.length > 0 && (
           <span data-testid="plan-queue-waiting-skipped" className="mr-auto">
-            Waiting on skipped {issueList(waitingOnSkipped)}. Release {waitingOnSkipped.length === 1 ? 'it' : 'them'} to start this issue.
+            Waiting on skipped {issueList(waitingOnSkipped)}. Start it from that row.
           </span>
         )}
-        {button('skip', 'Skip', <SkipForward size={12} />)}
+        {button('skip', skipLabel(dependents), <SkipForward size={12} />)}
       </div>
     );
   }

@@ -19,6 +19,7 @@ vi.mock('./usePlanIssuesManager', () => ({
       clearError: vi.fn(),
       implementingIssue: null,
       queuedIssueNumbers: new Set<number>(), queueRowProps: () => ({}),
+      issueCounts: { total: issues.length, merged: 0, underReview: 0, processing: 0, queued: 0, blocked: 0, skipped: 0, pending: 0, closed: 0 },
       queueingRemaining: false,
       handleQueueRemaining: vi.fn(),
       issueTitles: { 1725: 'Notification intents' },

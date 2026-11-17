@@ -58,4 +58,43 @@ describe('graph executions in the Planner Studio issue list', () => {
     expect(result.current.chainExecution).toBe(true);
     expect(result.current.getUnmergedIssuesBefore(4).map(entry => entry.issue_number)).toEqual([1, 2, 3]);
   });
+
+  describe('"After" metadata follows the active execution, not the persisted graph', () => {
+    const withPersisted = (dependsOn: Record<number, number[]>) => {
+      state.issues = state.issues.map(entry => ({ ...entry, depends_on_issues: dependsOn[entry.issue_number] ?? [] }));
+    };
+    const rowFor = async (issueNumber: number) => {
+      const { result } = renderHook(() => usePlanIssuesManager({ draftId: 'draft', tasks: [], useEpic: true }));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      const row = result.current.issues.find(entry => entry.issue_number === issueNumber)!;
+      return result.current.queueRowProps(row, false);
+    };
+
+    test('a sequential execution shows its chain prerequisite though the persisted dependencies are empty', async () => {
+      withPersisted({});
+      state.queue = queue('sequential');
+      const row = await rowFor(2);
+      expect(row.dependsOn).toEqual([1]);
+      expect(row.waitingOn).toEqual([1]);
+    });
+
+    test('a parallel execution enforces no edges, so persisted graph dependencies are not shown', async () => {
+      withPersisted({ 2: [1], 3: [1] });
+      const parallel = queue('parallel');
+      state.queue = { ...parallel, issueStates: (parallel.issueStates ?? []).map(entry => ({ ...entry, dependsOn: [], waitingOn: [] })) };
+      for (const issueNumber of [2, 3]) {
+        const row = await rowFor(issueNumber);
+        expect(row.dependsOn).toEqual([]);
+        expect(row.waitingOn).toEqual([]);
+      }
+    });
+
+    test('persisted dependencies are the fallback when the execution supplies none for the issue', async () => {
+      withPersisted({ 4: [1] });
+      state.queue = queue('graph');
+      const row = await rowFor(4);
+      expect(row.dependsOn).toEqual([1]);
+      expect(row.waitingOn).toEqual([1]);
+    });
+  });
 });

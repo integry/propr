@@ -28,6 +28,8 @@ interface PlanIssuesManagerProps {
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
   onIssuesChange?: (issues: PlanIssue[]) => void;
+  /** Reports the issue counts (queued, skipped, blocked, in review, running, merged) for the footer. */
+  onCountsChange?: (counts: import('./approvedPlanFooterStats').FooterStats) => void;
   refreshKey?: number;
   useEpic?: boolean;
   autoMerge?: boolean;
@@ -116,7 +118,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   tasks,
   onRefresh,
   onViewPlanClick,
-  onIssuesChange,
+  onIssuesChange, onCountsChange,
   refreshKey,
   useEpic,
   autoMerge,
@@ -146,7 +148,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   const {
     issues, agents, loading, error, clearError, implementingIssue,
     queuedIssueNumbers, queueingRemaining, handleQueueRemaining, chainExecution,
-    queueRowProps,
+    queueRowProps, issueCounts,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
@@ -190,6 +192,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }, [pendingImplementIssue, getUnmergedIssuesBefore]);
 
   useEffect(() => { onIssuesChange?.(issues); }, [issues, onIssuesChange]);
+  useEffect(() => { onCountsChange?.(issueCounts); }, [issueCounts, onCountsChange]);
 
   useEffect(() => {
     if (refreshKey !== undefined && refreshKey > 0) handleRefresh();
@@ -364,14 +367,14 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
               task={issueTaskMap[issue.issue_number]}
               draftId={draftId}
-              {...queueRowProps(issue.issue_number, isReadOnly)}
+              {...queueRowProps(issue, isReadOnly)}
             />
           ))}
         </div>
       )}
       <ExecuteAllBar
         remainingCount={pendingCount - queuedIssueNumbers.size}
-        queuedCount={queuedIssueNumbers.size}
+        queuedCount={issueCounts.queued} skippedCount={issueCounts.skipped} blockedCount={issueCounts.blocked}
         taskCount={issueCount}
         useEpic={useEpic}
         autoMerge={autoMerge}
@@ -416,7 +419,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                     disableImplementation={isSavingExecutionSettings || isReadOnly}
                     task={issueTaskMap[issue.issue_number]}
                     draftId={draftId}
-                    {...queueRowProps(issue.issue_number, isReadOnly)}
+                    {...queueRowProps(issue, isReadOnly)}
                   />
                 ))}
               </motion.div>

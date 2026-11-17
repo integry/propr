@@ -168,3 +168,26 @@ for (const width of [320, 390]) {
     await captureTarget(palette, `global-search-row-layout-${width}`);
   });
 }
+
+test('a plan without a name shows the first line of its prompt on one line', async ({ page }) => {
+  const prompt = '## Add official plugins for Linear, Jira and Slack with two-way issue, state and comment sync for every connected workspace\n\n'
+    + 'Each plugin registers its manifest, stores OAuth tokens, imports issues with label mapping and mirrors comments both ways. '
+    + 'The settings page shows connection health, and every sync writes an audit log entry so operators can trace a change back to its source.';
+  const unnamed = { ...plans[2], draft_id: 'plan-unnamed', name: null, initial_prompt: prompt };
+  await fixture(page, { width: 1286, height: 800 }, [], []);
+  await page.route('**/api/planner/drafts?**', route => route.fulfill({ json: { drafts: [unnamed], total: 1, page: 1, limit: 5, hasMore: false } }));
+  await page.route('**/api/tasks?**', route => route.fulfill({ json: { tasks: [], total: 0 } }));
+  await page.route('**/api/instance/catalog', route => route.fulfill({ json: { agents: [], repositories: [] } }));
+  await page.goto('/');
+  await page.getByRole('combobox', { name: 'Search' }).fill('plugins');
+  const option = page.getByTestId('global-search-palette').getByRole('option');
+  await expect(option).toHaveCount(1);
+  const firstLine = 'Add official plugins for Linear, Jira and Slack with two-way issue, state and comment sync for every connected workspace';
+  const title = option.locator('[data-search-option-title]');
+  await expect(title).toHaveText(firstLine);
+  await expect(title).toHaveAttribute('title', firstLine);
+  const metrics = await title.evaluate(element => ({ height: element.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(element).lineHeight) }));
+  expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight + 1);
+  await expect(option).not.toContainText('Each plugin registers');
+  await captureTarget(page.getByTestId('global-search-palette'), 'global-search-unnamed-plan');
+});
