@@ -16,6 +16,7 @@ import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeR
 import type { AnalyticsCache } from './analyticsCache.js';
 import { hasColumn } from './analyticsSchema.js';
 import { loadPullRequestCosts, type PullRequestSpend } from './reviewScoreSpend.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 
 interface ScoreRow {
   id: number;
@@ -294,7 +295,7 @@ export async function loadReviewScoreSummary(
     .select('id', 'repository_id', 'pr_number', 'task_id', 'implementer_model', 'implementer_agent', effort, 'score',
       'blocker_count', 'cycle_number', 'goal', 'goal_reached', 'created_at')
     .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }]);
-  if (repository !== 'all') query.where('repository_id', repository);
+  if (repository !== 'all') whereRepositoryMatches(query, 'repository_id', repository);
   whereCreatedWithin(query, 'created_at', analyticsWindow);
   const rows = await query as ScoreRow[];
 

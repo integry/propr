@@ -14,6 +14,7 @@ import type { Knex } from 'knex';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { hasColumn, hasTable } from './analyticsSchema.js';
 import { csvCell } from './reviewScoreStats.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 
 /** Grouping dimensions, in the order their columns appear. */
@@ -160,7 +161,7 @@ function executionRows(
   }
   whereCreatedWithin(query, 'e.start_time', window);
   if (scope.repositories) query.whereIn('t.repository', scope.repositories);
-  if (scope.repository && scope.repository !== 'all') query.where('t.repository', scope.repository);
+  if (scope.repository && scope.repository !== 'all') whereRepositoryMatches(query, 't.repository', scope.repository);
   return query;
 }
 

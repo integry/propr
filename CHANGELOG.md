@@ -211,7 +211,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bounded goal and task pages**: `GET /api/goals` without a `limit` now
   returns one page of 50 goals (at most 200 per request; follow
-  `nextOffset`), and `GET /api/tasks` accepts at most `limit=200`. The web
+  `nextOffset`). Every goal page, including that first one, is now newest
+  created first, so following `nextOffset` neither skips nor repeats a goal;
+  the read without paging parameters no longer sorts by latest update.
+  `GET /api/tasks` accepts at most `limit=200`. The web
   console walks the goal pages, and `propr task list --limit` rejects values
   above 200.
 - **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the

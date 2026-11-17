@@ -12,6 +12,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
 import { createRepositoryScopeResolver } from '../repositoryScope.js';
 import { createCostExportRoutes } from '../routes/costExport.js';
+import { collectNarrativeFacts } from '../routes/dashboardNarrative.js';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createRepoTodoRoutes } from '../routes/repoTodoRoutes.js';
@@ -96,6 +97,79 @@ test('cost, tasks and pull request scores match a configured repository in any c
   const drafts = await call(createPlannerRoutes({ db, repositoryScope }).listDrafts, { repository: 'INTEGRY/PROPR' });
   assert.equal(drafts.status, 200);
   assert.equal(drafts.body.drafts.length, 1);
+});
+
+test('a repository configured in another capitalization still reads its stored rows, under its configured name', async () => {
+  // Stored rows say `integry/propr`; the instance configures `Integry/ProPR`.
+  const configuredAs = createRepositoryScopeResolver({
+    configuredRepositories: async () => [{ name: 'Integry/ProPR', enabled: true }],
+    checksGitHubAccess: () => false,
+  });
+  const cost = createCostExportRoutes({ db, now: () => NOW, repositoryScope: configuredAs });
+  const stats = createStatsRoutes({ db, now: () => NOW, repositoryScope: configuredAs });
+  const scores = createReviewScoreRoutes({ db, now: () => NOW, repositoryScope: configuredAs });
+  const tasks = createTaskRoutes({ db, repositoryScope: configuredAs });
+  const dashboard = createDashboardRoutes({
+    db, repositoryScope: configuredAs, now: () => NOW,
+    redisClient: { sMembers: async () => [], hGetAll: async () => ({}) } as never,
+    taskQueue: { isPaused: async () => false, getActiveCount: async () => 0 } as never,
+    liveDetails: async () => null,
+    isSummaryEnabled: async () => false,
+  });
+  // Dashboard work sources beyond tasks: a plan issue waiting on a decision and a running goal.
+  await db('plan_issues').insert({ draft_id: 'draft-1', repository: 'integry/propr', issue_number: 9, status: 'under_review' });
+  await db('goals').insert({
+    goal_id: 'goal-1', owner_id: 'user-1', owner_login: 'alice', repository: 'integry/propr', objective: 'Ship', launch_strategy: 'direct',
+    initial_prompt: 'Ship', agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'model-a',
+    desired_state: 'running', current_task_id: 'goal-task-1', artifact_refs: '[]', artifact_stats: '{}',
+  });
+  await db('task_drafts').insert({ draft_id: 'draft-generating', user_id: 'user-1', repository: 'integry/propr', name: 'Generating', status: 'generating' });
+  try {
+    // The narrative reads the configured name it is given; a generating plan stored lowercase is live work.
+    const narrative = await collectNarrativeFacts(db, 'Integry/ProPR', NOW, { ownerId: 'user-1' });
+    assert.ok(narrative.facts.live.some(item => item.id === 'draft-generating'), 'narrative plans');
+
+    // Both the stored spelling and any other one resolve to the configured name and find the stored rows.
+    for (const spelling of ['integry/propr', 'INTEGRY/PROPR']) {
+      const json = await call(cost.getCost, { period: '7d', repository: spelling, group_by: 'repository' });
+      assert.equal(json.status, 200, spelling);
+      assert.equal(json.body.repository, 'Integry/ProPR', `${spelling}: the configured name is echoed`);
+      assert.equal(json.body.totals.executions, 1, `${spelling}: cost totals`);
+      assert.deepEqual(json.body.rows.map((row: Json) => [row.repository, row.executions]), [['integry/propr', 1]], `${spelling}: rows keep the stored name`);
+      const csv = await call(cost.getCostCsv, { period: '7d', repository: spelling, group_by: 'repository' });
+      assert.equal(csv.status, 200, spelling);
+      assert.equal(String(csv.body.sent).trimEnd().split('\r\n').length, 2, `${spelling}: the CSV has a data row: ${csv.body.sent}`);
+
+      const dashboardStats = await call(stats.getDashboardStats, { period: '7d', repository: spelling });
+      assert.equal(dashboardStats.body.repository, 'Integry/ProPR', spelling);
+      assert.equal(dashboardStats.body.tasks, 1, `${spelling}: dashboard stats`);
+
+      const scoreSummary = await call(scores.getSummary, { period: '7d', repository: spelling });
+      assert.equal(scoreSummary.status, 200, spelling);
+      assert.equal(scoreSummary.body.repository, 'Integry/ProPR', spelling);
+      assert.equal(scoreSummary.body.scores_recorded, 1, `${spelling}: review scores`);
+
+      const taskPage = await call(tasks.getTasks, { repository: spelling });
+      assert.equal(taskPage.body.total, 1, `${spelling}: tasks`);
+
+      const outcomes = await call(dashboard.getOutcomes, { repository: spelling });
+      assert.equal(outcomes.status, 200, `${spelling}: ${JSON.stringify(outcomes.body)}`);
+      assert.equal(outcomes.body.repository, 'Integry/ProPR', spelling);
+      assert.deepEqual(outcomes.body.items.map((item: Json) => item.taskId), ['task-1'], `${spelling}: completed work`);
+
+      const summary = await call(dashboard.getSummary, { repository: spelling });
+      assert.equal(summary.body.repository, 'Integry/ProPR', spelling);
+      assert.equal(summary.body.completedRecently, 1, `${spelling}: recent completions ${JSON.stringify(summary.body)}`);
+      const attention = await call(dashboard.getAttention, { repository: spelling });
+      assert.ok(attention.body.items.some((item: Json) => item.issueNumber === 9), `${spelling}: plan issue decision ${JSON.stringify(attention.body)}`);
+      const active = await call(dashboard.getActive, { repository: spelling });
+      assert.ok(JSON.stringify(active.body).includes('goal-1'), `${spelling}: running goal ${JSON.stringify(active.body)}`);
+    }
+  } finally {
+    await db('plan_issues').where({ draft_id: 'draft-1' }).delete();
+    await db('goals').where({ goal_id: 'goal-1' }).delete();
+    await db('task_drafts').where({ draft_id: 'draft-generating' }).delete();
+  }
 });
 
 test('repository media reads and projects a configured repository under its configured spelling', async () => {

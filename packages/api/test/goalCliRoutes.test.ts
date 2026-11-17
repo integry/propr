@@ -88,11 +88,11 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
       }),
     });
 
-    // The unpaginated dashboard read keeps its recency order and shape.
+    // A read without paging parameters is the first page of the same creation order the explicit pages walk.
     const dashboard = await call(routes.list, request(ownerId));
     assert.equal(dashboard.status, 200);
     assert.deepEqual(dashboard.body.goals.map((goal: Json) => goal.id),
-      ['goal-paused', 'goal-running', 'goal-completed', 'goal-failed']);
+      ['goal-running', 'goal-paused', 'goal-completed', 'goal-failed']);
     assert.equal(dashboard.body.nextOffset, null);
     // A read without a limit is one bounded page, not every goal.
     assert.equal(dashboard.body.limit, 50);
@@ -121,6 +121,18 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
     assert.deepEqual(await ids({ state: 'all', repository: otherRepository, limit: '20' }), ['goal-completed']);
     // The repository filter matches the configured repository in any capitalization.
     assert.deepEqual(await ids({ state: 'all', repository: 'ACME/Other', limit: '20' }), ['goal-completed']);
+    // A repository configured in another capitalization than its stored goals still finds them.
+    const configuredUpper = createGoalRoutes({
+      db, taskQueue: {} as never, redisClient: withLiveOutputReads({ get: async () => null }) as never,
+      previewReader: { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never,
+      repositoryScope: createRepositoryScopeResolver({
+        configuredRepositories: async () => [{ name: 'ACME/Other', enabled: true }], checksGitHubAccess: () => false,
+      }),
+    });
+    for (const spelling of ['acme/other', 'ACME/Other']) {
+      const scoped = await call(configuredUpper.list, request(ownerId, {}, { state: 'all', repository: spelling, limit: '20' }));
+      assert.deepEqual(scoped.body.goals.map((goal: Json) => goal.id), ['goal-completed'], spelling);
+    }
     const unknown = await call(routes.list, request(ownerId, {}, { repository: 'facebook/react' }));
     assert.equal(unknown.status, 404);
     assert.equal(unknown.body.code, 'REPOSITORY_NOT_ACCESSIBLE');
@@ -159,6 +171,45 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
       assert.equal(denied.status, 404);
       assert.doesNotMatch(JSON.stringify(denied.body), /Correction|abc1234/);
     }
+  } finally {
+    await db.destroy();
+    await closeEventPublisher();
+    await closeConnection();
+  }
+});
+
+test('following nextOffset from a parameterless goal list reads every goal exactly once', async () => {
+  const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+  try {
+    await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
+    // 51 goals: G1 is the oldest but was updated most recently; the rest were updated in creation order.
+    const at = (minute: number) => new Date(Date.UTC(2026, 8, 1, 0, minute)).toISOString().replace('T', ' ').slice(0, 19);
+    const ids = Array.from({ length: 51 }, (_, index) => `goal-${String(index + 1).padStart(2, '0')}`);
+    await db('goals').insert(ids.map((goalId, index) => ({
+      ...goalDefaults, goal_id: goalId, repository, current_task_id: `task-${goalId}`,
+      created_at: at(index), updated_at: index === 0 ? at(1000) : at(100 + index),
+    })));
+    const routes = createGoalRoutes({
+      db,
+      taskQueue: {} as never,
+      redisClient: withLiveOutputReads({ get: async () => null }) as never,
+      previewReader: { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never,
+    });
+
+    const read: string[] = [];
+    let page = await call(routes.list, request(ownerId));
+    assert.equal(page.status, 200);
+    assert.equal(page.body.goals.length, 50);
+    read.push(...page.body.goals.map((goal: Json) => goal.id));
+    let pages = 1;
+    while (page.body.nextOffset !== null) {
+      assert.ok(pages++ < 5, 'the continuation terminates');
+      page = await call(routes.list, request(ownerId, {}, { offset: String(page.body.nextOffset) }));
+      assert.equal(page.status, 200);
+      read.push(...page.body.goals.map((goal: Json) => goal.id));
+    }
+    assert.equal(read.length, ids.length, `every goal once: ${read.join(', ')}`);
+    assert.deepEqual([...read].sort(), ids);
   } finally {
     await db.destroy();
     await closeEventPublisher();
