@@ -118,6 +118,10 @@
     "automation-templates:generate": "tsx scripts/generate-automation-templates.ts",
     "automation-templates:check": "tsx scripts/generate-automation-templates.ts --check",
     "plugins:check": "tsx scripts/check-plugins.mjs",
+    "plugins:new": "tsx scripts/new-plugin.mjs",
+    "plugins:docs": "tsx scripts/gen-plugin-docs.mjs",
+    "plugins:docs:check": "tsx scripts/gen-plugin-docs.mjs --check",
+    "plugins:contract:update": "tsx scripts/update-plugin-contract.mjs",
     "docs:check-serving": "node scripts/check-docs-static-serving.mjs docs/build"
   },
   "keywords": [],

@@ -1045,6 +1045,24 @@ jobs:
             echo "✅ Plugin manifests are valid" >> build_log.txt
           fi
 
+          # The manifest reference, event payload table and SDK surface in
+          # docs/docs/plugins/authoring.md, the plugin catalog page, the
+          # manifest JSON Schema and the docs sidebar's plugin pages are
+          # generated from the zod schema, the plugin contract and the
+          # manifests; fail when any of them drifted, or when an official
+          # plugin has no docs page.
+          echo -e "\n--- Plugins: Generated Docs Check ---" >> build_log.txt
+          PLUGIN_DOCS_FAILED=0
+          PLUGIN_DOCS_OUTPUT=$(npm run plugins:docs:check 2>&1) || {
+            echo "❌ Plugin docs are out of date (run npm run plugins:docs)" >> build_log.txt
+            echo "$PLUGIN_DOCS_OUTPUT" >> build_log.txt
+            PLUGIN_DOCS_FAILED=1
+            EXIT_CODE=1
+          }
+          if [ $PLUGIN_DOCS_FAILED -eq 0 ]; then
+            echo "✅ Plugin docs are current" >> build_log.txt
+          fi
+
           # --- API REFERENCE ---
           # The OpenAPI spec is generated from the API route registry, published
           # by the docs site and consumed by @propr/client, so a change to any

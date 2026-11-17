@@ -49,6 +49,7 @@ import {
   createRelayCommand,
   createRuntimeCommand,
   createHandoffsCommand,
+  createPluginCommand,
   runChecks,
   printChecks,
   STACK_CONFIG_CHECK_NAME,
@@ -253,6 +254,7 @@ Command Groups:
   Automations:    automation [list|show|run|runs|report|approve|reject|cancel]   (Agents: saved automations)
   Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
   Handoffs:       handoffs [list|inspect|resume|release]   (admin recovery for PR follow-up publications)
+  Plugins:        plugin [list|show]   (read-only; instance administrators)
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|enable|disable|delete|pool]   (coding-agent configurations)
   Settings:       setting [get|update|reindex-summaries]
@@ -454,6 +456,7 @@ program.addCommand(createStatsCommand());
 program.addCommand(createAdmissionCommand());
 program.addCommand(createPrCommand());
 program.addCommand(createEventsCommand());
+program.addCommand(createPluginCommand());
 
 function isCliEntryPoint(): boolean {
   const invocation = process.argv[1];

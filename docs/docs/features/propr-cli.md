@@ -512,6 +512,19 @@ propr todo category move <id> 1
 propr todo category delete <id>          # Its todos become uncategorized
 ```
 
+## Plugins
+
+```bash
+propr plugin list [--json]        # Every plugin: name, category, version, state (available/installed/enabled, needs approval), repository limit
+propr plugin show <id> [--json]   # Permissions, connections and their state, contributions, what blocks enabling; --json adds the audit trail
+```
+
+Both are read-only and use the plugin REST API (`/api/instance/plugins/v1`),
+so they need an instance administrator with `instance.manage_settings`, as the
+Plugins page does. Install, configure and enable plugins on the
+[Plugins page](./plugins.md#the-plugins-page). The [catalog](../plugins/catalog.md)
+lists the official plugins.
+
 ## Settings, Logs, and System
 
 ```bash
