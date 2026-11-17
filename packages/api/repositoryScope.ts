@@ -195,7 +195,8 @@ export async function repositoryScopeOrRespond(
     return await (options.resolver ?? resolveRepositoryScope)(req, value, options);
   } catch (error) {
     if (await sendRepositoryScopeError(req, res, error, shape)) return null;
-    console.error(`Error resolving the repository of ${options.context ?? req.path}:`, error);
+    // The route name is passed as an argument, never as the format string: `req.path` is caller-controlled.
+    console.error('Error resolving the repository of %s:', options.context ?? req.path, error);
     sendFailure(res, shape, { status: 500, code: options.internalErrorCode ?? 'INTERNAL_ERROR', message: 'Failed to check repository access.' });
     return null;
   }
