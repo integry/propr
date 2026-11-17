@@ -10,7 +10,7 @@ import { ApprovedPlanHeader } from './ApprovedPlanHeader';
 import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { PlanFooterStats } from './ApprovedPlanFooter';
-import { buildFooterStats, buildCreationFooterStats } from './approvedPlanFooterStats';
+import { buildFooterStats, buildCreationFooterStats, type FooterStats } from './approvedPlanFooterStats';
 import { IDLE_PROGRESS, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
@@ -66,7 +66,10 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
   const baseBranch = draft.context_config?.baseBranch || 'main';
   const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
   const tasks: PlanTask[] = useMemo(() => parsePlanTasks(draft.plan_json), [draft.plan_json]);
-  const footerStats = useMemo(() => buildFooterStats(issues), [issues]);
+  // The issue list reports counts that know the execution queue (queued, skipped, blocked); until it
+  // does, count from the issues alone.
+  const [issueCounts, setIssueCounts] = useState<FooterStats | null>(null);
+  const footerStats = useMemo(() => issueCounts ?? buildFooterStats(issues), [issueCounts, issues]);
   const [creationProgress, setCreationProgress] = useState<IssueCreationProgress>(IDLE_PROGRESS);
   const isCreatingIssues = draft.status === 'executing' || creationProgress.status === 'in_progress';
   const creationStats = useMemo(
@@ -199,7 +202,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <ApprovedPlanHeader planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode && !isCreatingIssues) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} isCreatingIssues={isCreatingIssues} />
       <div className="flex-1 overflow-auto p-4">
-        <PlanIssuesManager draftId={draft.draft_id} repository={repository} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} onCreationProgressChange={setCreationProgress} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} notificationIntent={notificationIntent} onNotificationIntentConsumed={onNotificationIntentConsumed} />
+        <PlanIssuesManager draftId={draft.draft_id} repository={repository} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} onCountsChange={setIssueCounts} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} onCreationProgressChange={setCreationProgress} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} notificationIntent={notificationIntent} onNotificationIntentConsumed={onNotificationIntentConsumed} />
       </div>
       <PlanFooterStats stats={footerStats} creation={creationStats} onRefresh={handleRefresh} />
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />

@@ -20,6 +20,7 @@ import {
   getItemTitle,
   getRepoName,
   getSearchStatus,
+  isPromptTitledPlan,
   searchListboxId,
   searchOptionId,
   splitFailureReason,
@@ -133,7 +134,10 @@ export const SearchResultList: React.FC<ResultListProps> = ({ idPrefix, items, a
           >
             <Icon className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${active ? 'text-primary-600' : 'text-slate-400'}`} aria-hidden="true" />
             <span className="min-w-0 flex-1">
-              <span data-search-option-title className="block break-words text-sm font-medium leading-5 text-slate-900">{getItemTitle(item)}</span>
+              {/* A plan without a name would otherwise print its whole prompt; its first line stays on one line. */}
+              <span data-search-option-title
+                className={`block text-sm font-medium leading-5 text-slate-900 ${isPromptTitledPlan(item) ? 'truncate' : 'break-words'}`}
+                title={isPromptTitledPlan(item) ? getItemTitle(item) : undefined}>{getItemTitle(item)}</span>
               <ResultMeta item={item} />
             </span>
           </li>

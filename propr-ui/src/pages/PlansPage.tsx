@@ -395,12 +395,12 @@ const PlansPage: React.FC = () => {
                 onChange={setSearchQuery}
                 onClear={handleSearchClear}
                 label="Search plans"
-                className="hidden sm:block"
-                inputClassName="w-64"
+                // The search gives up width before the filters do (up to 16rem), so both fit beside the title.
+                className="hidden min-w-0 flex-1 sm:block sm:max-w-64"
               />
             )}
             {/* Filters row - inline on all screen sizes */}
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0 sm:flex-shrink-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
               <select
                 value={statusFilter}
@@ -423,7 +423,7 @@ const PlansPage: React.FC = () => {
                   onRepoChange={handleFilterChange}
                   variant="default"
                   labelLayout="stacked"
-                  className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[320px] sm:max-w-[320px]"
+                  className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[220px] xl:w-[320px] xl:max-w-[320px]"
                 />
               )}
             </div>

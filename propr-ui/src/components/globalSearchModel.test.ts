@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DraftListItem } from '../api/plannerApi';
 import type { TaskSearchResult } from '../hooks/useGlobalSearch';
-import { findSelectedRepository, formatTimeAgoPhrase, getItemState, getItemDescription, getPlansAction, getScopeAction, getSearchStatus, getShortcutModifierLabel, splitFailureReason } from './globalSearchModel';
+import { findSelectedRepository, formatTimeAgoPhrase, getItemState, getItemDescription, getItemTitle, isPromptTitledPlan, getPlansAction, getScopeAction, getSearchStatus, getShortcutModifierLabel, splitFailureReason } from './globalSearchModel';
 
 const plan = (name: string, initial_prompt: string) =>
   ({ kind: 'plan' as const, key: 'plan:1', plan: { draft_id: '1', repository: 'a/b', name, initial_prompt } as DraftListItem });
@@ -29,6 +29,14 @@ describe('globalSearchModel', () => {
     // Plans matched under All stay reachable through their own full search.
     expect(getPlansAction('all', { all: 2, repositories: 0, plans: 2, tasks: 0 }, 'mcp'))
       .toEqual({ label: 'Search all plans for "mcp"', path: '/plans?search=mcp' });
+  });
+
+  it('titles a plan by its name, or by the first line of its prompt', () => {
+    expect(getItemTitle(plan('Expose retrieval over MCP', 'Long prompt'))).toBe('Expose retrieval over MCP');
+    expect(isPromptTitledPlan(plan('Expose retrieval over MCP', 'Long prompt'))).toBe(false);
+    const unnamed = plan('', '\n## Add an official Linear plugin\n\nIt should sync issues both ways, map states, and keep comments.\n- one\n- two');
+    expect(getItemTitle(unnamed)).toBe('Add an official Linear plugin');
+    expect(isPromptTitledPlan(unnamed)).toBe(true);
   });
 
   it('drops a description that only restates the title', () => {
