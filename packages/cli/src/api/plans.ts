@@ -196,6 +196,49 @@ export async function listPlans(
   return response.data;
 }
 
+/** Most plans the server returns per page. */
+export const PLAN_LIST_MAX_LIMIT = 100;
+
+/** Server default page size when no limit is given. */
+export const PLAN_LIST_DEFAULT_LIMIT = 10;
+
+/**
+ * Lists `limit` plans starting at `offset` (0-based). The server pages by
+ * page number, so an offset that is not a multiple of the limit reads the
+ * two pages covering the window and slices it. The response keeps the
+ * `ListPlansResponse` shape, plus the `offset` it starts at.
+ */
+export async function listPlansWindow(
+  project: string,
+  window: { limit?: number; offset?: number } = {},
+  client?: ApiClient
+): Promise<ListPlansResponse & { offset?: number }> {
+  if (window.offset === undefined || window.offset === 0) {
+    const result = await listPlans(project, { limit: window.limit }, client);
+    return window.offset === undefined ? result : { ...result, offset: 0 };
+  }
+  const apiClient = client ?? (await createApiClient());
+  const limit = window.limit ?? PLAN_LIST_DEFAULT_LIMIT;
+  const offset = window.offset;
+  const page = Math.floor(offset / limit) + 1;
+  const skip = offset % limit;
+  const first = await listPlans(project, { page, limit }, apiClient);
+  let drafts = first.drafts.slice(skip);
+  if (skip > 0 && first.hasMore) {
+    const second = await listPlans(project, { page: page + 1, limit }, apiClient);
+    drafts = drafts.concat(second.drafts);
+  }
+  drafts = drafts.slice(0, limit);
+  return {
+    drafts,
+    total: first.total,
+    page: first.page,
+    limit,
+    offset,
+    hasMore: offset + drafts.length < first.total,
+  };
+}
+
 /**
  * Submits a new plan generation request.
  *

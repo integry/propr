@@ -117,6 +117,6 @@ export async function getCostExport(query: CostExportQuery = {}, client?: ApiCli
 /** The same export as CSV, exactly as the server renders it. */
 export async function getCostExportCsv(query: CostExportQuery = {}, client?: ApiClient): Promise<string> {
   const apiClient = client ?? (await createApiClient());
-  const response = await apiClient.get<string>(costExportPath("/api/stats/cost.csv", query));
+  const response = await apiClient.get<string>(costExportPath("/api/stats/cost.csv", query), { responseType: "csv" });
   return response.data;
 }

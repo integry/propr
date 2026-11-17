@@ -5,7 +5,7 @@ import type { McpTool, ToolDeps } from '../mcp/tools.js';
 import {
   assertSectionsConsistent, at, buildDeps, buildPrincipal, configuredRepositories,
   createActivityDatabase, ids, insertGoal, insertHistory, insertNotification, insertTask,
-  owner, repositories,
+  mcpConfig, owner, repositories,
 } from './fixtures/mcpActivity.js';
 
 const core = await import('@propr/core');
@@ -106,6 +106,81 @@ test('a repository configured for several base branches counts once against the 
   }
   const current = await callTool(deps, principal, 'get_current_activity');
   assert.deepEqual(ids(current.sections.runningTasks.items, task => task.taskId), ['run-alpha']);
+});
+
+test('a grant wider than twenty repositories is covered end to end; the only running task in the last one is reported', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  const names = Array.from({ length: 24 }, (_, index) => `acme/repo-${String(index).padStart(2, '0')}`);
+  repositories(...names);
+  const checked: string[] = [];
+  const deps = buildDeps(db);
+  const verify = deps.policy.repository.bind(deps.policy);
+  deps.policy.repository = async (principal, repository) => { checked.push(repository); await verify(principal, repository); };
+  const principal = buildPrincipal(names);
+  const last = names.at(-1)!;
+  await insertTask(db, { taskId: 'run-last', repository: last, createdAt: at(3_600_000) });
+  await insertHistory(db, { taskId: 'run-last', state: 'claude_execution', timestamp: at(600_000) });
+  await insertTask(db, { taskId: 'done-last', repository: last, createdAt: at(3_600_000) });
+  await insertHistory(db, { taskId: 'done-last', state: 'completed', timestamp: at(300_000) });
+
+  const current = await callTool(deps, principal, 'get_current_activity');
+  assert.deepEqual(current.repositories, names);
+  assert.equal(current.repositoriesTruncated, false);
+  assert.equal(current.repositoriesNotScanned, 0);
+  assert.deepEqual(ids(current.sections.runningTasks.items, task => task.taskId), ['run-last']);
+  // Access is checked once per granted repository, never once per section.
+  assert.equal(checked.length, names.length);
+
+  const recent = await callTool(deps, principal, 'get_recent_activity', { sinceMinutes: 60 });
+  assert.equal(recent.repositoriesNotScanned, 0);
+  assert.ok(recent.events.some((event: { reference: { taskId?: string } }) => event.reference.taskId === 'done-last'));
+
+  const { presentResult } = await import('../mcp/presentation.js');
+  const summary = presentResult(activityTool(deps, 'get_current_activity'), {}, current, mcpConfig).summary;
+  assert.match(summary, /^Across 24 repositories: 1 running tasks/);
+  assert.doesNotMatch(summary, /not scanned/);
+});
+
+test('repositories past the digest bound are counted and named in the summary', async t => {
+  const db = await createActivityDatabase();
+  t.after(() => db.destroy());
+  const names = Array.from({ length: 103 }, (_, index) => `acme/repo-${String(index).padStart(3, '0')}`);
+  repositories(...names);
+  const deps = buildDeps(db);
+  const principal = buildPrincipal(names);
+  const current = await callTool(deps, principal, 'get_current_activity');
+  assert.equal(current.repositories.length, 100);
+  assert.equal(current.repositoriesTruncated, true);
+  assert.equal(current.repositoriesNotScanned, 3);
+  const { presentResult } = await import('../mcp/presentation.js');
+  assert.match(presentResult(activityTool(deps, 'get_current_activity'), {}, current, mcpConfig).summary,
+    /3 granted repositories were not scanned; work there may be missing\.$/);
+});
+
+test('the pull request inventory walks a wide grant in repository windows', async () => {
+  const { inventoryRepositories } = await import('../mcp/pullRequestInventory.js');
+  const names = Array.from({ length: 24 }, (_, index) => `acme/repo-${String(index).padStart(2, '0')}`);
+  repositories(...names, 'acme/ungranted');
+  const deps = buildDeps({} as never, { forbidden: ['acme/repo-03'] });
+  const principal = buildPrincipal(names);
+
+  const first = await inventoryRepositories(principal, deps.policy);
+  assert.deepEqual(first.repositories, names.slice(0, 20).filter(name => name !== 'acme/repo-03'));
+  assert.equal(first.truncated, true);
+  assert.equal(first.notScanned, 4);
+  assert.equal(first.nextRepositoryOffset, 20);
+
+  const rest = await inventoryRepositories(principal, deps.policy, undefined, 20);
+  assert.deepEqual(rest.repositories, names.slice(20));
+  assert.equal(rest.notScanned, 20);
+  assert.equal(rest.nextRepositoryOffset, null);
+
+  const { presentResult } = await import('../mcp/presentation.js');
+  const tool = { name: 'list_pull_requests', readOnly: true } as McpTool;
+  assert.match(presentResult(tool, {}, { repositories: first.repositories, pullRequests: [], repositoriesNotScanned: 4,
+    nextRepositoryOffset: 20 }, mcpConfig).summary,
+  /^list pull requests: 0 pull requests in this page\. 4 granted repositories were not scanned; work there may be missing\. Continue with repositoryOffset 20\.$/);
 });
 
 test('current activity paginates sections and reports truncation', async t => {

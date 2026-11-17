@@ -112,7 +112,7 @@ export function createLogCommand(): Command {
     .addHelpText("after", `
 Examples:
   $ propr log list                      # List recent logs
-  $ propr log list -m claude-sonnet-4-20250514  # Filter by model
+  $ propr log list -m claude-sonnet-5-5  # Filter by model
   $ propr log list --failed             # Show failures only
 `);
 
@@ -133,7 +133,7 @@ Examples:
 Examples:
   $ propr log list                            # List recent logs
   $ propr log list -l 100 --page 2            # Paginated results
-  $ propr log list -m claude-sonnet-4-20250514            # Filter by model
+  $ propr log list -m claude-sonnet-5-5       # Filter by model
   $ propr log list --failed                   # Show failures only
   $ propr log list --draft abc123             # Filter by plan ID
   $ propr log list --agent my-claude          # Filter by agent
