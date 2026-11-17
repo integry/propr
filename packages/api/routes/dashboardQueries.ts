@@ -18,6 +18,7 @@
 
 import type { Knex } from 'knex';
 import { isPullRequestTask } from './pullRequestTaskIdentity.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 
 /** Worker lifecycle states the UI labels "Active"/"Implementing". */
 export const RUNNING_TASK_STATES = ['processing', 'claude_execution', 'post_processing', 'active'] as const;
@@ -196,7 +197,7 @@ export function latestTaskStateQuery(db: Knex, repository: string): Knex.QueryBu
         LIMIT 1
       )
     `);
-  if (repository && repository !== 'all') query.where('t.repository', repository);
+  if (repository && repository !== 'all') whereRepositoryMatches(query, 't.repository', repository);
   return query;
 }
 
@@ -255,7 +256,7 @@ export async function loadThreadWork(
       .select('t.task_id', 't.repository', 't.issue_number', 't.initial_job_data')
       // Ascending, so the last write for a thread is its newest run.
       .orderBy('t.created_at', 'asc');
-    if (repository && repository !== 'all') query.where('t.repository', repository);
+    if (repository && repository !== 'all') whereRepositoryMatches(query, 't.repository', repository);
     for (const row of await query as Array<Record<string, unknown>>) {
       const work: ThreadWork = { taskId: String(row.task_id), title: taskTitle(row.initial_job_data) };
       index.byThread.set(`${String(row.repository)}#${Number(row.issue_number)}`, work);
@@ -329,6 +330,6 @@ export function terminalTransitionQuery(
         LIMIT 1
       )
     `, bindings);
-  if (repository && repository !== 'all') query.where('t.repository', repository);
+  if (repository && repository !== 'all') whereRepositoryMatches(query, 't.repository', repository);
   return query;
 }

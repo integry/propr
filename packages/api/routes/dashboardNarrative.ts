@@ -7,6 +7,7 @@ import { phaseLabel, RECENT_COMPLETION_WINDOW_HOURS, toIso } from './dashboardQu
 import { loadDashboardWork, loadRunningDashboardGoals } from './dashboardWorkQueries.js';
 import { loadCompletedRows, OutcomeProjectionError } from './dashboardOutcomeQueries.js';
 import { EMPTY_LIVE_ACTIVITY, MAX_LIVE_DETAIL_LOOKUPS, type LiveActivity } from './dashboardLiveActivity.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 
 export type NarrativeModel = () => Promise<{
   id: string;
@@ -110,7 +111,7 @@ export async function collectNarrativeFacts(
     ? db('task_drafts')
       .where({ user_id: options.ownerId })
       .whereIn('status', ['generating', 'refining'])
-      .modify(query => { if (repository !== 'all') query.where({ repository }); })
+      .modify(query => { if (repository !== 'all') whereRepositoryMatches(query, 'repository', repository); })
       .select('draft_id', 'repository', 'name', 'initial_prompt', 'status', 'generation_trace', 'refinement_result', 'updated_at')
       .orderBy('updated_at', 'desc')
       .limit(MAX_LIVE_DETAIL_LOOKUPS)

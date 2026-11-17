@@ -64,7 +64,8 @@ function sendApiError(req: IncomingMessage, res: ServerResponse, error: unknown)
   const { status, body } = describeApiError(error);
   if (status >= 500) {
     // Log the cause server-side only; the response never carries it.
-    console.error(`[api] Unhandled error for ${req.method} ${(req.url ?? '').split('?')[0]}:`, error);
+    // Constant format string: the method and path are request-controlled, so they go in as arguments.
+    console.error('[api] Unhandled error for %s %s:', String(req.method), (req.url ?? '').split('?')[0], error);
   }
   if (res.headersSent) {
     // Matches Express: a started response cannot be replaced, so end the connection.

@@ -10,6 +10,7 @@ import { advanceOutcomeProjection, installOutcomeProjection, loadCompletedRows, 
 import { collectNarrativeFacts } from '../routes/dashboardNarrative.js';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import { call, createDashboardTestDatabase, seedTask, minutesAgo, NOW } from './dashboardTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 async function fixture(count = 2) {
   const directory = await mkdtemp(join(tmpdir(), 'dashboard-reads-'));
@@ -105,7 +106,7 @@ for (const mode of ['memory', 'disabled', 'legacy'] as const) {
       await seedTask(db, { taskId: 'outside', repository: 'other/repo', states: [{ state: 'completed', timestamp: minutesAgo(0) }] });
       const query = { search: 'ÄNDERUNG', limit: 1 };
       assert.deepEqual(await service.load.summary!('integry/propr', query), await loadCompletedRows(db, 'integry/propr', query));
-      const routes = createDashboardRoutes({ db, redisClient: {} as never,
+      const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver, db, redisClient: {} as never,
         taskQueue: { isPaused: async () => false, getActiveCount: async () => 0 },
         liveDetails: async () => null, completedRows: service.load, now: () => NOW,
         narrativeModel: async () => ({ id: 'test', generate: async prompt => {
@@ -148,7 +149,7 @@ test('outcomes and narrative route their completion reads through the supplied s
   const data = await fixture();
   const service = await startDashboardReadService(data.db);
   const calls: Array<{ repository: string; limit?: number; search?: string }> = [];
-  const routes = createDashboardRoutes({
+  const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db: data.db, redisClient: {} as never,
     taskQueue: { isPaused: async () => false, getActiveCount: async () => 0 },
     liveDetails: async () => null,
@@ -189,7 +190,7 @@ for (const summaryLoader of ['supplied', 'direct'] as const) {
       ? Object.assign(legacy, { summary: (repository: string, options?: { limit?: number; search?: string }) =>
         loadOutcomeSummaries(data.db, repository, options) })
       : legacy;
-    const routes = createDashboardRoutes({ db: data.db, redisClient: {} as never,
+    const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver, db: data.db, redisClient: {} as never,
       taskQueue: { isPaused: async () => false, getActiveCount: async () => 0 },
       liveDetails: async () => null, completedRows, now: () => NOW,
       narrativeModel: async () => ({ id: 'test', generate: async prompt => {
@@ -274,7 +275,7 @@ test('summary failures other than not-ready do not invoke the legacy fallback', 
       const completedRows = Object.assign(async () => { legacyCalls++; return []; }, {
         summary: async () => { await Promise.resolve(); throw error; },
       });
-      const routes = createDashboardRoutes({ db, redisClient: {} as never,
+      const routes = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver, db, redisClient: {} as never,
         taskQueue: {} as never, liveDetails: async () => null, completedRows });
       const response = await call(routes.getOutcomes, { view: 'summary' });
       assert.equal(response.status, error instanceof OutcomeProjectionError ? 409 : 500);

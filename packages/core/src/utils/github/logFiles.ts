@@ -32,6 +32,8 @@ interface IssueRef {
 
 interface CompletionCommentOptions {
     publishedAs?: 'pull_request' | 'issue_comment';
+    /** The task page; linked in place of log locations, which are internal to the worker. */
+    taskUrl?: string;
     /** The run's diff; with changes, the parts include a review digest. */
     review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig; acceptanceCriteria?: readonly AcceptanceCriterion[] };
 }
@@ -259,7 +261,8 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
     if (claudeResult?.conversationId) {
         lines.push(`- Conversation ID: \`${claudeResult.conversationId}\``);
     }
-    if (claudeResult?.model) {
+    // Placeholders such as `<synthetic>` name no model a reader could act on.
+    if (claudeResult?.model && !/^<[^>]*>$/.test(claudeResult.model.trim())) {
         const modelDisplayName = getModelName(claudeResult.model);
         lines.push(`- LLM Model: ${modelDisplayName}`);
     }
@@ -298,8 +301,11 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
         `- Repository: ${issueRef.repoOwner}/${issueRef.repoName}`,
         `- Status: ${status}`,
         `- Execution Time: ${executionTimeStr}`,
-        `- Tokens used: ${formatTokens(totalTokens)} tokens [${formatTokens(inputTokens)} input + ${formatTokens(outputTokens)} output]`,
-        `- API cost: $${cost.toFixed(2)}`,
+        // A run that never called a model has no usage to report.
+        ...(totalTokens > 0 || cost > 0 ? [
+            `- Tokens used: ${formatTokens(totalTokens)} tokens [${formatTokens(inputTokens)} input + ${formatTokens(outputTokens)} output]`,
+            `- API cost: $${cost.toFixed(2)}`,
+        ] : []),
         `- Timestamp: ${formattedTimestamp}`,
         ...buildOptionalDetails(claudeResult)
     ];
@@ -345,33 +351,12 @@ function buildSummarySection(claudeResult: ClaudeResult): string {
     return section;
 }
 
-function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): string {
-    if (Object.keys(logFiles).length === 0) return '';
-    const lines = ['**Detailed Logs:**'];
-    if (logFiles.conversation && claudeResult.conversationLog?.length) {
-        lines.push(`- Conversation: ${claudeResult.conversationLog.length} messages`);
-        lines.push(`- Session: \`${claudeResult.sessionId}\``);
-    }
-    lines.push('\nLog files stored at:');
-    Object.entries(logFiles).forEach(([type, filePath]) => lines.push(`- ${type}: \`${filePath}\``));
-    lines.push('\n<details>\n<summary>Latest Conversation Messages</summary>\n');
-    if (claudeResult.conversationLog?.length) {
-        lines.push('```');
-        claudeResult.conversationLog.slice(-3).forEach(msg => {
-            if (msg.type === 'assistant') {
-                const rawContent = msg.message?.content
-                    ?.map(block => block.text)
-                    .filter(Boolean)
-                    .join('\n') || '[content unavailable]';
-                const content = redactSecrets(rawContent);
-                const preview = content.substring(0, 200);
-                lines.push(`ASSISTANT: ${preview}${content.length > 200 ? '...' : ''}\n`);
-            }
-        });
-        lines.push('```');
-    }
-    lines.push('</details>\n');
-    return lines.join('\n') + '\n';
+/**
+ * Where to read the run in detail. Log file paths, session ids and conversation
+ * excerpts are internal to the worker and stay on the task page.
+ */
+function buildTaskLinkSection(taskUrl: string | undefined): string {
+    return taskUrl ? `[View task](${taskUrl}) for the run's logs and conversation.\n\n` : '';
 }
 
 export interface CompletionCommentParts {
@@ -385,7 +370,7 @@ export interface CompletionCommentParts {
     reviewDigest: ReviewDigest | null;
     /** Container-observed repository validation report. */
     validation: string;
-    /** Log file locations and the latest conversation messages. */
+    /** Link to the task page, which holds the run's logs; empty without a task URL. */
     logs: string;
     /** Attribution line; generateCompletionComment puts a horizontal rule above it. */
     trailer: string;
@@ -401,10 +386,9 @@ export async function generateCompletionCommentParts(
     const timestamp = new Date().toISOString();
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
     const execution = await buildExecutionDetails(result, issueRef, timestamp);
-    let logs = '';
+    const logs = buildTaskLinkSection(options.taskUrl);
     try {
-        const logFiles = await createLogFiles(result, issueRef);
-        logs = buildLogFilesSection(logFiles, result);
+        await createLogFiles(result, issueRef);
     } catch (logError) {
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');

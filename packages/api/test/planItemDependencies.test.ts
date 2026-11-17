@@ -10,6 +10,7 @@ import { createFinalizeHandler } from '../routes/plannerActionHandlers.js';
 import { listPlanRevisions, restorePlanRevision } from '../routes/plannerHelpers/planRevisions.js';
 import { runBackgroundRefinement } from '../routes/plannerHelpers/refineBackground.js';
 import type { McpPolicy, McpPrincipal } from '../mcp/policy.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 after(async () => closeConnection());
 
@@ -53,7 +54,7 @@ function mcp(db: Knex, request: McpPrincipal['github']['request'] = (async () =>
 async function restUpdate(db: Knex, body: Record<string, unknown>): Promise<{ statusCode: number; body: Record<string, unknown> }> {
   const response = { statusCode: 200, body: {} as Record<string, unknown> };
   const res = { status(code: number) { response.statusCode = code; return res; }, json(value: Record<string, unknown>) { response.body = value; return res; } };
-  await createPlannerRoutes({ db }).updateDraft({ params: { id: draftId }, user: { id: userId }, body } as never, res as never);
+  await createPlannerRoutes({ repositoryScope: unscopedRepositoryResolver, db }).updateDraft({ params: { id: draftId }, user: { id: userId }, body } as never, res as never);
   return response;
 }
 

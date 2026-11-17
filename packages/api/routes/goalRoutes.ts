@@ -43,6 +43,7 @@ import {
   sqliteTimestampMs,
 } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { ALL_REPOSITORIES, repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { rememberCreator } from '../services/creatorProjection.js';
 import { loadGoalCreators, serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
@@ -57,6 +58,7 @@ import { goalInputPage } from '../mcp/goalTaskDetail.js';
 import { GoalWaitError, waitForGoal } from '../services/goalWait.js';
 import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import { demoGoalRepositories, type DemoRepositoryLoader } from '../services/demoGoalScope.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 import {
   appendGoalAttachments,
   deleteGoalAttachmentDirectory,
@@ -85,6 +87,8 @@ interface GoalRoutesDeps {
   loadVisualPreviewSettings?: typeof loadRepositoryVisualPreviewSettings;
   getOctokit?: typeof getAuthenticatedOctokit;
   waitForGoal?: typeof waitForGoal;
+  /** Resolves the list's `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
 }
 
 const cannedInputs = {
@@ -243,20 +247,21 @@ function parsePage(
   return { offset, limit };
 }
 
-const GOAL_LIST_MAX_LIMIT = 200;
+/** A goal list read without a limit is one page of this size; `nextOffset` continues it. */
+export const GOAL_LIST_DEFAULT_LIMIT = 50;
+export const GOAL_LIST_MAX_LIMIT = 200;
 const GOAL_LIST_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 function parseGoalListQuery(query: Record<string, unknown>): {
-  repository?: string; state?: GoalListState; offset: number; limit: number; paginated: boolean;
+  repository?: string; state?: GoalListState; offset: number; limit: number;
 } | { error: string } {
   const repository = queryValue(query, 'repository');
   if (repository !== undefined && !GOAL_LIST_REPOSITORY_PATTERN.test(repository)) return { error: 'repository must be in owner/repo format' };
   const state = queryValue(query, 'state');
   if (state !== undefined && !isGoalListState(state)) return { error: `state must be one of ${GOAL_LIST_STATES.join(', ')}` };
-  const page = parsePage(query, { defaultLimit: GOAL_LIST_MAX_LIMIT, maxLimit: GOAL_LIST_MAX_LIMIT });
+  const page = parsePage(query, { defaultLimit: GOAL_LIST_DEFAULT_LIMIT, maxLimit: GOAL_LIST_MAX_LIMIT });
   if ('error' in page) return page;
-  const paginated = queryValue(query, 'offset') !== undefined || queryValue(query, 'limit') !== undefined;
-  return { repository, state: state === 'all' ? undefined : state, ...page, paginated };
+  return { repository, state: state === 'all' ? undefined : state, ...page };
 }
 
 type AgentSelection = { agent: Agent } | { error: string; status: number };
@@ -394,18 +399,22 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
     const listQuery = parseGoalListQuery(req.query ?? {});
     if ('error' in listQuery) return void res.status(400).json({ error: listQuery.error });
-    const { repository, state, offset, limit, paginated } = listQuery;
+    const { state, offset, limit } = listQuery;
+    const scoped = listQuery.repository === undefined ? ALL_REPOSITORIES
+      : await repositoryScopeOrRespond(req, res, listQuery.repository, { resolver: deps.repositoryScope ?? resolveRepositoryScope, allowAll: false, context: '/api/goals' });
+    if (scoped === null) return;
+    const repository = scoped === ALL_REPOSITORIES ? undefined : scoped;
     const demoRepositories = await demoGoalRepositories(req, deps.loadDemoRepositories);
     const rows = await timeApiStage('sql.goals.list', () => {
       const query = demoRepositories
         ? deps.db<GoalRow>('goals').whereIn('repository', demoRepositories)
         : deps.db<GoalRow>('goals').where({ owner_id: ownerId });
-      if (repository) query.where('repository', repository);
+      if (repository) whereRepositoryMatches(query, 'repository', repository);
       applyGoalLifecycleFilter(query, state);
-      // Explicit pages use the immutable creation order so a goal updated mid-walk is neither
-      // skipped nor repeated; the unpaginated dashboard read keeps its recency order.
-      if (paginated) query.orderBy('created_at', 'desc').orderBy('goal_id', 'desc');
-      else query.orderBy('updated_at', 'desc');
+      // Every page, including the one read without paging parameters, uses the immutable
+      // creation order, so following `nextOffset` neither skips nor repeats a goal, even one
+      // updated mid-walk. A client that shows goals by recent activity sorts what it read.
+      query.orderBy('created_at', 'desc').orderBy('goal_id', 'desc');
       return query.offset(offset).limit(limit);
     });
     const creators = await loadGoalCreators(rows);

@@ -97,7 +97,7 @@ describe('buildReviewComment', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
-                response: '## Actionable Findings\nNo actionable findings.\n\n## Score\nScore: 10/10',
+                response: '## Overall Evaluation\nLooks focused.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\n**Score: 8/10**',
                 modelUsed: 'claude-sonnet',
                 executionTimeMs: 1000,
                 success: true,
@@ -383,7 +383,9 @@ describe('buildReviewComment', () => {
             { firstFindingNumber: 3, changedFilePaths: ['src/changed.ts'] },
         );
 
-        assert.ok(formatted.includes('Review output was invalid and could not be displayed safely.'));
+        assert.ok(formatted.includes('⚠️ **Review output was invalid.** The review cited files this pull request does not change, so it is not shown.'));
+        assert.ok(!formatted.includes('**Next step:**'));
+        assert.match(formatted, /<!-- propr:ai-review model="claude-sonnet" error="true" -->/);
         assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
         assert.strictEqual(getNextActionableFindingNumber([formatted]), 1);
     });
@@ -495,7 +497,7 @@ describe('buildReviewComment', () => {
             },
         );
 
-        assert.ok(formatted.includes('Review output was invalid and could not be displayed safely.'));
+        assert.ok(formatted.includes('⚠️ **Review output was invalid.** The review output could not be parsed, so it is not shown.'));
         assert.doesNotMatch(formatted, /violatedRequirement|introducedByPR|requiredForMerge|minimumCorrection/);
         assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
     });
@@ -504,7 +506,7 @@ describe('buildReviewComment', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
-                response: '## Overall Evaluation\nLooks focused.\n\n## Findings\n✅ **Positive** — Fine.\n\n## Score\n**Score: 8/10**',
+                response: '## Overall Evaluation\nLooks focused.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\n**Score: 8/10**',
                 modelUsed: 'claude-sonnet',
                 executionTimeMs: 1200,
                 success: true,
@@ -586,7 +588,7 @@ describe('buildReviewComment', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             {
-                response: '## Overall Evaluation\nLooks focused.\n\n## Findings\n✅ **Positive** — Fine.\n\n## Score\n**Score: 8/10**',
+                response: '## Overall Evaluation\nLooks focused.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\n**Score: 8/10**',
                 modelUsed: 'claude-opus-4-8',
                 executionTimeMs: 153000,
                 success: true,

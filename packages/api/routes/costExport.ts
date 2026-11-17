@@ -14,7 +14,8 @@ import type { Knex } from 'knex';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { hasColumn, hasTable } from './analyticsSchema.js';
 import { csvCell } from './reviewScoreStats.js';
-import { validateRepositoryFilter } from './validation.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 
 /** Grouping dimensions, in the order their columns appear. */
 export const COST_GROUP_KEYS = ['day', 'repository', 'agent', 'model', 'reasoning_level', 'execution_type', 'outcome'] as const;
@@ -160,7 +161,7 @@ function executionRows(
   }
   whereCreatedWithin(query, 'e.start_time', window);
   if (scope.repositories) query.whereIn('t.repository', scope.repositories);
-  if (scope.repository && scope.repository !== 'all') query.where('t.repository', scope.repository);
+  if (scope.repository && scope.repository !== 'all') whereRepositoryMatches(query, 't.repository', scope.repository);
   return query;
 }
 
@@ -255,24 +256,25 @@ export function costExportCsv(costExport: CostExport): string {
   return `${lines.join('\r\n')}\r\n`;
 }
 
-export function createCostExportRoutes({ db, now = () => new Date() }: { db: Knex; now?: () => Date }) {
+export function createCostExportRoutes({ db, now = () => new Date(), repositoryScope = resolveRepositoryScope }: {
+  db: Knex; now?: () => Date;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
+}) {
   async function readExport(req: Request, res: Response): Promise<CostExport | null> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
     if (analyticsWindow === false) return null;
     // Validate what was sent: repeated or nested parameters are not a string,
     // and defaulting them to `all` would widen the export to every repository.
-    const validation = validateRepositoryFilter(req.query.repository);
-    if (!validation.valid) {
-      res.status(400).json({ error: validation.error });
-      return null;
-    }
-    const repository = typeof req.query.repository === 'string' && req.query.repository ? req.query.repository : 'all';
+    // The filter resolves to the configured spelling, so any capitalization finds its rows.
+    const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: '/api/stats/cost' });
+    if (repository === null) return null;
     const groupBy = parseCostGroupBy(req.query.group_by);
     if ('invalid' in groupBy) {
       res.status(400).json({ error: `group_by must be a comma-separated list of: ${COST_GROUP_KEYS.join(', ')}` });
       return null;
     }
-    return await loadCostExport(db, analyticsWindow, groupBy.keys, { repository: repository === 'all' ? 'all' : repository.trim() });
+    return await loadCostExport(db, analyticsWindow, groupBy.keys, { repository });
   }
 
   async function getCost(req: Request, res: Response): Promise<void> {

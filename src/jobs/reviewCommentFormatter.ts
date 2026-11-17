@@ -12,6 +12,7 @@
 
 import { getModelName, type AnalysisResult } from '@propr/core';
 import { formatFixCommand } from '@propr/shared';
+import { stripUpstreamPageTitles } from './upstreamPageTitle.js';
 import type { ReviewAssignment } from './prReviewRunner.js';
 import { countFindingsByCategory, type ReviewFindingCategoryCounts } from './reviewFindingCategory.js';
 import {
@@ -209,7 +210,7 @@ export function buildReviewComment(
         changedFilePaths: options.changedFilePaths,
     });
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
+    comment += publicResponse ?? `⚠️ **Review output was invalid.** ${describeInvalidReviewOutput(sanitizedResponse)}`;
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -239,6 +240,15 @@ export function buildReviewComment(
         comment += formatOmittedDiffFilesForComment(omittedDiffFiles, omissionReasons);
     }
 
+    const executionMetadata = reviewExecutionMetadata(options);
+    const partialReviewMetadata = isPartialReview ? ' partial="true"' : '';
+    if (!publicResponse) {
+        // Nothing was published, so there is nothing to /fix and the comment is an error review.
+        comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;
+        comment += `\n<!-- propr:ai-review model="${effectiveModel}" error="true"${partialReviewMetadata}${executionMetadata} -->`;
+        return comment;
+    }
+
     // --- /fix instructions ---
     comment += `\n\n---\n`;
     comment += `> 💡 **Next step:** Comment \`/fix\` to address every F# merge blocker, \`/fix all\` for every pending blocker and suggestion, or name records explicitly, as in \`/fix F3 S5\`.\n`;
@@ -247,8 +257,6 @@ export function buildReviewComment(
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;
-    const executionMetadata = reviewExecutionMetadata(options);
-    const partialReviewMetadata = isPartialReview ? ' partial="true"' : '';
     comment += `\n<!-- propr:ai-review model="${effectiveModel}"${partialReviewMetadata}${executionMetadata} -->`;
 
     return comment;
@@ -339,6 +347,22 @@ function formatOmittedDiffFilesForComment(omittedFiles: string[], reasons: Omitt
     ].join('\n');
 }
 
+/** One sentence saying why a successful reviewer call produced nothing publishable. */
+export function describeInvalidReviewOutput(response: string): string {
+    if (!response.trim()) return 'The reviewer returned no text.';
+    return parsePublishableReview(response)
+        ? 'The review cited files this pull request does not change, so it is not shown.'
+        : 'The review output could not be parsed, so it is not shown.';
+}
+
+/** One sentence saying why a reviewer call failed; never empty. */
+export function describeReviewFailure(errorMessage: string | undefined): string {
+    const detail = stripUpstreamPageTitles((errorMessage ?? '').split('\n').map(line => line.trim()).find(Boolean) ?? '');
+    if (!detail || /^unknown error\.?$/i.test(detail)) return 'The provider call failed without an error message.';
+    const bounded = detail.length > 300 ? `${detail.slice(0, 300)}…` : detail;
+    return `The provider call failed: ${/[.!?…]$/.test(bounded) ? bounded : `${bounded}.`}`;
+}
+
 /**
  * Build the GitHub comment body for a *failed* review.
  */
@@ -349,7 +373,12 @@ export function buildReviewErrorComment(
 ): string {
     return (
         `## 🔍 AI Code Review — ${label}\n\n` +
-        `❌ **Review failed:** ${errorMessage}\n\n` +
+        `❌ **Review failed.** ${describeReviewFailure(errorMessage)}\n\n` +
         `<!-- propr:ai-review model="${model}" error="true" -->`
     );
+}
+
+/** Whether a posted review comment is an error review (failed or invalid output). */
+export function isErrorReviewComment(body: string | null | undefined): boolean {
+    return !!body && /<!--\s*propr:ai-review\b[^>]*\berror\s*=\s*["']true["'][^>]*-->/i.test(body);
 }

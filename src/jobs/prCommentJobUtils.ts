@@ -14,6 +14,7 @@ import {
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { DEFAULT_FOLLOWUP_COMMIT_SUBJECT } from './followupCommitSubject.js';
+import { buildFollowupFailureCommentBody } from './prCommentFailureComment.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
@@ -318,11 +319,10 @@ async function handleGenericError(error: Error, job: Job<CommentJobData>, option
     }
     if (octokit && startingWorkComment) {
         try {
-            const realCommentIds = filterRealComments(unprocessedComments).map(comment => comment.id);
-            const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `${options.followupHandoff ? normalFailureHandoffMarkers(options.followupHandoff) + '\n\n' : ''}${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `An error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\``}\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
+                body: buildFollowupFailureCommentBody({ prefixes: [options.followupHandoff && normalFailureHandoffMarkers(options.followupHandoff), options.publicationStatus], authorsText,
+                    errorMessage: sanitizedMessage, pushFailureMarkdown: pushFailure ? formatPushFailureMarkdown(pushFailure) : undefined, comments: unprocessedComments, taskId }),
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');

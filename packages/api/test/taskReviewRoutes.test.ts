@@ -4,12 +4,13 @@ import type { Request, Response } from 'express';
 import {
   state, claims, redis, acceptedJobs, add, request, database, createTaskRoutes,
 } from './taskFollowupFixture.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 async function postReview(overrides: Record<string, unknown> = {}, user: unknown = { id: 'user-1', login: 'human' }) {
   const result = { status: 200, json: {} as Record<string, unknown> };
   const response = { status(code: number) { result.status = code; return this; },
     json(payload: Record<string, unknown>) { result.json = payload; return this; } } as unknown as Response;
-  await createTaskRoutes({ db: database,
+  await createTaskRoutes({ repositoryScope: unscopedRepositoryResolver, db: database,
     resolveMetadataToken: async () => 'fixture-token', verifyRepositoryAccess: async () => {},
     reviewAssignmentGate: async () => ({ allowed: true, reason: 'author_assigned' }), ...overrides,
   }).postReview({ params: { taskId: 'completed-task' }, user } as unknown as Request, response);
