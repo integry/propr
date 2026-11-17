@@ -84,6 +84,8 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
           const id = `agent-capability-${capability}`;
           return (
             <li key={capability} className="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-x-3">
+              {/* A label around the 16px box answers a tap across 32px on touch layouts. */}
+              <label htmlFor={id} className="touch-hit mt-0.5 inline-flex h-4 w-4">
               <input
                 id={id}
                 type="checkbox"
@@ -92,8 +94,9 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
                 disabled={disabled || locked}
                 onChange={event => toggle(capability, event.target.checked)}
                 aria-describedby={hint ? `${id}-description ${id}-hint` : `${id}-description`}
-                className="mt-0.5 h-4 w-4 flex-none rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-50"
+                className="h-4 w-4 flex-none rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-50"
               />
+              </label>
               <div className="min-w-0">
                 <label htmlFor={id} className={`text-sm font-medium ${locked ? 'text-slate-400' : 'text-slate-900'}`}>
                   {text.label}

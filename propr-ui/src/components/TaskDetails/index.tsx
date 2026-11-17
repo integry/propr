@@ -11,7 +11,7 @@ import ResultOverview from './ResultOverview';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
-import ContextStrip, { ConsumptionGroup, MobileGitContext, MobilePeopleRuntime } from './ContextStrip';
+import { ConsumptionGroup, MobileGitContext, MobilePeopleRuntime } from './ContextStrip';
 import ActionBar from './ActionBar';
 import TaskHeader, { ReturnToRunButton } from './TaskHeader';
 import ProgressBar from './ProgressBar';
@@ -35,14 +35,10 @@ import { useTaskPullRequestScores } from './pullRequestScores';
 import { followupTargetFor, getEmptyTraceMessage, hasFollowupTarget, isAutomationReportTask, taskLabelMode } from './taskKind';
 import { useTaskFollowup } from './useTaskFollowup';
 import FollowupHandoffBanner from './FollowupHandoffBanner';
-import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_STATIC, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
+import { CompactHeaderLine, MOBILE_COMPACT_BAR_HEIGHT, ShortTaskHeader, type MobileHeaderProps } from './CompactTaskHeader';
+import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_MEASURE_ONLY, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
 
 
-type MobileHeaderProps = {
-  contextStripProps: React.ComponentProps<typeof ContextStrip>;
-  actionBarProps: React.ComponentProps<typeof ActionBar>;
-  todos: React.ComponentProps<typeof ProgressBar>['todos'];
-};
 
 /** The full mobile summary scrolls away with the title; the compact bar stands in for it once it's gone. */
 const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ contextStripProps, actionBarProps, todos }, ref) => (
@@ -64,13 +60,10 @@ const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ con
 ));
 MobileSummary.displayName = 'MobileSummary';
 
-/** Height of the compact bar; sections pin their own headers just below it. */
-const MOBILE_COMPACT_BAR_HEIGHT = 44;
+
 
 /**
- * One fixed-height line: the pull request and the task's title on the left,
- * the overflow (and Stop, while the task works) on the right; the overflow
- * opens as a bottom action sheet. The sticky
+ * The phone's compact line, shown once the full summary scrolls away. The sticky
  * wrapper takes no height, so showing the bar never reflows the page under it.
  */
 const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ contextStripProps, actionBarProps, todos, visible }) => (
@@ -83,17 +76,12 @@ const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ 
       inert={!visible}
       className={`absolute inset-x-0 top-0 border-b border-slate-200 bg-white shadow-sm transition-opacity duration-150 ${visible ? 'opacity-100' : 'invisible opacity-0'}`}
     >
-      <div className="flex items-center justify-between gap-2 px-3" style={{ height: MOBILE_COMPACT_BAR_HEIGHT - 1 }}>
-        {/* Only the left side clips, so the 44px overflow button keeps its full touch target. */}
-        <div className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
-          <ContextStrip {...contextStripProps} mobileCompact={true} />
-        </div>
-        <ActionBar {...actionBarProps} compact={true} />
-      </div>
+      <CompactHeaderLine contextStripProps={contextStripProps} actionBarProps={actionBarProps} />
       <ProgressBar todos={todos} />
     </div>
   </div>
 );
+
 
 /** Whether the full mobile summary has scrolled up under the compact bar. */
 const useMobileHeaderCollapsed = () => {
@@ -315,8 +303,17 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
         </div>
       </header>
 
+      {/* A short window (a phone in landscape) opens on the one-line compact header, leaving the room to the timeline. */}
+      <ShortTaskHeader
+        visible={shortWorkspace.short}
+        contextStripProps={contextStripProps}
+        actionBarProps={actionBarProps}
+        todos={taskData.liveDetails.todos}
+        paneControls={paneControls}
+      />
+
       {/* Desktop sticky header shell; keep below global navigation overlays. */}
-      <header ref={shortWorkspace.headerRef} className={`hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white ${SHORT_STATIC}`}>
+      <header {...shortWorkspace.headerProps} className={`hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white ${SHORT_MEASURE_ONLY}`}>
         <DesktopTaskHeader
           headerProps={headerProps}
           contextStripProps={assignedStripProps}

@@ -133,8 +133,9 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
             href={`https://github.com/${repo.name}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="p-0.5 text-slate-400 hover:text-slate-700 shrink-0"
+            className="touch-hit p-0.5 text-slate-400 hover:text-slate-700 shrink-0"
             title="View on GitHub"
+            aria-label={`View ${repo.name} on GitHub`}
             onClick={(e) => e.stopPropagation()}
           >
             <Github className="w-3 h-3" />

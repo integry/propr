@@ -31,7 +31,7 @@ const AnalyticsTimeframeSelector: React.FC<AnalyticsTimeframeSelectorProps> = ({
           aria-label={ANALYTICS_TIMEFRAME_LABELS[option]}
           title={ANALYTICS_TIMEFRAME_LABELS[option]}
           onClick={() => onChange(option)}
-          className={`rounded-sm px-2.5 py-1 text-xs font-semibold transition-colors ${
+          className={`touch-hit rounded-sm px-2.5 py-1 text-xs font-semibold transition-colors touch:min-w-8 ${
             value === option ? 'bg-white text-slate-800' : 'text-slate-500 hover:text-slate-700'
           }`}
         >

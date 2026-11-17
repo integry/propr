@@ -171,7 +171,7 @@ const defaultTriggerStyles = (size: 'default' | 'compact', appearance: 'field' |
   const title = appearance === 'title';
   return {
     iconClassName: compact ? 'w-3.5 h-3.5' : 'w-4 h-4',
-    padding: compact ? 'h-7 px-2 gap-1.5 text-xs' : `px-3 ${labelLayout === 'stacked' ? 'py-1 min-h-[38px]' : 'py-2'} gap-2`,
+    padding: compact ? 'h-7 touch:h-8 px-2 gap-1.5 text-xs' : `px-3 ${labelLayout === 'stacked' ? 'py-1 min-h-[38px]' : 'py-2'} gap-2`,
     textSize: compact ? 'text-xs' : title ? 'text-sm font-semibold' : 'text-sm',
     // A title hugs its label in the middle of the bar; a field fills it from the left.
     labelFlow: title ? 'min-w-0' : 'flex-1 min-w-0 text-left',

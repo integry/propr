@@ -180,7 +180,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               href={issueUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-16 font-mono text-xs text-slate-600 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
+              className="touch-hit w-16 font-mono text-xs text-slate-600 hover:text-primary-600 transition-colors flex items-center gap-1 flex-shrink-0"
               onClick={(e) => e.stopPropagation()}
             >
               #{issue.issue_number}

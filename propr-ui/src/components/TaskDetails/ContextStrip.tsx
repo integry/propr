@@ -357,7 +357,7 @@ const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: s
         </span>
       )}
       {label && (
-        <span className="min-w-0 max-w-[280px] truncate font-medium text-gray-900" title={title.text ? title.tooltip : repo}>
+        <span className="min-w-0 max-w-[280px] truncate font-medium text-gray-900 sm:max-w-none" title={title.text ? title.tooltip : repo}>
           {label}
         </span>
       )}

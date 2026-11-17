@@ -197,7 +197,7 @@ export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, mode
 );
 
 export interface PrLinkProps { prUrl: string; prNumber: number; }
-export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-slate-600 hover:text-slate-900 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
+export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="touch-hit inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-slate-600 hover:text-slate-900 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
 
 export interface FollowupCountProps { count: number; }
 export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
