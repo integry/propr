@@ -254,22 +254,6 @@ export async function queueIndexingJob(
     };
   }
 
-  // Resume-on-failure: a full reindex requested while the repo is in a 'failed'
-  // state should continue the existing index (reuse summaries already produced,
-  // only process the missing/changed files) rather than reprocessing every file
-  // from scratch. Partial progress from the failed run is preserved, recovery is
-  // far cheaper, and it won't re-fail on files that already succeeded.
-  let effectiveFullReindex = fullReindex;
-  if (fullReindex) {
-    const repoRow = await db('repositories')
-      .where({ full_name: repository, branch: effectiveBranch })
-      .first() as { indexing_status?: string } | undefined;
-    if (repoRow?.indexing_status === 'failed') {
-      effectiveFullReindex = false;
-      console.log(`Full reindex requested for failed repo ${repository} (${effectiveBranch}); resuming existing index instead of starting over`);
-    }
-  }
-
   const [owner, name] = repository.split('/');
   const octokit = await getAuthenticatedOctokit();
   const { token } = await octokit.auth({ type: 'installation' }) as { token: string };
@@ -284,14 +268,45 @@ export async function queueIndexingJob(
   const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token, branch: baseBranch });
   if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
 
+  // Read after clone/fetch so enqueue rollback uses the latest pre-submission
+  // status, including any indexing run that finished during repository setup.
+  const repoRow = await db('repositories')
+    .where({ full_name: repository, branch: effectiveBranch })
+    .first() as { indexing_status?: string } | undefined;
+  const previousStatus = repoRow?.indexing_status ?? 'idle';
+
+  // Resume-on-failure: a full reindex requested while the repo is in a 'failed'
+  // state should continue the existing index (reuse summaries already produced,
+  // only process the missing/changed files) rather than reprocessing every file
+  // from scratch. Partial progress from the failed run is preserved, recovery is
+  // far cheaper, and it won't re-fail on files that already succeeded.
+  const effectiveFullReindex = fullReindex && previousStatus !== 'failed';
+  if (fullReindex && !effectiveFullReindex) {
+    console.log(`Full reindex requested for failed repo ${repository} (${effectiveBranch}); resuming existing index instead of starting over`);
+  }
+
   const correlationId = generateCorrelationId();
   const sanitizedBranch = sanitizeJobIdSegment(effectiveBranch);
-  const job = await queue.add(
-    'indexRepository',
-    { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
-    { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
-  );
+  // Persist before making the job available to a worker. An incremental job
+  // can finish during add(), so writing afterwards could erase its terminal state.
   await updateRepositoryStatus(repository, 'indexing', effectiveBranch);
+  let job;
+  try {
+    job = await queue.add(
+      'indexRepository',
+      { repository, repoPath, correlationId, priority: 'high', fullReindex: effectiveFullReindex, baseBranch: effectiveBranch, ignoreCooldown: options.ignoreCooldown },
+      { jobId: `index-${repository.replace('/', '-')}-${sanitizedBranch}-${correlationId}`, priority: 1 }
+    );
+  } catch (error) {
+    // Submission failure is not execution failure: marking it failed would
+    // downgrade the next explicit full reindex to an incremental resume. Only
+    // roll back a pending status; a worker may have run before add() rejected.
+    // Update directly to preserve completion metadata such as last_indexed_at.
+    await db('repositories')
+      .where({ full_name: repository, branch: effectiveBranch, indexing_status: 'indexing' })
+      .update({ indexing_status: previousStatus, updated_at: db.fn.now() });
+    throw error;
+  }
 
   // Return the normalized branch so callers report/match the same value that was
   // stored on the job and used to update repository status.

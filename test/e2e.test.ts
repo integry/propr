@@ -25,13 +25,15 @@ import {
 } from "./e2e/planGeneration.js";
 import { modelPhaseBudgetMs, modelMatrixSuiteTimeoutMs, MODEL_MATRIX_FOLLOWUP_BUDGET_MS } from "./e2e/modelTaskTimeout.js";
 
+import { waitForIndexedRepo, triggerAndWaitForIndexing, INDEXING_BUDGET_MS, INDEXING_TEST_TIMEOUT_MS } from "./e2e/indexing.js";
+
 import { writeReport } from "./e2e/report.js";
 import { parseModelPairLimit, selectAgentModelPairs } from "./e2e/modelMatrix.js";
 
 import type { ApiClient } from "../packages/cli/src/api/client.js";
 import { getSystemStatus } from "../packages/cli/src/api/system.js";
 import { getQueueStats } from "../packages/cli/src/api/system.js";
-import { getRepos, addRepo, removeRepo, triggerIndexing, getIndexingStatus } from "../packages/cli/src/api/repos.js";
+import { getRepos, addRepo, removeRepo, getIndexingStatus } from "../packages/cli/src/api/repos.js";
 import { getSettings } from "../packages/cli/src/api/settings.js";
 import { listLlmLogs } from "../packages/cli/src/api/logs.js";
 import type { LlmLogEntry, ListLlmLogsOptions } from "../packages/cli/src/api/logs.js";
@@ -136,36 +138,6 @@ describe("ProPR CLI E2E", {
   });
 
   // 2. Repositories
-  const isIndexingAlreadyQueued = (error: unknown): boolean =>
-    error instanceof Error && error.message.includes("Indexing job already queued");
-
-  const waitForIndexedRepo = async (label: string): Promise<void> => {
-    const observedPhases = new Set<string>();
-    for (let i = 0; i < 60; i++) {
-      await sleep(5000);
-      const c = await getIndexingStatus(REPO!, client);
-      const st = c.repositories[0];
-      if (st?.progress?.phase) observedPhases.add(st.progress.phase);
-      if (st?.indexing_status === "completed" && st.last_indexed_at && st.last_indexed_hash) {
-        console.log(`    ${label} completed. Observed phases: ${Array.from(observedPhases).join(", ") || "none"}`);
-        console.log(`    Indexed at: ${st.last_indexed_at}, hash: ${st.last_indexed_hash.substring(0, 8)}`);
-        return;
-      }
-      if (st?.indexing_status === "failed") assert.fail(`${label} failed`);
-    }
-    assert.fail(`${label} timed out`);
-  };
-
-  const triggerIndexingOrWaitForQueued = async (fullReindex: boolean, label: string): Promise<void> => {
-    try {
-      await triggerIndexing(REPO!, { fullReindex }, client);
-    } catch (error) {
-      if (!isIndexingAlreadyQueued(error)) throw error;
-      console.log(`    ${label} already queued; waiting for current indexing job`);
-    }
-    await waitForIndexedRepo(label);
-  };
-
   describe("2. Repositories", () => {
     it("getRepos", async () => {
       const r = await getRepos(client);
@@ -184,24 +156,25 @@ describe("ProPR CLI E2E", {
       assert.ok(repo?.enabled, `${REPO} not found or disabled`);
     });
 
-    it("ensure indexed", { timeout: 300_000 }, async () => {
-      const s = await getIndexingStatus(REPO!, client);
+    it("ensure indexed", { timeout: INDEXING_TEST_TIMEOUT_MS }, async (t) => {
+      const deadline = planDeadline(INDEXING_BUDGET_MS);
+      const s = await getIndexingStatus(REPO!, client, { signal: t.signal, timeout: 30_000, retry: false });
       const status = s.repositories[0];
       if (status?.indexing_status === "completed" && status.last_indexed_at && status.last_indexed_hash) {
         console.log(`    Already indexed`);
         return;
       }
       console.log(`    Triggering indexing...`);
-      await triggerIndexingOrWaitForQueued(true, "Indexing");
+      await triggerAndWaitForIndexing(REPO!, true, client, { signal: t.signal, deadline, label: "Indexing" });
     });
 
-    it("indexing status has commit info after completion", { timeout: 300_000 }, async () => {
-      await waitForIndexedRepo("Indexing metadata");
+    it("indexing status has commit info after completion", { timeout: INDEXING_TEST_TIMEOUT_MS }, async (t) => {
+      await waitForIndexedRepo(REPO!, client, { signal: t.signal, label: "Indexing metadata" });
     });
 
-    it("incremental reindex completes without errors", { timeout: 300_000 }, async () => {
+    it("incremental reindex completes without errors", { timeout: INDEXING_TEST_TIMEOUT_MS }, async (t) => {
       console.log(`    Triggering incremental reindex...`);
-      await triggerIndexingOrWaitForQueued(false, "Incremental reindex");
+      await triggerAndWaitForIndexing(REPO!, false, client, { signal: t.signal, label: "Incremental reindex" });
     });
   });
 
