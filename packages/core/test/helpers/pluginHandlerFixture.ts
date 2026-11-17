@@ -79,7 +79,7 @@ export function recordingBackend() {
  * An in-memory instance with the fixture plugin installed through the real
  * plugin store: `api-token` set (sealed), limited to `owner/allowed`, enabled.
  */
-export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string; official?: boolean; connections?: Record<string, string>; enabled?: boolean } = {}) {
+export async function pluginHandlerFixture(t: TestContext, options: { secret?: string; repositories?: string[] | null; pluginId?: string; official?: boolean; connections?: Record<string, string>; settings?: Record<string, unknown>; hostLookup?: typeof lookup; enabled?: boolean } = {}) {
   const database = extensionTestResources(t).database();
   await database.schema.createTable('instance_members', c => { c.string('github_user_id').primary(); c.string('role'); });
   await database('instance_members').insert({ github_user_id: '1', role: 'admin' });
@@ -90,11 +90,14 @@ export async function pluginHandlerFixture(t: TestContext, options: { secret?: s
   const manifest = options.official ? getOfficialPlugin(pluginId, { includeDevelopment: false })!.manifest : fixtureManifest(pluginId);
   const catalog = async () => [manifest];
   const store = new PluginStore(database, ENVIRONMENT, catalog);
+  if (options.hostLookup) store.hostLookup = options.hostLookup;
   await store.install('1', pluginId);
   if (options.secret) await store.setConnection('1', pluginId, 'api-token', options.secret);
   // Connections set before enabling: a token connection a contributed MCP server uses is required to enable.
   for (const [name, value] of Object.entries(options.connections ?? {})) await store.setConnection('1', pluginId, name, value);
   await store.setRepositories('1', pluginId, options.repositories === undefined ? ['owner/allowed'] : options.repositories);
+  // Settings saved before enabling: a required setting (Jira's site URL) must be set to enable.
+  if (options.settings) await store.updateSettings('1', pluginId, options.settings);
   if (options.enabled !== false) await store.setEnabled('1', pluginId, true);
   const { backend, calls } = recordingBackend();
   const http = echoTransport();

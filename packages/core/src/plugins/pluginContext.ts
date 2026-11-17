@@ -7,7 +7,7 @@ import {
 import logger from '../utils/logger.js';
 import type { ExtensionLookup } from '../extensions/endpointPolicy.js';
 import { redactExtensionOutput } from '../extensions/extensionOutput.js';
-import { createPluginHttp, scrubCredentialValues, secretUrlCredentials, type PluginHttpTransport } from './pluginHttp.js';
+import { basicCredentials, createPluginHttp, scrubCredentialValues, secretUrlCredentials, type PluginHttpTransport } from './pluginHttp.js';
 import { githubPluginProprBackend } from './pluginProprBackend.js';
 import { pluginActor, scopedProprClient, type PluginProprBackend, type PluginProprCallOutcome, type PluginProprCallRecord, type PluginProprCallScope } from './pluginProprClient.js';
 import { pluginStateStore, requireInstallation, type PluginInstallationAuthority, type PluginStateWriteGuard } from './pluginStateStore.js';
@@ -203,7 +203,7 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
   const outboundHosts = pluginOutboundHosts(manifest, settings);
   const http = (connection?: string): PluginHttpFetch => {
     let credential: (() => Promise<string>) | undefined;
-    let credentialUse: 'bearer' | 'raw' | 'signature' | 'url' = 'bearer';
+    let credentialUse: 'bearer' | 'raw' | 'basic' | 'signature' | 'url' = 'bearer';
     let secretUrl: PluginSecretUrl | undefined;
     if (connection !== undefined) {
       const declared = manifest.connections.find(c => c.name === connection);
@@ -211,12 +211,13 @@ export function buildPluginContext(target: PluginInstallationTarget, deps: Plugi
       if (declared.type === 'oauth') throw new PluginSdkError('connection_unavailable', `Connection ${connection} is oauth; ctx.http uses token and signing_secret connections only`);
       if (declared.type === 'signing_secret') credentialUse = 'signature';
       if (declared.type === 'token' && declared.secretUrl) { credentialUse = 'url'; secretUrl = declared.secretUrl; }
-      else if (declared.type === 'token' && declared.authorization === 'raw') credentialUse = 'raw';
+      else if (declared.type === 'token' && (declared.authorization === 'raw' || declared.authorization === 'basic')) credentialUse = declared.authorization;
       credential = async () => {
         const secret = await (deps.connectionSecret ?? ((id, name) => defaultConnectionSecret({ database: deps.database, environment, allowDisabled }, id, name, installation)))(pluginId, connection);
         if (!secret) throw new PluginSdkError('connection_unavailable', `Connection ${connection} is not set`);
         // A secret URL is redacted whole and by its path and query, which carry its credential.
-        credentials.push(...(credentialUse === 'url' ? secretUrlCredentials(secret) : [secret]));
+        // Basic credentials are redacted whole and by their secret part (the API token) too.
+        credentials.push(...(credentialUse === 'url' ? secretUrlCredentials(secret) : credentialUse === 'basic' ? basicCredentials(secret) : [secret]));
         return secret;
       };
     }

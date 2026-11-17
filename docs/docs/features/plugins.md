@@ -55,6 +55,7 @@ own tests and as a reference for plugin authors.
 | [Discord](../plugins/discord.md) (`discord`) | Posts short notifications to Discord channels as embeds through channel webhooks. |
 | [Microsoft Teams](../plugins/teams.md) (`teams`) | Posts short notifications to Teams channels or chats as Adaptive Cards through a Workflows webhook. |
 | [Linear](../plugins/linear.md) (`linear`) | Adding a label to a Linear ticket creates a GitHub issue that starts a task; ProPR then comments on the ticket and moves it through its workflow as the work progresses. |
+| [Jira Cloud](../plugins/jira.md) (`jira`) | The same hand-off for Jira Cloud: a label on a ticket of a mapped project creates a GitHub issue that starts a task; ProPR comments on the ticket and transitions it as the work progresses. |
 
 ## The manifest
 
@@ -96,7 +97,7 @@ pointing to where the credential is obtained.
 | Type | What the administrator provides |
 | --- | --- |
 | `oauth` | A sign-in, using the same flow as [OAuth library servers](./agent-extensions.md#oauth-servers). `registrations` limits the client registration methods (`metadata_document`, `dynamic`, `preregistered`; all three by default) and `scopes` lists the scopes to request. |
-| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). `ctx.http` sends it as `Authorization: Bearer <token>`; with `"authorization": "raw"` it sends `Authorization: <token>`, for services whose API keys take no scheme, such as Linear's. An MCP server using the connection always gets it as Bearer. |
+| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). `ctx.http` sends it as `Authorization: Bearer <token>`; with `"authorization": "raw"` it sends `Authorization: <token>`, for services whose API keys take no scheme, such as Linear's; with `"authorization": "basic"` the administrator enters `<user>:<secret>` (a value without that shape is refused) and it sends `Authorization: Basic <base64>`, for services that take an account and an API token as HTTP Basic credentials, such as Jira Cloud. An MCP server using the connection always gets it as Bearer. |
 | `signing_secret` | A shared secret: it verifies inbound webhooks, and `ctx.http` signs outbound requests with it. |
 
 #### Webhook URL connections
@@ -136,7 +137,7 @@ one of:
 
 | Shape | Meaning |
 | --- | --- |
-| `{ "type": "string" }` | Text, with optional `maxLength`. With `enum`, one of a fixed list of values. With `"format": "https-url"`, an `https://` URL on a public host (see below). |
+| `{ "type": "string" }` | Text, with optional `maxLength`. With `enum`, one of a fixed list of values. With `"format": "https-url"`, an `https://` URL on a public host (see below), and with `hosts` (such as `["*.atlassian.net"]`) only on those hosts. |
 | `{ "type": "number" }` | A number, with optional `minimum`, `maximum` and `integer`. |
 | `{ "type": "boolean" }` | A switch. |
 | `{ "type": "array", "items": { "type": "string" } }` | A list of strings, with optional `maxItems`. With `"items": { "type": "string", "enum": [ ... ] }`, a multiple choice: every entry is one of the listed values, shown as checkboxes. |
@@ -174,6 +175,13 @@ local name such as `localhost`, `*.local` or `*.internal`. A plain HTTP or
 private-address URL is therefore refused when the settings are saved. When a
 plugin names the setting in `outboundHostsFromSettings`, its host must also
 resolve to public addresses only when a new or changed value is saved.
+
+A URL setting may list `hosts`: host names, or `*.` and a domain for any name
+under it (`*.atlassian.net` takes `acme.atlassian.net`, not `atlassian.net` or
+`atlassian.net.example.com`). A URL on another host is refused when the
+settings are saved, with a message such as `siteUrl must be on *.atlassian.net,
+not jira.example.com`, and gives the handlers no outbound host even if it was
+saved before the list was declared.
 
 ### Contributions
 
@@ -787,7 +795,8 @@ responses to 1 MiB.
 
 Handlers never receive raw secrets. `ctx.http('my-token')` opens the stored
 `token` connection only to send the request, as `Authorization: Bearer …` (or
-the bare token with `"authorization": "raw"`), and
+the bare token with `"authorization": "raw"`, or HTTP Basic credentials with
+`"authorization": "basic"`), and
 removes the credential from the response before the handler reads it. Log lines,
 error messages and results pass the secret redaction.
 

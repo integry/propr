@@ -5,7 +5,7 @@ import {
   PLUGIN_PERMISSIONS, parsePluginManifest, pluginHttpsUrlHost, pluginSecretUrlHostAllowed, pluginSecretUrlProblem, pluginManifestSchema, pluginOutboundHosts, pluginSharedCommandSiblings, publicPluginManifest,
   type PluginManifestInput,
 } from '../src/plugins.js';
-import { validatePluginSettings } from '../src/pluginInstallations.js';
+import { pluginSettingProblem, validatePluginSettings } from '../src/pluginInstallations.js';
 import { PLUGIN_SETTING_OPTIONS_LIMITS, parsePluginSettingOptions } from '../src/pluginSdk.js';
 
 const INTEGRITY = `sha512-${'A'.repeat(86)}==`;
@@ -346,12 +346,32 @@ test('optionsFrom: a string or repository map setting names the handler that loa
   assert.deepEqual(validatePluginSettings({ type: 'object', properties: { team: { type: 'string', label: 'Team', optionsFrom: 'teamOptions' } }, required: [] }, { team: 'ENG' }), { ok: true, settings: { team: 'ENG' } });
 });
 
-test('a token connection may send its token raw, but a secret URL takes no authorization', () => {
+test('a token connection may send its token raw or as Basic credentials, but a secret URL takes no authorization', () => {
   const manifest = valid();
   const connections = (extra: Record<string, unknown>) => parsePluginManifest({ ...manifest, connections: [...manifest.connections!, { type: 'token', name: 'api-key', label: 'API key', help: 'Paste it.', helpUrl: 'https://acme.example.com/keys', ...extra }] });
   assert.equal(connections({ authorization: 'raw' }).ok, true);
-  assert.equal(connections({ authorization: 'basic' }).ok, false);
+  assert.equal(connections({ authorization: 'basic' }).ok, true);
+  assert.equal(connections({ authorization: 'digest' }).ok, false);
   assert.deepEqual(connections({ authorization: 'raw', secretUrl: { hosts: ['hooks.acme.example.com'] } }), { ok: false, errors: ['connections.3.authorization: Connection api-key is a secret URL; it sends no Authorization header, so it takes no authorization'] });
+});
+
+test('an https-url setting may limit its hosts: checked when saved, and a URL off them adds no outbound host', () => {
+  const manifest = valid();
+  const withSite = (setting: Record<string, unknown>) => parsePluginManifest({ ...manifest, settings: { type: 'object', properties: { site: { type: 'string', label: 'Site', ...setting } }, required: [] }, outboundHostsFromSettings: ['site'] });
+  const parsed = withSite({ format: 'https-url', hosts: ['*.atlassian.net', 'jira.acme.example.com'] });
+  assert.ok(parsed.ok);
+  const site = parsed.manifest.settings.properties.site;
+  assert.equal(pluginSettingProblem('site', site, 'https://acme.atlassian.net'), null);
+  assert.equal(pluginSettingProblem('site', site, 'https://jira.acme.example.com/x'), null);
+  assert.equal(pluginSettingProblem('site', site, 'https://atlassian.net'), 'site must be on one of *.atlassian.net, jira.acme.example.com, not atlassian.net');
+  assert.equal(pluginSettingProblem('site', site, 'https://x.acme.example.com'), 'site must be on one of *.atlassian.net, jira.acme.example.com, not x.acme.example.com');
+  assert.equal(pluginSettingProblem('site', site, ''), null, 'empty is unset');
+  assert.deepEqual(pluginOutboundHosts(parsed.manifest, { site: 'https://evil.example.com' }), [...parsed.manifest.outboundHosts]);
+  assert.deepEqual(pluginOutboundHosts(parsed.manifest, { site: 'https://acme.atlassian.net' }), [...parsed.manifest.outboundHosts, 'acme.atlassian.net']);
+  const plain = withSite({ hosts: ['*.atlassian.net'] });
+  assert.ok(!plain.ok && plain.errors.includes('settings.properties.site.hosts: Setting site lists hosts but is not an https-url setting'));
+  assert.equal(withSite({ format: 'https-url', hosts: ['*.atlassian.net'], default: 'https://jira.example.com' }).ok, false, 'a default off the hosts');
+  assert.equal(withSite({ format: 'https-url', hosts: ['https://bad'] }).ok, false);
 });
 
 test('parsePluginSettingOptions keeps well-formed choices, each value once, within the limits', () => {

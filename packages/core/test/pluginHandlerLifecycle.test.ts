@@ -630,3 +630,20 @@ test('a handler resuming after its repository limit changed cannot read a task o
   assert.equal((run.result as { ok: boolean; value: { repository: string } }).ok, true);
   assert.equal((run.result as { ok: boolean; value: { repository: string } }).value.repository, 'owner/allowed');
 });
+
+test('a basic token connection is sent as HTTP Basic credentials, and an echo of the whole credential, its header value or its secret part is scrubbed', async () => {
+  const stored = 'ada@example.com:ATATT3x-basic-sentinel-5d0e9a';
+  const requests: PluginHttpTransportRequest[] = [];
+  const transport: PluginHttpTransport = async request => {
+    requests.push(request);
+    const authorization = request.headers.authorization ?? '';
+    return { status: 200, headers: { 'x-echo': authorization }, body: Buffer.from(JSON.stringify({ authorization, decoded: Buffer.from(authorization.slice(6), 'base64').toString(), token: stored.split(':')[1] })) };
+  };
+  const response = await createPluginHttp({ outboundHosts: ['api.fixture.example'], credential: async () => stored, credentialUse: 'basic', lookup, transport })('https://api.fixture.example/v1');
+  assert.equal(requests[0].headers.authorization, `Basic ${Buffer.from(stored).toString('base64')}`);
+  const text = await response.text();
+  for (const spelling of [stored, stored.split(':')[1], Buffer.from(stored).toString('base64')]) {
+    assert.equal(text.includes(spelling), false, text);
+    assert.equal(response.headers['x-echo'].includes(spelling), false, response.headers['x-echo']);
+  }
+});

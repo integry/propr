@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import {
   PLUGIN_CONNECTION_URL, PLUGIN_PERMISSIONS, PLUGIN_PROPR_OPERATIONS, PLUGIN_STATE_LIMITS, PluginSdkError, pluginOutboundHosts, pluginSecretUrlProblem,
   type PluginConnection, type PluginContext, type PluginHttpRequestInit, type PluginHttpResponse, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
-  type PluginPermission, type PluginProprClient, type PluginProprOperation, type PluginSettingValues,
+  type PluginPermission, type PluginProprClient, type PluginProprOperation, type PluginSettings, type PluginSettingValues,
 } from '@propr/shared';
 
 /**
@@ -36,6 +36,8 @@ export interface TestPluginContextOptions {
   outboundHosts?: readonly string[];
   /** The manifest's `outboundHostsFromSettings`: the hosts of these URL settings in `settings` are allowed too. */
   outboundHostsFromSettings?: readonly string[];
+  /** The manifest's setting definitions: a URL setting's `hosts` limit the hosts derived from it, as in the real context. */
+  settingDefinitions?: PluginSettings['properties'];
   /** Connection names `ctx.http(connection)` accepts; any when omitted. */
   connections?: readonly string[];
   /**
@@ -173,7 +175,7 @@ export function createTestPluginContext(options: TestPluginContextOptions = {}):
 
   // The manifest's hosts and those of its URL settings, as the real context derives them; any host when neither is given.
   const hosts = options.outboundHosts || options.outboundHostsFromSettings
-    ? pluginOutboundHosts({ outboundHosts: [...options.outboundHosts ?? []], outboundHostsFromSettings: [...options.outboundHostsFromSettings ?? []] }, options.settings ?? {})
+    ? pluginOutboundHosts({ outboundHosts: [...options.outboundHosts ?? []], outboundHostsFromSettings: [...options.outboundHostsFromSettings ?? []], settings: options.settingDefinitions ? { properties: options.settingDefinitions } : undefined }, options.settings ?? {})
     : null;
   const http = (connection?: string) => {
     if (connection !== undefined && options.connections && !options.connections.includes(connection)) throw new PluginSdkError('connection_unavailable', `No connection ${connection}`);

@@ -228,6 +228,10 @@ describe('plugin settings helpers', () => {
 
     fireEvent.change(url, { target: { value: 'http://hooks.example.com/propr' } });
     expect(clientSettingErrors(settings, { ...draftsOf(settings, {}), targetUrl: 'http://hooks.example.com/propr' }, false)).toEqual({ targetUrl: 'targetUrl must be an https:// URL, not http' });
+    // A URL setting limited to hosts says so, and a URL off them is refused before saving.
+    const limited = { ...settings, properties: { ...settings.properties, targetUrl: { ...settings.properties.targetUrl, hosts: ['*.atlassian.net'] } } };
+    expect(clientSettingErrors(limited, { ...draftsOf(limited, {}), targetUrl: 'https://jira.example.com' }, false)).toEqual({ targetUrl: 'targetUrl must be on *.atlassian.net, not jira.example.com' });
+    expect(clientSettingErrors(limited, { ...draftsOf(limited, {}), targetUrl: 'https://acme.atlassian.net' }, false)).toEqual({});
     expect(clientSettingErrors(settings, { ...draftsOf(settings, {}), targetUrl: 'https://10.1.2.3/x' }, false)).toEqual({ targetUrl: 'targetUrl must name a public host such as hooks.example.com, not an IP address' });
   });
 });

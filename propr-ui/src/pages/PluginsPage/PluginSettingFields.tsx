@@ -43,7 +43,7 @@ function useFieldIds(error?: string) {
 }
 
 function hint(setting: PluginSetting): string {
-  if (setting.type === 'string' && setting.format === 'https-url') return 'An https:// URL on a public host';
+  if (setting.type === 'string' && setting.format === 'https-url') return setting.hosts?.length ? `An https:// URL on ${setting.hosts.join(' or ')}` : 'An https:// URL on a public host';
   if (setting.type === 'number') {
     const range = [setting.minimum !== undefined ? `at least ${setting.minimum}` : '', setting.maximum !== undefined ? `at most ${setting.maximum}` : ''].filter(Boolean).join(', ');
     return [setting.integer ? 'A whole number' : 'A number', range].filter(Boolean).join(', ');

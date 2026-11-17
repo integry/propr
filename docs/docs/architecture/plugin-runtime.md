@@ -499,12 +499,22 @@ port, a host name (no IP address), no credentials or fragment and no local name.
 A new or changed URL's host must also resolve to public addresses only, which
 the plugin store checks before the settings are written. On each request
 `ctx.http` allows exactly those hosts, from the settings the run started with,
-and checks their addresses again.
+and checks their addresses again. A URL setting with `hosts` (`*.atlassian.net`
+for the Jira Cloud plugin) is refused at save time when its host is not one of
+them (`pluginHttpsUrlSettingProblem`), and `pluginOutboundHosts` derives no host
+from such a value either.
 
 **Raw tokens.** A `token` connection declared with `"authorization": "raw"` is
 sent as the whole `Authorization` value instead of `Bearer <token>` (Linear's
 personal API keys need this). It is redacted from responses, logs and errors in
 the same spellings as a Bearer token.
+
+**Basic credentials.** A `token` connection declared with
+`"authorization": "basic"` holds `<user>:<secret>` (the plugin store refuses a
+value without a user name, a colon and a secret) and is sent as
+`Authorization: Basic <base64(user:secret)>` (Jira Cloud's account email and
+API token). The whole value, its base64 header form and the secret part alone
+are redacted.
 
 **Secret URLs.** A `token` connection with `secretUrl` holds a URL, such as a
 chat service's incoming webhook URL (`pluginSecretUrlSchema` in

@@ -6,6 +6,7 @@
     { "id": "discord" },
     { "id": "teams" },
     { "id": "linear" },
+    { "id": "jira" },
     { "id": "example-pack", "development": true }
   ]
 }

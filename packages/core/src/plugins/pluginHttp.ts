@@ -29,13 +29,15 @@ export interface PluginHttpOptions {
    * How the credential is used: `bearer` (the default) injects it as
    * `Authorization: Bearer`; `raw` (a `token` connection with
    * `authorization: raw`) sets `Authorization` to the token itself;
+   * `basic` (`authorization: basic`) sends `Authorization: Basic` and the
+   * base64 of the token, stored as `<user>:<secret>`;
    * `signature` (a `signing_secret` connection) signs
    * each request as its `signature` says, and every request must have one;
    * `url` (a `token` connection with `secretUrl`) sends each request to the
    * stored URL: the handler passes `PLUGIN_CONNECTION_URL`, and no header is
    * added.
    */
-  credentialUse?: 'bearer' | 'raw' | 'signature' | 'url';
+  credentialUse?: 'bearer' | 'raw' | 'basic' | 'signature' | 'url';
   /** With `credentialUse: 'url'`: the hosts and paths the stored URL must be on, checked on every request. */
   secretUrl?: PluginSecretUrl;
   /**
@@ -75,7 +77,8 @@ function credentialSpellings(secret: string): CredentialSpelling[] {
     const exact = [value, json, json.split('/').join('\\/'), Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url'), encodeURIComponent(value)];
     return [...exact.map(text => ({ text, anyCase: false })), { text: Buffer.from(value).toString('hex'), anyCase: true }];
   };
-  return uniqueSpellings([...encodings(`Bearer ${secret}`), ...encodings(secret)]);
+  const basic = `Basic ${Buffer.from(secret).toString('base64')}`;
+  return uniqueSpellings([...encodings(`Bearer ${secret}`), ...encodings(basic), ...encodings(secret)]);
 }
 /** Distinct spellings, longest first: the header value's encodings are not made of the secret's. */
 function uniqueSpellings(spellings: readonly CredentialSpelling[]): CredentialSpelling[] {
@@ -342,6 +345,17 @@ const tokenSpellings = (part: string) => [part, decodedOrRaw(part)].filter(text 
  * each token-like path segment and query value (the token or signature they
  * carry, with its `name=` too), as written and decoded.
  */
+/**
+ * The values to redact of an HTTP Basic credential stored as `<user>:<secret>`:
+ * the whole value, and the secret part (the API token) alone. The user name
+ * (an account email) is not secret.
+ */
+export function basicCredentials(secret: string): string[] {
+  const separator = secret.indexOf(':');
+  const token = separator >= 0 ? secret.slice(separator + 1) : '';
+  return token.length > 1 && token !== secret ? [secret, token] : [secret];
+}
+
 export function secretUrlCredentials(secret: string): string[] {
   try {
     const url = new URL(secret);
@@ -424,13 +438,13 @@ function requestSignature(options: Pick<PluginHttpOptions, 'credentialUse'>, ini
   return signing ? signatureSpec(init.signature, headers) : undefined;
 }
 
-/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer` (or the bare token with `raw`). */
+/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer` (the bare token with `raw`, HTTP Basic with `basic`). */
 // eslint-disable-next-line max-params -- the headers, body, secret, signature and how the token is written are explicit inputs
-function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | undefined, raw: boolean): void {
+function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | undefined, scheme: 'bearer' | 'raw' | 'basic'): void {
   if (spec) {
     if (!secret) throw new PluginSdkError('connection_unavailable', 'The signing secret is not set');
     headers[spec.header] = pluginRequestSignature(secret, body, spec);
-  } else if (secret) headers.authorization = raw ? secret : `Bearer ${secret}`;
+  } else if (secret) headers.authorization = scheme === 'raw' ? secret : scheme === 'basic' ? `Basic ${Buffer.from(secret).toString('base64')}` : `Bearer ${secret}`;
 }
 
 /**
@@ -516,7 +530,8 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
   /** Every spelling of the run's credential a response could echo: a secret URL by its path and query too. */
   const spellingsOf = (secret: string | null) => {
     if (!secret) return [];
-    return options.credentialUse === 'url' ? uniqueSpellings(secretUrlCredentials(secret).flatMap(credentialSpellings)) : credentialSpellings(secret);
+    if (options.credentialUse === 'url') return uniqueSpellings(secretUrlCredentials(secret).flatMap(credentialSpellings));
+    return options.credentialUse === 'basic' ? uniqueSpellings(basicCredentials(secret).flatMap(credentialSpellings)) : credentialSpellings(secret);
   };
   return async (value, init = {}) => {
     // Only the hostname is ever logged: a refused URL may carry credentials or a query.
@@ -535,7 +550,7 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       checkLive(signal);
       const { address, family } = await untilEnded(resolvePublic(host, lookup), signal);
       const secret = await untilEnded(readCredential(), signal);
-      if (!secretUrl) applyCredential(headers, body, secret, spec, options.credentialUse === 'raw');
+      if (!secretUrl) applyCredential(headers, body, secret, spec, options.credentialUse === 'raw' || options.credentialUse === 'basic' ? options.credentialUse : 'bearer');
       if (options.authorize) await untilEnded(options.authorize(), signal);
       // The run may have ended during the lookups: nothing is sent for an ended handler.
       checkLive(signal);

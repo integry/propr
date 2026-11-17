@@ -1,0 +1,69 @@
+{
+  "webhookSecret": "jira_wh_FIXTUREsecret0123456789abcdef",
+  "receivedAt": 1763303000500,
+  "ids": {
+    "projects": {
+      "ENG": "10000",
+      "DES": "10001",
+      "OPS": "10002"
+    },
+    "tickets": {
+      "mapped": "10123",
+      "unmapped": "10456",
+      "injection": "10789",
+      "created": "10999"
+    }
+  },
+  "requests": {
+    "labelAdded": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\",\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"bug\",\"to\":null,\"toString\":\"bug propr\"}]}}",
+      "signature": "sha256=a60f7c85ea0c80044194a9c2a00941f4fec96dff37a9a55afcc78430d21cd7d5",
+      "identifier": "7001"
+    },
+    "labelAddedAgain": {
+      "body": "{\"timestamp\":1763303000200,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\",\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"bug\",\"to\":null,\"toString\":\"bug propr\"}]}}",
+      "signature": "sha256=3e14966a34438457cf2b753a1668afd94f8d98a33ae9a27d6df6ddf5012a4a1c",
+      "identifier": "7002"
+    },
+    "otherLabel": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\",\"frontend\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"bug\",\"to\":null,\"toString\":\"bug frontend\"}]}}",
+      "signature": "sha256=c89de7618df63afd29be7e9f83e8f56e6d472d5859f45fdca663428f46ee779c",
+      "identifier": "7003"
+    },
+    "labelKept": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\",\"propr\",\"frontend\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"bug propr\",\"to\":null,\"toString\":\"bug frontend propr\"}]}}",
+      "signature": "sha256=1ea67491cb635bca0048bb7dbbc8e023fb4fd63ecffea049d5513a0580e180cf",
+      "identifier": "7004"
+    },
+    "labelRemoved": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"bug propr\",\"to\":null,\"toString\":\"bug\"}]}}",
+      "signature": "sha256=e9318b9e5ea83e155d0c93c98d2d8da302b777c4d8469e8e4989f589c07829f9",
+      "identifier": "7005"
+    },
+    "titleEdit": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\",\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"summary\",\"fieldtype\":\"jira\",\"fieldId\":\"summary\",\"from\":null,\"fromString\":\"Old title\",\"to\":null,\"toString\":\"Fix the redirect after login\"}]}}",
+      "signature": "sha256=1da305c1133a7f88a7a3f58e297dd59baa2dddf7c3db7c623588fd2161045b87",
+      "identifier": "7006"
+    },
+    "unmapped": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10456\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10456\",\"key\":\"OPS-7\",\"fields\":{\"summary\":\"Rotate the certificates\",\"labels\":[\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10002\",\"id\":\"10002\",\"key\":\"OPS\",\"name\":\"Operations\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"\",\"to\":null,\"toString\":\"propr\"}]}}",
+      "signature": "sha256=6772734a870622ba5e75375869e3b99ad2baf2d733473369d499ee2cfba33107",
+      "identifier": "7007"
+    },
+    "injection": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_updated\",\"issue_event_type_name\":\"issue_updated\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10789\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10789\",\"key\":\"ENG-124\",\"fields\":{\"summary\":\"Add dark mode\",\"labels\":[\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}},\"changelog\":{\"id\":\"20001\",\"items\":[{\"field\":\"labels\",\"fieldtype\":\"jira\",\"fieldId\":\"labels\",\"from\":null,\"fromString\":\"\",\"to\":null,\"toString\":\"propr\"}]}}",
+      "signature": "sha256=d56025f0f9c6213071181c37454c0d3d7ea249cd007c6f9d619e7ae46ef461ac",
+      "identifier": "7008"
+    },
+    "createdWithLabel": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"jira:issue_created\",\"issue_event_type_name\":\"issue_created\",\"user\":{\"accountId\":\"5b10a2844c20165700ede21g\",\"displayName\":\"Ada Admin\",\"active\":true},\"issue\":{\"id\":\"10999\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10999\",\"key\":\"DES-9\",\"fields\":{\"summary\":\"New onboarding screens\",\"labels\":[\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10001\",\"id\":\"10001\",\"key\":\"DES\",\"name\":\"Design\"},\"status\":{\"name\":\"To Do\"}}}}",
+      "signature": "sha256=51975efb647a22acf3f9866435820a7b962f74e0ecedfb45254ad32621cfed58",
+      "identifier": "7009"
+    },
+    "comment": {
+      "body": "{\"timestamp\":1763303000000,\"webhookEvent\":\"comment_created\",\"comment\":{\"id\":\"30001\",\"body\":\"hello\"},\"issue\":{\"id\":\"10123\",\"self\":\"https://acme.atlassian.net/rest/api/3/issue/10123\",\"key\":\"ENG-123\",\"fields\":{\"summary\":\"Fix the redirect after login\",\"labels\":[\"bug\",\"propr\"],\"project\":{\"self\":\"https://acme.atlassian.net/rest/api/3/project/10000\",\"id\":\"10000\",\"key\":\"ENG\",\"name\":\"Engineering\"},\"status\":{\"name\":\"To Do\"}}}}",
+      "signature": "sha256=04ffcd27d20eb2167c76553547282f6e1595365a5167b271a85922bd6b074f55",
+      "identifier": "7010"
+    }
+  }
+}

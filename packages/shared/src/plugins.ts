@@ -157,8 +157,20 @@ export function pluginSecretUrlProblem(secretUrl: PluginSecretUrl, value: string
   return null;
 }
 
+/**
+ * Why `value` is not acceptable for an `https-url` string setting, or null:
+ * `pluginHttpsUrlProblem`, and with `hosts`, a host one of them takes.
+ */
+export function pluginHttpsUrlSettingProblem(setting: { hosts?: readonly string[] }, value: string): string | null {
+  const problem = pluginHttpsUrlProblem(value);
+  if (problem || !setting.hosts) return problem;
+  const host = new URL(value).hostname.toLowerCase();
+  if (pluginSecretUrlHostAllowed(setting.hosts, host)) return null;
+  return `must be on ${setting.hosts.length === 1 ? setting.hosts[0] : `one of ${setting.hosts.join(', ')}`}, not ${host}`;
+}
+
 /** How a `token` connection's credential is written in the `Authorization` header of `ctx.http` requests. */
-export const PLUGIN_TOKEN_AUTHORIZATIONS = ['bearer', 'raw'] as const;
+export const PLUGIN_TOKEN_AUTHORIZATIONS = ['bearer', 'raw', 'basic'] as const;
 export type PluginTokenAuthorization = typeof PLUGIN_TOKEN_AUTHORIZATIONS[number];
 /** The URL a handler passes to `ctx.http(<secret URL connection>)`: ProPR sends to the connection's stored URL instead. */
 export const PLUGIN_CONNECTION_URL = 'propr-connection:url' as const;
@@ -176,7 +188,11 @@ export const pluginConnectionSchema = z.discriminatedUnion('type', [
     /**
      * How `ctx.http(<connection>)` sends the token: `bearer` (the default) as
      * `Authorization: Bearer <token>`, `raw` as `Authorization: <token>`, for
-     * services whose API keys take no scheme (Linear's personal API keys).
+     * services whose API keys take no scheme (Linear's personal API keys),
+     * `basic` as `Authorization: Basic <base64 of the token>`, for services
+     * that take a user name and an API token as HTTP Basic credentials (Jira
+     * Cloud's account email and API token): the token is stored as
+     * `<user>:<secret>`, and a value without that shape is refused when set.
      * MCP servers using the connection always receive it as Bearer.
      */
     authorization: z.enum(PLUGIN_TOKEN_AUTHORIZATIONS).optional(),
@@ -207,6 +223,12 @@ export const pluginSettingSchema = z.discriminatedUnion('type', [
     maxLength: z.number().int().positive().max(PLUGIN_LIMITS.text).optional(),
     /** `https-url`: an `https://` URL to a public host (see `pluginHttpsUrlProblem`). */
     format: z.enum(PLUGIN_STRING_SETTING_FORMATS).optional(),
+    /**
+     * With `format: https-url`: the hosts the URL must be on, as host names or
+     * `*.` patterns (`*.atlassian.net`), checked when the settings are saved
+     * and again when the handlers' outbound hosts are derived from them.
+     */
+    hosts: z.array(z.string().max(253).regex(PLUGIN_SECRET_URL_HOST_PATTERN, 'Enter a hostname such as hooks.example.com, or *.example.com')).min(1).max(8).optional(),
     /** The handler that lists the choices of this select; see `optionsFromSchema`. */
     optionsFrom: optionsFromSchema.optional(),
   }),
@@ -524,8 +546,9 @@ function stringSettingProblems(key: string, setting: SettingOf<'string'>): Setti
   if (setting.maxLength !== undefined && (setting.default?.length ?? 0) > setting.maxLength) problems.push({ message: `Default of setting ${key} is longer than maxLength`, field: 'default' });
   if (setting.format && setting.enum) problems.push({ message: `Setting ${key} has a format and an enum; use one`, field: 'format' });
   if (setting.optionsFrom && (setting.enum || setting.format)) problems.push({ message: `Setting ${key} has optionsFrom and ${setting.enum ? 'an enum' : 'a format'}; use one`, field: 'optionsFrom' });
+  if (setting.hosts && setting.format !== 'https-url') problems.push({ message: `Setting ${key} lists hosts but is not an https-url setting`, field: 'hosts' });
   if (setting.format === 'https-url' && setting.default !== undefined && setting.default !== '') {
-    const problem = pluginHttpsUrlProblem(setting.default);
+    const problem = pluginHttpsUrlSettingProblem(setting, setting.default);
     if (problem) problems.push({ message: `Default of setting ${key} ${problem}`, field: 'default' });
   }
   return problems;
@@ -581,8 +604,15 @@ function checkOutboundHostsFromSettings(manifest: z.infer<typeof pluginManifestO
  * manifest's `outboundHosts` and the host of each `outboundHostsFromSettings`
  * URL that is set and acceptable. Lower case, each once.
  */
-export function pluginOutboundHosts(manifest: Pick<PluginManifest, 'outboundHosts' | 'outboundHostsFromSettings'>, settings: Readonly<Record<string, unknown>>): string[] {
-  const fromSettings = manifest.outboundHostsFromSettings.map(key => (Object.hasOwn(settings, key) ? pluginHttpsUrlHost(settings[key]) : null));
+export function pluginOutboundHosts(manifest: Pick<PluginManifest, 'outboundHosts' | 'outboundHostsFromSettings'> & { settings?: Pick<PluginManifest['settings'], 'properties'> }, settings: Readonly<Record<string, unknown>>): string[] {
+  const fromSettings = manifest.outboundHostsFromSettings.map(key => {
+    if (!Object.hasOwn(settings, key)) return null;
+    // A URL off the setting's hosts (saved before they were declared) adds no host.
+    const setting = manifest.settings && Object.hasOwn(manifest.settings.properties, key) ? manifest.settings.properties[key] : undefined;
+    const value = settings[key];
+    if (setting?.type === 'string' && typeof value === 'string' && pluginHttpsUrlSettingProblem(setting, value)) return null;
+    return pluginHttpsUrlHost(value);
+  });
   return [...new Set([...manifest.outboundHosts, ...fromSettings.filter((host): host is string => host !== null)])];
 }
 
