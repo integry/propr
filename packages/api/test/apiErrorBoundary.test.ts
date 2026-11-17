@@ -1,10 +1,13 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { apiSecurityHeaders, bodyParserErrorHandler, describeApiError, installApiFinalHandler } from '../apiErrorBoundary.js';
 import { parseActivityPaging } from '../routes/queueRoutes.js';
 import { isValidGitHubRepositoryPath } from '../routes/githubRoutes.js';
+
+// The route modules open core's SQLite connection on import; close it so the process exits.
+after(async () => { const core = await import('@propr/core'); await core.closeConnection(); });
 
 test('describeApiError maps parser, upload and server errors to safe JSON bodies', () => {
   assert.deepEqual(describeApiError(Object.assign(new SyntaxError('Unexpected end of JSON input at /usr/src/app'), { status: 400, type: 'entity.parse.failed' })),
