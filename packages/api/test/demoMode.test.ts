@@ -397,6 +397,8 @@ test('repo todo demo reads use the curated database without owner filters', asyn
     { todo_id: demoTodoId, user_id: 'demo', repository: 'integry/propr', category_id: demoCategoryId, content: 'Demo todo', order_index: 2 },
     { todo_id: otherTodoId, user_id: 'real-user', repository: 'integry/propr', category_id: otherCategoryId, content: 'Other todo', order_index: 1 },
   ]);
+  // Demo mode has no GitHub identity: the instance resolver checks only the demo's configured repositories.
+  await db('system_configs').insert({ key: 'repos_to_monitor', value: JSON.stringify([{ name: 'integry/propr', enabled: true }]) });
   const routes = createRepoTodoRoutes();
   const categoryResponse = createJsonResponse();
   const todoResponse = createJsonResponse();

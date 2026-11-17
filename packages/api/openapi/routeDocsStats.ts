@@ -41,7 +41,7 @@ export const CostExport = component('CostExport', z.object({
 
 export const CostExportQuery = querySet('CostExportQuery', z.object({
   period: z.enum(ANALYTICS_TIMEFRAMES).optional().describe('Bounds executions by when they started; omitted means all time.'),
-  repository: z.string().optional().describe('`owner/repo`, or `all` (default).'),
+  repository: z.string().optional().describe('`owner/repo` of a configured repository (any capitalization; the response echoes its configured name), or `all` (default).'),
   group_by: z.string().optional().describe(`Comma-separated list of ${COST_GROUP_KEYS.map(key => `\`${key}\``).join(', ')}; defaults to \`day\`.`),
 }));
 
@@ -57,6 +57,7 @@ export const STATS_ROUTE_DOCS: Record<string, RouteDoc> = {
     responses: {
       200: { description: 'The grouped rows and their totals.', schema: CostExport },
       400: { description: '`period`, `repository` or `group_by` is invalid.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: `repository` is not configured here, or the caller cannot read it on GitHub.' },
     },
   },
   'GET /api/stats/cost.csv': {
@@ -68,6 +69,7 @@ export const STATS_ROUTE_DOCS: Record<string, RouteDoc> = {
     responses: {
       200: { description: 'RFC 4180 CSV attachment.', contentType: 'text/csv' },
       400: { description: '`period`, `repository` or `group_by` is invalid.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: `repository` is not configured here, or the caller cannot read it on GitHub.' },
     },
   },
 };

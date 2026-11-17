@@ -32,12 +32,13 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
   'GET /api/tasks': {
     operationId: 'listTasks',
     summary: 'List task runs',
-    description: 'Newest first. Filter by status, repository or search text, and page with `limit` and `offset`. With `groupBy=task`, paging counts tasks (the pull request or issue a run belongs to) and a page returns every matching run of its tasks.',
+    description: 'Newest first. Filter by status, repository or search text, and page with `limit` (at most 200) and `offset`. The repository filter matches a configured repository case-insensitively. With `groupBy=task`, paging counts tasks (the pull request or issue a run belongs to) and a page returns every matching run of its tasks.',
     tags: ['Tasks'],
     query: ListTasksQuery,
     responses: {
       200: { description: 'A page of task runs.', schema: TaskPage },
       400: { description: 'A filter or paging parameter is invalid.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: the repository filter names a repository that is not configured here, or that the caller cannot read on GitHub.' },
     },
   },
   'GET /api/task/:taskId/history': {
@@ -261,7 +262,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
   'GET /api/pull-requests/:number/readiness': {
     operationId: 'getPullRequestReadiness',
     summary: 'Get the readiness verdict of a pull request',
-    description: 'Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. The caller needs read access to the repository on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after it is proven. See the gate and reason-code tables in the API reference.',
+    description: 'Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. Only an enabled repository configured on this instance is evaluated (matched case-insensitively; the response echoes its configured name), and the caller needs read access to it on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after both are proven. See the gate and reason-code tables in the API reference.',
     tags: ['Tasks'],
     pathParams: { number: 'Pull request number.' },
     query: PullRequestReadinessQuery,
@@ -269,7 +270,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     responses: {
       200: { description: 'The readiness verdict.', schema: PullRequestReadiness },
       400: { description: '`INVALID_INPUT`: the number or repository is malformed.' },
-      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: the caller cannot read the repository on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it.' },
+      404: { description: '`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it.' },
       502: { description: '`GITHUB_UNAVAILABLE`: GitHub did not return the pull request, or could not be reached to check repository access; the read is safe to retry.' },
     },
   },

@@ -7,6 +7,7 @@ import { costExportCsv, createCostExportRoutes, loadCostExport, parseCostGroupBy
 import { addStatsTools } from '../mcp/toolsStats.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const NOW = new Date('2026-11-12T12:00:00.000Z');
 const daysAgo = (days: number, hour = 10): string =>
@@ -244,7 +245,7 @@ function fakeResponse() {
 }
 
 test('the routes read the analytics window, repository filter and group_by, and reject bad input', async () => {
-  const routes = createCostExportRoutes({ db, now: () => NOW });
+  const routes = createCostExportRoutes({ repositoryScope: unscopedRepositoryResolver, db, now: () => NOW });
   const call = async (handler: 'getCost' | 'getCostCsv', query: Record<string, unknown>) => {
     const { res, response } = fakeResponse();
     await routes[handler]({ query } as unknown as Request, res);
@@ -267,13 +268,13 @@ test('the routes read the analytics window, repository filter and group_by, and 
 });
 
 test('repeated or nested repository parameters are rejected rather than widened to every repository', async () => {
-  const routes = createCostExportRoutes({ db, now: () => NOW });
+  const routes = createCostExportRoutes({ repositoryScope: unscopedRepositoryResolver, db, now: () => NOW });
   for (const handler of ['getCost', 'getCostCsv'] as const) {
     for (const repository of [['acme/alpha', 'acme/beta'], ['acme/alpha'], { name: 'acme/alpha' }]) {
       const { res, response } = fakeResponse();
       await routes[handler]({ query: { period: '7d', repository } } as unknown as Request, res);
       assert.equal(response.statusCode, 400, `${handler} ${JSON.stringify(repository)}`);
-      assert.deepEqual(response.body, { error: 'Repository must be a string' });
+      assert.equal((response.body as { error?: string }).error, 'Repository must be a string');
     }
   }
 });

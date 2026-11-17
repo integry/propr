@@ -12,6 +12,7 @@ import {
   seedTask as seedTaskInto,
   type TaskSeed,
 } from './dashboardTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 let database: Knex;
 
@@ -26,7 +27,7 @@ test('success rate excludes queued, running and cancelled work and is null when 
   await seedTask({ taskId: 'run-b', repository: 'acme/only-running', issueNumber: 2, states: [{ state: 'pending', timestamp: daysAgo(1) }] });
   await seedTask({ taskId: 'run-c', repository: 'acme/only-running', issueNumber: 3, states: [{ state: 'cancelled', timestamp: daysAgo(1) }] });
 
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const onlyRunning = await call(stats.getDashboardStats, { repository: 'acme/only-running' });
   assert.equal(onlyRunning.body.successRate, null);
   assert.notEqual(onlyRunning.body.successRate, 0);
@@ -66,7 +67,7 @@ test('dashboard stats compare against the previous period and report recorded sp
     { task_id: 'then-1', start_time: daysAgo(9), cost_usd: 0.5, success: true },
   ]);
 
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const current = await call(stats.getDashboardStats, { repository: 'acme/spend', period: '7d' });
   assert.equal(current.body.completed, 1);
   assert.equal(current.body.successRate, 100);
@@ -97,7 +98,7 @@ test('the previous period ends exactly where the current one starts', async () =
     { task_id: 'just-before', start_time: justBefore, cost_usd: 2 },
   ]);
 
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const response = await call(stats.getDashboardStats, { repository: 'acme/seam', period: '7d' });
   // Each task and each run falls in exactly one of the two periods.
   assert.equal(response.body.tasks, 1);
@@ -119,7 +120,7 @@ test('historical stats keep a recorded failure once its retry starts', async () 
   });
   await seedTask({ taskId: 'clean', repository: 'acme/history', issueNumber: 2, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
 
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const current = await call(stats.getDashboardStats, { repository: 'acme/history', period: '7d' });
   // One run finished well and one finished badly. Starting a retry does not
   // turn the instance's history into a perfect record.
@@ -136,7 +137,7 @@ test('historical stats keep a recorded failure once its retry starts', async () 
 });
 
 test('dashboard stats reject an unsupported period', async () => {
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const rejected = await call(stats.getDashboardStats, { repository: 'all', period: '90d' });
   assert.equal(rejected.status, 400);
 });

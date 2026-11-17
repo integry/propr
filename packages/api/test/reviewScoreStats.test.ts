@@ -11,6 +11,7 @@ import { createAnalyticsCache } from '../routes/analyticsCache.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
 import { loadDeliveryMetrics } from '../routes/analyticsDelivery.js';
 import type { AnalyticsWindow } from '../routes/analyticsWindow.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const NOW = new Date('2026-10-06T12:00:00.000Z');
 const daysAgo = (days: number): string => new Date(NOW.getTime() - days * 24 * 60 * 60_000).toISOString();
@@ -155,7 +156,7 @@ async function invoke(handler: (req: Request, res: Response) => Promise<void>, q
   return state;
 }
 
-const routes = () => createReviewScoreRoutes({ db: database, now: () => NOW });
+const routes = () => createReviewScoreRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
 test('median handles odd, even and empty inputs', () => {
   assert.equal(median([5, 7, 4]), 5);
@@ -283,7 +284,7 @@ test('returns one PR\'s score history with its outcome', async () => {
 });
 
 test('the overview\'s model usage carries the mean final score and scored-PR count', async () => {
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const state = await invoke(stats.getOverview, { period: '30d' });
   assert.equal(state.status, 200);
   const usage = (state.body as { model_usage: Array<{ model: string; mean_final_score: number | null; n_scored: number }> }).model_usage;
@@ -439,7 +440,7 @@ test('the shared cache remembers an all-time summary for a minute and a bounded 
   await seedScore({ pr: 70, score: 6, at: daysAgo(1), model: OPUS, repository });
   let clock = NOW.getTime();
   const analyticsCache = createAnalyticsCache({ ttlMs: 1_000, boundedTtlMs: 100, now: () => clock });
-  const cached = createReviewScoreRoutes({ db: database, now: () => NOW, analyticsCache });
+  const cached = createReviewScoreRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW, analyticsCache });
   const read = async (period?: string) => {
     const state = await invoke(cached.getSummary, { repository, ...(period ? { period } : {}) });
     return (state.body as { scores_recorded: number }).scores_recorded;

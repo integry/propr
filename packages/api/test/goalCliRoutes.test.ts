@@ -5,6 +5,7 @@ import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { closeConnection, closeEventPublisher } from '@propr/core';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
+import { createRepositoryScopeResolver } from '../repositoryScope.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -39,6 +40,7 @@ async function call(handler: (req: Request, res: Response) => Promise<void>, req
 async function seed(db: Knex): Promise<void> {
   await db('goals').insert([
     { goal_id: 'goal-running', repository, current_task_id: 'task-running', final_pr_number: 41,
+      worktree_path: '/tmp/git-processor/worktrees/goal-running',
       checkpoint_interval_minutes: 15, checkpoint_count: 2, last_checkpoint_at: '2026-09-05 12:00:10',
       last_checkpoint_commit_sha: 'abc1234', effective_model: 'model-a',
       created_at: '2026-09-05 12:00:00', updated_at: '2026-09-05 12:00:30', started_at: '2026-09-05 12:00:00' },
@@ -80,6 +82,10 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
       taskQueue: {} as never,
       redisClient: withLiveOutputReads({ get: async () => null }) as never,
       previewReader: { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never,
+      repositoryScope: createRepositoryScopeResolver({
+        configuredRepositories: async () => [{ name: repository, enabled: true }, { name: otherRepository, enabled: true }],
+        checksGitHubAccess: () => false,
+      }),
     });
 
     // The unpaginated dashboard read keeps its recency order and shape.
@@ -88,6 +94,12 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
     assert.deepEqual(dashboard.body.goals.map((goal: Json) => goal.id),
       ['goal-paused', 'goal-running', 'goal-completed', 'goal-failed']);
     assert.equal(dashboard.body.nextOffset, null);
+    // A read without a limit is one bounded page, not every goal.
+    assert.equal(dashboard.body.limit, 50);
+    // Host paths never reach a member: the worktree stays on the API host.
+    assert.doesNotMatch(JSON.stringify(dashboard.body), /worktreePath|\/tmp\/git-processor/);
+    assert.equal((await call(routes.list, request(ownerId, {}, { limit: '200' }))).status, 200);
+    assert.equal((await call(routes.list, request(ownerId, {}, { limit: '201' }))).status, 400);
 
     // Explicit pages walk the immutable creation order without gaps or repeats.
     const first = await call(routes.list, request(ownerId, {}, { limit: '2' }));
@@ -107,6 +119,11 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
     assert.deepEqual(await ids({ state: 'paused', limit: '20' }), ['goal-paused']);
     assert.deepEqual(await ids({ state: 'failed', limit: '20' }), ['goal-failed']);
     assert.deepEqual(await ids({ state: 'all', repository: otherRepository, limit: '20' }), ['goal-completed']);
+    // The repository filter matches the configured repository in any capitalization.
+    assert.deepEqual(await ids({ state: 'all', repository: 'ACME/Other', limit: '20' }), ['goal-completed']);
+    const unknown = await call(routes.list, request(ownerId, {}, { repository: 'facebook/react' }));
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.body.code, 'REPOSITORY_NOT_ACCESSIBLE');
     assert.equal((await call(routes.list, request(ownerId, {}, { state: 'bogus' }))).status, 400);
     assert.equal((await call(routes.list, request(ownerId, {}, { limit: '0' }))).status, 400);
     assert.equal((await call(routes.list, request(ownerId, {}, { repository: 'not a repo' }))).status, 400);
@@ -116,6 +133,7 @@ test('goal REST reads expose paginated lists, the shared inspect detail and inpu
     const inspected = await call(routes.detail, request(ownerId, { goalId: 'goal-running' }));
     assert.equal(inspected.status, 200);
     assert.equal(inspected.body.goal.id, 'goal-running');
+    assert.doesNotMatch(JSON.stringify(inspected.body), /worktreePath|\/tmp\/git-processor/);
     assert.equal(inspected.body.goal.checkpoint.count, 2);
     const { detail } = inspected.body;
     assert.deepEqual(detail.progress.tasks, { total: 3, active: 1, completed: 1, failed: 1, cancelled: 0 });

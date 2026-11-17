@@ -1,11 +1,13 @@
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { goalPreviewSource, previewMediaReader, taskPreviewSource } from '../services/previewMediaProjection.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 
 const PAGE_SIZE = 24;
 
-export function createRepositoryMediaRoutes(deps: { db: Knex; reader?: typeof previewMediaReader }) {
+export function createRepositoryMediaRoutes(deps: { db: Knex; reader?: typeof previewMediaReader; repositoryScope?: RepositoryScopeResolver }) {
   const reader = deps.reader ?? previewMediaReader;
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
   return {
     async getMedia(req: Request, res: Response): Promise<void> {
       if (!req.user?.id) { res.status(401).json({ error: 'Authentication required' }); return; }
@@ -15,6 +17,8 @@ export function createRepositoryMediaRoutes(deps: { db: Knex; reader?: typeof pr
         || !Number.isSafeInteger(offset) || offset < 0 || offset > 1_000_000) {
         res.status(400).json({ error: 'A repository and valid media offset are required' }); return;
       }
+      // A repository this instance does not configure, or the caller cannot read, is not accessible.
+      if (await repositoryScopeOrRespond(req, res, repository, { resolver: repositoryScope, allowAll: false, context: '/api/repos/media' }) === null) return;
       try {
         if (!(await reader.enabledRepositories([repository])).has(repository)) {
           res.json({ previews: [], nextOffset: null }); return;

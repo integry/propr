@@ -19,6 +19,12 @@ after(async () => { await database.destroy(); await closeConnection(); });
 
 /** The caller can read every repository; the denied-caller test supplies its own check. */
 const allowAccess = async () => {};
+/** The repositories this instance configures; readiness is served for no other. */
+const configuredRepositories = async () => [
+  { name: 'acme/app', enabled: true },
+  { name: 'acme/private-repo', enabled: true },
+  { name: 'Acme/Retired', enabled: false },
+];
 
 async function invoke(handler: (req: Request, res: Response) => Promise<void>, params: Record<string, string>, query: Record<string, string>) {
   const sent: { status: number; body?: unknown } = { status: 200 };
@@ -43,6 +49,7 @@ test('GET /api/pull-requests/:number/readiness returns the core verdict, scored 
   const evaluated: string[] = [];
   const routes = createPullRequestReadinessRoutes({
     db: database,
+    configuredRepositories,
     verifyAccess: allowAccess,
     evaluate: (owner, repo, number, deps) => {
       evaluated.push(`${owner}/${repo}#${number}`);
@@ -80,6 +87,7 @@ test('GET /api/pull-requests/:number/readiness returns the core verdict, scored 
 test('a GitHub outage reading the pull request is a retryable GITHUB_UNAVAILABLE envelope', async () => {
   const routes = createPullRequestReadinessRoutes({
     db: database,
+    configuredRepositories,
     verifyAccess: allowAccess,
     evaluate: (owner, repo, number, deps) => evaluatePullRequestReadiness(owner, repo, number, {
       ...readOnlyStandIns, ...deps, octokit: { request: async () => { throw Object.assign(new Error('Bad gateway'), { status: 502 }); } },
@@ -99,6 +107,7 @@ test('a caller without GitHub read access to the repository gets no readiness da
   let denial: unknown = Object.assign(new Error('Not Found'), { status: 404 });
   const routes = createPullRequestReadinessRoutes({
     db: database,
+    configuredRepositories,
     verifyAccess: async (_req, repository) => { checked.push(repository); if (denial) throw denial; },
     evaluate: (owner, repo, number, deps) => {
       evaluated.push(`${owner}/${repo}#${number}`);
@@ -135,6 +144,7 @@ test('without an injected check the caller\'s own GitHub credential is required 
   const evaluated: string[] = [];
   const routes = createPullRequestReadinessRoutes({
     db: database,
+    configuredRepositories,
     evaluate: async (owner, repo, number) => { evaluated.push(`${owner}/${repo}#${number}`); throw new Error('must not run'); },
   });
   // An instance member authenticated without a GitHub token (no session token, not an instance token).
@@ -147,4 +157,36 @@ test('without an injected check the caller\'s own GitHub credential is required 
   assert.notEqual(sent.status, 200);
   assert.equal(sent.body?.code, 'GITHUB_AUTHORIZATION_REQUIRED');
   assert.deepEqual(evaluated, []);
+});
+
+test('readiness is served only for an enabled configured repository, under its configured name', async () => {
+  await database.migrate.latest();
+  const evaluated: string[] = [];
+  const checked: string[] = [];
+  const routes = createPullRequestReadinessRoutes({
+    db: database,
+    configuredRepositories,
+    verifyAccess: async (_req, repository) => { checked.push(repository); },
+    evaluate: async (owner, repo, number) => {
+      evaluated.push(`${owner}/${repo}#${number}`);
+      return { repository: `${owner}/${repo}`, number } as never;
+    },
+  });
+
+  // A public repository this instance does not monitor, and a disabled one, are never evaluated.
+  for (const repository of ['facebook/react', 'acme/retired']) {
+    const denied = await invoke(routes.getReadiness, { number: '1' }, { repository });
+    assert.equal(denied.status, 404, repository);
+    assertConforms(ErrorEnvelope, denied.body, 'ErrorEnvelope');
+    assert.equal((denied.body as { code: string }).code, 'REPOSITORY_NOT_ACCESSIBLE');
+  }
+  assert.deepEqual(checked, [], 'no GitHub quota is spent on an unconfigured repository');
+  assert.deepEqual(evaluated, []);
+
+  // Any capitalization finds the configured repository, and the echo is its configured name.
+  const ready = await invoke(routes.getReadiness, { number: '7' }, { repository: 'ACME/App' });
+  assert.equal(ready.status, 200);
+  assert.equal((ready.body as { repository: string }).repository, 'acme/app');
+  assert.deepEqual(evaluated, ['acme/app#7']);
+  assert.deepEqual(checked, ['acme/app']);
 });

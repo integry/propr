@@ -10,6 +10,7 @@ import { createListPlanRevisionsHandler, createRestorePlanRevisionHandler } from
 import { verifyDraftOwnership } from '../routes/plannerHelpers/auth.js';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import type { McpPolicy, McpPrincipal } from '../mcp/policy.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 after(async () => closeConnection());
 
@@ -157,7 +158,7 @@ test('MCP update records both the rename and outgoing snapshot when name and pla
 
 test('HTTP update records both the rename and outgoing snapshot when name and plan change together', async t => {
   const db = await setup(t);
-  const routes = createPlannerRoutes({ db });
+  const routes = createPlannerRoutes({ repositoryScope: unscopedRepositoryResolver, db });
   const response = { statusCode: 200, body: undefined as unknown };
   const res = {
     status(code: number) { response.statusCode = code; return res; },

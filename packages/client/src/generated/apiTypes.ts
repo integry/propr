@@ -1282,7 +1282,7 @@ export interface DeleteTaskQuery {
 export interface CostExportQuery {
   /** Bounds executions by when they started; omitted means all time. */
   period?: "24h" | "7d" | "30d" | "90d" | "1y" | "all";
-  /** `owner/repo`, or `all` (default). */
+  /** `owner/repo` of a configured repository (any capitalization; the response echoes its configured name), or `all` (default). */
   repository?: string;
   /** Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`. */
   group_by?: string;
@@ -1360,10 +1360,10 @@ export interface RepositoryEventsQuery {
 export interface ListTasksQuery {
   /** `all` (default), `active`, `waiting`, `attention`, or a worker state. */
   status?: string;
-  /** `owner/name`, or `all` (default). */
+  /** `owner/name` of a configured repository (any capitalization), or `all` (default). */
   repository?: string;
   search?: string;
-  /** Page size; defaults to 50. */
+  /** Page size; defaults to 50, at most 200. */
   limit?: number;
   offset?: number;
   /** Only runs whose pull request awaits review. */

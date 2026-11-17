@@ -21,7 +21,7 @@ function toTodoDomain(record: RepoTodoRecord): RepoTodo {
 /** Get all categories for a user and repository, ordered by order_index. */
 export async function getCategoriesForRepository(userId: string, repository: string): Promise<RepoTodoCategory[]> {
   try {
-    const records = await db<RepoTodoCategoryRecord>('repo_todo_categories').where('user_id', userId).andWhere('repository', repository).orderBy('order_index', 'asc');
+    const records = await db<RepoTodoCategoryRecord>('repo_todo_categories').where('user_id', userId).andWhereRaw('repository = ? COLLATE NOCASE', [repository]).orderBy('order_index', 'asc');
     return records.map(toCategoryDomain);
   } catch (error) {
     logger.error({ error: (error as Error).message, userId, repository }, 'Failed to get categories');
@@ -34,7 +34,7 @@ export async function createCategory(params: CreateCategoryParams): Promise<Repo
   try {
     let orderIndex = params.orderIndex;
     if (orderIndex === undefined) {
-      const maxResult = await db<RepoTodoCategoryRecord>('repo_todo_categories').where('user_id', params.userId).andWhere('repository', params.repository).max('order_index as maxOrder').first() as { maxOrder: number | null } | undefined;
+      const maxResult = await db<RepoTodoCategoryRecord>('repo_todo_categories').where('user_id', params.userId).andWhereRaw('repository = ? COLLATE NOCASE', [params.repository]).max('order_index as maxOrder').first() as { maxOrder: number | null } | undefined;
       orderIndex = ((maxResult?.maxOrder as number | null) ?? -1) + 1;
     }
     await db<RepoTodoCategoryRecord>('repo_todo_categories').insert({ category_id: params.categoryId, user_id: params.userId, repository: params.repository, name: params.name, order_index: orderIndex });
@@ -82,7 +82,7 @@ export async function batchReorderCategories(userId: string, repository: string,
   try {
     await db.transaction(async (trx) => {
       for (const item of items) {
-        await trx<RepoTodoCategoryRecord>('repo_todo_categories').where('category_id', item.id).andWhere('user_id', userId).andWhere('repository', repository).update({ order_index: item.orderIndex, updated_at: db.fn.now() });
+        await trx<RepoTodoCategoryRecord>('repo_todo_categories').where('category_id', item.id).andWhere('user_id', userId).andWhereRaw('repository = ? COLLATE NOCASE', [repository]).update({ order_index: item.orderIndex, updated_at: db.fn.now() });
       }
     });
     logger.debug({ userId, repository, itemCount: items.length }, 'Categories reordered');
@@ -95,7 +95,7 @@ export async function batchReorderCategories(userId: string, repository: string,
 /** Get all todos for a user and repository, grouped by category and ordered. */
 export async function getTodosForRepository(userId: string, repository: string): Promise<RepoTodo[]> {
   try {
-    const records = await db<RepoTodoRecord>('repo_todos').where('user_id', userId).andWhere('repository', repository).orderBy('category_id', 'asc').orderBy('order_index', 'asc');
+    const records = await db<RepoTodoRecord>('repo_todos').where('user_id', userId).andWhereRaw('repository = ? COLLATE NOCASE', [repository]).orderBy('category_id', 'asc').orderBy('order_index', 'asc');
     return records.map(toTodoDomain);
   } catch (error) {
     logger.error({ error: (error as Error).message, userId, repository }, 'Failed to get todos');
@@ -119,7 +119,7 @@ export async function createTodo(params: CreateTodoParams): Promise<RepoTodo> {
   try {
     let orderIndex = params.orderIndex;
     if (orderIndex === undefined) {
-      const query = db<RepoTodoRecord>('repo_todos').where('user_id', params.userId).andWhere('repository', params.repository);
+      const query = db<RepoTodoRecord>('repo_todos').where('user_id', params.userId).andWhereRaw('repository = ? COLLATE NOCASE', [params.repository]);
       if (params.categoryId) query.andWhere('category_id', params.categoryId);
       else query.whereNull('category_id');
       const maxResult = await query.max('order_index as maxOrder').first() as { maxOrder: number | null } | undefined;
@@ -174,7 +174,7 @@ export async function batchReorderTodos(userId: string, repository: string, item
       for (const item of items) {
         const updateData: Record<string, unknown> = { order_index: item.orderIndex, updated_at: db.fn.now() };
         if (item.categoryId !== undefined) updateData.category_id = item.categoryId;
-        await trx<RepoTodoRecord>('repo_todos').where('todo_id', item.id).andWhere('user_id', userId).andWhere('repository', repository).update(updateData);
+        await trx<RepoTodoRecord>('repo_todos').where('todo_id', item.id).andWhere('user_id', userId).andWhereRaw('repository = ? COLLATE NOCASE', [repository]).update(updateData);
       }
     });
     logger.debug({ userId, repository, itemCount: items.length }, 'Todos reordered');

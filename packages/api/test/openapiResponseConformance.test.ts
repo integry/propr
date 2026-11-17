@@ -27,6 +27,7 @@ import { createDesktopAuthRoutes } from '../routes/desktopAuthRoutes.js';
 import { createTaskHistoryRoutes } from '../routes/taskHistoryRoutes.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 /**
  * The handlers and the schemas in openapi/schemas.ts are maintained
@@ -114,7 +115,7 @@ describe('Handler responses match the published schemas', () => {
     await db('plan_issues').insert({
       draft_id: 'draft-1', repository: 'acme/app', issue_number: 12, task_id: 'run-completed', status: 'merged',
     });
-    const routes = createTaskRoutes({ db });
+    const routes = createTaskRoutes({ repositoryScope: unscopedRepositoryResolver, db });
 
     for (const query of [{}, { status: 'failed' }, { groupBy: 'task', limit: '2' }]) {
       const { response, sent } = recorder();

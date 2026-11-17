@@ -6,6 +6,7 @@ import { after, afterEach, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { parseTaskAssignmentFilter, type TaskAssignmentFilter } from '@propr/shared';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDbFilename = process.env.DB_FILENAME;
@@ -275,7 +276,7 @@ async function getTasks(db: Knex, query: Record<string, string>, user?: { id: st
     status(code: number) { result.status = code; return this; },
     json(payload: unknown) { result.json = payload; return this; },
   } as unknown as Response;
-  await createTaskRoutes({ db }).getTasks({ query, ...(user ? { user } : {}) } as unknown as Request, response);
+  await createTaskRoutes({ repositoryScope: unscopedRepositoryResolver, db }).getTasks({ query, ...(user ? { user } : {}) } as unknown as Request, response);
   return result;
 }
 

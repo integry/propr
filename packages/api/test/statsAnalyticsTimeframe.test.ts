@@ -12,6 +12,7 @@ import {
   minutesAgo,
   seedTask,
 } from './dashboardTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 let database: Knex;
 
@@ -66,7 +67,7 @@ async function seedRecentAndOlder(): Promise<void> {
 }
 
 test('an unknown period is rejected with 400 by every analytics endpoint', async () => {
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   for (const handler of [stats.getTaskStats, stats.getRepositoryStats, stats.getOverview]) {
     const response = await call(handler, { period: 'nope' });
     assert.equal(response.status, 400);
@@ -79,7 +80,7 @@ test('without a period the endpoints keep their historical scope', async () => {
   await seedTask(database, {
     taskId: 'ancient', repository: 'acme/older', issueNumber: 3, states: [{ state: 'completed', timestamp: daysAgo(400) }],
   });
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const tasks = await call(stats.getTaskStats);
   assert.equal(tasks.status, 200);
@@ -124,7 +125,7 @@ test('without a period the daily series still lists a day with only a run', asyn
     { execution_id: 3, task_id: 'older', start_time: daysAgo(1), model_name: 'gpt-5.6' },
     { execution_id: 4, task_id: 'older', start_time: daysAgo(40), model_name: 'gpt-5.6' },
   ]);
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const tasks = await call(stats.getTaskStats);
   assert.equal(tasks.status, 200);
@@ -139,7 +140,7 @@ test('without a period the daily series still lists a day with only a run', asyn
 
 test('a period bounds task counts to tasks created inside the window', async () => {
   await seedRecentAndOlder();
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const lastDay = await call(stats.getTaskStats, { period: '24h' });
   assert.deepEqual(lastDay.body.summary, { total: 1, completed: 1, failed: 0 });
@@ -156,7 +157,7 @@ test('a period bounds task counts to tasks created inside the window', async () 
 
 test('a day period zero-fills one daily count per UTC day, today and the days before it', async () => {
   await seedRecentAndOlder();
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const week = await call(stats.getTaskStats, { period: '7d' });
   const days = week.body.dailyCounts as Array<{ date: string; count: number }>;
@@ -199,7 +200,7 @@ test('the 24-hour period buckets activity by UTC hour: this hour and the 23 befo
     // Just outside the window: the hour 24 hours ago has closed.
     { execution_id: 5, task_id: 'older', start_time: minutesAgo(23 * 60 + 30), model_name: 'claude-opus-5-5' },
   ]);
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const lastDay = await call(stats.getTaskStats, { period: '24h' });
   const hours = lastDay.body.dailyCounts as Array<{ date: string; count: number; runs: number }>;
@@ -222,7 +223,7 @@ test('the 24-hour period buckets activity by UTC hour: this hour and the 23 befo
 });
 
 test('all-time activity starts at the earliest task or run, so its runs match the overview', async () => {
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   const totalRuns = async () => {
     const overview = await call(stats.getOverview, { period: 'all' });
     return (overview.body.runs as { total: number }).total;
@@ -248,7 +249,7 @@ test('all-time activity starts at the earliest task or run, so its runs match th
 
 test('a period bounds overview usage by execution start but never the indexed repository count', async () => {
   await seedRecentAndOlder();
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const lastDay = await call(stats.getOverview, { period: '24h' });
   assert.deepEqual(lastDay.body.usage, {
@@ -278,7 +279,7 @@ test('the dashboard widget and the Analytics page report the same figures for th
     { task_id: 'outside', start_time: daysAgo(8), cost_usd: 9 },
   ]);
 
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
   for (const period of ['7d', '30d']) {
     const widget = await call(stats.getDashboardStats, { repository: 'all', period });
     const tasks = await call(stats.getTaskStats, { period });
@@ -319,7 +320,7 @@ test('every run reaches the Models table, so its runs sum to the delivery band a
     { execution_id: 4, task_id: 'older', start_time: daysAgo(1.5), cost_usd: null, model_name: '' },
   ]);
   await database('llm_execution_details').insert({ execution_id: 3, token_count_input: 10, token_count_output: 5 });
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const overview = await call(stats.getOverview, { period: '7d' });
   // The unknown runs share one row, listed last, with no review figures of its own.
@@ -343,7 +344,7 @@ test('goal tasks are left out of task volume on the Analytics page and the dashb
     taskId: 'goal', repository: 'acme/recent', issueNumber: 1, taskType: 'goal',
     states: [{ state: 'processing', timestamp: minutesAgo(40) }, { state: 'completed', timestamp: minutesAgo(5) }],
   });
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const tasks = await call(stats.getTaskStats, { period: '7d' });
   assert.deepEqual(tasks.body.summary, { total: 2, completed: 1, failed: 1 });
@@ -359,7 +360,7 @@ test('token figures use each run\'s cache-inclusive totals and fall back to step
   await seedRecentAndOlder();
   // Claude per-step usage excludes cached input; the run total counts it.
   await database('llm_executions').where({ execution_id: 1 }).update({ input_tokens: 3_000_000, output_tokens: 20_000 });
-  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const stats = createStatsRoutes({ repositoryScope: unscopedRepositoryResolver, db: database, now: () => NOW });
 
   const overview = await call(stats.getOverview, { period: '7d' });
   assert.deepEqual(overview.body.model_usage, [

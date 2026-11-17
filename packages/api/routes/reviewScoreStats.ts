@@ -12,7 +12,7 @@ import type { Knex } from 'knex';
 import { REASONING_LEVELS } from '@propr/shared';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { chunk } from './dashboardQueries.js';
-import { validateRepository, validateRepositoryFilter } from './validation.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import type { AnalyticsCache } from './analyticsCache.js';
 import { hasColumn } from './analyticsSchema.js';
 import { loadPullRequestCosts, type PullRequestSpend } from './reviewScoreSpend.js';
@@ -418,11 +418,12 @@ export interface PullRequestScoreHistory {
 /** One PR's scores, oldest first, with its recorded outcome. */
 export async function loadPullRequestScores(db: Knex, repository: string, prNumber: number): Promise<PullRequestScoreHistory> {
   const [scores, state] = await Promise.all([
-    db('review_scores').where({ repository_id: repository, pr_number: prNumber })
+    // Stored names keep the spelling they were recorded with; match them case-insensitively.
+    db('review_scores').whereRaw('repository_id = ? COLLATE NOCASE', [repository]).where({ pr_number: prNumber })
       .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }])
       .select('cycle_number', 'source', 'score', 'goal', 'goal_reached', 'blocker_count', 'suggestion_count', 'reviewer_agent',
         'reviewer_model', 'implementer_model', 'head_sha', 'task_id', 'created_at') as Promise<Array<Omit<PullRequestScoreHistory['scores'][number], 'goal_reached'> & { goal_reached: boolean | number | null }>>,
-    db('notification_pull_request_state').where({ repository, pr_number: prNumber })
+    db('notification_pull_request_state').whereRaw('repository = ? COLLATE NOCASE', [repository]).where({ pr_number: prNumber })
       .select('outcome', 'merged_at', 'closed_at').first() as Promise<{ outcome: string | null; merged_at: string | null; closed_at: string | null } | undefined>,
   ]);
   const outcome = state?.outcome === 'merged' || state?.merged_at ? 'merged' : state?.outcome === 'closed' ? 'closed' : null;
@@ -438,19 +439,17 @@ interface ReviewScoreRoutesDeps {
   now?: () => Date;
   /** Remembers the all-time summary for a short while; shared with the stats routes. */
   analyticsCache?: AnalyticsCache;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
 }
 
-export function createReviewScoreRoutes({ db, now = () => new Date(), analyticsCache }: ReviewScoreRoutesDeps) {
+export function createReviewScoreRoutes({ db, now = () => new Date(), analyticsCache, repositoryScope = resolveRepositoryScope }: ReviewScoreRoutesDeps) {
   async function readSummary(req: Request, res: Response): Promise<ReviewScoreSummary | null> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
     if (analyticsWindow === false) return null;
-    const repository = typeof req.query.repository === 'string' && req.query.repository ? req.query.repository : 'all';
-    const validation = validateRepositoryFilter(repository);
-    if (!validation.valid) {
-      res.status(400).json({ error: validation.error });
-      return null;
-    }
-    return await loadReviewScoreSummary(db, analyticsWindow, repository === 'all' ? 'all' : repository.trim(), analyticsCache);
+    const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: '/api/stats/review-scores' });
+    if (repository === null) return null;
+    return await loadReviewScoreSummary(db, analyticsWindow, repository, analyticsCache);
   }
 
   async function getSummary(req: Request, res: Response): Promise<void> {
@@ -482,12 +481,8 @@ export function createReviewScoreRoutes({ db, now = () => new Date(), analyticsC
       res.status(400).json({ error: 'Pull request number must be a positive integer' });
       return;
     }
-    const validation = validateRepository(req.query.repository);
-    if (!validation.valid) {
-      res.status(400).json({ error: validation.error });
-      return;
-    }
-    const repository = String(req.query.repository).trim();
+    const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, allowAll: false, context: '/api/pull-requests/:number/scores' });
+    if (repository === null) return;
     try {
       res.json(await loadPullRequestScores(db, repository, prNumber));
     } catch (error) {
