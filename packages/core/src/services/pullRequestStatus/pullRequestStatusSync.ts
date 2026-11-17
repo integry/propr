@@ -165,7 +165,11 @@ async function readPull(github: PullRequestStatusGitHub, repository: string, prN
  * were read (PullRequestStatusChecks.readFailed), and whether ProPR created the
  * pull request (only its title is ever changed).
  */
-interface DesiredStatus { status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null }
+interface DesiredStatus {
+    status: PullRequestStatus | null; checksReadFailed: boolean; isProprPullRequest: boolean; epic: EpicStatusFacts | null;
+    /** The status waits this long for a new head's checks to appear; no webhook ends that wait in a repository without CI. */
+    checksAwaitedForMs?: number | null;
+}
 
 async function desiredStatus(
     deps: PullRequestStatusSyncDeps, target: { repository: string; prNumber: number; pull: PullRequestStatusPull },
@@ -176,9 +180,10 @@ async function desiredStatus(
         const isPropr = hasStatusSlot(pull.title) && await isProprCreatedPullRequest(deps.sources.db, repository, { number: prNumber, head: pull.head });
         return { status: null, checksReadFailed: false, isProprPullRequest: isPropr, epic: null };
     }
-    const facts = await loadPullRequestStatusFacts(repository, prNumber, { ...deps.sources, github: deps.github }, pull);
+    const facts = await loadPullRequestStatusFacts(repository, prNumber, { now: () => deps.now().getTime(), ...deps.sources, github: deps.github }, pull);
     return {
         status: computePullRequestStatus(facts), checksReadFailed: facts.checks.readFailed === true, isProprPullRequest: facts.isProprPullRequest, epic: facts.epic,
+        checksAwaitedForMs: facts.checksAwaitedForMs ?? null,
     };
 }
 
@@ -197,6 +202,10 @@ function bodyWithStatus(current: string, status: PullRequestStatus | null, now: 
     return applyPullRequestStatusBlock(current, null);
 }
 
+function earliest(a: number | null, b: number | null): number | null {
+    return a === null ? b : b === null ? a : Math.min(a, b);
+}
+
 /** GitHub is still computing mergeability, so the status cannot settle yet. */
 function awaitsMergeability(status: PullRequestStatus | null): boolean {
     return status?.state === 'working' && status.detail.activity === 'checking_mergeability';
@@ -212,7 +221,7 @@ interface SyncOutcome {
     checksReadFailed: boolean;
     /**
      * Update again after this many milliseconds: the title waits for a ⚠️ or ✅ to settle (pullRequestStatusTitle),
-     * or an epic has sub-PRs still to read (withEpicChildReadContinuation).
+     * an epic has sub-PRs still to read (withEpicChildReadContinuation), or the wait for a new head's checks ends.
      */
     titleSettleInMs: number | null;
 }
@@ -300,7 +309,7 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
         const bodyChanged = !(next === current || sameRenderedStatus(next, current));
         const read = {
             awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed,
-            titleSettleInMs: withEpicChildReadContinuation(title.settleInMs, desired),
+            titleSettleInMs: withEpicChildReadContinuation(earliest(title.settleInMs, desired.checksAwaitedForMs ?? null), desired),
             notes: await epicSyncNotes(deps.redis, { repository, prNumber, lease }, desired, bodyChanged || title.title !== null),
         };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };

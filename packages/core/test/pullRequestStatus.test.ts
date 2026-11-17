@@ -104,6 +104,38 @@ test('goal reached while checks are pending is working, not ready', () => {
     assert.equal(status.detail.activity, 'waiting_for_ci');
 });
 
+// --- a new head whose checks have not appeared yet (#3590) ---
+
+test('a head whose checks have not appeared yet waits for CI instead of being ready', () => {
+    const empty = { complete: true, reported: false, passed: 0, failed: 0, pending: 0, failedNames: [] };
+    const waiting = computePullRequestStatus(facts({ checks: empty, checksAwaitedForMs: 60_000, latestReviewScore: 8 }));
+    assert.equal(waiting.state, 'working');
+    assert.equal(waiting.detail.activity, 'waiting_for_ci');
+    // The wait is over (or the repository has no CI): nothing else holds it.
+    assert.equal(computePullRequestStatus(facts({ checks: empty, checksAwaitedForMs: null, latestReviewScore: 8 })).state, 'ready');
+    const ultrafix = computePullRequestStatus(facts({ checks: empty, checksAwaitedForMs: 60_000, ultrafix: loop() }));
+    assert.equal(ultrafix.detail.activity, 'waiting_for_ci');
+});
+
+test('a review score of an older head is not held against a new head while its checks are outstanding', () => {
+    const pushed = { latestReviewScore: 6, latestReviewHeadSha: 'old', pullRequest: { state: 'open', merged: false, headSha: 'abc', mergeable: true } };
+    const pending = { complete: true, reported: true, passed: 9, failed: 0, pending: 12, failedNames: [] };
+    const absent = { complete: true, reported: false, passed: 0, failed: 0, pending: 0, failedNames: [] };
+    for (const [label, extra] of [['pending', { checks: pending }], ['absent', { checks: absent, checksAwaitedForMs: 30_000 }]] as const) {
+        const status = computePullRequestStatus(facts({ ...pushed, ...extra }));
+        assert.equal(status.state, 'working', label);
+        assert.equal(status.detail.activity, 'waiting_for_ci', label);
+    }
+    // Once the new head's checks concluded, the latest score is what there is.
+    assert.equal(computePullRequestStatus(facts(pushed)).detail.reason, 'review_below_goal');
+    // A score for the current head (or one recorded without its head) is established whatever pending checks conclude.
+    for (const head of ['abc', null]) {
+        assert.equal(computePullRequestStatus(facts({ ...pushed, latestReviewHeadSha: head, checks: pending })).detail.reason, 'review_below_goal');
+    }
+    // A failed check still needs you on the new head.
+    assert.equal(computePullRequestStatus(facts({ ...pushed, checks: { ...pending, failed: 1, failedNames: ['lint'] } })).detail.reason, 'check_failed');
+});
+
 // --- state table: needs_attention ---
 
 test('the last ProPR run failed', () => {

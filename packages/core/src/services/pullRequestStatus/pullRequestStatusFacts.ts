@@ -4,6 +4,7 @@ import { summarizeCheckSignals } from '../../webhook/checkRunHelpers.js';
 import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { loadPullRequestScoreHistory } from '../reviewScoreStore.js';
+import { headChecksWaitMs } from './pullRequestStatusCheckWait.js';
 import { loadEpicStatusFacts } from './pullRequestStatusEpicFacts.js';
 import {
     computePullRequestStatus,
@@ -37,8 +38,14 @@ export interface PullRequestStatusPull {
 export interface PullRequestStatusSources {
     github: PullRequestStatusGitHub;
     db: Knex;
-    /** Ultrafix loop state lives in Redis; without it no loop is reported. */
-    redis?: Pick<Redis, 'get'> | null;
+    /**
+     * Ultrafix loop state lives in Redis; without it no loop is reported. A store
+     * that can also write records when a head was first seen without checks
+     * (pullRequestStatusCheckWait); a read-only one only reads it.
+     */
+    redis?: (Pick<Redis, 'get'> & Partial<Pick<Redis, 'set' | 'del'>>) | null;
+    /** The clock the wait for a new head's checks runs on; Date.now when absent. */
+    now?: () => number;
     loadRatingGoal: () => Promise<number>;
     loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]>;
     /** BullMQ jobs for the pull request that have not started yet. */
@@ -203,16 +210,18 @@ const MAX_CHECK_PAGES = 3;
  * budget is spent. `complete` is false when items were left unread: an unread
  * check may be failed or pending, so the read ones cannot establish a pass.
  */
-async function readCheckPages<T>(read: (page: number) => Promise<{ items: T[]; total: number }>): Promise<{ items: T[]; complete: boolean }> {
+async function readCheckPages<T>(read: (page: number) => Promise<{ items: T[]; total: number }>): Promise<{ items: T[]; complete: boolean; total: number }> {
     const items: T[] = [];
+    let listed = 0;
     for (let page = 1; page <= MAX_CHECK_PAGES; page++) {
         const { items: pageItems, total } = await read(page);
         items.push(...pageItems);
-        if (items.length >= total) return { items, complete: true };
+        listed = Math.max(listed, total);
+        if (items.length >= total) return { items, complete: true, total: listed };
         // A short page with items still unlisted is GitHub's count disagreeing with its list; nothing further is readable.
-        if (pageItems.length < CHECK_PAGE) return { items, complete: false };
+        if (pageItems.length < CHECK_PAGE) return { items, complete: false, total: listed };
     }
-    return { items, complete: false };
+    return { items, complete: false, total: listed };
 }
 
 interface CheckRun { name?: string; status: string; conclusion: string | null }
@@ -221,19 +230,19 @@ interface CheckRunPage { total_count?: number; check_runs?: CheckRun[] }
 /** The head's check runs, at most MAX_CHECK_PAGES pages (readCheckPages). */
 async function loadCheckRuns(
     github: PullRequestStatusGitHub, owner: string, repo: string, ref: string,
-): Promise<{ runs: CheckRun[]; complete: boolean }> {
-    const { items, complete } = await readCheckPages<CheckRun>(async page => {
+): Promise<{ runs: CheckRun[]; complete: boolean; total: number }> {
+    const { items, complete, total: listed } = await readCheckPages<CheckRun>(async page => {
         const { data } = await github.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', { owner, repo, ref, per_page: CHECK_PAGE, page }) as { data: CheckRunPage };
         const runs = data.check_runs ?? [];
         return { items: runs, total: data.total_count ?? runs.length };
     });
-    return { runs: items, complete };
+    return { runs: items, complete, total: Math.max(listed, items.length) };
 }
 
 interface LegacyStatusContext { context?: string; state?: string }
 interface LegacyStatusPage { state?: string; total_count?: number; statuses?: LegacyStatusContext[] }
 /** The head's legacy commit statuses: the combined state and the contexts listed within the page budget. */
-interface LegacyStatuses { state: string; statuses: LegacyStatusContext[]; complete: boolean }
+interface LegacyStatuses { state: string; statuses: LegacyStatusContext[]; complete: boolean; total: number }
 /** Blocking legacy contexts classified one by one; `count` and `nonBlocking` cover the listed contexts only. */
 interface LegacyChecks { count: number; nonBlocking: number; passed: number; failed: string[]; pending: string[] }
 
@@ -246,13 +255,13 @@ const LEGACY_PLACEHOLDER = 'commit status';
  */
 async function loadLegacyStatuses(github: PullRequestStatusGitHub, owner: string, repo: string, ref: string): Promise<LegacyStatuses> {
     let state = 'pending';
-    const { items, complete } = await readCheckPages<LegacyStatusContext>(async page => {
+    const { items, complete, total } = await readCheckPages<LegacyStatusContext>(async page => {
         const { data } = await github.request('GET /repos/{owner}/{repo}/commits/{ref}/status', { owner, repo, ref, per_page: CHECK_PAGE, page }) as { data: LegacyStatusPage };
         if (page === 1 && typeof data.state === 'string') state = data.state;
         const statuses = Array.isArray(data.statuses) ? data.statuses : [];
         return { items: statuses, total: data.total_count ?? statuses.length };
     });
-    return { state, statuses: items, complete };
+    return { state, statuses: items, complete, total: Math.max(total, items.length) };
 }
 
 /**
@@ -310,6 +319,7 @@ export async function loadPullRequestStatusChecks(
     const complete = runs.status === 'fulfilled' && runs.value.complete && statuses.status === 'fulfilled' && statuses.value.complete;
     return {
         complete,
+        reported: (runs.status === 'fulfilled' && runs.value.total > 0) || (statuses.status === 'fulfilled' && statuses.value.total > 0),
         readFailed: runs.status === 'rejected' || statuses.status === 'rejected',
         passed: Math.max(0, summary.count - (summary.nonBlockingCount ?? 0) - runFailed.length - runPending) + legacy.passed,
         failed: failedNames.length,
@@ -332,10 +342,10 @@ export async function countQueuedPullRequestJobs(
     }).length;
 }
 
-async function latestReviewScore(db: Knex, repository: string, prNumber: number): Promise<number | null> {
+async function latestReviewScore(db: Knex, repository: string, prNumber: number): Promise<{ score: number; headSha: string | null } | null> {
     const history = await loadPullRequestScoreHistory(db, repository, prNumber);
     const latest = history.at(-1);
-    return latest ? latest.score : null;
+    return latest ? { score: latest.score, headSha: typeof latest.head_sha === 'string' && latest.head_sha ? latest.head_sha : null } : null;
 }
 
 /** An epic pull request's facts (loadEpicStatusFacts); its sub-PRs' status by this same computation. */
@@ -378,7 +388,14 @@ export async function loadPullRequestStatusFacts(
         sources.loadRatingGoal(),
         loadEpicFacts(repository, prNumber, sources, { epicRef, pull: pr }),
     ]);
-    return { pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, latestReviewScore: score, ratingGoal, epic };
+    // A head GitHub lists no check for yet may only be one whose checks have not started (pullRequestStatusCheckWait).
+    const checksAwaitedForMs = await headChecksWaitMs(sources.redis, {
+        repository, prNumber, headSha: pullRequest.headSha, reported: checks.complete ? checks.reported === true : null,
+    }, sources.now ? sources.now() : Date.now());
+    return {
+        pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, checksAwaitedForMs,
+        latestReviewScore: score?.score ?? null, latestReviewHeadSha: score?.headSha ?? null, ratingGoal, epic,
+    };
 }
 
 /** The status of a pull request: its facts read, then computed by the one status computation. */
