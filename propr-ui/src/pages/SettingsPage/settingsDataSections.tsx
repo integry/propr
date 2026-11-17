@@ -38,26 +38,27 @@ export function settingsDataSections(): SettingsNavigationSection[] {
 }
 
 /**
- * Operator upkeep, in order: instance data, then follow-up handoffs held for a
- * decision. Both are administrator-only, so a viewer who can use neither gets
- * no sections and the Maintenance category drops out of the list.
+ * Operator upkeep, in order: held follow-ups, which may be blocking a pull
+ * request right now, then instance data. Both are administrator-only, so a
+ * viewer who can use neither gets no sections and the Maintenance category
+ * drops out of the list.
  */
 export function maintenanceSections(user: CurrentUser | null): SettingsNavigationSection[] {
   const sections: SettingsNavigationSection[] = [];
+  if (canManageHeldFollowups(user)) {
+    sections.push({
+      id: 'maintenance',
+      category: 'maintenance',
+      searchText: 'maintenance held follow-ups follow-up hold release resume blocked pull request fork publication stuck command cancelled',
+      content: <MaintenanceSection />
+    });
+  }
   if (canManageInstanceStorage(user)) {
     sections.push({
       id: 'instance-storage',
       category: 'maintenance',
       searchText: 'instance data database export inventory repository cache cleanup storage self hosted admin backup maintenance',
       content: <InstanceStorageSection />
-    });
-  }
-  if (canManageHeldFollowups(user)) {
-    sections.push({
-      id: 'maintenance',
-      category: 'maintenance',
-      searchText: 'maintenance held follow-ups follow-up handoff hold release resume operator blocked pull request fork publication stuck command',
-      content: <MaintenanceSection />
     });
   }
   return sections;

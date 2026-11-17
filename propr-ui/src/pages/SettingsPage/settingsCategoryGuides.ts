@@ -105,7 +105,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
     notes: [
       'Database exports and repository cache cleanup recheck your administrator authority on every request. A cleanup confirmation expires after five minutes.',
       'Cache cleanup only removes eligible repository caches, which are refetched on next use. Worktrees are always protected.',
-      'A follow-up held for an operator blocks every later command on its pull request. Release frees the branch without deleting files or commits; Resume re-arms recovery.',
+      'Held follow-ups that settle on their own, for example when the pull request closes, move to Show released.',
     ],
     links: [
       { label: 'Instance data', href: `${DOCS}/architecture/instance-storage-v1#native-instance-data-management-3013` },

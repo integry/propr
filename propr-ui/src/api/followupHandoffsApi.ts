@@ -1,10 +1,11 @@
 import { API_BASE_URL, apiFetch } from './apiClient';
 
 /**
- * Admin view of pull request follow-up handoffs: attempts whose publication is
- * still owed. A hold awaiting an operator blocks every later command on its
- * pull request, so the Maintenance section lists them and lets an
- * administrator resume or release them. Mirrors `/api/admin/followup-handoffs`.
+ * Admin view of held follow-ups: follow-up attempts that stopped before their
+ * work reached the pull request (the API calls them follow-up handoffs). One
+ * held for a decision blocks new commands on its pull request, so Settings →
+ * Maintenance lists them and lets an administrator resume or release them.
+ * Mirrors `/api/admin/followup-handoffs`.
  */
 export interface FollowupHandoffStatus {
   repository: string;
@@ -45,26 +46,38 @@ const target = (repository: string, pullRequest: number) => {
   return `${base()}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(String(pullRequest))}`;
 };
 
+const REFUSED = 'This follow-up can’t be changed right now. Try again shortly.';
+const NO_LONGER_HELD = 'This follow-up is no longer held.';
+const UNPUBLISHED = 'This follow-up still has unpublished work. Tick the box to release it anyway; the commits are kept.';
+
+/** Why the server refused, in the words the Maintenance screen uses. */
 const REASON_TEXT: Record<string, string> = {
-  worktree_holds_unpublished_work: 'The retained worktree still holds unpublished work. Release with force to detach it anyway; the commits stay reachable.',
-  agent_still_running: 'The attempt’s agent is still running.',
-  liveness_unavailable: 'The attempt’s agent liveness could not be verified; stop the agent first.',
-  lease_held_by_live_writer: 'Another job currently holds this pull request.',
-  requires_cancellation_authorization: 'The user cancelled this work. Resume with cancellation authorization to publish it anyway.',
-  not_resumable: 'The handoff is not in a state that can be resumed.',
+  worktree_holds_unpublished_work: UNPUBLISHED,
+  unpublished_commits_still_on_branch: UNPUBLISHED,
+  agent_still_running: 'Its agent is still running. Try again when it finishes.',
+  liveness_unavailable: 'Its agent can’t be checked right now. Try again shortly.',
+  lease_held_by_live_writer: 'Another job is working on this pull request. Try again shortly.',
+  branch_still_registered: 'Another worktree still uses this branch. Try again shortly.',
+  worktree_registrations_unavailable: 'The worktrees can’t be checked right now. Try again shortly.',
+  cancelled_claims_withdrawal_failed: 'The cancelled comments couldn’t be withdrawn. Try again shortly.',
+  requires_cancellation_authorization: 'This work was cancelled. Tick “Publish the cancelled work” to resume it.',
+  cancellation_authorization_unavailable: 'This follow-up can’t be resumed.',
+  not_resumable: 'This follow-up can’t be resumed.',
+  followup_handoff_ownership_lost: 'This follow-up can’t be resumed.',
+  released: NO_LONGER_HELD,
+  superseded: 'This follow-up changed in the meantime. Check the list and try again.',
 };
 
 async function failure(response: Response): Promise<Error> {
-  if (response.status === 401 || response.status === 403) return new Error('Instance runtime administration is required.');
+  if (response.status === 401 || response.status === 403) return new Error('Only instance administrators can do this.');
+  if (response.status === 429) return new Error('Too many requests. Try again in a minute.');
   let body: { error?: unknown; code?: unknown; reason?: unknown } = {};
   try { body = await response.json(); } catch { /* no body */ }
-  if (response.status === 404) return new FollowupHandoffRefusedError('This follow-up handoff is no longer tracked.', 'not_found');
+  if (response.status === 404) return new FollowupHandoffRefusedError(NO_LONGER_HELD, 'not_found');
   const reason = typeof body.reason === 'string' ? body.reason : typeof body.code === 'string' ? body.code : null;
-  if (response.status === 409) {
-    const text = (reason && REASON_TEXT[reason]) || (typeof body.error === 'string' ? body.error : null) || `Refused (${reason ?? 'unknown reason'}).`;
-    return new FollowupHandoffRefusedError(text, reason);
-  }
-  return new Error(typeof body.error === 'string' ? body.error : 'Follow-up handoff operation failed; the record is retained.');
+  // The server's own wording is written for the CLI and the API, so it is never shown here.
+  if (response.status === 409) return new FollowupHandoffRefusedError((reason && REASON_TEXT[reason]) || REFUSED, reason);
+  return new Error('Something went wrong. The follow-up is unchanged.');
 }
 
 async function request<T>(url: string, body?: Record<string, unknown>): Promise<T> {

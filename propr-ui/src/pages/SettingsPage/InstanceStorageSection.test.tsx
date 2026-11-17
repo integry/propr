@@ -41,7 +41,7 @@ describe('native instance storage', () => {
     expect(confirm).toBeDisabled(); expect(api.storageExecute).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(confirm);
-    expect(await screen.findByText('Cleanup completed: 1 deleted, 0 retained.')).toBeInTheDocument();
+    expect(await screen.findByText('Cleanup finished: 1 deleted, 0 kept.')).toBeInTheDocument();
     expect(api.storageExecute).toHaveBeenCalledTimes(1);
   });
   it('old/offline runtime clears authority without fabricating an empty inventory', async () => {
@@ -118,7 +118,7 @@ describe('database export job across transient and authority-bearing failures', 
     vi.mocked(api.databaseExportStatus).mockReturnValue(new Promise(() => {}));
     render(view()); await screen.findByText('example/project');
     fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
-    expect(await screen.findByText(/Export: running/)).toBeInTheDocument();
+    expect(await screen.findByText(/Export running/)).toBeInTheDocument();
   }
   const jobShown = () => screen.queryByRole('button', { name: 'Discard export' });
 
@@ -128,7 +128,7 @@ describe('database export job across transient and authority-bearing failures', 
     render(view()); await screen.findByText('example/project');
     fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
     expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('temporarily unavailable');
-    expect(screen.getByText(/Export: running/)).toBeInTheDocument();
+    expect(screen.getByText(/Export running/)).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Download once' }, { timeout: 5000 })).toBeInTheDocument();
     expect(api.databaseExportStatus).toHaveBeenCalledTimes(2);
   }, 10_000);
@@ -143,7 +143,7 @@ describe('database export job across transient and authority-bearing failures', 
       failure();
       fireEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
       expect(await screen.findByRole('alert')).toBeInTheDocument();
-      expect(screen.getByText(/Export: running/)).toBeInTheDocument();
+      expect(screen.getByText(/Export running/)).toBeInTheDocument();
       vi.mocked(api.storageCapabilities).mockResolvedValue({ ...capabilities, features: [...capabilities.features] });
       fireEvent.click(jobShown()!);
       await waitFor(() => expect(api.cancelDatabaseExport).toHaveBeenCalledWith(running));
@@ -186,7 +186,7 @@ describe('database export job across transient and authority-bearing failures', 
       failure();
       fireEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
       await waitFor(() => expect(jobShown()).not.toBeInTheDocument());
-      expect(screen.queryByText(/Export: running/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Export running/)).not.toBeInTheDocument();
     });
   }
 

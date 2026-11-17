@@ -1,31 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import { canManageHeldFollowups } from './settingsPermissions';
 import * as api from '../../api/followupHandoffsApi';
 import { SettingsSection } from './SettingsLayout';
+import { ListSkeleton } from '../../components/ui/Skeleton';
+import { AgentConfirmDialog } from '../../components/Agents/AgentConfirmDialog';
+import { useSettingsSectionVisible } from './settingsSectionVisibility';
+import {
+  isHeldFollowup, isOpenFollowup, needsCancelledChoice, nextStep, phaseLabel, reasonLabel, statusLabel, updatedLabel,
+} from './heldFollowupText';
 
 const button = 'max-w-full rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50';
+const chip = 'rounded bg-slate-100 px-1 font-mono text-[11px]';
+/** Held follow-ups change on their own (recovery, auto-release), so the open list re-reads quietly. */
+const REFRESH_MS = 60_000;
 
-const STATUS_TEXT: Record<string, string> = {
-  awaiting_operator: 'Held for an operator',
-  released: 'Released',
-};
-const REASON_TEXT: Record<string, string> = {
-  fork_publication_unsupported: 'The pull request comes from a fork; recovery cannot publish to it.',
-  usage_limit_retry_unconfirmed: 'A usage-limit retry may already own this request.',
-  cancelled_by_user: 'The user cancelled the work before it was published.',
-  publication_failed: 'Publishing the retained work failed.',
-  head_advanced_externally: 'Newer commits reached the pull request after this attempt.',
-  recorded_commit_mismatch: 'The retained commit no longer matches the record.',
-  worktree_missing: 'The retained worktree is gone.',
-  worktree_not_on_branch: 'The retained worktree left its branch.',
-  worktree_restore_failed: 'The retained worktree could not be rebuilt.',
-};
+type Handoff = api.FollowupHandoffStatus;
+const keyOf = (handoff: Handoff) => `${handoff.repository}#${handoff.pullRequest}`;
+const prUrl = (handoff: Handoff) => `https://github.com/${handoff.repository}/pull/${handoff.pullRequest}`;
 
 /**
- * Follow-up handoffs held for an operator, which
- * block every later command on their pull request until someone resumes or
- * releases them. Admin-only, like the routes it calls.
+ * Held follow-ups: follow-ups that stopped before their work reached the pull
+ * request. One held for a decision blocks new commands on its pull request
+ * until someone resumes or releases it. Admin-only, like the routes it calls.
  */
 export default function MaintenanceSection() {
   const user = useCurrentUser();
@@ -34,106 +32,181 @@ export default function MaintenanceSection() {
 }
 
 function HeldFollowups() {
-  const [handoffs, setHandoffs] = useState<api.FollowupHandoffStatus[]>();
+  const visible = useSettingsSectionVisible();
+  const [handoffs, setHandoffs] = useState<Handoff[]>();
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [forceFor, setForceFor] = useState<string | null>(null);
+  const [publishCancelledFor, setPublishCancelledFor] = useState<string | null>(null);
+  const [confirmRelease, setConfirmRelease] = useState<{ handoff: Handoff; force: boolean } | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const alive = useRef(true);
+  const loaded = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
-  const run = useCallback(async (label: string, action: () => Promise<string>) => {
-    setBusy(label); setError(''); setMessage('');
+  // A failed background read keeps the rows on screen; only a failed first read shows an error.
+  const load = useCallback(async () => {
     try {
-      const outcome = await action();
       const next = await api.listFollowupHandoffs();
-      if (alive.current) { setHandoffs(next); setMessage(outcome); }
+      if (!alive.current) return;
+      loaded.current = true;
+      setHandoffs(next); setLoadError('');
     } catch (e) {
-      if (alive.current) setError(e instanceof Error ? e.message : 'Maintenance operation failed.');
-    } finally {
-      if (alive.current) setBusy(null);
+      if (alive.current && !loaded.current) setLoadError(e instanceof Error ? e.message : 'Held follow-ups are unavailable.');
     }
   }, []);
 
-  const refresh = useCallback(() => run('refresh', async () => {
-    return '';
-  }), [run]);
-  useEffect(() => { void refresh(); }, [refresh]);
+  // Read only while the Maintenance category (or a search hit) shows this section.
+  useEffect(() => {
+    if (!visible) return;
+    void load();
+    const timer = setInterval(() => { if (document.visibilityState !== 'hidden') void load(); }, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [visible, load]);
 
-  const key = (handoff: api.FollowupHandoffStatus) => `${handoff.repository}#${handoff.pullRequest}`;
-  const when = (updatedAt: number) => new Date(updatedAt).toLocaleString();
-  const prUrl = (handoff: api.FollowupHandoffStatus) => `https://github.com/${handoff.repository}/pull/${handoff.pullRequest}`;
+  const run = useCallback(async (id: string, action: () => Promise<string>) => {
+    setBusy(id); setError(''); setMessage('');
+    try {
+      const outcome = await action();
+      if (alive.current) setMessage(outcome);
+    } catch (e) {
+      if (alive.current) setError(e instanceof Error ? e.message : 'Something went wrong. The follow-up is unchanged.');
+    } finally {
+      await load();
+      if (alive.current) setBusy(null);
+    }
+  }, [load]);
+
+  const resume = (handoff: Handoff) => {
+    const id = keyOf(handoff);
+    const authorizeCancelled = needsCancelledChoice(handoff) && publishCancelledFor === id;
+    void run(id, async () => {
+      const { summary } = authorizeCancelled
+        ? await api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest, { authorizeCancelled: true })
+        : await api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest);
+      setPublishCancelledFor(null);
+      if (summary.awaitingOperator > 0) return `Resumed ${id}, but it is still held.`;
+      if (summary.published > 0) return `Resumed ${id}. Its work is published.`;
+      return `Resumed ${id}.`;
+    });
+  };
+
+  const release = (handoff: Handoff, force: boolean) => {
+    const id = keyOf(handoff);
+    setConfirmRelease(null);
+    void run(id, async () => {
+      await api.releaseFollowupHandoff(handoff.repository, handoff.pullRequest, { force });
+      setForceFor(null);
+      return `Released ${id}. Post the command on the pull request again to redo it.`;
+    });
+  };
+
+  const open = handoffs?.filter(isOpenFollowup) ?? [];
+  const released = handoffs?.filter(handoff => !isOpenFollowup(handoff)) ?? [];
 
   return (
     <SettingsSection
       className="min-w-0 [overflow-wrap:anywhere]"
       title="Held follow-ups"
-      description="Follow-ups whose publication is still owed. These operator decisions otherwise need the CLI or the admin API."
+      description="Follow-ups that stopped before their work reached the pull request."
     >
-      <div className="space-y-5 text-xs">
+      <div className="space-y-4 text-xs">
+        <p className="max-w-2xl leading-5 text-slate-500">
+          A held follow-up blocks new commands on its pull request. Resume tries to publish it again; Release drops it and unblocks the pull request. Nothing is deleted.
+        </p>
         {error && <p role="alert" className="text-red-700">{error}</p>}
         {message && <p role="status">{message}</p>}
-        <div>
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-            <p className="min-w-0 max-w-2xl flex-1 leading-5 text-slate-500">
-              One held for an operator blocks every later command on its pull request until it is resumed or released.
-              Release frees the branch and never deletes files or commits; the next command redoes the request from the current branch.
-            </p>
-            <button className={button} disabled={busy !== null} onClick={() => void refresh()}>Refresh</button>
-          </div>
-          {handoffs === undefined && !error && <p className="text-slate-500">Loading…</p>}
-          {handoffs && handoffs.length === 0 && <p className="py-3 text-slate-500">No follow-up handoffs are tracked.</p>}
-          {handoffs && handoffs.length > 0 && (
-            <ul className="divide-y divide-slate-100 border-y border-slate-200" aria-label="Held follow-ups">
-              {handoffs.map(handoff => {
-                const id = key(handoff);
-                const held = handoff.status === 'awaiting_operator';
-                return (
-                  <li key={id} className="py-3">
-                    <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                      <a className="font-medium text-slate-900 underline-offset-2 hover:underline" href={prUrl(handoff)} target="_blank" rel="noreferrer">
-                        {handoff.repository}#{handoff.pullRequest}
-                      </a>
-                      <span className="text-slate-500">{STATUS_TEXT[handoff.status] ?? handoff.status} · {handoff.phase.replace(/_/g, ' ')} · updated {when(handoff.updatedAt)}</span>
-                    </div>
-                    <p className="mt-1 leading-5 text-slate-600">
-                      {handoff.statusReason ? (REASON_TEXT[handoff.statusReason] ?? handoff.statusReason.replace(/_/g, ' ')) : 'Recovery is in progress.'}
-                      {' '}Branch <code className="rounded bg-slate-100 px-1">{handoff.branchName}</code>.
-                      {handoff.commitHash ? <> Unpublished commit <code className="rounded bg-slate-100 px-1">{handoff.commitHash.slice(0, 10)}</code>.</> : ' No commit recorded.'}
-                    </p>
-                    <p className="mt-1 leading-5 text-slate-500">Next: {handoff.nextAction}.</p>
-                    <p className="mt-1 break-all leading-5 text-slate-400">Task {handoff.taskId} · worktree {handoff.retainedWorktreePath}</p>
-                    <div className="mt-2 flex flex-wrap items-center gap-3">
-                      <button
-                        className={button}
-                        disabled={busy !== null || !held}
-                        onClick={() => void run(id, async () => {
-                          const result = await api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest);
-                          const summary = result.summary;
-                          return `Resumed ${id}: ${summary.published} published, ${summary.settled} settled, ${summary.awaitingOperator} still held.`;
-                        })}
-                      >Resume</button>
-                      <button
-                        className={button}
-                        disabled={busy !== null}
-                        onClick={() => void run(id, async () => {
-                          await api.releaseFollowupHandoff(handoff.repository, handoff.pullRequest, { force: forceFor === id });
-                          setForceFor(null);
-                          return `Released ${id}. Post the command again on the pull request to redo the request.`;
-                        })}
-                      >{forceFor === id ? 'Release anyway' : 'Release'}</button>
+        {handoffs === undefined && (loadError
+          ? <p role="alert" className="text-red-700">{loadError}</p>
+          : <ListSkeleton label="Loading held follow-ups…" rows={2} />)}
+        {handoffs && open.length === 0 && <p className="py-3 text-slate-500">No held follow-ups.</p>}
+        {open.length > 0 && (
+          <ul className="divide-y divide-slate-100 border-y border-slate-200" aria-label="Held follow-ups">
+            {open.map(handoff => {
+              const id = keyOf(handoff);
+              const held = isHeldFollowup(handoff);
+              const force = forceFor === id;
+              const next = nextStep(handoff);
+              return (
+                <li key={id} className="py-3">
+                  <FollowupSummary handoff={handoff} />
+                  {next && <p className="mt-1 leading-5 text-slate-500">{next}</p>}
+                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+                    {held && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button className={button} disabled={busy !== null} onClick={() => resume(handoff)}>Resume</button>
+                        {needsCancelledChoice(handoff) && (
+                          <label className="flex items-center gap-2 text-slate-600">
+                            <input type="checkbox" checked={publishCancelledFor === id} onChange={event => setPublishCancelledFor(event.target.checked ? id : null)} />
+                            <span>Publish the cancelled work</span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button className={button} disabled={busy !== null} onClick={() => setConfirmRelease({ handoff, force })}>Release</button>
                       <label className="flex items-center gap-2 text-slate-600">
-                        <input type="checkbox" checked={forceFor === id} onChange={event => setForceFor(event.target.checked ? id : null)} />
-                        <span>Release even if the worktree holds unpublished work</span>
+                        <input type="checkbox" checked={force} onChange={event => setForceFor(event.target.checked ? id : null)} />
+                        <span>Also release if it has unpublished work</span>
                       </label>
                     </div>
-                  </li>
-                );
-              })}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {released.length > 0 && (
+          <details className="group">
+            <summary className="cursor-pointer select-none py-1 font-medium text-slate-600 hover:text-slate-900">Show released ({released.length})</summary>
+            <ul className="mt-2 divide-y divide-slate-100 border-y border-slate-200" aria-label="Released follow-ups">
+              {released.map(handoff => <li key={keyOf(handoff)} className="py-3"><FollowupSummary handoff={handoff} /></li>)}
             </ul>
-          )}
-        </div>
+          </details>
+        )}
       </div>
+      {confirmRelease && (
+        <AgentConfirmDialog
+          title={`Release ${keyOf(confirmRelease.handoff)}?`}
+          confirmLabel="Release"
+          tone="danger"
+          onCancel={() => setConfirmRelease(null)}
+          onConfirm={() => release(confirmRelease.handoff, confirmRelease.force)}
+        >
+          <p>
+            It stops blocking new commands on its pull request. Nothing is deleted; post the command again to redo it.
+            {confirmRelease.force && ' Any unpublished commits stay on the branch.'}
+          </p>
+        </AgentConfirmDialog>
+      )}
     </SettingsSection>
+  );
+}
+
+/** One follow-up: pull request, state, reason, branch and task. Shared by open and released rows. */
+function FollowupSummary({ handoff }: { handoff: Handoff }) {
+  const released = !isOpenFollowup(handoff);
+  const updated = updatedLabel(handoff.updatedAt);
+  return (
+    <>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <a className="font-medium text-slate-900 underline-offset-2 hover:underline" href={prUrl(handoff)} target="_blank" rel="noreferrer">
+          {keyOf(handoff)}
+        </a>
+        <span className="text-slate-500">
+          {released ? '' : `${statusLabel(handoff.status)} · ${phaseLabel(handoff.phase)} · `}<time dateTime={updated.iso} title={updated.absolute}>{updated.relative}</time>
+        </span>
+      </div>
+      <p className="mt-1 leading-5 text-slate-600">
+        {reasonLabel(handoff)}
+        {' '}Branch <code className={chip}>{handoff.branchName}</code>.
+        {!released && handoff.commitHash && <> Unpublished commit <code className={chip}>{handoff.commitHash.slice(0, 10)}</code>.</>}
+      </p>
+      <p className="mt-1 leading-5 text-slate-500">
+        Task{' '}
+        <Link className="break-all text-teal-700 underline-offset-2 hover:underline" to={`/tasks/${encodeURIComponent(handoff.taskId)}`}>{handoff.taskId}</Link>
+      </p>
+    </>
   );
 }
