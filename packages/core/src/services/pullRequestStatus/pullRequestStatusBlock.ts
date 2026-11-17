@@ -32,6 +32,7 @@ const REASON_TEXT: Record<PullRequestAttentionReason, string> = {
     check_failed: 'checks failed',
     merge_conflict: 'conflicts with base',
     review_below_goal: 'review below goal',
+    review_blockers: 'review has open blockers',
     checks_unavailable: 'checks could not be read',
     epic_child_needs_attention: 'a sub-PR needs you',
     epic_child_ready: 'a sub-PR waits to be merged',

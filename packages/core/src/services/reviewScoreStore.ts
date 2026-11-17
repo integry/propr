@@ -204,6 +204,49 @@ export async function loadPullRequestScoreHistory(
         .select('*') as ReviewScoreRow[];
 }
 
+/** The fields of a stored score row that identify its review round and its verdict. */
+export interface ReviewRoundRow {
+    task_id: string;
+    score: number;
+    blocker_count: number;
+    head_sha: string | null;
+    cycle_number?: number | null;
+}
+
+/** The newest review round of a pull request, summarized as one verdict. */
+export interface ReviewRoundSummary<T extends ReviewRoundRow = ReviewRoundRow> {
+    /** The lowest score of the round: one reviewer's clean score never covers another's lower one. */
+    score: number;
+    /** Blockers reported by all reviewers of the round together. */
+    blockerCount: number;
+    headSha: string | null;
+    /** The round's rows, oldest first. */
+    rows: T[];
+}
+
+/**
+ * The newest review round in a score history (oldest first): every row the
+ * newest row's review job wrote for the same head (and Ultrafix cycle). One
+ * `/review` that asks several models writes one row per reviewer, in posting
+ * order; the round's verdict must not depend on which reviewer posted last,
+ * so it reports the lowest score and every blocker. A later review of a
+ * newer head is a new job, so it replaces the round.
+ */
+export function latestReviewRound<T extends ReviewRoundRow>(history: readonly T[]): ReviewRoundSummary<T> | null {
+    const latest = history.at(-1);
+    if (!latest) return null;
+    // A row without its task is a round of its own: nothing ties it to another row.
+    const rows = !latest.task_id ? [latest] : history.filter(row => row.task_id === latest.task_id
+        && (row.head_sha ?? null) === (latest.head_sha ?? null)
+        && (row.cycle_number ?? null) === (latest.cycle_number ?? null));
+    return {
+        score: Math.min(...rows.map(row => row.score)),
+        blockerCount: rows.reduce((total, row) => total + (Number(row.blocker_count) || 0), 0),
+        headSha: latest.head_sha ?? null,
+        rows,
+    };
+}
+
 export interface PullRequestOutcomeEvent {
     repository: string;
     prNumber: number;

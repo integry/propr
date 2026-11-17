@@ -97,7 +97,7 @@ before(async () => {
     await database.schema.createTable('goals', table => { table.string('goal_id'); table.string('repository'); table.integer('final_pr_number'); });
     await database.schema.createTable('review_scores', table => {
         table.increments('id'); table.string('repository_id'); table.integer('pr_number'); table.integer('score'); table.string('created_at');
-        table.string('head_sha');
+        table.string('head_sha'); table.string('task_id'); table.integer('blocker_count').defaultTo(0); table.integer('cycle_number');
     });
     setPullRequestTitleSettleMsForTests(SETTLE_MS);
 });
@@ -157,6 +157,17 @@ async function setTaskState(taskId: string, state: string): Promise<void> {
 
 async function addScore(score: number, headSha: string | null = null): Promise<void> {
     await database('review_scores').insert({ repository_id: REPOSITORY, pr_number: PR, score, created_at: new Date().toISOString(), head_sha: headSha });
+}
+
+/** One `/review` that asked several models: one row per reviewer, in posting order, as recordReviewScores writes them. */
+async function addReviewRound(taskId: string, headSha: string, reviews: Array<{ score: number; blockers: number }>): Promise<void> {
+    const createdAt = new Date().toISOString();
+    for (const review of reviews) {
+        await database('review_scores').insert({
+            repository_id: REPOSITORY, pr_number: PR, task_id: taskId, head_sha: headSha,
+            score: review.score, blocker_count: review.blockers, created_at: createdAt,
+        });
+    }
 }
 
 function setUltrafix(state: Record<string, unknown>): void {
@@ -537,4 +548,50 @@ test('a head without checks in a repository that reports them is ready once the 
     await syncSettled();
     assert.equal(github.pull.title, `✅ ${TITLE}`);
     assert.deepEqual(github.renames, [`✅ ${TITLE}`, `🔨 ${TITLE}`, `✅ ${TITLE}`]);
+});
+
+// --- several reviews of one round (#3591) ---
+
+for (const order of ['blocked review first', 'blocked review last'] as const) {
+    test(`a round scored 6 with a blocker and 8 needs you at 6, in the title and the line (${order})`, async () => {
+        await addTask('issue', 'completed');
+        const reviews = [{ score: 6, blockers: 1 }, { score: 8, blockers: 0 }];
+        await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
+        await syncSettled();
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review below goal 7\/10 · review 6\/10/);
+        assert.equal(github.pull.title, `⚠️➅ ${TITLE}`);
+    });
+
+    test(`a round scored 8 and 9 with no blocker is ready at 8, in the title and the line (${order})`, async () => {
+        await addTask('issue', 'completed');
+        const reviews = [{ score: 8, blockers: 0 }, { score: 9, blockers: 0 }];
+        await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
+        await syncSettled();
+        assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · review 8\/10/);
+        assert.equal(github.pull.title, `✅➇ ${TITLE}`);
+    });
+
+    test(`a round at the goal with one reviewer's open blocker is not ready (${order})`, async () => {
+        await addTask('issue', 'completed');
+        const reviews = [{ score: 8, blockers: 1 }, { score: 9, blockers: 0 }];
+        await addReviewRound('review-1', github.pull.head.sha, order === 'blocked review first' ? reviews : reviews.reverse());
+        await syncSettled();
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ Needs you · review has open blockers · review 8\/10/);
+        assert.equal(github.pull.title, `⚠️➇ ${TITLE}`);
+    });
+}
+
+test('a later single review of a newer head replaces the round', async () => {
+    await addTask('issue', 'completed');
+    const firstHead = github.pull.head.sha;
+    await addReviewRound('review-1', firstHead, [{ score: 6, blockers: 1 }, { score: 8, blockers: 0 }]);
+    await syncSettled();
+    assert.equal(github.pull.title, `⚠️➅ ${TITLE}`);
+
+    push(`${firstHead}-fixed`);
+    github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }];
+    await addReviewRound('review-2', github.pull.head.sha, [{ score: 9, blockers: 0 }]);
+    await syncSettled();
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ Ready · review 9\/10/);
+    assert.equal(github.pull.title, `✅➈ ${TITLE}`);
 });

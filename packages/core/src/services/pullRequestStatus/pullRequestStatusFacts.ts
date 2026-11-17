@@ -4,7 +4,7 @@ import logger from '../../utils/logger.js';
 import { summarizeCheckSignals } from '../../webhook/checkRunHelpers.js';
 import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
-import { loadPullRequestScoreHistory } from '../reviewScoreStore.js';
+import { latestReviewRound, loadPullRequestScoreHistory } from '../reviewScoreStore.js';
 import { headChecksWaitMs } from './pullRequestStatusCheckWait.js';
 import { loadEpicStatusFacts } from './pullRequestStatusEpicFacts.js';
 import {
@@ -345,10 +345,10 @@ export async function countQueuedPullRequestJobs(
     }).length;
 }
 
-async function latestReviewScore(db: Knex, repository: string, prNumber: number): Promise<{ score: number; headSha: string | null } | null> {
-    const history = await loadPullRequestScoreHistory(db, repository, prNumber);
-    const latest = history.at(-1);
-    return latest ? { score: latest.score, headSha: typeof latest.head_sha === 'string' && latest.head_sha ? latest.head_sha : null } : null;
+/** The newest review round's verdict (latestReviewRound): its lowest score and its blockers, never just the last posted review. */
+async function latestReviewScore(db: Knex, repository: string, prNumber: number): Promise<{ score: number; blockers: number; headSha: string | null } | null> {
+    const round = latestReviewRound(await loadPullRequestScoreHistory(db, repository, prNumber));
+    return round ? { score: round.score, blockers: round.blockerCount, headSha: round.headSha || null } : null;
 }
 
 /** An epic pull request's facts (loadEpicStatusFacts); its sub-PRs' status by this same computation. */
@@ -399,7 +399,8 @@ export async function loadPullRequestStatusFacts(
     }, sources.now ? sources.now() : Date.now());
     return {
         pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, checksAwaitedForMs,
-        latestReviewScore: score?.score ?? null, latestReviewHeadSha: score?.headSha ?? null, ratingGoal, epic,
+        latestReviewScore: score?.score ?? null, latestReviewBlockers: score?.blockers ?? null,
+        latestReviewHeadSha: score?.headSha ?? null, ratingGoal, epic,
     };
 }
 
