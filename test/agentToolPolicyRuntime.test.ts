@@ -312,6 +312,35 @@ describe('Codex extension configuration on the pinned CLI', { skip: skipUnlessPi
     });
 });
 
+test('Codex entrypoint adds --trust to codex exec only when asked and the installed CLI offers it', () => {
+    const script = readFileSync(new URL('../scripts/codex-entrypoint.sh', import.meta.url), 'utf8');
+    const block = script.slice(script.indexOf('codex_exec_offers_trust() {'), script.indexOf('# If arguments are provided'));
+    assert.ok(block.includes('set -- codex exec --trust "$@"'));
+    const root = mkdtempSync(join(tmpdir(), 'codex-entrypoint-trust-'));
+    // Help text shapes of Codex 0.168.0 (no --trust) and 0.169.0.
+    const stub = (name: string, helpOptions: string) => {
+        const bin = join(root, name); mkdirSync(bin);
+        writeFileSync(join(bin, 'codex'), `#!/bin/sh\nprintf '%s\\n' 'Options:' ${helpOptions} '      --ephemeral'\n`, { mode: 0o755 });
+        return bin;
+    };
+    const legacy = stub('legacy', "'      --trusted-hosts <HOSTS>'");
+    const current = stub('current', "'      --trust'");
+    const run = (bin: string, env: Record<string, string>, ...args: string[]) => spawnSync('bash', ['-c', `set -e\n${block}\nprintf '%s\\n' "$@"`, 'entrypoint', ...args], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROPR_EXTENSION_EXCLUSIVE_MCP: '0', ...env }, encoding: 'utf8',
+    }).stdout.trim().split('\n');
+    const task = ['codex', 'exec', '--ephemeral', '--json', '-'];
+    try {
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), ['codex', 'exec', '--trust', '--ephemeral', '--json', '-']);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'exec', 'resume', '--json', 'thread', '-'),
+            ['codex', 'exec', '--trust', 'resume', '--json', 'thread', '-']);
+        assert.deepEqual(run(legacy, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), task);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '0' }, ...task), task);
+        assert.deepEqual(run(current, {}, ...task), task);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1', PROPR_EXTENSION_EXCLUSIVE_MCP: '1' }, ...task), task);
+        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'app-server'), ['codex', 'app-server']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('Codex entrypoint rejects container project ancestry after setup and skips ignored user configuration', () => {
     const script = readFileSync(new URL('../scripts/codex-entrypoint.sh', import.meta.url), 'utf8');
     const guard = script.slice(script.indexOf('if [ "${PROPR_EXTENSION_EXCLUSIVE_MCP'), script.indexOf('# If arguments are provided'));

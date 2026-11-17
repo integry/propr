@@ -236,6 +236,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     tool call. Inkling 2 Small Free is also listed but is not added: it
     refused every run with "This model is not available in your country". The
     existing eight free models stay.
+  - Codex runs pass `--trust` once the bundled CLI offers it (0.169.0 and
+    later). Codex 0.169.0 stops `codex exec` from loading the repository's
+    `.codex/config.toml` and project MCP servers in an untrusted workspace.
+    Through 0.168.0, every bypass-mode run saved that trust in the mounted
+    `config.toml` without being asked. The flag saves the same entry and still
+    respects a workspace marked `untrusted`. 0.168.0 rejects the flag, so the
+    entrypoint adds it only when `codex exec --help` lists it. Repository
+    inspection and exclusive extension MCP runs stay untrusted.
 - **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the
   `propr/agent` image moves from Claude Code 2.1.323 and Antigravity CLI
   1.5.8. Codex stays on 0.168.0 and Mistral Vibe on 2.25.8.
