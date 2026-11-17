@@ -33,3 +33,25 @@ test('automationReportPreview truncates a long first line with an ellipsis', () 
   assert.ok(preview.endsWith('…'));
   assert.ok(!preview.includes('second'));
 });
+
+test('automationReportPreview reduces links, images and tags as before', () => {
+  assert.equal(automationReportPreview('See ![](x.png) and ![chart](c.png) in [the report](https://example.com/r)'), 'See and chart in the report');
+  assert.equal(automationReportPreview('[![badge](b.svg)](https://ci)'), 'badge');
+  assert.equal(automationReportPreview('[] (x) [](y) [open ( only'), '[] (x) [](y) [open ( only');
+  assert.equal(automationReportPreview('<b>Bold</b> <br/> text <> a < b'), 'Bold text <> a < b');
+});
+
+test('automationReportPreview leaves no tag that can be reassembled from its pieces', () => {
+  const preview = automationReportPreview('<scr<script>ipt>alert(1)</scr</script>ipt> <<script>script>');
+  assert.ok(preview);
+  assert.ok(!/<[^>]+>/u.test(preview), preview);
+});
+
+test('automationReportPreview stays linear on repeated unmatched brackets', () => {
+  const inputs = [`![${'![\\'.repeat(50_000)}`, `![](${'![]('.repeat(50_000)}`, `[${'[a]('.repeat(50_000)}`, '<'.repeat(100_000)];
+  for (const input of inputs) {
+    const started = performance.now();
+    automationReportPreview(input);
+    assert.ok(performance.now() - started < 500, `took too long on ${input.slice(0, 8)}…`);
+  }
+});
