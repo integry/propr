@@ -299,6 +299,7 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
       readOnly={isDemoMode}
       agents={catalogAgents}
       creating={isNew}
+      fullWidth={!editing}
     />
   );
 

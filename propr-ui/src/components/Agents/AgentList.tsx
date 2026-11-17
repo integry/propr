@@ -41,6 +41,11 @@ interface AgentListProps {
   agents?: readonly InstanceCatalogAgent[];
   /** The new-automation form is open beside the list and offers the templates itself. */
   creating?: boolean;
+  /**
+   * The list fills the page (no automation open beside it), so from `sm` up its
+   * rows take the header's inset and line up with the title and its right edge.
+   */
+  fullWidth?: boolean;
 }
 
 const MAX_REPO_CHIPS = 3;
@@ -134,8 +139,8 @@ function useAutomationListFilters() {
   };
 }
 
-const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?: AutomationRunState; selected: boolean; now: number; agents: readonly InstanceCatalogAgent[]; listQuery: string }> = ({
-  definition, lastRunState, selected, now, agents, listQuery,
+const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?: AutomationRunState; selected: boolean; now: number; agents: readonly InstanceCatalogAgent[]; listQuery: string; fullWidth: boolean }> = ({
+  definition, lastRunState, selected, now, agents, listQuery, fullWidth,
 }) => {
   const extraRepos = definition.repositories.length - MAX_REPO_CHIPS;
   return (
@@ -144,7 +149,7 @@ const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?
         to={`/automations/${encodeURIComponent(definition.id)}${listQuery}`}
         aria-current={selected ? 'page' : undefined}
         data-testid="agent-row"
-        className={`block border-b border-slate-100 px-4 py-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-teal-50/60 shadow-[inset_2px_0_0_0_#0d9488]' : 'hover:bg-slate-50'}`}
+        className={`block border-b border-slate-100 px-4 py-2.5 ${fullWidth ? 'sm:px-6' : ''} focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 ${selected ? 'bg-teal-50/60 shadow-[inset_2px_0_0_0_#0d9488]' : 'hover:bg-slate-50'}`}
       >
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -193,7 +198,7 @@ function useListClock(): number {
 }
 
 export const AgentList: React.FC<AgentListProps> = ({
-  definitions, lastRunStates, error, selectedId, readOnly = false, now: fixedNow, agents = NO_AGENTS, creating = false,
+  definitions, lastRunStates, error, selectedId, readOnly = false, now: fixedNow, agents = NO_AGENTS, creating = false, fullWidth = false,
 }) => {
   const clock = useListClock();
   const now = fixedNow ?? clock;
@@ -278,6 +283,7 @@ export const AgentList: React.FC<AgentListProps> = ({
                 now={now}
                 agents={agents}
                 listQuery={listQuery}
+                fullWidth={fullWidth}
               />
             ))}
           </ul>
