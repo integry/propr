@@ -36,7 +36,7 @@ export {
     type PersistLogsParams
 } from './claudeOutputHelpers.js';
 
-export { isRunStatusNote, reportsUnfinishedWork, selectRunSummary, NO_AGENT_SUMMARY_TEXT, type RunSummarySelection } from './runSummary.js';
+export { isRunStatusNote, notificationTurnEntryIndexes, reportsUnfinishedWork, selectRunSummary, NO_AGENT_SUMMARY_TEXT, type RunSummarySelection } from './runSummary.js';
 
 export { buildAnalysisSafetySuffix } from './analysisPromptSafety.js';
 export { analysisReasoningLevelField } from './analysisReasoningLevel.js';

@@ -3,7 +3,7 @@ import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import type { ExecutionResult } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { processDockerResult } from '../packages/core/src/agents/impl/utils/dockerResultProcessor.js';
-import { isRunStatusNote, NO_AGENT_SUMMARY_TEXT, selectRunSummary } from '../packages/core/src/agents/impl/utils/runSummary.js';
+import { isRunStatusNote, NO_AGENT_SUMMARY_TEXT, reportsUnfinishedWork, selectRunSummary } from '../packages/core/src/agents/impl/utils/runSummary.js';
 import { agentResultToClaudeResponse } from '../src/jobs/prFileUtils.js';
 import { buildCommitMessage } from '../src/jobs/prCommentJobUtils.js';
 import { buildCompletionComment } from '../src/jobs/prCompletionComment.js';
@@ -116,6 +116,72 @@ describe('run summary selection', () => {
         assert.equal(response.summary, fresh);
     });
 
+    test('a short summary written after fixing a notified failure is kept', () => {
+        const fixed = 'Fixed the failing retry assertion. All 28 suites now pass.';
+        const { response } = processDockerResult(execution([
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('suite failed'),
+            toolUse('t2', 'One suite failed; fixing it.'), toolResult('t2'),
+            toolUse('t3'), toolResult('t3'),
+            assistantText(fixed), result(fixed),
+        ]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.summary, fixed);
+        assert.equal(response.success, true);
+        assert.equal(response.commitMessage?.split('\n')[0], fixed);
+        assert.equal(isRunStatusNote('Fixed the failing retry assertion; all 28 suites now pass.', { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('Fixed the timeout in the retry test; all suites pass.', { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('Nothing else to do.', { afterNotification: true }), true);
+    });
+
+    test('a long notification reply rejected as a summary does not return through the recent-message fallback', () => {
+        const watcherReply = `The watcher timed out. ${'It was the background watcher on the full suite, which had already reported its last batch before the limit, so the timeout says nothing about the code and needs no re-arming. '.repeat(3)}`.trim();
+        assert.ok(watcherReply.length > 320);
+        const status = 'Verification is complete. Summarizing now.';
+        const conversationLog = [
+            toolUse('t1', 'Starting the full suite in the background.'), toolResult('t1'),
+            notification('Watcher timed out'),
+            assistantText(watcherReply),
+            notification('Monitor "suites" timed out'),
+            assistantText(status),
+        ];
+        const { response } = processDockerResult(execution([...conversationLog, result(status)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.summary, undefined);
+        assert.equal(response.commitMessage, null);
+        assert.equal(selectRunSummary({ resultText: status, conversationLog }).summary, null);
+    });
+
+    for (const [label, waiting] of [
+        ['a heading', '## Summary\n\nStill running (7 of ~110 suites done). Waiting for the completion notification.'],
+        ['a bullet', '- Still running (7 of ~110 suites done). Waiting for the completion notification.'],
+        ['bold text', '**Status:** still running (7 of ~110 suites done); waiting for the completion notification.'],
+    ]) {
+        test(`a waiting message formatted with ${label} is an unfinished run`, () => {
+            const { response } = processDockerResult(execution([
+                toolUse('t1', 'Starting the full suite in the background.'), toolResult('t1'),
+                assistantText(waiting), result(waiting),
+            ]), 'prompt', 'claude-opus-5-5', 1);
+            assert.equal(response.success, false);
+            assert.equal(response.terminationReason, 'unfinished_work');
+            assert.equal(response.summary, undefined);
+            assert.equal(response.commitMessage, null);
+        });
+    }
+
+    test('a completed change that quotes waiting wording is not an unfinished run', () => {
+        for (const done of [
+            'Changed the status label to \u2018Waiting for the completion notification\u2019.',
+            'Changed the status label to "Still running" while the suite executes.',
+            'Changed the status label so it reads Waiting for the completion notification.',
+        ]) {
+            const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(done), result(done)]), 'prompt', 'claude-opus-5-5', 1);
+            assert.equal(response.success, true, done);
+            assert.equal(response.terminationReason, undefined, done);
+            assert.equal(response.summary, done);
+            assert.equal(reportsUnfinishedWork(done), false, done);
+        }
+    });
+
     test('ordinary runs keep the reported result unchanged', () => {
         const short = 'Fixed the typo in README.md.';
         const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(short), result(short)]), 'prompt', 'claude-opus-5-5', 1);
@@ -169,6 +235,19 @@ describe('published comment and commit for a run without a summary', () => {
         }, claudeResult);
         assert.match(body, new RegExp(`## Summary of Changes\\n\\n${NO_AGENT_SUMMARY_TEXT.replace('.', '\\.')}`));
         assert.doesNotMatch(body, /Still running/);
+    });
+
+    test('a long "Summary:" reply to a notification is not taken from the conversation', async () => {
+        const reply = `Summary: the watcher timed out. ${'It was the background watcher on the full suite, which had already reported its last batch before the limit, so the timeout says nothing about the code. '.repeat(3)}`.trim();
+        const claudeResult = agentResultToClaudeResponse({
+            ...baseResult,
+            conversationLog: [toolUse('t1', 'Starting the probe.'), toolResult('t1'), notification('Watcher timed out'), assistantText(reply)],
+        });
+        const body = await buildCompletionComment({ commitHash: 'abcdef1234567' }, [], {
+            changesSummary: '', commitMessage: 'feat(ai): Apply follow-up changes from PR comment', llm: 'claude-opus-5-5', authorsText: '@octo',
+        }, claudeResult);
+        assert.doesNotMatch(body, /watcher timed out/);
+        assert.match(body, new RegExp(NO_AGENT_SUMMARY_TEXT.replace('.', '\\.')));
     });
 
     test('a status-note summary never becomes the commit subject', () => {

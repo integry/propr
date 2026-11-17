@@ -445,7 +445,7 @@ export type { AgentImageBuildDiskSpace } from './agents/agentImageBuildCapacity.
 export * from './goalExports.js';
 export * from './agents/syntheticRouting.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason, taskTerminalReasonForAgentTermination } from './agents/termination.js';
-export { isRunStatusNote, reportsUnfinishedWork, selectRunSummary, NO_AGENT_SUMMARY_TEXT, type RunSummarySelection } from './agents/impl/utils/runSummary.js';
+export { isRunStatusNote, notificationTurnEntryIndexes, reportsUnfinishedWork, selectRunSummary, NO_AGENT_SUMMARY_TEXT, type RunSummarySelection } from './agents/impl/utils/runSummary.js';
 export { AgentActivityWatchdog, AGENT_WATCHDOG_MESSAGE_PREFIX, describeAgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export type { AgentWatchdogRule, AgentWatchdogSettings, AgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export {

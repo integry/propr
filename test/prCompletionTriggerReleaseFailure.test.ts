@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
 import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 import { safeUpdateLabels } from '../packages/core/src/utils/github/labelOperations.js';
-import { isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
+import { isRunStatusNote, notificationTurnEntryIndexes, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
 
 /**
  * Once a pull request exists, a failed trigger release (GitHub 5xx on the
@@ -52,7 +52,7 @@ await mock.module('@propr/core', {
         describeAgentTermination: mock.fn(() => ''),
         resolveAgentTerminationReason: mock.fn(() => undefined),
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',
-        isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
+        isRunStatusNote, notificationTurnEntryIndexes, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
         getAuthenticatedOctokit: mock.fn(async () => octokit),
         linkPRToPlanIssue,
         safeUpdateLabels,

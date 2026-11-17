@@ -10,7 +10,7 @@ import { DEFAULT_FOLLOWUP_COMMIT_SUBJECT } from './followupCommitSubject.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { describeUncommittedFiles, quoteBlockerExplanation } from './blockedRunText.js';
-import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths, isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '@propr/core';
+import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths, isRunStatusNote, notificationTurnEntryIndexes, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -123,10 +123,13 @@ function textFromConversationMessage(message: ConversationMessage): string | nul
 function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): string | null {
     const conversationLog = (claudeResult.conversationLog || []) as ConversationMessage[];
     // Replies to background notifications and "summary above" pointers are
-    // not summaries, even when they open with "Summary:".
+    // not summaries, even when they open with "Summary:". Each message is
+    // judged in its own turn, so a reply to a notification is recognised.
+    const notificationEntries = notificationTurnEntryIndexes(conversationLog as Parameters<typeof notificationTurnEntryIndexes>[0]);
     const assistantTexts = conversationLog
-        .map(textFromConversationMessage)
-        .filter((text): text is string => Boolean(text) && !isRunStatusNote(text));
+        .map((message, index) => ({ text: textFromConversationMessage(message), afterNotification: notificationEntries.has(index) }))
+        .filter((message): message is { text: string; afterNotification: boolean } => Boolean(message.text) && !isRunStatusNote(message.text, message))
+        .map(message => message.text);
 
     for (let index = assistantTexts.length - 1; index >= 0; index--) {
         if (!isSummaryEntry(assistantTexts[index])) continue;

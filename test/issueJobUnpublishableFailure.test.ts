@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { sanitizeAgentReport } from '../packages/core/src/agents/agentReportSanitizer.js';
 import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
-import { isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
+import { isRunStatusNote, notificationTurnEntryIndexes, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
 
 const commitChanges = mock.fn(async () => null);
 const pushBranch = mock.fn(async () => undefined);
@@ -30,7 +30,7 @@ await mock.module('@propr/core', {
         sanitizeAgentReport,
         generateCompletionComment,
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',
-        isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
+        isRunStatusNote, notificationTurnEntryIndexes, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
         redactSecrets: (value: string) => value.replace('secret-token', '[REDACTED]'),
         validatePRCreation: mock.fn(),
     },
