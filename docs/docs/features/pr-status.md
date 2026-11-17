@@ -119,7 +119,7 @@ When ProPR rewrites the epic body (its issue list and `Fixes #` lines), it keeps
 
 ### What the epic progress comment says now
 
-Independently of `prTitleStatus`, the epic progress comment ("N out of M PRs merged", the progress bar and "Merged child PRs") also says what is happening, below "Merged child PRs":
+Independently of `prTitleStatus`, the epic progress comment ("N of M issues merged", the progress bar and "Merged child PRs") also says what is happening, below "Merged child PRs":
 
 ```
 Merged child PRs: #3490, #3504, #3507, #3515, #3518

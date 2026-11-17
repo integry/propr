@@ -6,7 +6,7 @@ import { agentBlockedIssueNumber, isAgentBlockedReason } from '../taskPlanning/e
 import { executionLimit, scheduleEpicIssues, type EpicScheduleIssue } from '../taskPlanning/epicQueueSchedule.js';
 import { epicScheduleIssues, getEpicExecutionQueue, type EpicExecutionQueue } from '../taskPlanning/epicQueueState.js';
 import {
-    computeEpicMergeProgress, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
+    computeEpicMergeProgress, epicChildBranchIssue, epicIssuesShippedBefore, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
 } from '../../webhook/epicMergeProgress.js';
 import type { EpicProgressOctokit } from '../../webhook/epicMergeEvidence.js';
 import { pullRequestBodyKey } from './pullRequestBodyLock.js';
@@ -162,8 +162,8 @@ async function childStatuses(
     const issueOf = (child: EpicChildPullRequest): number | null => {
         const linked = context.plan.issues.find(issue => issue.pr_number === child.number);
         if (linked) return linked.issue_number;
-        const fromBranch = Number(child.headRef?.match(/^(\d+)[/-]/)?.[1]);
-        return planIssueNumbers.has(fromBranch) ? fromBranch : null;
+        const fromBranch = epicChildBranchIssue(child.headRef);
+        return fromBranch !== null && planIssueNumbers.has(fromBranch) ? fromBranch : null;
     };
     // A pull request from another epic branch into this one is not a sub-PR whose status is read (no epic reads another).
     const readable = open.filter(child => !EPIC_BRANCH_PATTERN.test(child.headRef ?? ''));
@@ -208,7 +208,8 @@ export async function loadEpicStatusFacts(
     const listed = await listChildPullRequests(github, owner, repo, epicBranch);
     const shipped = await listChildrenShippedBeforeOpenEpic(github, { owner, repo, epicBranch, epicPrNumber: prNumber, baseBranch: pull.base?.ref }, listed);
     const children = listed.filter(child => !shipped.has(child.number));
-    const issues = plan.issues.filter(issue => issue.pr_number == null || !shipped.has(issue.pr_number));
+    const shippedIssues = epicIssuesShippedBefore(listed, shipped, plan.issues);
+    const issues = plan.issues.filter(issue => !shippedIssues.has(issue.issue_number));
     const progress = computeEpicMergeProgress(children, null, issues);
 
     const titles = epicIssueTitles(pull.body);
