@@ -103,7 +103,7 @@ export const HistoricalStatsPanel: React.FC<DashboardSectionProps> = ({ reposito
               type="button"
               aria-pressed={period === option}
               onClick={() => setPeriod(option)}
-              className={`rounded-sm px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+              className={`touch-hit rounded-sm px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                 period === option ? 'bg-white text-slate-800' : 'text-slate-500 hover:text-slate-700'
               }`}
             >

@@ -117,15 +117,18 @@ const Kbd: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <kbd className="rounded-sm border border-slate-200 bg-white px-1 py-px font-sans text-[10px] text-slate-500">{children}</kbd>
 );
 
-/** Footer keyboard hints. A compact palette gives their row to the results; the keys still work. */
+/**
+ * Footer keyboard hints. A compact palette gives their row to the results; the keys still work.
+ * A touch layout (a phone, or a coarse pointer) has no keyboard to hint at, so it drops them too.
+ */
 const KeyHints: React.FC<{ modifierKey: string; compact: boolean }> = ({ modifierKey, compact }) => compact ? null : (
-  <>
+  <span data-testid="global-search-key-hints" className="contents touch:hidden">
     <span><Kbd>↑</Kbd> <Kbd>↓</Kbd> navigate</span>
     <span><Kbd>Tab</Kbd> filter</span>
     <span><Kbd>↵</Kbd> open</span>
     <span><Kbd>{modifierKey}↵</Kbd> GitHub</span>
     <span><Kbd>Esc</Kbd> close</span>
-  </>
+  </span>
 );
 
 /**
@@ -138,7 +141,7 @@ const EmptyResults: React.FC<{ query: string; compact: boolean; onSearchAllTasks
     <p className="min-h-0 max-w-full overflow-y-auto break-words text-sm text-slate-500 scrollbar-subtle">No results found for "{query}"</p>
     <button
       onClick={onSearchAllTasks}
-      className={`${compact ? 'mt-1' : 'mt-3'} flex-none text-xs text-primary-600 hover:text-primary-700 transition-colors`}
+      className={`touch-hit ${compact ? 'mt-1' : 'mt-3'} flex-none text-xs text-primary-600 hover:text-primary-700 transition-colors`}
     >
       Search all tasks
     </button>
@@ -342,7 +345,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
           </button>
         )}
         {!query && (
-          <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400 sm:right-3">
+          <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 touch:hidden rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-400 sm:right-3">
             {modifierKey}K
           </kbd>
         )}
@@ -405,7 +408,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
                       disabled={disabled}
                       onMouseDown={e => e.preventDefault()}
                       onClick={() => selectCategory(id)}
-                      className={`rounded-sm px-2 py-0.5 text-xs font-medium transition-colors ${
+                      className={`touch-hit rounded-sm px-2 py-0.5 text-xs font-medium transition-colors ${
                         selected
                           ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
                           : 'text-slate-500 hover:text-slate-800 disabled:cursor-default disabled:text-slate-300'
@@ -428,7 +431,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
                 )}
               </div>
 
-              <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] text-slate-500">
+              <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] text-slate-500 touch:py-0">
                 <KeyHints modifierKey={modifierKey} compact={anchor.compact} />
                 <span className="ml-auto flex min-w-0 items-center gap-3">
                   <NarrowRepositoryTasksAction item={activeItem} onOpenTasks={openRepositoryTasks} />
@@ -437,7 +440,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
                       type="button"
                       onMouseDown={e => e.preventDefault()}
                       onClick={() => followAction(plansAction.path)}
-                      className="min-w-0 truncate text-primary-600 hover:text-primary-700"
+                      className="min-w-0 truncate text-primary-600 hover:text-primary-700 touch:leading-8"
                     >
                       {plansAction.label} →
                     </button>
@@ -447,10 +450,10 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef,
                     aria-keyshortcuts="Shift+Enter"
                     onMouseDown={e => e.preventDefault()}
                     onClick={() => followAction(scopeAction.path)}
-                    className="flex min-w-0 items-center gap-1 text-primary-600 hover:text-primary-700"
+                    className="flex min-w-0 items-center gap-1 text-primary-600 hover:text-primary-700 touch:min-h-8"
                   >
                     <span className="truncate">{scopeAction.label} →</span>
-                    <span aria-hidden="true"><Kbd>⇧↵</Kbd></span>
+                    <span aria-hidden="true" className="touch:hidden"><Kbd>⇧↵</Kbd></span>
                   </button>
                 </span>
               </div>

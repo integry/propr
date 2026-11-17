@@ -11,8 +11,10 @@ const LOG_BAR_REM = 2.25;
 // its content's height and the log bar stays pinned below. Scroll padding keeps a revealed or focused row
 // clear of the pane heading pinned above it and the log bar (and its border) below. It matches the bar
 // exactly: any more and focus returning to a row resting whole just above the bar would scroll the page.
-export const SHORT_DETAILS = 'data-[short-workspace]:overflow-y-auto data-[short-workspace]:scroll-pt-[4.5rem] data-[short-workspace]:scroll-pb-[calc(2.25rem+1px)]';
-export const SHORT_STATIC = 'group-data-[short-workspace]/task:static';
+export const SHORT_DETAILS = 'data-[short-workspace]:relative data-[short-workspace]:overflow-y-auto data-[short-workspace]:scroll-pt-[4.5rem] data-[short-workspace]:scroll-pb-[calc(2.25rem+1px)]';
+// The full header gives way to the one-line compact header, but stays laid out (unseen, out of flow, at
+// the same width) so the decision below keeps measuring the header it stands in for and cannot flip back.
+export const SHORT_MEASURE_ONLY = 'group-data-[short-workspace]/task:invisible group-data-[short-workspace]/task:absolute group-data-[short-workspace]/task:inset-x-0 group-data-[short-workspace]/task:top-0';
 export const SHORT_UNBOUNDED = 'group-data-[short-workspace]/task:flex-none group-data-[short-workspace]/task:overflow-visible';
 export const SHORT_LOG_BAR = 'group-data-[short-workspace]/task:sticky group-data-[short-workspace]/task:bottom-0 group-data-[short-workspace]/task:z-10 group-data-[short-workspace]/task:flex-none';
 // An open log keeps its own height rather than sharing the page's (none) left over.
@@ -21,7 +23,8 @@ export const SHORT_OPEN_LOG = 'group-data-[short-workspace]/task:h-[clamp(12rem,
 /**
  * Whether the desktop task header leaves the workspace too short to use: a phone in landscape,
  * a short desktop window, an on-screen keyboard or enlarged text. The task then scrolls as one
- * page, so the header and the pinned bands give way to whatever the reader scrolls to.
+ * page under a one-line compact header, so the header and the pinned bands give way to whatever
+ * the reader scrolls to.
  *
  * The decision reads only the space the header leaves, which the switch itself never changes,
  * so it cannot flip back and forth. Pinch zoom is left alone, as it pans rather than resizes.
@@ -55,5 +58,11 @@ export function useShortWorkspace() {
     };
   }, [details, header]);
   // The marker every `SHORT_*` class keys on.
-  return { detailsProps: { ref: setDetails, 'data-short-workspace': short || undefined }, headerRef: setHeader };
+  // The full header stays laid out for this measurement while the compact one stands in for it.
+  const measureOnly = short || undefined;
+  return {
+    detailsProps: { ref: setDetails, 'data-short-workspace': measureOnly },
+    headerProps: { ref: setHeader, 'aria-hidden': measureOnly, inert: measureOnly },
+    short,
+  };
 }

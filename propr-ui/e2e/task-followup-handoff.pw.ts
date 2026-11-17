@@ -64,10 +64,10 @@ async function stub(page: Page, platform?: 'linux', { startAfter = 2, completeAf
 
 async function sendFollowup(page: Page) {
   const direct = page.locator('button[title^="Follow Up"]').filter({ visible: true });
-  await expect(direct.or(page.getByRole('button', { name: /more actions/i }).filter({ visible: true })).first()).toBeVisible();
+  await expect(direct.or(page.getByRole('button', { name: /more task actions/i }).filter({ visible: true })).first()).toBeVisible();
   if (await direct.count()) await direct.first().click();
   else {
-    await page.getByRole('button', { name: /more actions/i }).filter({ visible: true }).first().click();
+    await page.getByRole('button', { name: /more task actions/i }).filter({ visible: true }).first().click();
     await page.getByRole('menuitem', { name: /Follow Up/ }).click();
   }
   const dialog = page.getByRole('dialog', { name: 'Follow Up on Task' });

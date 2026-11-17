@@ -31,7 +31,7 @@ async function stubTask(page: Page, shell: Shell, posts: string[]) {
 
 async function openFollowup(page: Page): Promise<Locator> {
   const direct = page.locator('button[title^="Follow Up"]').filter({ visible: true });
-  const more = page.getByRole('button', { name: /more actions/i }).filter({ visible: true });
+  const more = page.getByRole('button', { name: /more task actions/i }).filter({ visible: true });
   await expect(direct.or(more).first()).toBeVisible();
   if (await direct.count()) await direct.first().click();
   else {

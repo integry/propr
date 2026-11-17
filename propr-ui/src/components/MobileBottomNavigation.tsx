@@ -129,7 +129,7 @@ const MobileNavLink: React.FC<MobileNavLinkProps> = ({
     onClick={onClick}
     aria-label={accessibleLabel}
     aria-current={active ? 'page' : undefined}
-    className={`relative flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 ${
+    className={`relative flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] max-[359.98px]:px-0 max-[359.98px]:text-[10px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 ${
       active ? 'text-primary-700' : 'text-slate-500 hover:text-slate-800'
     }`}
   >
@@ -391,7 +391,7 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
           aria-controls="mobile-create-sheet"
           aria-current={active.creating ? 'page' : undefined}
           aria-label={isDemoMode ? 'Create unavailable in demo mode' : 'Create'}
-          className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 disabled:text-slate-400 ${
+          className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] max-[359.98px]:px-0 max-[359.98px]:text-[10px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 disabled:text-slate-400 ${
             active.creating || openSheet === 'create' ? 'text-primary-800' : 'text-primary-700'
           }`}
         >
@@ -418,7 +418,7 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
           aria-expanded={openSheet === 'more'}
           aria-controls="mobile-more-sheet"
           aria-current={active.more ? 'page' : undefined}
-          className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 ${
+          className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] max-[359.98px]:px-0 max-[359.98px]:text-[10px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 ${
             active.more || openSheet === 'more' || openSheet === 'usage' ? 'text-primary-700' : 'text-slate-500 hover:text-slate-800'
           }`}
         >

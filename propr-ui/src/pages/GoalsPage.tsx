@@ -937,6 +937,13 @@ function GoalDetails({ goalId }: { goalId: string }) {
   const artifactLinks = goal.artifacts
     .map(artifact => artifact as { type?: string; number?: number; url?: string })
     .filter(artifact => Boolean(artifact.url));
+  const headerActions = [
+    goal.desiredState === 'running' && canMutate && <button key="pause" disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} border border-amber-300 text-amber-800 hover:bg-amber-50`}><CirclePause className="h-4 w-4" />Pause</button>,
+    goal.desiredState === 'paused' && canMutate && <button key="resume" disabled={busy} onClick={() => act(() => resumeGoal(goal.id))} className={`${buttonClass} border border-green-300 text-green-800 hover:bg-green-50`}><CirclePlay className="h-4 w-4" />{goal.pausePending ? 'Resume after safe boundary' : 'Resume'}</button>,
+    canContinue && <button key="continue" disabled={busy} onClick={() => void reopen()} className={`${buttonClass} border border-green-300 text-green-800 hover:bg-green-50`}><RotateCcw className="h-4 w-4" />Continue goal</button>,
+    canMutate && <button key="cancel" disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} border border-red-300 text-red-700 hover:bg-red-50`}><CircleStop className="h-4 w-4" />Cancel</button>,
+    goal.finalPr && <a key="final-pr" href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-600 text-white shadow-sm hover:bg-primary-700`}><GitPullRequest className="h-4 w-4" />{goal.launchStrategy === 'direct' ? 'Open draft PR' : 'Review final PR'} <ExternalLink className="h-3.5 w-3.5" /></a>,
+  ].filter(Boolean);
   return <div className="min-h-full bg-white text-slate-900">
     <header className="w-full border-b border-slate-200 px-4 py-3 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl">
@@ -973,18 +980,19 @@ function GoalDetails({ goalId }: { goalId: string }) {
             </>}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {goal.desiredState === 'running' && canMutate && <button disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} border border-amber-300 text-amber-800 hover:bg-amber-50`}><CirclePause className="h-4 w-4" />Pause</button>}
-            {goal.desiredState === 'paused' && canMutate && <button disabled={busy} onClick={() => act(() => resumeGoal(goal.id))} className={`${buttonClass} border border-green-300 text-green-800 hover:bg-green-50`}><CirclePlay className="h-4 w-4" />{goal.pausePending ? 'Resume after safe boundary' : 'Resume'}</button>}
-            {canContinue && <button disabled={busy} onClick={() => void reopen()} className={`${buttonClass} border border-green-300 text-green-800 hover:bg-green-50`}><RotateCcw className="h-4 w-4" />Continue goal</button>}
-            {canMutate && <button disabled={busy} onClick={() => act(() => cancelGoal(goal.id))} className={`${buttonClass} border border-red-300 text-red-700 hover:bg-red-50`}><CircleStop className="h-4 w-4" />Cancel</button>}
-            {goal.finalPr && <a href={goal.finalPr.url} target="_blank" rel="noreferrer" className={`${buttonClass} bg-primary-600 text-white shadow-sm hover:bg-primary-700`}><GitPullRequest className="h-4 w-4" />{goal.launchStrategy === 'direct' ? 'Open draft PR' : 'Review final PR'} <ExternalLink className="h-3.5 w-3.5" /></a>}
-            <details className="group relative">
-              <summary aria-label="More goal actions" className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border border-slate-300 text-slate-600 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-4 w-4" /></summary>
-              <div className="absolute right-0 z-20 mt-2 w-48 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-                <Link to={`/tasks/${encodeURIComponent(goal.taskId)}`} className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Open task history</Link>
-                {!isDemoMode && <button disabled={busy} onClick={remove} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"><Trash2 className="h-4 w-4" />Delete goal</button>}
-              </div>
-            </details>
+            {/* The menu wraps together with the last action, so it never sits alone on a row of its own;
+                only when the pair is wider than the row (enlarged text on a phone) does it split, rather than overflow. */}
+            {headerActions.slice(0, -1)}
+            <span className="inline-flex max-w-full flex-wrap items-center justify-end gap-2">
+              {headerActions[headerActions.length - 1]}
+              <details className="group relative">
+                <summary aria-label="More goal actions" className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-md border border-slate-300 text-slate-600 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-4 w-4" /></summary>
+                <div className="absolute right-0 z-20 mt-2 w-48 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                  <Link to={`/tasks/${encodeURIComponent(goal.taskId)}`} className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">Open task history</Link>
+                  {!isDemoMode && <button disabled={busy} onClick={remove} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"><Trash2 className="h-4 w-4" />Delete goal</button>}
+                </div>
+              </details>
+            </span>
           </div>
         </div>
       </div>
@@ -1065,14 +1073,15 @@ function GoalDetails({ goalId }: { goalId: string }) {
 
         <section className="mt-8 border-t border-slate-200 pt-5">
           {/* One header row owns both the label and the control that switches what sits under it. */}
-          <header className="flex items-center justify-between gap-3">
+          {/* A phone gets short labels so the switch keeps to the header row; at its narrowest the switch wraps under the label. */}
+          <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <div className="flex items-center gap-2">
               <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Implementation log</h2>
               {readableTimeline.length > 0 && <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-500">{readableTimeline.length}</span>}
             </div>
             <div role="group" aria-label="Goal output view" className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1">
-              <button type="button" aria-pressed={outputMode === 'readable'} onClick={() => setOutputMode('readable')} className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition ${outputMode === 'readable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><FileText className="h-3.5 w-3.5" />Human readable</button>
-              <button type="button" aria-pressed={outputMode === 'terminal'} onClick={() => setOutputMode('terminal')} className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition ${outputMode === 'terminal' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Terminal className="h-3.5 w-3.5" />Raw terminal</button>
+              <button type="button" aria-label="Human readable" aria-pressed={outputMode === 'readable'} onClick={() => setOutputMode('readable')} className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition ${outputMode === 'readable' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><FileText className="h-3.5 w-3.5" aria-hidden="true" /><span className="sm:hidden" aria-hidden="true">Readable</span><span className="hidden sm:inline" aria-hidden="true">Human readable</span></button>
+              <button type="button" aria-label="Raw terminal" aria-pressed={outputMode === 'terminal'} onClick={() => setOutputMode('terminal')} className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition ${outputMode === 'terminal' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Terminal className="h-3.5 w-3.5" aria-hidden="true" /><span className="sm:hidden" aria-hidden="true">Terminal</span><span className="hidden sm:inline" aria-hidden="true">Raw terminal</span></button>
             </div>
           </header>
           {outputMode === 'readable'
@@ -1142,8 +1151,10 @@ function GoalDetails({ goalId }: { goalId: string }) {
         </section>}
 
         {/* A cancelling goal gets no footer bar: the locked state is already stated beside the status badge.
-            A finished goal keeps the composer, which then continues the goal instead of correcting it. */}
-        {(canMutate || canContinue) && <section aria-labelledby="correction-heading" className={`${railInset} sticky bottom-0 mt-auto bg-slate-50 pb-1 pt-10`}>
+            A finished goal keeps the composer, which then continues the goal instead of correcting it.
+            It pins to the window's bottom edge only on a wide desktop: on a narrower rail (a 1024px laptop or a
+            phone, where the rail follows the log) a pinned composer would sit over the Metrics above it. */}
+        {(canMutate || canContinue) && <section aria-labelledby="correction-heading" className={`${railInset} mt-auto bg-slate-50 pb-1 pt-10 xl:sticky xl:bottom-0`}>
           {(canMutate || canContinue) && <div className="mb-2 flex flex-col items-end gap-1">
             <label htmlFor="goal-continuation-model" className="text-xs text-slate-500">Model for next continuation</label>
             <select id="goal-continuation-model" value={canContinue && continuationModel?.goalId === goal.id ? continuationModel.model : goal.requestedModel} onChange={event => canContinue ? setContinuationModel({ goalId: goal.id, model: event.target.value }) : act(() => requestGoalModel(goal.id, event.target.value))} className="max-w-48 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 shadow-sm">{models.map(item => <option key={item} value={item}>{getModelDisplayName(item)}</option>)}</select>

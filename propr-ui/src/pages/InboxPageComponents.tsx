@@ -306,7 +306,7 @@ export const InboxCard: React.FC<InboxCardProps> = ({ notification, onDismiss, o
                 {pullRequestUrl ? (
                   <a href={pullRequestUrl} target="_blank" rel="noopener noreferrer"
                     onClick={() => onOpen(notification.id)}
-                    className="relative z-10 flex-none rounded-sm hover:underline focus-visible:outline-teal-500"
+                    className="touch-hit relative z-10 flex-none rounded-sm hover:underline focus-visible:outline-teal-500"
                     aria-label={`${reference.label} on GitHub`}>
                     <ReferenceChip title={reference.title}>{reference.label}</ReferenceChip>
                   </a>

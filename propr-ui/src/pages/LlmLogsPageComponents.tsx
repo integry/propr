@@ -36,7 +36,10 @@ export const ExpandButton: React.FC<{
   onClick: (e: React.MouseEvent) => void;
 }> = ({ isExpanded, onClick }) => (
   <button
-    className="p-1 hover:bg-gray-200 rounded"
+    type="button"
+    aria-expanded={isExpanded}
+    aria-label={isExpanded ? 'Hide details' : 'Show details'}
+    className="touch-hit p-1 hover:bg-gray-200 rounded"
     onClick={onClick}
   >
     {isExpanded ? (

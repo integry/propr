@@ -230,7 +230,7 @@ export const NarrowRepositoryTasksAction: React.FC<{ item: SearchItem | undefine
       data-testid="global-search-narrow-tasks"
       onMouseDown={e => e.preventDefault()}
       onClick={() => onOpenTasks(item)}
-      className="min-w-0 truncate text-primary-600 hover:text-primary-700 md:hidden"
+      className="min-w-0 truncate text-primary-600 hover:text-primary-700 touch:leading-8 md:hidden"
     >
       Tasks for {getRepoName(item.repo.name)} →
     </button>
@@ -294,7 +294,7 @@ export const SearchPreview: React.FC<PreviewProps> = ({ item, onOpen, onOpenTask
           >
             <ExternalLink className="h-3 w-3" aria-hidden="true" />
             GitHub
-            <kbd className="font-sans text-[10px] text-slate-400">{shortcutKey}↵</kbd>
+            <kbd className="font-sans text-[10px] text-slate-400 touch:hidden">{shortcutKey}↵</kbd>
           </a>
         )}
       </div>

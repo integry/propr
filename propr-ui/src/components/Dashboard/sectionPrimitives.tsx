@@ -120,7 +120,7 @@ export const SectionHeading: React.FC<{
 );
 
 export const SectionLink: React.FC<{ to: string; children: React.ReactNode }> = ({ to, children }) => (
-  <Link to={to} className="font-medium text-gray-500 transition-colors hover:text-gray-800">
+  <Link to={to} className="touch-hit font-medium text-gray-500 transition-colors hover:text-gray-800">
     {children}
   </Link>
 );
@@ -167,7 +167,7 @@ export const SectionFooterButton: React.FC<{
     type="button"
     aria-expanded={expanded}
     onClick={onClick}
-    className="-mx-1 rounded-sm px-1 font-medium text-slate-600 transition-colors hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+    className="touch-hit -mx-1 rounded-sm px-1 font-medium text-slate-600 transition-colors hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
   >
     {children}
   </button>

@@ -330,7 +330,7 @@ const GitGroup: React.FC<{
  * title, truncated. Scrolled down a task, the title is what you lose track of;
  * the repository is only the fallback for a task without one.
  */
-const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number } }> = ({ taskInfo, prInfo }) => {
+const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number }; heading?: boolean }> = ({ taskInfo, prInfo, heading }) => {
   const pr = prInfo?.url
     ? { url: prInfo.url, number: prInfo.number }
     : taskInfo?.type === 'pr-comment' && taskInfo.number
@@ -356,11 +356,10 @@ const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: s
           {label && <span aria-hidden="true">:</span>}
         </span>
       )}
-      {label && (
-        <span className="min-w-0 max-w-[280px] truncate font-medium text-gray-900" title={title.text ? title.tooltip : repo}>
-          {label}
-        </span>
-      )}
+      {label && React.createElement(heading ? 'h2' : 'span', {
+        className: 'min-w-0 max-w-[280px] truncate font-medium text-gray-900 sm:max-w-none',
+        title: title.text ? title.tooltip : repo,
+      }, label)}
     </div>
   );
 };
@@ -412,6 +411,8 @@ interface ContextStripProps {
   synthetic?: boolean;
   /** Mobile only: the collapsed header's one line, the pull request then the task's title, truncated. */
   mobileCompact?: boolean;
+  /** Compact only: the title is the page's heading, as when the compact line stands in for the full header. */
+  compactHeading?: boolean;
   /**
    * One part of the strip: `repository` is the repository on its own,
    * `git` is the rest of where the task lives (PR, issue, commit),
@@ -435,11 +436,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   budget,
   synthetic,
   mobileCompact,
+  compactHeading,
   part,
   lead,
   assignment,
 }) => {
-  if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} />;
+  if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} heading={compactHeading} />;
   if (part === 'repository') return taskInfo ? <RepoIdentity taskInfo={taskInfo} /> : null;
 
   const showGit = part !== 'telemetry';

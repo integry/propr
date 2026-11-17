@@ -113,7 +113,7 @@ const TagListSection: React.FC<TagListSectionProps> = ({
                 disabled={!canRemove}
                 title={canRemove ? undefined : `At least ${minItems === 1 ? 'one entry is' : `${minItems} entries are`} required`}
                 onClick={(event) => { event.stopPropagation(); setRemovalArmed(false); onRemoveItem(item); }}
-                className="ml-1.5 inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-300 hover:text-slate-700 focus:bg-slate-400 focus:text-white focus:outline-none disabled:pointer-events-none disabled:opacity-40"
+                className="touch-hit ml-1.5 inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-300 hover:text-slate-700 focus:bg-slate-400 focus:text-white focus:outline-none disabled:pointer-events-none disabled:opacity-40"
               >
                 <span className="sr-only">Remove {item}</span>
                 <X aria-hidden="true" className="h-2.5 w-2.5" />

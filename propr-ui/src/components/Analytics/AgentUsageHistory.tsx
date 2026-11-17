@@ -95,7 +95,7 @@ const RangeSelector: React.FC<{ value: UsageRange; onChange: (range: UsageRange)
         aria-label={`Quota usage, ${USAGE_RANGE_LABELS[option].toLowerCase()}`}
         title={USAGE_RANGE_LABELS[option]}
         onClick={() => onChange(option)}
-        className={`rounded-sm px-2 py-0.5 text-xs font-semibold transition-colors ${
+        className={`touch-hit rounded-sm px-2 py-0.5 text-xs font-semibold transition-colors touch:min-w-8 ${
           value === option ? 'bg-white text-slate-800' : 'text-slate-500 hover:text-slate-700'
         }`}
       >
@@ -167,7 +167,7 @@ const AgentUsageHistory: React.FC = () => {
             type="button"
             aria-pressed={showTable}
             onClick={() => setShowTable(value => !value)}
-            className="rounded-sm px-2 py-0.5 text-xs font-semibold text-slate-500 hover:text-slate-700"
+            className="touch-hit rounded-sm px-2 py-0.5 text-xs font-semibold text-slate-500 hover:text-slate-700"
           >
             {showTable ? 'Chart' : 'Table'}
           </button>

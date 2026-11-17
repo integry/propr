@@ -50,7 +50,7 @@ export default function ManagedPreviewStorageSection() {
       </dl>
       <div className="flex max-w-2xl items-center justify-between gap-3">
         <p className="text-[12px] leading-5 text-slate-500">{status?.effective ? 'Effective limits reported by ProPR Connect.' : 'Standard Plus limits shown; effective limits are currently unavailable.'}</p>
-        <button type="button" disabled={refreshing || !status} onClick={() => void refresh()} className="shrink-0 text-[12px] text-slate-600 underline hover:text-slate-900 disabled:opacity-50">{refreshing ? 'Refreshing…' : 'Refresh status'}</button>
+        <button type="button" disabled={refreshing || !status} onClick={() => void refresh()} className="touch-hit shrink-0 text-[12px] text-slate-600 underline hover:text-slate-900 disabled:opacity-50">{refreshing ? 'Refreshing…' : 'Refresh status'}</button>
       </div>
     </SettingsSection>
   );
