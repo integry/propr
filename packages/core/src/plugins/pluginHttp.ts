@@ -27,13 +27,15 @@ export interface PluginHttpOptions {
   credential?: () => Promise<string | null>;
   /**
    * How the credential is used: `bearer` (the default) injects it as
-   * `Authorization: Bearer`; `signature` (a `signing_secret` connection) signs
+   * `Authorization: Bearer`; `raw` (a `token` connection with
+   * `authorization: raw`) sets `Authorization` to the token itself;
+   * `signature` (a `signing_secret` connection) signs
    * each request as its `signature` says, and every request must have one;
    * `url` (a `token` connection with `secretUrl`) sends each request to the
    * stored URL: the handler passes `PLUGIN_CONNECTION_URL`, and no header is
    * added.
    */
-  credentialUse?: 'bearer' | 'signature' | 'url';
+  credentialUse?: 'bearer' | 'raw' | 'signature' | 'url';
   /** With `credentialUse: 'url'`: the hosts and paths the stored URL must be on, checked on every request. */
   secretUrl?: PluginSecretUrl;
   /**
@@ -422,12 +424,13 @@ function requestSignature(options: Pick<PluginHttpOptions, 'credentialUse'>, ini
   return signing ? signatureSpec(init.signature, headers) : undefined;
 }
 
-/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer`. */
-function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | undefined): void {
+/** Inject the credential: the signature header of a signed request, otherwise `Authorization: Bearer` (or the bare token with `raw`). */
+// eslint-disable-next-line max-params -- the headers, body, secret, signature and how the token is written are explicit inputs
+function applyCredential(headers: Record<string, string>, body: Buffer | undefined, secret: string | null, spec: ReturnType<typeof signatureSpec> | undefined, raw: boolean): void {
   if (spec) {
     if (!secret) throw new PluginSdkError('connection_unavailable', 'The signing secret is not set');
     headers[spec.header] = pluginRequestSignature(secret, body, spec);
-  } else if (secret) headers.authorization = `Bearer ${secret}`;
+  } else if (secret) headers.authorization = raw ? secret : `Bearer ${secret}`;
 }
 
 /**
@@ -532,7 +535,7 @@ export function createPluginHttp(options: PluginHttpOptions): PluginHttpFetch {
       checkLive(signal);
       const { address, family } = await untilEnded(resolvePublic(host, lookup), signal);
       const secret = await untilEnded(readCredential(), signal);
-      if (!secretUrl) applyCredential(headers, body, secret, spec);
+      if (!secretUrl) applyCredential(headers, body, secret, spec, options.credentialUse === 'raw');
       if (options.authorize) await untilEnded(options.authorize(), signal);
       // The run may have ended during the lookups: nothing is sent for an ended handler.
       checkLive(signal);

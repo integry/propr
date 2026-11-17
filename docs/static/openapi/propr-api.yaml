@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 347
-    documented: 109
+    total: 348
+    documented: 110
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -5644,6 +5644,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/settings/{settingKey}/options:
+    get:
+      operationId: getPluginSettingOptions
+      summary: Load the choices of a setting whose manifest entry has `optionsFrom` (for example the teams or workflow states of the connected service). The named handler runs now, enabled or not, with outbound HTTP to the plugin's hosts and no ProPR permission. Refused with 404 for a setting without `optionsFrom`, and with 409 and the handler's message when it fails, for example while the service is not connected yet.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: settingKey
+          in: path
+          required: true
+          description: A setting key from the manifest.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The choices, in the order the plugin gives them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginSettingOptionsResponse"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "403":
@@ -13633,6 +13675,12 @@ components:
                             required:
                               - hosts
                             additionalProperties: false
+                          authorization:
+                            description: "How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default) or `Authorization: <token>` (raw)."
+                            type: string
+                            enum:
+                              - bearer
+                              - raw
                         required:
                           - type
                           - name
@@ -13663,7 +13711,7 @@ components:
                         - properties
                         - required
                       additionalProperties: false
-                      description: "The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map)."
+                      description: "The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`)."
                     outboundHosts:
                       type: array
                       items:
@@ -14361,6 +14409,29 @@ components:
       required:
         - plugin
       additionalProperties: false
+    PluginSettingOptionsResponse:
+      type: object
+      properties:
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                description: The value saved.
+              label:
+                type: string
+                description: The label shown.
+            required:
+              - value
+              - label
+            additionalProperties: false
+          description: At most 250 choices.
+      required:
+        - options
+      additionalProperties: false
+      description: The choices of a plugin setting, loaded from the service by the plugin's optionsFrom handler.
     PluginSettingsRequest:
       type: object
       properties:
@@ -14497,6 +14568,12 @@ components:
                         required:
                           - hosts
                         additionalProperties: false
+                      authorization:
+                        description: "How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default) or `Authorization: <token>` (raw)."
+                        type: string
+                        enum:
+                          - bearer
+                          - raw
                     required:
                       - type
                       - name
@@ -14527,7 +14604,7 @@ components:
                     - properties
                     - required
                   additionalProperties: false
-                  description: "The settings schema: a JSON Schema subset (string, optionally an enum or an https-url format; number; boolean; string list, optionally of enum values; repository map)."
+                  description: "The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`)."
                 outboundHosts:
                   type: array
                   items:

@@ -59,7 +59,9 @@ already loaded (`{ pluginId, manifest, record }`). The runner:
 4. Returns `{ outcome, timedOut, durationMs, error, logs, result? }`.
 
 The runner **never throws**. A thrown error, a timeout, a missing handler and a
-result that is not JSON or is larger than 16 KiB are all `outcome: 'failed'`
+result that is not JSON or is larger than 16 KiB (for a `setting_options`
+input, `PLUGIN_SETTING_OPTIONS_LIMITS.resultBytes`, room for every choice at its
+limits) are all `outcome: 'failed'`
 with a message. The message, the log lines and the result are redacted.
 
 When the run ends, whether it succeeded, failed or timed out, `ctx` stops working
@@ -73,6 +75,17 @@ The [event dispatcher](#event-dispatcher) calls the runner with
 it with `PluginWebhookInput`. A later issue calls it from commands
 (`PluginCommandInput`).
 `PluginInvokeInput` carries a JSON payload for direct calls and tests.
+
+`loadPluginSettingOptions` (`packages/core/src/plugins/pluginSettingOptions.ts`)
+calls it with `PluginSettingOptionsInput` (`{ kind: 'setting_options', setting }`)
+for a setting whose manifest entry names an `optionsFrom` handler, when the
+settings options route (`GET /api/instance/plugins/v1/:pluginId/settings/:settingKey/options`,
+administrators only) asks. It passes `allowDisabled`, so the handler runs, and its
+`ctx.http` may use the installation's connections, while the plugin is installed
+but not enabled; the installation's granted permissions are replaced with none,
+so every `ctx.propr` call is refused. Nothing is recorded as a delivery. A failed
+run is a 409 carrying the redacted error; a result that is not
+`{ options: [{ value, label }] }` is a 502.
 
 ## Event dispatcher
 
@@ -488,6 +501,11 @@ the plugin store checks before the settings are written. On each request
 `ctx.http` allows exactly those hosts, from the settings the run started with,
 and checks their addresses again.
 
+**Raw tokens.** A `token` connection declared with `"authorization": "raw"` is
+sent as the whole `Authorization` value instead of `Bearer <token>` (Linear's
+personal API keys need this). It is redacted from responses, logs and errors in
+the same spellings as a Bearer token.
+
 **Secret URLs.** A `token` connection with `secretUrl` holds a URL, such as a
 chat service's incoming webhook URL (`pluginSecretUrlSchema` in
 `packages/shared/src/plugins.ts`). The plugin store refuses a value that is not
@@ -568,7 +586,14 @@ such as "this pull request maps to that chat thread":
 await ctx.state.set(`thread:${repository}#${number}`, { channel, ts });
 const thread = await ctx.state.get<{ channel: string; ts: string }>(`thread:${repository}#${number}`);
 await ctx.state.delete(key); await ctx.state.keys('thread:');
+// Atomic read-and-replace: no other update of this installation's state runs in between.
+await ctx.state.update('tickets:3', list => [...(Array.isArray(list) ? list : []), record]);
 ```
+
+`update` holds the installation row `FOR UPDATE` for its read and write (on
+SQLite, write transactions already run one at a time), so updates from several
+processes never interleave. `change` runs inside the transaction and must not
+await; it returns `undefined` to leave the value unchanged.
 
 | Limit | Value |
 | --- | --- |

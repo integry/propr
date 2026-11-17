@@ -3,6 +3,7 @@ import {
   PluginAcknowledgementRequest, PluginConnectionRequest, PluginDetailResponse, PluginEnabledRequest, PluginList, PluginRepositoriesRequest, PluginResponse,
   PluginSettingsRequest, PluginUninstallRequest, PluginEmptyRequest, PluginOAuthClientRequest, PluginOAuthCompleteRequest, PluginOAuthStartResponse,
   PluginActivityResponse, PluginDeliveryResponse, PluginHealthResponse, PluginWebhooksResponse, PluginCommandWriteRequest, PluginSharedCommandOwnerRequest,
+  PluginSettingOptionsResponse,
 } from './schemasPlugins.js';
 import { JsonObject } from './schemas.js';
 import type { RouteDoc } from './types.js';
@@ -29,6 +30,11 @@ export const PLUGIN_ROUTE_DOCS: Record<string, RouteDoc> = {
   },
   [`POST ${BASE}/:pluginId/install`]: mutation('installPlugin', 'Install a registry plugin, disabled, with its default settings; grants the manifest\'s permissions. A package server with secret variables must be acknowledged.', PluginAcknowledgementRequest),
   [`PUT ${BASE}/:pluginId/settings`]: mutation('updatePluginSettings', 'Replace the settings, validated against the manifest\'s settings schema. Required settings cannot be removed while the plugin is enabled.', PluginSettingsRequest),
+  [`GET ${BASE}/:pluginId/settings/:settingKey/options`]: {
+    operationId: 'getPluginSettingOptions', summary: 'Load the choices of a setting whose manifest entry has `optionsFrom` (for example the teams or workflow states of the connected service). The named handler runs now, enabled or not, with outbound HTTP to the plugin\'s hosts and no ProPR permission. Refused with 404 for a setting without `optionsFrom`, and with 409 and the handler\'s message when it fails, for example while the service is not connected yet.', description, tags: ['Configuration'],
+    pathParams: { ...pluginId, settingKey: 'A setting key from the manifest.' },
+    responses: { 200: { description: 'The choices, in the order the plugin gives them.', schema: PluginSettingOptionsResponse } },
+  },
   [`PUT ${BASE}/:pluginId/repositories`]: mutation('setPluginRepositories', 'Limit the plugin to repositories, or clear the limit (all repositories).', PluginRepositoriesRequest),
   [`PUT ${BASE}/:pluginId/connections/:connectionName`]: mutation('setPluginConnection', 'Set or clear a `token` or `signing_secret` connection. The secret is sealed and write-only.', PluginConnectionRequest, {
     pathParams: { ...pluginId, connectionName: 'Connection name from the manifest.' },

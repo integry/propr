@@ -103,6 +103,7 @@ const sidebars: SidebarsConfig = {
         'plugins/slack',
         'plugins/discord',
         'plugins/teams',
+        'plugins/linear',
       ],
     },
     {

@@ -6,6 +6,7 @@ import {
   type PluginManifestInput,
 } from '../src/plugins.js';
 import { validatePluginSettings } from '../src/pluginInstallations.js';
+import { PLUGIN_SETTING_OPTIONS_LIMITS, parsePluginSettingOptions } from '../src/pluginSdk.js';
 
 const INTEGRITY = `sha512-${'A'.repeat(86)}==`;
 const valid = (): PluginManifestInput => ({
@@ -325,4 +326,38 @@ test('a token connection may be a secret URL on declared host patterns; it is ne
   assert.equal(pluginSecretUrlProblem(secretUrl, 'not a url'), 'The URL must be an https:// URL');
   assert.equal(pluginSecretUrlHostAllowed(['*.acme.example'], 'a.b.acme.example'), true);
   assert.equal(pluginSecretUrlHostAllowed(['*.acme.example'], 'acme.example'), false);
+});
+
+test('optionsFrom: a string or repository map setting names the handler that loads its choices, and never also an enum or a format', () => {
+  const withSettings = (properties: Record<string, unknown>) => {
+    const manifest = valid() as unknown as Record<string, unknown>;
+    return parsePluginManifest({ ...manifest, settings: { type: 'object', properties, required: [] } });
+  };
+  const ok = withSettings({
+    team: { type: 'string', label: 'Team', optionsFrom: 'teamOptions' },
+    teams: { type: 'object', format: 'repository-map', additionalProperties: { type: 'string' }, label: 'Teams', optionsFrom: 'teamOptions' },
+  });
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.deepEqual(withSettings({ team: { type: 'string', label: 'Team', optionsFrom: 'teamOptions', enum: ['a'] } }), { ok: false, errors: ['settings.properties.team.optionsFrom: Setting team has optionsFrom and an enum; use one'] });
+  assert.deepEqual(withSettings({ site: { type: 'string', label: 'Site', optionsFrom: 'sites', format: 'https-url' } }), { ok: false, errors: ['settings.properties.site.optionsFrom: Setting site has optionsFrom and a format; use one'] });
+  assert.equal(withSettings({ team: { type: 'string', label: 'Team', optionsFrom: 'not a handler' } }).ok, false);
+  assert.equal(withSettings({ on: { type: 'boolean', label: 'On', optionsFrom: 'x' } }).ok, false, 'only string and repository map settings load choices');
+  // Saved values are plain strings, validated like any other.
+  assert.deepEqual(validatePluginSettings({ type: 'object', properties: { team: { type: 'string', label: 'Team', optionsFrom: 'teamOptions' } }, required: [] }, { team: 'ENG' }), { ok: true, settings: { team: 'ENG' } });
+});
+
+test('a token connection may send its token raw, but a secret URL takes no authorization', () => {
+  const manifest = valid();
+  const connections = (extra: Record<string, unknown>) => parsePluginManifest({ ...manifest, connections: [...manifest.connections!, { type: 'token', name: 'api-key', label: 'API key', help: 'Paste it.', helpUrl: 'https://acme.example.com/keys', ...extra }] });
+  assert.equal(connections({ authorization: 'raw' }).ok, true);
+  assert.equal(connections({ authorization: 'basic' }).ok, false);
+  assert.deepEqual(connections({ authorization: 'raw', secretUrl: { hosts: ['hooks.acme.example.com'] } }), { ok: false, errors: ['connections.3.authorization: Connection api-key is a secret URL; it sends no Authorization header, so it takes no authorization'] });
+});
+
+test('parsePluginSettingOptions keeps well-formed choices, each value once, within the limits', () => {
+  assert.deepEqual(parsePluginSettingOptions({ options: [{ value: 'a', label: ' A ' }, { value: 'a', label: 'again' }, { value: 'b', label: 'B' }] }), [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }]);
+  assert.equal(parsePluginSettingOptions({ options: [{ value: '', label: 'empty' }] }), null);
+  assert.equal(parsePluginSettingOptions({ options: [{ value: 'a' }] }), null);
+  assert.equal(parsePluginSettingOptions([]), null);
+  assert.equal(parsePluginSettingOptions({ options: Array.from({ length: 300 }, (_, i) => ({ value: `v${i}`, label: `L${i}` })) })!.length, PLUGIN_SETTING_OPTIONS_LIMITS.options);
 });

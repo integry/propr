@@ -54,6 +54,7 @@ own tests and as a reference for plugin authors.
 | [Slack](../plugins/slack.md) (`slack`) | Posts short notifications to Slack channels through incoming webhooks, or with your own Slack app in one thread per pull request; in app mode, mentioning the bot creates an issue that starts a task. |
 | [Discord](../plugins/discord.md) (`discord`) | Posts short notifications to Discord channels as embeds through channel webhooks. |
 | [Microsoft Teams](../plugins/teams.md) (`teams`) | Posts short notifications to Teams channels or chats as Adaptive Cards through a Workflows webhook. |
+| [Linear](../plugins/linear.md) (`linear`) | Adding a label to a Linear ticket creates a GitHub issue that starts a task; ProPR then comments on the ticket and moves it through its workflow as the work progresses. |
 
 ## The manifest
 
@@ -95,7 +96,7 @@ pointing to where the credential is obtained.
 | Type | What the administrator provides |
 | --- | --- |
 | `oauth` | A sign-in, using the same flow as [OAuth library servers](./agent-extensions.md#oauth-servers). `registrations` limits the client registration methods (`metadata_document`, `dynamic`, `preregistered`; all three by default) and `scopes` lists the scopes to request. |
-| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). |
+| `token` | A secret pasted by the administrator, such as an API token. With `secretUrl`, the secret is a URL instead (see [Webhook URL connections](#webhook-url-connections)). `ctx.http` sends it as `Authorization: Bearer <token>`; with `"authorization": "raw"` it sends `Authorization: <token>`, for services whose API keys take no scheme, such as Linear's. An MCP server using the connection always gets it as Bearer. |
 | `signing_secret` | A shared secret: it verifies inbound webhooks, and `ctx.http` signs outbound requests with it. |
 
 #### Webhook URL connections
@@ -143,6 +144,29 @@ one of:
 
 Defaults must satisfy their own constraints, and every `required` key must be
 defined.
+
+#### Choices loaded from the service
+
+A `string` setting, or a repository map's values, can offer choices the plugin
+loads from its service, such as a tracker's teams or workflow states. Name an
+exported handler in `optionsFrom` (it cannot be combined with `enum` or
+`format`):
+
+```json
+"openedState": { "type": "string", "label": "Move the ticket to", "optionsFrom": "stateOptions" }
+```
+
+The handler receives `{ kind: 'setting_options', setting }` and returns
+`{ options: [{ value, label }] }` (at most 250, each value once, values up to
+500 and labels up to 200 characters; a result within these limits is never too
+large). It runs when
+the Plugins page shows the form, through
+`GET /api/instance/plugins/v1/<id>/settings/<key>/options`, which only an
+administrator may call. It runs whether the plugin is enabled or not, with
+`ctx.http` and `ctx.state` but no `ctx.propr` permission. If it fails, for
+example because the API key is not set yet, the form shows its message next to
+the field and keeps a text box. Saved values are plain strings, validated like
+any other.
 
 An `https-url` value must be `https://`, on the default port, without a user
 name, password or `#fragment`, and name a host: never an IP address, and not a
@@ -391,6 +415,7 @@ Each setting becomes one field, labelled with its `label` and described by its
 | `boolean` | A list with **Not set**, **Yes** and **No**, so an explicit **No** (`false`) is saved and kept apart from an unset setting. |
 | `array` of `string` | One box per entry, with **Add entry** and **Remove**. Each entry is saved exactly as typed, including spaces, empty entries and line breaks. |
 | `object` with `format: repository-map` | One row per repository: the repository (`owner/name`, with this instance's repositories suggested) and its value, with **Add repository** and **Remove**. |
+| `string` or repository map with `optionsFrom` | The choices the plugin loads from its service, in a list with **Not set** (for a map, one list per repository), and **Reload choices**. A saved value the service no longer offers stays listed as "not offered by the service". If the choices cannot be loaded, the plugin's message is shown (for example "Linear is not connected yet…") and the field is a text box. |
 
 The form starts from the saved settings; a fresh installation starts from the
 manifest's defaults. **Save settings** sends every setting at once
@@ -673,7 +698,8 @@ ordinary automations and are not changed.
 
 A plugin folder may contain a `handlers.ts` that exports named async functions.
 Each handler receives `(input, ctx)` and returns nothing or a small JSON result
-(at most 16 KiB). `ctx` is the only way a handler touches anything. Handlers of
+(at most 16 KiB; an `optionsFrom` handler's choices may be larger, up to the
+options limits). `ctx` is the only way a handler touches anything. Handlers of
 official plugins run in-process, but only through this interface, so the same
 plugin could later run out of process. How ProPR runs them is described in
 [Plugin runtime](../architecture/plugin-runtime.md).
@@ -698,7 +724,7 @@ export const onTaskEvent = definePluginHandler<PluginEventInput>(async (input, c
 | `ctx.repositories` | The repository limit (`owner/repo` list), or `null` for all repositories. |
 | `ctx.propr` | ProPR, limited to the granted permissions and the repository limit (below). |
 | `ctx.http(connection?)` | `fetch`-like outbound HTTPS to the manifest's `outboundHosts` (and the hosts of its `outboundHostsFromSettings` URLs) only. With a `token` connection name, its credential is injected. With a `signing_secret` connection name, ProPR signs each request. |
-| `ctx.state` | A small JSON key-value store for this installation: `get`, `set`, `delete`, `keys(prefix?)`. |
+| `ctx.state` | A small JSON key-value store for this installation: `get`, `set`, `delete`, `keys(prefix?)`, and `update(key, change)`, an atomic read-and-replace. |
 | `ctx.log` | `debug`, `info`, `warn`, `error(message, fields?)`: structured lines returned with the run, redacted. |
 | `ctx.signal` | Aborted when the handler runs past its 30 second limit. |
 
@@ -760,7 +786,8 @@ redirects are not followed. Requests are limited to 256 KiB and 10 seconds, and
 responses to 1 MiB.
 
 Handlers never receive raw secrets. `ctx.http('my-token')` opens the stored
-`token` connection only to send the request, as `Authorization: Bearer …`, and
+`token` connection only to send the request, as `Authorization: Bearer …` (or
+the bare token with `"authorization": "raw"`), and
 removes the credential from the response before the handler reads it. Log lines,
 error messages and results pass the secret redaction.
 
@@ -787,7 +814,11 @@ body bytes as sent, preceded by the timestamp header's value and `.` when
 
 `ctx.state` holds up to 256 keys and 256 KiB per installation, each value at
 most 16 KiB of JSON. It is meant for cursors and mappings, for example "this
-pull request maps to that chat thread". It is kept when the plugin is disabled
+pull request maps to that chat thread". Handlers can run at the same time, in
+several ProPR processes: a `get` followed by a `set` can overwrite what another
+handler wrote in between. `update(key, current => next)` reads and replaces a
+key atomically; `change` must not await, and returns `undefined` to leave the
+value unchanged. It is kept when the plugin is disabled
 and deleted when it is uninstalled.
 
 ### Imports

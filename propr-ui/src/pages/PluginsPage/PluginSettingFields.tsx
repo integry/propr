@@ -2,6 +2,8 @@ import { useId, type ReactNode } from 'react';
 import type { PluginSetting } from '@propr/shared';
 import { buttonClass, inputClass } from './pluginUi';
 import type { CollectionDraft, RepositoryMapRow, SettingDraft } from './pluginSettingsUi';
+import { ChoiceOptions, SettingChoicesStatus } from './PluginSettingOptions';
+import { useSettingChoices } from './usePluginSettingChoices';
 
 export interface SettingFieldProps {
   name: string;
@@ -12,6 +14,8 @@ export interface SettingFieldProps {
   disabled: boolean;
   /** Repositories this instance manages, suggested as repository map keys. */
   repositories: string[];
+  /** The plugin whose settings these are: a setting with `optionsFrom` loads its choices from it. */
+  pluginId?: string;
   onChange: (draft: SettingDraft) => void;
 }
 
@@ -132,8 +136,10 @@ function ChoiceListField({ setting, draft, required, error, disabled, onChange }
   );
 }
 
-function RepositoryMapField({ setting, draft, required, error, disabled, repositories, onChange }: SettingFieldProps) {
+function RepositoryMapField({ name, setting, draft, required, error, disabled, repositories, pluginId, onChange }: SettingFieldProps) {
   const ids = useFieldIds(error);
+  const { choices, reload } = useSettingChoices(pluginId, name, setting.type === 'object' ? setting.optionsFrom : undefined);
+  const options = choices?.state === 'loaded' ? choices.options : null;
   const map = draft as CollectionDraft<RepositoryMapRow>;
   const rows = map.rows;
   const listId = `${ids.id}-repositories`;
@@ -144,14 +150,22 @@ function RepositoryMapField({ setting, draft, required, error, disabled, reposit
       <legend className="font-medium text-slate-900 [overflow-wrap:anywhere]">{setting.label}</legend>
       <span className="block text-xs text-slate-500">Maps a repository (owner/name) to a value.</span>
       <datalist id={listId}>{repositories.map(name => <option key={name} value={name} />)}</datalist>
+      {choices && <SettingChoicesStatus label={setting.label} choices={choices} disabled={disabled} onReload={() => void reload()} />}
       <CollectionState label={setting.label} draft={map} empty="No repositories yet." disabled={disabled} onChange={onChange} />
       <ul className="mt-1 space-y-2">
         {rows.map((row, index) => (
           <li key={index} className="flex flex-col gap-2 sm:flex-row sm:items-start">
             <input className={`${inputClass} mt-0 sm:flex-1 ${error ? invalidClass : ''}`} list={listId} value={row.repository} disabled={disabled}
               aria-label={`${setting.label}: repository ${index + 1}`} placeholder="owner/name" onChange={event => update(index, { repository: event.target.value })} />
-            <input className={`${inputClass} mt-0 sm:flex-1 ${error ? invalidClass : ''}`} value={row.text} disabled={disabled}
-              aria-label={`${setting.label}: value for repository ${index + 1}`} onChange={event => update(index, { text: event.target.value })} />
+            {options ? (
+              <select className={`${inputClass} mt-0 sm:flex-1 ${error ? invalidClass : ''}`} value={row.text} disabled={disabled}
+                aria-label={`${setting.label}: value for repository ${index + 1}`} onChange={event => update(index, { text: event.target.value })}>
+                <ChoiceOptions options={options} value={row.text} />
+              </select>
+            ) : (
+              <input className={`${inputClass} mt-0 sm:flex-1 ${error ? invalidClass : ''}`} value={row.text} disabled={disabled}
+                aria-label={`${setting.label}: value for repository ${index + 1}`} onChange={event => update(index, { text: event.target.value })} />
+            )}
             <button type="button" className={buttonClass} disabled={disabled} aria-label={`Remove repository ${index + 1} from ${setting.label}`}
               onClick={() => set(rows.filter((_, i) => i !== index))}>Remove</button>
           </li>
@@ -162,6 +176,26 @@ function RepositoryMapField({ setting, draft, required, error, disabled, reposit
       </button>
       <FieldText setting={setting} required={required} helpId={ids.helpId} errorId={ids.errorId} error={error} />
     </fieldset>
+  );
+}
+
+/** A string setting with `optionsFrom`: a select of the choices the plugin loads from its service, or a text box while they cannot be loaded. */
+function LoadedChoiceField({ name, setting, draft, required, error, disabled, pluginId, onChange }: SettingFieldProps) {
+  const ids = useFieldIds(error);
+  const { choices, reload } = useSettingChoices(pluginId, name, setting.type === 'string' ? setting.optionsFrom : undefined);
+  const common = {
+    id: ids.id, disabled, 'aria-describedby': ids.describedBy, 'aria-invalid': ids.invalid || undefined,
+    className: `${inputClass} ${error ? invalidClass : ''}`,
+  };
+  const value = String(draft);
+  const control = choices?.state === 'loaded'
+    ? <select {...common} value={value} onChange={event => onChange(event.target.value)}><ChoiceOptions options={choices.options} value={value} /></select>
+    : <input {...common} type="text" maxLength={setting.type === 'string' ? setting.maxLength : undefined} value={value} onChange={event => onChange(event.target.value)} />;
+  return (
+    <Labelled setting={setting} required={required} ids={ids} error={error}>
+      {control}
+      {choices && <SettingChoicesStatus label={setting.label} choices={choices} disabled={disabled} onReload={() => void reload()} />}
+    </Labelled>
   );
 }
 
@@ -201,9 +235,14 @@ function ValueField(props: SettingFieldProps) {
   return <Labelled setting={setting} required={required} ids={ids} error={error}>{control}</Labelled>;
 }
 
-/** One generated field: text, URL, number, select (a choice list, or Not set / Yes / No), list, multiple choice or repository map, chosen from the setting's schema. */
+/**
+ * One generated field: text, URL, number, select (a choice list, choices loaded from the service through `optionsFrom`,
+ * or Not set / Yes / No), list, multiple choice or repository map (its values optionally loaded choices), chosen from the
+ * setting's schema.
+ */
 export function PluginSettingField(props: SettingFieldProps) {
   if (props.setting.type === 'array') return props.setting.items.enum ? <ChoiceListField {...props} /> : <ListField {...props} />;
   if (props.setting.type === 'object') return <RepositoryMapField {...props} />;
+  if (props.setting.type === 'string' && props.setting.optionsFrom) return <LoadedChoiceField {...props} />;
   return <ValueField {...props} />;
 }

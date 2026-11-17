@@ -49,6 +49,9 @@ export const approvePlugin = (id: string, acknowledgements: string[]): Plugin =>
 /** Replace the settings; a `null` value removes that setting. The API validates them against the manifest's settings schema. */
 export const setPluginSettings = (id: string, settings: ProprApi.PluginSettingsRequest['settings']): Plugin =>
   request(plugin(id, '/settings'), { method: 'PUT', body: { settings } satisfies ProprApi.PluginSettingsRequest });
+/** The choices of a setting with `optionsFrom`, loaded by the plugin from its service; refused with the plugin's message (for example: not connected yet). */
+export const getPluginSettingOptions = (id: string, setting: string) =>
+  request<ProprApi.PluginSettingOptionsResponse>(plugin(id, `/settings${segment(setting)}/options`));
 /** `null` (or an empty list) for all repositories. */
 export const setPluginRepositories = (id: string, repositories: string[] | null): Plugin =>
   request(plugin(id, '/repositories'), { method: 'PUT', body: { repositories: repositories?.length ? repositories : null } satisfies ProprApi.PluginRepositoriesRequest });
