@@ -15,14 +15,27 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import type logger from '../utils/logger.js';
-import { isDependencyGateFailure, type CancellationProvenanceOctokit } from './ciCancellationProvenance.js';
+import { loadDependencyGateFailure, type CancellationProvenanceOctokit } from './ciCancellationProvenance.js';
 import type { CiFailureFollowupRequest } from './ciFailureFollowup.js';
 
 type Log = ReturnType<typeof logger.withCorrelation>;
 
 const HEAD_MARKER_PREFIX = '<!-- propr:ci-failure-head';
 const MARKER_BLOCK_START = '\n<!-- propr:ci-failure-';
-const ACTIONS_RUN_ID_RE = /\/actions\/runs\/(\d+)/gu;
+const ACTIONS_RUN_ID_RE = /\/actions\/runs\/(\d+)/u;
+/** A listed check's generated `- Check:` line; failure evidence is quoted (`> `), so it never matches. */
+const GENERATED_CHECK_LINE_RE = /^- Check: `((?:[^`\\]|\\.)*)`$/u;
+/** A listed check's generated `- Run:` line, which follows its `- Check:` line. */
+const GENERATED_RUN_LINE_RE = /^- Run: \[View CI failure\]\(https?:\/\/[^\s()]*?\/actions\/runs\/(\d+)(?:[/?#][^\s()]*)?\)$/u;
+/**
+ * The dependency gate's label for a needed job (see pr-test-on-label.yml) →
+ * the check names of that job. A label missing here, such as `Shard coverage
+ * verification`, is a failure of the aggregate's own and is never omitted.
+ */
+const GATE_DEPENDENCY_CHECKS = new Map<string, RegExp>([
+    ['Full test suite shards', /^Full Test Suite Shard \d+\/\d+$/u],
+    ['Docs site validation', /^Validate Docs Site$/u],
+]);
 const SINGLE_FAILURE_INSTRUCTION = 'Please investigate and fix this CI failure.';
 const MULTIPLE_FAILURES_INSTRUCTION = 'Please investigate and fix these CI failures.';
 /** Longer than one read, annotation load and write (with retries) take, so a held lock does not lapse mid-write. */
@@ -91,12 +104,42 @@ export function appendCheckToCiFailureComment(body: string, check: { title: stri
     ].join('\n');
 }
 
+interface ListedCheck {
+    name: string;
+    runId: number;
+}
+
 /**
- * Whether the failing check is an aggregate job whose own shard is already
- * listed. "Aggregate" reuses the dependency-gate knowledge the cancellation
- * check keeps for pr-test-on-label.yml: a job whose step enforcing its needed
- * jobs' results failed. Its shards are the jobs of the same Actions run, so a
- * listed check from that run is one of them. Anything unreadable lists it.
+ * The checks the comment lists, read only from the generated `- Check:` and
+ * `- Run:` lines of each check's section. Run links inside quoted failure
+ * evidence (or anywhere else) do not list a check.
+ */
+function listedChecks(body: string): ListedCheck[] {
+    const markerAt = body.indexOf(MARKER_BLOCK_START);
+    const checks: ListedCheck[] = [];
+    let pendingName: string | null = null;
+    for (const line of (markerAt === -1 ? body : body.slice(0, markerAt)).split('\n')) {
+        const check = GENERATED_CHECK_LINE_RE.exec(line);
+        if (check) {
+            pendingName = check[1].replace(/\\([\\`])/gu, '$1');
+            continue;
+        }
+        const run = GENERATED_RUN_LINE_RE.exec(line);
+        if (run && pendingName !== null) checks.push({ name: pendingName, runId: Number(run[1]) });
+        if (run || line === '---') pendingName = null;
+    }
+    return checks;
+}
+
+/**
+ * Whether the failing check is an aggregate job whose failure is entirely
+ * explained by checks the comment already lists. "Aggregate" reuses the
+ * dependency-gate knowledge the cancellation check keeps for
+ * pr-test-on-label.yml: only its gate step failed, and its failure
+ * annotations only report needed jobs that failed. Every such needed job must
+ * be listed from the same Actions run; any other failure of the aggregate
+ * (another failed step, failed shard coverage verification, an unrecognized
+ * annotation) keeps it listed. Anything unreadable lists it.
  */
 export async function isAggregateOfListedCheck(
     octokit: CancellationProvenanceOctokit,
@@ -104,12 +147,18 @@ export async function isAggregateOfListedCheck(
     existingBody: string,
     log: Log,
 ): Promise<boolean> {
-    const listedRuns = new Set([...existingBody.matchAll(ACTIONS_RUN_ID_RE)].map(match => Number(match[1])));
-    const ownRun = [...evidence.url.matchAll(ACTIONS_RUN_ID_RE)][0];
-    if (evidence.kind !== 'check_run' || evidence.checkRunId == null || !ownRun || !listedRuns.has(Number(ownRun[1]))) return false;
+    const ownRun = ACTIONS_RUN_ID_RE.exec(evidence.url);
+    if (evidence.kind !== 'check_run' || evidence.checkRunId == null || !ownRun) return false;
+    const runId = Number(ownRun[1]);
+    const sameRun = listedChecks(existingBody).filter(check => check.runId === runId);
+    if (sameRun.length === 0) return false;
     try {
-        const gateRun = await isDependencyGateFailure(octokit, { owner, repo, jobId: evidence.checkRunId });
-        return gateRun !== null && listedRuns.has(gateRun);
+        const gate = await loadDependencyGateFailure(octokit, { owner, repo, jobId: evidence.checkRunId });
+        if (!gate || gate.runId !== runId) return false;
+        return gate.failedDependencies.every(label => {
+            const checkName = GATE_DEPENDENCY_CHECKS.get(label);
+            return checkName !== undefined && sameRun.some(check => checkName.test(check.name));
+        });
     } catch (error) {
         log.warn({ error: (error as Error).message }, 'Could not read whether a failed check is an aggregate; listing it');
         return false;
