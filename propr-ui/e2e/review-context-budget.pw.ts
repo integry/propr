@@ -102,7 +102,7 @@ test('adjusts the review context budget with the keyboard and saves the percenta
 
   const slider = page.getByRole('slider', { name: 'Review context budget' });
   await expect(slider).toHaveValue('100');
-  await expect(page.getByTestId('review-context-budget-allowance')).toContainText('≈ 948K input tokens for claude - Claude Opus 5.5');
+  await expect(page.getByTestId('review-context-budget-allowance')).toContainText('≈ 948K tokens for claude - Claude Opus 5.5');
   await expect(page.getByRole('spinbutton')).toHaveCount(0);
   await page.getByText('Allowance by reviewer model').click();
   await capture(page, 'review-context-budget-slider');
@@ -112,7 +112,7 @@ test('adjusts the review context budget with the keyboard and saves the percenta
   await page.keyboard.press('ArrowLeft');
   await expect(slider).toHaveValue('80');
   await expect(page.locator('output#pr_review_context_budget_output')).toHaveText('80%');
-  await expect(page.getByTestId('review-context-budget-allowance')).toContainText('≈ 758K input tokens');
+  await expect(page.getByTestId('review-context-budget-allowance')).toContainText('≈ 758K tokens');
   await expect.poll(() => saved.at(-1)?.pr_review_context_budget_percent).toBe(80);
   expect(saved.every(update => update.pr_review_max_context_tokens === 0)).toBe(true);
 
@@ -126,7 +126,7 @@ test('explains and explicitly removes a retained legacy token cap', async ({ pag
   await page.goto('/settings?tab=models');
 
   await expect(page.getByRole('note')).toContainText('A legacy absolute cap of 120,000 tokens is still in effect.');
-  await expect(page.getByTestId('review-context-budget-allowance')).toContainText('limited by the legacy cap');
+  await expect(page.getByTestId('review-context-budget-allowance')).toContainText('(legacy cap)');
   await capture(page, 'review-context-budget-legacy-cap');
 
   await page.getByRole('button', { name: 'Remove legacy cap' }).click();

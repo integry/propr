@@ -1,9 +1,10 @@
-/** The Codex configuration limitation of runs with extensions. */
+/** Docs section on why Codex runs that need a custom Codex config run without extensions. */
+export const CODEX_LIMITATION_DOCS = 'https://docs.propr.dev/docs/features/agent-extensions#codex-configuration';
+
+/** The Codex configuration limitation of runs with extensions, with the detail in the docs. */
 export const CodexLimitation = () => (
   <>
-    Applies to Codex: Codex runs with extensions use <code>--ignore-user-config</code>, so custom{' '}
-    <code>model_provider</code> settings in <code>CODEX_HOME/config.toml</code> are unavailable, and repositories
-    containing <code>.codex/config.toml</code> are refused. Automatic items are left out of a Codex run that needs
-    either; items an automation adds keep this behaviour.
+    Codex: not used in runs that need a custom Codex config.{' '}
+    <a href={CODEX_LIMITATION_DOCS} target="_blank" rel="noopener noreferrer" className="font-medium underline hover:no-underline">Details</a>
   </>
 );

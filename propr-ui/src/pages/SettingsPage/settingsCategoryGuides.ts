@@ -20,7 +20,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
     summary: 'ProPR addresses models by stable model IDs, so the same ID works in issue labels, the CLI and PR commands such as /switch.',
     notes: [
       'When the summarization model hits a provider quota, indexing switches to the fallback model and keeps going instead of failing.',
-      'Repositories are reindexed daily by default. Reindex All Repositories queues them all now, unless a quota cooldown is active.',
+      'Repositories are reindexed daily by default. Reindex all repositories queues them all now, unless a quota cooldown is active.',
     ],
     links: [
       { label: 'Agents and models', href: `${DOCS}/features/agents-and-models` },
@@ -33,6 +33,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
       'A processing label such as AI moves through AI-processing to AI-done, or AI-failed-* when a run fails.',
       'An empty trigger whitelist lets every GitHub user start work.',
       'A task’s own spend cap and a repository’s limits.max_cost_usd in .propr/workflow.yml take precedence over the default cap.',
+      'Provider failure replacements cover transient errors such as 5xx or overloaded. Usage limits (429) are re-queued separately.',
     ],
     links: [
       { label: 'PR follow-up', href: `${DOCS}/features/pr-followup` },
@@ -40,10 +41,10 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
     ],
   },
   ultrafix: {
-    summary: '/ultrafix alternates review and fix cycles until the latest review score reaches the target or Max Cycles runs out.',
+    summary: '/ultrafix alternates review and fix cycles until the latest review score reaches the target or max cycles run out.',
     notes: [
       'Escalation compares each review with the best score so far in the run: 6 → 6 or lower is a stall, 6 → 7 resets patience.',
-      'After Patience stalled reviews, the current model climbs one reasoning tier. Once it has climbed Max Reasoning Levels times, the next model in the chain takes over at its base effort.',
+      'After Patience stalled reviews, the current model climbs one reasoning tier. Once it has climbed max reasoning levels times, the next model in the chain takes over at its base effort.',
       'Remove the ultrafix label from a pull request to stop the loop after the current cycle.',
     ],
     links: [
@@ -68,7 +69,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
   'agent-extensions': {
     summary: 'What agents can use inside their containers beyond the repository: MCP tools, skills and extra system packages.',
     notes: [
-      'Skills & MCP servers lists the instance’s MCP servers and read-only skills. Each item can be limited to repositories (and, under Advanced, agents), applies automatically unless you turn that off, and can be switched off with its checkbox without losing its settings. Automations can add further items in their editor. Claude and Codex runs only.',
+      'Each item applies automatically in the repositories it is limited to. Untick it to switch it off. Claude and Codex runs only.',
       'Agents run without sudo, so system tools such as chromium or ffmpeg must be added as runtime packages. ProPR rebuilds every agent image and keeps the previous images until the build succeeds.',
       'Runtime packages use Debian apt names. Repository-specific npm or pip dependencies belong in .propr/setup.sh.',
     ],
@@ -105,7 +106,7 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
     notes: [
       'Database exports and repository cache cleanup recheck your administrator authority on every request. A cleanup confirmation expires after five minutes.',
       'Cache cleanup only removes eligible repository caches, which are refetched on next use. Worktrees are always protected.',
-      'A follow-up held for an operator blocks every later command on its pull request. Release frees the branch without deleting files or commits; Resume re-arms recovery.',
+      'Held follow-ups that settle on their own, for example when the pull request closes, move to Show released.',
     ],
     links: [
       { label: 'Instance data', href: `${DOCS}/architecture/instance-storage-v1#native-instance-data-management-3013` },

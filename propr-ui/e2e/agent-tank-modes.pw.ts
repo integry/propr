@@ -73,10 +73,10 @@ async function capture(page: Page, name: string): Promise<void> {
   if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
   const directory = path.resolve('../.propr/previews');
   await mkdir(directory, { recursive: true });
-  const section = page.getByRole('region', { name: 'LLM Usage Tracking' });
+  const section = page.getByRole('region', { name: 'LLM usage tracking' });
   await section.scrollIntoViewIfNeeded();
   const box = await section.boundingBox();
-  if (!box) throw new Error('LLM Usage Tracking section is not visible');
+  if (!box) throw new Error('LLM usage tracking section is not visible');
   await page.screenshot({
     animations: 'disabled',
     path: path.join(directory, `${name}.png`),
@@ -109,7 +109,7 @@ test('offers three modes and shows the daemon URL only for external', async ({ p
   await page.getByRole('radio', { name: /Bundled/ }).check();
   await expect.poll(() => saved.at(-1)?.mode).toBe('bundled');
   await expect(page.getByLabel('Daemon URL')).toHaveCount(0);
-  const section = page.getByRole('region', { name: 'LLM Usage Tracking' });
+  const section = page.getByRole('region', { name: 'LLM usage tracking' });
   await expect(section.getByRole('status')).toContainText('Bundled Agent Tank ready');
   await capture(page, 'agent-tank-bundled');
 
@@ -173,7 +173,7 @@ test('bundled mode with nothing to monitor is not announced as ready', async ({ 
   );
   await page.goto('/settings?tab=integrations');
 
-  const status = page.getByRole('region', { name: 'LLM Usage Tracking' }).getByRole('status');
+  const status = page.getByRole('region', { name: 'LLM usage tracking' }).getByRole('status');
   await expect(status).toContainText('Bundled Agent Tank unavailable');
   await expect(status).not.toContainText('ready');
   await capture(page, 'agent-tank-bundled-nothing-to-monitor');
@@ -191,7 +191,7 @@ test('bundled mode whose every provider failed is not announced as ready', async
   );
   await page.goto('/settings?tab=integrations');
 
-  const status = page.getByRole('region', { name: 'LLM Usage Tracking' }).getByRole('status');
+  const status = page.getByRole('region', { name: 'LLM usage tracking' }).getByRole('status');
   await expect(status).toContainText('Bundled Agent Tank unavailable');
   await expect(status).not.toContainText('ready');
   await capture(page, 'agent-tank-bundled-all-providers-failed');
@@ -226,7 +226,7 @@ test('bundled availability is reported only once bundled is the stored mode', as
     return route.fulfill({ json: { mode: storedMode, enabled: storedMode !== 'disabled', url: '' } });
   });
   await page.goto('/settings?tab=integrations');
-  const section = page.getByRole('region', { name: 'LLM Usage Tracking' });
+  const section = page.getByRole('region', { name: 'LLM usage tracking' });
   await expect(page.getByRole('radio', { name: /Disabled/ })).toBeChecked();
 
   holdCompatibilityGet = true;
@@ -260,7 +260,7 @@ for (const mode of ['disabled', 'bundled'] as const) {
 
     await expect.poll(() => saved.at(-1)).toMatchObject({ mode: 'external', enabled: true, url });
     await expect(page.getByLabel('Daemon URL')).toHaveValue(url);
-    await expect(page.getByRole('region', { name: 'LLM Usage Tracking' }).getByRole('status'))
+    await expect(page.getByRole('region', { name: 'LLM usage tracking' }).getByRole('status'))
       .toContainText('Agent Tank connected');
     await capture(page, `agent-tank-url-restored-after-${mode}`);
   });

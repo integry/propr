@@ -54,9 +54,9 @@ export interface FollowupHandoffStatus {
 export interface FollowupHandoffRouteDeps {
   recoverInterruptedFollowupHandoffs(deps?: object, key?: FollowupHandoffKey): Promise<FollowupHandoffRecoverySummary>;
   inspectFollowupHandoffs(deps?: object, key?: FollowupHandoffKey): Promise<FollowupHandoffStatus[]>;
-  authorizeCancelledFollowupHandoff(key: FollowupHandoffKey, deps?: object): Promise<FollowupHandoffRecordFields | null>;
+  authorizeCancelledFollowupHandoff(key: FollowupHandoffKey, deps?: object, options?: { expectedTaskId?: string }): Promise<FollowupHandoffRecordFields | null>;
   resumeOperatorHeldFollowupHandoff(key: FollowupHandoffKey, deps?: object): Promise<{ resumed: boolean; reason?: string }>;
-  releaseFollowupHandoffRecord(key: FollowupHandoffKey, options: { force?: boolean }, deps?: object): Promise<{ released: boolean; reason?: string }>;
+  releaseFollowupHandoffRecord(key: FollowupHandoffKey, options: { force?: boolean; expectedTaskId?: string }, deps?: object): Promise<{ released: boolean; reason?: string }>;
 }
 
 /**
@@ -74,7 +74,7 @@ export function createDefaultFollowupHandoffDeps(): FollowupHandoffRouteDeps {
   return {
     recoverInterruptedFollowupHandoffs: async (deps, key) => (await loadRecoveryModule()).recoverInterruptedFollowupHandoffs(deps, key),
     inspectFollowupHandoffs: async (deps, key) => (await loadRecoveryModule()).inspectFollowupHandoffs(deps, key),
-    authorizeCancelledFollowupHandoff: async (key, deps) => (await loadRecoveryModule()).authorizeCancelledFollowupHandoff(key, deps),
+    authorizeCancelledFollowupHandoff: async (key, deps, options) => (await loadRecoveryModule()).authorizeCancelledFollowupHandoff(key, deps, options),
     resumeOperatorHeldFollowupHandoff: async (key, deps) => (await loadRecoveryModule()).resumeOperatorHeldFollowupHandoff(key, deps),
     releaseFollowupHandoffRecord: async (key, options, deps) => (await loadRecoveryModule()).releaseFollowupHandoffRecord(key, options, deps),
   };
@@ -148,6 +148,18 @@ export function createFollowupHandoffRoutes(deps: FollowupHandoffRouteDeps) {
     return value === true;
   };
 
+  /** Optional attempt identity: the task id of the handoff the caller decided about. */
+  const attempt = (req: Request, res: Response): string | null | undefined => {
+    const body: Record<string, unknown> = req.body && typeof req.body === 'object' ? req.body : {};
+    const value = body.taskId;
+    if (value === undefined) return null;
+    if (typeof value !== 'string' || value.length === 0 || value.length > 200) {
+      res.status(400).json({ error: 'taskId must be a non-empty string' });
+      return undefined;
+    }
+    return value;
+  };
+
   const inspectOne = async (key: FollowupHandoffKey) => {
     const [status] = await deps.inspectFollowupHandoffs({}, key);
     return status ? toStatusPayload(status) : null;
@@ -172,9 +184,20 @@ export function createFollowupHandoffRoutes(deps: FollowupHandoffRouteDeps) {
       if (!key) return;
       const authorizeCancelled = flag(req, res, 'authorizeCancelled');
       if (authorizeCancelled === undefined) return;
+      const expectedTaskId = attempt(req, res);
+      if (expectedTaskId === undefined) return;
       if (authorizeCancelled) {
-        const record = await deps.authorizeCancelledFollowupHandoff(key);
+        // With a taskId the consent covers only that attempt; the operator re-checks it under the PR lease.
+        const record = await deps.authorizeCancelledFollowupHandoff(key, {}, expectedTaskId === null ? {} : { expectedTaskId });
         if (!record) {
+          // Only picks the refusal wording; the authority check above already refused.
+          if (expectedTaskId !== null) {
+            const current = await inspectOne(key);
+            if (current && current.taskId !== expectedTaskId) {
+              res.status(409).json({ error: 'The pull request now has a different follow-up attempt; cancellation authorization was not granted', code: 'superseded' });
+              return;
+            }
+          }
           res.status(409).json({ error: 'The handoff is missing, not operator-held, changed, or its pull request lease is held by another writer; cancellation authorization was not granted', code: 'cancellation_authorization_unavailable' });
           return;
         }
@@ -199,7 +222,10 @@ export function createFollowupHandoffRoutes(deps: FollowupHandoffRouteDeps) {
       if (!key) return;
       const force = flag(req, res, 'force');
       if (force === undefined) return;
-      const result = await deps.releaseFollowupHandoffRecord(key, { force });
+      const expectedTaskId = attempt(req, res);
+      if (expectedTaskId === undefined) return;
+      // With a taskId the release (and its force) covers only that attempt; the operator re-checks it under the PR lease.
+      const result = await deps.releaseFollowupHandoffRecord(key, expectedTaskId === null ? { force } : { force, expectedTaskId });
       if (result.released) { res.json({ released: true }); return; }
       if (result.reason === 'not_found') { res.status(404).json({ error: 'Follow-up handoff not found', code: 'not_found' }); return; }
       res.status(409).json({ released: false, reason: result.reason });

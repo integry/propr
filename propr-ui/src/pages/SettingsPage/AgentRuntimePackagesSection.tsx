@@ -306,7 +306,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
 
   return (
     <SettingsSection
-      title="Agent Runtime Packages"
+      title="Agent runtime packages"
       description={<AgentRuntimePackagesDescription />}
       status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
     >

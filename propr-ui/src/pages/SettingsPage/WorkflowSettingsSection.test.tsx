@@ -26,9 +26,9 @@ const ULTRAFIX_SETTINGS = {
 it('shows the follow-up assignment toggle with copy covering unassigned tasks', () => {
   const onSettingChange = vi.fn(); const onBlur = vi.fn();
   render(<WorkflowSettingsSection settings={SETTINGS} onSettingChange={onSettingChange} onBlur={onBlur} />);
-  const toggle = screen.getByLabelText('Follow-ups Only From Assigned Users');
+  const toggle = screen.getByLabelText('Follow-ups only from assigned users');
   expect(toggle).not.toBeChecked();
-  expect(screen.getByText(/Has no effect on a task nobody is assigned to/)).toBeInTheDocument();
+  expect(screen.getByText('Only the people assigned to a task can start follow-ups by commenting. Unassigned tasks are not affected.')).toBeInTheDocument();
   fireEvent.click(toggle); fireEvent.blur(toggle);
   expect(onSettingChange).toHaveBeenCalledOnce();
   expect(onSettingChange.mock.calls[0][0].target.name).toBe('followup_requires_assignment');
@@ -45,18 +45,18 @@ it('groups follow-up and merge defaults apart from processing limits', () => {
   render(<WorkflowSettingsSection settings={SETTINGS} onSettingChange={vi.fn()} />);
   const processing = screen.getByRole('region', { name: 'Processing' });
   const defaults = screen.getByRole('region', { name: 'Repository defaults' });
-  expect(processing).toContainElement(screen.getByLabelText('Worker Concurrency'));
-  expect(processing).toContainElement(screen.getByLabelText('Default Spend Cap per Run (USD)'));
-  expect(defaults).toContainElement(screen.getByLabelText('Auto-Resolve Merge Conflicts (default for repositories)'));
-  expect(defaults).toContainElement(screen.getByLabelText('Follow-ups Only From Assigned Users'));
-  expect(screen.queryByLabelText(/Max Cycles/)).toBeNull();
+  expect(processing).toContainElement(screen.getByLabelText('Worker concurrency'));
+  expect(processing).toContainElement(screen.getByLabelText('Default spend cap per run (USD)'));
+  expect(defaults).toContainElement(screen.getByLabelText('Auto-resolve merge conflicts (default for repositories)'));
+  expect(defaults).toContainElement(screen.getByLabelText('Follow-ups only from assigned users'));
+  expect(screen.queryByLabelText(/Max cycles/)).toBeNull();
 });
 
 it('names the ultrafix goal a target review score out of 10', () => {
   render(<UltrafixSettingsSection settings={ULTRAFIX_SETTINGS} onSettingChange={vi.fn()} modelAgents={[]} onEscalationModelsChange={vi.fn()} />);
-  const target = screen.getByLabelText('Target Review Score');
+  const target = screen.getByLabelText('Target review score');
   expect(target).toHaveValue('7');
-  expect(screen.getByRole('option', { name: '7/10 (Default)' })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: '7/10 (default)' })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: '10/10' })).toBeInTheDocument();
   expect(screen.queryByText('Rating Goal')).toBeNull();
 });

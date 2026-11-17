@@ -25,7 +25,7 @@ describe('AIModelSelectionSection', () => {
     activateStoredHostedTunnelFlow('app.propr.dev', '', memoryStorage(), 'empty-context');
   });
 
-  it('shows the GitHub override label for every reasoning level', () => {
+  it('lists every reasoning level by its plain name', () => {
     render(
       <AIModelSelectionSection
         settings={{
@@ -55,24 +55,24 @@ describe('AIModelSelectionSection', () => {
       />
     );
 
-    expect(screen.getByText('Fast Analysis Model')).toBeInTheDocument();
+    expect(screen.getByText('Fast analysis model')).toBeInTheDocument();
     expect(screen.getByText('Used by /review to gather repository context before the review.')).toBeInTheDocument();
     expect(screen.queryByText('Post-Implementation Analysis Model')).not.toBeInTheDocument();
 
-    const options = within(screen.getByLabelText('Reasoning Level'))
+    const options = within(screen.getByLabelText('Reasoning level'))
       .getAllByRole('option')
       .map(option => option.textContent);
 
     expect(options).toEqual([
       'Agent default',
-      'Low — GitHub: level-low',
-      'Medium — GitHub: level-medium',
-      'High — GitHub: level-high',
-      'XHigh — GitHub: level-xhigh',
-      'Max — GitHub: level-max',
-      'Ultra (Codex only) — GitHub: level-ultra',
-      'Ultracode (Claude only) — GitHub: level-ultracode',
-      'Auto (Claude only) — GitHub: level-auto'
+      'Low',
+      'Medium',
+      'High',
+      'XHigh',
+      'Max',
+      'Ultra (Codex only)',
+      'Ultracode (Claude only)',
+      'Auto (Claude only)'
     ]);
   });
 
@@ -156,15 +156,45 @@ describe('AIModelSelectionSection', () => {
       />
     );
 
-    for (const label of ['Plan Context Analysis Model', 'Plan Generation Model', 'Default PR Review Model', 'Context Scout Model']) {
+    for (const label of ['Plan context analysis model', 'Plan generation model', 'Default PR review model', 'Context scout model']) {
       expect(within(screen.getByLabelText(label)).getByRole('option', { name: 'balanced - Virtual Code' }))
         .toHaveValue('balanced:virtual-code');
     }
 
-    fireEvent.change(screen.getByLabelText('Plan Generation Model'), {
+    fireEvent.change(screen.getByLabelText('Plan generation model'), {
       target: { value: 'balanced:virtual-code' },
     });
     expect(submittedSettings).toEqual([{ name: 'planner_generation_model', value: 'balanced:virtual-code' }]);
+  });
+
+  it.each([
+    ['a disabled agent', 'gemini-old:virtual-flash', 'gemini-old - Virtual Flash'],
+    ['an agent that is no longer configured', 'removed:virtual-pro', 'removed - Virtual Pro'],
+  ])('names a saved summarization fallback from %s by its display name, not its raw id', (_case, fallback, label) => {
+    render(
+      <AIModelSelectionSection
+        settings={{
+          analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
+          default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
+          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0, pr_review_context_budget_percent: 100
+        }}
+        summarizationSettings={{ enabled: true, agent_alias: 'balanced:virtual-code', fallback_agent_alias: fallback }}
+        agents={[]}
+        catalogAgents={[
+          { id: 'pool-balanced', kind: 'synthetic', alias: 'balanced', enabled: true, supportedModels: ['virtual-code'] },
+          { id: 'pool-old', kind: 'synthetic', alias: 'gemini-old', enabled: false, supportedModels: ['virtual-flash'] },
+        ]}
+        onSettingChange={vi.fn()} onReviewPromptChange={vi.fn()} onReviewPromptBlur={vi.fn()}
+        onReviewContextEnabledChange={vi.fn()} onReviewContextBudgetPercentChange={vi.fn()}
+        onReviewContextBudgetPercentCommit={vi.fn()} onRemoveLegacyReviewCap={vi.fn()}
+        onSummarizationModelChange={vi.fn()} onSummarizationFallbackModelChange={vi.fn()}
+        onDefaultAgentChange={vi.fn()}
+      />
+    );
+
+    const select = screen.getByLabelText('Summarization fallback model');
+    expect(select).toHaveDisplayValue(label);
+    expect(within(select).queryByRole('option', { name: new RegExp(fallback) })).not.toBeInTheDocument();
   });
 
   it('does not put a raw attacker flow on the Coding agents link when no active flow exists', () => {

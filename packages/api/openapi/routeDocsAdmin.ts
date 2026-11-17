@@ -47,9 +47,9 @@ export const ADMIN_ROUTE_DOCS: Record<string, RouteDoc> = {
     requestBody: { schema: FollowupHandoffResumeRequest, description: 'Optional flags; `{}` resumes a non-cancelled operator hold.' },
     responses: {
       200: { description: 'The keyed pass ran; `summary` counts its outcome and `status` is the state afterwards.', schema: FollowupHandoffResumeResult },
-      400: { description: 'Invalid target or non-boolean flag.' },
+      400: { description: 'Invalid target, non-boolean flag or invalid `taskId`.' },
       404: { description: 'No handoff is recorded for the pull request (code `not_found`).' },
-      409: { description: 'The handoff cannot be resumed. `code` names why: `requires_cancellation_authorization`, `cancellation_authorization_unavailable` (also returned while another writer holds the PR lease), `lease_held_by_live_writer`, `released` or `superseded`.' },
+      409: { description: 'The handoff cannot be resumed. `code` names why: `requires_cancellation_authorization`, `cancellation_authorization_unavailable` (also returned while another writer holds the PR lease), `lease_held_by_live_writer`, `released` or `superseded` (also returned when `taskId` no longer names the current attempt).' },
       429: OPERATOR_RATE_LIMITED,
     },
   },
@@ -62,9 +62,9 @@ export const ADMIN_ROUTE_DOCS: Record<string, RouteDoc> = {
     requestBody: { schema: FollowupHandoffReleaseRequest, description: 'Optional flags; `{}` performs a safe release.' },
     responses: {
       200: { description: 'The branch is free and the record retired.', schema: FollowupHandoffReleaseResult },
-      400: { description: 'Invalid target or non-boolean flag.' },
+      400: { description: 'Invalid target, non-boolean flag or invalid `taskId`.' },
       404: { description: 'No handoff is recorded for the pull request (code `not_found`).' },
-      409: { description: 'Refused; `reason` names why: `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered`, `worktree_registrations_unavailable`, `cancelled_claims_withdrawal_failed` or `superseded` (the handoff changed concurrently, for example an operator re-armed it).', schema: FollowupHandoffReleaseResult },
+      409: { description: 'Refused; `reason` names why: `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered`, `worktree_registrations_unavailable`, `cancelled_claims_withdrawal_failed` or `superseded` (the handoff changed concurrently, for example an operator re-armed it, or `taskId` no longer names the current attempt).', schema: FollowupHandoffReleaseResult },
       429: OPERATOR_RATE_LIMITED,
     },
   },

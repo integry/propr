@@ -22,8 +22,8 @@ export default function AgentHealthFeedback({ agent, health, onLogin, onRecheck,
   );
   if (health.status !== 'error') return null;
   const rateLimited = health.errorCode === 'rate_limit';
-  const title = health.errorCode === 'preparation_failed' ? 'Agent image preparation failed' : rateLimited ? 'Rate Limit Exceeded'
-    : health.errorCode === 'auth_required' ? 'Authentication Expired'
+  const title = health.errorCode === 'preparation_failed' ? 'Agent image preparation failed' : rateLimited ? 'Rate limit exceeded'
+    : health.errorCode === 'auth_required' ? 'Authentication expired'
       : 'Agent unavailable';
   return (
     <>

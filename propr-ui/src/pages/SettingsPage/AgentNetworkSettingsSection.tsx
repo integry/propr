@@ -52,7 +52,7 @@ function AllowedHostsFields({ savedAllow, defaultAllow, onCommit }: AllowedHosts
       <SettingsField
         label="Allowed hosts list"
         htmlFor="agent_network_allow_source"
-        helperText="The environment default is AGENT_NETWORK_ALLOW. A custom list replaces it; an empty custom list adds no hosts."
+        helperText="A custom list replaces the default."
       >
         <select
           id="agent_network_allow_source"
@@ -110,7 +110,7 @@ export function AgentNetworkSettingsSection({ values, defaults, onCommit }: Agen
   return (
     <SettingsSection
       title="Agent network"
-      description="Restricted mode starts agent containers without a network interface; their only route out is a per-run proxy on the worker that allows the agent's provider API, GitHub and package registries, plus the hosts below and each repository's network.allow. Denied hosts are listed on the task timeline."
+      description="Restricted mode limits agents to GitHub, package registries and the hosts listed below."
     >
       <SettingsField
         label="Network mode"

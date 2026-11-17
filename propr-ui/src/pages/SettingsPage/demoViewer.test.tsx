@@ -84,8 +84,8 @@ describe('demo viewer navigation', () => {
 
     const categories = within(screen.getByRole('tablist', { name: 'Settings categories' })).getAllByRole('tab');
     expect(categories.map(tab => tab.textContent)).toEqual(expect.arrayContaining([
-      expect.stringContaining('AI Models & Reasoning'),
-      expect.stringContaining('Workflow & PR Rules'),
+      expect.stringContaining('AI models & reasoning'),
+      expect.stringContaining('Workflow & PR rules'),
       expect.stringContaining('Integrations & MCP'),
       expect.stringContaining('Notifications'),
       expect.stringContaining('Experimental'),

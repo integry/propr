@@ -1,7 +1,9 @@
 import { useEffect, useId, useState } from 'react';
 import { type ExtensionLibraryPackageServer, type ExtensionPackageResolution, type ExtensionSecretAcknowledgement, type ExtensionSecretStatus } from '@propr/shared';
 import { resolveExtensionPackage } from '../../../api/extensionProfilesApi';
-import { buttonClass, inputClass } from './extensionUi';
+import { buttonClass, fieldErrorClass, hintClass, inputClass, labelClass } from './extensionUi';
+import { usePendingEntry } from './pendingEntries';
+import type { ServerField } from './extensionValidation';
 import { acknowledgementCovers, isExactVersion } from './packageServerUi';
 
 type Patch = (patch: Partial<ExtensionLibraryPackageServer>) => void;
@@ -14,7 +16,7 @@ const parseEnv = (text: string) => lines(text).map(line => {
   return index < 0 ? { name: line.trim(), value: '' } : { name: line.slice(0, index).trim(), value: line.slice(index + 1) };
 });
 
-/** "Check": the registry's integrity value and the executable that will run. Nothing is installed or run. */
+/** "Check package": the registry's integrity value and the executable that will run. Nothing is installed or run. */
 function PackageCheck({ server }: { server: ExtensionLibraryPackageServer }) {
   const identity = `${server.ecosystem}\n${server.package}\n${server.version}\n${server.bin ?? ''}`;
   const [checked, setChecked] = useState<{ identity: string; result?: ExtensionPackageResolution; error?: string; busy?: boolean }>();
@@ -29,9 +31,9 @@ function PackageCheck({ server }: { server: ExtensionLibraryPackageServer }) {
   return (
     <div className="space-y-2 text-sm">
       <button type="button" className={buttonClass} disabled={!server.package || !isExactVersion(server.version) || shown?.busy} onClick={check}>
-        {shown?.busy ? 'Checking…' : 'Check'}
+        {shown?.busy ? 'Checking…' : 'Check package'}
       </button>
-      <p className="text-xs text-slate-500">Looks the exact version up in the npm registry. Nothing is downloaded or run.</p>
+      <p className={hintClass}>Looks the version up in the npm registry. Nothing is downloaded or run.</p>
       {shown?.result && (
         <dl role="status" data-testid="extension-package-check" className="grid gap-x-3 gap-y-1 break-all rounded-md bg-teal-50 p-2 text-xs text-teal-900 sm:grid-cols-[auto_1fr]">
           <dt className="font-semibold">Version</dt><dd>{shown.result.package}@{shown.result.version}</dd>
@@ -49,6 +51,7 @@ function SecretVariables({ server, status, dropped, values, onValues, onChange }
   server: ExtensionLibraryPackageServer; status?: ExtensionSecretStatus; dropped: boolean; values: Record<string, string>; onValues: (values: Record<string, string>) => void; onChange: Patch;
 }) {
   const [adding, setAdding] = useState('');
+  usePendingEntry(adding);
   const saved = new Set(status && 'configuredEnv' in status ? status.configuredEnv ?? [] : []);
   const configured = dropped ? new Set<string>() : saved;
   const add = () => {
@@ -61,13 +64,13 @@ function SecretVariables({ server, status, dropped, values, onValues, onChange }
       <legend className="font-medium">Secret variables</legend>
       {server.secretEnv.map(name => (
         <div key={name} className="flex flex-wrap items-end gap-2">
-          <label className="min-w-0 flex-1">
-            {name} <span className="text-xs text-slate-500">({configured.has(name) ? 'configured' : 'not configured'}; write-only)</span>
+          <label className={`${labelClass} min-w-0 flex-1`}>
+            {name} <span className="text-[12px] text-slate-500">({configured.has(name) ? 'saved' : 'not set'})</span>
             <input type="password" autoComplete="new-password" className={inputClass} value={values[name] ?? ''}
-              placeholder={configured.has(name) ? 'Leave blank to keep the configured value' : 'Enter the value'}
+              placeholder={configured.has(name) ? 'Leave blank to keep the saved value' : 'Enter the value'}
               onChange={event => onValues({ ...values, [name]: event.target.value })} />
             {dropped && saved.has(name) && !values[name] && (
-              <span className="mt-1 block text-xs text-amber-800">Changing the server name or package clears the stored value. Enter it again.</span>
+              <span className="mt-1 block text-[12px] text-amber-800">Changing the server name or package clears the stored value. Enter it again.</span>
             )}
           </label>
           <button type="button" className={buttonClass} aria-label={`Remove secret variable ${name}`} onClick={() => {
@@ -77,7 +80,7 @@ function SecretVariables({ server, status, dropped, values, onValues, onChange }
         </div>
       ))}
       <div className="flex flex-wrap items-end gap-2">
-        <label className="min-w-0 flex-1">
+        <label className={`${labelClass} min-w-0 flex-1`}>
           New secret variable name
           <input className={inputClass} value={adding} placeholder="API_TOKEN" onChange={event => setAdding(event.target.value.toUpperCase())}
             onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); add(); } }} />
@@ -93,7 +96,7 @@ function SecretVariables({ server, status, dropped, values, onValues, onChange }
  * package server, the "Check" registry lookup, and the secret variables with
  * the container trust-boundary warning and its acknowledgement.
  */
-export function PackageServerFields({ server, status, secretsDropped = false, acknowledgement, secretValues, onSecretValues, acknowledged, onAcknowledged, onChange }: {
+export function PackageServerFields({ server, status, secretsDropped = false, acknowledgement, secretValues, onSecretValues, acknowledged, onAcknowledged, problems = {}, onBlur, onChange }: {
   server: ExtensionLibraryPackageServer;
   status?: ExtensionSecretStatus;
   /** The name or package changed from the saved server, so its stored secret values will not carry over. */
@@ -104,55 +107,63 @@ export function PackageServerFields({ server, status, secretsDropped = false, ac
   onSecretValues: (values: Record<string, string>) => void;
   acknowledged: boolean;
   onAcknowledged: (acknowledged: boolean) => void;
+  /** Problems of fields the user has left, shown under them. */
+  problems?: { package?: string; version?: string };
+  onBlur?: (field: ServerField) => void;
   onChange: Patch;
 }) {
   const warningId = useId();
+  const packageId = useId();
+  const packageErrorId = useId();
+  const versionId = useId();
+  const versionHintId = useId();
   const [argsText, setArgsText] = useState(() => server.args.join('\n'));
   const [env, setEnv] = useState(() => envText(server.env));
-  const versionInvalid = server.version !== '' && !isExactVersion(server.version);
+  const versionProblem = problems.version ?? (server.version !== '' && !isExactVersion(server.version)
+    ? 'Enter an exact version such as 1.2.3. Ranges and tags (latest, ^1.2) are not accepted.' : undefined);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-sm">
-          Package registry
-          <select className={inputClass} value={server.ecosystem} onChange={() => onChange({ ecosystem: 'npm' })}>
-            <option value="npm">npm</option>
-          </select>
-          <span className="mt-1 block text-xs text-slate-500">Public npm registry only. PyPI packages are not supported yet.</span>
-        </label>
-        <label className="text-sm">
-          Package
-          <input className={inputClass} value={server.package} placeholder="@scope/mcp-server" autoCapitalize="none" spellCheck={false}
-            onChange={event => onChange({ package: event.target.value.trim() })} />
-        </label>
-        <label className="text-sm">
-          Exact version
-          <input className={inputClass} value={server.version} placeholder="1.2.3" aria-invalid={versionInvalid} spellCheck={false}
-            onChange={event => onChange({ version: event.target.value.trim() })} />
-          <span className={`mt-1 block text-xs ${versionInvalid ? 'text-red-700' : 'text-slate-500'}`}>
-            {versionInvalid ? 'Enter an exact version such as 1.2.3. Ranges and tags (latest, ^1.2) are not accepted.' : 'Changing the version later is an explicit edit and a new library revision.'}
-          </span>
-        </label>
-        <label className="text-sm">
+        {/* npm is the only registry, so it is shown as text until a second one exists. */}
+        <div className={labelClass}>
+          <span>Package registry</span>
+          <p data-testid="extension-package-registry" className="mt-1 py-1.5 font-medium">npm</p>
+          <span className={hintClass}>Public npm registry only.</span>
+        </div>
+        <div>
+          <label htmlFor={packageId} className={labelClass}>Package</label>
+          <input id={packageId} className={inputClass} value={server.package} placeholder="@scope/mcp-server" autoCapitalize="none" spellCheck={false}
+            aria-invalid={Boolean(problems.package)} aria-describedby={problems.package ? packageErrorId : undefined}
+            onChange={event => onChange({ package: event.target.value.trim() })} onBlur={() => onBlur?.('package')} />
+          {problems.package && <span id={packageErrorId} role="alert" className={fieldErrorClass}>{problems.package}</span>}
+        </div>
+        <div>
+          <label htmlFor={versionId} className={labelClass}>Exact version</label>
+          <input id={versionId} className={inputClass} value={server.version} placeholder="1.2.3" aria-invalid={Boolean(versionProblem)} spellCheck={false}
+            aria-describedby={versionProblem ? versionHintId : undefined}
+            onChange={event => onChange({ version: event.target.value.trim() })} onBlur={() => onBlur?.('version')} />
+          {versionProblem && <span id={versionHintId} className={fieldErrorClass}>{versionProblem}</span>}
+        </div>
+        <label className={labelClass}>
           Executable (optional)
           <input className={inputClass} value={server.bin ?? ''} placeholder="Only when the package has several" spellCheck={false}
             onChange={event => onChange({ bin: event.target.value.trim() || undefined })} />
         </label>
       </div>
       <PackageCheck server={server} />
-      {server.integrity && <p className="break-all text-xs text-slate-600">Pinned integrity: {server.integrity}</p>}
+      {server.integrity && <p className="break-all text-[12px] text-slate-600">Pinned integrity: {server.integrity}</p>}
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-sm">
+        <label className={labelClass}>
           Arguments
           <textarea className={`${inputClass} font-mono`} rows={3} value={argsText} spellCheck={false} placeholder={'--read-only\n--port=0'}
             onChange={event => { setArgsText(event.target.value); onChange({ args: lines(event.target.value) }); }} />
-          <span className="mt-1 block text-xs text-slate-500">One argument per line, passed as is. No shell.</span>
+          <span className={hintClass}>One argument per line, passed as is. No shell.</span>
         </label>
-        <label className="text-sm">
+        <label className={labelClass}>
           Variables
           <textarea className={`${inputClass} font-mono`} rows={3} value={env} spellCheck={false} placeholder="LOG_LEVEL=info"
             onChange={event => { setEnv(event.target.value); onChange({ env: parseEnv(event.target.value) }); }} />
-          <span className="mt-1 block text-xs text-slate-500">One NAME=value per line. Plain values, saved with the server and shown here.</span>
+          <span className={hintClass}>One NAME=value per line. Plain values, saved with the server and shown here.</span>
         </label>
       </div>
       <SecretVariables server={server} status={status} dropped={secretsDropped} values={secretValues} onValues={onSecretValues} onChange={onChange} />

@@ -106,7 +106,7 @@ describe('experimental voice briefing preference', () => {
   it('persists explicit opt-in and opt-out across remounts without starting voice on enable', () => {
     const view = render(<><VoiceSettingsSection /><VoiceBriefingControl /></>, { wrapper: Wrapper });
     const toggle = screen.getByRole('checkbox');
-    expect(toggle).toHaveAccessibleDescription(/Off by default/);
+    expect(toggle).toHaveAccessibleDescription(/Spoken summaries on request/);
     fireEvent.click(toggle);
     expect(toggle).toBeChecked();
     expect(localStorage.getItem(key)).toBe('true');
