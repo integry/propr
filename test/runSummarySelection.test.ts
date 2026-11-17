@@ -10,9 +10,14 @@ import {
   selectRunSummary,
 } from '../packages/core/src/agents/runSummarySelection.ts';
 import { buildCommitMessage } from '../src/jobs/prCommentJobUtils.ts';
+import { agentResultToClaudeResponse } from '../src/jobs/issueJob/agent.ts';
+import { redisClient } from '../src/jobs/issueJob/config.ts';
 import { buildCompletionComment } from '../src/jobs/prCompletionComment.ts';
 
-after(async () => closeConnection());
+after(async () => {
+  redisClient.disconnect();
+  await closeConnection();
+});
 
 const SUMMARY = 'Fixed the retry loop in the worker and added a regression test.';
 const LATE = 'The monitor timed out after the batch had already finished, so my summary above still holds.';
@@ -53,6 +58,14 @@ test('a valid index selects that message unchanged as summary and commit source'
   assert.equal(call.executionType, 'summary-selection');
   assert.equal(call.metadata.label, 'Run summary selection');
   assert.ok(call.timeoutMs > 0);
+});
+
+test('a Codex-shaped result with no commit message gets the selected text as the issue commit source', async () => {
+  const codexRun = run({ conversationLog: candidates.map(codexMessage), commitMessage: null });
+  const result = await applyRunSummarySelection(codexRun, context, deps('{"index": 2}').deps);
+  assert.equal(result.summary, SUMMARY);
+  assert.equal(result.commitMessage, SUMMARY);
+  assert.equal(agentResultToClaudeResponse(result).commitMessage, SUMMARY);
 });
 
 test('null gives the fixed sentence and clears the commit message so the title is the subject', async () => {

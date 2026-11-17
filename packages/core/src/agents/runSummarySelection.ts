@@ -187,7 +187,7 @@ export async function applyRunSummarySelection(
     return {
         ...result,
         summary: selection.text,
-        commitMessage: result.commitMessage ? commitMessageFrom(selection.text) : result.commitMessage,
+        commitMessage: commitMessageFrom(selection.text),
         summarySelection: 'selected',
     };
 }
