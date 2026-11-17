@@ -154,6 +154,7 @@ export function buildCiFailureFollowupComment(
     const { evidence } = request;
     const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
     const shortSha = evidence.sha.slice(0, 12);
+    const commitUrl = `https://github.com/${encodeURIComponent(request.owner)}/${encodeURIComponent(request.repo)}/commit/${encodeURIComponent(evidence.sha)}`;
 
     return [
         `CI failed: **${escapeInlineMarkdown(evidence.name)}**`,
@@ -162,8 +163,8 @@ export function buildCiFailureFollowupComment(
         '',
         `- Check: \`${escapeInlineCode(evidence.name)}\``,
         `- Result: \`${escapeInlineCode(evidence.state)}\``,
-        `- Commit: [\`${shortSha}\`](${evidence.url}) (\`${escapeInlineCode(evidence.sha)}\`)`,
-        `- Details: [View CI failure](${evidence.url})`,
+        `- Commit: [\`${shortSha}\`](${commitUrl}) (\`${escapeInlineCode(evidence.sha)}\`)`,
+        `- Run: [View CI failure](${evidence.url})`,
         '',
         '**Failure evidence**',
         ...excerpt.split('\n').map(line => `> ${line || ' '}`),
