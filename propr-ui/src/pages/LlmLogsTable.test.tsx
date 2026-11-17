@@ -5,6 +5,7 @@ import type { LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { LlmLogTable } from './LlmLogsTable';
 import { PaginationFooter } from './LlmLogsPageComponents';
 import { formatTimestamp, formatTokens } from './llmLogsUtils';
+import { formatModelName } from '../utils/modelDisplay';
 
 function log(overrides: Partial<LlmLogEntry> = {}): LlmLogEntry {
   return {
@@ -71,6 +72,26 @@ describe('LlmLogTable', () => {
     // Type, model, usage and duration are table columns from lg and a second line below it.
     expect(within(row).getAllByText('1m 30s')).toHaveLength(2);
     expect(within(row).getAllByTitle('Plan Generation With Refinement')).toHaveLength(2);
+  });
+
+  it('shows the human-readable model name, never the raw ID, in every model tooltip', () => {
+    renderTable([log()]);
+    const row = screen.getByTestId('llm-log-row');
+    const label = formatModelName('claude-opus-4-1-20250805');
+    expect(label).not.toBe('claude-opus-4-1-20250805');
+    // The desktop column, the stacked line below lg and the narrow-desktop line under the work reference.
+    const models = within(row).getAllByText(label).filter(node => node.classList.contains('font-mono'));
+    expect(models).toHaveLength(3);
+    for (const model of models) expect(model).toHaveAttribute('title', label);
+    expect(row.querySelector('[title="claude-opus-4-1-20250805"]')).toBeNull();
+  });
+
+  it('shows a missing model as a dash with no tooltip', () => {
+    renderTable([log({ modelName: null })]);
+    const row = screen.getByTestId('llm-log-row');
+    const dashes = within(row).getAllByText('-').filter(node => node.matches('span.font-mono.truncate'));
+    expect(dashes).toHaveLength(3);
+    for (const dash of dashes) expect(dash).not.toHaveAttribute('title');
   });
 
   it('shows the start as the shared relative age with the full local date and time in the tooltip', () => {

@@ -82,8 +82,8 @@ const WorkReference: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
 };
 
 const ModelName: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
-  const model = log.modelName ? formatModelName(log.modelName) : '-';
-  return <span className="block truncate font-mono" title={log.modelName || undefined}>{model}</span>;
+  const model = log.modelName ? formatModelName(log.modelName) : undefined;
+  return <span className="block truncate font-mono" title={model}>{model ?? '-'}</span>;
 };
 
 const LogTime: React.FC<{ startTime: string | null }> = ({ startTime }) => (
@@ -132,7 +132,7 @@ const LlmLogRow: React.FC<{ log: LlmLogEntry; expanded: boolean; onToggle: (logI
         {/* Below lg the other columns are hidden; their values move here instead. */}
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 lg:hidden">
           <TypeBadge type={log.executionType} />
-          <span className="min-w-0 max-w-full truncate font-mono" title={log.modelName || undefined}>
+          <span className="min-w-0 max-w-full truncate font-mono" title={log.modelName ? formatModelName(log.modelName) : undefined}>
             {log.modelName ? formatModelName(log.modelName) : '-'}
           </span>
           <Usage log={log} />
