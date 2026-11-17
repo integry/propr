@@ -26,8 +26,10 @@ export function useSidebarUsageFit(): SidebarUsageFit {
   const elements = useRef<{ column: HTMLElement | null; nav: HTMLElement | null; bottom: HTMLElement | null; usage: HTMLElement | null }>({
     column: null, nav: null, bottom: null, usage: null,
   });
-  // The full block's height, measured while it showed, so it only returns when it fits.
-  const fullUsageHeight = useRef(0);
+  // The whole bottom block's height (Usage plus the account and footer gaps that
+  // tighten with it), measured while the full layout showed, so the full layout
+  // only returns when all of it fits.
+  const fullBottomHeight = useRef(0);
   const [observed, setObserved] = useState(0);
 
   const evaluate = useCallback(() => {
@@ -36,14 +38,16 @@ export function useSidebarUsageFit(): SidebarUsageFit {
     const overflowing = nav.scrollHeight > nav.clientHeight + SLACK_PX;
     if (!compactRef.current) {
       if (!usage || !overflowing) return;
-      fullUsageHeight.current = usage.offsetHeight;
+      fullBottomHeight.current = bottom.offsetHeight;
       compactRef.current = true;
       setCompact(true);
       return;
     }
     if (overflowing) return;
     const free = column.clientHeight - nav.offsetHeight - bottom.offsetHeight;
-    const growth = fullUsageHeight.current - (usage?.offsetHeight ?? 0);
+    // Every compact-dependent height lives in the bottom block, so comparing it
+    // whole covers the margins as well as Usage; expanding cannot overflow again.
+    const growth = fullBottomHeight.current - bottom.offsetHeight;
     if (free >= growth + SLACK_PX) {
       compactRef.current = false;
       setCompact(false);

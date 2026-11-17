@@ -299,3 +299,35 @@ test('1920x1080 has room for the full Usage panel', async ({ page }) => {
   await expect(page.locator('aside').getByText('Claude', { exact: true })).toBeVisible();
   await expectClickable(page, 'Access');
 });
+
+/** Whether Usage is folded at each of the next `frames` animation frames. */
+const foldedPerFrame = (page: Page, frames: number) => page.evaluate(async count => {
+  const states: boolean[] = [];
+  for (let frame = 0; frame < count; frame += 1) {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    states.push(document.querySelector('[data-testid="usage-line"]') !== null);
+  }
+  return states;
+}, frames);
+
+test('growing the window through the fold threshold settles into one layout at every height', async ({ page }) => {
+  await openAdminDashboard(page, { width: 1280, height: 720 });
+  await expect(page.getByTestId('usage-line')).toBeVisible();
+  // Folding tightens the account and footer gaps too, so expanding must budget
+  // for them; otherwise a band of heights flips between the layouts every frame.
+  let expanded = false;
+  for (let height = 720; height <= 1040; height += 4) {
+    await page.setViewportSize({ width: 1280, height });
+    const states = await foldedPerFrame(page, 12);
+    // A layout that flips on every commit ends in React's update-depth error,
+    // which the page's error boundary shows instead of the sidebar.
+    await expect(page.getByRole('heading', { name: 'Something went wrong on this page' }), `${height}px crashed`).toHaveCount(0);
+    const settled = states.slice(4);
+    expect(new Set(settled).size, `${height}px keeps switching layouts: ${states.join(',')}`).toBe(1);
+    if (!settled[0]) expanded = true;
+    // A taller window never folds Usage again once the full panel fitted.
+    expect(settled[0] && expanded, `${height}px folded Usage again after it fitted`).toBe(false);
+    if (expanded) await expectClickable(page, 'Access');
+  }
+  expect(expanded, 'the full Usage panel returned within the sweep').toBe(true);
+});
