@@ -11,6 +11,7 @@ import {
 import { refineWorkflowPreviews } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
+import { isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
 
 type Prepared = Awaited<ReturnType<typeof prepareVisualPreviewEvidence>>;
 
@@ -52,6 +53,7 @@ await mock.module('@propr/core', {
         describeAgentTermination: () => '',
         resolveAgentTerminationReason: () => undefined,
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',
+        isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
         redactSecrets: (value: string) => value,
         getAuthenticatedOctokit: noOp,
         linkPRToPlanIssue: noOp,

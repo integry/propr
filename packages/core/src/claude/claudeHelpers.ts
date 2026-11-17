@@ -95,6 +95,8 @@ export interface ClaudeOutput {
     sessionId: string | null;
     conversationId?: string;
     finalResult: ClaudeOutputResult | null;
+    /** Conversation-log length at each result line; more than one means the run continued after a result. */
+    resultLogIndexes?: number[];
     model?: string;
     tokenUsage?: TokenUsage;
 }
@@ -378,6 +380,7 @@ function processJsonLine(
 }
 
 function processResultLine(jsonLine: JsonLineMessage, claudeOutput: ClaudeOutput): void {
+    (claudeOutput.resultLogIndexes ??= []).push(claudeOutput.conversationLog.length);
     claudeOutput.finalResult = {
         type: jsonLine.type || 'result',
         subtype: jsonLine.subtype,

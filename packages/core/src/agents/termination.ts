@@ -45,6 +45,7 @@ export function describeAgentTermination(reason: AgentTerminationReason): string
         case 'timeout': return 'The agent reached the execution time limit before it could confirm that all requested work was complete.';
         case 'cost_cap': return 'The run reached its spend cap before the agent could confirm that all requested work was complete.';
         case 'stalled': return 'The agent stopped producing output and the stall watchdog ended the run before it could confirm that all requested work was complete.';
+        case 'unfinished_work': return 'The agent ended its run while it was still waiting for work it had started, before it could confirm that all requested work was complete.';
         case 'degenerate_output': return 'The agent produced only whitespace output and the watchdog ended the run before it could confirm that all requested work was complete.';
         default: return 'The agent reached the maximum turn limit before it could confirm that all requested work was complete.';
     }

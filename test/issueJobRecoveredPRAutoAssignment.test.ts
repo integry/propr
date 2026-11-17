@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, describe, mock, test } from 'node:test';
 import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
+import { isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
 
 /**
  * A pull request published through final validation's recovery paths (found
@@ -39,6 +40,7 @@ await mock.module('@propr/core', {
         describeAgentTermination: mock.fn(() => ''),
         resolveAgentTerminationReason: mock.fn(() => undefined),
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',
+        isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
         getAuthenticatedOctokit: mock.fn(async () => retryOctokit),
         linkPRToPlanIssue,
         safeUpdateLabels,

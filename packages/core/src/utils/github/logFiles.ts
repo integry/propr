@@ -63,7 +63,7 @@ interface ClaudeResult {
     finalResult?: FinalResult;
     summary?: string;
     error?: string;
-    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
+    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash' | 'unfinished_work';
     modifiedFiles?: string[];
     tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
     usageMetrics?: SubscriptionUsageMetrics | null;

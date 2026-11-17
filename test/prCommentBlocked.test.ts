@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
 import { BLOCKER_MARKER, detectBlockerReport } from '../packages/core/src/workflow/blockerReport.js';
 import { isGeneratedRuntimePath } from '../packages/core/src/git/commitOperations.js';
+import { isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
 
 /**
  * Follow-up and `/fix` runs whose agent reports a blocker commit and push
@@ -30,6 +31,7 @@ await mock.module('@propr/core', {
         resolveAgentTerminationReason: () => undefined,
         describeAgentTermination: () => '',
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',
+        isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
         redactSecrets: (value: string) => value,
         redactVisualPreviewPaths: (value: string) => value,
         VISUAL_PREVIEW_DIRECTORY: '.propr/previews',

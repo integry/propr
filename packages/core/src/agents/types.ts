@@ -385,8 +385,10 @@ export interface AgentExecutionResult {
  * `cost_cap` is set when the run reached its spend cap. `stalled` and
  * `degenerate_output` are set when the activity watchdog stopped a live run
  * (no output past its threshold, or a run of whitespace-only deltas).
+ * `unfinished_work` is set when the agent ended its run with a message saying
+ * it was still waiting for work it had started.
  */
-export type AgentTerminationReason = 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
+export type AgentTerminationReason = 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash' | 'unfinished_work';
 
 export interface Agent {
     readonly config: AgentConfig;

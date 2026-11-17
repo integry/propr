@@ -8,11 +8,12 @@ import {
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel, getModelName,
     resolveModelAlias, getPendingPrCommentsKey,
     buildVisualPreviewPrompt, describeAgentTermination, resolveAgentTerminationReason,
-    sanitizeAgentReport, getPushFailure, formatPushFailureMarkdown,
+    sanitizeAgentReport, isRunStatusNote, getPushFailure, formatPushFailureMarkdown,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager, type VisualPreviewSettings,
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
+import { DEFAULT_FOLLOWUP_COMMIT_SUBJECT } from './followupCommitSubject.js';
 import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.js';
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
@@ -126,15 +127,15 @@ export interface CommitMessageOptions {
 
 export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
-    const publishableSummary = sanitizeAgentReport(changesSummary);
+    const reportedSummary = sanitizeAgentReport(changesSummary);
+    // A status note ("Summarizing now.") is never a commit subject.
+    const publishableSummary = isRunStatusNote(reportedSummary) ? '' : reportedSummary;
 
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
     const terminationReason = resolveAgentTerminationReason(claudeResult);
-    const partialExecutionNote = terminationReason
-        ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}`
-        : '';
+    const partialExecutionNote = terminationReason ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}` : '';
     const modelId = claudeResult.model || llm || DEFAULT_MODEL_NAME;
-    return `feat(ai): ${publishableSummary ? publishableSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
+    return `feat(ai): ${publishableSummary ? publishableSummary.split('\n')[0] : DEFAULT_FOLLOWUP_COMMIT_SUBJECT}
 
 ${publishableSummary || `Implemented changes requested by ${authorsText}`}
 

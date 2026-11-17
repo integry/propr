@@ -10,6 +10,7 @@ import { ExecutionResult } from '../../../claude/docker/dockerExecutor.js';
 import { hasKnownNonzeroExit, parseStreamJsonOutput } from '../../../claude/claudeHelpers.js';
 import { getCorrectedTokenUsage, ensurePromptInConversationLog } from './tokenUtils.js';
 import { getClaudeAnalysisText } from './claudeOutputHelpers.js';
+import { selectRunSummary } from './runSummary.js';
 import { describeAgentTermination, resolveAgentTerminationReason } from '../../termination.js';
 
 /**
@@ -100,6 +101,22 @@ function resolveExecutionOutcome(
 }
 
 /**
+ * A run whose last message says it is still waiting for work it started did
+ * not finish, even when Claude Code reported success.
+ */
+function resolveUnfinishedWork(
+    outcome: ReturnType<typeof resolveExecutionOutcome>,
+    reportedSuccess: boolean,
+    unfinishedWork: string | null
+): ReturnType<typeof resolveExecutionOutcome> {
+    if (outcome.terminationReason || !reportedSuccess || !unfinishedWork) return outcome;
+    return {
+        terminationReason: 'unfinished_work',
+        error: `${describeAgentTermination('unfinished_work')} Its last message: "${unfinishedWork}"`
+    };
+}
+
+/**
  * Result of processing a Docker execution result.
  */
 export interface ProcessedDockerResult {
@@ -151,9 +168,18 @@ export function processDockerResult(
         fullConversationLog
     );
 
-    const { terminationReason, error } = resolveExecutionOutcome(claudeOutput, result);
-    const summary = claudeOutput.finalResult?.result
-        ?? (terminationReason ? getClaudeAnalysisText(claudeOutput) || undefined : undefined);
+    const outcome = resolveExecutionOutcome(claudeOutput, result);
+    const reportedSummary = claudeOutput.finalResult?.result
+        ?? (outcome.terminationReason ? getClaudeAnalysisText(claudeOutput) || undefined : undefined);
+    // The last message may only react to a background notification or point
+    // back to an earlier answer; publish the run's real summary instead.
+    const selection = selectRunSummary({
+        resultText: reportedSummary,
+        conversationLog: claudeOutput.conversationLog,
+        resultLogIndexes: claudeOutput.resultLogIndexes
+    });
+    const summary = selection.summary ?? undefined;
+    const { terminationReason, error } = resolveUnfinishedWork(outcome, claudeOutput.success, selection.unfinishedWork);
     // Extract commit message from Claude's summary
     const commitMessage = extractCommitMessage(summary);
 

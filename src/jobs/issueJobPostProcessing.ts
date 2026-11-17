@@ -11,7 +11,7 @@ import {
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
-import { redactSecrets } from '@propr/core';
+import { redactSecrets, isRunStatusNote } from '@propr/core';
 import { agentFailureLine } from '@propr/shared';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
@@ -45,7 +45,10 @@ function buildImplementationCompletionNote(claudeResult: ClaudeCodeResponse): st
         : 'Implementation attempted - see PR comments for details.';
 }
 
-function resolveAgentCommitMessage(candidate: string, fallback: string): string { return sanitizeAgentReport(candidate) || fallback; }
+function resolveAgentCommitMessage(candidate: string, fallback: string): string {
+    const message = sanitizeAgentReport(candidate);
+    return message && !isRunStatusNote(message) ? message : fallback;
+}
 
 function hasPublishableAgentWork(claudeResult: ClaudeCodeResponse | null): boolean {
     if (!claudeResult) return false;

@@ -6,10 +6,11 @@ import {
     isEmptyReviewFeedbackSelection,
 } from '@propr/shared';
 import { buildMetricsSection } from './prCommentJobUtils.js';
+import { DEFAULT_FOLLOWUP_COMMIT_SUBJECT } from './followupCommitSubject.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { describeUncommittedFiles, quoteBlockerExplanation } from './blockedRunText.js';
-import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
+import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths, isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -121,9 +122,11 @@ function textFromConversationMessage(message: ConversationMessage): string | nul
 
 function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): string | null {
     const conversationLog = (claudeResult.conversationLog || []) as ConversationMessage[];
+    // Replies to background notifications and "summary above" pointers are
+    // not summaries, even when they open with "Summary:".
     const assistantTexts = conversationLog
         .map(textFromConversationMessage)
-        .filter((text): text is string => Boolean(text));
+        .filter((text): text is string => Boolean(text) && !isRunStatusNote(text));
 
     for (let index = assistantTexts.length - 1; index >= 0; index--) {
         if (!isSummaryEntry(assistantTexts[index])) continue;
@@ -135,24 +138,33 @@ function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): s
         if (summaryThread) return summaryThread;
     }
 
-    for (const text of [...assistantTexts].reverse()) {
-        if (!isDryCodeSummary(text)) return text;
-    }
-    return null;
+    // Otherwise use the run's own answer, chosen as core chooses it: never a
+    // reply to a notification or narration between tool calls.
+    const selected = selectRunSummary({ conversationLog: conversationLog as Parameters<typeof selectRunSummary>[0]['conversationLog'] }).summary;
+    return selected && !isDryCodeSummary(selected) ? selected : null;
 }
 
-function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: string, changesSummary: string): string {
-    const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
-    const primarySummary = (claudeResult.summary || claudeResult.finalResult?.result || changesSummary || '').trim();
+/** The agent's summary carried in a commit body; empty for the default follow-up commit message. */
+function summaryFromCommitBody(commitMessage: string): string {
+    if (commitMessage.startsWith(`feat(ai): ${DEFAULT_FOLLOWUP_COMMIT_SUBJECT}`)) return '';
+    const body = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
+    return isRunStatusNote(body.replace(/^(PR|Comment by|Model):.*$/gm, '')) ? '' : body;
+}
+
+function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: string, changesSummary: string, partial: boolean): string {
+    const reported = (claudeResult.summary || claudeResult.finalResult?.result || changesSummary || '').trim();
+    const primarySummary = isRunStatusNote(reported) ? '' : reported;
     const conversationSummary = getLatestUsefulConversationSummary(claudeResult);
 
     if (conversationSummary && (isDryCodeSummary(primarySummary) || isSummaryEntry(conversationSummary))) return conversationSummary;
     if (primarySummary && !isDryCodeSummary(primarySummary)) return primarySummary;
 
+    // A completed run without a summary says so; it never falls back to a
+    // status note. A partial run lists its changed files instead.
     return conversationSummary
         || primarySummary
-        || commitBody
-        || changesSummary;
+        || summaryFromCommitBody(commitMessage)
+        || (partial ? '' : NO_AGENT_SUMMARY_TEXT);
 }
 
 /**
@@ -228,7 +240,7 @@ export async function buildCompletionComment(
         }
         prCommentBody += addressedLine;
 
-        const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary);
+        const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary, partial);
         if (contentToShow) {
             prCommentBody += `${partial ? '## Last Agent Update' : '## Summary of Changes'}\n\n${cleanBody(contentToShow)}\n\n`;
         } else if (partial && claudeResult.modifiedFiles.length > 0) {

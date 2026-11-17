@@ -3,6 +3,7 @@ import { beforeEach, mock, test } from 'node:test';
 import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 import { BLOCKER_MARKER, detectBlockerReport } from '../packages/core/src/workflow/blockerReport.js';
 import { isGeneratedRuntimePath } from '../packages/core/src/git/commitOperations.js';
+import { isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT } from '../packages/core/src/agents/impl/utils/runSummary.js';
 
 /**
  * Issue runs whose workflow sets `on_blocker: report` and whose agent ends
@@ -37,6 +38,7 @@ await mock.module('@propr/core', {
         safeUpdateLabels,
         generateCompletionComment: mock.fn(async () => ''),
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',
+        isRunStatusNote, selectRunSummary, NO_AGENT_SUMMARY_TEXT,
         redactSecrets: (value: string) => value,
         validatePRCreation: mock.fn(),
         detectBlockerReport,
