@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PLUGIN_CATEGORIES, PLUGIN_MANIFEST_VERSION, PLUGIN_SHARED_FOLDER, pluginIdSchema } from '../packages/shared/src/plugins.js';
+import { PLUGIN_CATEGORIES, PLUGIN_MANIFEST_VERSION, PLUGIN_SHARED_FOLDER, parsePluginManifest, pluginIdSchema } from '../packages/shared/src/plugins.js';
 import { PLUGINS_ROOT } from './check-plugins.mjs';
 import { AUTHORING_PAGE, DOCS_ROOT, generatePluginDocs, mdxText, writePluginDocs } from './gen-plugin-docs.mjs';
 
@@ -287,11 +287,15 @@ export function scaffoldPlugin({ id, name = titleCase(id), category = 'other', d
   const registry = JSON.parse(readFileSync(registryFile, 'utf8'));
   const problem = newPluginProblem(id, { root, registry });
   if (problem) throw new Error(problem);
+  // The whole manifest is checked as plugins:check will read it, before anything is written: an empty or overlong
+  // --name or --description must not leave a registered plugin that fails the check and blocks a corrected rerun.
+  const manifest = manifestFor({ id, name, category, description });
+  const parsed = parsePluginManifest(manifest);
+  if (!parsed.ok) throw new Error(`The plugin manifest would be invalid; nothing was written:\n${parsed.errors.map(error => `  ${error}`).join('\n')}`);
   const testFile = path.join(tests, `${id}.test.ts`);
   const docsFile = path.join(docs, 'docs/plugins', `${id}.md`);
   for (const file of [testFile, docsFile]) if (existsSync(file)) throw new Error(`${file} already exists`);
 
-  const manifest = manifestFor({ id, name, category, description });
   const directory = path.join(root, id);
   const files = new Map([
     [path.join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`],

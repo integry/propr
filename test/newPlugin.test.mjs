@@ -195,6 +195,34 @@ test('the scaffold refuses ids that are taken, reserved or malformed, and unknow
   assert.deepEqual(JSON.parse(await readFile(join(root, 'registry.json'), 'utf8')).plugins, [{ id: 'example-pack', development: true }]);
 });
 
+test('the scaffold refuses an invalid name or description before writing anything, and a corrected rerun succeeds', async () => {
+  const { root, docs } = await workspace();
+  const tests = join(root, 'test');
+  const registryText = await readFile(join(root, 'registry.json'), 'utf8');
+  const outputs = [join(root, 'acme-chat'), join(tests, 'acme-chat.test.ts'), join(docs, 'docs/plugins/acme-chat.md'), join(docs, CATALOG_PAGE), join(docs, 'plugin-pages.json')];
+  for (const [options, message] of [
+    [{ name: '' }, /name: Too small/],
+    [{ name: '   ' }, /name: Too small/],
+    [{ name: 'x'.repeat(81) }, /name: Too big/],
+    [{ description: '' }, /description: Too small/],
+    [{ description: ' \t ' }, /description: Too small/],
+    [{ description: 'x'.repeat(501) }, /description: Too big/],
+  ]) {
+    assert.throws(() => scaffoldPlugin({ id: 'acme-chat', category: 'messaging', ...options, root, tests, docs }), error => {
+      assert.match(error.message, /manifest would be invalid; nothing was written/);
+      assert.match(error.message, message);
+      return true;
+    }, JSON.stringify(options));
+    assert.equal(await readFile(join(root, 'registry.json'), 'utf8'), registryText, JSON.stringify(options));
+    for (const file of outputs) assert.equal(existsSync(file), false, `${JSON.stringify(options)}: ${file}`);
+    assert.deepEqual(checkPlugins({ root }).errors, []);
+  }
+  // Nothing blocks the corrected run.
+  scaffoldPlugin({ id: 'acme-chat', name: 'Acme Chat', category: 'messaging', description: 'Posts merged pull requests to Acme Chat.', root, tests, docs });
+  assert.deepEqual(checkPlugins({ root }).errors, []);
+  assert.deepEqual(generatePluginDocs({ root, docs }).problems, []);
+});
+
 test('npm run plugins:new prints what it wrote', async () => {
   const { root, docs } = await workspace();
   const { stdout } = await run(join(BIN, 'tsx'), [join(REPOSITORY, 'scripts/new-plugin.mjs'), 'status-board', '--root', root, '--docs', docs, '--category', 'deployment'], { cwd: REPOSITORY, timeout: 60_000 });
