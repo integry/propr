@@ -28,6 +28,10 @@ const BACK_REFERENCE = /\b(?:summary|report|answer|write-?up|recap|results?)\s+(
 const ANNOUNCES_SUMMARY = /\b(?:summari[sz]ing (?:now|the (?:work|changes|results))|(?:i(?:'ll| will)|let me|now i(?:'ll| will)) (?:now )?(?:summari[sz]e|write (?:up )?(?:the|a|my) summary))\b/i;
 const COMPLETION_ONLY = /^(?:(?:the )?(?:verification|validation|work|task|run|everything)\s+(?:is\s+)?(?:now\s+)?(?:complete|completed|done|finished)|all done)[.!]?$/i;
 const ABOUT_NOTIFICATION = /\b(?:notification|notice|monitor|watcher|timed out|timeout|background (?:task|command|job|run|process)|probe|re-?arm)/i;
+/** What a still-waiting note waits on: a pronoun for it, or a named running operation. */
+const RUNNING_WORK_SUBJECT = '(?:it|they|that|this|the (?:[\\w-]+\\s+){0,4}?(?:suites?|tests?|runs?|builds?|jobs?|tasks?|commands?|monitors?|watchers?|batch(?:es)?|process(?:es)?|probes?))';
+/** The operation finishing, as the event the note waits for. */
+const RUNNING_WORK_FINISHES = '(?:\\s+(?:finish(?:es)?|complete[sd]?|returns?|ends?|reports?(?: back)?)|(?:\\s+(?:is|are)|[\'\u2019](?:s|re)) (?:done|finished|complete|over))\\b';
 /**
  * A sentence that asserts the agent's own work has not finished yet. Matched
  * only at the start of a sentence (after an optional "Summary:" style label),
@@ -38,7 +42,12 @@ const UNFINISHED_WORK_SENTENCE = new RegExp([
     '^(?:(?:summary|status|update|progress)\\s*:\\s*)?(?:',
     'still (?:running|in progress|executing)\\b',
     '|(?:(?:i[\'\u2019]m|i am|we[\'\u2019]re|we are) )?(?:(?:still|currently|now) )?(?:keep )?waiting (?:for|on|until)\\b.*\\b(?:notification|completion|complete|finish|finishes|done|suites?|tests?|run|build|job|task|command|monitor|watcher|background|results?)\\b',
-    '|(?:i(?:[\'\u2019]ll| will) |will )(?:keep waiting|report|summari[sz]e|post|follow up|update)\\b.*\\b(?:once|when|after) (?:it|they|the|that|this)\\b',
+    '|(?:i(?:[\'\u2019]ll| will) |will )keep waiting\\b',
+    // A promise to report later counts only when it waits on running work
+    // finishing ("I'll report back once the suites finish"), not on a future
+    // event ("I'll update the changelog after the next release").
+    '|(?:i(?:[\'\u2019]ll| will) |will )(?:report|summari[sz]e|post|follow up|update)\\b.*\\b(?:once|when|after|as soon as) ',
+    RUNNING_WORK_SUBJECT, RUNNING_WORK_FINISHES,
     ')'
 ].join(''), 'i');
 /** Unfinished-work notes are status messages, not reports; a longer text is a report. */
@@ -193,6 +202,9 @@ const STATUS_SENTENCE_MAX_LENGTH = 120;
 
 /** A sentence that only announces, completes or points back to a summary. */
 function isStatusSentence(sentence: string): boolean {
+    // A sentence reporting a change is a report even when it names a summary
+    // ("Fixed the previous summary rendering.").
+    if (COMPLETED_CHANGE.test(sentence)) return false;
     if (COMPLETION_ONLY.test(sentence)) return true;
     if (sentence.length > STATUS_SENTENCE_MAX_LENGTH || /:\s*\S/.test(sentence)) return false;
     return ANNOUNCES_SUMMARY.test(sentence) || BACK_REFERENCE.test(sentence);

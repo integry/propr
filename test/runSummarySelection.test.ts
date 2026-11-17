@@ -312,6 +312,56 @@ describe('run summary selection', () => {
         assert.equal(response.terminationReason, undefined);
     });
 
+    test('a completed change that names a summary is kept as the summary and commit subject', () => {
+        for (const fixed of ['Fixed the previous summary rendering.', 'Updated the earlier summary wording in the README.']) {
+            const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(fixed), result(fixed)]), 'prompt', 'claude-opus-5-5', 1);
+            assert.equal(response.success, true, fixed);
+            assert.equal(response.summary, fixed);
+            assert.equal(response.commitMessage?.split('\n')[0], fixed);
+            assert.equal(isRunStatusNote(fixed), false, fixed);
+            assert.equal(isRunStatusNote(fixed, { afterNotification: true }), false, fixed);
+
+            const claudeResult = agentResultToClaudeResponse({
+                success: true, model: 'claude-opus-5-5', executionTimeMs: 1000, logs: '', exitCode: 0, modelUsed: 'claude-opus-5-5',
+                modifiedFiles: ['a.ts'], commitMessage: response.commitMessage ?? null, summary: response.summary,
+            });
+            const commitMessage = buildCommitMessage({
+                changesSummary: fixed, unprocessedComments: [], pullRequestNumber: 12, claudeResult, llm: 'claude-opus-5-5', authorsText: '@octo',
+            });
+            assert.equal(commitMessage.split('\n')[0], `feat(ai): ${fixed}`);
+        }
+        // A sentence that only points back at a summary is still a status note.
+        assert.equal(isRunStatusNote('The previous summary still holds.'), true);
+    });
+
+    test('a plan for a future event is not unfinished work', () => {
+        const done = 'Fixed the retry bug. I\'ll update the changelog after the next release.';
+        const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(done), result(done)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.terminationReason, undefined);
+        assert.equal(response.summary, done);
+        for (const plan of [
+            'I\'ll update the changelog after the next release.',
+            'I will post the migration notes when the release is done.',
+            'I\'ll report the numbers to the team after the meeting.',
+        ]) assert.equal(reportsUnfinishedWork(plan), false, plan);
+    });
+
+    test('a promise to report once running work finishes is still unfinished work', () => {
+        for (const waiting of [
+            'I\'ll keep waiting for the completion notification.',
+            'I\'ll report back once the suites finish.',
+            'I\'ll summarize the results when the full test suite is done.',
+            'Will follow up after the background build finishes.',
+            'I\'ll post the results when they complete.',
+        ]) assert.equal(reportsUnfinishedWork(waiting), true, waiting);
+
+        const waiting = 'Started the full suite in the background. I\'ll report back once it finishes.';
+        const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(waiting), result(waiting)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, false);
+        assert.equal(response.terminationReason, 'unfinished_work');
+    });
+
     test('the output-limit continuation prompt is not a notification turn', () => {
         const conversationLog = [
             assistantText(SUMMARY.slice(0, 40)),
