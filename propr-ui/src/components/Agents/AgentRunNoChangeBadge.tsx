@@ -10,7 +10,7 @@ interface AgentRunNoChangeBadgeProps {
 
 /**
  * "No change" for a run whose report was empty or the same as last time, or
- * whose acting step changed nothing. The run still completed; the badge only
+ * whose action step changed nothing. The run still completed; the badge only
  * says it produced nothing. Renders nothing for productive or unflagged runs.
  */
 export const AgentRunNoChangeBadge: React.FC<AgentRunNoChangeBadgeProps> = ({ run, className = '' }) => {

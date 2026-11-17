@@ -83,7 +83,7 @@ describe('AgentRunDetail', () => {
     expect(report).toHaveTextContent('Report truncated — full output in the task log');
     expect(screen.getByTestId('agent-run-state')).toHaveTextContent('Completed');
     expect(screen.getByRole('link', { name: 'Open report task' })).toHaveAttribute('href', '/tasks/task-report');
-    expect(screen.queryByRole('link', { name: 'Open acting task' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open action task' })).not.toBeInTheDocument();
     expect(document.title).toBe('Run · Dependency review | ProPR');
     expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
 
@@ -127,7 +127,7 @@ describe('AgentRunDetail', () => {
     serveRun({ ...baseRun, state: 'awaiting_approval', trigger: 'schedule', autonomyMode: 'auto', finishedAt: null, skipReason: reason });
     renderDetail();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Automatic acting paused for approval');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Automatic action step paused for approval');
     expect(screen.getByTestId('agent-run-reason').textContent).toBe(reason);
     expect(screen.getByTestId('agent-run-approval')).toBeInTheDocument();
   });
@@ -162,7 +162,7 @@ describe('AgentRunDetail', () => {
 
     const panel = await screen.findByTestId('agent-run-approval');
     expect(panel).toHaveTextContent('cannot merge pull requests or change settings');
-    fireEvent.change(within(panel).getByLabelText('Note for the acting agent (optional)'), { target: { value: '  Only fix lodash.  ' } });
+    fireEvent.change(within(panel).getByLabelText('Note for the action step (optional)'), { target: { value: '  Only fix lodash.  ' } });
     fireEvent.click(within(panel).getByRole('button', { name: 'Approve and act' }));
 
     const dialog = screen.getByRole('dialog');
@@ -175,8 +175,8 @@ describe('AgentRunDetail', () => {
     expect(screen.queryByTestId('agent-run-approval')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve and act' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open acting task' })).toHaveAttribute('href', '/tasks/task-act');
-    expect(screen.getByTestId('agent-run-action-summary')).toHaveTextContent('The acting agent is working');
+    expect(screen.getByRole('link', { name: 'Open action task' })).toHaveAttribute('href', '/tasks/task-act');
+    expect(screen.getByTestId('agent-run-action-summary')).toHaveTextContent('The action step is working');
   });
 
   it('rejects an awaiting run after confirmation, and a dismissed confirmation sends nothing', async () => {

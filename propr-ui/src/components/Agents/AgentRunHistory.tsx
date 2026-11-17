@@ -79,6 +79,7 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
         data-testid="agent-run-row"
         onMouseEnter={() => onPreview(run)}
         onFocus={() => onPreview(run)}
+        onTouchStart={() => onPreview(run)}
         className={`${ROW_GRID} border-b border-slate-100 px-4 py-2 text-sm hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500`}
       >
         <time dateTime={new Date(started).toISOString()} title={formatTimestamp(started)} className="whitespace-nowrap text-slate-700">
@@ -94,7 +95,7 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
           {runDuration(run, now)}
         </span>
         <span className="col-span-2 truncate text-xs text-slate-500 [@container(min-width:36rem)]:col-span-1" data-testid="agent-run-preview">
-          {preview ?? (hasReport(run) ? <span className="text-slate-400">Hover to preview the report</span> : null)}
+          {preview}
         </span>
       </Link>
     </li>

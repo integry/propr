@@ -111,15 +111,18 @@ async function exerciseCreation(page: Page, shell: Shell, open: () => Promise<vo
 
   // Escape asks before discarding the draft; declining keeps the dialog and the draft.
   await prompt.focus();
-  page.once('dialog', prompt => void prompt.dismiss());
+  const discard = page.getByRole('dialog', { name: 'Discard this unsaved task?' });
   await page.keyboard.press('Escape');
+  await expect(discard).toBeVisible();
+  await discard.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(discard).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await expect(prompt).toHaveValue(draft);
 
   const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
   await expectReachable(cancel);
-  page.once('dialog', prompt => void prompt.accept());
   await cancel.click();
+  await discard.getByRole('button', { name: 'Discard', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(/\/tasks$/);
   expect(baseline).toEqual(expect.arrayContaining(await inertRegions(page)));
@@ -138,7 +141,7 @@ async function exerciseConfirmation(page: Page, shell: Shell) {
   const detail = page.getByTestId('agent-run-detail');
   await expect(detail).toBeVisible();
   const baseline = await inertRegions(page);
-  await detail.getByLabel('Note for the acting agent (optional)').fill(note);
+  await detail.getByLabel('Note for the action step (optional)').fill(note);
 
   const approve = detail.getByRole('button', { name: 'Approve and act' });
   await approve.click();
@@ -156,7 +159,7 @@ async function exerciseConfirmation(page: Page, shell: Shell) {
   await cancel.click();
   await expect(approval).toHaveCount(0);
   await expect(approve).toBeFocused();
-  await expect(detail.getByLabel('Note for the acting agent (optional)')).toHaveValue(note);
+  await expect(detail.getByLabel('Note for the action step (optional)')).toHaveValue(note);
   expect(baseline).toEqual(expect.arrayContaining(await inertRegions(page)));
 
   const cancelRun = detail.getByRole('button', { name: 'Cancel run' });
@@ -183,7 +186,7 @@ for (const shell of shells) {
         test.beforeEach(({ page }) => page.setViewportSize(size));
 
         test(`${label}: New Task keeps clear of the native titlebar`, async ({ page }) => {
-          await exerciseCreation(page, shell, () => page.getByRole('button', { name: 'New Task', exact: true }).first().click());
+          await exerciseCreation(page, shell, () => page.getByRole('button', { name: 'New task', exact: true }).first().click());
         });
 
         test(`${label}: run confirmations keep clear of the native titlebar`, async ({ page }) => {
@@ -204,7 +207,7 @@ for (const size of [{ width: 320, height: 640 }, { width: 390, height: 844 }, { 
         await exerciseCreation(page, {}, async () => {
           // On phones, creation starts from the bottom bar's Create sheet.
           await page.getByRole('navigation', { name: 'Primary navigation', exact: true }).getByRole('button', { name: 'Create', exact: true }).click();
-          await page.getByRole('dialog', { name: 'Create' }).getByRole('link', { name: 'New Task', exact: true }).click();
+          await page.getByRole('dialog', { name: 'Create' }).getByRole('link', { name: 'New task', exact: true }).click();
         });
       });
 

@@ -11,7 +11,7 @@ import { AgentRunApprovalPanel } from './AgentRunApprovalPanel';
 import { AgentRunNoChangeBadge } from './AgentRunNoChangeBadge';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import { AUTONOMY_BADGE_CLASSES, AUTONOMY_LABELS } from './agentPresentation';
-import { CANCELLABLE_RUN_STATES, formatTimestamp, isTerminalRunState, runTriggerLabel } from './agentRunPresentation';
+import { CANCELLABLE_RUN_STATES, formatTimestamp, isTerminalRunState, runTriggerSummary } from './agentRunPresentation';
 import { AgentRunTriggerEvent } from './AgentRunTriggerEvent';
 import { useAgentRun } from './useAgentRun';
 
@@ -32,7 +32,7 @@ const TASK_LINK = 'inline-flex items-center gap-1 text-sm font-medium text-teal-
 function runReason(run: AutomationRunRecord): { title: string; message: string } | null {
   if (run.state === 'failed' && run.failureReason) return { title: 'Run failed', message: run.failureReason };
   if (run.state === 'skipped' && run.skipReason) return { title: 'Run skipped', message: run.skipReason };
-  if (run.state === 'awaiting_approval' && run.skipReason) return { title: 'Automatic acting paused for approval', message: run.skipReason };
+  if (run.state === 'awaiting_approval' && run.skipReason) return { title: 'Automatic action step paused for approval', message: run.skipReason };
   if (run.state === 'deferred') {
     const until = run.deferredUntil !== null ? ` until ${formatTimestamp(run.deferredUntil)}` : '';
     return { title: `Run deferred${until}`, message: run.skipReason ?? 'The run will be retried automatically.' };
@@ -89,6 +89,16 @@ const AgentRunReport: React.FC<{ run: AutomationRunRecord }> = ({ run }) => (
   </section>
 );
 
+const AgentRunTrigger: React.FC<{ run: AutomationRunRecord }> = ({ run }) => {
+  const { label, detail, tooltip } = runTriggerSummary(run);
+  return (
+    <span className="text-sm text-slate-700" title={tooltip ?? undefined} data-testid="agent-run-trigger">
+      {label}
+      {detail && <span className="text-slate-500"> · {detail}</span>}
+    </span>
+  );
+};
+
 /** State, trigger, autonomy and timeline of a run, with its actions on the right. */
 const AgentRunHeader: React.FC<{ run: AutomationRunRecord; actions?: React.ReactNode }> = ({ run, actions }) => (
   <header className="space-y-3">
@@ -96,10 +106,7 @@ const AgentRunHeader: React.FC<{ run: AutomationRunRecord; actions?: React.React
       <div className="flex flex-wrap items-center gap-2">
         <AgentRunStateBadge state={run.state} data-testid="agent-run-state" />
         <AgentRunNoChangeBadge run={run} />
-        <span className="text-sm text-slate-700" title={run.triggerSource ?? undefined}>
-          {runTriggerLabel(run)}
-          {run.triggerSource && <span className="text-slate-500"> · {run.triggerSource}</span>}
-        </span>
+        <AgentRunTrigger run={run} />
         <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${AUTONOMY_BADGE_CLASSES[run.autonomyMode]}`} title="Autonomy mode used by this run">
           {AUTONOMY_LABELS[run.autonomyMode]}
         </span>
@@ -114,23 +121,23 @@ const AgentRunHeader: React.FC<{ run: AutomationRunRecord; actions?: React.React
   </header>
 );
 
-/** The acting step's summary, once the run is acting or has acted. */
+/** The action step's summary, once the run is acting or has acted. */
 const AgentRunAction: React.FC<{ run: AutomationRunRecord }> = ({ run }) => {
   const shown = run.state === 'acting' || run.actionSummary !== null || run.actionTaskId !== null;
   if (!shown) return null;
   return (
     <section aria-labelledby="agent-run-action-title" className="rounded-lg border border-slate-200 bg-white">
-      <h2 id="agent-run-action-title" className="border-b border-slate-200 px-4 py-2 text-sm font-semibold text-slate-900">What the acting agent did</h2>
+      <h2 id="agent-run-action-title" className="border-b border-slate-200 px-4 py-2 text-sm font-semibold text-slate-900">What the action step did</h2>
       <div className="px-4 py-3 text-sm" data-testid="agent-run-action-summary">
         {run.actionSummary
           ? <MarkdownRenderer text={run.actionSummary} />
-          : <p className="text-slate-500">{run.state === 'acting' ? 'The acting agent is working; its summary appears here when it finishes.' : 'No summary was recorded.'}</p>}
+          : <p className="text-slate-500">{run.state === 'acting' ? 'The action step is working; its summary appears here when it finishes.' : 'No summary was recorded.'}</p>}
       </div>
     </section>
   );
 };
 
-/** The report and acting steps are ordinary tasks; their live output, cost and logs live on the task page. */
+/** The report and action steps are ordinary tasks; their live output, cost and logs live on the task page. */
 const AgentRunTaskLinks: React.FC<{ run: AutomationRunRecord }> = ({ run }) => {
   if (!run.reportTaskId && !run.actionTaskId) return null;
   return (
@@ -142,7 +149,7 @@ const AgentRunTaskLinks: React.FC<{ run: AutomationRunRecord }> = ({ run }) => {
       )}
       {run.actionTaskId && (
         <Link to={`/tasks/${encodeURIComponent(run.actionTaskId)}`} className={TASK_LINK}>
-          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />Open acting task
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />Open action task
         </Link>
       )}
     </nav>
@@ -152,7 +159,7 @@ const AgentRunTaskLinks: React.FC<{ run: AutomationRunRecord }> = ({ run }) => {
 /**
  * One run of an agent: its state and timeline, the reason it was skipped,
  * deferred or failed, the Markdown report, the approval decision for preview
- * mode and what the acting agent did. The report and acting steps are
+ * mode and what the action step did. The report and action steps are
  * ordinary tasks, so their live output and logs are a link away rather than
  * repeated here.
  */

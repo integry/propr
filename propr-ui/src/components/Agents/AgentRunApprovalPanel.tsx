@@ -38,10 +38,10 @@ export const AgentRunApprovalPanel: React.FC<AgentRunApprovalPanelProps> = ({ re
         <ShieldCheck className="h-4 w-4" aria-hidden="true" />Awaiting your approval
       </h2>
       <p className="mt-1.5 text-sm text-amber-900/90">
-        Approving starts the acting agent on this report. It can use ProPR tools on {scope} — for example opening issues,
+        Approving starts the action step on this report. It can use ProPR tools on {scope} — for example opening issues,
         starting tasks or commenting — but it cannot merge pull requests or change settings.
       </p>
-      <label htmlFor="agent-run-note" className="mt-3 block text-xs font-medium text-slate-700">Note for the acting agent (optional)</label>
+      <label htmlFor="agent-run-note" className="mt-3 block text-xs font-medium text-slate-700">Note for the action step (optional)</label>
       <textarea
         id="agent-run-note"
         value={note}
@@ -82,7 +82,7 @@ export const AgentRunApprovalPanel: React.FC<AgentRunApprovalPanelProps> = ({ re
           onConfirm={() => void confirm()}
         >
           {confirming === 'approve'
-            ? <p>The acting agent will start now and use ProPR tools on {scope}{note.trim() ? ', with your note' : ''}.</p>
+            ? <p>The action step will start now and use ProPR tools on {scope}{note.trim() ? ', with your note' : ''}.</p>
             : <p>The run ends with its report only; nothing will be acted on.</p>}
         </AgentConfirmDialog>
       )}

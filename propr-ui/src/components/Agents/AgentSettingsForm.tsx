@@ -1,9 +1,12 @@
 import { AdditionalExtensionsSelector } from '../Extensions/AdditionalExtensionsSelector';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Loader2, Plus, Save, Trash2 } from 'lucide-react';
-import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH, EMPTY_AUTOMATION_EXTENSIONS, type AutomationExtensions } from '@propr/shared';
+import { AUTOMATION_DESCRIPTION_MAX_LENGTH, AUTOMATION_NAME_MAX_LENGTH, EMPTY_AUTOMATION_EXTENSIONS, type AutomationExtensions, type AutomationTemplate } from '@propr/shared';
 import { AgentModelSelector } from '../TaskPlanner/AgentModelSelector';
-import { AGENT_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
+import { AGENT_INPUT_CLASSES, AGENT_INVALID_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
+import { agentFieldErrorId, focusAgentField, type AgentFormField } from './agentFormValidation';
+import { useUnproductiveRunThreshold } from './useUnproductiveRunThreshold';
+import { useDiscardConfirmation } from '../ui/useDiscardConfirmation';
 import { AgentScopeSection } from './AgentScopeSection';
 import { AgentPromptSection } from './AgentPromptSection';
 import { AgentCapabilitiesSection } from './AgentCapabilitiesSection';
@@ -52,9 +55,33 @@ const extensionTarget = (editor: ReturnType<typeof useAgentEditor>) => {
 };
 
 /** The agent's settings: scope, prompt and files, model, capabilities, schedule and autonomy. */
+/** A field's error props: the message for the row, and what its control needs to point at it. */
+const invalidProps = (error: string | undefined, field: AgentFormField) => ({
+  'aria-invalid': error ? true : undefined,
+  'aria-describedby': error ? agentFieldErrorId(field) : undefined,
+});
+
 export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, isNew, readOnly, isDemoMode, hidden, onDelete }) => {
-  const { definition, form, update } = editor;
+  const { definition, form, update, fieldErrors, invalidFocus } = editor;
   const runner = defaultRunner(editor.agents, editor.defaultAgentAlias);
+  const unproductiveRunThreshold = useUnproductiveRunThreshold();
+  const { confirmDiscard, dialog: templateDialog } = useDiscardConfirmation();
+
+  // A refused save brings the first field to fix into view, once its error has rendered.
+  useEffect(() => {
+    if (invalidFocus) focusAgentField(invalidFocus.field);
+  }, [invalidFocus]);
+
+  /** Filling the form from a template over typed input asks first. */
+  const chooseTemplate = (template: AutomationTemplate) => {
+    if (!editor.templateWouldOverwrite) { editor.applyTemplate(template); return; }
+    confirmDiscard({
+      title: `Replace what you entered with “${template.name}”?`,
+      message: 'The name, prompt, schedule and other settings the template sets are replaced. Repositories and the coding agent stay.',
+      confirmLabel: 'Use template',
+    }, () => editor.applyTemplate(template));
+  };
+
   return (
   <form
     id="agent-editor-form"
@@ -65,16 +92,17 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
   >
     <div className="min-h-0 flex-1 overflow-y-auto">
       {isNew && editor.template && <AgentTemplateReview template={editor.template} />}
-      {isNew && <AgentTemplatePicker selectedId={editor.template?.id ?? null} onSelect={editor.applyTemplate} disabled={readOnly} />}
+      {isNew && <AgentTemplatePicker selectedId={editor.template?.id ?? null} onSelect={chooseTemplate} disabled={readOnly} />}
       <fieldset disabled={readOnly} className="min-w-0">
-        <AgentFormRow label="Name" htmlFor="agent-name" hint="Shown in the list and in run notifications.">
+        <AgentFormRow label="Name" htmlFor="agent-name" hint="Shown in the list and in run notifications." error={fieldErrors.name} errorId={agentFieldErrorId('name')}>
           <input
             id="agent-name"
             value={form.name}
             maxLength={AUTOMATION_NAME_MAX_LENGTH}
             onChange={event => update({ name: event.target.value })}
             placeholder="Weekly dependency review"
-            className={AGENT_INPUT_CLASSES}
+            className={fieldErrors.name ? AGENT_INVALID_INPUT_CLASSES : AGENT_INPUT_CLASSES}
+            {...invalidProps(fieldErrors.name, 'name')}
           />
         </AgentFormRow>
         <AgentFormRow label="Description" htmlFor="agent-description" hint="Optional. What this automation is for.">
@@ -106,9 +134,10 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           onUpload={editor.upload}
           onRemoveAttachment={editor.removeAttachment}
           disabled={readOnly}
+          error={fieldErrors.prompt}
         />
 
-        <AgentFormRow label="Coding agent" hint="The coding agent and model that write the report. Left on the default, the instance default agent runs it with its default model.">
+        <AgentFormRow label="Coding agent" hint="The agent and model that write the report.">
           <AgentModelSelector
             agents={editor.agents}
             selectedAgent={form.agentId}
@@ -120,6 +149,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
             agentPlaceholderProvider={runner?.provider}
             agentLabel="Coding agent"
             disabled={readOnly}
+            fullWidth
           />
         </AgentFormRow>
 
@@ -128,6 +158,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           onChange={capabilities => update({ capabilities })}
           proprMcpSupport={editor.proprMcpSupport}
           agentType={editor.agentType}
+          autonomy={form.autonomy}
           disabled={readOnly}
         />
 
@@ -137,6 +168,8 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           pauseWhenUnproductive={form.pauseWhenUnproductive}
           onChange={update}
           disabled={readOnly}
+          unproductiveRunThreshold={unproductiveRunThreshold}
+          error={fieldErrors.schedule}
         />
 
         <AgentEventTriggerSection
@@ -146,6 +179,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
           automationRepositories={form.repositories}
           onChange={update}
           disabled={readOnly}
+          error={fieldErrors.eventTrigger}
         />
 
         <AgentAutonomySection
@@ -172,6 +206,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, is
     </div>
 
     <AgentSaveFooter isNew={isNew} saving={editor.saving} disabled={readOnly || editor.conflict || editor.attachmentsPending} />
+    {templateDialog}
   </form>
   );
 };

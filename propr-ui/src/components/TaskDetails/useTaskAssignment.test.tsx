@@ -220,3 +220,13 @@ describe('AssignmentControl while saving', () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe('useTaskAssignment for automation runs', () => {
+  it.each(['agent-run-7e68b7c9-report', 'agent-run-7e68b7c9-action'])('does not ask for the assignees of %s, which has no issue or pull request', async taskId => {
+    const { result } = renderHook(() => useTaskAssignment(taskId));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.unavailable).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(api.getTaskAssignees).not.toHaveBeenCalled();
+  });
+});

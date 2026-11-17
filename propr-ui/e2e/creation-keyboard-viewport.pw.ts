@@ -109,7 +109,7 @@ test('New task opened with the keyboard up is placed from the current viewport, 
   await page.setViewportSize(layout);
   await setKeyboard(page, keyboard);
   await page.getByRole('button', { name: 'Create', exact: true }).click();
-  await page.getByRole('navigation', { name: 'Create' }).getByRole('link', { name: 'New Task' }).click();
+  await page.getByRole('navigation', { name: 'Create' }).getByRole('link', { name: 'New task' }).click();
   await expect(dialog).toBeVisible();
   await expectShown([dialog.getByRole('heading', { name: 'New task' }), dialog.getByRole('button', { name: 'Close task creation' })], keyboard);
 });

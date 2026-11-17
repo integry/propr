@@ -82,6 +82,12 @@ export const formFromTemplate = (template: AutomationTemplate, current: AgentEdi
   };
 };
 
+/** The fields `formFromTemplate` replaces: a template applied over a form that changed any of them overwrites typed input. */
+const TEMPLATE_FIELDS = ['name', 'description', 'prompt', 'capabilities', 'schedule', 'scheduleEnabled', 'autonomy', 'previousReportCount'] as const;
+
+export const templateFieldsDiffer = (form: AgentEditorForm, baseline: AgentEditorForm): boolean =>
+  TEMPLATE_FIELDS.some(field => JSON.stringify(form[field]) !== JSON.stringify(baseline[field]));
+
 export const formFromDefinition = (definition: AutomationDefinitionRecord): AgentEditorForm => ({
   name: definition.name,
   description: definition.description ?? '',
@@ -114,6 +120,16 @@ export const eventTriggerFilterLost = (form: AgentEditorForm): boolean =>
 export const EVENT_TRIGGER_FILTER_LOST_MESSAGE =
   'The event trigger was limited to repositories that are no longer in this automation. Choose the repositories it reacts to, or turn it off.';
 
+/** Merging happens in the action step, so a Report only automation cannot merge. */
+export const mergeAvailableFor = (autonomy: AutomationAutonomyMode): boolean => autonomy !== 'dry_run';
+
+/**
+ * The capabilities a definition is saved with: `merge` is dropped while the automation is
+ * Report only. The form keeps it, so choosing Preview or Auto again brings it back.
+ */
+export const effectiveCapabilities = (capabilities: readonly AutomationCapability[], autonomy: AutomationAutonomyMode): AutomationCapability[] =>
+  mergeAvailableFor(autonomy) ? [...capabilities] : capabilities.filter(capability => capability !== 'merge');
+
 /** The request body for a create or a full-form update, in the shared input contract. */
 export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput => ({
   ...(form.extensions !== undefined ? { extensions: form.extensions } : {}),
@@ -121,7 +137,7 @@ export const formToInput = (form: AgentEditorForm): AutomationDefinitionInput =>
   description: form.description.trim() || null,
   prompt: form.prompt,
   repositories: form.repositories,
-  capabilities: form.capabilities,
+  capabilities: effectiveCapabilities(form.capabilities, form.autonomy),
   autonomy: form.autonomy,
   schedule: form.scheduleEnabled ? form.schedule.trim() : null,
   agentId: form.agentId,

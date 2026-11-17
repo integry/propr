@@ -106,14 +106,14 @@ describe('GlobalHeader desktop toolbar', () => {
   };
 
   it.each([
-    ['/', 'New Task', '/tasks/new', 'lucide-zap', ['New Plan', 'New Goal', 'New Automation']],
-    ['/tasks/task-1', 'New Task', '/tasks/new', 'lucide-zap', ['New Plan', 'New Goal', 'New Automation']],
-    ['/plans', 'New Plan', '/studio/new', 'lucide-scroll-text', ['New Task', 'New Goal', 'New Automation']],
-    ['/studio/draft-1', 'New Plan', '/studio/new', 'lucide-scroll-text', ['New Task', 'New Goal', 'New Automation']],
-    ['/goals', 'New Goal', '/goals?new=1', 'lucide-target', ['New Task', 'New Plan', 'New Automation']],
-    ['/goals/goal-1?tab=activity#latest', 'New Goal', '/goals?new=1', 'lucide-target', ['New Task', 'New Plan', 'New Automation']],
-    ['/automations', 'New Automation', '/automations/new', 'lucide-workflow', ['New Task', 'New Plan', 'New Goal']],
-    ['/automations/def-1/runs/run-1', 'New Automation', '/automations/new', 'lucide-workflow', ['New Task', 'New Plan', 'New Goal']],
+    ['/', 'New task', '/tasks/new', 'lucide-zap', ['New plan', 'New goal', 'New automation']],
+    ['/tasks/task-1', 'New task', '/tasks/new', 'lucide-zap', ['New plan', 'New goal', 'New automation']],
+    ['/plans', 'New plan', '/studio/new', 'lucide-scroll-text', ['New task', 'New goal', 'New automation']],
+    ['/studio/draft-1', 'New plan', '/studio/new', 'lucide-scroll-text', ['New task', 'New goal', 'New automation']],
+    ['/goals', 'New goal', '/goals?new=1', 'lucide-target', ['New task', 'New plan', 'New automation']],
+    ['/goals/goal-1?tab=activity#latest', 'New goal', '/goals?new=1', 'lucide-target', ['New task', 'New plan', 'New automation']],
+    ['/automations', 'New automation', '/automations/new', 'lucide-workflow', ['New task', 'New plan', 'New goal']],
+    ['/automations/def-1/runs/run-1', 'New automation', '/automations/new', 'lucide-workflow', ['New task', 'New plan', 'New goal']],
   ])('uses the route action and remaining menu options on %s', (route, label, to, icon, options) => {
     renderToolbar(route);
     const primary = screen.getByRole('button', { name: label });
@@ -122,10 +122,10 @@ describe('GlobalHeader desktop toolbar', () => {
     expect(mocks.navigate).toHaveBeenLastCalledWith(to);
 
     const destinations: Record<string, string> = {
-      'New Task': '/tasks/new', 'New Plan': '/studio/new', 'New Goal': '/goals?new=1', 'New Automation': '/automations/new',
+      'New task': '/tasks/new', 'New plan': '/studio/new', 'New goal': '/goals?new=1', 'New automation': '/automations/new',
     };
     const icons: Record<string, string> = {
-      'New Task': 'lucide-zap', 'New Plan': 'lucide-scroll-text', 'New Goal': 'lucide-target', 'New Automation': 'lucide-workflow',
+      'New task': 'lucide-zap', 'New plan': 'lucide-scroll-text', 'New goal': 'lucide-target', 'New automation': 'lucide-workflow',
     };
     for (const option of options) {
       fireEvent.click(screen.getByRole('button', { name: 'More creation options' }));
@@ -146,15 +146,15 @@ describe('GlobalHeader desktop toolbar', () => {
       expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(options);
     };
     await act(() => router.navigate('/goals/goal-1'));
-    expectActions('New Goal', ['New Task', 'New Plan', 'New Automation']);
+    expectActions('New goal', ['New task', 'New plan', 'New automation']);
     await act(() => router.navigate('/repositories'));
-    expectActions('New Task', ['New Plan', 'New Goal', 'New Automation']);
+    expectActions('New task', ['New plan', 'New goal', 'New automation']);
     await act(() => router.navigate(-1));
-    expectActions('New Goal', ['New Task', 'New Plan', 'New Automation']);
+    expectActions('New goal', ['New task', 'New plan', 'New automation']);
     await act(() => router.navigate(-1));
-    expectActions('New Plan', ['New Task', 'New Goal', 'New Automation']);
+    expectActions('New plan', ['New task', 'New goal', 'New automation']);
     await act(() => router.navigate(1));
-    expectActions('New Goal', ['New Task', 'New Plan', 'New Automation']);
+    expectActions('New goal', ['New task', 'New plan', 'New automation']);
   });
 
   it('re-renders the header search without looping on its result set', () => {
@@ -213,7 +213,7 @@ describe('GlobalHeader desktop toolbar', () => {
   it('draws the caret inside the New Task button rather than beside it', () => {
     const { right } = renderToolbar();
 
-    const newTask = within(right).getByRole('button', { name: 'New Task' });
+    const newTask = within(right).getByRole('button', { name: 'New task' });
     const caret = within(right).getByRole('button', { name: 'More creation options' });
     // One filled, clipped shell owns both halves: the caret cannot read as a
     // stray glyph floating next to the button when it shares its container.
@@ -234,8 +234,8 @@ describe('GlobalHeader desktop toolbar', () => {
 
     fireEvent.click(caret);
     expect(screen.getByRole('menu', { name: 'More creation options' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'New Plan' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'New Goal' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'New plan' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'New goal' })).toBeInTheDocument();
     expect(caret).toHaveAttribute('aria-expanded', 'true');
 
     // The `<details>` element this replaced could not do either of these.
@@ -249,20 +249,20 @@ describe('GlobalHeader desktop toolbar', () => {
     const caret = within(right).getByRole('button', { name: 'More creation options' });
 
     fireEvent.click(caret);
-    fireEvent.click(screen.getByRole('menuitem', { name: 'New Plan' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New plan' }));
 
     expect(mocks.navigate).toHaveBeenCalledWith('/studio/new');
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
 
     fireEvent.click(caret);
-    fireEvent.click(screen.getByRole('menuitem', { name: 'New Goal' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New goal' }));
     expect(mocks.navigate).toHaveBeenCalledWith('/goals?new=1');
 
-    fireEvent.click(within(right).getByRole('button', { name: 'New Task' }));
+    fireEvent.click(within(right).getByRole('button', { name: 'New task' }));
     expect(mocks.navigate).toHaveBeenCalledWith('/tasks/new');
   });
 
-  it.each([['/', 'New Task'], ['/plans', 'New Plan'], ['/goals', 'New Goal']])('keeps creation inert in demo mode on %s', (route, label) => {
+  it.each([['/', 'New task'], ['/plans', 'New plan'], ['/goals', 'New goal']])('keeps creation inert in demo mode on %s', (route, label) => {
     render(
       <MemoryRouter initialEntries={[route]}>
         <GlobalHeader

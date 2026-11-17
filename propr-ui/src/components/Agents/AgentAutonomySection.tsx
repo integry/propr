@@ -1,27 +1,28 @@
 import React from 'react';
 import { AUTOMATION_AUTONOMY_MODES, type AutomationAutonomyMode } from '@propr/shared';
 import { AgentFormRow } from './AgentFormRow';
+import { AUTONOMY_LABELS } from './agentPresentation';
 
 interface AgentAutonomySectionProps {
   autonomy: AutomationAutonomyMode;
   onChange: (autonomy: AutomationAutonomyMode) => void;
-  /** The acting step needs ProPR tools, so coding agents without them are limited to dry runs. */
+  /** The action step needs ProPR tools, so coding agents without them are limited to Report only. */
   actingAvailable: boolean;
   disabled: boolean;
 }
 
 const AUTONOMY_TEXT: Record<AutomationAutonomyMode, { label: string; description: string }> = {
   dry_run: {
-    label: 'Dry run',
+    label: AUTONOMY_LABELS.dry_run,
     description: 'The report is saved for you to read. Nothing else happens.',
   },
   preview: {
     label: 'Preview & approve',
-    description: 'After the report, an acting step is prepared and waits for your approval before it uses ProPR tools.',
+    description: 'After the report, an action step is prepared and waits for your approval before it uses ProPR tools.',
   },
   auto: {
     label: 'Auto',
-    description: 'After the report, the acting step runs immediately and may create tasks, issues or goals through ProPR tools.',
+    description: 'After the report, the action step runs immediately and may create tasks, issues or goals through ProPR tools.',
   },
 };
 
@@ -34,7 +35,7 @@ const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium has-[:focus-visible]:ring
 export const AgentAutonomySection: React.FC<AgentAutonomySectionProps> = ({ autonomy, onChange, actingAvailable, disabled }) => (
   <AgentFormRow
     label="Autonomy"
-    hint={actingAvailable ? 'What happens after the report is written.' : 'The selected coding agent cannot use ProPR tools, so this automation can only run dry.'}
+    hint={actingAvailable ? 'What happens after the report is written.' : 'The selected coding agent cannot use ProPR tools, so this automation is Report only.'}
   >
     <div role="radiogroup" aria-label="Autonomy" className="inline-flex overflow-hidden rounded-md border border-slate-300">
       {AUTOMATION_AUTONOMY_MODES.map((mode, index) => {

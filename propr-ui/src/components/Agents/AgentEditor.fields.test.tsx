@@ -30,7 +30,7 @@ describe('AgentEditor fields', () => {
   it('picks autonomy from a segmented control and explains only the chosen mode', () => {
     renderEditor();
     const group = screen.getByRole('radiogroup', { name: 'Autonomy' });
-    expect(screen.getByRole('radio', { name: 'Dry run' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Report only' })).toBeChecked();
     expect(screen.getByTestId('agent-autonomy-description')).toHaveTextContent('Nothing else happens.');
 
     fireEvent.click(screen.getByRole('radio', { name: 'Preview & approve' }));

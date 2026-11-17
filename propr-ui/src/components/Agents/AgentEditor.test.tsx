@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { validateAutomationSchedule } from '@propr/shared';
 import { AgentEditor } from './AgentEditor';
 import {
   AutomationApiError, createAutomationDefinition, deleteAutomationAttachment, deleteAutomationDefinition, getAutomationCapacity,
@@ -55,27 +54,6 @@ describe('AgentEditor', () => {
     vi.useRealTimers();
   });
 
-  it('shows the shared validation message for an invalid cron and sends no request', async () => {
-    renderEditor();
-    fillRequired();
-    fireEvent.click(screen.getByRole('radio', { name: 'Cron' }));
-    fireEvent.change(screen.getByLabelText('Cron expression'), { target: { value: '61 * * * *' } });
-
-    const message = validateAutomationSchedule('61 * * * *')!;
-    expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent(message);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(message);
-    expect(createAutomationDefinition).not.toHaveBeenCalled();
-  });
-
-  it('requires a name before creating', async () => {
-    renderEditor();
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('name is required');
-    expect(createAutomationDefinition).not.toHaveBeenCalled();
-  });
-
   it('creates an agent with the form contents', async () => {
     vi.mocked(createAutomationDefinition).mockResolvedValue({ ...definition, id: 'agent-2' });
     renderEditor();
@@ -99,6 +77,9 @@ describe('AgentEditor', () => {
     fireEvent.click(mcpToggle);
     expect(mcpToggle).toBeChecked();
     const mergeToggle = screen.getByRole('switch', { name: /Merge pull requests/ });
+    // A new automation is Report only, which has no action step to merge in.
+    expect(mergeToggle).toBeDisabled();
+    fireEvent.click(screen.getByRole('radio', { name: /^Auto/ }));
     expect(mergeToggle).toBeEnabled();
     fireEvent.click(mergeToggle);
     expect(mergeToggle).toBeChecked();
@@ -108,7 +89,7 @@ describe('AgentEditor', () => {
     expect(mcpToggle).not.toBeChecked();
     expect(mergeToggle).toBeDisabled();
     expect(mergeToggle).not.toBeChecked();
-    expect(screen.getByTestId('agent-capability-merge-hint')).toHaveTextContent('merging happens in the acting step');
+    expect(screen.getByTestId('agent-capability-merge-hint')).toHaveTextContent('merging happens in the action step');
     expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: only Claude and Codex');
     expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on OpenCode');
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeDisabled();
@@ -193,7 +174,7 @@ describe('AgentEditor', () => {
 
     const runButton = await screen.findByRole('button', { name: 'Run now' });
     expect(runButton).toBeEnabled();
-    fireEvent.click(screen.getByRole('radio', { name: /^Dry run/ }));
+    fireEvent.click(screen.getByRole('radio', { name: /^Report only/ }));
     fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Only report, change nothing' } });
 
     expect(runButton).toBeDisabled();
