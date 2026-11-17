@@ -6,13 +6,13 @@ import {
   type AutomationRunTrigger,
 } from '@propr/shared';
 import type { AutomationCapacity, AutomationRunRecord } from '../../api/automationDefinitionsApi';
-import { agentTypeLabel, formatDuration } from './agentPresentation';
+import { agentTypeLabel, formatDuration, scheduleSentence } from './agentPresentation';
 
 /** How the run history and run detail name triggers, times and capacity. */
 
 export const RUN_TRIGGER_LABELS: Record<AutomationRunTrigger, string> = {
   manual: 'Run now',
-  schedule: 'Schedule',
+  schedule: 'Scheduled',
   api: 'API',
   mcp: 'MCP',
   cli: 'CLI',
@@ -24,6 +24,24 @@ export const runTriggerLabel = (run: Pick<AutomationRunRecord, 'trigger' | 'trig
   run.trigger === 'event' && run.triggerEvent?.type === 'plan.issue_blocked'
     ? `Issue #${run.triggerEvent.issueNumber} blocked`
     : RUN_TRIGGER_LABELS[run.trigger];
+
+/** `schedule:0 9 * * *` → `0 9 * * *`: the expression a scheduled run was started from. */
+const scheduleOfSource = (source: string | null): string | null => {
+  const match = source?.match(/^schedule:(.+)$/);
+  return match ? match[1].trim() : null;
+};
+
+/**
+ * How the run page names what started a run: `Scheduled · every day 09:00 UTC`
+ * with the cron in the tooltip, or the trigger and its source as recorded.
+ */
+export const runTriggerSummary = (run: Pick<AutomationRunRecord, 'trigger' | 'triggerEvent' | 'triggerSource'>): { label: string; detail: string | null; tooltip: string | null } => {
+  const label = runTriggerLabel(run);
+  const cron = run.trigger === 'schedule' ? scheduleOfSource(run.triggerSource) : null;
+  if (cron) return { label, detail: scheduleSentence(cron), tooltip: `${cron} (UTC)` };
+  if (run.trigger === 'schedule') return { label, detail: null, tooltip: run.triggerSource };
+  return { label, detail: run.triggerSource, tooltip: run.triggerSource };
+};
 
 /** States a run can still be cancelled from. */
 export const CANCELLABLE_RUN_STATES: readonly AutomationRunState[] = ['queued', 'deferred', 'running', 'awaiting_approval', 'acting'];

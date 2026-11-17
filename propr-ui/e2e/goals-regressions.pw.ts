@@ -202,7 +202,7 @@ test('keeps the goal work queue within the available 1024px desktop content widt
 test('dismisses the repository picker before the dirty goal creator on Escape', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 820 });
   await page.goto('/goals');
-  await page.getByRole('button', { name: 'New Goal', exact: true }).click();
+  await page.getByRole('button', { name: 'New goal', exact: true }).click();
 
   const creator = page.getByRole('dialog', { name: 'Start a goal' });
   await expect(creator).toBeVisible();

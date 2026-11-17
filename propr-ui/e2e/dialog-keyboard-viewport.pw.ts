@@ -294,7 +294,7 @@ test('the Create sheet opened with the keyboard already up starts inside it, and
   const sheet = await openTodoForm(page);
   await expectShown([sheet.getByRole('heading', { name: 'Create' }), sheet.getByRole('button', { name: 'Close Create menu' })], todoBand);
   await sheet.getByRole('textbox').pressSequentially('Never submitted');
-  const link = sheet.getByRole('link', { name: 'New Task' });
+  const link = sheet.getByRole('link', { name: 'New task' });
   await link.scrollIntoViewIfNeeded();
   await expectShown([link], todoBand);
   await link.tap();

@@ -6,7 +6,7 @@ import { NetworkEgressDetail, NetworkEgressIcon } from './NetworkEgressDetail';
 import { isNetworkEgress, networkEgressLabel, networkEgressNeedsAttention } from './networkEgress';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
-import { AUTOMATION_REPORT_MODE, reportStepLabel } from './taskKind';
+import { AUTOMATION_REPORT_MODE, extensionsEventLabel, reportStepLabel, resolvedNoExtensions } from './taskKind';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban, CircleDollarSign, FileText } from 'lucide-react';
 
 interface TaskStatusTableProps {
@@ -64,7 +64,7 @@ const getEventLabel = (item: HistoryItem): string | null => {
   if (replacementLabel) return replacementLabel;
   if (item.metadata?.repositoryWorkflowDeferrals || item.metadata?.agentCapacityDeferrals) return `Waiting for ${item.metadata.repositoryWorkflowDeferrals ? 'Repository' : 'Agent'} Capacity`;
   if (isBudgetExceeded(item)) return 'Spend Cap Reached';
-  return networkEgressLabel(item);
+  return extensionsEventLabel(item.metadata) ?? networkEgressLabel(item);
 };
 
 /** Automatic-replacement timeline events repeat the task's state; label them by event. */
@@ -313,7 +313,7 @@ const TaskTimelineItem: React.FC<{
 // retries, checkpoints, or pool attempts, so never collapse those by state.
 const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
   const steps: HistoryItem[] = [];
-  for (const item of history) {
+  for (const item of history.filter(entry => !resolvedNoExtensions(entry.metadata))) {
     const previous = steps[steps.length - 1];
     const state = item.state?.toUpperCase();
     // Metadata events (an auto-assignment, a replacement, a spend cap) are their own steps, never

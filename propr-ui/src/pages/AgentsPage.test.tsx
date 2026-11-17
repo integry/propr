@@ -334,7 +334,7 @@ describe('AgentsPage', () => {
     vi.mocked(listAutomationDefinitions).mockResolvedValue({ definitions: [], total: 0, limit: 200, offset: 0 });
     renderAt('/automations');
     expect(await screen.findByText('No automations yet')).toBeInTheDocument();
-    expect(screen.getByText(/runs on demand or on a schedule/)).toBeInTheDocument();
+    expect(screen.getByText(/runs on a schedule or on demand/)).toBeInTheDocument();
   });
   it('refreshes an unfinished run until it settles, including a run started from the editor', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

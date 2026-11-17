@@ -34,6 +34,8 @@ interface AgentModelSelectorProps {
   agentPlaceholderProvider?: string;
   /** Accessible name of the agent select, matching the field label it sits under. */
   agentLabel?: string;
+  /** Stretch the selects to the width of the field, one under the other. */
+  fullWidth?: boolean;
 }
 
 export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
@@ -55,7 +57,8 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   formatAgentLabel,
   agentPlaceholder,
   agentPlaceholderProvider,
-  agentLabel
+  agentLabel,
+  fullWidth = false,
 }) => {
   const [multiDropdownOpen, setMultiDropdownOpen] = useState(autoOpenMultiDropdown && isMulti);
 
@@ -182,6 +185,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
       agentPlaceholder={agentPlaceholder}
       agentPlaceholderProvider={agentPlaceholderProvider}
       agentLabel={agentLabel}
+      fullWidth={fullWidth}
     />
   );
 };

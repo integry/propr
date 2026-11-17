@@ -21,7 +21,7 @@ export const AgentExtensionsExplanation: React.FC = () => (
   <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700" aria-label="How extensions apply">
     <li>Items apply automatically to issue tasks, pull request follow-ups and automations in matching repositories.</li>
     <li>Untick an item to switch it off everywhere without losing its settings or stored secret; tick it to switch it back on.</li>
-    <li>Write servers need the write opt-in on New Task, or an automation action phase that allows writes.</li>
+    <li>Write servers need the write opt-in on New Task, or an automation action step that allows writes.</li>
     <li>
       The labels <code className={CODE}>disable-mcps</code>, <code className={CODE}>disable-skills</code> and{' '}
       <code className={CODE}>disable-extensions</code> turn them off for one issue or pull request.
