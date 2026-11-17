@@ -122,6 +122,24 @@ for (const [label, load] of builds) {
         }
     });
 
+    test(`the ${label} build guards wildcards after brackets and quotes the parser reads literally`, () => {
+        const picomatch = load();
+        // An unclosed `[`, a `[` inside a class and a `"` swallowed by plain
+        // text are literal to the parser, so the `*` after them is a live
+        // wildcard. Unguarded, each takes ~0.5 s at 24 repeats and doubles per repeat.
+        for (const [glob, unit] of [['+([*)', '['], ['*([*)', '['], ['+([[]*)', '['], ['+(a"*)', 'a"'], ['+([+)', '[']]) {
+            const regex = picomatch.makeRe(glob);
+            const { matched, ms } = timedTest(regex, `${unit.repeat(32)}/`);
+            assert.equal(matched, false, glob);
+            assert.ok(ms < 500, `${glob} took ${ms.toFixed(0)} ms`);
+            assert.equal(picomatch.isMatch(glob, glob), true, `${glob} still matches its literal text`);
+        }
+        // Classes holding `[`, POSIX classes and closed quotes still compile as globs.
+        assert.equal(picomatch.isMatch('[a[a', '+([[]a)'), true);
+        assert.equal(picomatch.isMatch('abc', '+([[:alpha:]])'), true);
+        assert.equal(picomatch.isMatch('***', '+("*")'), true);
+    });
+
     test(`the ${label} build keeps ordinary glob and extglob matching`, () => {
         const picomatch = load();
         assert.equal(picomatch.isMatch('src/jobs/a.ts', 'src/**/*.ts'), true);
