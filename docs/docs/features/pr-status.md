@@ -88,7 +88,7 @@ An epic pull request collects the sub-PRs of a plan: its own branch only receive
 
 | State | When |
 | --- | --- |
-| `working` | Not every issue is merged, and a sub-PR or an issue of the epic is being worked on (a sub-PR whose own status is `working`, or an issue that started and has no sub-PR yet), ProPR is working on the epic PR itself, or the plan's queue is about to start its next issue (a queue that has not finished setting up starts nothing, so it does not count). |
+| `working` | Not every issue is merged, and a sub-PR or an issue of the epic is being worked on (a sub-PR whose own status is `working`, or an issue that started and has no sub-PR yet), ProPR is working on the epic PR itself, or the plan's queue starts an issue now: its prerequisites are merged and the queue has a free slot, rather than waiting on a sub-PR that is not merged yet (a queue that has not finished setting up starts nothing, so it does not count). |
 | `needs_attention` | Not every issue is merged and nothing is running: a sub-PR needs you, an issue's run stopped on a blocker the agent reported, a sub-PR is `ready` and waits to be merged into the epic branch, the plan's queue is paused, the epic PR conflicts with its base, or nothing is left to start. Also when every issue is merged but a check on the epic PR's head failed or it conflicts with its base. |
 | `ready` | Every issue is merged into the epic branch, every check on the epic PR's current head completed and passed, and it does not conflict with its base. |
 

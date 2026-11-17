@@ -127,8 +127,13 @@ export interface EpicStatusFacts {
     startedIssues?: EpicIssueRef[];
     /** Plan issues that have not started, in queue order. */
     upNext?: EpicIssueRef[];
-    /** The plan's queue is about to start its next issue. */
+    /**
+     * The plan's queue starts an issue now: one its dispatcher claimed, or one whose prerequisites are
+     * satisfied with a slot free. Not while an issue the queue waits for sits in a sub-PR that is not merged.
+     */
     nextIssueQueued?: boolean;
+    /** The issue the queue starts now, when `nextIssueQueued` (one of `upNext`); none: the first of `upNext`. */
+    nextIssue?: number;
     queuePaused?: boolean;
     /** The full merge progress, for the epic progress comment. */
     progress?: EpicMergeProgress;
@@ -335,7 +340,10 @@ function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts)
     if (workingIssue) return withFocus('working', issueFocus(workingIssue), { activity: 'implementing' });
     const ownWork = activeProprWork(own);
     if (ownWork) return withFocus('working', null, { activity: ownWork });
-    if (epic.nextIssueQueued && !epic.queuePaused) return withFocus('working', issueFocus(epic.upNext?.[0]), { activity: 'queued' });
+    if (epic.nextIssueQueued && !epic.queuePaused) {
+        const next = epic.upNext?.find(issue => issue.issueNumber === epic.nextIssue) ?? epic.upNext?.[0];
+        return withFocus('working', issueFocus(next), { activity: 'queued' });
+    }
 
     // Nothing read is working; a sub-PR whose status was not read may be, so no attention state is established.
     const unreadChildren = (epic.children ?? []).filter(child => child.statusUnread).length;

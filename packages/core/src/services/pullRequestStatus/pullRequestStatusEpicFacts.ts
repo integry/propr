@@ -3,6 +3,8 @@ import { stripStatusSlot } from '@propr/shared';
 import type { PlanIssue } from '../../config/planIssueManager.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { agentBlockedIssueNumber, isAgentBlockedReason } from '../taskPlanning/epicQueueBlockedHead.js';
+import { executionLimit, scheduleEpicIssues, type EpicScheduleIssue } from '../taskPlanning/epicQueueSchedule.js';
+import { epicScheduleIssues, getEpicExecutionQueue, type EpicExecutionQueue } from '../taskPlanning/epicQueueState.js';
 import {
     computeEpicMergeProgress, listChildPullRequests, listChildrenShippedBeforeOpenEpic, type EpicChildPullRequest,
 } from '../../webhook/epicMergeProgress.js';
@@ -84,7 +86,7 @@ interface EpicPlan {
     name: string | null;
     paused: boolean;
     issues: PlanIssue[];
-    queue: { issues: number[]; cursor: number; status: string; ready: boolean; parallel: boolean; blockedReason: string | null } | null;
+    queue: EpicExecutionQueue | null;
 }
 
 /** The plan ProPR recorded `epicBranch` for: its draft holds the branch's first issue and the branch's `base-` label. */
@@ -94,21 +96,10 @@ async function loadEpicPlan(db: Knex, repository: string, epicBranch: string, fi
         .where({ repository }).whereIn('draft_id', draftIds).select('draft_id', 'name', 'paused', 'context_config');
     const draft = drafts.find(candidate => parseJson(candidate.context_config).epicLabel === `base-${epicBranch}`);
     if (!draft) return null;
-    const [issues, queueRow] = await Promise.all([
+    const [issues, queue] = await Promise.all([
         db('plan_issues').where({ draft_id: draft.draft_id }).orderBy('created_at', 'asc').orderBy('id', 'asc') as Promise<PlanIssue[]>,
-        db('epic_execution_queues').where({ draft_id: draft.draft_id })
-            .first('issues', 'cursor', 'status', 'ready', 'parallel', 'blocked_reason') as Promise<Record<string, unknown> | undefined>,
+        getEpicExecutionQueue(draft.draft_id, { database: db }),
     ]);
-    let queue: EpicPlan['queue'] = null;
-    if (queueRow) {
-        let queued: unknown = [];
-        try { queued = JSON.parse(String(queueRow.issues ?? '[]')); } catch { queued = []; }
-        queue = {
-            issues: Array.isArray(queued) ? queued.filter((issue): issue is number => typeof issue === 'number') : [],
-            cursor: Number(queueRow.cursor ?? 0), status: String(queueRow.status ?? ''), ready: Boolean(queueRow.ready),
-            parallel: Boolean(queueRow.parallel), blockedReason: typeof queueRow.blocked_reason === 'string' ? queueRow.blocked_reason : null,
-        };
-    }
     return { draftId: draft.draft_id, name: draft.name ?? null, paused: Boolean(draft.paused), issues, queue };
 }
 
@@ -126,21 +117,31 @@ function childTitle(title: string | undefined): string | null {
 }
 
 /**
- * The queue is about to start its next issue: it is active, ready (the
+ * The issue the queue starts now, if any: the queue is active, ready (the
  * dispatcher starts and advances nothing else: startEpicQueueHead,
- * advanceEpicQueue), and not paused or held on a blocker, and its head has not
- * started (or has merged and the queue is about to advance to an issue still
- * to start).
+ * advanceEpicQueue), and not paused or held on a blocker, and an issue still to
+ * start is either claimed by the dispatcher already or one the schedule starts
+ * now: its prerequisites are satisfied and a slot is free (epicQueueSchedule),
+ * in every execution mode. An issue whose sub-PR waits for a person holds its
+ * slot (a chain's head, a graph's in-flight issue) and keeps its dependents
+ * waiting, so nothing behind it starts. An in-flight issue that has already
+ * settled in the plan (merged, or closed under the terminal policy) counts as
+ * settled: the queue is about to advance past it.
  */
-function nextIssueQueued(plan: EpicPlan, pending: Set<number>): boolean {
+function nextQueuedIssue(plan: EpicPlan, pending: Set<number>): number | null {
     const queue = plan.queue;
-    if (!queue || queue.status !== 'active' || !queue.ready || plan.paused || isAgentBlockedReason(queue.blockedReason)) return false;
-    if (queue.parallel) return queue.issues.some(issue => pending.has(issue));
-    const head = queue.issues[queue.cursor];
-    if (head === undefined) return false;
-    if (pending.has(head)) return true;
-    const headStatus = plan.issues.find(issue => issue.issue_number === head)?.status;
-    return headStatus === 'merged' && queue.issues.slice(queue.cursor + 1).some(issue => pending.has(issue));
+    if (!queue || queue.status !== 'active' || !queue.ready || plan.paused || isAgentBlockedReason(queue.blockedReason)) return null;
+    const claimed = queue.items.find(item => item.state === 'dispatched' && pending.has(item.issueNumber));
+    if (claimed) return claimed.issueNumber;
+    const planStatus = new Map(plan.issues.map(issue => [issue.issue_number, issue.status]));
+    const advancing = (issueNumber: number): boolean => {
+        const status = planStatus.get(issueNumber);
+        return status === 'merged' || (status === 'closed' && queue.advanceOn === 'terminal');
+    };
+    const issues: EpicScheduleIssue[] = epicScheduleIssues(queue).map(issue =>
+        issue.state !== 'done' && issue.state !== 'skipped' && advancing(issue.issueNumber) ? { ...issue, state: 'done', inFlight: false } : issue);
+    const schedule = scheduleEpicIssues({ issues, mergedOutside: queue.mergedOutside, limit: executionLimit(queue.mode, queue.maxParallel) });
+    return schedule.start.find(issue => pending.has(issue)) ?? null;
 }
 
 /** Plan issues not started, in queue order, then in plan order; `excluded` are listed elsewhere or not counted. */
@@ -231,6 +232,7 @@ export async function loadEpicStatusFacts(
     // A blocked issue has started (it is listed as stopped on its blocker), so it is not up next.
     const excluded = new Set(plan.issues.filter(issue => !issues.includes(issue) || isBlocked(issue)).map(issue => issue.issue_number));
     const pending = new Set(issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number));
+    const nextIssue = nextQueuedIssue(plan, pending);
     const { children: childStatusList, continueChildReads } = await childStatuses(
         sources, { repository, owner, repo, epicKey: pullRequestBodyKey(repository, prNumber) }, open, { plan, titles });
     return {
@@ -240,7 +242,7 @@ export async function loadEpicStatusFacts(
         ...(continueChildReads ? { continueChildReads } : {}),
         startedIssues,
         upNext: upNextIssues(plan, excluded, titles),
-        nextIssueQueued: nextIssueQueued(plan, pending),
+        ...(nextIssue !== null ? { nextIssueQueued: true, nextIssue } : { nextIssueQueued: false }),
         queuePaused: plan.paused && plan.queue?.status === 'active',
         progress,
         planName: plan.name,
