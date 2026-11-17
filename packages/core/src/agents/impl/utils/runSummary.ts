@@ -87,8 +87,17 @@ const UNFINISHED_WORK_SENTENCE = new RegExp([
 ].join(''), 'i');
 /** Unfinished-work notes are status messages, not reports; a longer text is a report. */
 const UNFINISHED_WORK_MAX_LENGTH = SHORT_TEXT_LENGTH;
+/** Verbs that report a change the agent made. */
+const CHANGE_VERB = '(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)';
 /** Leads of a sentence that reports a completed change, not a notification. */
-const COMPLETED_CHANGE = new RegExp(`^${INLINE_LABEL}(?:i(?:['\u2019]ve|\\s+have)?\\s+)?(?:now\\s+)?(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)\\b`, 'i');
+const COMPLETED_CHANGE = new RegExp(`^${INLINE_LABEL}(?:i(?:['\u2019]ve|\\s+have)?\\s+)?(?:now\\s+)?${CHANGE_VERB}\\b`, 'i');
+/**
+ * A later clause of a sentence that reports a change the agent made ("The
+ * watcher reported a retry failure, which I fixed in worker.ts."): after a
+ * comma, a coordinating conjunction or "which", the agent itself ("I", "we")
+ * reports the change. "...and I changed nothing" reports none.
+ */
+const CHANGE_CLAUSE = new RegExp(`(?:,|\\b(?:and|then|so|which)\\b)\\s+(?:(?:and|then|so|which)\\s+)?(?:i|we)(?:['\u2019](?:ve|d)|\\s+(?:have|had))?\\s+(?:(?:now|also|then)\\s+)?${CHANGE_VERB}\\b(?!\\s+(?:nothing|anything)\\b)`, 'i');
 /** A reply to a notification that says nothing needs doing. */
 const NO_ACTION = /\b(?:nothing (?:else |more |further )?(?:to do|is needed|needed|to change)|no (?:further |other )?(?:action|changes?) (?:is |are )?(?:needed|required)|(?:doesn'?t|does not) change anything|nothing (?:has )?changed)\b/i;
 
@@ -219,9 +228,13 @@ export function reportsUnfinishedWork(text: string | null | undefined): boolean 
     return sentences(prose).some(sentence => UNFINISHED_WORK_SENTENCE.test(sentence));
 }
 
-/** A sentence that reports a change the agent made: positive evidence of substance. */
+/**
+ * A sentence that reports a change the agent made: positive evidence of
+ * substance, whether it opens with the change or reports it in a later clause
+ * of a sentence that opens with a notification.
+ */
 function reportsChangeSentence(sentence: string): boolean {
-    return COMPLETED_CHANGE.test(sentence);
+    return COMPLETED_CHANGE.test(sentence) || CHANGE_CLAUSE.test(sentence);
 }
 
 /** Longest sentence still read as a bare status line rather than a report. */

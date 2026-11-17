@@ -70,6 +70,8 @@ export interface ClaudeCodeResponse {
     exitCode?: number | null;
     rawOutput?: string;
     conversationLog?: ConversationLogEntry[];
+    /** Index into `conversationLog` at each result line of the stream (see `AgentExecutionResult`). */
+    resultLogIndexes?: number[];
     sessionId?: string | null;
     conversationId?: string;
     /**
@@ -176,6 +178,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             exitCode: result.exitCode,
             rawOutput: result.stdout,
             conversationLog: claudeOutput.conversationLog || [],
+            resultLogIndexes: claudeOutput.resultLogIndexes,
             sessionId: claudeOutput.sessionId,
             conversationId: claudeOutput.conversationId,
             model: claudeOutput.model || process.env.CLAUDE_MODEL || getDefaultModel() || (() => {

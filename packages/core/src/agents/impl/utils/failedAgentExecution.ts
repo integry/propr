@@ -97,7 +97,7 @@ export function failedExecutionResult(
     return {
         ...(completed && {
             sessionId: completed.sessionId, conversationId: completed.conversationId,
-            conversationLog: completed.conversationLog, tokenUsage: completed.tokenUsage, cost: completed.cost,
+            conversationLog: completed.conversationLog, resultLogIndexes: completed.resultLogIndexes, tokenUsage: completed.tokenUsage, cost: completed.cost,
             providerModel: completed.providerModel, prompt: completed.prompt,
         }),
         executionId: completed?.executionId ?? assignExecutionId({}),

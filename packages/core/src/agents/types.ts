@@ -379,6 +379,12 @@ export interface AgentExecutionResult {
     // Conversation log for execution analysis
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     conversationLog?: any[];
+    /**
+     * Index into `conversationLog` at each result line of the stream. More than
+     * one means the run continued after a reported answer; summary selection
+     * downstream needs these boundaries to judge what followed.
+     */
+    resultLogIndexes?: number[];
 }
 
 /**

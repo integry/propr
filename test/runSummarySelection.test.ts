@@ -461,6 +461,48 @@ describe('run summary selection', () => {
         assert.equal(kept.summary, fixed);
     });
 
+    test('the completion comment keeps the summary core chose across a second result line', async () => {
+        // No notification is logged: only the result boundary marks the
+        // labelled watcher reply as a reply, so the comment must see it too.
+        const reply = 'Summary: The watcher timed out after the suites finished; nothing else to do.';
+        const { response } = processDockerResult(execution([
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY), result(SUMMARY),
+            assistantText(reply), result(reply),
+        ]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.summary, SUMMARY);
+        // The prompt is prepended to the published log; the boundary follows it.
+        assert.equal(response.conversationLog?.[response.resultLogIndexes![1] - 1]?.message?.content?.[0]?.text, reply);
+
+        const claudeResult = agentResultToClaudeResponse({ ...response, modifiedFiles: ['epicQueue.ts'] });
+        assert.deepEqual(claudeResult.resultLogIndexes, response.resultLogIndexes);
+        const body = await buildCompletionComment({ commitHash: 'abcdef1234567' }, [], {
+            changesSummary: SUMMARY, commitMessage: response.commitMessage ?? '', llm: 'claude-opus-5-5', authorsText: '@octo',
+        }, claudeResult);
+        assert.match(body, /Fixed the epic queue/);
+        assert.doesNotMatch(body, /watcher timed out/);
+    });
+
+    test('a notification sentence that reports a fix in its next clause supersedes the earlier summary', () => {
+        const fixed = 'The watcher reported a retry failure, which I fixed in worker.ts.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('Watcher reported a failure'),
+            toolUse('t2', 'Looking at the failure.'), toolResult('t2'),
+            assistantText(fixed),
+        ];
+        assert.equal(isRunStatusNote(fixed, { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('The watcher reported a retry failure, and I\'ve fixed it in worker.ts.', { afterNotification: true }), false);
+        // A clause that reports no change leaves the sentence a notification reply.
+        assert.equal(isRunStatusNote('The monitor timed out, and I changed nothing.', { afterNotification: true }), true);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fixed)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.summary, fixed);
+        assert.equal(response.commitMessage?.split('\n')[0], fixed);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fixed);
+    });
+
     test('the output-limit continuation prompt is not a notification turn', () => {
         const conversationLog = [
             assistantText(SUMMARY.slice(0, 40)),

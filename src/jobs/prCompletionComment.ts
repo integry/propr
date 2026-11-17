@@ -122,10 +122,13 @@ function textFromConversationMessage(message: ConversationMessage): string | nul
 
 function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): string | null {
     const conversationLog = (claudeResult.conversationLog || []) as ConversationMessage[];
+    // The stream's result lines split turns as core split them: what follows a
+    // reported answer replies to an event even when no notification was logged.
+    const resultLogIndexes = claudeResult.resultLogIndexes;
     // Replies to background notifications and "summary above" pointers are
     // not summaries, even when they open with "Summary:". Each message is
     // judged in its own turn, so a reply to a notification is recognised.
-    const notificationEntries = notificationTurnEntryIndexes(conversationLog as Parameters<typeof notificationTurnEntryIndexes>[0]);
+    const notificationEntries = notificationTurnEntryIndexes(conversationLog as Parameters<typeof notificationTurnEntryIndexes>[0], resultLogIndexes);
     const assistantTexts = conversationLog
         .map((message, index) => ({ text: textFromConversationMessage(message), afterNotification: notificationEntries.has(index) }))
         .filter((message): message is { text: string; afterNotification: boolean } => Boolean(message.text) && !isRunStatusNote(message.text, message))
@@ -143,7 +146,7 @@ function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): s
 
     // Otherwise use the run's own answer, chosen as core chooses it: never a
     // reply to a notification or narration between tool calls.
-    const selected = selectRunSummary({ conversationLog: conversationLog as Parameters<typeof selectRunSummary>[0]['conversationLog'] }).summary;
+    const selected = selectRunSummary({ conversationLog: conversationLog as Parameters<typeof selectRunSummary>[0]['conversationLog'], resultLogIndexes }).summary;
     return selected && !isDryCodeSummary(selected) ? selected : null;
 }
 

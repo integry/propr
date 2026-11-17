@@ -202,6 +202,8 @@ export function processDockerResult(
         terminationReason,
         prompt,
         conversationLog: fullConversationLog,
+        // Re-indexed to the published log, which may lead with the prompt.
+        resultLogIndexes: claudeOutput.resultLogIndexes?.map(index => index + fullConversationLog.length - claudeOutput.conversationLog.length),
         tokenUsage: correctedTokenUsage
     };
 

@@ -61,6 +61,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     modifiedFiles: result.modifiedFiles,
     commitMessage: result.commitMessage || null,
     conversationLog: result.conversationLog,
+    resultLogIndexes: result.resultLogIndexes,
     tokenUsage: result.tokenUsage,
     usageMetrics: result.usageMetrics
   };
