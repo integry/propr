@@ -549,6 +549,40 @@ test('check runs past the page budget are not complete, so the pull request is n
     assert.match(statusLine(), /✅ Ready · checks: 300 passed/);
 });
 
+for (const incomplete of ['page budget', 'rejected status read'] as const) {
+    test(`checks listed by an incomplete read (${incomplete}) still mark the repository, so a new head without checks waits the longer bound`, async () => {
+        const { CHECKS_EXPECTED_WAIT_MS } = await import('../src/services/pullRequestStatus/pullRequestStatusCheckWait.js');
+        await addTask('issue', 'completed');
+        const request = github.request.bind(github);
+        if (incomplete === 'page budget') {
+            github.checkRuns = Array.from({ length: 301 }, (_, index) => ({ name: `unit-${index}`, status: 'completed', conclusion: 'success' }));
+        } else {
+            github.request = async (route: string, params: Record<string, unknown>) => {
+                if (route === 'GET /repos/{owner}/{repo}/commits/{ref}/status' && github.pull.head.sha === 'head-1') throw new Error('GitHub unavailable');
+                return await request(route, params);
+            };
+        }
+        const now = Date.parse('2026-11-16T13:34:42Z');
+        const sources = { ...deps().sources!, github, now: () => now };
+        const first = await loadPullRequestStatusFacts(REPOSITORY, PR, sources);
+        assert.equal(first.checks.complete, false);
+        assert.equal(first.checks.reported, true);
+
+        // A fix pushes a new head whose checks have not appeared yet: a complete, empty read.
+        github.pull.head.sha = 'head-2';
+        github.checkRuns = [];
+        github.commitStatus = { state: 'pending', total_count: 0, statuses: [] };
+        const next = await loadPullRequestStatusFacts(REPOSITORY, PR, sources);
+        assert.equal(next.checks.complete, true);
+        assert.equal(next.checksAwaitedForMs, CHECKS_EXPECTED_WAIT_MS, 'the repository reported checks, so not the two-minute no-CI grace');
+
+        // Another process sees the record in Redis, not only this one.
+        resetPullRequestCheckWaitForTests();
+        const shared = await loadPullRequestStatusFacts(REPOSITORY, PR, { ...sources, now: () => now + 60_000 });
+        assert.equal(shared.checksAwaitedForMs, CHECKS_EXPECTED_WAIT_MS - 60_000);
+    });
+}
+
 test('reviewing or following up on a pull request a person opened does not make it a ProPR pull request', async () => {
     await addTask('pr-comment', 'completed', { comments: [{ commandMode: 'review' }] });
     await addTask('review', 'completed');

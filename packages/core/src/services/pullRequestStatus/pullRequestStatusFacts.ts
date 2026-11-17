@@ -389,8 +389,10 @@ export async function loadPullRequestStatusFacts(
         loadEpicFacts(repository, prNumber, sources, { epicRef, pull: pr }),
     ]);
     // A head GitHub lists no check for yet may only be one whose checks have not started (pullRequestStatusCheckWait).
+    // A listed check is evidence even from an incomplete read (page budget, one endpoint rejected); only a complete read shows none.
+    const reported = checks.reported === true ? true : checks.complete ? false : null;
     const checksAwaitedForMs = await headChecksWaitMs(sources.redis, {
-        repository, prNumber, headSha: pullRequest.headSha, reported: checks.complete ? checks.reported === true : null,
+        repository, prNumber, headSha: pullRequest.headSha, reported,
     }, sources.now ? sources.now() : Date.now());
     return {
         pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, checksAwaitedForMs,
