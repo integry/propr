@@ -15,8 +15,15 @@ administrator in Access first.
 
 ## The settings screen
 
-**Skills & MCP servers** opens with a short explanation of how items reach runs,
-then two flat lists, **MCP servers** and **Skills**. Each row shows:
+**Skills & MCP servers** opens with two flat lists, **MCP servers** and
+**Skills**. The Settings inspector beside them summarises how items apply: each
+item applies automatically in the repositories it is limited to, unticking it
+switches it off, and only Claude and Codex runs use extensions. Items with
+**Apply automatically** turned off reach only the automations that add them, write
+servers need the run's [write authorization](#mcp-policy), and the
+[opt-out labels](#opt-out-labels) remove items from one issue or pull request.
+Changes apply to new runs; running tasks keep the items they started with.
+Each row shows:
 
 - an **enabled checkbox**. Ticking or unticking it saves at once through the
   single-item endpoint (`POST /api/instance/extensions/v1/items/enabled`), with no
@@ -31,7 +38,7 @@ then two flat lists, **MCP servers** and **Skills**. Each row shows:
 - for an OAuth server, its connection state (**Not connected**, **Connected** or
   **Needs sign-in**), who connected it and when, the granted scopes, and
   **Connect**, **Reconnect** and **Disconnect** (see [OAuth servers](#oauth-servers));
-- notes and warnings: the Codex configuration limitation (below) on items that
+- notes and warnings: the [Codex configuration](#codex-configuration) limitation on items that
   can reach a Codex agent, a missing Bearer token or secret variable, *Imported from profile X; not
   applied automatically* on migrated items, and the automations that add the item
   explicitly (on a switched-off item: that those automations currently run
@@ -39,8 +46,8 @@ then two flat lists, **MCP servers** and **Skills**. Each row shows:
 
 **Add server** opens one form: an HTTPS endpoint (with tool discovery and
 authentication by a write-only Bearer token or OAuth sign-in), a
-[local package](#local-package-servers) or an operator catalog entry, the allowed tools and
-capability, then the item limits: **Limit to repositories** (empty means every
+[local package](#local-package-servers) or a preinstalled operator catalog entry, the allowed tools and
+access (**Read**, or **Write**, which a run must be allowed), then the item limits: **Limit to repositories** (empty means every
 repository), **Apply automatically** (on by default) and, under **Advanced**,
 **Limit to agents**. **Add skill** picks a skill already imported, or imports one
 from a tar/tar.gz archive or a pinned GitHub commit, with the same three limits.
@@ -49,11 +56,23 @@ form for a row; renaming a server or changing its endpoint clears its stored
 token, so enter it again. **Remove** asks for confirmation; an item an automation
 adds is refused with the automations named.
 
+The server form checks each field when you leave it, with the same rules the API
+applies: a name of 1–48 characters that starts with a lowercase letter and
+continues with lowercase letters, digits, `-` or `_` (not `propr`, and unique in
+the library), and an `https://` endpoint on port 443 without credentials, query
+parameters or fragments. **Add server** and **Discover tools** stay disabled until
+the fields are valid; the API remains the authority and refuses anything the form
+missed. Escape closes the form, and closing it or following a link away from it
+after typing asks before the changes are discarded. On a phone the form's actions
+stay pinned to the bottom of the screen. A GitHub skill import shows *Confirmed
+import commit* only after the exact 40-character commit has been resolved from a
+branch or tag, or verified against the repository.
+
 A warning above a list appears when more than 8 enabled servers or 8 enabled
 skills could apply to one repository and agent combination: only 8 are used per
-run. **Validate saved MCP connectivity** checks the saved HTTPS servers, and
-**Revision history** lists every library revision with the administrator and
-time. Bearer tokens are never shown; the form only says whether one is
+run. **Test connections** checks the saved HTTPS servers and reports each as
+reachable, not reachable or not tested, and **Revision history** lists every
+library revision with its time and administrator. Bearer tokens are never shown; the form only says whether one is
 configured.
 
 Automations pick further items in their editor under
@@ -204,13 +223,18 @@ output, task buffers, diagnostics or session inspection.
 Bearer/header values, exact configured secrets and their common encodings are
 redacted from gateway output, including tool descriptions. Upstream errors and
 connectivity validation disclose no response content. Claude uses a strict MCP
-catalog. Codex ignores its ambient user configuration while retaining the existing
+catalog.
+
+### Codex configuration
+
+Codex ignores its ambient user configuration while retaining the existing
 `CODEX_HOME` authentication. This also skips operator settings in
 `CODEX_HOME/config.toml`, including custom `model_provider`, provider base URLs
 and named configurations. Runs with extensions use ProPR’s explicit runtime launch
 settings. Runs with extensions refuse `.codex/config.toml` in the task container
 workspace or its ancestry after repository setup because the qualified CLI has no
-project-config ignore switch. These limitations are displayed in the editor.
+project-config ignore switch. Rows that can reach a Codex agent show the short
+note *Codex: not used in runs that need a custom Codex config*, which links here.
 
 Auto-apply never breaks a Codex run that works without extensions. Before launch
 the worker checks both conditions: the operator `config.toml` defines a custom

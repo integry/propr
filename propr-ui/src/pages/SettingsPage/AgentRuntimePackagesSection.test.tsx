@@ -80,8 +80,9 @@ describe('AgentRuntimePackagesSection', () => {
     await screen.findByText('jq');
 
     expect(screen.getByText(/without sudo/)).toBeInTheDocument();
-    expect(screen.getByText('Finding package names')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'packages.debian.org' })).toHaveAttribute('href', 'https://packages.debian.org/');
+    expect(screen.getByText(/comes from/)).toHaveTextContent('psql comes from postgresql-client');
+    expect(screen.getByRole('link', { name: 'Finding package names' })).toHaveAttribute('href', 'https://docs.propr.dev/docs/features/propr-cli#finding-package-names');
+    expect(screen.queryByText(/packages\.debian\.org/)).toBeNull();
   });
 
   it('offers catalog suggestions and validates a selected package', async () => {
