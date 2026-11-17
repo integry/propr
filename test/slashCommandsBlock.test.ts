@@ -80,5 +80,8 @@ describe('buildSlashCommandsBlock with plugin commands', () => {
         const result = buildSlashCommandsBlock([{ name: 'deploy', description: 'a | b\n<img src=x>', pluginName: 'Ship|it' }]);
         const row = result.split('\n').find(line => line.startsWith('| `/deploy`'))!;
         assert.strictEqual(row, '| `/deploy` | a \\| b img src=x (from the Ship\\|it plugin) | `/deploy` |');
+        const escaped = buildSlashCommandsBlock([{ name: 'deploy', description: 'ends in \\| pipe', pluginName: 'Back\\' }]);
+        const escapedRow = escaped.split('\n').find(line => line.startsWith('| `/deploy`'))!;
+        assert.strictEqual(escapedRow, '| `/deploy` | ends in \\\\\\| pipe (from the Back\\\\ plugin) | `/deploy` |', 'a backslash cannot unescape a pipe');
     });
 });

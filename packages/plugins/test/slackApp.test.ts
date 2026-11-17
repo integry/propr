@@ -284,7 +284,7 @@ test('events for a pull request reuse its stored thread, starting from the menti
   await fallback.notify(eventInput({ ...CHAT_FIXTURE_EVENTS['pull_request.opened'], repository: 'acme/other' }), fallback.ctx);
   assert.equal(fallback.posted()[0].channel, 'C0DEFAULT');
   assert.equal((await fallback.notify(eventInput({ ...CHAT_FIXTURE_EVENTS['pull_request.opened'], repository: 'acme/quiet' }), fallback.ctx) as { skipped: string }).skipped, 'muted');
-  assert.equal(k.requests.some(r => r.url.startsWith('https://hooks.slack.com')), false, 'app mode never uses the webhook URLs');
+  assert.equal(k.requests.some(r => new URL(r.url).hostname === 'hooks.slack.com'), false, 'app mode never uses the webhook URLs');
 });
 
 test('app mode retries rate limits and server errors, refuses permanent errors and starts a new thread when the old one is gone', async () => {

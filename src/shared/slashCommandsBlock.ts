@@ -1,8 +1,9 @@
 /** A command an enabled plugin offers in the repository, listed after the built-in commands. */
 export interface PluginCommandHelpRow { name: string; description: string; pluginName: string }
 
-/** One table cell of plugin-written text: a single line without table or HTML syntax. */
-const cell = (text: string) => text.replace(/[\r\n]+/g, ' ').replace(/[<>]/g, '').replace(/\|/g, '\\|').trim();
+/** One table cell of plugin-written text: a single line without table or HTML syntax
+ * (backslashes and pipes are escaped, so a trailing backslash cannot unescape a pipe). */
+const cell = (text: string) => text.replace(/[\r\n]+/g, ' ').replace(/[<>]/g, '').replace(/[\\|]/g, '\\$&').trim();
 
 /**
  * Builds an expandable HTML <details> block documenting available ProPR slash commands.
