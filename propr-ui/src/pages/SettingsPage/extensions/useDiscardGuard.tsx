@@ -8,7 +8,7 @@ const LEAVING = 'a[href], [role="tab"], [data-settings-mobile-header] button';
  * Keeps typed content of an open editor from being lost unnoticed. Escape and
  * Cancel close the form, asking first when it is `dirty`; so do in-app links
  * and Settings navigation clicked outside the form, which are replayed once
- * the discard is confirmed. Reloading or closing the tab gets the browser's
+ * the discard is confirmed and the form closed. Reloading or closing the tab gets the browser's
  * own prompt.
  */
 export function useDiscardGuard(formRef: RefObject<HTMLElement | null>, dirty: boolean, onClose: () => void): {
@@ -19,6 +19,8 @@ export function useDiscardGuard(formRef: RefObject<HTMLElement | null>, dirty: b
   /** What confirming the discard does: close the form, or replay the click that would leave it. */
   const [pending, setPending] = useState<(() => void) | null>(null);
   const bypass = useRef(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   const requestClose = useCallback(() => {
     if (dirty) setPending(() => onClose); else onClose();
   }, [dirty, onClose]);
@@ -33,6 +35,9 @@ export function useDiscardGuard(formRef: RefObject<HTMLElement | null>, dirty: b
       if (target instanceof HTMLAnchorElement && (target.target === '_blank' || target.hasAttribute('download'))) return;
       event.preventDefault(); event.stopPropagation();
       setPending(() => () => {
+        // Discarding closes this form before the click is replayed. Another open form with typed content then
+        // asks for itself, and once it is confirmed this form is gone and cannot intercept that replay.
+        closeRef.current();
         bypass.current = true;
         try { target.click(); } finally { bypass.current = false; }
       });

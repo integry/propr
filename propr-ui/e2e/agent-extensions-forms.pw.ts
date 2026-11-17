@@ -154,7 +154,9 @@ for (const width of [1440, 390]) {
     await expect(github.getByTestId('extension-skill-commit')).toHaveText('Enter the full 40-character commit (0–9, a–f).');
     await expect(form.getByText(/Confirmed/)).toHaveCount(0);
     await exact.fill('a'.repeat(40));
-    await expect(github.getByTestId('extension-skill-commit')).toHaveText('This commit was not found in the repository.');
+    // A refused lookup is not taken as final: it can be checked again.
+    await expect(github.getByTestId('extension-skill-commit')).toHaveText('This commit could not be verified. It may not exist in the repository, or the check failed. Check again');
+    await expect(github.getByRole('button', { name: 'Check again' })).toBeVisible();
     await expect(form.getByText(/Confirmed/)).toHaveCount(0);
     await capture(page, testInfo, `extension-skill-commit-unverified-${width}`, form);
 

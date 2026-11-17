@@ -83,7 +83,11 @@ export const serverDraftDirty = (draft: ExtensionLibraryServer, opened: string, 
   JSON.stringify(draft) !== opened || token !== '' || Object.values(secretValues).some(Boolean);
 
 /** The lookup of one typed or resolved commit. */
-export interface CommitLookup { commit: string; status: 'checking' | 'verified' | 'failed' }
+/**
+ * `failed` means the repository answered with another commit; `unavailable` means the check itself
+ * did not succeed, which can be temporary, so it may be retried.
+ */
+export interface CommitLookup { commit: string; status: 'checking' | 'verified' | 'failed' | 'unavailable' }
 
 /**
  * The label of the commit a GitHub skill import will use. Nothing is called
@@ -95,5 +99,6 @@ export function importCommitLabel(commit: string, lookup: CommitLookup | undefin
   const status = lookup?.commit === commit ? lookup.status : 'checking';
   if (status === 'verified') return { tone: 'confirmed', text: 'Confirmed import commit:' };
   if (status === 'failed') return { tone: 'invalid', text: 'This commit was not found in the repository.' };
+  if (status === 'unavailable') return { tone: 'invalid', text: 'This commit could not be verified. It may not exist in the repository, or the check failed.' };
   return { tone: 'pending', text: 'Checking the commit…' };
 }

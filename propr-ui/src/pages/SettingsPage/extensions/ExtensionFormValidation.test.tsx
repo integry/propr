@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExtensionServerForm } from './ExtensionServerForm';
@@ -159,7 +160,44 @@ describe('Add server validation', () => {
     expect(followed).not.toHaveBeenCalled();
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Discard' }));
     expect(followed).toHaveBeenCalledTimes(1);
+    // Discarding before leaving closes the form, so it cannot intercept the navigation again.
+    expect(onCancel).toHaveBeenCalledTimes(2);
     link.remove();
+  });
+
+  it('leaves once every open form with typed content agreed to discard', () => {
+    /** Both lists can have their editor open at once; each closes it on Cancel. */
+    function BothEditors() {
+      const [server, setServer] = useState(true);
+      const [skill, setSkill] = useState(true);
+      return (
+        <>
+          {server && <ExtensionServerForm servers={[]} catalog={[]} choices={choices} onSave={vi.fn()} onCancel={() => setServer(false)} />}
+          {skill && <ExtensionSkillForm available={[]} choices={choices} onImported={() => {}} onSave={vi.fn()} onCancel={() => setSkill(false)} />}
+        </>
+      );
+    }
+    render(<BothEditors />);
+    fireEvent.change(within(screen.getByTestId('extension-server-form')).getByLabelText('HTTPS endpoint'), { target: { value: 'https://tools.example.com/mcp' } });
+    const skill = screen.getByTestId('extension-skill-form');
+    fireEvent.click(within(skill).getByText('Import from an authorized GitHub repository'));
+    fireEvent.change(within(skill).getByLabelText('Relative skill directory'), { target: { value: 'skills/review' } });
+    const tab = document.createElement('button');
+    tab.setAttribute('role', 'tab'); tab.textContent = 'Agents';
+    const followed = vi.fn();
+    tab.addEventListener('click', followed);
+    document.body.append(tab);
+    try {
+      fireEvent.click(tab);
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Discard changes?' })).getByRole('button', { name: 'Discard' }));
+      expect(followed).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('extension-server-form')).toBeNull();
+      // The other form asks for itself; confirming it lets the click through instead of asking again.
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Discard changes?' })).getByRole('button', { name: 'Discard' }));
+      expect(followed).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.queryByTestId('extension-skill-form')).toBeNull();
+    } finally { tab.remove(); }
   });
 
   it('keeps the actions in a footer that sticks to the bottom on a phone', () => {
@@ -209,13 +247,46 @@ describe('Add skill from GitHub', () => {
   });
 
   it('refuses a commit the repository does not have', async () => {
-    vi.mocked(resolveGithubSkillRef).mockRejectedValue(new Error('not found'));
+    vi.mocked(resolveGithubSkillRef).mockResolvedValue({ commit: 'f'.repeat(40) });
     const { form } = skillForm();
     fireEvent.change(within(form).getByLabelText('Repository'), { target: { value: 'example/docs' } });
     fireEvent.click(within(form).getByText('Use an exact commit'));
     fireEvent.change(within(form).getByLabelText('Exact 40-character commit'), { target: { value: commit } });
     expect(await within(form).findByText('This commit was not found in the repository.')).toBeInTheDocument();
     expect(form).not.toHaveTextContent('Confirmed');
+  });
+
+  const typeCommitAfterFailedCheck = async () => {
+    vi.mocked(resolveGithubSkillRef).mockRejectedValueOnce(new Error('Extension operation unavailable. Check the configuration and try again.'))
+      .mockResolvedValue({ commit });
+    const { form } = skillForm();
+    fireEvent.change(within(form).getByLabelText('Repository'), { target: { value: 'example/docs' } });
+    fireEvent.click(within(form).getByText('Use an exact commit'));
+    fireEvent.change(within(form).getByLabelText('Exact 40-character commit'), { target: { value: commit } });
+    fireEvent.change(within(form).getByLabelText('Relative skill directory'), { target: { value: 'skills/review' } });
+    expect(await within(form).findByText(/This commit could not be verified/)).toBeInTheDocument();
+    expect(form).not.toHaveTextContent('Confirmed');
+    expect(within(form).getByRole('button', { name: 'Import pinned skill' })).toBeDisabled();
+    return form;
+  };
+
+  it('checks the same commit again after a failed check when asked', async () => {
+    const form = await typeCommitAfterFailedCheck();
+    fireEvent.click(within(form).getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(within(form).getByTestId('extension-skill-commit')).toHaveTextContent(`Confirmed import commit: ${commit}`));
+    expect(resolveGithubSkillRef).toHaveBeenCalledTimes(2);
+    expect(within(form).getByRole('button', { name: 'Import pinned skill' })).toBeEnabled();
+  });
+
+  it('checks the same commit again after a failed check once it is typed again', async () => {
+    const form = await typeCommitAfterFailedCheck();
+    const input = within(form).getByLabelText('Exact 40-character commit');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.change(input, { target: { value: commit } });
+    await waitFor(() => expect(within(form).getByTestId('extension-skill-commit')).toHaveTextContent(`Confirmed import commit: ${commit}`));
+    expect(resolveGithubSkillRef).toHaveBeenCalledTimes(2);
+    expect(within(form).queryByRole('button', { name: 'Check again' })).toBeNull();
+    expect(within(form).getByRole('button', { name: 'Import pinned skill' })).toBeEnabled();
   });
 
   it('shows a typed repository as the selected option only once it is a valid owner/name', async () => {

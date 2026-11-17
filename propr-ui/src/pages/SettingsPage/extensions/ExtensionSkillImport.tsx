@@ -49,6 +49,8 @@ type Lookup = CommitLookup & { repository: string };
 /**
  * Checks a typed full commit against the repository, shortly after typing
  * stops. A commit resolved from a branch or tag is recorded as verified by the caller.
+ * Clearing the lookup checks the same commit again; the caller does that on
+ * edits and on retry, so a failed check never sticks to the form.
  */
 function useTypedCommitLookup(repository: string, commit: string, lookup: Lookup | undefined, onLookup: (lookup: Lookup) => void) {
   const known = lookup?.repository === repository && lookup.commit === commit;
@@ -59,7 +61,7 @@ function useTypedCommitLookup(repository: string, commit: string, lookup: Lookup
     const timer = setTimeout(() => {
       void resolveGithubSkillRef(repository, pending)
         .then(result => { if (active) onLookup({ repository, commit: pending, status: result.commit === pending ? 'verified' : 'failed' }); })
-        .catch(() => { if (active) onLookup({ repository, commit: pending, status: 'failed' }); });
+        .catch(() => { if (active) onLookup({ repository, commit: pending, status: 'unavailable' }); });
     }, 400);
     return () => { active = false; clearTimeout(timer); };
   }, [pending, repository, onLookup]);
@@ -112,8 +114,10 @@ function GithubSkillImport({ repositories, run, onInput }: { repositories: strin
     return () => { active = false; };
   }, [chosenRef, source.repository, setStatus]);
   useTypedCommitLookup(source.repository, chosenRef ? '' : source.commit, lookup, setLookup);
+  /** Forgets a lookup that did not verify, so the commit as typed next is checked again. */
+  const forgetUnverified = () => setLookup(value => value?.status === 'verified' ? value : undefined);
   const setRepository = (repository: string) => {
-    setChosenRef(undefined); setSource(value => ({ ...value, repository: repository.trim(), commit: '' }));
+    setChosenRef(undefined); forgetUnverified(); setSource(value => ({ ...value, repository: repository.trim(), commit: '' }));
   };
   const commitLabel = validRepository ? importCommitLabel(source.commit, lookup?.repository === source.repository ? lookup : undefined) : null;
   const verified = commitLabel?.tone === 'confirmed';
@@ -133,6 +137,9 @@ function GithubSkillImport({ repositories, run, onInput }: { repositories: strin
         {commitLabel && (
           <p id={commitStatusId} data-testid="extension-skill-commit" data-tone={commitLabel.tone} className={`break-all text-[12px] leading-5 ${COMMIT_TONES[commitLabel.tone]}`}>
             {commitLabel.text}{verified && <> <code>{source.commit}</code></>}
+            {lookup?.repository === source.repository && lookup.commit === source.commit && lookup.status === 'unavailable' && (
+              <> <button type="button" className="font-medium underline" onClick={forgetUnverified}>Check again</button></>
+            )}
           </p>
         )}
         <details>
@@ -140,7 +147,7 @@ function GithubSkillImport({ repositories, run, onInput }: { repositories: strin
           <label className={labelClass}>Exact 40-character commit
             <input className={`${inputClass} font-mono`} value={source.commit} autoCapitalize="none" spellCheck={false} maxLength={64}
               aria-describedby={commitLabel ? commitStatusId : undefined} aria-invalid={commitLabel?.tone === 'invalid'}
-              onChange={event => { setChosenRef(undefined); setSource(value => ({ ...value, commit: event.target.value.trim() })); }} />
+              onChange={event => { setChosenRef(undefined); forgetUnverified(); setSource(value => ({ ...value, commit: event.target.value.trim() })); }} />
           </label>
         </details>
         <label className={labelClass}>Relative skill directory
