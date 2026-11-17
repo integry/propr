@@ -145,6 +145,31 @@ test('changing an exported SDK error class\'s constructor or members is a breaki
   assert.ok(base.breaking.includes('sdk: type PluginSdkError extends was removed'), base.breaking.join('\n'));
 });
 
+test('adding an SDK error code or an event domain in the source is an addition; removing one is a breaking change', () => {
+  const snapshot = readJson(SNAPSHOT);
+  const codes = 'export const PLUGIN_SDK_ERROR_CODES = [';
+  const code = readPluginContractSource({ overrides: editedSource(PLUGIN_SDK_SOURCE, codes, `${codes}\n  'rate_limited',`) });
+  // The runtime list (`errorCodes`) is read from the module, so record the same addition there, as the real change would.
+  const withCode = buildSourcePluginContract(code);
+  withCode.sdk.errorCodes.push('rate_limited');
+  const added = comparePluginContract(snapshot, withCode);
+  assert.deepEqual(added.breaking, []);
+  for (const message of ['sdk: type PluginSdkErrorCode now includes "rate_limited"', 'sdk: error code: rate_limited was added']) assert.ok(added.additions.includes(message), added.additions.join('\n'));
+  const domains = "export const REPOSITORY_EVENT_DOMAINS = ['pull_request', 'epic_queue', 'plan_issue', 'task'] as const;";
+  const domain = readPluginContractSource({ overrides: editedSource(REPOSITORY_EVENTS_SOURCE, domains, "export const REPOSITORY_EVENT_DOMAINS = ['pull_request', 'epic_queue', 'plan_issue', 'task', 'deployment'] as const;") });
+  const addedDomain = comparePluginContract(snapshot, buildSourcePluginContract(domain));
+  assert.deepEqual(addedDomain.breaking, []);
+  assert.deepEqual(addedDomain.additions, ['sdk: type RepositoryEventDomain now includes "deployment"']);
+  // Removals, and changing what the alias is declared as, are still breaking changes.
+  const removedCode = breakingAfterEdit(PLUGIN_SDK_SOURCE, "'state_limit',", '');
+  assert.deepEqual(removedCode.breaking, ['sdk: type PluginSdkErrorCode no longer includes "state_limit"']);
+  const removedDomain = breakingAfterEdit(REPOSITORY_EVENTS_SOURCE, domains, "export const REPOSITORY_EVENT_DOMAINS = ['pull_request', 'epic_queue', 'task'] as const;");
+  assert.deepEqual(removedDomain.breaking, ['sdk: type RepositoryEventDomain no longer includes "plan_issue"']);
+  const widened = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export type PluginSdkErrorCode = typeof PLUGIN_SDK_ERROR_CODES[number];', 'export type PluginSdkErrorCode = typeof PLUGIN_SDK_ERROR_CODES[number] | string;');
+  assert.equal(widened.breaking.length, 1, widened.breaking.join('\n'));
+  assert.match(widened.breaking[0], /^sdk: type PluginSdkErrorCode changed from typeof PLUGIN_SDK_ERROR_CODES\[number\] = .* to typeof PLUGIN_SDK_ERROR_CODES\[number\] \| string = string$/);
+});
+
 test('every journal event type has a payload contract, and nothing else does', () => {
   assert.deepEqual(Object.keys(PLUGIN_EVENT_PAYLOAD_FIELDS).sort(), pluginEventNames().sort());
 });

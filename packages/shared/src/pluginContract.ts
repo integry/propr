@@ -317,6 +317,35 @@ function compareManifest(previous: PluginContract, current: PluginContract, supp
   }
 }
 
+const LITERAL = String.raw`(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false)`;
+const LITERAL_UNION_ALIAS = new RegExp(`^(.*?) = (${LITERAL}(?: \\| ${LITERAL})*)$`);
+const LITERALS = new RegExp(LITERAL, 'g');
+
+/**
+ * The declared text and the literal values of an alias the contract source records expanded, because
+ * it follows a runtime list (`typeof PLUGIN_SDK_ERROR_CODES[number] = "permission_denied" | …`).
+ */
+function literalUnionAlias(text: string): { declared: string; members: string[] } | null {
+  const match = LITERAL_UNION_ALIAS.exec(text);
+  return match ? { declared: match[1], members: match[2].match(LITERALS) ?? [] } : null;
+}
+
+/**
+ * A declared SDK type whose text changed. An alias of a runtime list (`PluginSdkErrorCode`,
+ * `RepositoryEventDomain`) grows with the list, which is additive like the list itself (a new error
+ * code or event domain); a value it no longer includes, or any other change, breaks plugins.
+ */
+function compareChangedType(member: string, previous: string, current: string, result: PluginContractComparison) {
+  const before = literalUnionAlias(previous);
+  const after = literalUnionAlias(current);
+  if (!before || !after || before.declared !== after.declared) {
+    result.breaking.push(`sdk: type ${member} changed from ${previous} to ${current}`);
+    return;
+  }
+  for (const value of before.members) if (!after.members.includes(value)) result.breaking.push(`sdk: type ${member} no longer includes ${value}`);
+  for (const value of after.members) if (!before.members.includes(value)) result.additions.push(`sdk: type ${member} now includes ${value}`);
+}
+
 /**
  * The changes from `previous` (the committed snapshot) to `current`. Only
  * what `previous` promised is checked: everything it lists must still be
@@ -356,7 +385,7 @@ export function comparePluginContract(previous: PluginContract, current: PluginC
     const now = current.sdk.types ?? {};
     for (const [member, type] of Object.entries(sdk.types)) {
       if (!(member in now)) result.breaking.push(`sdk: type ${member} was removed`);
-      else if (now[member] !== type) result.breaking.push(`sdk: type ${member} changed from ${type} to ${now[member]}`);
+      else if (now[member] !== type) compareChangedType(member, type, now[member], result);
     }
     // A required member added to an interface plugins supply (a parameter of an SDK call) breaks the plugins that build it.
     const supplied = new Set([...(sdk.suppliedTypes ?? []), ...(current.sdk.suppliedTypes ?? [])]);
