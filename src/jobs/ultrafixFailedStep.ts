@@ -6,6 +6,10 @@
  * deferred record and nothing queued. No trigger would look at it again. This
  * records a retry obligation for such a loop so the resume sweep re-arms it,
  * and counts the failure on the loop so repeated failures trip a breaker.
+ *
+ * A step refused at admission for disk pressure is recorded as a wait
+ * instead (`recordUltrafixDiskPressureRefusal`): not counted, and retried on
+ * the backoff of `ultrafixDiskPressureWait.ts`.
  */
 
 import type { Redis } from 'ioredis';
@@ -17,10 +21,12 @@ import {
     getUltrafixStateKey,
     loadRearmRetryRaw,
 } from './ultrafixOrchestrationService.js';
-import type { UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
+import type { UltrafixAction, UltrafixLoopState, UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
 import { REARM_RETRY_TTL_SECONDS } from './ultrafixDeferredContinuationStore.js';
 import { loadStateSnapshot, recordFailedStepInState } from './ultrafixResumeClaim.js';
 import { indexUltrafixResumeCandidate } from './ultrafixResumeIndex.js';
+import { DISK_PRESSURE_RETRY_REASON, getDiskPressureWait, recordDiskPressureRefusalInState } from './ultrafixDiskPressureWait.js';
+import type { UltrafixDiskPressureWait } from './ultrafixDiskPressureWait.js';
 
 /** Reason recorded on the retry obligation left by a step job that failed for good. */
 export const FAILED_STEP_RETRY_REASON = 'step_job_failed';
@@ -50,7 +56,21 @@ export interface FailedStepJobData {
     repoName?: string;
     pullRequestNumber?: number;
     ultrafixMeta?: Pick<UltrafixCommandMeta, 'workEpoch'> | null;
+    commandMode?: string;
 }
+
+/** How one exhausted step changes the loop state, and what the sweep is asked to do about it. */
+interface StepFailureTransition {
+    reason: string;
+    nextState(state: UltrafixLoopState): UltrafixLoopState;
+    /** When the sweep may act on the obligation; absent: at once. */
+    notBefore?(state: UltrafixLoopState): string | undefined;
+}
+
+const FAILED_STEP_TRANSITION: StepFailureTransition = {
+    reason: FAILED_STEP_RETRY_REASON,
+    nextState: recordFailedStepInState,
+};
 
 /**
  * Record the obligation only for a step that still owned its active loop: a
@@ -65,22 +85,75 @@ export interface FailedStepJobData {
  * failure streak is written in the same atomic step.
  */
 export async function recordFailedUltrafixStep(redis: Redis, data: FailedStepJobData): Promise<boolean> {
+    return await recordStepFailure(redis, data, FAILED_STEP_TRANSITION) !== null;
+}
+
+function stepActionOf(data: FailedStepJobData): UltrafixAction | null {
+    return data.commandMode === 'review' || data.commandMode === 'fix' ? data.commandMode : null;
+}
+
+/**
+ * Record an Ultrafix step refused at worker admission for disk pressure: a
+ * wait, not a failed step. The failed-step streak is left alone; the
+ * obligation asks the sweep to retry the same step once its backoff has
+ * passed, or (retries used up) to stop the loop with the real reason.
+ * Returns the recorded wait, or null when the job was no current Ultrafix step.
+ */
+export async function recordUltrafixDiskPressureRefusal(
+    redis: Redis,
+    data: FailedStepJobData,
+    now = Date.now(),
+): Promise<UltrafixDiskPressureWait | null> {
+    const action = stepActionOf(data);
+    if (!action) return null;
+    const recorded = await recordStepFailure(redis, data, {
+        reason: DISK_PRESSURE_RETRY_REASON,
+        nextState: state => recordDiskPressureRefusalInState(state, action, now),
+        notBefore: state => {
+            const wait = getDiskPressureWait(state);
+            return wait && !wait.exhausted ? wait.retryAt : undefined;
+        },
+    });
+    return recorded?.diskPressureWait ?? null;
+}
+
+/**
+ * The obligation is replaced by a new version, keeping any claimed step it
+ * carries, so that settling a handoff recorded before cannot release it.
+ */
+function buildFailureRetry(
+    target: { owner: string; repo: string; pr: number; workEpoch: number },
+    transition: StepFailureTransition,
+    nextState: UltrafixLoopState,
+    existing: UltrafixRearmRetry | null,
+): UltrafixRearmRetry {
+    const notBefore = transition.notBefore?.(nextState);
+    return {
+        ...target,
+        reason: transition.reason,
+        savedAt: new Date().toISOString(),
+        ...(notBefore ? { notBefore } : {}),
+        failureVersion: (existing?.failureVersion ?? 0) + 1,
+        ...(existing?.claimedStep ? { claimedStep: existing.claimedStep } : {}),
+    };
+}
+
+async function recordStepFailure(
+    redis: Redis,
+    data: FailedStepJobData,
+    transition: StepFailureTransition,
+): Promise<UltrafixLoopState | null> {
     const { repoOwner: owner, repoName: repo, pullRequestNumber: pr, ultrafixMeta } = data;
-    if (!ultrafixMeta || !owner || !repo || typeof pr !== 'number') return false;
+    if (!ultrafixMeta || !owner || !repo || typeof pr !== 'number') return null;
     const workEpoch = ultrafixMeta.workEpoch ?? 0;
     for (let attempt = 1; attempt <= MAX_RECORD_ATTEMPTS; attempt++) {
         const snapshot = await loadStateSnapshot(redis, owner, repo, pr);
-        if (!snapshot?.state.active || (snapshot.state.workEpoch ?? 0) !== workEpoch) return false;
-        if (await getUltrafixAutomaticWorkEpoch(redis, owner, repo, pr) !== workEpoch) return false;
+        if (!snapshot?.state.active || (snapshot.state.workEpoch ?? 0) !== workEpoch) return null;
+        if (await getUltrafixAutomaticWorkEpoch(redis, owner, repo, pr) !== workEpoch) return null;
         const existingRaw = await loadRearmRetryRaw(redis, owner, repo, pr);
         const existing = existingRaw ? JSON.parse(existingRaw) as UltrafixRearmRetry : null;
-        const retry: UltrafixRearmRetry = {
-            owner, repo, pr, workEpoch,
-            reason: FAILED_STEP_RETRY_REASON,
-            savedAt: new Date().toISOString(),
-            failureVersion: (existing?.failureVersion ?? 0) + 1,
-            ...(existing?.claimedStep ? { claimedStep: existing.claimedStep } : {}),
-        };
+        const nextState = transition.nextState(snapshot.state);
+        const retry = buildFailureRetry({ owner, repo, pr, workEpoch }, transition, nextState, existing);
         const recorded = await redis.eval(
             RECORD_FAILED_STEP_SCRIPT,
             3,
@@ -89,15 +162,15 @@ export async function recordFailedUltrafixStep(redis: Redis, data: FailedStepJob
             getUltrafixRearmRetryKey(owner, repo, pr),
             String(workEpoch),
             snapshot.raw,
-            JSON.stringify(recordFailedStepInState(snapshot.state)),
+            JSON.stringify(nextState),
             existingRaw ?? '',
             JSON.stringify(retry),
             String(REARM_RETRY_TTL_SECONDS),
         );
         if (Number(recorded) === 1) {
             await indexUltrafixResumeCandidate(redis, retry);
-            return true;
+            return nextState;
         }
     }
-    return false;
+    return null;
 }

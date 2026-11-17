@@ -12,7 +12,7 @@ await mock.module('@propr/core', {
 });
 
 await mock.module('../src/jobs/ultrafixLoopContinuationHelpers.js', {
-    namedExports: { postPrComment: mock.fn(async () => null), updatePrComment: mock.fn(async () => false) },
+    namedExports: { postPrComment: mock.fn(async () => null), updatePrComment: mock.fn(async () => false), removeUltrafixLabel: mock.fn(async () => undefined) },
 });
 
 const {
