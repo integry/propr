@@ -5,7 +5,7 @@ description: "Manage the instance extension library of authorized MCP servers an
 ---
 # Instance agent extensions
 
-Instance Settings → Agent Extensions & Packages → Skills & MCP servers manages the
+Instance Settings → Agent extensions & packages → Skills & MCP servers manages the
 native Core **extension library**: one instance-wide list of MCP servers and skill
 bundle references. No Connect account or Hosted control is required. The API
 requires a current **durable** `instance_members` administrator with

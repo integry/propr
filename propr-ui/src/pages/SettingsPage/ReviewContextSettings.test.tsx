@@ -56,15 +56,14 @@ describe('ReviewContextSettings', () => {
     expect(screen.getByText('100%').tagName).toBe('OUTPUT');
     expect(screen.queryByRole('spinbutton')).toBeNull();
     expect(screen.queryByText('Maximum Review Context')).toBeNull();
-    expect(screen.getByText(/A lower percentage reduces review context and can produce/)).toBeInTheDocument();
+    expect(screen.getByText(/How much of each model.s input a review may use\. Lower values can give partial reviews\./)).toBeInTheDocument();
   });
 
   it('shows the effective allowance of the configured reviewer', () => {
     renderSettings({ pr_review_context_budget_percent: 50 });
 
     const allowance = screen.getByTestId('review-context-budget-allowance');
-    expect(allowance).toHaveTextContent('≈ 474K input tokens for claude - Claude Opus 5.5');
-    expect(allowance).toHaveTextContent('50% of 948K safe; verified runtime window');
+    expect(allowance).toHaveTextContent(/^≈ 474K tokens for claude - Claude Opus 5\.5$/);
   });
 
   it('shows per-reviewer differences for configured agents', () => {
@@ -78,7 +77,7 @@ describe('ReviewContextSettings', () => {
   it('reports an automatic state for a routed reviewer instead of inventing precision', () => {
     renderSettings({ pr_review_model: 'pool:balanced' }, [{ alias: 'pool', kind: 'synthetic', enabled: true, supportedModels: ['balanced'] }]);
 
-    expect(screen.getByTestId('review-context-budget-allowance')).toHaveTextContent('Automatic — allowance is resolved per reviewer when a review runs');
+    expect(screen.getByTestId('review-context-budget-allowance')).toHaveTextContent(/^Automatic$/);
     expect(screen.getByText(/each reviewer uses its own budget/)).toBeInTheDocument();
   });
 
@@ -105,8 +104,8 @@ describe('ReviewContextSettings', () => {
     const { handlers } = renderSettings({ pr_review_max_context_tokens: 120000 });
 
     expect(screen.getByRole('note')).toHaveTextContent('A legacy absolute cap of 120,000 tokens is still in effect.');
-    expect(screen.getByTestId('review-context-budget-allowance')).toHaveTextContent('≈ 120K input tokens');
-    expect(screen.getByTestId('review-context-budget-allowance')).toHaveTextContent('limited by the legacy cap');
+    expect(screen.getByTestId('review-context-budget-allowance')).toHaveTextContent('≈ 120K tokens');
+    expect(screen.getByTestId('review-context-budget-allowance')).toHaveTextContent('(legacy cap)');
 
     fireEvent.change(screen.getByRole('slider', { name: 'Review context budget' }), { target: { value: '100' } });
     expect(handlers.onRemoveLegacyCap).not.toHaveBeenCalled();

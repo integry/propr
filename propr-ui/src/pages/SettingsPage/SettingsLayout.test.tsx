@@ -20,12 +20,12 @@ describe('Settings layout primitives', () => {
 
   it('stacks label, control, and helper text in one readable column', () => {
     render(
-      <SettingsField label="Plan Generation Model" htmlFor="plan-model" helperText="Used for plans.">
+      <SettingsField label="Plan generation model" htmlFor="plan-model" helperText="Used for plans.">
         <select id="plan-model" className={SETTINGS_CONTROL}><option>gpt</option></select>
       </SettingsField>
     );
 
-    const control = screen.getByLabelText('Plan Generation Model');
+    const control = screen.getByLabelText('Plan generation model');
     const row = control.closest('div')?.parentElement;
     expect(row).toHaveClass('max-w-2xl');
     expect(control).toHaveClass('w-full');

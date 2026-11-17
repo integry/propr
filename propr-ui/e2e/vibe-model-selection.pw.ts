@@ -44,11 +44,11 @@ test('Vibe offers GLM models and saves the selected default', async ({ page }) =
   if (process.env.PROPR_CAPTURE_PREVIEW) {
     const directory = resolve(process.cwd(), '../.propr/previews');
     mkdirSync(directory, { recursive: true });
-    await page.getByRole('heading', { name: 'Add New Agent' }).locator('../..').screenshot({ path: resolve(directory, 'vibe-glm-selection.png') });
+    await page.getByRole('heading', { name: 'Add new agent' }).locator('../..').screenshot({ path: resolve(directory, 'vibe-glm-selection.png') });
   }
   await page.getByRole('button', { name: 'Add Agent', exact: true }).click();
   await expect.poll(() => saved?.agents[0]?.defaultModel).toBe('zai-glm-5-3');
-  await expect(page.getByRole('heading', { name: 'Add New Agent' })).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Add new agent' })).toBeHidden();
   expect(saved?.agents[0]?.type).toBe('vibe');
   expect(saved?.agents[0]?.supportedModels).toEqual(['mistral-medium-3.5', 'zai-glm-5-3', 'zai-glm-5-2']);
 });

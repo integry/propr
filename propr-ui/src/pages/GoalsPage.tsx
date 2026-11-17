@@ -501,7 +501,7 @@ function CreateGoalDialog({ isOpen, onClose, onCreated }: CreateGoalDialogProps)
   }, [isOpen]);
 
   if (!isOpen) return null;
-  return <CreationDialog title="Start a goal" icon={Target} description="Your reusable session settings are remembered after creation."
+  return <CreationDialog title="Start a goal" icon={Target} description="These settings are remembered for next time."
     closeLabel="Close goal creation" onClose={requestClose} busy={submitting}>
     <CreateGoalForm onCancel={requestClose} onCreated={onCreated} onDirtyChange={setDirty} onSubmittingChange={setSubmitting} />
   </CreationDialog>;

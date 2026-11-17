@@ -62,7 +62,7 @@ it('shows conservative auto fallback and saves the repository override', () => {
   const onUpdate = vi.fn();
   const { rerender } = render(<RepositoryVisualPreviewControl repo={repo} onUpdate={onUpdate} isReadOnly={false} />);
   expect(screen.getByRole('combobox')).toHaveValue('auto');
-  expect(screen.getByRole('status')).toHaveTextContent('Auto unresolved; using conservative Free limits. Images: 10 MiB; videos: 10 MiB.');
+  expect(screen.getByRole('status')).toHaveTextContent('Using the Free plan limits. Images: 10 MiB; videos: 10 MiB.');
   fireEvent.change(screen.getByRole('combobox'), { target: { value: 'paid' } });
   expect(onUpdate).toHaveBeenLastCalledWith(repo.id, expect.objectContaining({ githubAttachmentPlan: 'paid' }));
   rerender(<RepositoryVisualPreviewControl repo={{ ...repo, visualPreview: { ...repo.visualPreview!, githubAttachmentPlan: 'paid' } }} onUpdate={onUpdate} isReadOnly={false} />);

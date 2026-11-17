@@ -181,7 +181,7 @@ agent's parser:
   count; any real text resets the count.
 
 `0` disables a rule. The thresholds are instance settings (Settings →
-Sandbox & Network → Agent watchdog, `propr setting update agent_stall_timeout_ms …`)
+Sandbox & network → Agent watchdog, `propr setting update agent_stall_timeout_ms …`)
 read at the start of every run, so a change applies to the next run without a
 restart; the environment variables are their defaults.
 

@@ -48,7 +48,7 @@ ProPR filters PR comments by author before processing anything (commands and nat
 - Users listed in `GITHUB_USER_BLACKLIST` are ignored when no whitelist is set.
 - MCP administrators with `instance.manage_settings` can inspect all three lists with `get_trigger_access_configuration`. User and bot allowlist changes use `update_trigger_access_configuration`; the environment-only blocklist is reported but cannot be edited by the tool.
 - Comments containing a configured follow-up ignore keyword are skipped.
-- **Assignment gate** (off by default). With **Follow-ups Only From Assigned Users** on (Settings → Workflow & PR Rules, MCP `update_execution_settings` `followup_requires_assignment`, or `propr setting update followup_requires_assignment true`), a comment that would start work on a pull request that has assignees is processed only when its author is one of them. This covers slash commands and natural follow-ups alike. It narrows the rules above and never admits a comment they rejected. An **unassigned pull request is unaffected**, and **ProPR's own system comments** (failed-CI follow-ups and the system `/ultrafix` comments) are never gated. The gate fails closed: if the assignees cannot be read from GitHub, the comment is not acted on until a redelivery or the next poll can read them. A refused author receives one explanatory comment per pull request. See [The assignment gate](./assignment.md#the-assignment-gate).
+- **Assignment gate** (off by default). With **Follow-ups Only From Assigned Users** on (Settings → Workflow & PR rules, MCP `update_execution_settings` `followup_requires_assignment`, or `propr setting update followup_requires_assignment true`), a comment that would start work on a pull request that has assignees is processed only when its author is one of them. This covers slash commands and natural follow-ups alike. It narrows the rules above and never admits a comment they rejected. An **unassigned pull request is unaffected**, and **ProPR's own system comments** (failed-CI follow-ups and the system `/ultrafix` comments) are never gated. The gate fails closed: if the assignees cannot be read from GitHub, the comment is not acted on until a redelivery or the next poll can read them. A refused author receives one explanatory comment per pull request. See [The assignment gate](./assignment.md#the-assignment-gate).
 
 Slash commands from an allowed author are processed directly. Natural follow-up comments are additionally gated: the PR must carry one of the configured processing labels (for example `AI` or `propr`), or the comment must contain a trigger keyword from `PR_FOLLOWUP_TRIGGER_KEYWORDS` (for example `!propr`). When `PR_FOLLOWUP_TRIGGER_KEYWORDS` is empty or unset, every comment from an allowed author triggers a follow-up, labeled PR or not.
 
@@ -91,9 +91,11 @@ A review judges the PR against its *effective objective*: the original objective
 
 When the linked issue has an **Acceptance criteria** list, the review prompt lists each criterion with the id the implementation run reported against (`AC1`, `AC2`, ...; see [Acceptance criteria](./pr-templates.md#acceptance-criteria)). The reviewer verifies every criterion against the diff, and each unmet criterion is a merge blocker with category `requirement` whose title names its id.
 
+**Settings → AI models & reasoning → Review prompt** (`pr_review_prompt`) replaces the built-in review guidance. The field is prefilled with the built-in default; clear it to restore that default. Whatever the guidance says, the required output sections (Overall Evaluation, Findings, Score) are always appended.
+
 ### Review Context Budget
 
-**Settings → AI Models & Reasoning → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
+**Settings → AI models & reasoning → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
 
 | Runtime | Context window used | Source |
 |---|---|---|
@@ -355,7 +357,7 @@ A bare number is treated as the goal: `/ultrafix 8` is the same as `/ultrafix go
 
 #### Automatic Escalation
 
-Settings → Ultrafix & Escalation → Ultrafix provides an instance-wide escalation policy, disabled by default. It does not add repository or PR overrides.
+Settings → Ultrafix & escalation → Ultrafix provides an instance-wide escalation policy, disabled by default. It does not add repository or PR overrides.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -368,7 +370,7 @@ The first model is the model already implementing the PR, including its normal r
 
 After patience expires, the implementation model climbs one of its own available effort tiers. After the configured number of increases, or when no higher tier exists, ProPR tries the next handoff model at that model's own configured base effort. Each step receives a fresh patience window, while the best score remains shared across the run. Antigravity uses the matching effort variant of its model ID (Pro has low/high; GPT-OSS has only medium). Models without an effort dial hand off directly.
 
-Select escalation models from the ordered dropdowns in **Settings → Ultrafix & Escalation**. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
+Select escalation models from the ordered dropdowns in **Settings → Ultrafix & escalation**. Fresh Agent Tank session or weekly usage of 100% or higher skips a handoff candidate. Missing, stale, disabled, or failed usage monitoring permits escalation. Unavailable models are skipped too. If no later model is available, the loop continues with the current model and effort until its normal stopping conditions apply.
 
 The policy is captured when the first automatic fix starts and persisted with the run, including its current model, effort, best score, and patience counter. Webhook and polling intake use the same continuation; deferred CI resumes retain this state. Disabling the master toggle also bypasses escalation in existing runs. The existing overall maximum cycle limit and goal/coverage rules still apply across all models. With escalation disabled, model and reasoning selection and stopping behavior remain unchanged.
 

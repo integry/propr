@@ -11,8 +11,8 @@ export const RepositoryPrTitleStatusControl: React.FC<{
 }> = ({ repo, onToggle, isReadOnly }) => (
   <label className="flex items-center justify-between gap-4 py-2 text-xs text-slate-600 cursor-pointer" onClick={(event) => event.stopPropagation()}>
     <span className="min-w-0">
-      <span className="block">Show the PR state as a leading emoji in the pull request title</span>
-      <span className="mt-1 block text-slate-500">Controls the title only: the live ProPR status line at the top of the pull request body is always kept up to date. Applies to every branch of this repository.</span>
+      <span className="block">Show status in pull request titles</span>
+      <span className="mt-1 block text-slate-500">Adds 🔨, ⚠️ or ✅ and the review score to the title.</span>
     </span>
     <input
       type="checkbox"
@@ -20,7 +20,7 @@ export const RepositoryPrTitleStatusControl: React.FC<{
       onChange={() => { if (!isReadOnly) onToggle(repo.id); }}
       disabled={isReadOnly}
       className="sr-only peer"
-      aria-label={`Show the PR state in pull request titles for ${repo.name}`}
+      aria-label={`Show status in pull request titles for ${repo.name}`}
     />
     <span className={toggleClassName} />
   </label>

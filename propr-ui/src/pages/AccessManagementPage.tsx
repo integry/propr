@@ -332,9 +332,8 @@ const AccessManagementPage: React.FC = () => {
           </button>
         </div>
         <p className="mt-3 max-w-[75ch] text-xs text-gray-500">
-          Instance roles and the GitHub trigger whitelist are separate. After adding or removing a user, you
-          can confirm a matching trigger whitelist change when access is restricted. An empty whitelist allows
-          every GitHub user to trigger ProPR. Manage the full whitelist in Settings.
+          Instance roles and the GitHub trigger whitelist are separate. After adding or removing a user, you can
+          update the whitelist to match; manage it in Settings → Workflow &amp; PR rules → GitHub trigger whitelist.
         </p>
       </form>
 

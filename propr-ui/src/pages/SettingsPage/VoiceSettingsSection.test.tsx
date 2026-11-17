@@ -29,11 +29,11 @@ describe('VoiceSettingsSection', () => {
   it('offers an experimental opt-in that is off until the user chooses it', () => {
     render(<VoiceSettingsSection />, { wrapper: Wrapper });
 
-    expect(screen.getByRole('heading', { name: 'Voice briefings · Experimental' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Voice briefings' })).toBeInTheDocument();
     const toggle = screen.getByRole('checkbox', { name: 'Enable voice briefings' });
     expect(toggle).toBeEnabled();
     expect(toggle).not.toBeChecked();
-    expect(toggle).toHaveAccessibleDescription(/Off by default in every runtime/);
+    expect(toggle).toHaveAccessibleDescription('Spoken summaries on request. Saved for this browser only. The microphone is used only after you choose Listen.');
     expect(localStorage.getItem(storageKey())).toBeNull();
 
     fireEvent.click(toggle);
