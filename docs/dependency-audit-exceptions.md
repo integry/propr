@@ -21,7 +21,9 @@ match the advisory range including prereleases. The guard matches the risky
 extglobs as literal text; the READMEs in those directories record provenance,
 the four upstream test assertions this changes and the residual nested-repeat
 case (`+(a*(a))`). `test/vendoredPicomatch.test.mjs` guards the tarballs, the
-lockfile and the behaviour. Remove both when upstream publishes fixed releases.
+lockfile and the behaviour. Both builds also replace upstream's quadratic
+`removeBackslashes` regex in `lib/utils.js` with an equivalent linear scan
+(CodeQL alerts 246 and 247). Remove both when upstream publishes fixed releases.
 
 ## minimatch GHSA-g3hv-75wg-m249
 
