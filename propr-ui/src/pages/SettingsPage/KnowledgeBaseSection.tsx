@@ -42,20 +42,20 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
 
   return (
     <SettingsSection
-      title="Knowledge Base"
+      title="Knowledge base"
       description="Configure codebase indexing to enable semantic search across your repositories."
       className={className}
     >
       <SettingsCheckboxField
         id="summarization_enabled"
-        label="Enable Semantic Codebase Indexing"
-        helperText="Allows AI to search your codebase by meaning, not just filenames. Requires a configured Agent."
+        label="Enable semantic codebase indexing"
+        helperText="Allows AI to search your codebase by meaning, not just filenames. Requires a configured agent."
         checked={settings.enabled}
         onChange={handleToggleEnabled}
       />
 
       <SettingsField
-        label="Custom Summary Prompt (Optional)"
+        label="Custom summary prompt (optional)"
         htmlFor="custom_prompt"
         helperText="Define specific goals for the AI when summarizing files."
       >
@@ -79,7 +79,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
             className="inline-flex items-center gap-1.5 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-white"
           >
             <RefreshCw aria-hidden="true" className={`h-3.5 w-3.5 ${isReindexing ? 'animate-spin' : ''}`} />
-            {isReindexing ? 'Reindexing...' : 'Reindex All Repositories'}
+            {isReindexing ? 'Reindexing...' : 'Reindex all repositories'}
           </button>
           {hasCooldown && (
             <button
@@ -88,7 +88,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
               disabled={!settings.enabled || !settings.agent_alias || isReindexing}
               className="inline-flex items-center rounded px-2.5 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
             >
-              Queue Once Despite Cooldown
+              Queue once despite cooldown
             </button>
           )}
         </div>
@@ -96,7 +96,7 @@ const KnowledgeBaseSection: React.FC<KnowledgeBaseSectionProps> = ({
 
       {settings.enabled && !settings.agent_alias && (
         <p className="max-w-2xl text-[12px] leading-5 text-amber-700">
-          Select a Summarization Model under AI &amp; Models → Planning to enable indexing.
+          Select a summarization model under AI models &amp; reasoning → Planning to enable indexing.
         </p>
       )}
     </SettingsSection>

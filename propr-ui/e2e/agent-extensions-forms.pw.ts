@@ -114,7 +114,7 @@ for (const width of [1440, 390]) {
       expect(footer!.y).toBeGreaterThan(viewport.height / 2);
       // The category title wraps instead of being cut off.
       const title = page.locator('[data-settings-mobile-title]');
-      await expect(title).toHaveText('Agent Extensions & Packages');
+      await expect(title).toHaveText('Agent extensions & packages');
       expect(await title.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     }
     await capture(page, testInfo, `extension-server-form-${width}`, width < 600 ? page.locator('body') : form);

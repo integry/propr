@@ -89,7 +89,7 @@ test('find_setting ranks aliases and environment names and explains access', asy
   const bots = await findSetting('bot whitelist');
   assert.equal(bots.matches[0].id, 'trigger.bot_allowlist');
   assert.equal(bots.matches[0].mcp.write, 'update_trigger_access_configuration');
-  assert.equal(bots.matches[0].ui, 'Settings → Workflow & PR Rules → GitHub trigger whitelist');
+  assert.equal(bots.matches[0].ui, 'Settings → Workflow & PR rules → GitHub trigger whitelist');
   assert.match(bots.matches[0].howToChange, /requires instance\.manage_settings/);
 
   const timeout = await findSetting('CODEX_TIMEOUT_MS');

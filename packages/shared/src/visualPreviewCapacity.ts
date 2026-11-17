@@ -163,7 +163,7 @@ export function githubAttachmentLimitBytes(contentType: string, capacity = resol
 
 export function describeGitHubAttachmentCapacity(capacity: GitHubAttachmentCapacity): string {
   const state = capacity.source === 'conservative-fallback'
-    ? 'Auto unresolved; using conservative Free limits'
+    ? 'Using the Free plan limits'
     : `${capacity.effectivePlan === 'paid' ? 'Paid' : 'Free'} (${capacity.source === 'override' ? 'repository override' : 'detected'})`;
   return `${state}. Images: 10 MiB; videos: ${capacity.videoLimitBytes / MIB} MiB.`;
 }

@@ -22,7 +22,7 @@ function Harness({ initial = [], onSave = vi.fn(), required = false }: {
   }, []);
   return required ? (
     <TagListSection
-      title="Primary Processing Labels"
+      title="Primary processing labels"
       description="Issues with these labels will be auto-processed."
       items={lists.primaryLabels}
       newItem={lists.newPrimaryLabel}
@@ -36,7 +36,7 @@ function Harness({ initial = [], onSave = vi.fn(), required = false }: {
     />
   ) : (
     <TagListSection
-      title="Follow-up Keywords"
+      title="Follow-up keywords"
       description="Triggers processing when found in comments."
       items={lists.keywords}
       newItem={lists.newKeyword}

@@ -193,7 +193,7 @@ Token-outlier alerts only notify. To **enforce** a limit, set a per-run spend ca
 |---|---|---|
 | 1 (highest) | Per task: `maxCostUsd` on task submissions and MCP `create_task`, or `propr issue implement --max-cost` | USD |
 | 2 | Repository: `limits.max_cost_usd` in `.propr/workflow.yml` | USD; `0` = no cap from the file |
-| 3 | Instance: `default_max_cost_usd` (Settings → Workflow & PR Rules, `propr setting update default_max_cost_usd`) | USD; empty or `0` = no cap |
+| 3 | Instance: `default_max_cost_usd` (Settings → Workflow & PR rules, `propr setting update default_max_cost_usd`) | USD; empty or `0` = no cap |
 
 The cap covers implementations, PR follow-ups, `/fix`, ultrafix cycles and reviews. Spend counts the task's recorded LLM calls plus the usage its running agent containers have streamed so far. A malformed or negative value is ignored with a warning (treated as no cap at that level). Retries share the budget: a re-queued attempt (provider usage-limit re-queue or BullMQ retry) may only spend what earlier attempts of the task left. A run stopped at its cap gets the terminal reason `cost_cap_exceeded`, a `budget.exceeded` timeline event, an Inbox notification and a short issue/PR comment; task details and `propr task get --json` show the cap, the spend and the percentage. See [Spend caps](../features/execution-safety.md#spend-caps).
 

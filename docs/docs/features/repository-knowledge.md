@@ -79,7 +79,7 @@ Each Monday (`0 9 * * 1`) the run reads the last 7 days of changes merged into t
 
 The template needs `repository_read` and `propr_mcp`, so it runs on Claude Code or Codex. It starts in `dry_run`, so a run only writes the report. With autonomy raised to `preview` or `auto`, the acting step saves each suggested consolidation as a repository To-Do (skipping any an open To-Do already covers), where you can schedule it like other maintenance work.
 
-The default pull request review guidance (Settings → AI Models & Reasoning → PR review, which an override replaces) also asks the reviewer to check whether newly added helpers duplicate existing code, so duplicates can be caught before they merge.
+The default pull request review guidance (Settings → AI models & reasoning → PR review, which an override replaces) also asks the reviewer to check whether newly added helpers duplicate existing code, so duplicates can be caught before they merge.
 
 ## When Knowledge Is Underpowered
 

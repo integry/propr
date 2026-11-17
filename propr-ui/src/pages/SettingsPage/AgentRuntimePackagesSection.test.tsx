@@ -140,7 +140,7 @@ describe('AgentRuntimePackagesSection', () => {
     render(<AgentRuntimePackagesSection />);
 
     await waitFor(() => expect(screen.queryByLabelText('Package name')).not.toBeInTheDocument());
-    expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument();
+    expect(screen.queryByText('Agent runtime packages')).not.toBeInTheDocument();
   });
 
   it('renders nothing until runtime package permissions load', async () => {
@@ -149,7 +149,7 @@ describe('AgentRuntimePackagesSection', () => {
 
     render(<AgentRuntimePackagesSection />);
 
-    expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument();
+    expect(screen.queryByText('Agent runtime packages')).not.toBeInTheDocument();
 
     resolveState({
       installationId: 'test-installation',
@@ -161,6 +161,6 @@ describe('AgentRuntimePackagesSection', () => {
       updatedAt: 'now'
     });
 
-    await waitFor(() => expect(screen.queryByText('Agent Runtime Packages')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Agent runtime packages')).not.toBeInTheDocument());
   });
 });

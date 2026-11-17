@@ -74,7 +74,7 @@ const AgentTankSection: React.FC<AgentTankSectionProps> = ({
 
   return (
     <SettingsSection
-      title="LLM Usage Tracking"
+      title="LLM usage tracking"
       status={status}
       description={
         <>

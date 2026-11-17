@@ -8,7 +8,7 @@ const STATE_LABELS = {
   connected: { label: 'Connected', className: 'bg-teal-50 text-teal-800' },
   needs_sign_in: { label: 'Needs sign-in', className: 'bg-amber-100 text-amber-900' },
 } as const;
-export const NO_PUBLIC_URL = 'Connect needs a public HTTPS base URL for this instance (API_PUBLIC_URL), which the provider redirects back to.';
+export const NO_PUBLIC_URL = 'Set a public HTTPS URL for this instance (API_PUBLIC_URL) to sign in.';
 
 /**
  * Connection state of an OAuth server row and its Connect, Reconnect and

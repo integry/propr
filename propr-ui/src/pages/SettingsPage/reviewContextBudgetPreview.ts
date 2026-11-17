@@ -89,11 +89,3 @@ export function formatTokenCount(tokens: number): string {
   if (tokens >= 1000) return `${Math.round(tokens / 1000).toLocaleString('en-US')}K`;
   return tokens.toLocaleString('en-US');
 }
-
-export function describeCapacitySource(capacity: ReviewInputCapacity): string {
-  switch (capacity.source) {
-    case 'runtime-verified': return 'verified runtime window';
-    case 'catalog': return 'model catalog window, runtime unverified';
-    default: return 'conservative fallback window';
-  }
-}
