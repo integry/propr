@@ -400,6 +400,67 @@ describe('run summary selection', () => {
         assert.equal(response.terminationReason, 'unfinished_work');
     });
 
+    test('a declarative summary that names an earlier summary is kept', () => {
+        const declarative = 'The previous summary rendering now handles empty responses.';
+        const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(declarative), result(declarative)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, declarative);
+        assert.equal(response.commitMessage?.split('\n')[0], declarative);
+        assert.equal(isRunStatusNote(declarative), false);
+        assert.equal(isRunStatusNote(declarative, { afterNotification: true }), false);
+        assert.equal(selectRunSummary({ conversationLog: [toolUse('t1'), toolResult('t1'), assistantText(declarative)] }).summary, declarative);
+        for (const ordinary of [
+            'The README now documents the retry limit.',
+            'Retries now back off exponentially, capped at 30 seconds.',
+            'The earlier report page now loads in under a second.',
+        ]) assert.equal(isRunStatusNote(ordinary), false, ordinary);
+    });
+
+    test('a declarative summary written after a notification replaces the older summary', () => {
+        const fresh = 'The background job now retries failed requests up to three times. Regression tests pass.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('suite failed'),
+            toolUse('t2', 'One suite failed; fixing it.'), toolResult('t2'),
+            assistantText(fresh),
+        ];
+        assert.equal(isRunStatusNote(fresh, { afterNotification: true }), false);
+        assert.equal(isRunStatusNote('The watcher reported a failure. Retries now stop after three attempts.', { afterNotification: true }), false);
+        // Wording about the notification event itself is still a reply to it.
+        assert.equal(isRunStatusNote('The background job timed out after the suites finished.', { afterNotification: true }), true);
+        assert.equal(isRunStatusNote('The background job now retries failed requests. My summary above still holds.', { afterNotification: true }), false);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fresh)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, fresh);
+        assert.match(response.commitMessage?.split('\n')[0] ?? '', /^The background job now retries failed requests/);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fresh);
+    });
+
+    test('a watcher reply after a second result line without a notification does not replace the summary', () => {
+        const reply = 'The watcher timed out after the suites finished; nothing else to do.';
+        const lines = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY), result(SUMMARY),
+            assistantText(reply), result(reply),
+        ];
+        const { response } = processDockerResult(execution(lines), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, SUMMARY);
+        assert.equal(response.commitMessage?.split('\n')[0], SUMMARY.split('\n')[0]);
+
+        // A substantive answer after the boundary is still the newest summary.
+        const fixed = 'The retry limit is now three attempts, and the regression test covers it.';
+        const { response: kept } = processDockerResult(execution([
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY), result(SUMMARY),
+            toolUse('t2'), toolResult('t2'),
+            assistantText(fixed), result(fixed),
+        ]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(kept.summary, fixed);
+    });
+
     test('the output-limit continuation prompt is not a notification turn', () => {
         const conversationLog = [
             assistantText(SUMMARY.slice(0, 40)),

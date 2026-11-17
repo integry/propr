@@ -24,10 +24,39 @@ const RECENT_MESSAGE_WINDOW = 6;
 
 /** Claude Code's own prompt to resume a reply cut at the output-token limit. */
 const CONTINUATION_PROMPT = /output token limit|resume directly/i;
-const BACK_REFERENCE = /\b(?:summary|report|answer|write-?up|recap|results?)\s+(?:above|earlier|before)\b|\b(?:above|earlier|previous|prior)\s+(?:summary|report|answer|write-?up|recap)\b|\bstill (?:holds|stands|applies)\b/i;
+/** What a back-reference points at: an earlier answer of the agent's. */
+const REFERENCED_ANSWER = '(?:summary|report|answer|write-?up|recap)';
+/**
+ * A pointer back to an earlier answer. Naming a summary is not enough ("The
+ * previous summary rendering now handles empty responses." reports a change):
+ * the sentence must place the answer above or earlier, say it still holds, or
+ * say the work was already summarised.
+ */
+const BACK_REFERENCE = new RegExp([
+    `\\b(?:${REFERENCED_ANSWER}|results?)\\s+(?:above|earlier)\\b`,
+    `\\b(?:above|earlier|previous|prior|last|my|the)\\s+${REFERENCED_ANSWER}\\s+(?:(?:is|remains)\\s+)?(?:still\\s+)?(?:holds|stands|applies|unchanged|accurate|valid|current|correct)\\b`,
+    '\\b(?:it|that|this|everything|all of (?:it|that))\\s+still (?:holds|stands|applies)\\b',
+    '\\b(?:already )?(?:summari[sz]ed|reported|described) (?:above|earlier|already)\\b'
+].join('|'), 'i');
 const ANNOUNCES_SUMMARY = /\b(?:summari[sz]ing (?:now|the (?:work|changes|results))|(?:i(?:'ll| will)|let me|now i(?:'ll| will)) (?:now )?(?:summari[sz]e|write (?:up )?(?:the|a|my) summary))\b/i;
 const COMPLETION_ONLY = /^(?:(?:the )?(?:verification|validation|work|task|run|everything)\s+(?:is\s+)?(?:now\s+)?(?:complete|completed|done|finished)|all done)[.!]?$/i;
-const ABOUT_NOTIFICATION = /\b(?:notification|notice|monitor|watcher|timed out|timeout|background (?:task|command|job|run|process)|probe|re-?arm)/i;
+/** What reports to the agent from outside its turn: a notification or a background operation. */
+const NOTIFIER = '(?:notification|notice|monitor|watcher|timeout|probe|background (?:task|command|job|run|process|build|suite)|(?:check|test|suite) run)s?';
+/**
+ * A sentence about a notification event itself ("The monitor timed out after
+ * the batch finished", "That notification is the probe I started"). Only the
+ * event, in the past tense or as an identification, counts: a sentence about
+ * what a background job now does ("The background job now retries failed
+ * requests") describes the product.
+ */
+const NOTIFICATION_EVENT = new RegExp([
+    `^(?:(?:the|that|this|my|its|a|an|one)\\s+)?(?:[\\w"'\u2019-]+\\s+){0,3}?${NOTIFIER}\\b(?:\\s+\\S+){0,8}?\\s+(?:(?:only|just|also|simply)\\s+)?(?:timed out|expired|fired|finished|completed|ended|stopped|exited|reported|came from|comes from|(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an|from)\\b)`,
+    `^(?:it|that|this)\\s+(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an)\\s+(?:[\\w-]+\\s+){0,4}?${NOTIFIER}\\b`
+].join('|'), 'i');
+/** A sentence that dismisses a notification as needing nothing from the agent. */
+const DISMISSES_NOTIFICATION = /\b(?:says nothing about|(?:doesn'?t|does not|don'?t|do not) need (?:to )?(?:re-?arm(?:ing)?|restart(?:ing)?|re-?run(?:ning)?)|needs? no (?:re-?arming|restart|re-?run)|no need to (?:re-?arm|restart|re-?run))\b/i;
+/** A sentence that only reports verification ("All 28 suites now pass."); never enough on its own. */
+const VERIFICATION_ONLY = /^(?:(?:and|so)\s+)?(?:all\s+)?(?:(?:the|of the)\s+)?(?:\d+\s+)?(?:(?:related|existing|new|regression|affected|remaining|unit|e2e)\s+)*(?:suites?|tests?|checks?|builds?|lint|typecheck)\s+(?:still\s+|now\s+)?(?:pass(?:es|ed)?|succeed(?:s|ed)?|(?:is|are)\s+(?:green|clean|passing))[.!]?$/i;
 /** What a still-waiting note waits on: a pronoun for it, or a named running operation. */
 const RUNNING_WORK_SUBJECT = '(?:it|they|that|this|the (?:[\\w-]+\\s+){0,4}?(?:suites?|tests?|runs?|builds?|jobs?|tasks?|commands?|monitors?|watchers?|batch(?:es)?|process(?:es)?|probes?))';
 /**
@@ -60,12 +89,15 @@ const UNFINISHED_WORK_SENTENCE = new RegExp([
 const UNFINISHED_WORK_MAX_LENGTH = SHORT_TEXT_LENGTH;
 /** Leads of a sentence that reports a completed change, not a notification. */
 const COMPLETED_CHANGE = new RegExp(`^${INLINE_LABEL}(?:i(?:['\u2019]ve|\\s+have)?\\s+)?(?:now\\s+)?(?:fixed|added|updated|changed|implemented|removed|made|resolved|corrected|replaced|renamed|refactored|moved|rewrote|reworked|extended|split|restored|reverted|adjusted|raised|lowered|increased|reduced|bumped)\\b`, 'i');
-/** A short reply to a notification that says nothing needs doing. */
+/** A reply to a notification that says nothing needs doing. */
 const NO_ACTION = /\b(?:nothing (?:else |more |further )?(?:to do|is needed|needed|to change)|no (?:further |other )?(?:action|changes?) (?:is |are )?(?:needed|required)|(?:doesn'?t|does not) change anything|nothing (?:has )?changed)\b/i;
 
 interface AnswerCandidate {
     text: string;
-    /** The answer ends a turn that began with an injected notification. */
+    /**
+     * The answer ends a turn that began after the run had already answered:
+     * with an injected notification, or right after an earlier result line.
+     */
     afterNotification: boolean;
 }
 
@@ -96,7 +128,12 @@ function isInjectedTurn(entry: LogEntry): boolean {
 interface Turn {
     start: number;
     end: number;
-    /** The turn began with an injected notification. */
+    /**
+     * The turn reacts to something after the run answered: it began with an
+     * injected notification, or at a result line (the stream went on after the
+     * agent's reported answer, so what follows replies to an event, even when
+     * the notification itself was not logged).
+     */
     afterNotification: boolean;
 }
 
@@ -110,11 +147,12 @@ function conversationTurns(conversationLog: LogEntry[], resultLogIndexes: readon
     });
     // Several result lines in one stream also mark where a turn ended.
     for (const index of resultLogIndexes) if (index > firstAssistant && index < conversationLog.length) starts.add(index);
+    const resultStarts = new Set(resultLogIndexes);
     const ordered = [...starts].sort((a, b) => a - b);
     return ordered.map((start, position) => ({
         start,
         end: ordered[position + 1] ?? conversationLog.length,
-        afterNotification: start !== firstAssistant && isInjectedTurn(conversationLog[start])
+        afterNotification: start !== firstAssistant && (resultStarts.has(start) || isInjectedTurn(conversationLog[start]))
     }));
 }
 
@@ -128,7 +166,7 @@ function answerCandidates(conversationLog: LogEntry[], turns: Turn[]): AnswerCan
 
 /**
  * Indexes of the conversation entries that belong to a turn begun by an
- * injected notification. Any message there must be judged as a possible reply
+ * injected notification or an earlier result line. Any message there must be judged as a possible reply
  * to that notification, not only the turn's final answer.
  */
 export function notificationTurnEntryIndexes(conversationLog: LogEntry[], resultLogIndexes: readonly number[] = []): Set<number> {
@@ -148,10 +186,6 @@ function isShort(text: string): boolean {
     const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
     const structured = lines.some(line => /^(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\|)/.test(line));
     return text.length <= SHORT_TEXT_LENGTH && !structured;
-}
-
-function firstSentence(text: string): string {
-    return text.trim().split(/(?<=[.!?…])\s|\n/)[0] ?? '';
 }
 
 /**
@@ -185,70 +219,51 @@ export function reportsUnfinishedWork(text: string | null | undefined): boolean 
     return sentences(prose).some(sentence => UNFINISHED_WORK_SENTENCE.test(sentence));
 }
 
-/**
- * A reply that only reacts to a notification: its first sentence is about the
- * notification and no sentence reports a change. Opening with the notification
- * ("The watcher exposed a retry bug.") does not discard a report of the fix
- * that follows it.
- */
-function isNotificationOnlyReply(text: string): boolean {
-    const prose = plainProse(text);
-    const first = firstSentence(prose);
-    if (!ABOUT_NOTIFICATION.test(first)) return false;
-    return !reportsCompletedChange(text);
-}
-
-/** Some sentence of the message's prose reports a change the agent made. */
-function reportsCompletedChange(text: string): boolean {
-    return sentences(plainProse(text)).some(sentence => COMPLETED_CHANGE.test(sentence));
+/** A sentence that reports a change the agent made: positive evidence of substance. */
+function reportsChangeSentence(sentence: string): boolean {
+    return COMPLETED_CHANGE.test(sentence);
 }
 
 /** Longest sentence still read as a bare status line rather than a report. */
 const STATUS_SENTENCE_MAX_LENGTH = 120;
 
-/** A sentence that only announces, completes or points back to a summary. */
-function isStatusSentence(sentence: string): boolean {
-    // A sentence reporting a change is a report even when it names a summary
-    // ("Fixed the previous summary rendering.").
-    if (COMPLETED_CHANGE.test(sentence)) return false;
-    if (COMPLETION_ONLY.test(sentence)) return true;
-    if (sentence.length > STATUS_SENTENCE_MAX_LENGTH || /:\s*\S/.test(sentence)) return false;
-    return ANNOUNCES_SUMMARY.test(sentence) || BACK_REFERENCE.test(sentence);
-}
+type SentenceKind = 'substance' | 'status' | 'notification' | 'verification';
 
 /**
- * Every sentence of the message's prose is a status line. Judged on the prose
- * without Markdown, so a heading or bullet does not turn "Summarizing now."
- * into a summary, while any substantive sentence keeps the message.
+ * What one sentence of a message is. Only affirmative wording makes a sentence
+ * a status line; any sentence that is not recognised as one is substance, so
+ * a summary is kept whatever verb it opens with.
  */
-function isStatusOnlyProse(text: string): boolean {
-    const all = sentences(plainProse(text));
-    return all.length > 0 && all.every(isStatusSentence);
+function classifySentence(raw: string): SentenceKind {
+    const sentence = raw.replace(new RegExp(`^${INLINE_LABEL}`, 'i'), '').trim();
+    if (!sentence) return 'verification';
+    // A sentence reporting a change is a report even when it names a summary
+    // ("Fixed the previous summary rendering.").
+    if (reportsChangeSentence(sentence)) return 'substance';
+    if (COMPLETION_ONLY.test(sentence)) return 'status';
+    if (VERIFICATION_ONLY.test(sentence)) return 'verification';
+    const bare = sentence.length <= STATUS_SENTENCE_MAX_LENGTH && !/:\s*\S/.test(sentence);
+    if (bare && (ANNOUNCES_SUMMARY.test(sentence) || BACK_REFERENCE.test(sentence))) return 'status';
+    if (NOTIFICATION_EVENT.test(sentence) || DISMISSES_NOTIFICATION.test(sentence) || (bare && NO_ACTION.test(sentence))) return 'notification';
+    return 'substance';
 }
 
 /**
  * True for a message that reports the run's status rather than its work: a
  * reply to a notification, a pointer back to an earlier summary, an
  * announcement that the summary follows, or a note that work is still running.
- * Being short and after a notification is not enough on its own: a concise
- * summary of a fix made in that turn is kept.
+ * Every sentence must be recognised as such a line (verification lines may
+ * accompany them), judged on the prose without Markdown so a heading or bullet
+ * changes nothing. Remarks about a notification decide only in a turn that
+ * reacts to one; a message with any other sentence is a summary and is kept.
  */
 export function isRunStatusNote(text: string | null | undefined, options: { afterNotification?: boolean } = {}): boolean {
     const trimmed = text?.trim() ?? '';
     if (!trimmed) return true;
     if (reportsUnfinishedWork(trimmed)) return true;
-    const short = isShort(trimmed);
-    if (isStatusOnlyProse(trimmed)) return true;
-    // Wording matches anywhere in the text ("the earlier summary still
-    // applies", "nothing else to do") only mark a status note when no sentence
-    // reports a completed change: a new fix that also points back is a report.
-    const reportsChange = reportsCompletedChange(trimmed);
-    if (options.afterNotification && (isNotificationOnlyReply(trimmed)
-        || (!reportsChange && (BACK_REFERENCE.test(trimmed) || (short && NO_ACTION.test(trimmed)))))) return true;
-    if (!short || reportsChange) return false;
-    return BACK_REFERENCE.test(trimmed)
-        || ANNOUNCES_SUMMARY.test(trimmed)
-        || COMPLETION_ONLY.test(trimmed);
+    const kinds = sentences(plainProse(trimmed)).map(classifySentence);
+    if (kinds.length === 0 || kinds.includes('substance')) return false;
+    return kinds.includes('status') || (!!options.afterNotification && kinds.includes('notification'));
 }
 
 interface RecentMessage {
