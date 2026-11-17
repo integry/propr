@@ -108,7 +108,9 @@ export class PluginContributions {
       const active = record.enabled && !pending.has(server.name);
       const managedBy: ExtensionManagedBy = { plugin: pluginId, item: server.name, active };
       const client = preregisteredClient(manifest, server, input.oauthClients ?? {});
-      servers.push(libraryServer(manifest, server, name, { ...limits(existing), managedBy: { ...managedBy, ...oauthRegistrations(manifest, server) } }, client));
+      // A new item starts with the manifest's automatic apply; an administrator's later choice is kept.
+      const serverLimits = { ...limits(existing), autoApply: existing?.autoApply ?? server.autoApply };
+      servers.push(libraryServer(manifest, server, name, { ...serverLimits, managedBy: { ...managedBy, ...oauthRegistrations(manifest, server) } }, client));
       for (const [key, connection] of credentialConnections(server, name)) if (input.connections[connection]) secrets[key] = input.connections[connection];
       if (client?.clientSecret) secrets[name] = client.clientSecret;
       if (server.kind === 'package' && server.secretEnv.length) {

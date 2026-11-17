@@ -107,6 +107,8 @@ const sidebars: SidebarsConfig = {
         'plugins/jira',
         'plugins/sentry',
         'plugins/notion',
+        'plugins/cloudflare',
+        'plugins/vercel',
       ],
     },
     {

@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import {
+  defaultPluginSettings, pluginCommandTaskInstruction, type PluginManifest,
   PLUGIN_CONNECTION_URL, PLUGIN_PERMISSIONS, PLUGIN_PROPR_OPERATIONS, PLUGIN_STATE_LIMITS, PluginSdkError, pluginOutboundHosts, pluginSecretUrlProblem,
   type PluginConnection, type PluginContext, type PluginHttpRequestInit, type PluginHttpResponse, type PluginJsonValue, type PluginLogLevel, type PluginLogLine,
   type PluginPermission, type PluginProprClient, type PluginProprOperation, type PluginSettings, type PluginSettingValues,
@@ -220,4 +221,29 @@ export function createTestPluginContext(options: TestPluginContextOptions = {}):
     signal: new AbortController().signal,
   };
   return { ctx, calls, requests, logs, state, respond: (matcher, answer) => { scripts.push({ matcher, answer }); } };
+}
+
+export interface TestCommandInstructionOptions {
+  /** The installation's saved settings; the manifest defaults when omitted. */
+  settings?: PluginSettingValues;
+  /** The comment's repository (`owner/repo`); `owner/repo` by default. */
+  repository?: string;
+  /** What follows the command name on the comment's first line. */
+  argument?: string;
+  author?: string;
+}
+
+/**
+ * The task instruction ProPR queues for a `prompt` command of `manifest`, built
+ * as command intake builds it: for testing a declarative plugin's commands at
+ * the prompt-construction level (what the instruction states for given
+ * settings and argument). Throws when the plugin has no such prompt command.
+ */
+export function testCommandInstruction(manifest: PluginManifest, command: string, options: TestCommandInstructionOptions = {}): string {
+  const found = manifest.contributes.commands.find(c => c.name === command);
+  if (!found || found.kind !== 'prompt') throw new Error(`${manifest.id} has no prompt command /${command}`);
+  return pluginCommandTaskInstruction(manifest, found, {
+    argument: options.argument ?? '', author: options.author,
+    settings: options.settings ?? defaultPluginSettings(manifest.settings), repository: options.repository ?? 'owner/repo',
+  });
 }

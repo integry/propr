@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 import {
-  COMMAND_NAME_PATTERN, isBuiltInCommandName, parseCommandLine, pluginCommandInstruction, pluginSharedCommandSiblings,
+  COMMAND_NAME_PATTERN, isBuiltInCommandName, parseCommandLine, pluginCommandTaskInstruction, pluginSharedCommandSiblings,
   type CommandTarget, type ExtensionLibraryRevision, type PluginCommand, type PluginManifest,
 } from '@propr/shared';
 import logger from '../utils/logger.js';
@@ -88,7 +88,7 @@ export interface PluginCommandDependencies {
 }
 
 /** An enabled installation as command resolution sees it. */
-export interface CommandInstallation { pluginId: string; repositories: readonly string[] | null }
+export interface CommandInstallation { pluginId: string; repositories: readonly string[] | null; settings?: Readonly<Record<string, unknown>> }
 
 const lower = (value: string) => value.toLowerCase();
 const inScope = (repositories: readonly string[] | null, repository: string) => !repositories || !repositories.length || repositories.map(lower).includes(lower(repository));
@@ -194,7 +194,7 @@ export async function resolvePluginCommand(request: PluginCommandRequest, deps: 
   if (!name) return { status: 'none' };
   const rows = await deps.database('plugin_installations').where({ enabled: true }).select() as PluginInstallationRow[];
   if (!rows.length) return { status: 'none' };
-  const installations = rows.map(row => ({ pluginId: row.plugin_id, repositories: installationRecord(row).repositories }));
+  const installations = rows.map(row => { const record = installationRecord(row); return { pluginId: row.plugin_id, repositories: record.repositories, settings: record.settings }; });
   const matches = applicablePluginCommands(await (deps.catalog ?? officialPluginCatalog)(), installations, { name, repository: request.repository, target: request.target });
   if (!matches.length) return { status: 'none' };
   const access = await readPluginCommandAccess(deps.database);
@@ -217,7 +217,9 @@ export async function resolvePluginCommand(request: PluginCommandRequest, deps: 
   const library = deps.library ? await deps.library() : await defaultLibrary(deps.database);
   const run: PluginCommandRun = {
     pluginId: manifest.id, pluginName: manifest.name, command: name, kind: command.kind,
-    instruction: pluginCommandInstruction({ pluginName: manifest.name, command: name, prompt: command.prompt ?? '', argument, author: request.author }),
+    instruction: pluginCommandTaskInstruction(manifest, command, {
+      argument, author: request.author, settings: installations.find(i => i.pluginId === manifest.id)?.settings ?? {}, repository: request.repository,
+    }),
     extensions: pluginCommandExtensions(manifest.id, command, library),
   };
   if (command.needsWrite) {

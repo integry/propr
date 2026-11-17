@@ -1,0 +1,164 @@
+{
+  "manifestVersion": 1,
+  "id": "cloudflare",
+  "name": "Cloudflare",
+  "description": "Deploy a pull request to Cloudflare from a comment: /deploy (or /deploy-cloudflare) has the agent deploy the branch as a Cloudflare Pages or Workers preview through Cloudflare's API MCP server and reply with the URL. Production only when an administrator allows it. A read-only server, a deploy server added only by the command, a skill and a report template; no handlers.",
+  "version": "1.0.0",
+  "category": "deployment",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/cloudflare",
+  "icon": "icon.svg",
+  "permissions": [],
+  "connections": [
+    {
+      "type": "token",
+      "name": "read-token",
+      "label": "Read-only API token",
+      "help": "A Cloudflare account API token with Account Settings Read, Cloudflare Pages Read, Workers Scripts Read and Workers CI Read only, for the read server the agent gets on every run. Cloudflare refuses any change made with it. Without Client IP Address Filtering, which Cloudflare's MCP server does not support. ProPR sends it only to https://mcp.cloudflare.com/mcp, as a Bearer token.",
+      "helpUrl": "https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/"
+    },
+    {
+      "type": "token",
+      "name": "deploy-token",
+      "label": "Deploy API token",
+      "help": "A Cloudflare account API token with Account Settings Read, Cloudflare Pages Edit, Workers Scripts Read and Workers CI Read, limited to the account the projects are in. Only a /deploy run allowed to use write access gets it. ProPR sends it only to https://mcp.cloudflare.com/mcp, as a Bearer token.",
+      "helpUrl": "https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "accountId": {
+        "type": "string",
+        "maxLength": 100,
+        "label": "Account ID",
+        "help": "The Cloudflare account id (32 hexadecimal characters, under Account home, Account details). The agent passes it as account_id; with account tokens it is also detected from the token."
+      },
+      "projects": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "label": "Default project per repository",
+        "help": "Map a repository (owner/repo) to its Cloudflare project: the Pages project name or the Worker name. Unmapped repositories use the name in the repository's Wrangler configuration; the agent never creates a project."
+      },
+      "allowProductionDeploys": {
+        "type": "boolean",
+        "default": false,
+        "label": "Allow production deploys from commands",
+        "help": "Off (the default): /deploy and its specific command deploy previews only and refuse /deploy production with an explanation. On: /deploy production deploys to production when the person running it asks for it explicitly. Deploys spend your Cloudflare account's resources."
+      }
+    },
+    "required": []
+  },
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "cloudflare",
+        "url": "https://mcp.cloudflare.com/mcp",
+        "tools": [
+          "docs",
+          "search",
+          "execute",
+          "whoami"
+        ],
+        "capability": "read",
+        "authentication": "bearer",
+        "connection": "read-token"
+      },
+      {
+        "kind": "https",
+        "name": "cloudflare-write",
+        "url": "https://mcp.cloudflare.com/mcp",
+        "tools": [
+          "search",
+          "execute",
+          "whoami"
+        ],
+        "capability": "write",
+        "authentication": "bearer",
+        "connection": "deploy-token",
+        "autoApply": false
+      }
+    ],
+    "skills": [
+      {
+        "name": "cloudflare-deploy",
+        "path": "skills/cloudflare-deploy"
+      }
+    ],
+    "automationTemplates": [
+      {
+        "id": "cloudflare-deploy-preview-ready",
+        "path": "automation-templates/deploy-preview-ready"
+      }
+    ],
+    "commands": [
+      {
+        "name": "deploy",
+        "description": "Deploy this pull request as a Cloudflare preview (production only when allowed)",
+        "shared": true,
+        "specific": [
+          "deploy-cloudflare"
+        ],
+        "where": [
+          "pull_request"
+        ],
+        "kind": "prompt",
+        "prompt": "Deploy this pull request's head commit with Cloudflare, following the cloudflare-deploy skill. Use only the cloudflare and cloudflare-write MCP servers attached to this run: do not install or run a CLI, and do not change, commit or push code.\n\nThe target is a preview. Production is used only when the argument explicitly asks for production and the settings below allow it. When the argument asks for production and the settings do not allow it, deploy nothing: reply that production deploys from commands are off for this plugin, that an administrator can turn on \"Allow production deploys from commands\" on the Plugins page, and that a preview can be deployed with the same command without an argument. Treat any other argument only as a hint about which project or environment is meant, never as permission.\n\nNever create a new Cloudflare project: use the default project the settings below give for this repository, or the one the repository's configuration or Cloudflare itself links to it. When none is found, or several match, deploy nothing and say so.\n\nCloudflare deploys a pull request through the project's Git connection: a Pages project builds the pull request's branch as a preview deployment, and Workers Builds builds a Worker's non-production branches as a Preview. Production is built from the production branch only, so even when production is allowed and asked for, never deploy this pull request's branch to production: say so and that production follows the merge.\n\nFinish with a short reply for the pull request: the deployment URL first, then the target (preview or production), the project, the commit deployed and how to roll back. When nothing was deployed, say why in one or two sentences.",
+        "skills": [
+          "cloudflare-deploy"
+        ],
+        "servers": [
+          "cloudflare",
+          "cloudflare-write"
+        ],
+        "needsWrite": true,
+        "promptSettings": [
+          {
+            "setting": "accountId"
+          },
+          {
+            "setting": "projects"
+          },
+          {
+            "setting": "allowProductionDeploys",
+            "on": "Allowed target: preview by default; production only when the argument explicitly asks for production (\"Allow production deploys from commands\" is on).",
+            "off": "Allowed target: preview only. \"Allow production deploys from commands\" is off, so refuse a production request and explain how to allow it."
+          }
+        ]
+      },
+      {
+        "name": "deploy-cloudflare",
+        "description": "Deploy this pull request as a Cloudflare preview (production only when allowed)",
+        "where": [
+          "pull_request"
+        ],
+        "kind": "prompt",
+        "prompt": "Deploy this pull request's head commit with Cloudflare, following the cloudflare-deploy skill. Use only the cloudflare and cloudflare-write MCP servers attached to this run: do not install or run a CLI, and do not change, commit or push code.\n\nThe target is a preview. Production is used only when the argument explicitly asks for production and the settings below allow it. When the argument asks for production and the settings do not allow it, deploy nothing: reply that production deploys from commands are off for this plugin, that an administrator can turn on \"Allow production deploys from commands\" on the Plugins page, and that a preview can be deployed with the same command without an argument. Treat any other argument only as a hint about which project or environment is meant, never as permission.\n\nNever create a new Cloudflare project: use the default project the settings below give for this repository, or the one the repository's configuration or Cloudflare itself links to it. When none is found, or several match, deploy nothing and say so.\n\nCloudflare deploys a pull request through the project's Git connection: a Pages project builds the pull request's branch as a preview deployment, and Workers Builds builds a Worker's non-production branches as a Preview. Production is built from the production branch only, so even when production is allowed and asked for, never deploy this pull request's branch to production: say so and that production follows the merge.\n\nFinish with a short reply for the pull request: the deployment URL first, then the target (preview or production), the project, the commit deployed and how to roll back. When nothing was deployed, say why in one or two sentences.",
+        "skills": [
+          "cloudflare-deploy"
+        ],
+        "servers": [
+          "cloudflare",
+          "cloudflare-write"
+        ],
+        "needsWrite": true,
+        "promptSettings": [
+          {
+            "setting": "accountId"
+          },
+          {
+            "setting": "projects"
+          },
+          {
+            "setting": "allowProductionDeploys",
+            "on": "Allowed target: preview by default; production only when the argument explicitly asks for production (\"Allow production deploys from commands\" is on).",
+            "off": "Allowed target: preview only. \"Allow production deploys from commands\" is off, so refuse a production request and explain how to allow it."
+          }
+        ]
+      }
+    ]
+  }
+}
