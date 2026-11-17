@@ -74,6 +74,36 @@ export function renderFailureCommentBody(body: string, key: string, count: numbe
     return `${clean}${note}\n${failureCommentMarker(key, count)}`;
 }
 
+const COMMENTS_PAGE_SIZE = 100;
+/** Bound on pages read for one lookup; an hour of comments never comes near it. */
+const MAX_COMMENT_PAGES = 100;
+
+/**
+ * Every comment of the issue updated at or after `since`, page by page. GitHub
+ * returns at most one page per request, oldest first, so a match beyond the
+ * first page is only seen by following the pages. Stops early once `stop`
+ * accepts a comment. A lookup that cannot finish throws.
+ */
+async function scanCommentsSince(
+    octokit: FailureCommentOctokit,
+    target: FailureCommentTarget,
+    since: Date,
+    visit: (comment: IssueCommentSummary) => boolean | void,
+): Promise<void> {
+    for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: target.owner, repo: target.repo, issue_number: target.issueNumber,
+            since: since.toISOString(), per_page: COMMENTS_PAGE_SIZE, page,
+        });
+        const comments = Array.isArray(response.data) ? response.data as IssueCommentSummary[] : [];
+        for (const comment of comments) {
+            if (visit(comment) === true) return;
+        }
+        if (comments.length < COMMENTS_PAGE_SIZE) return;
+    }
+    throw new Error(`More than ${MAX_COMMENT_PAGES} pages of comments since ${since.toISOString()}; lookup incomplete`);
+}
+
 /** Most recent ProPR comment carrying `key` that was updated within the window. */
 export async function findRecentFailureComment(
     octokit: FailureCommentOctokit,
@@ -81,20 +111,17 @@ export async function findRecentFailureComment(
 ): Promise<(IssueCommentSummary & { count: number }) | null> {
     const now = target.now ?? new Date();
     const since = new Date(now.getTime() - FAILURE_COMMENT_WINDOW_MS);
-    const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: target.owner, repo: target.repo, issue_number: target.issueNumber,
-        since: since.toISOString(), per_page: 100,
-    });
-    const comments = Array.isArray(response.data) ? response.data as IssueCommentSummary[] : [];
     const botLogins = ownBotLogins();
-    for (const comment of [...comments].reverse()) {
-        if (comment.id === target.excludeCommentId) continue;
-        if (!isOwnComment(comment, botLogins)) continue;
-        if (comment.updated_at && Date.parse(comment.updated_at) < since.getTime()) continue;
+    let latest: (IssueCommentSummary & { count: number }) | null = null;
+    // Comments arrive oldest first: every page is read and the last match wins.
+    await scanCommentsSince(octokit, target, since, comment => {
+        if (comment.id === target.excludeCommentId) return;
+        if (!isOwnComment(comment, botLogins)) return;
+        if (comment.updated_at && Date.parse(comment.updated_at) < since.getTime()) return;
         const count = failureCommentCount(comment.body, target.key);
-        if (count !== null) return { ...comment, count };
-    }
-    return null;
+        if (count !== null) latest = { ...comment, count };
+    });
+    return latest;
 }
 
 export interface PublishFailureCommentOptions extends FailureCommentTarget {
@@ -223,13 +250,14 @@ async function postNoticeOnceLocked(octokit: FailureCommentOctokit, options: Not
     const marker = noticeMarker(key);
     try {
         const since = new Date(now.getTime() - (options.windowMs ?? NOTICE_DEDUPE_WINDOW_MS));
-        const response = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: options.owner, repo: options.repo, issue_number: options.issueNumber, since: since.toISOString(), per_page: 100,
-        });
-        const comments = Array.isArray(response.data) ? response.data as IssueCommentSummary[] : [];
         const botLogins = ownBotLogins();
-        const recent = comments.some(comment => isOwnComment(comment, botLogins) && comment.body?.includes(marker)
-            && (!comment.updated_at || Date.parse(comment.updated_at) >= since.getTime()));
+        let recent = false;
+        // The first match settles it; otherwise every page of the window is read.
+        await scanCommentsSince(octokit, options, since, comment => {
+            recent = isOwnComment(comment, botLogins) && Boolean(comment.body?.includes(marker))
+                && (!comment.updated_at || Date.parse(comment.updated_at) >= since.getTime());
+            return recent;
+        });
         if (recent) return false;
     } catch {
         // Fall through and post.

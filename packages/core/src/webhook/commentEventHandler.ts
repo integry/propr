@@ -213,17 +213,35 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     }
 
     // ProPR edits the head commit's CI-failure comment to add later failures of
-    // that commit. A follow-up already queued or running for it covers the
-    // head; restarting it (or starting another) would only repeat the work.
-    // The edit is not written into the queued job: the worker re-reads the
-    // comment from GitHub after it claims the job, right before it builds the
-    // request, and runs on that revision (currentCiFailureRequestBody), so a
-    // claim racing this edit cannot lose it. A waiting batch record first takes
-    // the edited body; when the record is claimed under the update, the edit is
-    // handled normally instead.
-    if (isSystemCiFailureEdit(payload) && (foundJob || await refreshPendingCiFailureComment(payload, config, { owner, repo, prNumber, eventType }))) {
-        correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'CI-failure comment updated while its follow-up is queued or running; not restarting');
-        return;
+    // that commit. A follow-up already queued or running for it is never aborted
+    // or restarted for that. Where the added failures are delivered depends on
+    // whether the follow-up has read the comment yet:
+    // - A queued follow-up (waiting or delayed when listed, so after GitHub saved
+    //   the edit) has not: its worker reads the comment from GitHub after it
+    //   claims the job, right before it builds the request, and runs on that
+    //   revision (currentCiFailureRequestBody).
+    // - A running follow-up may already have built its request. The revision is
+    //   recorded as its own queued follow-up, which waits behind the PR lock and
+    //   then runs unless the revision it reads is the one a run already consumed
+    //   (see ciFailureCommentPickup in the worker).
+    // A waiting batch record takes the edited body; when the record is claimed
+    // under the update, the edit is handled normally instead.
+    if (isSystemCiFailureEdit(payload)) {
+        const holders = allJobs.filter(job => (job.data.comments?.map(c => c.id) || []).includes(commentId));
+        if (holders.length > 0) {
+            const notStarted = await notStartedJobIds(holders);
+            if (holders.some(job => notStarted.has(job.id))) {
+                correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'CI-failure comment updated while its follow-up is queued; the follow-up reads it at pickup, not restarting');
+                return;
+            }
+            const revisionJobId = await enqueueCiFailureRevisionFollowup(payload, eventType, { owner, repo, prNumber }, { config, correlationId });
+            correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId, revisionJobId }, 'CI-failure comment updated while its follow-up is running; queued the revision behind it, not restarting');
+            return;
+        }
+        if (await refreshPendingCiFailureComment(payload, config, { owner, repo, prNumber, eventType })) {
+            correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'CI-failure comment updated while waiting for batch pickup; not restarting');
+            return;
+        }
     }
 
     if (foundJob) {
@@ -240,6 +258,47 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
 
 function isSystemCiFailureEdit(payload: IssueCommentEvent | PullRequestReviewCommentEvent): boolean {
     return getSystemBotUsernames().has(payload.comment.user.login) && isCiFailureFollowupComment(payload.comment.body);
+}
+
+/**
+ * Ids of the jobs that were waiting or delayed when listed. The list was read
+ * after GitHub saved the edit, so such a job reads the edited comment when it
+ * validates. A job in neither list now (it moved on) counts as started.
+ */
+async function notStartedJobIds(jobs: Job<PRJobData>[]): Promise<Set<string | undefined>> {
+    const queue = await getIssueQueue();
+    const [waiting, delayed] = await Promise.all([queue.getWaiting(), queue.getDelayed()]);
+    const notStarted = new Set([...waiting, ...delayed].map(job => job.id));
+    return new Set(jobs.filter(job => notStarted.has(job.id)).map(job => job.id));
+}
+
+/**
+ * Queue the comment's current revision as its own follow-up. The job id names
+ * the revision, so a redelivered edit queues it once and another revision gets
+ * its own job; it waits for the PR lock held by the running follow-up.
+ */
+async function enqueueCiFailureRevisionFollowup(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType,
+    pr: RepoContext,
+    intake: { config: CommentEventConfig; correlationId: string },
+): Promise<string> {
+    const { config, correlationId } = intake;
+    const rawComment = payload.comment as PRComment;
+    const author = rawComment.user.login;
+    const { comment } = prepareCiFollowupComment(rawComment, author, getSystemBotUsernames());
+    const revision = getCommentRevisionIdentity(rawComment, eventType).replace(/[^a-zA-Z0-9_-]/g, '-');
+    const jobId = `pr-comments-batch-${pr.owner}-${pr.repo}-${pr.prNumber}-${comment.id}-ci-revision-${revision}`;
+    try {
+        await enqueueNewCommentJob(comment, author, { eventType, ...pr }, {
+            payload, redisClient: config.redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, jobId,
+        });
+    } catch (error) {
+        // A redelivered edit finds this revision already queued.
+        if (!(error as Error).message?.includes('Job already exists')) throw error;
+    }
+    return jobId;
 }
 
 async function refreshPendingCiFailureComment(

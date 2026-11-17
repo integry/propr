@@ -103,10 +103,8 @@ export async function validateAndFilterComments(
     return validatedComments;
 }
 
-interface FilterOptions {
-    pullRequestNumber: number;
-    correlatedLogger: Logger;
-}
+/** `unconsumedRevisionIds`: CI-failure comments edited after a run consumed them; their receipts are for an earlier revision. */
+interface FilterOptions { pullRequestNumber: number; correlatedLogger: Logger; unconsumedRevisionIds?: ReadonlySet<number> }
 
 export function filterUnprocessedComments(
     commentsToProcess: UnprocessedComment[],
@@ -125,7 +123,7 @@ export function filterUnprocessedComments(
             // A starting receipt alone does not end the request: a usage-limit
             // retry of it must still run. This check runs under the PR lease, so
             // no other writer of that receipt is live.
-            const alreadyProcessed = prCommentsForValidation.some(prComment =>
+            const alreadyProcessed = !options.unconsumedRevisionIds?.has(comment.id) && prCommentsForValidation.some(prComment =>
                 prComment.user.login === botUsername && receiptConsumesRequest(prComment.body, comment.id));
 
             if (alreadyProcessed) {

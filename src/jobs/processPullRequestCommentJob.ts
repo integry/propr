@@ -17,6 +17,7 @@ import {
     buildCommentHistory, updateTaskTitleForPR, resolvePrReasoningLevelOverride
 } from './prCommentJobHelpers.js';
 import { localizeContentImages } from './issueJobHelpers.js';
+import { recordConsumedCiFailureRevisions, unconsumedCiFailureRevisions } from './ciFailureCommentPickup.js';
 import { pullRequestJobAllowed } from './prCommentLabelGate.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
@@ -134,8 +135,12 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     // A processing label (e.g. 'AI') opts the PR in; without one only explicit requests run.
     if (!await pullRequestJobAllowed(prData.data.labels, primaryProcessingLabels, { data: context.jobRequest ?? {}, comments: validatedComments, correlationId: context.correlationId })) return { skip: true, reason: 'missing_required_label' };
     const llm = extractModelFromLabels(prData.data.labels, initialLlm, pullRequestNumber, correlatedLogger);
-    const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger });
+    const pr = { repoOwner, repoName, pullRequestNumber };
+    const unconsumedRevisionIds = await unconsumedCiFailureRevisions(redisClient, pr, { comments: commentsToProcess, current: allCommentsForValidation, correlatedLogger });
+    const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger, unconsumedRevisionIds });
     if (unprocessedComments.length === 0) return { skip: true, reason: 'already_processed' };
+    // This run takes these revisions; a CI-failure comment edited from here on is new work.
+    await recordConsumedCiFailureRevisions(redisClient, pr, unprocessedComments, allCommentsForValidation);
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
 }
 

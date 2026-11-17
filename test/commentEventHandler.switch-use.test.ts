@@ -196,7 +196,8 @@ const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js'
 const { applyPendingCommentCommandContext, pickUpPendingCommentsWithClaim } = await import(
     '../src/jobs/prPendingComments.js'
 );
-const { validateAndFilterComments } = await import('../src/jobs/prCommentJobHelpers.js');
+const { validateAndFilterComments, filterUnprocessedComments } = await import('../src/jobs/prCommentJobHelpers.js');
+const { recordConsumedCiFailureRevisions, unconsumedCiFailureRevisions } = await import('../src/jobs/ciFailureCommentPickup.js');
 type UnprocessedCommentLike = { id: number; body: string; author: string };
 
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
@@ -465,6 +466,89 @@ describe('commentEventHandler — automatic CI follow-up marker', () => {
         const [kept] = await validateAndFilterComments(jobData.comments as never, [copied], 42, mockLoggerInstance as never);
         assert.strictEqual(kept.body, queuedBody);
         mockDelayedJobs = [];
+    });
+
+    test('failures added to the CI comment while its follow-up runs are queued as a revision and run after it, without a restart (F9)', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: { head: { ref: 'feature-branch' }, labels: [] } }));
+        const redisClient = createListRedis();
+        const reprocess = mock.fn(async () => ({ status: 'accepted' }));
+        const config = createTestConfig({ redisClient, processCommentEvent: reprocess });
+        const onGitHub = (event: ReturnType<typeof ciFailureEdit>) => ({ id: event.comment.id, body: event.comment.body, updated_at: event.comment.updated_at, user: { login: event.comment.user.login }, created_at: event.comment.created_at });
+        const log = mockLoggerInstance as never;
+
+        // The Lint failure starts a follow-up; the worker reads the comment and the run takes that revision.
+        const first = ciFailureEdit(['Lint'], '2026-11-17T08:00:00Z');
+        await processCommentEvent(first, 'issue_comment', 'corr-ci-running', config);
+        const [, jobData] = mockQueueAdd.mock.calls[0].arguments as unknown as [string, { comments: UnprocessedCommentLike[]; repoOwner: string; repoName: string }];
+        const pr = { repoOwner: jobData.repoOwner, repoName: jobData.repoName, pullRequestNumber: 42 };
+        const consumed = await validateAndFilterComments(jobData.comments as never, [onGitHub(first)], 42, log);
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, consumed, [onGitHub(first)]);
+        assert.doesNotMatch(consumed[0].body, /Typecheck/, 'the running request lists Lint only');
+        const remove = mock.fn(async () => {});
+        mockActiveJobs = [{ id: 'pr-comments-batch-running', name: 'processPullRequestComment', data: jobData, remove }];
+
+        // While the agent runs, Typecheck fails on the same head and ProPR adds it to the comment.
+        mockQueueAdd.mock.resetCalls();
+        const edited = ciFailureEdit(['Lint', 'Typecheck'], '2026-11-17T08:05:00Z');
+        await handleCommentEdited(edited, 'issue_comment', 'corr-ci-running-edit', config);
+        assert.strictEqual(remove.mock.callCount(), 0, 'the running follow-up is not removed');
+        assert.strictEqual(reprocess.mock.callCount(), 0, 'and not restarted');
+        assert.ok(!redisClient.set.mock.calls.some(call => String(call.arguments[0]).startsWith('worker:abort:')), 'nor aborted');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1, 'the revision is recorded as queued work');
+        const [, revisionData, revisionOptions] = mockQueueAdd.mock.calls[0].arguments as unknown as [string, { comments: UnprocessedCommentLike[] }, { jobId: string }];
+        assert.match(revisionOptions.jobId, /-7001-ci-revision-/);
+        assert.deepStrictEqual(revisionData.comments.map(comment => comment.id), [7001]);
+
+        // A redelivery of the same edit names the same revision job.
+        await handleCommentEdited(edited, 'issue_comment', 'corr-ci-running-redelivery', config);
+        const [, , redelivered] = mockQueueAdd.mock.calls[1].arguments as unknown as [string, unknown, { jobId: string }];
+        assert.strictEqual(redelivered.jobId, revisionOptions.jobId);
+
+        // The running follow-up completes; its receipt names comment 7001 by id.
+        mockActiveJobs = [];
+        const receipt = {
+            id: 9001, user: { login: 'propr-dev[bot]' }, created_at: '2026-11-17T08:20:00Z',
+            body: '✅ Fixed lint\n\n---\n_Processing comment ID: 7001✓_\n<!-- propr:work-evidence phase=completed trigger-comment-ids=7001 -->',
+        };
+        // The revision job then reads the comment as GitHub holds it now.
+        const current = [onGitHub(edited)];
+        const validated = await validateAndFilterComments(revisionData.comments as never, current, 42, log);
+        assert.strictEqual(filterUnprocessedComments(validated, [receipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log }).length, 0,
+            'by id alone the earlier receipt hides the added failure');
+        const unconsumedRevisionIds = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current });
+        const toRun = filterUnprocessedComments(validated, [receipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log, unconsumedRevisionIds });
+        assert.strictEqual(toRun.length, 1, 'the revision no run consumed is run');
+        assert.match(toRun[0].body, /Lint.*Typecheck/);
+
+        // Once a run took that revision, another job for it is handled work.
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, toRun, current);
+        const handled = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: revisionData.comments, current });
+        assert.strictEqual(handled.size, 0);
+        assert.strictEqual(filterUnprocessedComments(validated, [receipt], 'propr-dev[bot]', { pullRequestNumber: 42, correlatedLogger: log, unconsumedRevisionIds: handled }).length, 0);
+    });
+
+    test('an edit that reached GitHub before the running follow-up read the comment is not run twice (F9)', async () => {
+        const redisClient = createListRedis();
+        const edited = ciFailureEdit(['Lint', 'Typecheck'], '2026-11-17T08:05:00Z');
+        const pr = { repoOwner: edited.repository.owner.login, repoName: edited.repository.name, pullRequestNumber: 42 };
+        const queued = [{ id: 7001, author: 'propr-dev[bot]', body: 'CI failed: **Lint**', type: 'issue' }];
+        const current = [{ id: 7001, body: edited.comment.body, updated_at: edited.comment.updated_at, user: { login: 'propr-dev[bot]' } }];
+        // The running follow-up read the comment after the edit, so it consumed the edited revision.
+        const consumed = await validateAndFilterComments(queued as never, current, 42, mockLoggerInstance as never);
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, consumed, current);
+        // The revision job queued for that edit finds its revision consumed; the receipt decides, and it is skipped.
+        const unconsumed = await unconsumedCiFailureRevisions(redisClient as never, pr, { comments: queued, current });
+        assert.strictEqual(unconsumed.size, 0);
+        // A comment of another author with the marker never gets a revision record.
+        const copied = [{ ...current[0], user: { login: 'someone-else' } }];
+        await recordConsumedCiFailureRevisions(redisClient as never, pr, [{ ...queued[0], id: 7002, author: 'someone-else' }], [{ ...copied[0], id: 7002 }]);
+        assert.ok(![...redisClient._store.keys()].some(key => key.endsWith(':7002')));
     });
 
     test('does not let an unrelated bot use the CI marker to bypass author filtering', async () => {

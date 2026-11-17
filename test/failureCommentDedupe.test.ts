@@ -31,7 +31,10 @@ function fakeGitHub(now: () => Date, listLatencyMs = 0) {
                 const since = Date.parse(String(params.since));
                 const snapshot = comments.filter(comment => Date.parse(comment.updated_at) >= since).map(comment => ({ ...comment }));
                 if (listLatencyMs > 0) await new Promise(resolve => setTimeout(resolve, listLatencyMs));
-                return { data: snapshot };
+                // GitHub's pages: oldest first, `per_page` (default 30) per `page` (from 1).
+                const perPage = Number(params.per_page ?? 30);
+                const page = Number(params.page ?? 1);
+                return { data: snapshot.slice((page - 1) * perPage, page * perPage) };
             }
             if (route.startsWith('POST ')) {
                 // ProPR posts as its bot account; `author` stands in for a person's own comment.
@@ -54,6 +57,10 @@ function fakeGitHub(now: () => Date, listLatencyMs = 0) {
     };
     return {
         octokit, comments, calls,
+        /** Comments by other people in the window, enough to push later ones past the first page. */
+        chatter: (count: number) => {
+            for (let index = 0; index < count; index++) comments.push({ id: nextId++, body: `comment ${index}`, html_url: `https://github.com/c/${nextId}`, updated_at: now().toISOString(), user: { login: 'octocat' } });
+        },
         post: (body: string, author?: string) => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { body, author }),
     };
 }
@@ -171,6 +178,49 @@ describe('identical failure comments (#3622 point 2)', () => {
         gh.comments.splice(0, 1);
         await gh.post(`> ${copy}`, 'octocat');
         assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: '🛑 **Execution Cancelled**', now: clock }), true);
+        assert.equal(gh.comments.filter(comment => comment.user.login === BOT).length, 1);
+    });
+
+    test('a repeat finds the earlier failure comment beyond the first page of comments (F10)', async () => {
+        let clock = new Date('2026-11-16T10:00:00Z');
+        const gh = fakeGitHub(() => clock);
+        // Discussion in the window comes first, so ProPR's failure comment is on page 2.
+        gh.chatter(150);
+        await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed to resolve merge conflicts', now: clock });
+        gh.chatter(80);
+        const pagesBefore = gh.calls.filter(call => call === 'GET').length;
+
+        clock = new Date(clock.getTime() + 5 * 60_000);
+        const starting = await gh.post('Working on it');
+        const result = await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed to resolve merge conflicts', startingCommentId: (starting.data as FakeComment).id, now: clock });
+
+        assert.equal(result.action, 'updated');
+        assert.equal(result.count, 2);
+        const failureComments = gh.comments.filter(comment => /propr:failure-comment/.test(comment.body));
+        assert.equal(failureComments.length, 1, 'the repeat updates the comment on page 2 instead of posting another');
+        assert.match(failureComments[0].body, /occurred 2 times/);
+        assert.equal(gh.calls.filter(call => call === 'GET').length - pagesBefore, 3, 'all three pages of the window are read');
+    });
+
+    test('the latest matching failure comment wins when matches span pages (F10)', async () => {
+        let clock = new Date('2026-11-16T10:00:00Z');
+        const gh = fakeGitHub(() => clock);
+        await gh.post(renderFailureCommentBody('older', key, 1, clock));
+        gh.chatter(120);
+        clock = new Date(clock.getTime() + 60_000);
+        await gh.post(renderFailureCommentBody('newer', key, 3, clock));
+        const result = await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock });
+        assert.equal(result.count, 4);
+        assert.equal(result.commentId, gh.comments[gh.comments.length - 1].id);
+    });
+
+    test('a repeated notice beyond the first page of comments is suppressed (F10)', async () => {
+        const clock = new Date('2026-11-16T18:25:34Z');
+        const gh = fakeGitHub(() => clock);
+        gh.chatter(100);
+        assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: '🛑 **Execution Cancelled**', now: clock }), true);
+        gh.chatter(150);
+        assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: '🛑 **Execution Cancelled**', now: clock }), false);
         assert.equal(gh.comments.filter(comment => comment.user.login === BOT).length, 1);
     });
 
