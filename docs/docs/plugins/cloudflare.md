@@ -31,8 +31,8 @@ apply as to any write server.
 
 | Project | What `/deploy` does |
 | --- | --- |
-| Pages project connected to Git | Creates a deployment of the pull request's branch (Pages' "create deployment" endpoint with `branch`); Cloudflare builds it as a preview. |
-| Worker with Workers Builds | A push to a non-production branch already builds a Preview: the agent finds the build of the head commit and reports its Preview URL. |
+| Pages project connected to Git | Reads the project's production branch first; when the pull request's head branch is the production branch, nothing is deployed, because that would be a production deployment. Otherwise creates a deployment of the pull request's branch (Pages' "create deployment" endpoint with `branch`); Cloudflare builds it as a preview. |
+| Worker with Workers Builds | A push to a non-production branch already builds a Preview: the agent finds the build of the head commit and reports its Preview URL. A build of the production branch is never reported as a preview. |
 | Direct Upload Pages project, or a Worker deployed with Wrangler only | Nothing is deployed: that needs Wrangler on a build machine. The reply says the project needs a Git connection or Workers Builds. |
 
 Cloudflare builds **production** from the project's production branch only.

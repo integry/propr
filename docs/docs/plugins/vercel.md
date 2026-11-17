@@ -24,8 +24,8 @@ write server.
   project or changes settings, domains, protection or environment variables is
   offered.
 - **Skill** `vercel-deploy`: detect the framework and the linked project, never
-  create a project, reuse a deployment Vercel's Git connection already made of
-  the head commit, deploy a preview unless production is allowed and asked for,
+  create a project, reuse a deployment of the head commit only when it has the
+  requested target (a Git preview never stands in for production), deploy a preview unless production is allowed and asked for,
   report the URL and how to roll back.
 - **Commands** `/deploy` (shared with other deployment plugins) and
   `/deploy-vercel`, on pull requests.

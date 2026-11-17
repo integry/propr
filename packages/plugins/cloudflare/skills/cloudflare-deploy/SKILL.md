@@ -36,17 +36,26 @@ deploy itself.
    creates, renames or deletes a project, and never change settings,
    environment variables, secrets, routes, domains or DNS.
 3. **Deploy a preview.**
-   - **Pages, connected to Git:** find the "create deployment" endpoint for
-     Pages projects with `search` and call it through `cloudflare-write`
-     with `branch` set to the pull request's head branch. Cloudflare builds
-     the branch's head commit as a preview deployment. Poll the deployment
+   - **Pages, connected to Git:** first read the project (through
+     `cloudflare`) and take its `production_branch`. When the pull request's
+     head branch is the production branch, or the production branch cannot
+     be read, deploy nothing: a deployment of that branch is a production
+     deployment, whatever target was asked for. Say so, and that production
+     follows the project's production branch. Otherwise find the "create
+     deployment" endpoint for Pages projects with `search` and call it
+     through `cloudflare-write` with `branch` set to the pull request's head
+     branch. Cloudflare builds that non-production branch's head commit as a
+     preview deployment. Poll the deployment
      (read it by id through `cloudflare`) until its latest stage succeeds or
      fails, at most about ten minutes; on failure, read the deployment's logs
      and quote the error.
    - **Worker with Workers Builds:** a push to a non-production branch already
-     builds a Preview. Find the build of the pull request's head commit with
-     `search` and `execute` (Workers Builds endpoints) and report its Preview
-     URL and status. Workers Builds starts on a push; when no build of the
+     builds a Preview. Read the Worker's production branch from its Workers
+     Builds trigger first; when the pull request's head branch is that
+     branch, a build of it is a production deployment, so do not report it as
+     a preview. Otherwise find the build of the pull request's head commit
+     with `search` and `execute` (Workers Builds endpoints) and report its
+     Preview URL and status. Workers Builds starts on a push; when no build of the
      head commit exists, say so rather than uploading code.
    - **Pages with Direct Upload only, or a Worker without Workers Builds:**
      deploying needs files built on a machine with Wrangler; deploy nothing,

@@ -13,7 +13,7 @@ skill and an automation template; no handlers. User documentation:
 | File | What it is |
 | --- | --- |
 | `manifest.json` | Two OAuth connections, the read server `vercel` and the deploy server `vercel-write` (both Vercel's MCP server), the skill, the template, `/deploy` and `/deploy-vercel`, and the settings. |
-| `skills/vercel-deploy/` | How to deploy this repository: detect the framework and the linked project, never create a project, reuse a deployment the Git connection already made, deploy a preview unless production is allowed and asked for, report the URL and how to roll back. |
+| `skills/vercel-deploy/` | How to deploy this repository: detect the framework and the linked project, never create a project, reuse a deployment of the head commit only when it has the requested target, deploy a preview unless production is allowed and asked for, report the URL and how to roll back. |
 | `automation-templates/deploy-preview-ready/` | "Deploy preview when review reaches the goal (Vercel)": a dry-run report of pull requests whose review reached the goal and that have no preview yet. It never deploys. |
 | `fixtures/tools.json` | Vercel MCP tools from the categories a deploy needs, with read or write access, captured 2026-11-17. |
 

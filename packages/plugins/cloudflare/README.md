@@ -46,7 +46,10 @@ item not; `/deploy` write authorization; two deployment plugins sharing
 
 How a preview is made: a **Git-connected Pages project** gets a deployment of
 the pull request's branch through Pages' "create deployment" endpoint (with
-`branch`), which Cloudflare builds as a preview. A **Worker with Workers
+`branch`), which Cloudflare builds as a preview. The agent reads the
+project's production branch first and deploys nothing when the pull request's
+head branch is the production branch, since that deployment would be
+production. A **Worker with Workers
 Builds** already builds a Preview of each push to a non-production branch;
 the agent reports it. Projects without a Git connection (Direct Upload, or a
 Worker deployed with Wrangler only) are not deployed: that needs Wrangler on a

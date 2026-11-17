@@ -141,6 +141,48 @@ for (const p of PLUGINS) {
   });
 }
 
+test('Cloudflare: a default /deploy checks the Pages production branch first and deploys nothing when the head branch is the production branch', () => {
+  const { manifest, assets } = plugin('cloudflare');
+  const skill = readFileSync(path.join(assets.skills.find(s => s.name === 'cloudflare-deploy')!.path, 'SKILL.md'), 'utf8');
+  // The production-branch check comes before the create-deployment call, and refuses whatever target was asked for.
+  const check = skill.indexOf('take its `production_branch`');
+  assert.ok(check > 0 && check < skill.indexOf('find the "create\n     deployment" endpoint'), 'production branch is read before creating a deployment');
+  assert.match(skill, /When the pull request's\n\s+head branch is the production branch, or the production branch cannot\n\s+be read, deploy nothing/);
+  assert.doesNotMatch(skill, /builds the pull request's branch as a preview/);
+  // Workers Builds: a production-branch build is never reported as a preview.
+  assert.match(skill, /when the pull request's head branch is that\n\s+branch, a build of it is a production deployment, so do not report it as\n\s+a preview/);
+  for (const command of ['deploy', 'deploy-cloudflare']) {
+    for (const settings of [{}, { allowProductionDeploys: true }]) {
+      const instruction = testCommandInstruction(manifest, command, { settings, repository: 'Owner/App' });
+      assert.match(instruction, /Before creating a Pages deployment, read the project's production branch; when the pull request's head branch is the production branch, or the production branch cannot be read, deploy nothing/);
+      assert.match(instruction, /never report a Workers Builds build of the production branch as a preview/);
+      assert.doesNotMatch(instruction, /a Pages project builds the pull request's branch as a preview/);
+    }
+  }
+});
+
+test('Vercel: the target is decided before reuse, and an existing preview never stands in for a production request', () => {
+  const { manifest, assets } = plugin('vercel');
+  const skill = readFileSync(path.join(assets.skills.find(s => s.name === 'vercel-deploy')!.path, 'SKILL.md'), 'utf8');
+  const decide = skill.indexOf('decide the target first');
+  const reuse = skill.indexOf('Reuse an existing deployment of the same target only');
+  const create = skill.indexOf('Call\n   `create_deployment`');
+  assert.ok(decide > 0 && decide < reuse && reuse < create, 'decide the target, then reuse, then create');
+  assert.match(skill, /whose target matches the\n\s+one decided in step 3/);
+  assert.match(skill, /A preview of the head commit \(for example the one\n\s+the Git connection made\) never satisfies a production request/);
+  assert.match(skill, /For production, set `requestBody.target` to `production`/);
+  for (const command of ['deploy', 'deploy-vercel']) {
+    // A production request with production allowed: the instruction rules out reporting the Git preview.
+    const instruction = testCommandInstruction(manifest, command, { settings: { allowProductionDeploys: true }, argument: 'production' });
+    assert.match(instruction, /Allowed target: preview by default; production only when the argument explicitly asks for production/);
+    const target = instruction.indexOf('Decide the target first');
+    assert.ok(target > 0 && target < instruction.indexOf('reuse a deployment only when'));
+    assert.match(instruction, /reuse a deployment only when it is of this pull request's head commit and has that same target/);
+    assert.match(instruction, /A preview of the head commit never satisfies a production request/);
+    assert.doesNotMatch(instruction, /has already deployed this pull request's head commit, report that deployment instead/);
+  }
+});
+
 test('the manifest check refuses promptSettings that name an unknown setting, give on and off to a non-boolean setting, or belong to a handler command', () => {
   const base = structuredClone(plugin('vercel').manifest) as unknown as { contributes: { commands: Record<string, unknown>[] } };
   const withCommand = (change: Record<string, unknown>) => {

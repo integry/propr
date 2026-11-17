@@ -28,23 +28,30 @@ project: they are not offered, and a project must already exist.
    repository (filter with `repo`). Use the team from the settings as
    `teamId`, or the team `get_project` reports. Check it with `get_project`.
    When there is no project, or several match, deploy nothing and say so.
-3. **Reuse an existing deployment.** With `list_deployments` (the project,
-   `sha` set to the pull request's head commit) look for a deployment of the
-   head commit. When the project's Git connection already deployed it as a
-   preview and it is `READY` or still building, report that one: do not
-   create a duplicate.
-4. **Deploy a preview.** Call `create_deployment` with `teamId` and a
-   `requestBody` naming the project (`name` and `project`) and a Git source:
-   `gitSource` of type `github` with the repository, `ref` set to the pull
-   request's head branch and `sha` set to its head commit (follow the tool's
-   input schema for the exact fields). **Leave `target` out**: that makes a
-   preview. Then poll `get_deployment` until `READY`, `ERROR` or `CANCELED`
-   (at most about ten minutes). On `ERROR`, read `get_deployment_build_logs`
-   with `errorsOnly` and quote the failing lines.
-5. **Production only when allowed.** Set `requestBody.target` to
-   `production` only when the allowed target permits production **and** the
-   command's argument explicitly asks for it. Otherwise refuse production and
-   explain how an administrator allows it.
+3. **Production only when allowed; decide the target first.** The target is
+   `preview`. It is `production` only when the allowed target permits
+   production **and** the command's argument explicitly asks for it. When production was asked
+   for and is not allowed, deploy nothing: refuse and explain how an
+   administrator allows it.
+4. **Reuse an existing deployment of the same target only.** With
+   `list_deployments` (the project, `sha` set to the pull request's head
+   commit) look for a deployment of the head commit whose target matches the
+   one decided in step 3: `production` for production, no target (a preview)
+   for a preview. When one is `READY` or still building, report that one: do
+   not create a duplicate. A preview of the head commit (for example the one
+   the Git connection made) never satisfies a production request, and a
+   production deployment never satisfies a preview request; deploy as in
+   step 5 instead.
+5. **Deploy a preview** (or production, when step 3 decided it). Call
+   `create_deployment` with `teamId` and a `requestBody` naming the project
+   (`name` and `project`) and a Git source: `gitSource` of type `github` with
+   the repository, `ref` set to the pull request's head
+   branch and `sha` set to its head commit (follow the tool's input schema for
+   the exact fields). For a preview, **leave `target` out**: that makes a
+   preview. For production, set `requestBody.target` to `production`. Then
+   poll `get_deployment` until `READY`, `ERROR` or `CANCELED` (at most about
+   ten minutes). On `ERROR`, read `get_deployment_build_logs` with
+   `errorsOnly` and quote the failing lines.
 6. **Report.** Reply with the deployment URL first (`https://` and the
    deployment's `url`), then: preview or production, the project, the commit
    deployed and the deployment id or inspector link. How to roll back:
