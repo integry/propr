@@ -55,7 +55,7 @@ function fakeGitHub() {
             }
             if (route === 'GET /repos/{owner}/{repo}/issues/comments/{comment_id}') {
                 const comment = comments.find(item => item.id === params.comment_id);
-                if (!comment) throw new Error('HTTP 404');
+                if (!comment) throw Object.assign(new Error('HTTP 404'), { status: 404 });
                 return { data: comment };
             }
             if (route.startsWith('PATCH ')) {
@@ -196,6 +196,62 @@ describe('one CI-failure comment per head commit (#3622 point 4)', () => {
         assert.ok(gh.octokit.request.mock.calls.length >= request);
         const lock = [...redis.values.entries()].find(([key]) => key.startsWith('ci-failure-followup-head-lock:'));
         assert.equal(lock?.[1], 'publisher-c', 'the other publisher\'s lock is left alone');
+    });
+    test('an unreadable head comment is never taken as absent: no second comment, and the failure is redelivered (F5/F7)', async () => {
+        const gh = fakeGitHub();
+        const redis = createRedis();
+        await postCiFailureFollowup(failure('Lint', 1), 'a', dependencies(gh, redis));
+        const request = gh.octokit.request;
+        const paginate = gh.octokit.paginate;
+        // GitHub reads fail for a while: the remembered comment and the scan alike.
+        gh.octokit.request = mock.fn(async (route: string, params: Record<string, unknown>) => {
+            if (route.startsWith('GET ')) throw Object.assign(new Error('HTTP 502'), { status: 502 });
+            return request(route, params);
+        });
+        gh.octokit.paginate = mock.fn(async () => { throw Object.assign(new Error('HTTP 502'), { status: 502 }); });
+
+        await assert.rejects(postCiFailureFollowup(failure('Typecheck', 2), 'b', dependencies(gh, redis)), { name: 'CiFailureHeadLookupError' });
+        assert.equal(gh.posts.length, 1, 'no second comment for the head');
+        assert.equal(gh.patches.length, 0);
+        const claims = [...redis.values.keys()].filter(key => !key.startsWith('ci-failure-followup-head'));
+        assert.equal(claims.length, 1, 'only the first check keeps its per-source claim; the second can be delivered again');
+
+        // GitHub recovers; the redelivery joins the one comment.
+        gh.octokit.request = request;
+        gh.octokit.paginate = paginate;
+        const retried = await postCiFailureFollowup(failure('Typecheck', 2), 'b-again', dependencies(gh, redis));
+        assert.equal(retried.reason, 'merged');
+        assert.equal(gh.posts.length, 1);
+        assert.deepEqual(parseCiFailureEntries(gh.comments[0].body).map(entry => entry.name), ['Lint', 'Typecheck']);
+    });
+
+    test('a failed read of the remembered comment falls back to a completed scan (F5/F7)', async () => {
+        const gh = fakeGitHub();
+        const redis = createRedis();
+        await postCiFailureFollowup(failure('Lint', 1), 'a', dependencies(gh, redis));
+        const request = gh.octokit.request;
+        gh.octokit.request = mock.fn(async (route: string, params: Record<string, unknown>) => {
+            if (route === 'GET /repos/{owner}/{repo}/issues/comments/{comment_id}') throw Object.assign(new Error('HTTP 502'), { status: 502 });
+            return request(route, params);
+        });
+        const result = await postCiFailureFollowup(failure('Typecheck', 2), 'b', dependencies(gh, redis));
+        assert.equal(result.reason, 'merged');
+        assert.equal(gh.posts.length, 1);
+    });
+
+    test('without a scan, an unreadable remembered comment fails instead of posting (F5/F7)', async () => {
+        const gh = fakeGitHub();
+        const redis = createRedis();
+        await postCiFailureFollowup(failure('Lint', 1), 'a', dependencies(gh, redis));
+        const request = gh.octokit.request;
+        const octokit = {
+            request: mock.fn(async (route: string, params: Record<string, unknown>) => {
+                if (route === 'GET /repos/{owner}/{repo}/issues/comments/{comment_id}') throw Object.assign(new Error('HTTP 502'), { status: 502 });
+                return request(route, params);
+            }),
+        };
+        await assert.rejects(postCiFailureFollowup(failure('Typecheck', 2), 'b', { ...dependencies(gh, redis), getOctokit: async () => octokit }), { name: 'CiFailureHeadLookupError' });
+        assert.equal(gh.posts.length, 1);
     });
 });
 

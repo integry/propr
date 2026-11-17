@@ -11,7 +11,9 @@ after(async () => {
     await closeConnection();
 });
 
-interface FakeComment { id: number; body: string; html_url: string; updated_at: string }
+interface FakeComment { id: number; body: string; html_url: string; updated_at: string; user: { login: string } }
+
+const BOT = 'propr-dev[bot]';
 
 /**
  * A GitHub issue's comment list: list (with `since`), post, patch and delete.
@@ -32,11 +34,16 @@ function fakeGitHub(now: () => Date, listLatencyMs = 0) {
                 return { data: snapshot };
             }
             if (route.startsWith('POST ')) {
-                const comment = { id: nextId++, body: String(params.body), html_url: `https://github.com/c/${nextId}`, updated_at: now().toISOString() };
+                // ProPR posts as its bot account; `author` stands in for a person's own comment.
+                const comment = { id: nextId++, body: String(params.body), html_url: `https://github.com/c/${nextId}`, updated_at: now().toISOString(), user: { login: String(params.author ?? BOT) } };
                 comments.push(comment);
                 return { data: comment };
             }
             const target = comments.find(comment => comment.id === params.comment_id);
+            if ((route.startsWith('PATCH ') || route.startsWith('DELETE ')) && target && target.user.login !== BOT) {
+                // GitHub refuses to edit or delete another author's comment.
+                throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+            }
             if (route.startsWith('PATCH ') && target) {
                 target.body = String(params.body);
                 target.updated_at = now().toISOString();
@@ -45,7 +52,10 @@ function fakeGitHub(now: () => Date, listLatencyMs = 0) {
             return { data: target ?? {} };
         },
     };
-    return { octokit, comments, calls, post: (body: string) => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { body }) };
+    return {
+        octokit, comments, calls,
+        post: (body: string, author?: string) => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { body, author }),
+    };
 }
 
 describe('identical failure comments (#3622 point 2)', () => {
@@ -97,6 +107,35 @@ describe('identical failure comments (#3622 point 2)', () => {
         assert.match(gh.comments[1].body, /Comment ID: 12✓/);
     });
 
+    test('a copy of the failure comment by a person neither absorbs nor blocks the repeat (F4)', async () => {
+        let clock = new Date('2026-11-16T10:00:00Z');
+        const gh = fakeGitHub(() => clock);
+        const first = await gh.post('Working on it');
+        await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed to resolve merge conflicts', startingCommentId: (first.data as FakeComment).id, now: clock });
+        // Someone quotes the failure comment, hidden marker included, to report it.
+        clock = new Date(clock.getTime() + 60_000);
+        await gh.post(`Same again:\n\n${gh.comments[0].body}`, 'octocat');
+
+        clock = new Date(clock.getTime() + 60_000);
+        const starting = await gh.post('Working on it');
+        const result = await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed to resolve merge conflicts', startingCommentId: (starting.data as FakeComment).id, now: clock });
+
+        assert.deepEqual({ action: result.action, commentId: result.commentId, count: result.count }, { action: 'updated', commentId: gh.comments[0].id, count: 2 });
+        assert.match(gh.comments[0].body, /occurred 2 times/);
+        assert.doesNotMatch(gh.comments[1].body, /occurred 2 times/, "the person's comment is left as written");
+    });
+
+    test('a copied marker in a person\'s comment alone does not count as an earlier failure (F4)', async () => {
+        const clock = new Date('2026-11-16T10:00:00Z');
+        const gh = fakeGitHub(() => clock);
+        await gh.post(renderFailureCommentBody('❌ Failed', key, 1, clock), 'octocat');
+        const result = await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock });
+        assert.equal(result.action, 'posted');
+        assert.equal(result.count, 1);
+        assert.equal(gh.comments.length, 2);
+        assert.equal(gh.comments[1].user.login, BOT);
+    });
+
     test('a follow-up failure notice names the cause, links the task and never lists the synthetic comment id 0', () => {
         const { body } = buildFollowupFailureBody({
             repoOwner: 'integry', repoName: 'propr', pullRequestNumber: 3523, authorsText: '@propr-ultrafix', taskId: 'pr-comments-batch-1',
@@ -122,6 +161,17 @@ describe('identical failure comments (#3622 point 2)', () => {
         assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-start', identity: 'claude\nopus\nb1', body: 'started', now: clock }), true);
         assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-start', identity: 'claude\nopus\nb1', body: 'started', now: clock }), false);
         assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-start', identity: 'codex\ngpt\nb2', body: 'started', now: clock }), true);
+    });
+
+    test('a notice marker copied into a person\'s comment does not suppress the notice (F4)', async () => {
+        const clock = new Date('2026-11-16T18:25:34Z');
+        const gh = fakeGitHub(() => clock);
+        assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: '🛑 **Execution Cancelled**', now: clock }), true);
+        const copy = gh.comments[0].body;
+        gh.comments.splice(0, 1);
+        await gh.post(`> ${copy}`, 'octocat');
+        assert.equal(await postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: '🛑 **Execution Cancelled**', now: clock }), true);
+        assert.equal(gh.comments.filter(comment => comment.user.login === BOT).length, 1);
     });
 
     test('a failed lookup still posts the notice', async () => {

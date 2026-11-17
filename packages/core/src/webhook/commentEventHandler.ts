@@ -24,6 +24,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
+import { refreshPendingComment } from './pendingCommentRefresh.js';
 import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
 
 export interface UltrafixDeps {
@@ -213,7 +214,10 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     // ProPR edits the head commit's CI-failure comment to add later failures of
     // that commit. A follow-up already queued or running for it covers the
     // head; restarting it (or starting another) would only repeat the work.
-    if (isSystemCiFailureEdit(payload) && (foundJob || await isPendingBatchComment(redisClient, { owner, repo, prNumber }, commentId))) {
+    // A waiting batch record first takes the edited body, so the batch that
+    // claims it carries every failure listed on the comment; when the record is
+    // claimed under the update, the edit is handled normally instead.
+    if (isSystemCiFailureEdit(payload) && (foundJob || await refreshPendingCiFailureComment(payload, config, { owner, repo, prNumber, eventType }))) {
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId }, 'CI-failure comment updated while its follow-up is queued or running; not restarting');
         return;
     }
@@ -234,11 +238,25 @@ function isSystemCiFailureEdit(payload: IssueCommentEvent | PullRequestReviewCom
     return getSystemBotUsernames().has(payload.comment.user.login) && isCiFailureFollowupComment(payload.comment.body);
 }
 
-async function isPendingBatchComment(redisClient: Redis, pr: { owner: string; repo: string; prNumber: number }, commentId: number): Promise<boolean> {
-    const pending = await redisClient.lrange(getPendingPrCommentsKey(pr.owner, pr.repo, pr.prNumber), 0, -1).catch(() => [] as string[]);
-    return pending.some(entry => {
-        try { return (JSON.parse(entry) as { id?: number }).id === commentId; } catch { return false; }
+async function refreshPendingCiFailureComment(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    config: CommentEventConfig,
+    pr: RepoContext & { eventType: CommentEventType },
+): Promise<boolean> {
+    const { comment } = payload;
+    const proofBody = stripCiFailureFollowupMarker(comment.body);
+    const keywords = config.PR_FOLLOWUP_TRIGGER_KEYWORDS;
+    const body = keywords.length > 0 ? stripKeywordsFromBody(proofBody, keywords) : proofBody;
+    const outcome = await refreshPendingComment(config.redisClient, pr, comment.id, {
+        body,
+        proofBody,
+        agentAdmissionParent: parentScopeFromIssueBody(proofBody, {
+            repoOwner: pr.owner, repoName: pr.repo, number: pr.prNumber, commentId: comment.id,
+            commentType: pr.eventType === 'issue_comment' ? 'issue' : 'review',
+        }),
+        updatedAt: comment.updated_at,
     });
+    return outcome === 'updated';
 }
 
 interface SlashCommandComment { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }

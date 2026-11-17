@@ -5,6 +5,9 @@
  * (a hidden marker on the comment), so a worker restart does not reset it.
  */
 import { createHash } from 'node:crypto';
+// Namespace import: suites that mock @propr/core with an enumerated export
+// list keep linking, and fall back to the configured logins below.
+import * as core from '@propr/core';
 import { issueCommentLockKey, withIssueCommentLock, type IssueCommentLease } from './issueCommentLock.js';
 
 export const FAILURE_COMMENT_WINDOW_MS = 60 * 60 * 1000;
@@ -16,7 +19,25 @@ interface FailureCommentOctokit {
     request: (route: string, params?: Record<string, unknown>) => Promise<{ data: unknown }>;
 }
 
-interface IssueCommentSummary { id: number; body?: string | null; html_url?: string; updated_at?: string }
+interface IssueCommentSummary { id: number; body?: string | null; html_url?: string; updated_at?: string; user?: { login?: string } | null }
+
+/**
+ * Whether ProPR itself wrote the comment. Its hidden markers are plain text
+ * anyone can copy into a comment of their own, so a marker counts only on a
+ * comment of one of ProPR's bot accounts (compared without case, as GitHub does).
+ */
+function isOwnComment(comment: IssueCommentSummary, botLogins: ReadonlySet<string>): boolean {
+    const login = comment.user?.login;
+    return typeof login === 'string' && botLogins.has(login.toLowerCase());
+}
+
+function ownBotLogins(): Set<string> {
+    const resolve = (core as Partial<Pick<typeof core, 'getSystemBotUsernames'>>).getSystemBotUsernames;
+    const logins = typeof resolve === 'function'
+        ? [...resolve()]
+        : [process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]'].filter((login): login is string => Boolean(login));
+    return new Set(logins.map(login => login.toLowerCase()));
+}
 
 export interface FailureCommentTarget {
     owner: string;
@@ -53,7 +74,7 @@ export function renderFailureCommentBody(body: string, key: string, count: numbe
     return `${clean}${note}\n${failureCommentMarker(key, count)}`;
 }
 
-/** Most recent comment carrying `key` that was updated within the window. */
+/** Most recent ProPR comment carrying `key` that was updated within the window. */
 export async function findRecentFailureComment(
     octokit: FailureCommentOctokit,
     target: FailureCommentTarget & { key: string; excludeCommentId?: number; now?: Date },
@@ -65,8 +86,10 @@ export async function findRecentFailureComment(
         since: since.toISOString(), per_page: 100,
     });
     const comments = Array.isArray(response.data) ? response.data as IssueCommentSummary[] : [];
+    const botLogins = ownBotLogins();
     for (const comment of [...comments].reverse()) {
         if (comment.id === target.excludeCommentId) continue;
+        if (!isOwnComment(comment, botLogins)) continue;
         if (comment.updated_at && Date.parse(comment.updated_at) < since.getTime()) continue;
         const count = failureCommentCount(comment.body, target.key);
         if (count !== null) return { ...comment, count };
@@ -183,7 +206,7 @@ export function noticeMarker(key: string): string {
 }
 
 /**
- * Post a start or cancel notice unless the same notice (by key) was posted on
+ * Post a start or cancel notice unless ProPR posted the same notice (by key) on
  * the issue within the window: several jobs reacting to one event post once.
  * A lookup failure posts, so a notice is never lost to a GitHub hiccup.
  */
@@ -204,7 +227,8 @@ async function postNoticeOnceLocked(octokit: FailureCommentOctokit, options: Not
             owner: options.owner, repo: options.repo, issue_number: options.issueNumber, since: since.toISOString(), per_page: 100,
         });
         const comments = Array.isArray(response.data) ? response.data as IssueCommentSummary[] : [];
-        const recent = comments.some(comment => comment.body?.includes(marker)
+        const botLogins = ownBotLogins();
+        const recent = comments.some(comment => isOwnComment(comment, botLogins) && comment.body?.includes(marker)
             && (!comment.updated_at || Date.parse(comment.updated_at) >= since.getTime()));
         if (recent) return false;
     } catch {

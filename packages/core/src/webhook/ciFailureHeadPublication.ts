@@ -33,30 +33,75 @@ function configuredBotUsernames(): Set<string> {
 
 interface HeadComment { id: number; body: string }
 
-/** The head commit's CI-failure comment: the id Redis remembers, else a marker scan. */
+/** The head comment could not be confirmed present or absent; posting now could add a second one. */
+export class CiFailureHeadLookupError extends Error {
+    constructor(headKey: string, cause?: unknown) {
+        super(`Could not look up the CI-failure comment of head ${headKey}; not posting a new one`);
+        this.name = 'CiFailureHeadLookupError';
+        if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+    }
+}
+
+function isNotFound(error: unknown): boolean {
+    return isRecord(error) && (error.status === 404 || error.status === 410);
+}
+
+/**
+ * The comment whose id Redis remembers. `inconclusive` carries the error when
+ * Redis or GitHub could not be read; a deleted comment is a confirmed miss.
+ */
+async function readRememberedHeadComment(
+    octokit: CiFailureOctokit,
+    redis: DedupeRedis,
+    request: CiFailureFollowupRequest,
+    headKey: string,
+): Promise<{ comment: HeadComment | null; inconclusive?: unknown }> {
+    let remembered: unknown;
+    try {
+        remembered = await redis.get(`ci-failure-followup-head:${headKey}`);
+    } catch (error) {
+        return { comment: null, inconclusive: error };
+    }
+    const rememberedId = Number(remembered);
+    if (!Number.isSafeInteger(rememberedId) || rememberedId <= 0) return { comment: null };
+    try {
+        const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+            owner: request.owner, repo: request.repo, comment_id: rememberedId,
+        });
+        const body = isRecord(data) && typeof data.body === 'string' ? data.body : '';
+        return { comment: body.includes(buildCiFailureFollowupMarker(headKey)) ? { id: rememberedId, body } : null };
+    } catch (error) {
+        return isNotFound(error) ? { comment: null } : { comment: null, inconclusive: error };
+    }
+}
+
+/**
+ * The head commit's CI-failure comment: the id Redis remembers, else a marker
+ * scan of the bot's comments. `null` only when absence is confirmed; a lookup
+ * that cannot complete throws, so a read failure never looks like no comment.
+ */
 async function findHeadComment(
     octokit: CiFailureOctokit,
     redis: DedupeRedis,
     request: CiFailureFollowupRequest,
     headKey: string,
 ): Promise<HeadComment | null> {
-    const marker = buildCiFailureFollowupMarker(headKey);
-    const rememberedId = Number(await redis.get(`ci-failure-followup-head:${headKey}`).catch(() => null));
-    if (Number.isSafeInteger(rememberedId) && rememberedId > 0) {
-        try {
-            const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-                owner: request.owner, repo: request.repo, comment_id: rememberedId,
-            });
-            const body = isRecord(data) && typeof data.body === 'string' ? data.body : '';
-            if (body.includes(marker)) return { id: rememberedId, body };
-        } catch {
-            // Deleted or unreadable: fall back to the scan.
-        }
+    const remembered = await readRememberedHeadComment(octokit, redis, request, headKey);
+    if (remembered.comment) return remembered.comment;
+    // An unreadable remembered comment leaves the decision to a completed scan.
+    if (!octokit.paginate) {
+        if (remembered.inconclusive !== undefined) throw new CiFailureHeadLookupError(headKey, remembered.inconclusive);
+        return null;
     }
-    if (!octokit.paginate) return null;
-    const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: request.owner, repo: request.repo, issue_number: request.prNumber, per_page: 100,
-    });
+    let comments: unknown[];
+    try {
+        comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: request.owner, repo: request.repo, issue_number: request.prNumber, per_page: 100,
+        });
+    } catch (error) {
+        throw new CiFailureHeadLookupError(headKey, error);
+    }
+    const marker = buildCiFailureFollowupMarker(headKey);
     const bots = configuredBotUsernames();
     for (const comment of comments) {
         if (!isRecord(comment) || typeof comment.body !== 'string' || !comment.body.includes(marker)) continue;
@@ -81,13 +126,9 @@ export async function publishHeadFailure(options: {
     lease: HeadLease;
 }): Promise<HeadPublication> {
     const { octokit, redis, request, entry, headKey, correlationId, log, lease } = options;
-    let existing: HeadComment | null = null;
-    try {
-        existing = await findHeadComment(octokit, redis, request, headKey);
-    } catch (error) {
-        // The per-source claim still protects redeliveries; a list failure must not hide a failure.
-        log.warn({ error: (error as Error).message }, 'Could not look up the head commit CI-failure comment');
-    }
+    // A lookup failure propagates: the caller releases the per-source claim so
+    // the failure is delivered again, instead of posting a possible second comment.
+    const existing = await findHeadComment(octokit, redis, request, headKey);
     const marker = buildCiFailureFollowupMarker(headKey);
     if (existing) {
         // A later failure of the same head joins its comment. Editing never

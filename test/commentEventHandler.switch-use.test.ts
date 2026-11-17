@@ -193,7 +193,7 @@ const { processCommentEvent, handleCommentDeleted, handleCommentEdited, setUltra
 );
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
-const { applyPendingCommentCommandContext } = await import(
+const { applyPendingCommentCommandContext, pickUpPendingCommentsWithClaim } = await import(
     '../src/jobs/prPendingComments.js'
 );
 
@@ -326,6 +326,98 @@ describe('commentEventHandler — automatic CI follow-up marker', () => {
         assert.strictEqual(jobData.comments[0].body, 'Please investigate unit-tests.');
         assert.doesNotMatch(jobData.comments[0].body, /propr:ci-failure-followup/);
         assert.deepStrictEqual(disposition.billing, { seatConsumed: false });
+    });
+
+    /** Redis lists as the pending-comments batch uses them, with the claim and compare-and-set scripts. */
+    function createListRedis() {
+        const base = createMockRedis();
+        const lists = new Map<string, string[]>();
+        return Object.assign(base, {
+            lists,
+            rpush: mock.fn(async (key: string, ...values: string[]) => {
+                lists.set(key, [...(lists.get(key) ?? []), ...values]);
+                return lists.get(key)!.length;
+            }),
+            lrange: mock.fn(async (key: string) => [...(lists.get(key) ?? [])]),
+            eval: mock.fn(async (script: string, _keys: number, key: string, ...args: Array<string | number>) => {
+                if (script.includes('lset')) {
+                    const list = lists.get(key);
+                    const index = Number(args[0]);
+                    if (!list || list[index] !== args[1]) return 0;
+                    list[index] = String(args[2]);
+                    return 1;
+                }
+                // The batch claim: read the whole list and delete it.
+                const claimed = lists.get(key) ?? [];
+                lists.delete(key);
+                return claimed;
+            }),
+        });
+    }
+
+    function ciFailureEdit(checks: string[], updatedAt: string) {
+        const marker = `<!-- propr:ci-failure-followup key="${'c'.repeat(64)}" -->`;
+        const event = createPRCommentEvent(`CI failed: ${checks.map(check => `**${check}**`).join(', ')}\n\n${marker}`);
+        event.comment.id = 7001;
+        event.comment.user.login = 'propr-dev[bot]';
+        event.comment.user.type = 'Bot';
+        event.comment.updated_at = updatedAt;
+        return event;
+    }
+
+    test('a CI-failure comment waiting in a batch takes the later failures added to it (F6)', async () => {
+        mockQueueAdd.mock.resetCalls();
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: { head: { ref: 'feature-branch' }, labels: [] } }));
+        const first = ciFailureEdit(['Lint'], '2026-11-17T08:00:00Z');
+        const pr = { repoOwner: first.repository.owner.login, repoName: first.repository.name, pullRequestNumber: 42 };
+        // Another follow-up of this PR is running, so the CI comment waits in the batch.
+        mockActiveJobs = [{ name: 'processPullRequestComment', data: { ...pr, comments: [{ id: 1 }] } }];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+        const redisClient = createListRedis();
+        const reprocess = mock.fn(async () => ({ status: 'accepted' }));
+        const config = createTestConfig({ redisClient, processCommentEvent: reprocess });
+
+        await processCommentEvent(first, 'issue_comment', 'corr-ci-batch', config);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0, 'stored for the batch, not queued');
+
+        // ProPR adds a second failing check of the same head to the comment.
+        const edited = ciFailureEdit(['Lint', 'Typecheck'], '2026-11-17T08:01:00Z');
+        await handleCommentEdited(edited, 'issue_comment', 'corr-ci-batch-edit', config);
+        assert.strictEqual(reprocess.mock.callCount(), 0, 'the waiting batch is not restarted');
+
+        const { pickedUpComments } = await pickUpPendingCommentsWithClaim([], { ...pr, correlatedLogger: mockLoggerInstance as never, redisClient: redisClient as never });
+        assert.strictEqual(pickedUpComments.length, 1);
+        assert.match(pickedUpComments[0].body, /Lint.*Typecheck/);
+        assert.doesNotMatch(pickedUpComments[0].body, /propr:ci-failure-followup/);
+
+        // A late delivery of the older revision does not undo the newer one.
+        await processCommentEvent(ciFailureEdit(['Lint'], '2026-11-17T08:00:00Z'), 'issue_comment', 'corr-ci-batch-2', config);
+        await handleCommentEdited(ciFailureEdit(['Lint', 'Typecheck', 'Build'], '2026-11-17T08:02:00Z'), 'issue_comment', 'corr-ci-batch-new', config);
+        await handleCommentEdited(edited, 'issue_comment', 'corr-ci-batch-stale', config);
+        const later = await pickUpPendingCommentsWithClaim([], { ...pr, correlatedLogger: mockLoggerInstance as never, redisClient: redisClient as never });
+        assert.match(later.pickedUpComments[0].body, /Build/);
+        mockActiveJobs = [];
+    });
+
+    test('a CI-failure edit whose batch record was already claimed is handled as an edit, not dropped (F6)', async () => {
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true }));
+        mockCheckCommentTrigger.mock.mockImplementation(() => ({ isTriggered: false }));
+        const first = ciFailureEdit(['Lint'], '2026-11-17T08:00:00Z');
+        const pr = { repoOwner: first.repository.owner.login, repoName: first.repository.name, pullRequestNumber: 42 };
+        mockActiveJobs = [{ name: 'processPullRequestComment', data: { ...pr, comments: [{ id: 1 }] } }];
+        const redisClient = createListRedis();
+        const reprocess = mock.fn(async () => ({ status: 'accepted' }));
+        const config = createTestConfig({ redisClient, processCommentEvent: reprocess });
+        await processCommentEvent(first, 'issue_comment', 'corr-ci-claimed', config);
+        // The batch claims the record (old body) just before the edit arrives.
+        await pickUpPendingCommentsWithClaim([], { ...pr, correlatedLogger: mockLoggerInstance as never, redisClient: redisClient as never });
+
+        await handleCommentEdited(ciFailureEdit(['Lint', 'Typecheck'], '2026-11-17T08:01:00Z'), 'issue_comment', 'corr-ci-claimed-edit', config);
+        assert.strictEqual(reprocess.mock.callCount(), 1, 'the edited comment is processed again so its new failure is not lost');
+        mockActiveJobs = [];
     });
 
     test('does not let an unrelated bot use the CI marker to bypass author filtering', async () => {
