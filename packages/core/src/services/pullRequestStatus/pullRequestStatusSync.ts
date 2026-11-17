@@ -14,6 +14,7 @@ import {
     epicSyncNotes, startEpicSyncRunner, stopEpicSyncRunner, syncEpicSideOfStatus, undeterminedEpicUpdate, withEpicChildReadContinuation, type EpicSyncNotes,
 } from './pullRequestStatusEpicSync.js';
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
+import { decideStatusBodyEdit, recordStatusEdit } from './pullRequestStatusEditPacing.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
 import { sameStatusSubject } from './pullRequestStatusSubject.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
@@ -42,7 +43,6 @@ import {
     preservePullRequestStatusBlock,
     renderCompactPullRequestStatusBlock,
     renderPullRequestStatusBlock,
-    sameRenderedStatus,
     stripPullRequestStatusBlock,
 } from './pullRequestStatusBlock.js';
 import {
@@ -285,10 +285,10 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
             ? await undeterminedEpicUpdate({ pull, status: status! }, deps.now(), decideTitle)
             : { body: bodyWithStatus(current, status, deps.now(), { repository, prNumber }), title: await decideTitle(status) };
         const written = extractPullRequestStatusBlock(next) !== null;
-        const bodyChanged = !(next === current || sameRenderedStatus(next, current));
+        const { bodyChanged, paceInMs } = await decideStatusBodyEdit(deps.redis, { repository, prNumber }, { current, next, renames: title.title !== null }, deps.now().getTime());
         const read = {
             awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed, checksAwaitedForMs: desired.checksAwaitedForMs,
-            titleSettleInMs: withEpicChildReadContinuation(earliest(title.settleInMs, desired.checksAwaitedForMs), desired),
+            titleSettleInMs: withEpicChildReadContinuation(earliest(earliest(title.settleInMs, desired.checksAwaitedForMs), paceInMs), desired),
             notes: await epicSyncNotes(deps.redis, { repository, prNumber, lease }, desired, bodyChanged || title.title !== null),
         };
         if (!bodyChanged && title.title === null) return { result: written ? 'unchanged' : 'skipped', ...read };
@@ -296,7 +296,10 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
         // since may have changed the body, so this read must not be written.
         await lease.assertHeld();
         // Recorded before the PATCH, so the edited webhook it causes is recognised as ProPR's own however fast it arrives.
-        if (bodyChanged) await recordPullRequestStatusWrite(deps.redis, repository, prNumber, extractPullRequestStatusBlock(next));
+        if (bodyChanged) {
+            await recordPullRequestStatusWrite(deps.redis, repository, prNumber, extractPullRequestStatusBlock(next));
+            await recordStatusEdit(deps.redis, repository, prNumber, deps.now().getTime());
+        }
         // The title slot stays pending until GitHub accepts the rename: a rejected one is no slot a person removed.
         const titleSlot = title.title !== null ? readStatusSlot(title.title) : null;
         if (title.title !== null) await recordPendingPullRequestTitleSlot(deps.redis, repository, prNumber, titleSlot);

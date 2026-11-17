@@ -297,6 +297,27 @@ function classifyLegacyStatuses(read: LegacyStatuses | null, patterns: readonly 
     };
 }
 
+/** A check name GitHub never expanded, such as `Validate ${{ matrix.platform }}`: a job cancelled before its matrix was read. */
+export function isUnexpandedCheckName(name: string | null | undefined): boolean {
+    return typeof name === 'string' && name.includes('${{');
+}
+
+/**
+ * Separates cancelled check runs from the rest. A cancelled run is no
+ * verdict on the head: it is not failed, and not passed. One that another run
+ * of the same check replaced, or whose name was never expanded (its workflow
+ * run was cancelled before its matrix was read, usually because a newer run
+ * superseded it), is left out entirely. Any other blocking one is reported as
+ * cancelled; nothing runs it again, so it still keeps the PR from being ready.
+ */
+function cancelledCheckRuns(runs: readonly CheckRun[], patterns: readonly string[]): { checkRuns: CheckRun[]; cancelledNames: string[] } {
+    const isCancelled = (run: CheckRun) => run.status === 'completed' && run.conclusion === 'cancelled';
+    const replaced = new Set(runs.filter(run => !isCancelled(run)).map(run => run.name ?? ''));
+    const cancelledNames = runs.filter(run => isCancelled(run) && !replaced.has(run.name ?? '') && !isUnexpandedCheckName(run.name)
+        && !isNonBlockingCheck(run.name, patterns)).map(run => run.name || 'check run');
+    return { checkRuns: runs.filter(run => !isCancelled(run)), cancelledNames };
+}
+
 /**
  * Blocking checks on the head; nonBlockingChecks neither fail nor hold the
  * status. A GitHub read that rejects leaves the checks incomplete and sets
@@ -311,23 +332,28 @@ export async function loadPullRequestStatusChecks(
         loadLegacyStatuses(sources.github, owner, repo, ref),
         sources.loadNonBlockingChecks(owner, repo),
     ]);
-    const checkRuns = runs.status === 'fulfilled' ? runs.value.runs : [];
+    const listedRuns = runs.status === 'fulfilled' ? runs.value.runs : [];
     const patternList = patterns.status === 'fulfilled' ? patterns.value : [];
     const legacy = classifyLegacyStatuses(statuses.status === 'fulfilled' ? statuses.value : null, patternList);
+    // Cancelled runs are no verdict (cancelledCheckRuns); the shared summary reads the rest.
+    const { checkRuns, cancelledNames } = cancelledCheckRuns(listedRuns, patternList);
     // Legacy contexts are classified above; the shared summary reads the check runs.
     const summary = summarizeCheckSignals(checkRuns, { state: 'success', totalCount: 0, statuses: [] }, patternList);
     const runFailed = summary.blockingFailed ?? [];
     const runPending = summary.blockingPending?.length ?? 0;
+    const skipped = checkRuns.filter(run => run.status === 'completed' && run.conclusion === 'skipped' && !isNonBlockingCheck(run.name, patternList)).length;
     const failedNames = [...runFailed, ...legacy.failed];
     const complete = runs.status === 'fulfilled' && runs.value.complete && statuses.status === 'fulfilled' && statuses.value.complete;
     return {
         complete,
         reported: (runs.status === 'fulfilled' && runs.value.total > 0) || (statuses.status === 'fulfilled' && statuses.value.total > 0),
         readFailed: runs.status === 'rejected' || statuses.status === 'rejected',
-        passed: Math.max(0, summary.count - (summary.nonBlockingCount ?? 0) - runFailed.length - runPending) + legacy.passed,
+        passed: Math.max(0, summary.count - (summary.nonBlockingCount ?? 0) - runFailed.length - runPending - skipped) + legacy.passed,
         failed: failedNames.length,
         pending: runPending + legacy.pending.length,
         failedNames,
+        ...(skipped > 0 ? { skipped } : {}),
+        ...(cancelledNames.length > 0 ? { cancelled: cancelledNames.length, cancelledNames } : {}),
     };
 }
 

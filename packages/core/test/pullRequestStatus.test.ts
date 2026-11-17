@@ -293,24 +293,24 @@ test('the block renders the documented one-line examples', () => {
             tasks: [task('pr-comment', 'claude_execution', 'follow_up')], ultrafix: loop(), latestReviewScore: 6,
             checks: { complete: true, passed: 31, failed: 0, pending: 4, failedNames: [] },
         })), NOW),
-        '**ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated 09:41 UTC',
+        '**ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated Nov 13 09:41 UTC',
     );
     assert.equal(
         renderPullRequestStatusLine(computePullRequestStatus(facts({ latestReviewScore: 8 })), new Date('2026-11-13T10:02:00Z')),
-        '**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC',
+        '**ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated Nov 13 10:02 UTC',
     );
     assert.equal(
         renderPullRequestStatusLine(computePullRequestStatus(facts({
             latestReviewScore: 6,
             ultrafix: loop({ active: false, cycleCount: 10, completionStatus: 'failed', completionReason: 'cycles_exhausted', finalScore: 6, completedAt: '2026-11-13T10:00:00Z' }),
         })), new Date('2026-11-13T10:15:00Z')),
-        '**ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated 10:15 UTC',
+        '**ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated Nov 13 10:15 UTC',
     );
 });
 
 test('epic pull requests lead with merged and total issue counts', () => {
     const line = renderPullRequestStatusLine(computePullRequestStatus(facts({ epic: { merged: 2, total: 5 } })), NOW);
-    assert.equal(line, '**ProPR** ⚠️ 2 of 5 issues merged · nothing in progress · updated 09:41 UTC');
+    assert.equal(line, '**ProPR** ⚠️ 2 of 5 issues merged · nothing in progress · updated Nov 13 09:41 UTC');
 });
 
 test('failed check names cannot break out of the one-line block', () => {
@@ -331,7 +331,7 @@ test('the block never exceeds the size new descriptions reserve for it', () => {
     assert.equal(worst.state, 'needs_attention');
     const block = renderPullRequestStatusBlock(worst, NOW);
     assert.ok(block && block.length <= PR_STATUS_BLOCK_MAX_LENGTH, `block is ${block?.length} characters`);
-    assert.match(block!, /updated 09:41 UTC\n<!-- \/propr:pr-status -->$/, 'the block keeps its markers and update time');
+    assert.match(block!, /updated Nov 13 09:41 UTC\n<!-- \/propr:pr-status -->$/, 'the block keeps its markers and update time');
     // Every state stays within the bound.
     for (const status of [computePullRequestStatus(facts()), computePullRequestStatus(facts({ tasks: [task('issue', 'processing')] }))]) {
         assert.ok(renderPullRequestStatusBlock(status, NOW)!.length <= PR_STATUS_BLOCK_MAX_LENGTH);
@@ -340,7 +340,7 @@ test('the block never exceeds the size new descriptions reserve for it', () => {
 
 test('the compact block keeps only the headline and the update time', () => {
     const status = computePullRequestStatus(facts({ latestReviewScore: 6 }));
-    assert.equal(renderCompactPullRequestStatusBlock(status, NOW), `${PR_STATUS_BLOCK_START}\n**ProPR** ⚠️ Needs you · updated 09:41 UTC\n${PR_STATUS_BLOCK_END}`);
+    assert.equal(renderCompactPullRequestStatusBlock(status, NOW), `${PR_STATUS_BLOCK_START}\n**ProPR** ⚠️ Needs you · updated Nov 13 09:41 UTC\n${PR_STATUS_BLOCK_END}`);
     assert.equal(renderCompactPullRequestStatusBlock(computePullRequestStatus(facts({ isProprPullRequest: false })), NOW), null);
 });
 
