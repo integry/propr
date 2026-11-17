@@ -13,6 +13,7 @@ import {
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
 import { describeUsageLimitKind, formatTimeUntil } from '@propr/shared';
 import { postNoticeOnce } from './failureCommentDedupe.js';
+import { issueCommentLockKey, withIssueCommentLock, type IssueCommentLease } from './issueCommentLock.js';
 import { completeProviderReplacement, isAgentExecutionFailure, prepareProviderReplacement } from './providerReplacement.js';
 
 type Octokit = {
@@ -145,7 +146,25 @@ export async function handleUsageLimitError(
     issueRef: IssueJobData,
     options: UsageLimitErrorOptions
 ): Promise<void> {
-    const { octokit, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG } = options;
+    // The pending-retry lookup, the notice and the scheduling are one claim of
+    // the issue run's next attempt: concurrent tasks of the run (on any worker)
+    // take it one at a time, so a later one sees the retry the first scheduled.
+    // Released on return or throw; a failed scheduling leaves no retry behind,
+    // so the next task of the run claims again.
+    const runKey = issueCommentLockKey(
+        { owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number },
+        `usage-limit-retry:${issueUsageLimitRetryJobId(issueRef, '')}`,
+    );
+    await withIssueCommentLock(runKey, lease => scheduleUsageLimitRetry(error, job, issueRef, { ...options, lease }));
+}
+
+async function scheduleUsageLimitRetry(
+    error: UsageLimitError,
+    job: Job<IssueJobData>,
+    issueRef: IssueJobData,
+    options: UsageLimitErrorOptions & { lease: IssueCommentLease },
+): Promise<void> {
+    const { octokit, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG, AI_WAITING_TAG, lease } = options;
     const jobId = job.id;
 
     correlatedLogger.warn({
@@ -187,6 +206,7 @@ export async function handleUsageLimitError(
     }
 
     if (octokit) {
+        await lease.assertHeld();
         try {
             const commentBody = formatRateLimitComment(error, retryTimestamp);
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -211,6 +231,7 @@ export async function handleUsageLimitError(
     const requeueJobId = issueUsageLimitRetryJobId(issueRef, attempt);
 
     if (await issueRetryWasStopped(stateManager, taskId)) return;
+    await lease.assertHeld();
     const retryJob = await issueQueue.add(job.name, requeuedJobData, {
         jobId: requeueJobId,
         delay: Math.max(0, delay)

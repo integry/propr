@@ -16,7 +16,9 @@ import {
 } from './ciFailureFollowup.js';
 
 const HEAD_LOCK_TTL_SECONDS = 30;
-const HEAD_LOCK_WAIT_MS = 15_000;
+const HEAD_LOCK_RENEW_MS = 10_000;
+/** Longer than the TTL: a crashed holder's lock lapses before a waiter gives up. */
+const HEAD_LOCK_WAIT_MS = 40_000;
 
 type Log = ReturnType<typeof logger.withCorrelation>;
 
@@ -76,8 +78,9 @@ export async function publishHeadFailure(options: {
     headKey: string;
     correlationId: string;
     log: Log;
+    lease: HeadLease;
 }): Promise<HeadPublication> {
-    const { octokit, redis, request, entry, headKey, correlationId, log } = options;
+    const { octokit, redis, request, entry, headKey, correlationId, log, lease } = options;
     let existing: HeadComment | null = null;
     try {
         existing = await findHeadComment(octokit, redis, request, headKey);
@@ -95,6 +98,7 @@ export async function publishHeadFailure(options: {
             owner: request.owner, repo: request.repo, sha: request.evidence.sha, entries: merged, marker,
             omittedCount: parseOmittedCiFailureCount(existing.body),
         });
+        await lease.assertHeld();
         await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: request.owner, repo: request.repo, comment_id: existing.id, body,
         });
@@ -103,9 +107,12 @@ export async function publishHeadFailure(options: {
     }
     const body = renderCiFailureHeadComment({ owner: request.owner, repo: request.repo, sha: request.evidence.sha, entries: [entry], marker });
     const created = await withRetry(
-        () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: request.owner, repo: request.repo, issue_number: request.prNumber, body,
-        }),
+        async () => {
+            await lease.assertHeld();
+            return octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: request.owner, repo: request.repo, issue_number: request.prNumber, body,
+            });
+        },
         { maxAttempts: 3, baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, correlationId },
         `post_ci_failure_followup_${request.owner}_${request.repo}_${request.prNumber}`,
     );
@@ -116,30 +123,95 @@ export async function publishHeadFailure(options: {
     return { posted: true, reason: 'posted', body };
 }
 
+/** The head lock was held by another publisher for the whole wait; nothing was published. */
+export class CiFailureHeadLockTimeoutError extends Error {
+    constructor(headKey: string) {
+        super(`Timed out waiting for the CI-failure comment lock of head ${headKey}; not publishing without it`);
+        this.name = 'CiFailureHeadLockTimeoutError';
+    }
+}
+
+/** This publisher no longer owns the head lock, so its read of the comment may be stale. */
+export class CiFailureHeadLockLostError extends Error {
+    constructor(headKey: string) {
+        super(`Lost the CI-failure comment lock of head ${headKey} before writing; not publishing`);
+        this.name = 'CiFailureHeadLockLostError';
+    }
+}
+
+/** Confirms, and extends, the head lock right before a GitHub write. */
+export interface HeadLease { assertHeld(): Promise<void> }
+
+type HeadLockRedis = DedupeRedis & { eval?: (script: string, numKeys: number, ...args: Array<string | number>) => Promise<unknown> };
+
+const RENEW_SCRIPT = 'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], ARGV[2]) else return 0 end';
+const RELEASE_SCRIPT = 'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
+
+/** Renews the lock while it still carries `token`; false once another publisher owns it or it lapsed. */
+async function renewHeadLock(redis: HeadLockRedis, lockKey: string, token: string): Promise<boolean> {
+    if (typeof redis.eval === 'function') {
+        return Number(await redis.eval(RENEW_SCRIPT, 1, lockKey, token, HEAD_LOCK_TTL_SECONDS)) === 1;
+    }
+    if (await redis.get(lockKey) !== token) return false;
+    return await redis.set(lockKey, token, 'EX', HEAD_LOCK_TTL_SECONDS, 'XX') === 'OK';
+}
+
+/**
+ * Runs `work` while holding the head's lock, so the failures of one head are
+ * merged one at a time. Contention for the whole wait (longer than the lock
+ * TTL, so only a live, renewing holder can cause it) throws instead of
+ * publishing unlocked; the caller then releases its per-source claim so the
+ * failure can be delivered again. The lock is renewed while the work runs,
+ * and `lease.assertHeld()` must be called right before each GitHub write.
+ */
 export async function withHeadLock<T>(
-    options: { redis: DedupeRedis; headKey: string; timing?: CiFailureFollowupTiming; log: Log },
-    work: () => Promise<T>,
+    options: { redis: HeadLockRedis; headKey: string; timing?: CiFailureFollowupTiming; log: Log },
+    work: (lease: HeadLease) => Promise<T>,
 ): Promise<T> {
     const { redis, headKey, timing, log } = options;
     const lockKey = `ci-failure-followup-head-lock:${headKey}`;
     const token = `${process.pid}:${Date.now()}:${Math.random()}`;
     const sleep = timing?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
     const deadline = Date.now() + (timing?.lockWaitMs ?? HEAD_LOCK_WAIT_MS);
-    let locked = false;
+    let acquiredAt = Date.now();
     for (;;) {
-        try {
-            locked = await redis.set(lockKey, token, 'EX', HEAD_LOCK_TTL_SECONDS, 'NX') === 'OK';
-        } catch {
-            break;
+        acquiredAt = Date.now();
+        // A Redis error propagates: publishing unlocked is never the fallback.
+        if (await redis.set(lockKey, token, 'EX', HEAD_LOCK_TTL_SECONDS, 'NX') === 'OK') break;
+        if (Date.now() >= deadline) {
+            log.warn({ headKey }, 'Head commit CI-failure comment is locked by another publisher; deferring this failure');
+            throw new CiFailureHeadLockTimeoutError(headKey);
         }
-        if (locked || Date.now() >= deadline) break;
         await sleep(100);
     }
-    if (!locked) log.warn({ headKey }, 'Could not lock the head commit CI-failure comment; publishing without the lock');
+    let lost = false;
+    let expiresAt = acquiredAt + HEAD_LOCK_TTL_SECONDS * 1000;
+    const renew = async (): Promise<boolean> => {
+        if (lost) return false;
+        const startedAt = Date.now();
+        try {
+            if (await renewHeadLock(redis, lockKey, token)) expiresAt = startedAt + HEAD_LOCK_TTL_SECONDS * 1000;
+            else lost = true;
+        } catch {
+            // A failed renewal proves nothing yet; the lock is lost once it lapses.
+        }
+        if (Date.now() >= expiresAt) lost = true;
+        return !lost;
+    };
+    const timer = setInterval(() => { void renew(); }, HEAD_LOCK_RENEW_MS);
+    timer.unref?.();
+    const lease: HeadLease = {
+        assertHeld: async () => {
+            if (!await renew()) throw new CiFailureHeadLockLostError(headKey);
+        },
+    };
     try {
-        return await work();
+        return await work(lease);
     } finally {
-        if (locked && await redis.get(lockKey).catch(() => null) === token) {
+        clearInterval(timer);
+        if (typeof redis.eval === 'function') {
+            await redis.eval(RELEASE_SCRIPT, 1, lockKey, token).catch(() => undefined);
+        } else if (await redis.get(lockKey).catch(() => null) === token) {
             await redis.del(lockKey).catch(() => undefined);
         }
     }

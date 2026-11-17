@@ -151,4 +151,51 @@ describe('one CI-failure comment per head commit (#3622 point 4)', () => {
             ['Full Test Suite Shard 1/4', 'Lint'],
         );
     });
+
+    test('a failure that cannot get the head lock from a live publisher defers instead of publishing unlocked (F3)', async () => {
+        const gh = fakeGitHub();
+        const redis = createRedis();
+        // Publisher A holds the head lock (its TTL has not lapsed) while it talks to GitHub.
+        const lockKey = 'ci-failure-followup-head-lock:';
+        const deps = { ...dependencies(gh, redis), timing: { sleep: async () => { await new Promise(resolve => setTimeout(resolve, 1)); }, lockWaitMs: 20 } };
+        const original = redis.set.mock.calls.length;
+        await postCiFailureFollowup(failure('Lint', 1), 'a', dependencies(gh, redis));
+        const heldKey = [...redis.values.keys()].find(key => key.startsWith(lockKey));
+        assert.equal(heldKey, undefined, 'A released its lock');
+        const headLockKey = redis.set.mock.calls.slice(original).map(call => String(call.arguments[0])).find(key => key.startsWith(lockKey))!;
+        redis.values.set(headLockKey, 'publisher-a');
+
+        await assert.rejects(postCiFailureFollowup(failure('Typecheck', 2), 'b', deps), { name: 'CiFailureHeadLockTimeoutError' });
+        assert.equal(gh.posts.length, 1, 'no second comment');
+        assert.equal(gh.patches.length, 0, 'no unlocked merge');
+        assert.equal([...redis.values.keys()].filter(key => key !== headLockKey && !key.startsWith('ci-failure-followup-head:')).length, 1,
+            'only the first check keeps its per-source claim; the deferred one can be delivered again');
+
+        // Once A releases, a redelivery of B merges into the one comment.
+        redis.values.delete(headLockKey);
+        const retried = await postCiFailureFollowup(failure('Typecheck', 2), 'b-again', dependencies(gh, redis));
+        assert.equal(retried.reason, 'merged');
+        assert.deepEqual(parseCiFailureEntries(gh.comments[0].body).map(entry => entry.name), ['Lint', 'Typecheck']);
+    });
+
+    test('a publisher that lost the head lock before writing does not write (F3)', async () => {
+        const gh = fakeGitHub();
+        const redis = createRedis();
+        await postCiFailureFollowup(failure('Lint', 1), 'first', dependencies(gh, redis));
+        const request = gh.octokit.request.mock.calls.length;
+        const paginate = gh.octokit.paginate;
+        // While this publisher reads the comment, its lock lapses and another publisher takes it.
+        gh.octokit.paginate = mock.fn(async () => {
+            for (const key of redis.values.keys()) if (key.startsWith('ci-failure-followup-head-lock:')) redis.values.set(key, 'publisher-c');
+            return paginate();
+        });
+        redis.values.forEach((_value, key) => { if (key.startsWith('ci-failure-followup-head:')) redis.values.delete(key); });
+        await assert.rejects(postCiFailureFollowup(failure('Typecheck', 2), 'second', dependencies(gh, redis)), { name: 'CiFailureHeadLockLostError' });
+        assert.equal(gh.patches.length, 0);
+        assert.equal(gh.posts.length, 1);
+        assert.ok(gh.octokit.request.mock.calls.length >= request);
+        const lock = [...redis.values.entries()].find(([key]) => key.startsWith('ci-failure-followup-head-lock:'));
+        assert.equal(lock?.[1], 'publisher-c', 'the other publisher\'s lock is left alone');
+    });
 });
+

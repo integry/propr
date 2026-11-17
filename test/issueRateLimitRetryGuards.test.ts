@@ -22,6 +22,25 @@ await mock.module('@propr/core', { namedExports: {
     TaskStates: { CANCELLED: 'cancelled', COMPLETED: 'completed', FAILED: 'failed' },
 } });
 const { formatRateLimitComment, handleUsageLimitError } = await import('../src/jobs/errorHandlers.js');
+const { setIssueCommentLockRedis, setIssueCommentLockTimingForTests } = await import('../src/jobs/issueCommentLock.js');
+
+/** Redis as the issue comment lock uses it: SET PX NX plus the renew and release scripts. */
+function lockRedis() {
+    const values = new Map<string, string>();
+    return {
+        values,
+        set: async (key: string, value: string, ..._args: Array<string | number>) => {
+            if (values.has(key)) return null;
+            values.set(key, value);
+            return 'OK';
+        },
+        eval: async (script: string, _keys: number, key: string, token: string) => {
+            if (values.get(key) !== token) return 0;
+            if (script.includes('"del"')) values.delete(key);
+            return 1;
+        },
+    };
+}
 
 const log = { info() {}, warn() {}, error() {} };
 const octokit = { request: async (_route: string, params: { body?: string }) => { if (params.body) comments.push(params.body); return { data: {} }; } };
@@ -34,7 +53,7 @@ const weekly = () => Object.assign(new Error('usage limit'), {
     rawErrorMessage: "You've hit your weekly limit · resets Nov 18, 4pm (UTC)",
 });
 
-beforeEach(() => { jobs.clear(); comments.length = 0; });
+beforeEach(() => { jobs.clear(); comments.length = 0; setIssueCommentLockRedis(null); setIssueCommentLockTimingForTests(null); });
 
 describe('rate-limit retry guards (#3556)', () => {
     test('the dated weekly reset is parsed instead of falling back to the next hour', () => {
@@ -89,5 +108,74 @@ describe('rate-limit retry guards (#3556)', () => {
             queue.add = add;
         }
         assert.ok(before + added[0] >= error.resetTimestamp * 1000);
+    });
+
+    test('two tasks of the same issue run hitting the limit at once schedule one retry and post one notice (F1)', async () => {
+        const getDelayed = queue.getDelayed;
+        let lookups = 0;
+        // The snapshot is taken when the lookup starts and returned a while later:
+        // without a claim both callers hold an empty snapshot before either schedules.
+        queue.getDelayed = async () => { lookups++; const snapshot = await getDelayed(); await new Promise(resolve => setTimeout(resolve, 20)); return snapshot; };
+        try {
+            await Promise.all(['a', 'b'].map(name => handleUsageLimitError(weekly() as never,
+                { id: `job-${name}`, name: 'processGitHubIssue', data: issue(`task-${name}`) } as never, issue(`task-${name}`) as never,
+                { octokit, correlatedLogger: log, stateManager: manager, taskId: `task-${name}` } as never)));
+        } finally {
+            queue.getDelayed = getDelayed;
+        }
+        assert.equal(lookups, 2);
+        assert.equal(jobs.size, 1, 'one pending retry per issue run');
+        assert.equal(comments.filter(body => body.includes('Rate Limit Reached')).length, 1, 'one notice');
+    });
+
+    test('a task on another worker holding the claim makes this task wait and then see its retry (F1)', async () => {
+        const redis = lockRedis();
+        setIssueCommentLockRedis(redis);
+        setIssueCommentLockTimingForTests({ pollMs: 5 });
+        const lockKey = 'propr:issue-comment-lock:integry/propr#3556:usage-limit-retry:issue-integry-propr-3556-claude-claude-opus-5-5-main-ratelimit-retry-';
+        redis.values.set(lockKey, 'other-worker');
+        let lookups = 0;
+        const getDelayed = queue.getDelayed;
+        queue.getDelayed = async () => { lookups++; return getDelayed(); };
+        try {
+            const pending = handleUsageLimitError(weekly() as never, { id: 'job-d', name: 'processGitHubIssue', data: issue('task-d') } as never, issue('task-d') as never,
+                { octokit, correlatedLogger: log, stateManager: manager, taskId: 'task-d' } as never);
+            await new Promise(resolve => setTimeout(resolve, 40));
+            assert.equal(lookups, 0, 'no lookup while the other worker holds the claim');
+            // The other worker schedules its retry, then releases the claim.
+            await queue.add('processGitHubIssue', { correlationId: 'task-other' }, { jobId: 'issue-integry-propr-3556-claude-claude-opus-5-5-main-ratelimit-retry-other' });
+            redis.values.delete(lockKey);
+            await pending;
+        } finally {
+            queue.getDelayed = getDelayed;
+        }
+        assert.equal(jobs.size, 1);
+        assert.equal(comments.length, 0);
+        assert.equal(redis.values.size, 0, 'the claim is released');
+    });
+
+    test('a claim held for the whole wait throws instead of scheduling unclaimed, and a failed scheduling releases the claim (F1)', async () => {
+        const redis = lockRedis();
+        setIssueCommentLockRedis(redis);
+        setIssueCommentLockTimingForTests({ pollMs: 5, waitMs: 30 });
+        const lockKey = 'propr:issue-comment-lock:integry/propr#3556:usage-limit-retry:issue-integry-propr-3556-claude-claude-opus-5-5-main-ratelimit-retry-';
+        redis.values.set(lockKey, 'other-worker');
+        const run = (name: string) => handleUsageLimitError(weekly() as never, { id: `job-${name}`, name: 'processGitHubIssue', data: issue(`task-${name}`) } as never, issue(`task-${name}`) as never,
+            { octokit, correlatedLogger: log, stateManager: manager, taskId: `task-${name}` } as never);
+        await assert.rejects(run('e'), { name: 'IssueCommentLockTimeoutError' });
+        assert.equal(jobs.size, 0);
+        assert.equal(comments.length, 0);
+
+        redis.values.delete(lockKey);
+        const add = queue.add;
+        queue.add = async () => { throw new Error('queue unavailable'); };
+        try {
+            await assert.rejects(run('f'), /queue unavailable/);
+        } finally {
+            queue.add = add;
+        }
+        assert.equal(redis.values.size, 0, 'the failed scheduling released the claim');
+        await run('g');
+        assert.equal(jobs.size, 1, 'the next task of the run claims and schedules');
     });
 });

@@ -25,6 +25,8 @@ import {
 import { setCheckRunDeps } from './jobs/ultrafixLoopContinuation.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processGitHubIssueJob } from './jobs/processGitHubIssueJob.js';
+import { redisClient as issueJobRedis } from './jobs/issueJob/config.js';
+import { setIssueCommentLockRedis } from './jobs/issueCommentLock.js';
 import { processPullRequestCommentJob } from './jobs/processPullRequestCommentJob.js';
 import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
@@ -173,6 +175,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     let aiPrimaryTag = 'AI';
 
     validateAttachmentBaseUrlConfig();
+    // Failure comments, notices and usage-limit retries serialize across workers.
+    setIssueCommentLockRedis(issueJobRedis);
 
     // No jobs may be claimed against a partially migrated schema.
     // Then copy extension profiles into the extension library once (never blocks startup).

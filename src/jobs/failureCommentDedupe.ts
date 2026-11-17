@@ -5,6 +5,7 @@
  * (a hidden marker on the comment), so a worker restart does not reset it.
  */
 import { createHash } from 'node:crypto';
+import { issueCommentLockKey, withIssueCommentLock, type IssueCommentLease } from './issueCommentLock.js';
 
 export const FAILURE_COMMENT_WINDOW_MS = 60 * 60 * 1000;
 
@@ -96,16 +97,28 @@ export interface PublishFailureCommentResult {
 /**
  * Publish a failure comment, or count it on the identical one posted in the
  * last hour. Lookup errors fall back to posting so a failure is never silent.
+ * Lookup, count and publication run under the issue's lock for this key, so
+ * concurrent identical failures post once and each adds to the count.
  */
 export async function publishFailureComment(
     octokit: FailureCommentOctokit,
     options: PublishFailureCommentOptions,
 ): Promise<PublishFailureCommentResult> {
+    return withIssueCommentLock(issueCommentLockKey(options, `failure:${options.key}`), lease => publishFailureCommentLocked(octokit, options, lease));
+}
+
+async function publishFailureCommentLocked(
+    octokit: FailureCommentOctokit,
+    options: PublishFailureCommentOptions,
+    lease: IssueCommentLease,
+): Promise<PublishFailureCommentResult> {
     const { owner, repo, issueNumber, key, startingCommentId } = options;
+    // The clock is read inside the lock: a waiter's window starts when it looks.
     const now = options.now ?? new Date();
     const previous = await findRecentFailureComment(octokit, { owner, repo, issueNumber, key, excludeCommentId: startingCommentId, now })
         .catch(() => null);
 
+    await lease.assertHeld();
     if (previous) {
         const count = previous.count + 1;
         await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
@@ -174,12 +187,16 @@ export function noticeMarker(key: string): string {
  * the issue within the window: several jobs reacting to one event post once.
  * A lookup failure posts, so a notice is never lost to a GitHub hiccup.
  */
-export async function postNoticeOnce(
-    octokit: FailureCommentOctokit,
-    options: FailureCommentTarget & { body: string; kind: string; identity?: string; windowMs?: number; now?: Date },
-): Promise<boolean> {
-    const now = options.now ?? new Date();
+type NoticeOptions = FailureCommentTarget & { body: string; kind: string; identity?: string; windowMs?: number; now?: Date };
+
+export async function postNoticeOnce(octokit: FailureCommentOctokit, options: NoticeOptions): Promise<boolean> {
     const key = createHash('sha256').update(`${options.kind}\n${options.identity ?? ''}`).digest('hex').slice(0, 16);
+    // Lookup and post run under the issue's lock for this notice, so concurrent jobs post it once.
+    return withIssueCommentLock(issueCommentLockKey(options, `notice:${key}`), lease => postNoticeOnceLocked(octokit, options, key, lease));
+}
+
+async function postNoticeOnceLocked(octokit: FailureCommentOctokit, options: NoticeOptions, key: string, lease: IssueCommentLease): Promise<boolean> {
+    const now = options.now ?? new Date();
     const marker = noticeMarker(key);
     try {
         const since = new Date(now.getTime() - (options.windowMs ?? NOTICE_DEDUPE_WINDOW_MS));
@@ -193,6 +210,7 @@ export async function postNoticeOnce(
     } catch {
         // Fall through and post.
     }
+    await lease.assertHeld();
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: options.owner, repo: options.repo, issue_number: options.issueNumber, body: `${options.body}\n${marker}`,
     });

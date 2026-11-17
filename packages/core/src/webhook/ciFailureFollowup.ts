@@ -240,7 +240,7 @@ export async function postCiFailureFollowup(
         // One comment per head commit: the lock serializes the failures of one
         // head so they merge into one comment instead of racing to post.
         const outcome = await withHeadLock({ redis, headKey, timing: dependencies.timing, log },
-            () => publishHeadFailure({ octokit, redis, request, entry, headKey, correlationId, log }));
+            lease => publishHeadFailure({ octokit, redis, request, entry, headKey, correlationId, log, lease }));
         if (outcome.reason === 'merged' || outcome.reason === 'duplicate') return outcome;
         const body = outcome.body;
         log.info({ ...failureLogContext(request), dedupeKey, headKey }, 'Posted automatic failed-CI follow-up comment');

@@ -1,9 +1,10 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    failureCommentKey, FAILURE_COMMENT_WINDOW_MS, postNoticeOnce, publishFailureComment,
+    failureCommentKey, FAILURE_COMMENT_WINDOW_MS, postNoticeOnce, publishFailureComment, renderFailureCommentBody,
 } from '../src/jobs/failureCommentDedupe.js';
 import { buildFollowupFailureBody } from '../src/jobs/prCommentFailureComment.js';
+import { setIssueCommentLockTimingForTests } from '../src/jobs/issueCommentLock.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 
 after(async () => {
@@ -12,8 +13,12 @@ after(async () => {
 
 interface FakeComment { id: number; body: string; html_url: string; updated_at: string }
 
-/** A GitHub issue's comment list: list (with `since`), post, patch and delete. */
-function fakeGitHub(now: () => Date) {
+/**
+ * A GitHub issue's comment list: list (with `since`), post, patch and delete.
+ * `listLatencyMs` returns the list a while after it was read, as a slow
+ * GitHub response does, so concurrent callers can hold stale snapshots.
+ */
+function fakeGitHub(now: () => Date, listLatencyMs = 0) {
     const comments: FakeComment[] = [];
     let nextId = 100;
     const calls: string[] = [];
@@ -22,7 +27,9 @@ function fakeGitHub(now: () => Date) {
             calls.push(route.split(' ')[0]);
             if (route.startsWith('GET ') && route.endsWith('/comments')) {
                 const since = Date.parse(String(params.since));
-                return { data: comments.filter(comment => Date.parse(comment.updated_at) >= since) };
+                const snapshot = comments.filter(comment => Date.parse(comment.updated_at) >= since).map(comment => ({ ...comment }));
+                if (listLatencyMs > 0) await new Promise(resolve => setTimeout(resolve, listLatencyMs));
+                return { data: snapshot };
             }
             if (route.startsWith('POST ')) {
                 const comment = { id: nextId++, body: String(params.body), html_url: `https://github.com/c/${nextId}`, updated_at: now().toISOString() };
@@ -130,3 +137,110 @@ describe('identical failure comments (#3622 point 2)', () => {
         assert.equal(posted.length, 1);
     });
 });
+
+/** Redis as the issue comment lock uses it: SET PX NX plus the renew and release scripts. */
+function lockRedis() {
+    const values = new Map<string, string>();
+    return {
+        values,
+        set: async (key: string, value: string, ..._args: Array<string | number>) => {
+            if (values.has(key)) return null;
+            values.set(key, value);
+            return 'OK';
+        },
+        eval: async (script: string, _keys: number, key: string, token: string) => {
+            if (values.get(key) !== token) return 0;
+            if (script.includes('"del"')) values.delete(key);
+            return 1;
+        },
+    };
+}
+
+describe('concurrent failure comments and notices (F2)', () => {
+    const target = { owner: 'integry', repo: 'propr', issueNumber: 3495 };
+    const key = failureCommentKey({ kind: 'merge-conflict:main', headSha: 'abc', cause: 'The agent run timed out.' });
+    const clock = new Date('2026-11-16T10:00:00Z');
+    after(() => setIssueCommentLockTimingForTests(null));
+
+    test('identical failures published at once leave one comment counting each of them', async () => {
+        const gh = fakeGitHub(() => clock, 20);
+        const results = await Promise.all([1, 2, 3].map(() => publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock })));
+        assert.equal(gh.comments.length, 1);
+        assert.deepEqual(results.map(result => result.count).sort(), [1, 2, 3]);
+        assert.match(gh.comments[0].body, /occurred 3 times/);
+    });
+
+    test('concurrent repeats of an existing failure each add to its count', async () => {
+        const gh = fakeGitHub(() => clock, 20);
+        await publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock });
+        await Promise.all([1, 2, 3].map(() => publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock })));
+        assert.equal(gh.comments.length, 1);
+        assert.match(gh.comments[0].body, /occurred 4 times/);
+    });
+
+    test('a cancel notice raised by several tasks at once is posted once', async () => {
+        const gh = fakeGitHub(() => clock, 20);
+        const results = await Promise.all([1, 2, 3].map(() => postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: '🛑 **Execution Cancelled**', now: clock })));
+        assert.deepEqual(results.sort(), [false, false, true]);
+        assert.equal(gh.comments.length, 1);
+    });
+
+    test('a failure on another worker holding the lock is waited for, then counted on', async () => {
+        setIssueCommentLockTimingForTests({ pollMs: 5 });
+        const redis = lockRedis();
+        const { setIssueCommentLockRedis, issueCommentLockKey } = await import('../src/jobs/issueCommentLock.js');
+        setIssueCommentLockRedis(redis);
+        try {
+            const gh = fakeGitHub(() => clock);
+            const lockKey = `propr:issue-comment-lock:${issueCommentLockKey(target, `failure:${key}`)}`;
+            redis.values.set(lockKey, 'other-worker');
+            const pending = publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock });
+            await new Promise(resolve => setTimeout(resolve, 30));
+            assert.equal(gh.calls.length, 0, 'no lookup while the other worker holds the lock');
+            // The other worker publishes the first occurrence, then releases.
+            await gh.post(renderFailureCommentBody('❌ Failed', key, 1, clock));
+            redis.values.delete(lockKey);
+            const result = await pending;
+            assert.equal(result.count, 2);
+            assert.equal(gh.comments.length, 1);
+            assert.equal(redis.values.size, 0, 'released after the work');
+        } finally {
+            setIssueCommentLockRedis(null);
+        }
+    });
+
+    test('a lock held by another worker for the whole wait fails instead of posting unlocked', async () => {
+        setIssueCommentLockTimingForTests({ pollMs: 5, waitMs: 30 });
+        const redis = lockRedis();
+        const { setIssueCommentLockRedis, issueCommentLockKey } = await import('../src/jobs/issueCommentLock.js');
+        setIssueCommentLockRedis(redis);
+        try {
+            const gh = fakeGitHub(() => clock);
+            redis.values.set(`propr:issue-comment-lock:${issueCommentLockKey(target, `failure:${key}`)}`, 'other-worker');
+            await assert.rejects(publishFailureComment(gh.octokit, { ...target, key, body: '❌ Failed', now: clock }), { name: 'IssueCommentLockTimeoutError' });
+            assert.equal(gh.comments.length, 0);
+        } finally {
+            setIssueCommentLockRedis(null);
+        }
+    });
+
+    test('a notice whose lock was taken over during the lookup is not posted', async () => {
+        const redis = lockRedis();
+        const { setIssueCommentLockRedis } = await import('../src/jobs/issueCommentLock.js');
+        setIssueCommentLockRedis(redis);
+        try {
+            const gh = fakeGitHub(() => clock);
+            const request = gh.octokit.request;
+            gh.octokit.request = async (route, params) => {
+                // The lease lapses mid-lookup and another worker takes the lock.
+                if (route.startsWith('GET ')) for (const lockKey of redis.values.keys()) redis.values.set(lockKey, 'other-worker');
+                return request(route, params);
+            };
+            await assert.rejects(postNoticeOnce(gh.octokit, { ...target, kind: 'issue-cancelled', body: 'cancelled', now: clock }), { name: 'IssueCommentLockLostError' });
+            assert.equal(gh.comments.length, 0);
+        } finally {
+            setIssueCommentLockRedis(null);
+        }
+    });
+});
+
