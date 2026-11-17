@@ -32,9 +32,10 @@ const positiveInteger = (value: unknown): number | null => {
  * Whether the review job reached the Ultrafix goal, by the rules the loop
  * applies to the job's combined result (`getPendingReviewState`,
  * `hasReviewReachedGoal`): every reviewer must post a complete, valid, scored
- * review, a blocker from any reviewer takes precedence, and the score is the
- * newest posted review's. One reviewer's clean score cannot pass a cycle
- * another reviewer blocked.
+ * review, a blocker from any reviewer takes precedence, and the job's score is
+ * its lowest reviewer's, as the PR status shows it (`latestReviewRound`). One
+ * reviewer's clean or higher score cannot pass a cycle another reviewer
+ * blocked or scored below the goal, whichever posted last.
  */
 function jobReachedGoal(
     results: readonly ScoredReviewResult[], reviews: ReadonlyArray<EffectiveReviewScore | null>, goal: number,
@@ -43,10 +44,7 @@ function jobReachedGoal(
     const complete = results.every((result, index) =>
         result.analysisResult.success && result.commentId !== undefined && !result.isPartial && reviews[index] !== null);
     if (!complete || reviews.some(review => review!.blockerCount > 0)) return false;
-    // GitHub comment IDs increase, so the highest is the newest posted review.
-    const newest = results.reduce((latest, result, index) =>
-        result.commentId! > results[latest].commentId! ? index : latest, 0);
-    return reviews[newest]!.score >= goal;
+    return reviews.every(review => review!.score >= goal);
 }
 
 /**
@@ -68,9 +66,10 @@ export function buildReviewScoreInputs(
     const goal = context.ultrafix ? positiveInteger(context.ultrafix.ultrafixGoal) : null;
     const goalReached = goal === null ? null : jobReachedGoal(results, reviews, goal);
     // The rows share one timestamp and history orders ties by insertion, so
-    // insert in publication order: the newest posted review (the one whose
-    // score is authoritative) must also be the latest stored score. Reviews
-    // that were never posted come first, in their original order.
+    // insert in publication order: the newest posted review is also the
+    // latest stored row (the round's verdict reads every row of the job, see
+    // latestReviewRound). Reviews that were never posted come first, in their
+    // original order.
     const publicationOrder = results.map((_, index) => index).sort((left, right) =>
         (results[left].commentId ?? -Infinity) - (results[right].commentId ?? -Infinity) || left - right);
     return publicationOrder.flatMap(index => {

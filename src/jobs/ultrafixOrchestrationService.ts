@@ -13,7 +13,8 @@ import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { hasOnlyStyleFindings, type ReviewFindingCategory } from './reviewFindingCategory.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
 import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
-import type { UltrafixOutcome } from '@propr/shared';
+import { getActionCounts, ultrafixStepCycle, type UltrafixOutcome } from '@propr/shared';
+export { getActionCounts } from '@propr/shared';
 import { ultrafixEndedEvent, ultrafixOutcomeFromCompletion, ultrafixStartedEvent, writeUltrafixJournalEvent as journal } from './ultrafixJournal.js';
 export {
     clearDeferredContinuationIfCurrent, clearUltrafixStateIfCurrent, getUltrafixAutomaticWorkEpoch,
@@ -93,6 +94,10 @@ export interface UltrafixLoopState extends UltrafixLoopWaitFields {
     completionReason: string | null;
     /** Final review score observed when the loop stopped. */
     finalScore: number | null;
+    /** Score of the latest review of this loop that reported one. */
+    lastReviewScore?: number | null;
+    /** Cycle the loop stopped in (see ultrafixStepCycle); set once it reaches a terminal state. */
+    finalCycle?: number;
     /** ISO timestamp when the loop reached a terminal state. */
     completedAt: string | null;
     /** Original PR/issue objective captured once and reused unchanged. */
@@ -216,23 +221,6 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         originalScopeCaptured: false,
         findingLifecycle: {},
     };
-}
-
-export function getActionCounts(state: UltrafixLoopState): { reviewCount: number; fixCount: number } {
-    if (typeof state.reviewCount === 'number' && typeof state.fixCount === 'number') {
-        return { reviewCount: state.reviewCount, fixCount: state.fixCount };
-    }
-
-    // Backward compatibility for state created before explicit per-action counts.
-    if (state.lastAction === 'review') {
-        return { reviewCount: state.cycleCount + 1, fixCount: state.cycleCount };
-    }
-
-    if (state.lastAction === 'fix') {
-        return { reviewCount: state.cycleCount, fixCount: state.cycleCount };
-    }
-
-    return { reviewCount: 0, fixCount: 0 };
 }
 
 // --- Decision logic ---
@@ -446,10 +434,12 @@ export async function recordReviewFindings(
         pr: number;
         findings: Array<{ id: string; sourceCommentId: number; title: string }>;
         workEpoch?: number;
+        score?: number | null; // kept as the loop's last review score
     },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadOwnedState(redis, params, params.workEpoch);
     if (!state) return null;
+    if (typeof params.score === 'number') state.lastReviewScore = params.score;
     const lifecycle = state.findingLifecycle ?? {};
     for (const finding of Object.values(lifecycle)) {
         if (finding.status === 'addressed') finding.status = 'resolved';
@@ -520,10 +510,12 @@ export async function completeLoop(
         pr: number;
         completionStatus: 'succeeded' | 'failed';
         completionReason: string;
-        finalScore: number | null;
+        finalScore: number | null; // the loop's last review score when null
         workEpoch?: number;
         /** Coded outcome; derived from the status and reason when omitted. */
         outcome?: UltrafixOutcome;
+        /** Step the loop stopped on, for its cycle: the last completed one unless given (a blocked fix, a review held back by CI). */
+        endedOn?: { action: UltrafixAction; completed: boolean };
     },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadOwnedState(redis, params, params.workEpoch);
@@ -532,11 +524,13 @@ export async function completeLoop(
     state.active = false;
     state.completionStatus = params.completionStatus;
     state.completionReason = params.completionReason;
-    state.finalScore = params.finalScore;
+    state.finalScore = params.finalScore ?? state.lastReviewScore ?? null;
+    state.finalCycle = ultrafixStepCycle({ ...getActionCounts(state), maxCycles: state.maxCycles },
+        params.endedOn ?? { action: state.lastAction ?? 'review', completed: true });
     state.completedAt = new Date().toISOString();
 
     if (!await saveOwnedState(redis, state, params.workEpoch)) return null;
-    await journal(ultrafixEndedEvent(state, { finalScore: params.finalScore, reason: params.completionReason,
+    await journal(ultrafixEndedEvent(state, { finalScore: state.finalScore, reason: params.completionReason,
         outcome: params.outcome ?? ultrafixOutcomeFromCompletion(params.completionStatus, params.completionReason) }));
     return state;
 }

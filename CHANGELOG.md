@@ -288,6 +288,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PR status line and review digest wording**: the status line no longer
+  counts skipped checks as passed (`checks: 35 passed, 12 skipped`), its
+  update time carries the date (`updated Nov 16 13:59 UTC`), a review below
+  the goal reads as one score (`⚠️ Needs you · review 6/10, goal 8`), and a
+  running loop names itself once (`🔨 Ultrafix cycle 3 of 10`). A cancelled
+  check run is no longer reported as failed: one that a newer run of the same
+  check replaced (a re-run job, or a newer run of the same workflow; a
+  same-named job of another workflow does not count), or whose name was never
+  expanded (`${{ matrix.platform }}`), is left out,
+  and one nothing replaced shows as cancelled. Check names that still hold
+  `${{` are never listed. When only check counts change, the body is edited
+  at most once every 30 seconds; a change of state is still written at once.
+  The review digest leaves out the Validation evidence section when no
+  validation command is configured or ran, and acceptance-criterion evidence
+  keeps its own inline code instead of showing literal backticks. The PR
+  status docs now say that a merge made on GitHub while the title has the
+  status slot keeps it in GitHub's default merge commit message.
+- **Epic progress counts plan issues, and every epic comment shows the same
+  count**: "N of M issues merged" now counts the plan's issues whose pull
+  request is merged into the epic branch. A pull request without a plan issue
+  (a fix opened by hand into the epic branch) no longer changes N or M, two
+  pull requests for one issue count it once, and an issue closed as not
+  planned leaves M and, on the next update, the epic body's issue list and
+  `Fixes` lines. The progress comment, the "Epic ready for final merge"
+  comment (`All N issues have been merged`), the status line and the title
+  use the same numbers, and a merged epic's progress comment no longer shows
+  a progress bar and `⏳ 75%` next to "merged".
+
 - **Connected apps page shows a full page of apps**: `/mcp/apps` counted
   revoked and expired grants towards each page of 50 and hid them afterwards,
   so an account that had reconnected apps many times saw one or two apps per

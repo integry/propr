@@ -37,7 +37,7 @@ test('a new epic PR is created with ○ 0/N before [Epic] and the status block i
         body: '## Epic PR', progress: { merged: 0, total: 5 }, nextIssue: 800,
     });
     assert.equal(created[0].title, '○ 0/5 [Epic] Scheduler primitives');
-    assert.match(String(created[0].body), /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 0 of 5 issues merged · #800 starts next · updated \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n## Epic PR$/);
+    assert.match(String(created[0].body), /^<!-- propr:pr-status -->\n\*\*ProPR\*\* 🔨 0 of 5 issues merged · #800 starts next · updated [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2} UTC\n<!-- \/propr:pr-status -->\n\n## Epic PR$/);
     assert.equal('progress' in created[0], false, 'only GitHub fields are sent');
 });
 

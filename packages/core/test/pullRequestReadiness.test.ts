@@ -284,6 +284,24 @@ test('ai_review gate: no review, stale head, below goal and goal reached', async
     const blocker = (await evaluate(fixture(), { loadReviewScores: async () => [score({ blocker_count: 1, score: 6 }), score({ score: 9 })] })).result;
     assert.equal(gateOf(blocker, 'ai_review').reason, 'score_below_goal');
 
+    // One round of several reviewers (#3591): the lowest score and any blocker decide, whatever the posting order.
+    for (const reviews of [[score({ score: 6, blocker_count: 1 }), score({ score: 8 })], [score({ score: 8 }), score({ score: 6, blocker_count: 1 })]]) {
+        const round = (await evaluate(fixture(), { loadReviewScores: async () => reviews })).result;
+        assert.equal(gateOf(round, 'ai_review').reason, 'score_below_goal');
+        assert.equal(round.review?.score, 6);
+    }
+    for (const reviews of [[score({ score: 8 }), score({ score: 9 })], [score({ score: 9 }), score({ score: 8 })]]) {
+        const round = (await evaluate(fixture(), { loadReviewScores: async () => reviews })).result;
+        assert.equal(gateOf(round, 'ai_review').reason, 'goal_reached');
+        assert.equal(round.review?.score, 8);
+    }
+    // A later single review of a newer head replaces the round.
+    const newer = (await evaluate(fixture(), { loadReviewScores: async () => [
+        score({ score: 6, blocker_count: 1, head_sha: OLD_HEAD }), score({ score: 8, head_sha: OLD_HEAD }), score({ task_id: 'review-2', score: 9 }),
+    ] })).result;
+    assert.equal(gateOf(newer, 'ai_review').reason, 'goal_reached');
+    assert.equal(newer.review?.score, 9);
+
     // An Ultrafix cycle's recorded verdict and goal are authoritative.
     const cycle = (await evaluate(fixture(), { loadReviewScores: async () => [score({ score: 7, goal: 7, goal_reached: 1 })] })).result;
     assert.deepEqual(gateOf(cycle, 'ai_review'), { gate: 'ai_review', status: 'pass', reason: 'goal_reached', detail: 'Score 7/10, goal 7.' });

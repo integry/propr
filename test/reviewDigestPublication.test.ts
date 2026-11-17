@@ -97,9 +97,9 @@ test('the digest lists the issue acceptance criteria with the agent statement fo
         const criteriaAt = body.indexOf('**Acceptance criteria** (1 of 3 met, as stated by the agent)');
         assert.ok(criteriaAt > body.indexOf('### Review digest') && criteriaAt < body.indexOf('**Risk-tiered paths**'), body);
         assert.ok(body.includes([
-            '- ✅ **AC1** (met): `Pads the value` — `` `app.js` ``',
+            '- ✅ **AC1** (met): `Pads the value` — `app.js`',
             '- ⚠️ **AC2** (not addressed): `Documents usage`',
-            '- ➖ **AC3** (not applicable): `Ships a CLI` — `no CLI in this repository`',
+            '- ➖ **AC3** (not applicable): `Ships a CLI` — no CLI in this repository',
         ].join('\n')), body);
         // No heading, no checklist.
         assert.ok(!(await publish(pullRequestOctokit(), directory, { diffBase: base, issueBody: 'Just pad it.' }, summary)).includes('**Acceptance criteria**'));

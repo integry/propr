@@ -158,6 +158,10 @@ test('a newer admission generation is not deferred by a live older-generation ho
     const old: AdmissionConfig = { instance: name, limit: 2, aliasLimits };
     const next: AdmissionConfig = { instance: name, limit: 2, generation: 1, aliasLimits };
     const events: string[] = [];
+    // checkJobAgentCapacity imports @propr/core lazily. Load it before the short
+    // lease starts: evaluating it mid-test blocks the event loop past the lease on
+    // a loaded host, so the old holder's renewal lapses and it no longer defers.
+    await import('@propr/core');
     // A long-running old-generation execution keeps renewing its lease.
     const stale = await prepareAdmittedAgent(['run', 'agent'], { agentAlias: 'local', client: redis!, docker: recording('old', events), config: old, pollMs: 10, leaseMs: 600 });
     assert.ok(stale);

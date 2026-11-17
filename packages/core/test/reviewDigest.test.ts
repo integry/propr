@@ -9,6 +9,8 @@ import { renderReviewDigest, summarizeReviewDigest, REVIEW_DIGEST_MAX_LISTED_FIL
 import { findAddedDependencies } from '../src/workflow/reviewDependencies.js';
 import { collectReviewDigest } from '../src/workflow/reviewDigestCollect.js';
 import type { RepositoryValidationResult } from '../src/workflow/repositoryValidationResult.js';
+import { micromark } from 'micromark';
+import { gfm, gfmHtml } from 'micromark-extension-gfm';
 
 const change = (filePath: string, extra: Partial<ReviewDigestChange> = {}): ReviewDigestChange => ({ path: filePath, linesAdded: 1, linesRemoved: 0, ...extra });
 const patch = (lines: string[]) => `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n${lines.join('\n')}`;
@@ -113,10 +115,33 @@ test('the digest renders risk tiers, then validation evidence, then diff size, w
     assert.equal(summarizeReviewDigest(digest), 'Review digest: 4 files (+19/−4): 2 high, 1 normal, 1 low risk; 1 new dependency; validation failed');
 });
 
-test('without validation commands the evidence says so; empty tiers read none', () => {
+test('without validation commands there is no validation section; empty tiers read none', () => {
     const markdown = renderReviewDigest(buildReviewDigest([change('src/a.ts')], undefined));
-    assert.match(markdown, /- \*\*High risk\*\*: none\n- \*\*Normal risk\*\* \(1 file\)\n {2}- `src\/a\.ts` \(\+1\/−0\)\n- \*\*Low risk\*\*: none/);
-    assert.match(markdown, /\*\*Validation evidence\*\*\n\n- No repository validation commands ran\./);
+    assert.match(markdown, /- \*\*High risk\*\*: none\n- \*\*Normal risk\*\* \(1 file\)\n {2}- `src\/a\.ts` \(\+1\/−0\)\n- \*\*Low risk\*\*: none\n\n\*\*Diff size:\*\*/);
+    assert.ok(!markdown.includes('Validation evidence'));
+    assert.ok(!markdown.includes('No repository validation commands ran'));
+    const ranNone = renderReviewDigest(buildReviewDigest([change('src/a.ts')], { overall: 'passed', commands: [] } as unknown as RepositoryValidationResult));
+    assert.ok(!ranNone.includes('Validation evidence'), 'a configuration whose commands did not run shows none either');
+});
+
+test('acceptance-criterion evidence keeps its own inline code and escapes the rest', () => {
+    const evidence = (text: string) => {
+        const digest = buildReviewDigest([change('src/a.ts')], undefined, {}, { criteria: [{ id: 'AC1', text: 'Adds a' }], agentReport: `- AC1: met — ${text}` })!;
+        return renderReviewDigest(digest).split('\n').find(line => line.includes('**AC1**'))!.split(' — ').slice(1).join(' — ');
+    };
+    assert.equal(evidence('`a.test.ts` ("covers it") and `b.ts`'), '`a.test.ts` \\("covers it"\\) and `b.ts`');
+    assert.equal(evidence('`src/a.ts`'), '`src/a.ts`', 'evidence that is one path reads as one code span, without literal backticks');
+    assert.equal(evidence('``x ` y`` done'), '``x ` y`` done', 'a span holding a backtick keeps its longer fence');
+    assert.equal(evidence('see @octo at https://x.test, _em_ [x](y) a<b'), 'see \\@octo at https\\://x.test, \\_em\\_ \\[x\\]\\(y\\) a\\<b', 'no mention, link, emphasis or HTML');
+    assert.equal(evidence('an unclosed ` tick'), 'an unclosed \\` tick');
+    // GitHub-flavoured rendering: no address becomes a link, the text reads as written, code spans stay code.
+    const rendered = (text: string) => micromark(evidence(text), { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+    for (const text of ['See www.example.com', 'See WWW.Example.com/path', '(www.example.com)', '*www.example.com* here', 'mail octo@example.com', 'https://x.test/a', 'awww.example.com']) {
+        const html = rendered(text);
+        assert.ok(!html.includes('<a '), `${text} renders no link: ${html}`);
+        assert.equal(html.replace(/<\/?p>|\n/g, ''), text.replace(/&/g, '&amp;'), `${text} reads as written`);
+    }
+    assert.equal(rendered('`www.example.com` stays code'), '<p><code>www.example.com</code> stays code</p>');
 });
 
 test('file lists are capped like files_changed; the structured value keeps counts and a bounded list', () => {
