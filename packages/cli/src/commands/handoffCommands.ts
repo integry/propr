@@ -36,14 +36,33 @@ export function parseHandoffTarget(repository: string, pr: string): HandoffTarge
   return { owner, repo, pullRequest: Number(pr) };
 }
 
+/**
+ * Spells an API enum value in words for text output: `agent_exited` reads
+ * "Agent exited". `--json` keeps the raw values.
+ */
+export function describeHandoffState(value: string | null | undefined): string {
+  if (!value) return "(none)";
+  const words = value.replace(/[_-]+/g, " ").trim().toLowerCase();
+  if (!words) return value;
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Formats the record's last update in the operator's local time. */
+export function formatHandoffUpdatedAt(updatedAt: number | string | null | undefined): string {
+  if (updatedAt === null || updatedAt === undefined || updatedAt === "") return "(unknown)";
+  const date = new Date(typeof updatedAt === "string" && /^\d+$/.test(updatedAt) ? Number(updatedAt) : updatedAt);
+  return Number.isNaN(date.getTime()) ? String(updatedAt) : date.toLocaleString();
+}
+
 export function formatHandoffStatus(status: FollowupHandoffStatus): string[] {
-  const reason = status.statusReason ? ` (${status.statusReason})` : "";
+  const reason = status.statusReason ? ` (${describeHandoffState(status.statusReason).toLowerCase()})` : "";
   return [
     `${status.repository}#${status.pullRequest}`,
-    `  Phase:            ${status.phase}`,
-    `  Status:           ${status.status}${reason}`,
-    `  Settlement:       ${status.settlement ?? "(none)"}`,
-    `  Liveness:         ${status.liveness}`,
+    `  Phase:            ${describeHandoffState(status.phase)}`,
+    `  Status:           ${describeHandoffState(status.status)}${reason}`,
+    `  Settlement:       ${describeHandoffState(status.settlement)}`,
+    `  Liveness:         ${describeHandoffState(status.liveness)}`,
+    `  Updated:          ${formatHandoffUpdatedAt(status.updatedAt)}`,
     `  Branch:           ${status.branchName}`,
     `  Task:             ${status.taskId}`,
     `  Predecessors:     ${status.predecessorTaskIds.length ? status.predecessorTaskIds.join(", ") : "(none)"}`,
@@ -54,6 +73,14 @@ export function formatHandoffStatus(status: FollowupHandoffStatus): string[] {
     `  Operator authorized: ${status.operatorAuthorized ? "yes" : "no"}`,
     `  Next action:      ${status.nextAction}`,
   ];
+}
+
+/** `handoffs list` text output: a count, then each record separated by a blank line. */
+export function formatHandoffList(statuses: FollowupHandoffStatus[]): string[] {
+  if (statuses.length === 0) return ["No follow-up handoffs are tracked."];
+  const lines = [`${statuses.length} follow-up handoff${statuses.length === 1 ? "" : "s"} tracked.`];
+  for (const status of statuses) lines.push("", ...formatHandoffStatus(status));
+  return lines;
 }
 
 export function formatRecoverySummary(summary: FollowupHandoffRecoverySummary): string {
@@ -118,8 +145,7 @@ export function createHandoffsCommand(): Command {
       try {
         const { handoffs: statuses } = await listFollowupHandoffs();
         if (options.json) { console.log(JSON.stringify(statuses, null, 2)); return; }
-        if (statuses.length === 0) { console.log("No follow-up handoffs are tracked."); return; }
-        for (const status of statuses) printStatus(status);
+        for (const line of formatHandoffList(statuses)) console.log(line);
       } catch (error) { fail(error); }
     });
 

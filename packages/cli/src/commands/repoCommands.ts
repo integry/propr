@@ -46,9 +46,23 @@ function parseAttachmentPlan(value: string): GitHubAttachmentPlanOverride {
   return value;
 }
 
-function formatVisualPreview(settings: VisualPreviewSettings | undefined): string {
+function formatVisualPreviewCapacity(settings: VisualPreviewSettings | undefined): string {
   const capacity = resolveGitHubAttachmentCapacity(settings?.githubAttachmentPlan, settings?.githubAttachmentCapacity?.detectedPlan);
-  return `${settings?.enabled ? settings.types.join('+') : 'Disabled'}; ${capacity.override}: ${describeGitHubAttachmentCapacity(capacity)}`;
+  return `${capacity.override}: ${describeGitHubAttachmentCapacity(capacity)}`;
+}
+
+function formatVisualPreview(settings: VisualPreviewSettings | undefined): string {
+  return `${settings?.enabled ? settings.types.join('+') : 'Disabled'}; ${formatVisualPreviewCapacity(settings)}`;
+}
+
+/** Short table value for visual previews: the enabled types (`image`, `image+video`) or `off`. */
+export function formatVisualPreviewShort(settings: VisualPreviewSettings | undefined): string {
+  return settings?.enabled && settings.types.length > 0 ? settings.types.join("+") : "off";
+}
+
+/** PR title status is on unless the repository explicitly turned it off. */
+export function formatPrTitleStatusShort(prTitleStatus: boolean | undefined): string {
+  return prTitleStatus === false ? "off" : "on";
 }
 
 /**
@@ -242,7 +256,7 @@ function displayIndexingStatusTable(statuses: RepositoryIndexingStatus[]): void 
 /**
  * Displays a table of repositories with clean formatting.
  */
-function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean): void {
+export function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean): void {
   const nameWidth = Math.max(
     "Repository".length,
     ...repos.map((r) => truncate(r.name, 40).length)
@@ -275,9 +289,15 @@ function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean)
     "Auto-assign PRs".length,
     ...repos.map((r) => formatAutoAssign(r).length)
   );
+  const prTitleStatusWidth = Math.max(
+    "PR title status".length,
+    ...repos.map((r) => formatPrTitleStatusShort(r.prTitleStatus).length)
+  );
+  // The full preview sentence (types, attachment capacity) stays in --json
+  // and the single-repository output; the table keeps one short value.
   const visualPreviewWidth = Math.max(
     "Visual previews".length,
-    ...repos.map((r) => formatVisualPreview(r.visualPreview).length)
+    ...repos.map((r) => formatVisualPreviewShort(r.visualPreview).length)
   );
 
   const header = [
@@ -289,6 +309,7 @@ function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean)
     "Notifications".padEnd(notificationsWidth),
     "Auto-resolve conflicts".padEnd(autoResolveWidth),
     "Auto-assign PRs".padEnd(autoAssignWidth),
+    "PR title status".padEnd(prTitleStatusWidth),
     "Visual previews".padEnd(visualPreviewWidth),
   ].join("  ");
 
@@ -305,10 +326,22 @@ function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean)
       formatEnabled(repo.notificationsEnabled !== false).padEnd(notificationsWidth),
       formatAutoResolveConflicts(repo.autoResolveMergeConflicts, autoResolveDefault).padEnd(autoResolveWidth),
       formatAutoAssign(repo).padEnd(autoAssignWidth),
-      formatVisualPreview(repo.visualPreview).padEnd(visualPreviewWidth),
+      formatPrTitleStatusShort(repo.prTitleStatus).padEnd(prTitleStatusWidth),
+      formatVisualPreviewShort(repo.visualPreview).padEnd(visualPreviewWidth),
     ].join("  ");
 
     console.log(row);
+  }
+
+  // The long attachment-capacity explanation stays out of the table; list it
+  // once per repository that publishes previews.
+  const previewing = repos.filter((repo) => repo.visualPreview?.enabled);
+  if (previewing.length > 0) {
+    console.log("");
+    console.log("Visual preview attachment limits:");
+    for (const repo of previewing) {
+      console.log(`  ${repo.name}: ${formatVisualPreviewCapacity(repo.visualPreview)}`);
+    }
   }
 }
 
