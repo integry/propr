@@ -77,4 +77,4 @@ End-to-end usage remains fully supported — it is simply one of the ways to use
 - **Tutorials**: Daily use, issue-to-PR, and Planner Studio walkthroughs
 - **Architecture**: Focused overviews and runtime references for intake, workers, agent runs, and git management
 - **Operations**: Deployment, maintenance, metrics, feedback loops, and Web UI integration
-- **[Concepts](./concepts/glossary.md)**: Glossary, security overview, and repository best practices
+- **[Concepts](./concepts/glossary.md)**: [Software factory](./concepts/software-factory.md) overview, glossary, security overview, and repository best practices

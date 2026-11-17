@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 title: Glossary
 ---
 
@@ -28,6 +28,8 @@ title: Glossary
 **Relay (token relay)** — the default GitHub auth mode: your stack holds a revocable relay token and mints short-lived installation tokens through Connect instead of storing a GitHub App private key.
 
 **Seat** — a distinct developer using a Connect installation in a billing cycle; the Community tier includes 3.
+
+**Software factory** — ProPR used as one repeatable line from request to merged pull request, with a person deciding how much of it runs without them. See [Software Factory](./software-factory.md).
 
 **Task** — one unit of agent work with its own record: prompt, isolated run, logs, usage, commits, and resulting PR or follow-up.
 
