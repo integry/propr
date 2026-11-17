@@ -33,6 +33,7 @@ import type {
     GetCheckRunsStatusFn,
 } from './ultrafixLoopContinuation.js';
 import { maybeEnableAutoMerge, postPrComment, removeUltrafixLabel } from './ultrafixLoopGithub.js';
+import { buildUltrafixStopNoticeHeader } from './ultrafixStopNotice.js';
 
 export {
     getUltrafixLabelState,
@@ -64,6 +65,8 @@ export async function finishUltrafixLoop(input: {
 
     const goalReached = completedAction === 'review'
         && hasReviewReachedGoal(reviewStatus, latestScore, state.goal, isPartial);
+    let finalScore = latestScore;
+    let finalCycle = state.cycleCount;
     const outcome: UltrafixOutcome = goalReached ? 'goal_reached' : blocked ? 'stopped' : styleFindingsOnly ? 'style_findings_only'
         : state.escalation?.exhausted ? 'failed' : 'cycles_exhausted';
     const finishResult = await withUltrafixLabelTransition(redisClient, identity, async () => {
@@ -75,8 +78,12 @@ export async function finishUltrafixLoop(input: {
             finalScore: latestScore,
             workEpoch,
             outcome,
+            // A blocked fix never completed, so the loop stopped in that fix's cycle.
+            ...(blocked ? { endedOn: { action: 'fix' as const, completed: false } } : {}),
         });
         if (!completedState) return false;
+        finalScore = completedState.finalScore;
+        finalCycle = completedState.finalCycle ?? finalCycle;
         if (!goalReached) {
             const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
             const cleanPartialReview = cleanReviewMissedGoal && isPartial;
@@ -95,7 +102,10 @@ export async function finishUltrafixLoop(input: {
                 owner,
                 repo,
                 pullRequestNumber,
-                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${state.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
+                body: buildUltrafixStopNoticeHeader({
+                    goal: state.goal, lastScore: completedState.finalScore,
+                    cycle: completedState.finalCycle, maxCycles: completedState.maxCycles,
+                }) + manualReason,
                 correlatedLogger,
             });
             return true;
@@ -114,13 +124,13 @@ export async function finishUltrafixLoop(input: {
     if (!finishResult) return { continued: false, reason: 'ultrafix_superseded' };
 
     correlatedLogger.info(
-        { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, goalReached },
+        { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, finalCycle, goalReached },
         'Ultrafix loop: loop finished',
     );
     return {
         continued: false,
         reason: decisionReason,
-        score: latestScore,
+        score: finalScore,
         cycleCount: state.cycleCount,
         outcome,
         goal: state.goal,

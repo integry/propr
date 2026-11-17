@@ -200,6 +200,7 @@ async function collectReviewOutput(
                 repo,
                 pr: pullRequestNumber,
                 workEpoch: params.ultrafixMeta?.workEpoch ?? 0,
+                score: pendingState.latestScore,
                 findings: pendingState.unprocessedComments.flatMap(comment =>
                     comment.actionableFindings.map(finding => ({
                         id: finding.id,
