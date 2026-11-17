@@ -1278,6 +1278,16 @@ export interface DeleteTaskQuery {
   force?: "true" | "false";
 }
 
+/** Query parameters of `getApiPlannerDraftsIdIssues`. */
+export interface PlanIssuesQuery {
+  /** Zero-based page. With `page` or `limit` the response is a page object; anything but a non-negative integer is a 400. */
+  page?: number;
+  /** Page size, 1 or more, capped at 100; defaults to 50. Anything else is a 400. */
+  limit?: number;
+  /** Paged responses only: keep issues with this plan status (an unknown value is ignored). */
+  status?: string;
+}
+
 /** Query parameters of `getCostExport`, `getCostExportCsv`. */
 export interface CostExportQuery {
   /** Bounds executions by when they started; omitted means all time. */

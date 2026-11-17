@@ -233,15 +233,18 @@ test('in a graph, dependents of an issue skipped without the option wait on it; 
   assert.equal((await skipEpicQueueIssue({ ...target, issueNumber: 1, satisfiesDependents: true }, deps)).outcome, 'already_skipped');
 });
 
-test('in a graph, skipping a pending prerequisite with the option starts its dependents right away', async () => {
+test('in a graph, skipping a pending prerequisite with the option releases its dependents once its own prerequisites are met', async () => {
   const queue = await createEpicExecutionQueue({ draftId, repository: 'acme/repo', issues: [1, 2, 3], mode: 'graph',
     dependsOn: new Map([[2, [1]], [3, [2]]]), maxParallel: 2 }, deps);
   const target = { draftId, executionId: queue.executionId };
   await startEpicQueueHead(draftId, deps);
   assert.deepEqual(starts, [1]);
   await skipEpicQueueIssue({ ...target, issueNumber: 2, satisfiesDependents: true }, deps);
-  assert.deepEqual(starts, [1, 3], 'the skipped 2 counts as met for 3');
+  // The skipped 2 counts as met for 3, but 2's own prerequisite 1 is still in flight: 3 waits on it.
+  assert.deepEqual(starts, [1]);
+  assert.deepEqual((await issueState(3))?.waitingOn, [1]);
   await finish(1);
+  assert.deepEqual(starts, [1, 3], 'the skipped 2 counts as met for 3 once 1 merged');
   await finish(3);
   assert.equal((await getEpicExecutionQueue(draftId))?.status, 'completed');
   assert.deepEqual(starts, [1, 3]);
