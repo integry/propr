@@ -6,7 +6,7 @@ import { NetworkEgressDetail, NetworkEgressIcon } from './NetworkEgressDetail';
 import { isNetworkEgress, networkEgressLabel, networkEgressNeedsAttention } from './networkEgress';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
-import { AUTOMATION_REPORT_MODE, isExtensionsResolvedEvent, reportStepLabel, resolvedNoExtensions } from './taskKind';
+import { AUTOMATION_REPORT_MODE, extensionsEventLabel, reportStepLabel, resolvedNoExtensions } from './taskKind';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban, CircleDollarSign, FileText } from 'lucide-react';
 
 interface TaskStatusTableProps {
@@ -64,7 +64,7 @@ const getEventLabel = (item: HistoryItem): string | null => {
   if (replacementLabel) return replacementLabel;
   if (item.metadata?.repositoryWorkflowDeferrals || item.metadata?.agentCapacityDeferrals) return `Waiting for ${item.metadata.repositoryWorkflowDeferrals ? 'Repository' : 'Agent'} Capacity`;
   if (isBudgetExceeded(item)) return 'Spend Cap Reached';
-  return isExtensionsResolvedEvent(item.metadata) ? 'Extensions Applied' : networkEgressLabel(item);
+  return extensionsEventLabel(item.metadata) ?? networkEgressLabel(item);
 };
 
 /** Automatic-replacement timeline events repeat the task's state; label them by event. */

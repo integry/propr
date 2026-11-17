@@ -386,6 +386,34 @@ describe.each(['rail', 'branch'] as const)('%s automation report labels', (varia
     expect(screen.getAllByText('Extensions Applied').length).toBeGreaterThan(0);
   });
 
+  it('keeps an extensions entry that explains why requested extensions are missing', () => {
+    const base: HistoryItem[] = [
+      { state: 'pending', timestamp: at(0) },
+      { state: 'processing', timestamp: at(1), reason: 'Preparing agent workspace' },
+    ];
+    const diagnostics: Array<Record<string, unknown>> = [
+      { omitted: [{ kind: 'server', name: 'github', reason: 'not_allowed' }] },
+      { skipped: [{ kind: 'skill', name: 'review', reason: 'disabled' }] },
+      { labelOptOut: { labels: ['no-mcp'], removed: { servers: ['github'], skills: [] } } },
+      { autoApplySkipped: { reason: 'codex_workspace_config', message: 'The workspace contains .codex/config.toml' } },
+    ];
+    for (const extra of diagnostics) {
+      const { unmount } = render(<TaskStatusTable variant={variant} history={[...base, {
+        state: 'processing', timestamp: at(2), reason: 'Extensions resolved; some items were skipped',
+        metadata: { event: 'extensions.resolved', servers: [], skills: [], skipped: [], omitted: [], ...extra } as HistoryItem['metadata'],
+      }]} />);
+      expect(screen.getAllByText('Extensions Not Applied').length).toBeGreaterThan(0);
+      expect(screen.queryByText('Extensions Applied')).not.toBeInTheDocument();
+      unmount();
+    }
+
+    render(<TaskStatusTable variant={variant} history={[...base, {
+      state: 'processing', timestamp: at(2), reason: 'Extensions resolved',
+      metadata: { event: 'extensions.resolved', servers: [], skills: [], skipped: [], omitted: [] } as HistoryItem['metadata'],
+    }]} />);
+    expect(screen.queryByText('Extensions Not Applied')).not.toBeInTheDocument();
+  });
+
   it('keeps cancellation and failure wording for a report run', () => {
     render(<TaskStatusTable variant={variant} commandMode="automation-report" history={[
       { state: 'claude_execution', timestamp: at(1), reason: 'Running agent codex' },
