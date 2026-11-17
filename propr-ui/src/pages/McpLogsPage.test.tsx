@@ -320,4 +320,32 @@ describe('McpLogsPage', () => {
     expect(await screen.findByText(/No MCP requests/)).toBeInTheDocument();
     expect(mockGetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 }));
   });
+
+  it('renders summary chips that share a tool name or lack a client id without duplicate React keys', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockGetStats.mockResolvedValue({
+      data: {
+        ...stats,
+        topTools: [{ name: 'propr_list_tasks', count: 30 }, { name: 'propr_list_tasks', count: 4 }],
+        topClients: [
+          { clientId: undefined as unknown as string, clientName: 'Claude Desktop', count: 41 },
+          { clientId: undefined as unknown as string, clientName: null, count: 3 },
+        ],
+      },
+    });
+    try {
+      renderPage();
+      const summary = within(await screen.findByRole('group', { name: 'MCP access summary' }));
+      expect(summary.getAllByText('propr_list_tasks')).toHaveLength(2);
+      expect(summary.getByText('Claude Desktop')).toBeInTheDocument();
+      expect(summary.getByText('30')).toBeInTheDocument();
+      expect(summary.getByText('4')).toBeInTheDocument();
+      expect(summary.getByText('3')).toBeInTheDocument();
+      // Duplicate tool names warn "same key"; clients without an id warn "unique key".
+      const duplicateKeyWarnings = consoleError.mock.calls.filter(call => call.some(arg => /same key|unique "key"/.test(String(arg))));
+      expect(duplicateKeyWarnings).toEqual([]);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });

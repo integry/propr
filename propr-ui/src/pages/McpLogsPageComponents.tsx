@@ -56,8 +56,10 @@ const TopList: React.FC<{ label: string; entries: Array<{ key: string; label: st
     <div className="mt-1 flex flex-wrap gap-1">
       {entries === null && <span className="text-sm text-slate-400">{UNAVAILABLE}</span>}
       {entries?.length === 0 && <span className="text-sm text-slate-400">None</span>}
-      {entries?.map(entry => (
-        <span key={entry.key} className="rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+      {entries?.map((entry, index) => (
+        // Real stats can repeat a tool name or omit a client id, so the
+        // position keeps each chip's key unique.
+        <span key={`${index}:${entry.key ?? ''}`} className="rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
           {entry.label}
           <span className="ml-1 text-slate-500">{formatMcpCount(entry.count)}</span>
         </span>
