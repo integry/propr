@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import NewTaskPage from './NewTaskPage';
@@ -27,13 +27,19 @@ describe('New Task issue launcher', () => {
   });
 
   it('protects edited input on dismissal and returns to tasks on cancel', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi.spyOn(window, 'confirm');
     renderPage();
     fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Keep this request' } });
     fireEvent.keyDown(document, { key: 'Escape' });
+    // The app's own dialog asks; keeping the draft leaves the form as it was.
+    const question = screen.getByRole('dialog', { name: 'Discard this unsaved task?' });
+    fireEvent.click(within(question).getByRole('button', { name: 'Keep editing' }));
+    expect(screen.queryByRole('dialog', { name: 'Discard this unsaved task?' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Prompt')).toHaveValue('Keep this request');
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Discard this unsaved task?' })).getByRole('button', { name: 'Discard' }));
     expect(await screen.findByTestId('destination')).toHaveTextContent('/tasks');
+    expect(confirm).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
 

@@ -241,6 +241,36 @@ describe('McpLogsPage', () => {
     ));
   });
 
+  it('fits the pane: a fixed-layout table whose long values truncate with a tooltip', async () => {
+    const longName = 'propr_list_repository_files_with_a_very_long_tool_name';
+    mockGetLogs.mockResolvedValue({ data: [entry({ name: longName })], pagination: pagination(), filters: {} });
+    renderPage();
+
+    const table = await screen.findByRole('table');
+    expect(table).toHaveClass('lg:table-fixed', 'w-full');
+    const name = within(table).getByText(longName);
+    expect(name).toHaveClass('truncate');
+    expect(name).toHaveAttribute('title', longName);
+    // The time is the shared relative age, with the full local date and time in its tooltip.
+    const time = table.querySelector('time');
+    expect(time).toHaveAttribute('dateTime', '2026-09-24T10:00:00.000Z');
+    expect(time?.getAttribute('title')).toMatch(/2026/);
+  });
+
+  it('states the page range and total with thousands separators', async () => {
+    mockGetLogs.mockResolvedValue({
+      data: [entry()],
+      pagination: pagination({ total: 165297, totalPages: 3306, hasNextPage: true }),
+      filters: {},
+    });
+    renderPage();
+    await screen.findByRole('table');
+
+    const total = (165297).toLocaleString();
+    expect(screen.getByTestId('log-pagination-summary')).toHaveTextContent(`Showing 1–50 of ${total} entries`);
+    expect(screen.getByTestId('log-pagination-summary')).toHaveTextContent(/165\D297/);
+  });
+
   it('pages through the log', async () => {
     mockGetLogs.mockResolvedValue({
       data: [entry()],
@@ -289,5 +319,33 @@ describe('McpLogsPage', () => {
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=1'));
     expect(await screen.findByText(/No MCP requests/)).toBeInTheDocument();
     expect(mockGetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 }));
+  });
+
+  it('renders summary chips that share a tool name or lack a client id without duplicate React keys', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockGetStats.mockResolvedValue({
+      data: {
+        ...stats,
+        topTools: [{ name: 'propr_list_tasks', count: 30 }, { name: 'propr_list_tasks', count: 4 }],
+        topClients: [
+          { clientId: undefined as unknown as string, clientName: 'Claude Desktop', count: 41 },
+          { clientId: undefined as unknown as string, clientName: null, count: 3 },
+        ],
+      },
+    });
+    try {
+      renderPage();
+      const summary = within(await screen.findByRole('group', { name: 'MCP access summary' }));
+      expect(summary.getAllByText('propr_list_tasks')).toHaveLength(2);
+      expect(summary.getByText('Claude Desktop')).toBeInTheDocument();
+      expect(summary.getByText('30')).toBeInTheDocument();
+      expect(summary.getByText('4')).toBeInTheDocument();
+      expect(summary.getByText('3')).toBeInTheDocument();
+      // Duplicate tool names warn "same key"; clients without an id warn "unique key".
+      const duplicateKeyWarnings = consoleError.mock.calls.filter(call => call.some(arg => /same key|unique "key"/.test(String(arg))));
+      expect(duplicateKeyWarnings).toEqual([]);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

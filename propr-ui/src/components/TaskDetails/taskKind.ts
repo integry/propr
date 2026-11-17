@@ -64,3 +64,47 @@ export function followupTargetFor(
 /** How the dialog names a follow-up's thread, with the repository in full. */
 export const describeFollowupTarget = (target: FollowupTarget): string =>
   `${target.kind === 'pull_request' ? 'PR' : 'Issue'} ${target.repository}#${target.number}`;
+
+/** What the trace says when a run recorded no steps, rather than leaving the column blank. */
+export const getEmptyTraceMessage = (isActive: boolean, status: string, automationReport = false) => {
+  if (isActive) return 'Waiting for the agent’s first step…';
+  // An automation report's agent steps are not streamed here; the report itself is on the automation's run page.
+  if (automationReport) return 'This report’s agent steps were not recorded. The report is on the automation’s run page.';
+  return status?.toUpperCase() === 'COMPLETED'
+    ? 'No execution logs recorded — task completed directly.'
+    : 'No execution logs recorded for this run.';
+};
+
+const EXTENSIONS_RESOLVED_EVENT = 'extensions.resolved';
+
+/** A timeline entry recording which library extensions a run resolved; it repeats the `processing` state it is past. */
+export const isExtensionsResolvedEvent = (metadata: { event?: unknown } | undefined): boolean => metadata?.event === EXTENSIONS_RESOLVED_EVENT;
+
+const isEmptyList = (value: unknown) => !Array.isArray(value) || value.length === 0;
+
+type ResolutionMetadata = {
+  event?: unknown; servers?: unknown; skills?: unknown; skipped?: unknown; omitted?: unknown;
+  labelOptOut?: unknown; autoApplySkipped?: unknown;
+} | undefined;
+
+/** Whether an extensions entry put any server or skill on the run. */
+export const appliedExtensions = (metadata: ResolutionMetadata): boolean =>
+  isExtensionsResolvedEvent(metadata) && !(isEmptyList(metadata?.servers) && isEmptyList(metadata?.skills));
+
+/**
+ * An extensions entry that resolved nothing and explains nothing: left out of
+ * the timeline, so it does not repeat the preparation step. An entry that
+ * skipped or omitted items, or records why requested items were removed
+ * (opt-out labels, auto-apply skipped), stays: it is why extensions are missing.
+ */
+export const resolvedNoExtensions = (metadata: ResolutionMetadata): boolean => {
+  if (!isExtensionsResolvedEvent(metadata)) return false;
+  if (metadata?.labelOptOut || metadata?.autoApplySkipped) return false;
+  return !appliedExtensions(metadata) && isEmptyList(metadata?.skipped) && isEmptyList(metadata?.omitted);
+};
+
+/** The timeline label of an extensions entry, or null for other entries. */
+export const extensionsEventLabel = (metadata: ResolutionMetadata): string | null => {
+  if (!isExtensionsResolvedEvent(metadata)) return null;
+  return appliedExtensions(metadata) ? 'Extensions Applied' : 'Extensions Not Applied';
+};

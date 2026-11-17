@@ -1,3 +1,4 @@
+import { formatDate } from '../../utils/dateFormat';
 import React from 'react';
 import { CliVersionType } from '../../api/proprApi';
 import { AgentType, AGENT_DEFAULTS } from '../../config/modelDefinitions';
@@ -75,7 +76,7 @@ const CliVersionSelector: React.FC<CliVersionSelectorProps> = ({
           <option value="">Select a version...</option>
           {versionData?.recentVersions.map(v => (
             <option key={v.version} value={v.version}>
-              {v.version} ({new Date(v.publishedAt).toLocaleDateString()})
+              {v.version} ({formatDate(v.publishedAt)})
             </option>
           ))}
         </select>

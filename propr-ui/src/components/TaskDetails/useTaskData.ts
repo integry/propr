@@ -13,6 +13,7 @@ import {
   capLiveEvents, executionSupersededByRead, isFinishedTask, isSupersededUpdate, mergeFullLiveDetails, readCoversUpdate,
 } from './liveDetailsMerge';
 import { getDesktopSocketConfigurationKey } from '../../api/apiClient';
+import { keepIfEqual } from '../../utils/keepIfEqual';
 export { capLiveEvents, MAX_LIVE_RAW_EVENTS, mergeFullLiveDetails } from './liveDetailsMerge';
 
 interface TaskHistoryData {
@@ -173,6 +174,7 @@ export const applyTaskLiveUpdate = (previous: LiveDetails, payload: IncrementalT
 };
 
 export const useTaskData = (taskId: string | undefined) => {
+  // Reconcile reads re-send the whole history; equal data keeps the shown objects (see keepIfEqual).
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [taskInfo, setTaskInfo] = useState<TaskInfo | null>(null);
   const [usageMetricRecords, setUsageMetricRecords] = useState<UsageMetricRecord[]>([]);
@@ -217,12 +219,15 @@ export const useTaskData = (taskId: string | undefined) => {
       if (activeRequestScopeRef.current !== requestedScope) return data;
       const nextHistory = data.history || [];
       latestHistoryRef.current = nextHistory;
-      setHistory(nextHistory);
-      setTaskInfo(data.taskInfo || null);
-      setUsageMetricRecords(data.usageMetricRecords || []);
-      setBudget(data.budget ?? null);
+      // Reconcile reads re-send the whole task; equal parts keep the objects shown, so the
+      // summary, output and review panes are not re-rendered by a refresh that changed nothing.
+      setHistory(current => keepIfEqual(current, nextHistory));
+      setTaskInfo(current => keepIfEqual(current, data.taskInfo || null));
+      setUsageMetricRecords(current => keepIfEqual(current, data.usageMetricRecords || []));
+      setBudget(current => keepIfEqual(current, data.budget ?? null));
       // Only trusted GitHub attachment URLs may become media sources.
-      setPreviewMedia(trustedPreviewMedia(data.previewMedia || data.taskInfo?.previewMedia, 8));
+      const nextPreviewMedia = trustedPreviewMedia(data.previewMedia || data.taskInfo?.previewMedia, 8);
+      setPreviewMedia(current => keepIfEqual(current, nextPreviewMedia));
       return data;
     } catch (err) {
       console.error('Error fetching task history:', err);

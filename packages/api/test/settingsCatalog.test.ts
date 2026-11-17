@@ -89,7 +89,7 @@ test('find_setting ranks aliases and environment names and explains access', asy
   const bots = await findSetting('bot whitelist');
   assert.equal(bots.matches[0].id, 'trigger.bot_allowlist');
   assert.equal(bots.matches[0].mcp.write, 'update_trigger_access_configuration');
-  assert.equal(bots.matches[0].ui, 'Settings → Workflow & PR Rules → GitHub trigger whitelist');
+  assert.equal(bots.matches[0].ui, 'Settings → Workflow & PR rules → GitHub trigger whitelist');
   assert.match(bots.matches[0].howToChange, /requires instance\.manage_settings/);
 
   const timeout = await findSetting('CODEX_TIMEOUT_MS');
@@ -171,8 +171,8 @@ test('find_setting finds held follow-ups, the extension library and the 0.9.2 se
   for (const query of ['extensions library', 'mcp servers skills extensions', 'Skills & MCP servers']) {
     const library = await first(query);
     assert.equal(library?.id, 'agents.extension_library', query);
-    assert.equal(library.ui, 'Settings → Agent Extensions & Packages → Skills & MCP servers');
-    assert.match(library.howToChange, /Settings → Agent Extensions & Packages → Skills & MCP servers/);
+    assert.equal(library.ui, 'Settings → Agent extensions & packages → Skills & MCP servers');
+    assert.match(library.howToChange, /Settings → Agent extensions & packages → Skills & MCP servers/);
   }
 
   const pause = await first('pause when unproductive');

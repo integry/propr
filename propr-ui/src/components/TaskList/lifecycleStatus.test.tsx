@@ -58,9 +58,11 @@ describe('lifecycle status presentation', () => {
     expect(pill.className).not.toMatch(/purple|violet/);
   });
 
-  it('keeps purple for Merged alone', () => {
+  it('keeps Merged neutral grey, told apart by its merge mark', () => {
     render(<>{getStatusPill('merged')}{getStatusPill('queued')}</>);
-    expect(screen.getByText('Merged').className).toContain('bg-violet-50');
+    expect(screen.getByText('Merged').className).toContain('bg-gray-100');
+    expect(screen.getByText('Merged').className).not.toMatch(/purple|violet|green/);
+    expect(screen.getByTestId('status-merged-icon')).toBeInTheDocument();
     expect(screen.getByText('Pending').className).not.toBe(screen.getByText('Merged').className);
   });
 

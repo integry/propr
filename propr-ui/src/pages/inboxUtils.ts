@@ -1,3 +1,4 @@
+import { formatRelativeTime as formatSharedRelativeTime } from '../utils/dateFormat';
 import type { Notification } from '@propr/shared';
 export { notificationHref, notificationPullRequestUrl } from '@propr/shared';
 
@@ -222,17 +223,7 @@ export function notificationFollowupCommand(notification: Notification): Notific
 }
 
 export function formatRelativeTime(timestamp: string, now = Date.now()): string {
-  const elapsedSeconds = Math.max(0, Math.floor((now - new Date(timestamp).getTime()) / 1_000));
-  if (elapsedSeconds < 60) return 'just now';
-  const minutes = Math.floor(elapsedSeconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
+  return formatSharedRelativeTime(timestamp, now);
 }
 
 export function compareNewestFirst(left: Notification, right: Notification): number {

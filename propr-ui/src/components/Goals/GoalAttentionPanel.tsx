@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../../utils/dateFormat';
 import { CirclePause, CirclePlay, CircleStop, HelpCircle, MessageSquareReply, ShieldAlert } from 'lucide-react';
 import type { GoalAttention, GoalBlocker, GoalBlockerAction } from '@propr/shared';
 
@@ -34,7 +35,7 @@ export interface GoalAttentionHandlers {
 
 function observedLabel(blocker: GoalBlocker): string | null {
   if (!blocker.firstObservedAt) return null;
-  const first = new Date(blocker.firstObservedAt).toLocaleString();
+  const first = formatRelativeTime(blocker.firstObservedAt);
   return blocker.detection.kind === 'goal_control' ? `Since ${first}` : `First seen ${first}`;
 }
 

@@ -23,10 +23,13 @@ import UserAvatar from './UserAvatar';
 import VoiceBriefingControl from './VoiceBriefingControl';
 import { HeaderScopeSlotContext } from './headerScopeSlot';
 import { SidebarNavigation, type NavigationState } from './SidebarNavigation';
+import { useSidebarUsageFit } from './useSidebarUsageFit';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
+
+const sidebarAccountGap = (compact: boolean): string => (compact ? 'mt-1' : 'mt-4');
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
@@ -42,6 +45,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const desktop = useDesktop();
   const [desktopSidebarHidden, setDesktopSidebarHidden] = useState(false);
   const hideSidebar = desktop && desktopSidebarHidden;
+  const usageFit = useSidebarUsageFit();
+  // Folded Usage also tightens the whitespace around the account block, so a 720px window fits every item.
+  const accountGap = sidebarAccountGap(usageFit.compact);
   // The toolbar's scope slot, handed to the routed page so it can mount its
   // filter beside search instead of spending a row of its own on it.
   const [headerScopeSlot, setHeaderScopeSlot] = useState<HTMLElement | null>(null);
@@ -200,14 +206,22 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </button>
         </div>}
         {desktop && <DesktopInstanceSelector transportReady={isConnected && user !== null} />}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div ref={usageFit.columnRef} className="flex min-h-0 flex-1 flex-col">
           {/* Whitespace separates navigation from the workspace control. */}
-          <SidebarNavigation state={navigationState} permissions={navigationPermissions} />
+          <SidebarNavigation state={navigationState} permissions={navigationPermissions} navRef={usageFit.navRef} />
           {/* Usage and account information stay at the bottom, with metadata
-              last. mt-auto absorbs the space below navigation. */}
-          <div className="mt-auto flex flex-none flex-col">
+              last. mt-auto absorbs the space below navigation. When the window
+              is too short for every item, Usage folds to one line first. */}
+          <div ref={usageFit.bottomRef} className="mt-auto flex flex-none flex-col">
           {(isDemoMode || canManageAgents) && (
-            <AgentTankSidebar allowManualRefresh={!isDemoMode} scrollable={Boolean(desktop)} className="desktop-sidebar-usage" />
+            <div ref={usageFit.usageRef} className="flex-none">
+              <AgentTankSidebar
+                allowManualRefresh={!isDemoMode}
+                scrollable={Boolean(desktop)}
+                layout={usageFit.compact ? 'line' : 'panel'}
+                className="desktop-sidebar-usage"
+              />
+            </div>
           )}
           {user && (
             // The interactive account block is its own group, detached from
@@ -216,7 +230,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             // 6px glyph inset inside the 28px logout button puts the logout
             // icon's right edge on the sidebar's shared 16px rail, aligned with
             // the nav badges and the Usage refresh icon.
-            <div className="desktop-sidebar-profile mt-4 flex flex-none items-center justify-between gap-2 py-2 pl-3 pr-2.5">
+            <div className={`desktop-sidebar-profile ${accountGap} flex flex-none items-center justify-between gap-2 py-2 pl-3 pr-2.5`}>
               <a
                 href={`https://github.com/${user.username}`}
                 target="_blank"
@@ -250,7 +264,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               metadata sits flush on the sidebar's shared 16px left rail (the same
               rail as the nav labels and the Usage heading) rather than being
               indented to the profile's text column. */}
-          {!desktop && <footer className="mt-4 px-4 pb-2 leading-tight space-y-1">
+          {!desktop && <footer className={`${accountGap} px-4 pb-2 leading-tight space-y-1`}>
             {/* The version is the datum developers scan for, so it sits one
                 contrast step above the secondary copyright line. */}
             <div className="text-[11px] text-slate-500">

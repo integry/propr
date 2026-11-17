@@ -678,6 +678,32 @@ describe('automation definition routes', () => {
     assert.equal(detail.body.run.report, 'All quiet.');
   });
 
+  test('run history carries a one-line plain-text report preview', async () => {
+    const definition = await createDefinition('alice');
+    const reported = (await triggerRun(definition.id)).body.run.id as string;
+    await transitionAgentRun(reported, ['queued'], 'running', {}, { database });
+    await transitionAgentRun(reported, ['running'], 'report_ready', {
+      report: '## Dependency **audit**\n\n- lodash is two majors behind\n- nothing else',
+    }, { database });
+    const long = (await triggerRun(definition.id, 'long-report')).body.run.id as string;
+    await transitionAgentRun(long, ['queued'], 'running', {}, { database });
+    await transitionAgentRun(long, ['running'], 'report_ready', { report: `- ${'finding '.repeat(40)}\nsecond line` }, { database });
+    const unreported = (await triggerRun(definition.id, 'no-report')).body.run.id as string;
+
+    const history = await call(routes.listRuns, request('alice', { params: { id: definition.id } }));
+    const runs = new Map((history.body.runs as Array<Record<string, unknown>>).map(run => [run.id, run]));
+    assert.equal(runs.get(reported)?.reportPreview, 'Dependency audit');
+    assert.equal('report' in (runs.get(reported) ?? {}), false);
+    const truncated = runs.get(long)?.reportPreview as string;
+    assert.ok(truncated.length <= 160, truncated);
+    assert.ok(truncated.startsWith('finding finding'), truncated);
+    assert.ok(truncated.endsWith('…'), truncated);
+    assert.equal('reportPreview' in (runs.get(unreported) ?? {}), false);
+
+    const detail = await call(routes.getRun, request('alice', { params: { runId: reported } }));
+    assert.equal('reportPreview' in detail.body.run, false);
+  });
+
   test('run payloads carry the unproductive-run flags and the derived no-change reason', async () => {
     const definition = await createDefinition('alice');
     const fresh = (await triggerRun(definition.id)).body.run as Record<string, unknown>;

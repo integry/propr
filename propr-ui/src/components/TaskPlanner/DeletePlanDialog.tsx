@@ -65,14 +65,14 @@ export const DeletePlanDialog: React.FC<DeletePlanDialogProps> = ({ isOpen, onCl
                 </div>
                 <div className="flex-1">
                   <h3 id="delete-plan-dialog-title" className="text-lg font-semibold text-gray-900 mb-2">
-                    Delete Plan?
+                    Delete plan?
                   </h3>
                   <p className="text-sm text-gray-600 mb-4">
                     Are you sure you want to delete this plan? This action cannot be undone
                     and all associated data will be permanently removed.
                   </p>
                   <p className="text-sm text-gray-600">
-                    This includes all tasks, chat history, and any created issues will remain on GitHub but will no longer be tracked.
+                    This includes all tasks and chat history. Issues already created stay on GitHub but are no longer tracked.
                   </p>
                 </div>
               </div>
@@ -98,7 +98,7 @@ export const DeletePlanDialog: React.FC<DeletePlanDialogProps> = ({ isOpen, onCl
                     Deleting...
                   </>
                 ) : (
-                  'Delete Plan'
+                  'Delete plan'
                 )}
               </button>
             </div>

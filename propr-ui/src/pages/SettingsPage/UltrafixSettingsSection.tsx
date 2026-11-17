@@ -52,7 +52,7 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
       }
     >
       <SettingsField
-        label="Target Review Score"
+        label="Target review score"
         htmlFor="ultrafix_rating_goal"
         helperText="Ultrafix stops once a review scores at least this high."
       >
@@ -66,14 +66,14 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
         >
           {Array.from({ length: 10 }, (_, i) => i + 1).map(n => (
             <option key={n} value={n}>
-              {n}/10{n === 7 ? ' (Default)' : ''}
+              {n}/10{n === 7 ? ' (default)' : ''}
             </option>
           ))}
         </select>
       </SettingsField>
 
       <SettingsField
-        label="Max Cycles"
+        label="Max cycles"
         htmlFor="ultrafix_max_cycles"
         helperText="Maximum fix-review cycles before stopping."
       >
@@ -91,7 +91,7 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
       </SettingsField>
 
       <SettingsField
-        label="Pause Between Cycles"
+        label="Pause between cycles"
         htmlFor="ultrafix_pause_seconds"
         helperText="Seconds to wait between each ultrafix cycle."
       >
@@ -110,13 +110,13 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
 
       <SettingsCheckboxField
         id="ultrafix_escalation_enabled" name="ultrafix_escalation_enabled"
-        label="Automatic Escalation"
+        label="Automatic escalation"
         helperText="When scores stall, raise reasoning effort, then switch models. E.g. medium → high, then next model."
         checked={settings.ultrafix_escalation_enabled} onChange={onSettingChange} onBlur={onBlur}
       />
       {settings.ultrafix_escalation_enabled && (
         <>
-          <SettingsField label="Escalation Models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
+          <SettingsField label="Escalation models (in order)" htmlFor={models.length ? "ultrafix_escalation_model_0" : "ultrafix_escalation_model_add"}
             helperText="Tried in order after the current model. Unavailable or usage-exhausted models are skipped.">
             <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2">
               {models.map((model, index) => (
@@ -144,12 +144,12 @@ const UltrafixSettingsSection: React.FC<UltrafixSettingsSectionProps> = ({
               </select>
             </div>
           </SettingsField>
-          <SettingsField label="Escalation Patience" htmlFor="ultrafix_escalation_patience"
+          <SettingsField label="Escalation patience" htmlFor="ultrafix_escalation_patience"
             helperText="Reviews without a new best score before escalating. E.g. 2: best 6/10, then 6 and 5 → escalate.">
             <input type="number" min={1} id="ultrafix_escalation_patience" name="ultrafix_escalation_patience"
               value={settings.ultrafix_escalation_patience} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />
           </SettingsField>
-          <SettingsField label="Max Reasoning Levels per Model" htmlFor="ultrafix_escalation_max_reasoning_levels"
+          <SettingsField label="Max reasoning levels per model" htmlFor="ultrafix_escalation_max_reasoning_levels"
             helperText="Effort increases per model before switching. E.g. 2: low → medium → high → next model. 0 switches right away.">
             <input type="number" min={0} id="ultrafix_escalation_max_reasoning_levels" name="ultrafix_escalation_max_reasoning_levels"
               value={settings.ultrafix_escalation_max_reasoning_levels} onChange={onSettingChange} onBlur={onBlur} className={SETTINGS_CONTROL} />

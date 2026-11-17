@@ -163,14 +163,14 @@ describe('task ledger rows', () => {
     expect(onRowClick).toHaveBeenCalledWith(group.tasks[0].id);
   });
 
-  it('ends the run track on a violet dot once the pull request has merged', () => {
+  it('ends the run track on a solid slate dot once the pull request has merged', () => {
     const merged: TaskGroup = { ...group, tasks: group.tasks.slice(1, 4).map(task => ({ ...task, prState: 'merged' })) };
     render(<TaskTableContent groupedTasks={[merged]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     const chip = within(table).getByRole('img', { name: '3 runs' });
     const markers = [...chip.querySelectorAll('[data-outcome]')];
     expect(markers.map(node => node.getAttribute('data-outcome'))).toEqual(['passed', 'passed', 'merged']);
-    expect(markers.at(-1)).toHaveClass('bg-violet-600');
+    expect(markers.at(-1)).toHaveClass('bg-slate-600');
     expect(chip.getAttribute('title')).toMatch(/Run 3 passed$/);
     expect(within(table).getAllByText('Merged').length).toBeGreaterThan(0);
   });
@@ -204,10 +204,10 @@ describe('task ledger rows', () => {
     // The owner is the same on every row, so the repository cell shows the name; the tooltip keeps both.
     const repo = within(table).getByTestId('task-repository');
     expect(repo).toHaveTextContent(/^desktop-workspaces$/);
-    expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
-    // The column is the container: plain monospace text, no chip border or fill.
-    expect(repo).toHaveClass('font-mono');
-    expect(repo.className).not.toMatch(/\b(?:border|bg-|rounded)/);
+    // The cell holds the shared repository chip: short name, full slug in its tooltip.
+    const chip = within(repo).getByTestId('repository-chip');
+    expect(chip).toHaveAttribute('title', 'integry/desktop-workspaces');
+    expect(chip).toHaveClass('font-mono');
   });
 
   it('ignores historical critique scores in rows and earlier runs', () => {

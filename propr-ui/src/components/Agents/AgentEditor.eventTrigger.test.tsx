@@ -37,7 +37,8 @@ describe('AgentEditor event trigger filter', () => {
 
     act(() => result.current.update({ repositories: ['acme/api'] }));
     await act(async () => { await result.current.save(); });
-    expect(result.current.error).toMatch(/no longer in this automation/);
+    expect(result.current.fieldErrors.eventTrigger).toMatch(/no longer in this automation/);
+    expect(result.current.invalidFocus?.field).toBe('eventTrigger');
     expect(updateAutomationDefinition).not.toHaveBeenCalled();
 
     // An explicit choice saves.

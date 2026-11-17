@@ -88,11 +88,11 @@ A merge made on GitHub is different. GitHub builds its default merge commit mess
 
 ### The title setting
 
-The repository setting **Show the PR state as a leading emoji in the pull request title** (`prTitleStatus`) controls the title slot only. It doesn't affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. With it off, titles are created and left exactly as they are. Turning it off removes the slot from open pull requests on their next change.
+The repository setting **Show status in pull request titles** (`prTitleStatus`) controls the title slot only. It doesn't affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. With it off, titles are created and left exactly as they are. Turning it off removes the slot from open pull requests on their next change.
 
 | Where | How |
 | --- | --- |
-| Web UI | Repositories → repository → Automation → **Show the PR state as a leading emoji in the pull request title** |
+| Web UI | Repositories → repository → Automation → **Show status in pull request titles** |
 | MCP | `update_repository_configuration` with `prTitleStatus: false` or `true`; `get_repository_configuration` reads it |
 | CLI | `propr repo toggle owner/repo --pr-title-status off` (or `--pr-title-status <on\|off>` on `propr repo add`) |
 | REST | `prTitleStatus` on the repository entries of `POST /api/config/repos` |

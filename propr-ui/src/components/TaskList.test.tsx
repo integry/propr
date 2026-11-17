@@ -139,14 +139,15 @@ describe('TaskList', () => {
     });
 
     await waitFor(() => expect(screen.getByTestId('repos-loading').textContent).toBe('false'));
-    expect(screen.getByTestId('repo-summary').textContent).toBe('all:3|integry/propr:3');
+    // No count badges: the stats count runs across every status, never the tasks the list totals.
+    expect(screen.getByTestId('repo-summary').textContent).toBe('all:na|integry/propr:na');
   });
 
   it('refreshes repository stats when live task updates arrive', async () => {
     mockGetTasks.mockResolvedValue({ tasks: [], total: 0 });
     mockGetRepositoryStats
       .mockResolvedValueOnce({ repositories: [repositoryStats('integry/propr', 1)] })
-      .mockResolvedValueOnce({ repositories: [repositoryStats('integry/propr', 2)] });
+      .mockResolvedValueOnce({ repositories: [repositoryStats('integry/propr', 2), repositoryStats('integry/desktop', 1)] });
 
     render(
       <MemoryRouter>
@@ -154,7 +155,7 @@ describe('TaskList', () => {
       </MemoryRouter>
     );
 
-    await waitFor(() => expect(screen.getByTestId('repo-summary').textContent).toBe('all:1|integry/propr:1'));
+    await waitFor(() => expect(screen.getByTestId('repo-summary').textContent).toBe('all:na|integry/propr:na'));
     expect(taskUpdateHandler).not.toBeNull();
 
     await act(async () => {
@@ -166,7 +167,7 @@ describe('TaskList', () => {
     });
 
     await waitFor(() => expect(mockGetRepositoryStats).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByTestId('repo-summary').textContent).toBe('all:2|integry/propr:2'));
+    await waitFor(() => expect(screen.getByTestId('repo-summary').textContent).toBe('all:na|integry/desktop:na|integry/propr:na'));
   });
 
   it('does not refetch repository stats when task query params change', async () => {

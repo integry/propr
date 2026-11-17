@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, Star, ChevronDown, X, Github, Loader2 } from 'lucide-react';
 import { fetchEnabledRepos } from '../utils/repoHelpers';
 import { RepositoryIcon } from './RepositoryIcon';
+import { formatCount } from '../utils/dateFormat';
 import { RepositoryGroups, RepositoryRow, isPinnedRepository, repositoryListStyles, repositoryKey as repoKey, sortRepositories as sortRepos } from '@propr/shared/dist/repositoryPresentation.js';
 
 export interface RepoOption {
@@ -84,7 +85,7 @@ const RepoLabel: React.FC<{ repo: RepoOption; labelLayout: 'inline' | 'stacked' 
     : (repo.displayName ? <>{repo.displayName}</> : <><FormatRepoName name={repo.name} />{repo.baseBranch && <span className="text-gray-500"> ({repo.baseBranch})</span>}</>)
 );
 
-const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span data-repo-count className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{count.toLocaleString('en-US')}</span>;
+const RepoCountBadge: React.FC<{ count: number; className?: string }> = ({ count, className = '' }) => <span data-repo-count className={`inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 flex-shrink-0 ${className}`}>{formatCount(count)}</span>;
 
 const RepoItem: React.FC<{
   repo: RepoOption;
@@ -170,7 +171,7 @@ const defaultTriggerStyles = (size: 'default' | 'compact', appearance: 'field' |
   const title = appearance === 'title';
   return {
     iconClassName: compact ? 'w-3.5 h-3.5' : 'w-4 h-4',
-    padding: compact ? 'h-7 px-2 gap-1.5 text-xs' : `px-3 ${labelLayout === 'stacked' ? 'py-1 min-h-[38px]' : 'py-2'} gap-2`,
+    padding: compact ? 'h-7 touch:h-8 px-2 gap-1.5 text-xs' : `px-3 ${labelLayout === 'stacked' ? 'py-1 min-h-[38px]' : 'py-2'} gap-2`,
     textSize: compact ? 'text-xs' : title ? 'text-sm font-semibold' : 'text-sm',
     // A title hugs its label in the middle of the bar; a field fills it from the left.
     labelFlow: title ? 'min-w-0' : 'flex-1 min-w-0 text-left',

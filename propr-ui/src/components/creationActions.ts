@@ -2,10 +2,10 @@ import { ScrollText, Target, Workflow, Zap } from 'lucide-react';
 import { matchPath } from 'react-router-dom';
 
 export const creationActions = [
-  { id: 'task', label: 'New Task', to: '/tasks/new', icon: Zap },
-  { id: 'plan', label: 'New Plan', to: '/studio/new', icon: ScrollText },
-  { id: 'goal', label: 'New Goal', to: '/goals?new=1', icon: Target },
-  { id: 'automation', label: 'New Automation', to: '/automations/new', icon: Workflow },
+  { id: 'task', label: 'New task', to: '/tasks/new', icon: Zap },
+  { id: 'plan', label: 'New plan', to: '/studio/new', icon: ScrollText },
+  { id: 'goal', label: 'New goal', to: '/goals?new=1', icon: Target },
+  { id: 'automation', label: 'New automation', to: '/automations/new', icon: Workflow },
 ] as const;
 
 // To-do creation opens the inline quick-add form instead of a route, so it

@@ -463,7 +463,7 @@ describe('AnalyticsPage', () => {
     // A model that made the code worse reads as a red drop.
     expect(within(rows[1]).getByTestId('review-quality-delta')).toHaveTextContent('−2.0 ▼');
     expect(within(rows[1]).getByTestId('review-quality-delta').firstElementChild).toHaveClass('text-red-600');
-    expect(rows[2]).toHaveTextContent('Manual / Untracked');
+    expect(rows[2]).toHaveTextContent('Manual or untracked');
     // No tracked agent can be credited with the untracked row's change, so its
     // delta is unknown rather than a measured 0.0; runs it never reported are unknown too.
     expect(within(rows[2]).getByTestId('review-quality-delta')).toHaveTextContent('—');

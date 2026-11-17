@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { ReviewScoreModelSummary, ReviewScoreSummaryResponse } from '../../api/taskStatsApi';
 import ReviewQualityByModel from './ReviewQualityByModel';
@@ -41,11 +41,11 @@ describe('ReviewQualityByModel', () => {
 
     // A model with several levels has a row per level beneath it, unknown (historical) effort last.
     const efforts = within(table).getAllByTestId('review-quality-effort-row');
-    expect(efforts.map(row => (row as HTMLTableRowElement).cells[0].textContent)).toEqual(['High effort', 'XHigh effort', 'Unknown effort']);
+    expect(efforts.map(row => (row as HTMLTableRowElement).cells[0].textContent)).toEqual(['High effort', 'XHigh effort', 'Effort not recorded']);
     expect(efforts[0].textContent).toBe('High effort26.09.0+3.0 ▲2.0100%');
     expect(models[0].nextElementSibling).toBe(efforts[0]);
     expect(efforts[2].nextElementSibling).toBe(models[1]);
-    expect(within(efforts[2]).getByText('Unknown effort')).toHaveAttribute('title', expect.stringMatching(/recorded no reasoning level/));
+    expect(within(efforts[2]).getByText('Effort not recorded')).toHaveAttribute('title', expect.stringMatching(/recorded no reasoning level/));
 
     // One known level is a tag on its model; untracked work, all of unknown effort, has neither.
     expect(within(models[1]).getByTestId('review-quality-effort-tag')).toHaveTextContent('Medium effort');
@@ -60,5 +60,34 @@ describe('ReviewQualityByModel', () => {
     expect(screen.getAllByTestId('review-quality-row')).toHaveLength(3);
     expect(screen.queryByTestId('review-quality-effort-row')).not.toBeInTheDocument();
     expect(screen.queryByTestId('review-quality-effort-tag')).not.toBeInTheDocument();
+  });
+
+  it('scrolls sideways with the model column pinned and an edge fade while figures are hidden', () => {
+    render(<ReviewQualityByModel summary={summary} loading={false} />);
+    const scroller = screen.getByTestId('review-quality-scroller');
+    // A phone-width pane over the wider matrix.
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 390 },
+      scrollWidth: { configurable: true, value: 659 },
+      scrollLeft: { configurable: true, writable: true, value: 0 },
+    });
+    fireEvent.scroll(scroller);
+    expect(scroller).toHaveAttribute('data-overflows-right', 'true');
+    expect(scroller).toHaveAttribute('data-scrolled', 'false');
+    expect(screen.getByTestId('review-quality-scroller-fade')).toHaveClass('opacity-100');
+
+    scroller.scrollLeft = 269;
+    fireEvent.scroll(scroller);
+    expect(scroller).toHaveAttribute('data-overflows-right', 'false');
+    expect(scroller).toHaveAttribute('data-scrolled', 'true');
+    expect(screen.getByTestId('review-quality-scroller-fade')).toHaveClass('opacity-0');
+
+    // Every model cell is pinned, and its name wraps instead of truncating.
+    for (const row of [...screen.getAllByTestId('review-quality-row'), ...screen.getAllByTestId('review-quality-effort-row')]) {
+      const cell = (row as HTMLTableRowElement).cells[0];
+      expect(cell).toHaveClass('sticky', 'left-0', 'whitespace-normal');
+      expect(cell.querySelector('.truncate')).toBeNull();
+    }
+    expect(screen.getAllByTestId('review-quality-row')[2]).toHaveTextContent('Manual or untracked');
   });
 });

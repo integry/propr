@@ -117,11 +117,7 @@ export function AdditionalExtensionsSelector({ value, onChange, target, disabled
   return (
     <div className="space-y-2 text-sm">
       <p className="font-medium text-slate-700">Additional extensions</p>
-      <p className="text-xs text-slate-500">
-        Library items this automation adds on top of the items that apply automatically, listed when their limits allow the
-        automation’s repositories and agent. Items marked “already applies automatically” are used without adding them.
-        Claude and Codex runs only.
-      </p>
+      <p className="text-xs text-slate-500">Extra skills and MCP servers for this automation. Claude and Codex only.</p>
       <div role="group" aria-label="Additional extensions" className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-2">
         {group('servers', 'MCP servers')}
         {group('skills', 'Skills')}

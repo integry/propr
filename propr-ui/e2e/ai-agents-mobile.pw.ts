@@ -89,7 +89,7 @@ test('keeps the Playground usable at 320px', async ({ page, baseURL }) => {
   await stubAiAgentsApis(page);
   await page.goto('/ai-agents');
 
-  await expect(page.getByRole('heading', { name: 'AI Agents' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Coding agents', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Playground' })).toBeVisible();
   const search = page.getByRole('combobox', { name: 'Search and add models to compare' });
   await expect(search).toBeVisible();
@@ -143,8 +143,8 @@ test('keeps the tabbed mobile layout through the app-shell breakpoint', async ({
   await stubAiAgentsApis(page);
   await page.goto('/ai-agents');
 
-  await expect(page.getByRole('heading', { name: 'AI Agents' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Coding agents', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Playground' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Agent Configuration' })).toBeHidden();
+  await expect(page.locator('#ai-agents-configuration-heading')).toBeHidden();
   await expectNoPageOverflow(page);
 });

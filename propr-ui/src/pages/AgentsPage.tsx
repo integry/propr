@@ -8,8 +8,11 @@ import { getInstanceCatalog } from '../api/proprApi';
 import { listAutomationDefinitions, listAutomationRuns, type AutomationDefinitionRecord } from '../api/automationDefinitionsApi';
 import { AgentList } from '../components/Agents/AgentList';
 import { AgentEditor } from '../components/Agents/AgentEditor';
+import { useUnsavedEditorGuard } from '../components/Agents/useUnsavedEditorGuard';
+import { automationListQuery } from '../components/Agents/automationListQuery';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { TASK_SPLIT_QUERY } from '../hooks/useTaskSelection';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const matchesSplit = (): boolean =>
   typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(TASK_SPLIT_QUERY).matches;
@@ -100,7 +103,9 @@ function useLastRunStates(definitions: AutomationDefinitionRecord[] | null) {
 
   const record = useCallback((definitionId: string, state: AutomationRunState) => {
     versions.current.set(definitionId, (versions.current.get(definitionId) ?? 0) + 1);
-    setLastRunStates(current => ({ ...current, [definitionId]: state }));
+    // An unchanged state keeps the record, so a background read that changed nothing
+    // does not re-render the page and the open automation or run beside the list.
+    setLastRunStates(current => (current[definitionId] === state ? current : { ...current, [definitionId]: state }));
   }, []);
 
   // A failed read leaves the row as it was until the next discovery read.
@@ -242,6 +247,8 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   const [searchParams] = useSearchParams();
   /** `/automations/new?template=<id>` opens the form prefilled from a shipped template. */
   const templateId = isNew ? searchParams.get('template') : null;
+  /** The list's repository and search filters, kept on every path the list stays beside. */
+  const listQuery = automationListQuery(searchParams);
   const navigate = useNavigate();
   const split = useSplitViewport();
   const { isDemoMode } = useDemoMode();
@@ -249,25 +256,31 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   const catalogAgents = useCatalogAgents();
   const { host: editorHost, dockRef } = useEditorDock();
   const editing = isNew || definitionId !== null;
+  // The open automation (or its run) titles the tab; the list alone is "Automations".
+  useDocumentTitle('Automations', !editing);
+  const editorKey = editing ? (definitionId ?? `new:${templateId ?? ''}`) : null;
+  const unsavedGuard = useUnsavedEditorGuard(editorKey);
+  const { guard } = unsavedGuard;
 
   // A save or delete that finishes after its editor was closed only updates the list:
   // navigating would replace whichever editor is open now and discard its edits.
   const onSaved = useCallback((definition: AutomationDefinitionRecord, created: boolean, open: boolean) => {
     upsert(definition);
-    if (created && open) navigate(`/automations/${encodeURIComponent(definition.id)}`, { replace: true });
-  }, [navigate, upsert]);
+    if (created && open) navigate(`/automations/${encodeURIComponent(definition.id)}${listQuery}`, { replace: true });
+  }, [listQuery, navigate, upsert]);
 
   const onDeleted = useCallback((id: string, open: boolean) => {
     remove(id);
-    if (open) navigate('/automations', { replace: true });
-  }, [navigate, remove]);
+    if (open) navigate(`/automations${listQuery}`, { replace: true });
+  }, [listQuery, navigate, remove]);
 
-  const close = useCallback(() => navigate('/automations'), [navigate]);
+  // Escape and Close ask first when the form holds input that was not saved.
+  const close = useCallback(() => guard(() => navigate(`/automations${listQuery}`)), [guard, listQuery, navigate]);
 
   useEffect(() => {
     if (!split || !editing) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
+      const target = event.target instanceof Element ? event.target : null;
       const typing = target?.closest('input, textarea, select, [contenteditable="true"]');
       if (event.key !== 'Escape' || event.defaultPrevented || typing || document.querySelector('[aria-modal="true"]')) return;
       event.preventDefault();
@@ -278,12 +291,22 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   }, [close, editing, split]);
 
   const list = (
-    <AgentList definitions={definitions} lastRunStates={lastRunStates} error={error} selectedId={definitionId} readOnly={isDemoMode} agents={catalogAgents} />
+    <AgentList
+      definitions={definitions}
+      lastRunStates={lastRunStates}
+      error={error}
+      selectedId={definitionId}
+      readOnly={isDemoMode}
+      agents={catalogAgents}
+      creating={isNew}
+      fullWidth={!editing}
+    />
   );
 
   const editor = editing && createPortal(
     <AgentEditor
-      key={definitionId ?? `new:${templateId ?? ''}`}
+      key={editorKey ?? undefined}
+      onUnsavedChange={unsavedGuard.setUnsaved}
       definitionId={isNew ? null : definitionId}
       templateId={templateId}
       section={runId ? 'run' : section}
@@ -305,7 +328,7 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
     layout = !editing ? <div className="h-full" data-testid="agents-list-page">{list}</div> : (
       <div className="flex h-full min-h-0 flex-col" data-testid="agents-detail-page">
         <nav className="flex-none border-b border-slate-200 bg-white px-4 py-2">
-          <Link to="/automations" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
+          <Link to={`/automations${listQuery}`} className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />Back to list
           </Link>
         </nav>
@@ -338,7 +361,7 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   }
 
   // The editor sits beside the layout rather than inside it, so it stays mounted when the layout changes.
-  return <>{editor}{layout}</>;
+  return <>{editor}{layout}{unsavedGuard.dialog}</>;
 };
 
 export default AgentsPage;

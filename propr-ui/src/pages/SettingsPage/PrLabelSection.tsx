@@ -17,12 +17,12 @@ const PrLabelSection: React.FC<PrLabelSectionProps> = ({
 }) => {
   return (
     <SettingsSection
-      title="PR Label"
+      title="PR label"
       description="Automatically added to all ProPR PRs. Used to monitor for follow-up comments."
       className={className}
     >
       <SettingsField
-        label="Label Name"
+        label="Label name"
         htmlFor="pr_label"
         helperText="Applied to every pull request ProPR opens."
       >

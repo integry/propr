@@ -68,43 +68,43 @@ test('the library lists servers and skills as rows with provenance, write-only a
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/settings?tab=agent-extensions');
   const section = sectionOf(page);
-  await expect(section.getByText(/Give agents extra tools for a task/)).toContainText('Only Claude and Codex runs can use extensions.');
-  await expect(section.getByRole('list', { name: 'How extensions apply' })).toContainText('disable-extensions');
-  await expect(section.getByText(/Revision 3 · updated/)).toBeVisible();
+  await expect(section.getByText(/MCP servers give agents extra tools/)).toContainText('Skills are folders of instructions');
+  await expect(section.getByTestId('extension-library-status')).toHaveAttribute('data-revision', '3');
   const server = section.getByTestId('extension-server');
   await expect(server).toContainText('documentation');
   await expect(server).toContainText('example/docs · Applies automatically · Agents: claude-main');
   await expect(server).toContainText('Added by automation “Weekly docs audit”.');
   const skill = section.getByTestId('extension-skill');
   await expect(skill).toContainText('Imported from profile “Docs profile”; not applied automatically.');
-  await expect(skill).toContainText('Applies to Codex');
+  await expect(skill).toContainText('Codex: not used in runs that need a custom Codex config. Details');
+  await expect(skill.getByRole('link', { name: 'Details' })).toHaveAttribute('href', 'https://docs.propr.dev/docs/features/agent-extensions#codex-configuration');
   await server.getByRole('button', { name: 'Edit' }).click();
   const form = section.getByTestId('extension-server-form');
   await expect(form.getByLabel(/^Bearer token/)).toHaveValue('');
-  await expect(form.getByText('(configured; write-only)', { exact: true })).toBeVisible();
+  await expect(form.getByText('(saved)', { exact: true })).toBeVisible();
   await form.getByRole('button', { name: 'Cancel' }).click();
   await skill.getByRole('button', { name: 'Edit' }).click();
   await expect(section.getByTestId('extension-skill-form').getByText(/SHA-256 d853bea/)).toBeVisible();
   await section.getByTestId('extension-skill-form').getByRole('button', { name: 'Cancel' }).click();
-  await section.getByRole('button', { name: 'Validate saved MCP connectivity' }).click();
+  await section.getByRole('button', { name: 'Test connections' }).click();
   await expect(section.getByRole('status')).toHaveText('documentation: reachable');
   await section.getByRole('button', { name: 'Revision history' }).click();
-  await expect(section.getByText(/Revision 3.*administrator 1/)).toBeVisible();
+  await expect(section.getByRole('list', { name: 'Revision history' })).toContainText(/ · 1$/);
   // An operator catalog server is added in one form.
   await section.getByRole('button', { name: 'Add server' }).click();
   const add = section.getByTestId('extension-server-form');
   await add.getByLabel('Server type').selectOption('operator-documentation');
-  await expect(add.locator('p', { hasText: 'Operator catalog entry: operator-documentation' })).toBeVisible();
-  await expect(add.getByText('Operator secrets: configured', { exact: true })).toBeVisible();
+  await expect(add.locator('p', { hasText: 'Preinstalled: operator-documentation' })).toBeVisible();
+  await expect(add.getByText('Credentials: set by the operator', { exact: true })).toBeVisible();
   await expect(add.getByRole('checkbox', { name: /Apply automatically/ })).toBeChecked();
   await expect(add.getByLabel('lookup', { exact: true })).toBeChecked();
-  await expect(add.getByLabel(/^Capability/)).toHaveValue('write');
-  await expect(add.getByLabel(/^Capability/)).toBeDisabled();
+  await expect(add.getByLabel(/^Access/)).toHaveValue('write');
+  await expect(add.getByLabel(/^Access/)).toBeDisabled();
   await add.getByLabel('update_document', { exact: true }).uncheck();
   await add.getByRole('button', { name: 'Add server' }).click();
   await expect(section.getByRole('status')).toHaveText('Server server-1 added.');
   expect(api.saves[0].input).toMatchObject({ servers: [library.servers[0], { kind: 'catalog', name: 'server-1', catalogId: 'operator-documentation', digest: 'a'.repeat(64), enabled: true, tools: ['lookup'], capability: 'write', ...allowAll }] });
-  await expect(section.getByText(/Revision 4 · updated/)).toBeVisible();
+  await expect(section.getByTestId('extension-library-status')).toHaveAttribute('data-revision', '4');
   await expect(section.getByTestId('extension-server').nth(1)).toContainText('Write');
   expect(await section.textContent()).not.toMatch(/API_KEY|OPERATOR_DOCS_KEY|UNMISTAKABLE|CATALOG_ARGUMENT_SENTINEL|CATALOG_PATH_SENTINEL|\/usr\/bin\/env/);
 });
@@ -160,16 +160,16 @@ test('a server and a skill are added in one flow each, switched off and on with 
   await page.setViewportSize({ width: 1280, height: 1100 });
   await page.goto('/settings?tab=agent-extensions');
   const section = sectionOf(page);
-  await expect(section.getByText('Nothing saved yet.', { exact: false })).toBeVisible();
+  await expect(section.getByTestId('extension-library-status')).toHaveText('Changes apply to new runs.');
   await section.getByRole('button', { name: 'Add server' }).click();
   const form = section.getByTestId('extension-server-form');
   await form.getByLabel(/^Server name/).fill('tracker');
   await form.getByLabel('HTTPS endpoint', { exact: true }).fill('https://tracker.example.com/mcp');
   const tools = form.getByRole('group', { name: 'Allowed tools', exact: true });
-  await tools.getByText('Add an unlisted value', { exact: true }).click();
-  await tools.getByLabel('Unlisted tool name').fill('create_issue');
+  await tools.getByText('Other tool', { exact: true }).click();
+  await tools.getByLabel('Other tool').fill('create_issue');
   await tools.getByRole('button', { name: 'Add' }).click();
-  await form.getByLabel(/^Capability/).selectOption('write');
+  await form.getByLabel(/^Access/).selectOption('write');
   await form.getByLabel('Authentication').selectOption('bearer');
   await form.getByLabel(/^Bearer token/).fill('synthetic-test-token');
   await form.getByRole('group', { name: 'Limit to repositories' }).getByLabel('example/docs', { exact: true }).check();
@@ -204,7 +204,7 @@ test('a server and a skill are added in one flow each, switched off and on with 
   await expect(skill).toHaveAttribute('data-enabled', 'false');
 
   await page.reload();
-  await expect(section.getByText(/Revision 4 · updated/)).toBeVisible();
+  await expect(section.getByTestId('extension-library-status')).toHaveAttribute('data-revision', '4');
   await expect(section.getByRole('checkbox', { name: 'Enabled: tracker' })).not.toBeChecked();
   await expect(section.getByTestId('extension-server')).toContainText('example/docs · Applies automatically · Agents: claude-main');
   await expect(section.getByTestId('extension-skill')).toContainText('example/app · Only where an automation adds it');
@@ -215,7 +215,7 @@ test('a server and a skill are added in one flow each, switched off and on with 
   // Settings, limits and the secret presence marker are unchanged after the round trip.
   await section.getByTestId('extension-server').getByRole('button', { name: 'Edit' }).click();
   const edit = section.getByTestId('extension-server-form');
-  await expect(edit.getByText('(configured; write-only)', { exact: true })).toBeVisible();
+  await expect(edit.getByText('(saved)', { exact: true })).toBeVisible();
   await expect(edit.getByLabel(/^Bearer token/)).toHaveValue('');
   await expect(edit.getByRole('group', { name: 'Limit to repositories' }).getByLabel('example/docs', { exact: true })).toBeChecked();
   await expect(edit.getByRole('group', { name: 'Limit to agents' }).getByLabel('claude-main', { exact: true })).toBeChecked();
@@ -262,10 +262,10 @@ test('a local package server is checked, acknowledged and saved with an exact ve
   await expect(form.getByLabel('HTTPS endpoint', { exact: true })).toHaveCount(0);
   await form.getByLabel(/^Server name/).fill('browser'); await form.getByLabel('Package', { exact: true }).fill('@example/browser-mcp');
   await form.getByLabel(/^Exact version/).fill('latest'); // A tag or range is refused before anything is sent.
-  await expect(form.getByRole('button', { name: 'Check' })).toBeDisabled();
+  await expect(form.getByRole('button', { name: 'Check package' })).toBeDisabled();
   await expect(form.getByText(/Ranges and tags \(latest, \^1.2\) are not accepted/)).toBeVisible();
   await form.getByLabel(/^Exact version/).fill('1.4.2');
-  await form.getByRole('button', { name: 'Check' }).click();
+  await form.getByRole('button', { name: 'Check package' }).click();
   for (const text of ['@example/browser-mcp@1.4.2', 'browser-mcp', integrity]) await expect(form.getByTestId('extension-package-check')).toContainText(text);
   expect(checks).toEqual([{ ecosystem: 'npm', package: '@example/browser-mcp', version: '1.4.2' }]);
   for (const [label, value] of [[/^Arguments/, '--headless'], [/^Variables/, 'LOG_LEVEL=info'], ['Tool name', 'navigate']] as const) await form.getByLabel(label).fill(value);
@@ -340,7 +340,7 @@ test('the agent limit offers eligible agents and a rename or endpoint change nev
   // A removal needs confirmation.
   await section.getByTestId('extension-server').getByRole('button', { name: 'Remove' }).click();
   await expect(section.getByText(/Remove docs from the library\?/)).toBeVisible();
-  await section.getByRole('button', { name: 'Keep' }).click();
+  await section.getByTestId('extension-server').getByRole('button', { name: 'Cancel' }).click();
   expect(api.saves).toHaveLength(1);
 });
 
@@ -354,7 +354,7 @@ test('a refused removal names the automations that add the item', async ({ page 
   await page.goto('/settings?tab=agent-extensions');
   const section = sectionOf(page);
   await section.getByTestId('extension-server').getByRole('button', { name: 'Remove' }).click();
-  await section.getByRole('button', { name: 'Confirm removal' }).click();
+  await section.getByTestId('extension-server').getByRole('button', { name: 'Remove' }).click();
   await expect(section.getByRole('alert')).toContainText('"Weekly docs audit" (docs)');
   await expect(section.getByTestId('extension-server')).toBeVisible();
 });
@@ -401,7 +401,8 @@ test('new HTTPS tools and GitHub branch imports can be selected with immutable c
   releaseDiscovery!(); await staleReply;
   await expect(section.getByLabel('stale_tool', { exact: true })).toHaveCount(0);
   await expect(section.getByLabel('search_docs', { exact: true })).toBeVisible();
-  await section.getByTestId('extension-server-form').getByRole('button', { name: 'Cancel' }).click();
+  // The form holds a typed endpoint, so closing it asks first.
+  await section.getByTestId('extension-server-form').getByRole('button', { name: 'Cancel' }).click(); await page.getByRole('dialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Discard' }).click();
   await section.getByRole('button', { name: 'Add skill' }).click();
   await section.getByText('Import from an authorized GitHub repository', { exact: true }).click();
   await section.getByLabel('Repository', { exact: true }).selectOption('example/docs');

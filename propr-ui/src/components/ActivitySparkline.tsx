@@ -56,6 +56,7 @@ import { isHourKey, planActivityAxis, type ActivityAxisLabel } from './Analytics
 import { pairDrift, pairedBarGeometry } from './Analytics/activityPairs';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
+import { formatCount } from '../utils/dateFormat';
 
 interface ActivityDay {
   /** The bucket: a UTC day as `YYYY-MM-DD`, or a UTC hour as the ISO instant at its top. */
@@ -146,10 +147,10 @@ export const ActivityLegend: React.FC<{ data: ActivityDay[] }> = ({ data }) => {
   return (
     <ul className="flex items-center gap-3 text-[11px] text-slate-500" aria-label="Activity legend" data-testid="activity-legend">
       <li className="flex items-center gap-1.5" title="Agent runs started: the compute spent">
-        {swatch(RUNS_FILL)}Runs <span className="font-semibold tabular-nums text-slate-700">{runs.toLocaleString()}</span>
+        {swatch(RUNS_FILL)}Runs <span className="font-semibold tabular-nums text-slate-700">{formatCount(runs)}</span>
       </li>
       <li className="flex items-center gap-1.5" title="Tasks created: the deliverables">
-        {swatch(TASKS_FILL)}Tasks <span className="font-semibold tabular-nums text-slate-700">{tasks.toLocaleString()}</span>
+        {swatch(TASKS_FILL)}Tasks <span className="font-semibold tabular-nums text-slate-700">{formatCount(tasks)}</span>
       </li>
     </ul>
   );
@@ -322,7 +323,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                       maxX={size.width}
                     >
                       {paired
-                        ? <>{day.displayDate}: {(day.runs ?? 0).toLocaleString()} runs · {day.count.toLocaleString()} tasks</>
+                        ? <>{day.displayDate}: {formatCount(day.runs ?? 0)} runs · {formatCount(day.count)} tasks</>
                         : <>{day.displayDate}: {day.count} tasks</>}
                       {ratio && <div className="text-slate-500">{ratio}</div>}
                     </AnchoredTooltip>

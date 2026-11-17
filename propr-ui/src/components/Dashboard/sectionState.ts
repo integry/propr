@@ -8,7 +8,8 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 // The task list owns the relative-time vocabulary; the dashboard reuses it
 // rather than growing a second set of duration strings.
-import { formatDuration, formatRelativeTime } from '../TaskList/utils.tsx';
+import { formatDuration } from '../TaskList/utils.tsx';
+import { formatRelativeTime } from '../../utils/dateFormat';
 import { SocketContext } from '../../contexts/SocketContext';
 import { CONNECTED_RECONCILE_MS, useLiveRefreshScheduler } from '../../hooks/useLiveRefreshScheduler';
 
@@ -193,9 +194,10 @@ export function useNowTick(intervalMs = 15_000): number {
  */
 export function elapsedLabel(since: string): string {
   const days = Math.floor((Date.now() - Date.parse(since)) / 86_400_000);
-  if (days >= 14) return `${days}d`;
+  // The shared relative age turns into a calendar date after seven days; a wait stays a duration.
+  if (days >= 7) return `${days}d`;
   const relative = formatRelativeTime(since);
-  if (!relative || relative === 'Just now') return 'less than a minute';
+  if (!relative || relative === 'just now' || relative.startsWith('in ')) return 'less than a minute';
   return relative.replace(/ ago$/, '');
 }
 
@@ -242,8 +244,7 @@ export function primaryClause(text: string): string {
  * has gone quiet. Neither is a verdict — a long test run is quiet too.
  */
 export function lastOutputLabel(at: string): string {
-  const relative = formatRelativeTime(at);
-  return relative.charAt(0).toLowerCase() + relative.slice(1);
+  return formatRelativeTime(at);
 }
 
 /** Precise elapsed time for running work, where minutes and seconds both matter. */

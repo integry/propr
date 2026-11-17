@@ -221,7 +221,9 @@ interface AgentTankSidebarProps {
   // `summary` folds the widget into one drill-down row ("Claude 25% · Codex 7%")
   // that calls `onOpenDetails` — for menus, where a block of progress bars
   // would push every entry below it off screen.
-  layout?: 'panel' | 'summary';
+  // `line` folds the sidebar panel to its heading and one line of percentages,
+  // when the window is too short for the navigation and the full panel.
+  layout?: 'panel' | 'summary' | 'line';
   onOpenDetails?: () => void;
   // Open every provider until a preference is saved.
   expandAll?: boolean;
@@ -310,11 +312,36 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({
     />
   ));
 
+  const summary = agents.flatMap(agent => {
+    const metric = getPrimaryMetric(agent);
+    return metric ? [{ name: getProviderDisplayName(agent.name), percent: metric.percent }] : [];
+  });
+  const summaryItems = summary.map((item, index) => (
+    <React.Fragment key={item.name}>
+      {index > 0 && <span className="text-slate-300" aria-hidden="true"> · </span>}
+      {item.name} <span className={getTextColor(item.percent)}>{item.percent}%</span>
+    </React.Fragment>
+  ));
+
+  if (layout === 'line') {
+    return (
+      <div className={`px-4 pt-2 ${className}`} data-testid="usage-line">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex-none text-[11px] uppercase font-bold tracking-wider text-slate-400">Usage</span>
+          <span
+            className="ml-auto min-w-0 truncate text-right text-[10px] font-medium text-slate-500"
+            title={summary.map(item => `${item.name} ${item.percent}%`).join(' · ')}
+            data-testid="usage-summary"
+          >
+            {summaryItems}
+          </span>
+          {refreshButton}
+        </div>
+      </div>
+    );
+  }
+
   if (layout === 'summary') {
-    const summary = agents.flatMap(agent => {
-      const metric = getPrimaryMetric(agent);
-      return metric ? [{ name: getProviderDisplayName(agent.name), percent: metric.percent }] : [];
-    });
     return (
       <button
         type="button"
@@ -325,12 +352,7 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({
         <Gauge className="h-5 w-5 flex-none text-slate-500" aria-hidden="true" />
         <span className="flex-none font-medium">API &amp; quota usage</span>
         <span className="ml-auto min-w-0 truncate text-right text-xs font-medium text-slate-500" data-testid="usage-summary">
-          {summary.map((item, index) => (
-            <React.Fragment key={item.name}>
-              {index > 0 && <span className="text-slate-300" aria-hidden="true"> · </span>}
-              {item.name} <span className={getTextColor(item.percent)}>{item.percent}%</span>
-            </React.Fragment>
-          ))}
+          {summaryItems}
         </span>
         <ChevronRight className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
       </button>

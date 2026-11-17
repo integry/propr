@@ -1,13 +1,17 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useOptionalToast } from '../ui/useToast';
 import { ListSkeleton } from '../ui/Skeleton';
+import { NOT_FOUND_TITLE, NotFound } from '../NotFound';
+import { useDocumentTitle } from '../../hooks/useDocumentTitle';
+import { isNotFoundMessage } from '../../utils/notFound';
 import { AgentDeleteDialog } from './AgentDeleteDialog';
 import { AgentConfirmDialog } from './AgentConfirmDialog';
 import { AgentRunsPane } from './AgentRunsPane';
 import { AgentConflictBanner, AgentDetailTabs, AgentEditorHeader, AgentRunBreadcrumb, type AgentDetailSection } from './AgentEditorHeader';
 import { AgentSettingsForm } from './AgentSettingsForm';
+import { useAutomationListQuery } from './automationListQuery';
 import { runAvailability, useAgentEditor, type AgentEditorCallbacks, type AgentEditorNotify } from './useAgentEditor';
 import type { AutomationRunRecord } from '../../api/automationDefinitionsApi';
 
@@ -22,6 +26,8 @@ interface AgentEditorProps extends AgentEditorCallbacks {
   runId?: string | null;
   /** A shipped template that prefills a new automation's form. */
   templateId?: string | null;
+  /** Told whether the form holds input that closing or replacing it would lose; false again on unmount. */
+  onUnsavedChange?: (unsaved: boolean) => void;
 }
 
 /** A new agent has only its settings; a run section without a run shows the history. */
@@ -62,28 +68,63 @@ const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, s
 };
 
 /**
+ * Titles the tab after the open automation, and says whether its id is not
+ * found: an unknown id, or one that is not a valid id. The open run's own page
+ * titles the tab while a run shows.
+ */
+function useAgentEditorTitle(definitionId: string | null, editor: ReturnType<typeof useAgentEditor>, section: AgentDetailSection): boolean {
+  const notFound = Boolean(definitionId) && isNotFoundMessage(editor.loadError);
+  const name = definitionId ? (editor.definition?.name || 'Automation') : 'New automation';
+  useDocumentTitle(notFound ? NOT_FOUND_TITLE : name, section !== 'run' || notFound);
+  return notFound;
+}
+
+/** No tabs or Run now for an automation that is not there; only the way back to the list. */
+const AgentNotFound: React.FC<{ headerControls?: React.ReactNode }> = ({ headerControls }) => (
+  <div className="flex h-full min-h-0 flex-col bg-white" data-testid="agent-editor-not-found">
+    {headerControls && <div className="flex flex-none justify-end px-4 pt-3">{headerControls}</div>}
+    <NotFound
+      title="Automation not found"
+      message="This automation does not exist, or it has been deleted."
+      backTo="/automations"
+      backLabel="Back to automations"
+      setsDocumentTitle={false}
+    />
+  </div>
+);
+
+/**
  * Create or edit an agent: scope, prompt and files, model, capabilities,
  * schedule and autonomy. A saved agent also has a Runs tab with its run
  * history and run detail; the settings form stays mounted (hidden) while
  * another tab shows, so unsaved edits survive a look at the runs.
  */
-export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerControls, section: requestedSection = 'settings', runId = null, templateId = null, ...callbacks }) => {
+export const AgentEditor: React.FC<AgentEditorProps> = ({
+  definitionId, headerControls, section: requestedSection = 'settings', runId = null, templateId = null, onUnsavedChange, ...callbacks
+}) => {
   const { isDemoMode } = useDemoMode();
   const navigate = useNavigate();
+  const listQuery = useAutomationListQuery();
   const openRun = useCallback((run: AutomationRunRecord) => {
-    navigate(`/automations/${encodeURIComponent(run.definitionId)}/runs/${encodeURIComponent(run.id)}`);
-  }, [navigate]);
+    navigate(`/automations/${encodeURIComponent(run.definitionId)}/runs/${encodeURIComponent(run.id)}${listQuery}`);
+  }, [listQuery, navigate]);
   const toast = useOptionalToast();
   const addToast = toast?.addToast;
   const notify = useCallback<AgentEditorNotify>((message, type) => { addToast?.({ type, message, duration: 3_000 }); }, [addToast]);
   const editor = useAgentEditor(definitionId, callbacks, { openRun, notify, templateId });
   const section = resolveSection(definitionId, requestedSection, runId);
+  const unsaved = editor.hasUnsavedInput && !isDemoMode;
+  useEffect(() => { onUnsavedChange?.(unsaved); }, [onUnsavedChange, unsaved]);
+  useEffect(() => () => onUnsavedChange?.(false), [onUnsavedChange]);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const { definition } = editor;
   const readOnly = isDemoMode || editor.saving;
+  const notFound = useAgentEditorTitle(definitionId, editor, section);
   const top = (
     <AgentEditorTop definitionId={definitionId} editor={editor} section={section} runId={runId} isDemoMode={isDemoMode} headerControls={headerControls} />
   );
+
+  if (notFound) return <AgentNotFound headerControls={headerControls} />;
 
   if (editor.loading || editor.loadError) {
     return (

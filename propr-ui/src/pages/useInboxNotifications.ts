@@ -11,6 +11,7 @@ import { useNotificationCenter } from '../contexts/NotificationCenterContext';
 import { useToast } from '../components/ui/useToast';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useInboxRefreshTriggers } from './useInboxRefreshTriggers';
+import { keepIfEqual } from '../utils/keepIfEqual';
 import {
   compareNewestFirst,
   isSystemNotification,
@@ -184,11 +185,12 @@ export function useInboxNotifications(): InboxNotificationsState {
       const incoming = reconcileIncoming(rawNotifications);
       const settled = mutationEpoch === mutationEpochRef.current;
       const boundary = latestNextCursor === null ? null : rawNotifications.at(-1);
+      // A background read that changed nothing keeps the list, so the open preview is not re-rendered.
       setNotifications(current => {
-        if (!settled || (keepLoadedPages && boundary === undefined)) return mergeNotifications(current, incoming);
-        return keepLoadedPages
+        if (!settled || (keepLoadedPages && boundary === undefined)) return keepIfEqual(current, mergeNotifications(current, incoming));
+        return keepIfEqual(current, keepLoadedPages
           ? replaceNotificationRange(current, incoming, boundary ?? null)
-          : mergeNotifications([], incoming);
+          : mergeNotifications([], incoming));
       });
       if (!keepLoadedPages || (settled && reachesFrontier(boundary, frontierRef.current))) {
         setNextCursor(latestNextCursor);

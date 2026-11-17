@@ -11,6 +11,7 @@ import { ProviderLogo } from '../ui/ProviderLogo';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getShortModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
+import { prerequisitesLabel, issueList, type RowQueueStatus } from './planQueueLabels';
 
 interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; goalLabel?: string; maxLabel?: string; defaultGoal?: number; defaultMaxCycles?: number; }
 
@@ -124,14 +125,22 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   );
 };
 
-/** A queued issue is still pending on the server; the label tells the user it will start on its own. */
-const QUEUED_STATUS = { ...STATUS_CONFIG.pending, label: 'Queued', bgColor: 'bg-slate-50', dotColor: 'bg-slate-400' };
+/**
+ * A queued, skipped or blocked issue is still pending on the server; the execution queue decides
+ * which it is. Queued tells the user it will start on its own; Skipped that the queue passed it by.
+ */
+const QUEUE_STATUS_CONFIG: Record<RowQueueStatus, (typeof STATUS_CONFIG)[PlanIssueStatus]> = {
+  queued: { ...STATUS_CONFIG.pending, label: 'Queued', bgColor: 'bg-slate-50', dotColor: 'bg-slate-400' },
+  skipped: { ...STATUS_CONFIG.pending, label: 'Skipped', color: 'text-slate-500', bgColor: 'bg-white', borderColor: 'border-dashed border-slate-300', dotColor: 'bg-slate-300' },
+  blocked: { ...STATUS_CONFIG.pending, label: 'Blocked', color: 'text-amber-800', bgColor: 'bg-amber-50', borderColor: 'border-amber-200', dotColor: 'bg-amber-500' },
+};
 
-export const StatusBadge: React.FC<{ status: PlanIssueStatus; queued?: boolean }> = ({ status, queued = false }) => {
-  const config = queued && status === 'pending' ? QUEUED_STATUS : STATUS_CONFIG[status];
+export const StatusBadge: React.FC<{ status: PlanIssueStatus; queued?: boolean; queueStatus?: RowQueueStatus | null }> = ({ status, queued = false, queueStatus }) => {
+  const rowQueueStatus = queueStatus ?? (queued ? 'queued' : null);
+  const config = rowQueueStatus && status === 'pending' ? QUEUE_STATUS_CONFIG[rowQueueStatus] : STATUS_CONFIG[status];
 
   return (
-    <span className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-medium rounded border ${config.color} ${config.bgColor} ${config.borderColor}`}>
+    <span data-testid="plan-issue-status" className={`inline-flex items-center gap-1.5 whitespace-nowrap px-1.5 py-0.5 text-xs font-medium rounded border ${config.color} ${config.bgColor} ${config.borderColor}`}>
       <span className="relative flex h-1.5 w-1.5">
         {config.isActive && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.dotColor} opacity-60`} />}
         <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${config.dotColor}`} />
@@ -188,7 +197,7 @@ export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, mode
 );
 
 export interface PrLinkProps { prUrl: string; prNumber: number; }
-export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-slate-600 hover:text-slate-900 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
+export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="touch-hit inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-slate-600 hover:text-slate-900 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
 
 export interface FollowupCountProps { count: number; }
 export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
@@ -321,9 +330,11 @@ export const RowActions: React.FC<RowActionsProps> = ({
 export interface ExpandedContentProps {
   task: PlanTask;
   draftId?: string;
+  /** The issue title in full; the collapsed row may have cut it to two lines. */
+  title?: string;
 }
 
-export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId }) => {
+export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId, title }) => {
   const attachments = task.attachments || [];
   const hasAttachments = attachments.length > 0;
   const renderAttachmentIcon = () => (
@@ -340,6 +351,7 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
 
   return (
     <div className="px-4 pb-4 pt-0 border-t border-gray-100">
+      {title && <p data-testid="plan-issue-full-title" className="mt-3 break-words text-sm font-medium text-slate-900">{title}</p>}
       {task.body && (
         <div className="mt-3">
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Context</span>
@@ -407,18 +419,28 @@ const MultiAgentInfo: React.FC<{ selectedModels: AgentModelPair[] }> = ({ select
   </span>
 );
 
-/** Secondary row facts (PR link, follow-ups, review scores). Agent and action live in RowActions' fixed columns. */
-export interface IssueMetadataProps { issue: PlanIssue; }
-export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue }) => {
+/** "After #9, #10" with each "#N" kept whole, so a long list wraps only between references. */
+const IssueRefs: React.FC<{ prefix: string; issues: number[] }> = ({ prefix, issues }) => <>{prefix}{issues.map((issue, index) =>
+  <React.Fragment key={issue}>{' '}<span className="whitespace-nowrap">#{issue}{index < issues.length - 1 ? ',' : ''}</span></React.Fragment>)}</>;
+
+/** Secondary row facts (prerequisites, PR link, follow-ups, review scores). Agent and action live in RowActions' fixed columns. */
+/** `dependsOn`: issues this one starts after; `waitingOn`: prerequisites not merged yet that a pending issue still waits for. Both lists are unbounded, so they wrap. */
+export interface IssueMetadataProps { issue: PlanIssue; dependsOn?: number[]; waitingOn?: number[]; className?: string }
+export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, dependsOn = [], waitingOn = [], className = '' }) => {
   const prUrl = issue.pr_number ? `https://github.com/${issue.repository}/pull/${issue.pr_number}` : null;
   const reviewScores = issue.review_scores ?? [];
-  if (!prUrl && issue.followup_count <= 0 && reviewScores.length === 0) return null;
+  const after = prerequisitesLabel(dependsOn);
+  if (!prUrl && issue.followup_count <= 0 && reviewScores.length === 0 && !after) return null;
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs sm:gap-3">
+    <div className={`flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs sm:gap-x-3 ${className}`}>
+      {after && <span data-testid="plan-issue-prerequisites" className="min-w-0 max-w-full text-right text-slate-500" title={`Starts after ${issueList(dependsOn)}`}>
+        <IssueRefs prefix="After" issues={dependsOn} />
+        {waitingOn.length > 0 && <span data-testid="plan-issue-waiting-on" className="text-amber-700"> · <IssueRefs prefix="waiting on" issues={waitingOn} /></span>}
+      </span>}
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
-      {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}
-      {reviewScores.length > 0 && <span className="hidden sm:block"><ReviewScoreTrace scores={reviewScores} /></span>}
+      {issue.followup_count > 0 && <span className="hidden whitespace-nowrap sm:block"><FollowupCount count={issue.followup_count} /></span>}
+      {reviewScores.length > 0 && <span className="hidden whitespace-nowrap sm:block"><ReviewScoreTrace scores={reviewScores} /></span>}
     </div>
   );
 };

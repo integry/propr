@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { approveAutomationRun, cancelAutomationRun, getAutomationRun, rejectAutomationRun, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { useOptionalSocket } from '../../contexts/useSocket';
-import { isTerminalRunState, rememberReportPreview } from './agentRunPresentation';
+import { keepIfEqual } from '../../utils/keepIfEqual';
+import { isTerminalRunState } from './agentRunPresentation';
 
 /** How often a run that has not finished is read again. */
 export const AGENT_RUN_REFRESH_MS = 10_000;
@@ -13,7 +14,9 @@ export type AgentRunAction = 'approve' | 'reject' | 'cancel';
  * AGENT_RUN_REFRESH_MS and as soon as a socket update arrives for its report
  * or acting task, and no longer once it reaches a terminal state. A read is
  * applied only if nothing newer was recorded after it was sent, so a poll
- * answered after an approval cannot show the run as awaiting approval again.
+ * answered after an approval cannot show the run as awaiting approval again,
+ * and a read equal to the run shown keeps the current object, so a refresh
+ * that changed nothing does not re-render the detail.
  * Runs are fetched by their global ID, so a run that belongs to an agent other
  * than `definitionId` is never kept: `foreignDefinitionId` names its actual
  * agent instead, and no action can be taken on it from here.
@@ -39,8 +42,9 @@ export function useAgentRun(definitionId: string, runId: string) {
       setForeignDefinitionId(next.definitionId);
       return;
     }
-    if (next.report !== undefined && next.reportedAt !== null) rememberReportPreview(next.id, next.report);
-    setRun(next);
+    // A reload that returns the same run keeps the current object, so the report and
+    // the rest of the detail are not re-rendered and a selection in them survives.
+    setRun(current => (current ? keepIfEqual(current, next) : next));
   }, [definitionId]);
 
   const load = useCallback(() => {

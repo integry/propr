@@ -596,7 +596,7 @@ const expectShortNoResults = async (page, cdp, click, capture, platform) => {
 /** Every File creation entry opens its existing form and never submits, creates or enables anything. */
 const expectCreationForms = async (page, click, capture, mutations) => {
   await click('New Goal');
-  const goal = page.getByRole('dialog', { name: 'Start a goal' });
+  const goal = page.getByRole('dialog', { name: 'New goal' });
   await expect(goal).toBeVisible();
   await expect(page).toHaveURL(/#\/goals$/);
   await goal.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Draft objective that must not start');

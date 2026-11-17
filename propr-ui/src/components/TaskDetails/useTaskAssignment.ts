@@ -60,6 +60,9 @@ const INITIAL_ASSIGNABLE: AssignableUsersState = { users: null, truncated: false
  * failure, as the page reports a failed stop or delete, then reads GitHub
  * again in case part of the change landed.
  */
+/** Automation run tasks are `agent-run-<run id>-report` and `-action`. */
+export const isAutomationRunTaskId = (taskId: string): boolean => taskId.startsWith('agent-run-');
+
 export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
   const { addToast } = useToast();
   const [assignees, setAssignees] = useState<AttributedUser[]>([]);
@@ -95,6 +98,12 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
     assignableRequested.current = false;
     saveGeneration.current += 1;
     if (!taskId) {
+      setLoading(false);
+      return;
+    }
+    // An automation run's task has no issue or pull request to assign, so it is not asked for one.
+    if (isAutomationRunTaskId(taskId)) {
+      setUnavailable(true);
       setLoading(false);
       return;
     }

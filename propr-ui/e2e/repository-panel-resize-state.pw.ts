@@ -128,7 +128,7 @@ test('Quick Add → View Todos keeps a saved edit and a deletion across 1440↔9
   await expect(quickAdd.getByRole('button', { name: 'acme/alpha' })).toBeVisible();
   await quickAdd.getByRole('button', { name: 'View Todos' }).click();
 
-  await expect(page).toHaveURL(/\/repositories$/);
+  await expect(page).toHaveURL(/\/repositories\/acme\/alpha$/);
   await expectWideLayout(page);
   await expectTodosTabShowing(page);
   await expect(todoRow(page, 'Original fixture note')).toBeVisible();

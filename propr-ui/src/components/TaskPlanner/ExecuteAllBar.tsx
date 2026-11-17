@@ -1,11 +1,16 @@
 import React from 'react';
 import { ListOrdered, Loader2, Play } from 'lucide-react';
+import { describeQueueHint, pluralTasks } from './planQueueLabels';
 
 interface ExecuteAllBarProps {
   /** Pending issues the execution queue does not own yet. */
   remainingCount: number;
   /** Pending issues already waiting in the execution queue. */
   queuedCount?: number;
+  /** Issues the execution queue skipped; they do not start. */
+  skippedCount?: number;
+  /** Issues the execution queue holds on a blocker. */
+  blockedCount?: number;
   taskCount: number;
   useEpic?: boolean;
   autoMerge?: boolean;
@@ -40,7 +45,6 @@ function describeBatch(taskLabel: string, hasRunningIssues: boolean, useEpic: bo
   return `Starts the first of ${taskLabel} now and starts each next one once the previous one finishes.`;
 }
 
-const pluralTasks = (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`;
 
 /** "Remaining" only reads right once part of the plan has run; a fresh plan starts the whole batch. */
 function getBatchButtonLabel(hasStarted: boolean, useEpic: boolean): string {
@@ -48,39 +52,40 @@ function getBatchButtonLabel(hasStarted: boolean, useEpic: boolean): string {
   return useEpic ? 'Start Epic PR' : 'Start All';
 }
 
-export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
-  remainingCount,
-  queuedCount = 0,
-  taskCount,
-  useEpic = false,
-  autoMerge = false,
-  hasRunningIssues,
-  canExecute,
-  readOnly = false,
-  locked = false,
-  unavailableReason,
-  executing,
-  onExecuteAll,
-}) => {
-  // Single-task plans run from their row; the batch control only applies to multi-issue plans
-  if (remainingCount + queuedCount === 0 || taskCount < 2) return null;
-
-  if (remainingCount === 0) {
-    return (
-      <div className="flex items-center gap-2 border-t border-slate-200 pt-3 text-xs text-slate-500" data-testid="execute-all-hint">
-        <ListOrdered size={14} className="flex-shrink-0 text-slate-400" />
-        {pluralTasks(queuedCount)} queued. Each starts automatically when the task ahead of it finishes.
-      </div>
-    );
-  }
-
+/**
+ * The plain hint shown instead of the batch button, or null when the button is offered. Undefined: nothing
+ * to show (no pending work, or a single-task plan that runs from its row).
+ */
+function getStaticHint({ remainingCount, queuedCount = 0, skippedCount = 0, blockedCount = 0, taskCount, useEpic, autoMerge }: ExecuteAllBarProps): string | null | undefined {
+  if (remainingCount + queuedCount + skippedCount + blockedCount === 0 || taskCount < 2) return undefined;
+  if (remainingCount === 0) return describeQueueHint(queuedCount, blockedCount, skippedCount);
   // The epic queue and the auto-merge queue are the only server paths that advance through the plan
   // on their own; without either, each task starts from its row, so there is no batch to offer.
-  if (!useEpic && !autoMerge) {
+  if (!useEpic && !autoMerge) return 'Enable auto-merge or Epic PR to queue the remaining tasks.';
+  return null;
+}
+
+export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = (props) => {
+  const {
+    remainingCount,
+    taskCount,
+    useEpic = false,
+    hasRunningIssues,
+    canExecute,
+    readOnly = false,
+    locked = false,
+    unavailableReason,
+    executing,
+    onExecuteAll,
+  } = props;
+  // Single-task plans run from their row; the batch control only applies to multi-issue plans
+  const staticHint = getStaticHint(props);
+  if (staticHint === undefined) return null;
+  if (staticHint !== null) {
     return (
       <div className="flex items-center gap-2 border-t border-slate-200 pt-3 text-xs text-slate-500" data-testid="execute-all-hint">
         <ListOrdered size={14} className="flex-shrink-0 text-slate-400" />
-        Enable auto-merge or Epic PR to queue the remaining tasks.
+        {staticHint}
       </div>
     );
   }

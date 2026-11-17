@@ -10,7 +10,6 @@ import { SettingsCheckboxField, SettingsField } from './SettingsLayout';
 import { SETTINGS_CONTROL, SETTINGS_HELPER } from './settingsStyles';
 import {
   buildReviewerBudgetPreviews,
-  describeCapacitySource,
   formatTokenCount,
   resolveConfiguredReviewerPreview,
   type ReviewBudgetPreviewAgent,
@@ -57,8 +56,8 @@ const ReviewContextSettings: React.FC<ReviewContextSettingsProps> = ({
   };
 
   const allowanceText = configured.status === 'resolved'
-    ? `≈ ${formatTokenCount(configured.reviewer.ceiling.ceiling)} input tokens for ${configured.reviewer.label}`
-    : 'Automatic — allowance is resolved per reviewer when a review runs';
+    ? `≈ ${formatTokenCount(configured.reviewer.ceiling.ceiling)} tokens for ${configured.reviewer.label}`
+    : 'Automatic';
 
   return (
     <>
@@ -71,9 +70,9 @@ const ReviewContextSettings: React.FC<ReviewContextSettingsProps> = ({
       />
 
       <SettingsField
-        label="Context Scout Model"
+        label="Context scout model"
         htmlFor="pr_review_context_model"
-        helperText="A fast coding-agent model used only to find relevant file ranges. If unset, ProPR uses the Fast Analysis Model, then the review model."
+        helperText="A fast coding-agent model used only to find relevant file ranges. If unset, ProPR uses the fast analysis model, then the review model."
       >
         <select
           id="pr_review_context_model"
@@ -83,10 +82,10 @@ const ReviewContextSettings: React.FC<ReviewContextSettingsProps> = ({
           disabled={!settings.pr_review_context_enabled || options.length === 0}
           className={SETTINGS_CONTROL}
         >
-          <option value="">Use Fast Analysis Model</option>
+          <option value="">Use fast analysis model</option>
           {options.map(option => (
             <option key={option.value} value={option.value}>
-              {option.label}{option.isRecommended ? ' (Recommended)' : ''}
+              {option.label}{option.isRecommended ? ' (recommended)' : ''}
             </option>
           ))}
         </select>
@@ -97,9 +96,7 @@ const ReviewContextSettings: React.FC<ReviewContextSettingsProps> = ({
         htmlFor="pr_review_context_budget_percent"
         helperText={(
           <span id="pr_review_context_budget_help">
-            Share of each reviewer&apos;s safe input allowance a review may use. 100% uses the full safe allowance; space for the
-            review response and agent runtime is always reserved. A lower percentage reduces review context and can produce
-            partial reviews. A <code>/review</code> command that names another model uses that model&apos;s own budget.
+            How much of each model&apos;s input a review may use. Lower values can give partial reviews.
           </span>
         )}
       >
@@ -134,13 +131,8 @@ const ReviewContextSettings: React.FC<ReviewContextSettingsProps> = ({
         </div>
         <p className="mt-1.5 text-[12px] leading-5 text-slate-700" data-testid="review-context-budget-allowance">
           {allowanceText}
-          {configured.status === 'resolved' && (
-            <span className="text-slate-500">
-              {' '}({configured.reviewer.ceiling.limitedBy === 'legacy-cap'
-                ? 'limited by the legacy cap'
-                : `${percent}% of ${formatTokenCount(configured.reviewer.capacity.safeInputTokens)} safe`};{' '}
-              {describeCapacitySource(configured.reviewer.capacity)})
-            </span>
+          {configured.status === 'resolved' && configured.reviewer.ceiling.limitedBy === 'legacy-cap' && (
+            <span className="text-slate-500"> (legacy cap)</span>
           )}
         </p>
         {configured.status === 'unknown' && <p className={SETTINGS_HELPER}>{configured.reason}</p>}

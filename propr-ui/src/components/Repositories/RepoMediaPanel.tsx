@@ -1,3 +1,4 @@
+import { formatTimestampsInText } from '../../utils/dateFormat';
 import { useEffect, useRef, useState } from 'react';
 import { Play } from 'lucide-react';
 import type { PublishedVisualPreview } from '@propr/shared';
@@ -59,7 +60,7 @@ export default function RepoMediaPanel({ repository }: { repository: string }) {
             </>}
         </button>
         <figcaption className="p-3"><p className="break-words text-sm font-medium text-slate-800">{preview.title}</p>
-          {preview.description && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{preview.description}</p>}
+          {preview.description && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{formatTimestampsInText(preview.description)}</p>}
         </figcaption>
       </figure>)}
     </div>

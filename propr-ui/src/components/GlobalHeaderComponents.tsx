@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../utils/dateFormat';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity, Users, X, Inbox, CornerDownRight, ScrollText, ListTodo, CheckCircle, Rocket, ExternalLink, Layers3 } from 'lucide-react';
@@ -11,15 +12,6 @@ import HeaderResourceStatus from './HeaderResourceStatus';
 
 interface TaskGroup { key: string; repoOwner: string; repoName: string; prNumber?: number; issueNumber?: number; latestTask: { id: string; status: string; createdAt: string; title?: string; }; allTasks: unknown[]; }
 
-// Shared utility functions
-const formatTimeAgo = (dateString: string): string => {
-  const diffMins = Math.floor((Date.now() - new Date(dateString).getTime()) / 60000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  return `${Math.floor(diffHours / 24)}d ago`;
-};
 const useClickOutside = (onClose: () => void, isOpen: boolean) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -107,7 +99,7 @@ const PlansDropdown: React.FC<PlansDropdownProps> = ({ activePlans, isOpen, onCl
                   {plan.status}
                 </span>
                 <span className="text-xs font-normal text-slate-500 ml-auto">
-                  {formatTimeAgo(plan.updated_at || plan.created_at)}
+                  {formatRelativeTime(plan.updated_at || plan.created_at)}
                 </span>
                 {/* Dismiss button */}
                 <button
@@ -226,7 +218,7 @@ const TasksDropdown: React.FC<TasksDropdownProps> = ({ taskGroups, isOpen, onClo
                   </>
                 )}
                 <span className="text-xs font-normal text-slate-500 ml-auto">
-                  {formatTimeAgo(group.latestTask.createdAt)}
+                  {formatRelativeTime(group.latestTask.createdAt)}
                 </span>
                 {/* Dismiss button */}
                 <button

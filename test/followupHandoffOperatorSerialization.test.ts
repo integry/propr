@@ -120,10 +120,10 @@ function createHarness() {
     return { redis, gitOps, deps, setOnLiveness(hook: () => Promise<void>) { onLiveness = hook; } };
 }
 
-async function seedHeldHandoff(statusReason: string) {
+async function seedHeldHandoff(statusReason: string, taskId = 'task-1') {
     const record = await recordFollowupHandoff({
         ref: { repoOwner: 'acme', repoName: 'widgets', pullRequestNumber: 7 },
-        taskId: 'task-1', sourceTaskIds: [], correlationId: 'corr-1',
+        taskId, sourceTaskIds: [], correlationId: 'corr-1',
         target: { repoOwner: 'acme', repoName: 'widgets', branchName: BRANCH, isFork: false },
         worktreePath: '/tmp/wt', localRepoPath: '/tmp/local',
         claimedComments: [{ id: 11, body: 'please fix the widget', author: 'alice', type: 'issue' }],
@@ -209,4 +209,84 @@ test('F39: authorization and resume refuse while a live writer holds the PR leas
     assert.deepEqual(await resumeOperatorHeldFollowupHandoff(KEY, h.deps), { resumed: false, reason: 'lease_held_by_live_writer' });
     assert.equal((await loadFollowupHandoff({ database }, KEY))?.status, HANDOFF_AWAITING_OPERATOR);
     assert.equal(h.redis.store.get(LOCK)?.value, 'live-writer-token', 'the foreign lease is never touched');
+});
+
+test('F5: cancellation authorization names its attempt and is refused for any other task', async () => {
+    const h = createHarness();
+    await seedHeldHandoff('cancelled_by_user');
+    assert.equal(await authorizeCancelledFollowupHandoff(KEY, h.deps, { expectedTaskId: 'task-0' }), null,
+        'consent given for an earlier attempt is not applied to the current one');
+    const row = await loadFollowupHandoff({ database }, KEY);
+    assert.equal(row?.status, HANDOFF_AWAITING_OPERATOR);
+    assert.equal(row?.operator_authorized, 0);
+    assert.equal(h.redis.store.has(LOCK), false, 'no lease taken or left for a mismatched attempt');
+
+    const authorized = await authorizeCancelledFollowupHandoff(KEY, h.deps, { expectedTaskId: 'task-1' });
+    assert.equal(authorized?.status, HANDOFF_ACTIVE);
+    assert.equal(authorized?.operator_authorized, 1);
+});
+
+test('F5: an attempt replaced while the authorization takes the lease is checked on the row read under it', async () => {
+    const h = createHarness();
+    await seedHeldHandoff('cancelled_by_user');
+    // The replacement lands after the unlocked read already matched task-1.
+    const evaluate = h.redis.eval.bind(h.redis);
+    h.redis.eval = async (script: string, numKeys: number, key: string, ...args: Array<string | number>) => {
+        const result = await evaluate(script, numKeys, key, ...args);
+        if (script.includes('ttl')) await database(PR_FOLLOWUP_HANDOFFS_TABLE).update({ task_id: 'task-2' });
+        return result;
+    };
+    assert.equal(await authorizeCancelledFollowupHandoff(KEY, h.deps, { expectedTaskId: 'task-1' }), null);
+    const row = await loadFollowupHandoff({ database }, KEY);
+    assert.equal(row?.task_id, 'task-2');
+    assert.equal(row?.status, HANDOFF_AWAITING_OPERATOR, 'the replacement attempt is not authorized');
+    assert.equal(row?.operator_authorized, 0);
+    assert.equal(h.redis.store.has(LOCK), false, 'the lease is given back');
+});
+
+test('F6: a release confirmed for a replaced attempt is refused before any side effect and leaves the new attempt held', async () => {
+    const h = createHarness();
+    let livenessChecks = 0;
+    h.setOnLiveness(async () => { livenessChecks += 1; });
+    // Attempt A (task-1) is released by someone else, then a new command replaces it with B (task-2).
+    await seedHeldHandoff('worktree_missing');
+    assert.equal((await releaseFollowupHandoffRecord(KEY, { force: true, expectedTaskId: 'task-1' }, h.deps)).released, true);
+    h.gitOps.state.attached = true;
+    await seedHeldHandoff('agent_completed_unpublished', 'task-2');
+    const before = { settled: h.gitOps.state.settledCalls, detached: h.gitOps.state.detached, liveness: livenessChecks };
+
+    // The confirmation still names A: nothing of B's is touched.
+    assert.deepEqual(await releaseFollowupHandoffRecord(KEY, { force: true, expectedTaskId: 'task-1' }, h.deps),
+        { released: false, reason: 'superseded' });
+    assert.deepEqual({ settled: h.gitOps.state.settledCalls, detached: h.gitOps.state.detached, liveness: livenessChecks }, before,
+        'no liveness check, worktree release or detach for an attempt the operator did not confirm');
+    const row = await loadFollowupHandoff({ database }, KEY);
+    assert.equal(row?.task_id, 'task-2');
+    assert.equal(row?.status, HANDOFF_AWAITING_OPERATOR, 'B keeps its publication obligation');
+    assert.equal(h.gitOps.state.attached, true);
+    assert.equal(h.redis.store.has(LOCK), false, 'no lease taken or left for a mismatched attempt');
+
+    // A confirmation naming B releases it.
+    assert.equal((await releaseFollowupHandoffRecord(KEY, { force: true, expectedTaskId: 'task-2' }, h.deps)).released, true);
+    assert.equal((await loadFollowupHandoff({ database }, KEY))?.status, HANDOFF_RELEASED);
+});
+
+test('F6: an attempt replaced while the release takes the lease is checked on the row read under it', async () => {
+    const h = createHarness();
+    await seedHeldHandoff('agent_completed_unpublished');
+    // The replacement lands after the unlocked read already matched task-1.
+    const evaluate = h.redis.eval.bind(h.redis);
+    h.redis.eval = async (script: string, numKeys: number, key: string, ...args: Array<string | number>) => {
+        const result = await evaluate(script, numKeys, key, ...args);
+        if (script.includes('ttl')) await database(PR_FOLLOWUP_HANDOFFS_TABLE).update({ task_id: 'task-2' });
+        return result;
+    };
+    assert.deepEqual(await releaseFollowupHandoffRecord(KEY, { force: true, expectedTaskId: 'task-1' }, h.deps),
+        { released: false, reason: 'superseded' });
+    assert.equal(h.gitOps.state.settledCalls, 0, 'no worktree mutation for the replacement');
+    assert.equal(h.gitOps.state.detached, 0);
+    const row = await loadFollowupHandoff({ database }, KEY);
+    assert.equal(row?.task_id, 'task-2');
+    assert.equal(row?.status, HANDOFF_AWAITING_OPERATOR);
+    assert.equal(h.redis.store.has(LOCK), false, 'the lease is given back');
 });

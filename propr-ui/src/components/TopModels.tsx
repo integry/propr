@@ -18,11 +18,17 @@
  * Each row opens the LLM log filtered to its model. Runs that recorded no
  * model share one "Unknown model" row, listed last and opening nothing, so the
  * runs column still sums to the period's total runs.
+ *
+ * The figure columns size to their content and never clip (`$2,255.86` keeps
+ * its last digit and its cell padding at every width); the model column takes
+ * the rest and wraps a long name onto a second line instead of truncating, so
+ * two models that share a prefix never read as the same model on a phone.
  */
 
 import React from 'react';
 import type { StatsOverviewModelUsage, StatsOverviewResponse } from '../api/taskStatsApi';
 import { formatModelName } from '../utils/modelDisplay';
+import { formatCount } from '../utils/dateFormat';
 import { ProviderLogo } from './ui/ProviderLogo';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
@@ -81,11 +87,14 @@ const modelRows = (overview: StatsOverviewResponse): ModelRow[] =>
 
 const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:px-4';
 /**
- * One width for every figure column, so tasks, tokens and cost read as three
+ * One width for every figure column, so runs, tokens and cost read as three
  * evenly spaced columns instead of a cluster pinched against the right edge.
+ * The table lays out automatically, so the width is a floor: a figure wider
+ * than it (`$2,255.86`) widens its column rather than being clipped.
  */
-const METRIC_COLUMN = 'w-20 2xl:w-28';
+const METRIC_COLUMN = 'w-20 whitespace-nowrap 2xl:w-28';
 const CELL = 'px-3 py-2 text-sm tabular-nums sm:px-4';
+const FIGURE_CELL = `${CELL} whitespace-nowrap text-right`;
 const UNKNOWN = '—';
 const UNKNOWN_MODEL = 'Unknown model';
 
@@ -110,7 +119,7 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
   if (loading) {
     return (
       <SkeletonRegion label="Loading models…">
-        <table className="w-full table-fixed" aria-hidden="true">
+        <table className="w-full" aria-hidden="true">
           <TableHead />
           <tbody>
             {[...Array(3)].map((_, i) => (
@@ -140,19 +149,19 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
   const countsRuns = rows.every(row => row.runs !== undefined);
 
   return (
-    <table className="w-full table-fixed" data-testid="model-breakdown-table">
+    <table className="w-full" data-testid="model-breakdown-table">
       <TableHead countsRuns={countsRuns} />
       <tbody>
         {displayModels.map(row => {
           const figures = (
             <>
-              <td className={`${CELL} text-right text-slate-800`} data-testid="model-run-count">
-                {(countsRuns ? row.runs ?? 0 : row.tasks).toLocaleString()}
+              <td className={`${FIGURE_CELL} text-slate-800`} data-testid="model-run-count">
+                {formatCount(countsRuns ? row.runs ?? 0 : row.tasks)}
               </td>
-              <td className={`${CELL} text-right text-slate-600`}>
+              <td className={`${FIGURE_CELL} text-slate-600`}>
                 {row.tokens === null ? UNKNOWN : formatCompactNumber(row.tokens)}
               </td>
-              <td className={`${CELL} text-right text-slate-600`}>
+              <td className={`${FIGURE_CELL} text-slate-600`} data-testid="model-cost">
                 {row.cost_usd === null ? UNKNOWN : formatUsd(row.cost_usd)}
               </td>
             </>
@@ -164,7 +173,7 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
                 <td className={CELL}>
                   <span className="flex min-w-0 items-center gap-2">
                     <ModelIcon modelId="" />
-                    <span className="truncate font-medium text-slate-500" title="Runs that recorded no model">{UNKNOWN_MODEL}</span>
+                    <span className="min-w-0 [overflow-wrap:anywhere] font-medium text-slate-500" title="Runs that recorded no model">{UNKNOWN_MODEL}</span>
                   </span>
                 </td>
                 {figures}
@@ -175,7 +184,7 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
             <DrillDownRow key={row.model} to={modelLogsHref(row.model)}>
               <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${formatModelName(row.model)}`} className={CELL}>
                 <ModelIcon modelId={row.model} />
-                <span className="truncate font-medium text-slate-800" title={formatModelName(row.model)}>
+                <span className="min-w-0 [overflow-wrap:anywhere] font-medium text-slate-800" title={formatModelName(row.model)} data-testid="model-name">
                   {formatModelName(row.model)}
                 </span>
               </DrillDownCell>

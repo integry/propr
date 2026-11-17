@@ -10,7 +10,8 @@ import {
   buildContextAnalysisOptions,
   buildPlanGenerationOptions,
   buildPrReviewOptions,
-  buildImplementationAgentOptions
+  buildImplementationAgentOptions,
+  getModelLabel
 } from './modelSelectionHelpers';
 import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
 import ReviewContextSettings from './ReviewContextSettings';
@@ -59,7 +60,7 @@ const NoAgentsMessage = ({ label }: { label: string }) => (
   <p className="text-[12px] leading-5 text-amber-700">
     No {label} available. Enable an agent on the{' '}
     <a href={buildAiAgentsSettingsHref()} className="font-medium underline hover:text-amber-800">
-      AI Agents
+      Coding agents
     </a>{' '}
     page first.
   </p>
@@ -95,7 +96,8 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   const fallbackSummarizationOptions = buildFallbackSummarizationOptions(
     summarizationOptions.filter(opt => opt.value !== summarizationSettings.agent_alias),
     summarizationOptions,
-    fallbackValue
+    fallbackValue,
+    modelOptions
   );
   const contextAnalysisOptions = buildContextAnalysisOptions(enabledModelAgents);
   const planGenerationOptions = buildPlanGenerationOptions(enabledModelAgents);
@@ -111,7 +113,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
     <div className={`space-y-10 ${className || ''}`}>
       <SettingsSection title="Implementation" icon={<Cpu aria-hidden="true" className="h-3.5 w-3.5 text-slate-400" />}>
         <SettingsField
-          label="Default Implementation Agent"
+          label="Default implementation agent"
           htmlFor="default_agent_alias"
           helperText="The agent used for code implementation tasks when no specific agent is specified."
         >
@@ -124,7 +126,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             >
               {implementationAgentOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                  {opt.label}{opt.isRecommended ? ' (recommended)' : ''}
                 </option>
               ))}
             </select>
@@ -134,7 +136,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Reasoning Level"
+          label="Reasoning level"
           htmlFor="model_reasoning_level"
           helperText="System-wide reasoning effort for supported GPT and Claude agents."
         >
@@ -157,7 +159,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
       <SettingsSection title="Planning" icon={<Brain aria-hidden="true" className="h-3.5 w-3.5 text-slate-400" />}>
         <SettingsField
-          label="Plan Context Analysis Model"
+          label="Plan context analysis model"
           htmlFor="planner_context_model"
           helperText="Used for matching prompts to relevant files using semantic analysis."
         >
@@ -172,7 +174,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               <option value="">Select a model...</option>
               {contextAnalysisOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                  {opt.label}{opt.isRecommended ? ' (recommended)' : ''}
                 </option>
               ))}
             </select>
@@ -182,7 +184,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Plan Generation Model"
+          label="Plan generation model"
           htmlFor="planner_generation_model"
           helperText="Used for generating detailed implementation plans from context."
         >
@@ -197,7 +199,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               <option value="">Select a model...</option>
               {planGenerationOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                  {opt.label}{opt.isRecommended ? ' (recommended)' : ''}
                 </option>
               ))}
             </select>
@@ -207,7 +209,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Summarization Model"
+          label="Summarization model"
           htmlFor="summarization_model"
           helperText="Used for repository indexing and, when enabled under Experimental → Opt-in features, dashboard AI summaries."
         >
@@ -221,7 +223,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               <option value="">Select a model...</option>
               {summarizationOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                  {opt.label}{opt.isRecommended ? ' (recommended)' : ''}
                 </option>
               ))}
             </select>
@@ -231,7 +233,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Summarization Fallback Model"
+          label="Summarization fallback model"
           htmlFor="summarization_fallback_model"
           helperText="Used once for a summarization batch when the primary model is quota-limited."
         >
@@ -245,7 +247,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               <option value="">No fallback model</option>
               {fallbackSummarizationOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                  {opt.label}{opt.isRecommended ? ' (recommended)' : ''}
                 </option>
               ))}
             </select>
@@ -261,7 +263,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
       <SettingsSection title="Review" icon={<ClipboardCheck aria-hidden="true" className="h-3.5 w-3.5 text-slate-400" />}>
         <SettingsField
-          label="Default PR Review Model"
+          label="Default PR review model"
           htmlFor="pr_review_model"
           helperText="The model used to review pull requests and provide feedback."
         >
@@ -276,7 +278,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
               <option value="">Use default agent model</option>
               {prReviewOptions.map(opt => (
                 <option key={opt.value} value={opt.value}>
-                  {opt.label}{opt.isRecommended ? ' (Recommended)' : ''}
+                  {opt.label}{opt.isRecommended ? ' (recommended)' : ''}
                 </option>
               ))}
             </select>
@@ -298,9 +300,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         />
 
         <SettingsField
-          label="Review Prompt"
+          label="Review prompt"
           htmlFor="pr_review_prompt"
-          helperText="Override for the review task guidance. Prefilled with the built-in default so you can see what's customizable — edit it to change the guidance. Clear the field to fall back to the built-in default. The required output sections (Overall Evaluation, Findings, Score) are always appended automatically."
+          helperText="Guidance for reviews. Clear the field to restore the default."
         >
           <textarea
             id="pr_review_prompt"
@@ -315,7 +317,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
         </SettingsField>
 
         <SettingsField
-          label="Fast Analysis Model"
+          label="Fast analysis model"
           htmlFor="analysis_model_fast"
           helperText="Used by /review to gather repository context before the review."
         >
@@ -329,14 +331,14 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
             >
               <option value="">Select a model...</option>
               {enabledOptions.length > 0 && (
-                <optgroup label="Enabled Agents">
+                <optgroup label="Enabled agents">
                   {enabledOptions.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </optgroup>
               )}
               {disabledOptions.length > 0 && (
-                <optgroup label="Disabled Agents">
+                <optgroup label="Disabled agents">
                   {disabledOptions.map(opt => (
                     <option key={opt.value} value={opt.value} disabled>{opt.label}</option>
                   ))}
@@ -355,15 +357,22 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 function buildFallbackSummarizationOptions(
   options: ReturnType<typeof buildSummarizationOptions>,
   allOptions: ReturnType<typeof buildSummarizationOptions>,
-  fallbackValue: string
+  fallbackValue: string,
+  catalogOptions: ReturnType<typeof buildAllModelOptions>
 ): ReturnType<typeof buildSummarizationOptions> {
   if (!fallbackValue || options.some(opt => opt.value === fallbackValue)) return options;
   const selectedOption = allOptions.find(opt => opt.value === fallbackValue) || {
     value: fallbackValue,
-    label: `Saved fallback (${fallbackValue})`,
+    label: catalogOptions.find(opt => opt.value === fallbackValue)?.label ?? savedModelLabel(fallbackValue),
     enabled: true
   };
   return [selectedOption, ...options];
+}
+
+/** A display name for a saved `alias:model` value whose agent is no longer listed. */
+function savedModelLabel(value: string): string {
+  const separator = value.indexOf(':');
+  return separator > 0 ? getModelLabel(value.slice(0, separator), value.slice(separator + 1)) : value;
 }
 
 export default AIModelSelectionSection;

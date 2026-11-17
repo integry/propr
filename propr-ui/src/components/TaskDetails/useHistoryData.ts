@@ -4,6 +4,7 @@ import { formatModelName } from './utils';
 export interface HistoryDerivedData {
   historyItemWithPaths: HistoryItem | undefined;
   currentStatus: string;
+  /** The run's model for display, or '' when it recorded none. */
   modelName: string;
   prInfo: { url?: string; number?: number } | undefined;
   isTaskActive: boolean;
@@ -17,11 +18,12 @@ export const getHistoryDerivedData = (history: HistoryItem[], taskInfo: TaskInfo
   const modelItem = [...history].reverse().find(item => item.metadata?.model);
   // The API reconciles task identity with persisted executions, including records
   // without a matching history row. Synthetic identities remain virtual.
-  const modelName = formatModelName(
-    routedItem?.metadata?.syntheticRouting?.virtualModel
-      || taskInfo?.modelName
-      || modelItem?.metadata?.model,
-  );
+  // A run that recorded no model (a no-op run, say) has none to show: the
+  // header then draws no model chip rather than "Unknown Model".
+  const modelId = routedItem?.metadata?.syntheticRouting?.virtualModel
+    || taskInfo?.modelName
+    || modelItem?.metadata?.model;
+  const modelName = modelId ? formatModelName(modelId) : '';
   
   const completedStep = [...history].reverse().find(item => {
     const state = item.state?.toUpperCase();

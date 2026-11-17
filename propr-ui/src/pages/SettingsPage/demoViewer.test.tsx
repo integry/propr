@@ -84,8 +84,8 @@ describe('demo viewer navigation', () => {
 
     const categories = within(screen.getByRole('tablist', { name: 'Settings categories' })).getAllByRole('tab');
     expect(categories.map(tab => tab.textContent)).toEqual(expect.arrayContaining([
-      expect.stringContaining('AI Models & Reasoning'),
-      expect.stringContaining('Workflow & PR Rules'),
+      expect.stringContaining('AI models & reasoning'),
+      expect.stringContaining('Workflow & PR rules'),
       expect.stringContaining('Integrations & MCP'),
       expect.stringContaining('Notifications'),
       expect.stringContaining('Experimental'),
@@ -107,7 +107,7 @@ describe('demo viewer navigation', () => {
     render(<MemoryRouter><AccessManagementPage /></MemoryRouter>);
 
     expect(await screen.findByText('@demo-operator')).toBeInTheDocument();
-    expect(screen.getByText('Demo mode is read-only. Instance access can be inspected but not changed.')).toBeInTheDocument();
+    expect(screen.getByText('Demo mode is read-only. Access can be inspected but not changed.')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('GitHub username')).toBeDisabled();
     expect(screen.getByRole('button', { name: /Add user/ })).toBeDisabled();
     expect(screen.getByRole('combobox', { name: 'Role for demo-operator' })).toBeDisabled();

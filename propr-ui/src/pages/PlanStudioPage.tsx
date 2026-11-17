@@ -1,7 +1,9 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
+import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { NOT_FOUND_TITLE, NotFound } from '../components/NotFound';
+import { isNotFoundMessage } from '../utils/notFound';
 import { replaceUiPathInPlace } from '../config/runtimeMode';
 import { useHistoryEntryOwnership } from '../hooks/useHistoryEntryOwnership';
 import { useDraft } from '../hooks/useDraft';
@@ -70,19 +72,16 @@ const LoadingView: React.FC<{ isNew: boolean }> = ({ isNew }) => (
   </div>
 );
 
-const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
-  <div className="max-w-4xl mx-auto p-6">
-    <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-      <h2 className="text-xl font-semibold text-red-700 mb-2">Error Loading Draft</h2>
-      <p className="text-red-600 mb-4">{error || 'Draft not found'}</p>
-      <Link
-        to="/"
-        className="inline-block px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-      >
-        Return to Dashboard
-      </Link>
-    </div>
-  </div>
+/**
+ * A plan id that does not exist, or is not a valid id at all, is not found;
+ * any other failed read says what went wrong. Both lead back to Plans.
+ */
+const ErrorView: React.FC<{ error: string | null; notFound: boolean }> = ({ error, notFound }) => (
+  <NotFound
+    title={notFound ? 'Plan not found' : 'Couldn’t load this plan'}
+    message={notFound ? 'This plan does not exist, or it has been deleted.' : error || 'The plan could not be read.'}
+    backTo="/plans" backLabel="Back to plans" setsDocumentTitle={false}
+  />
 );
 
 /**
@@ -215,7 +214,21 @@ const getNewDraftTitle = (search: string): string =>
 const getDocumentTitle = (draft: PlannerDraft | null): string => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const draftAny = draft as any;
-  return getDraftDisplayName(draftAny, draftAny?.task_title || draft?.repository || 'Planner Studio');
+  return getDraftDisplayName(draftAny, draftAny?.task_title || draft?.repository || 'Plans');
+};
+
+/**
+ * A draft that the read did not return (no error) or that the API does not
+ * know (including an id that is not a valid UUID) is not found.
+ */
+const isDraftNotFound = (loading: boolean, draft: PlannerDraft | null, error: string | null): boolean =>
+  !loading && !draft && (!error || isNotFoundMessage(error));
+
+type StudioTitleInput = { isNew: boolean; search: string; loading: boolean; error: string | null } &
+  Record<'inPlaceDraft' | 'titleDraft' | 'draft', PlannerDraft | null>;
+const getStudioDocumentTitle = ({ isNew, inPlaceDraft, search, titleDraft, loading, draft, error }: StudioTitleInput): string => {
+  if (isNew) return inPlaceDraft ? getDocumentTitle(titleDraft) : getNewDraftTitle(search);
+  return isDraftNotFound(loading, draft, error) ? NOT_FOUND_TITLE : getDocumentTitle(titleDraft);
 };
 
 const isApprovedStatus = (status: string | undefined): boolean => {
@@ -422,7 +435,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   // (LLM-generated) name shows up as soon as it is fetched.
   const titleDraft = applyMetadataOverride(draft || inPlaceDraft);
 
-  useDocumentTitle(isNew && !inPlaceDraft ? getNewDraftTitle(location.search) : getDocumentTitle(titleDraft));
+  useDocumentTitle(getStudioDocumentTitle({ isNew, inPlaceDraft, search: location.search, titleDraft, loading, draft, error }));
 
   // Determine effective draft and status for rendering decisions
   // After refetch, 'draft' from useDraft contains the latest status
@@ -451,7 +464,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   }
 
   if (error || !draft) {
-    return <ErrorView error={error} />;
+    return <ErrorView error={error} notFound={isDraftNotFound(false, null, error)} />;
   }
 
   const activeNotificationIntent = intentForDraft(notificationIntent, draft.draft_id);

@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime } from '../../../utils/dateFormat';
 import { useState } from 'react';
 import type { ExtensionOAuthConnectionStatus } from '@propr/shared';
 import { buttonClass, dangerButtonClass } from './extensionUi';
@@ -8,7 +9,7 @@ const STATE_LABELS = {
   connected: { label: 'Connected', className: 'bg-teal-50 text-teal-800' },
   needs_sign_in: { label: 'Needs sign-in', className: 'bg-amber-100 text-amber-900' },
 } as const;
-export const NO_PUBLIC_URL = 'Connect needs a public HTTPS base URL for this instance (API_PUBLIC_URL), which the provider redirects back to.';
+export const NO_PUBLIC_URL = 'Set a public HTTPS URL for this instance (API_PUBLIC_URL) to sign in.';
 
 /**
  * Connection state of an OAuth server row and its Connect, Reconnect and
@@ -33,7 +34,7 @@ export function ExtensionOAuthConnection({ name, status, redirectUri, busy, onCo
         <span className="text-slate-600">OAuth sign-in:</span>
         <span className={`${badge} ${shown.className}`}>{shown.label}</span>
         {status?.connectedBy && status.connectedAt !== undefined && (
-          <span className="text-slate-600">by administrator {status.connectedBy} · {new Date(status.connectedAt).toLocaleString()}</span>
+          <span className="text-slate-600">by administrator {status.connectedBy} · <span title={formatDateTime(status.connectedAt)}>{formatRelativeTime(status.connectedAt)}</span></span>
         )}
       </p>
       {state !== 'not_connected' && (
@@ -46,8 +47,8 @@ export function ExtensionOAuthConnection({ name, status, redirectUri, busy, onCo
         {confirming ? (
           <>
             <span className="text-red-800">Disconnect {name}? ProPR asks the provider to revoke the tokens, then deletes them.</span>
-            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => { setConfirming(false); onDisconnect(); }}>Confirm disconnect</button>
-            <button type="button" className={buttonClass} onClick={() => setConfirming(false)}>Keep connected</button>
+            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => { setConfirming(false); onDisconnect(); }}>Disconnect</button>
+            <button type="button" className={buttonClass} onClick={() => setConfirming(false)}>Cancel</button>
           </>
         ) : (
           <>

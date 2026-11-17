@@ -11,7 +11,7 @@ interface AgentTypeSelectorProps {
 
 const AgentTypeSelector: React.FC<AgentTypeSelectorProps> = ({ value, onChange }) => (
   <div>
-    <span className="block text-gray-700 mb-1.5 font-medium text-sm">Agent Type</span>
+    <span className="block text-gray-700 mb-1.5 font-medium text-sm">Agent type</span>
     <div className="flex flex-wrap gap-1 bg-gray-100 rounded-full p-1 w-fit">
       {AGENT_DISPLAY_ORDER.map(type => (
         <button

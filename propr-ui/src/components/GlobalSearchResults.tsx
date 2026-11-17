@@ -20,6 +20,7 @@ import {
   getItemTitle,
   getRepoName,
   getSearchStatus,
+  isPromptTitledPlan,
   searchListboxId,
   searchOptionId,
   splitFailureReason,
@@ -36,7 +37,7 @@ const STATUS_TONES: Record<SearchStatusTone, { pill: string; dot: string }> = {
   active: { pill: 'bg-teal-50 text-teal-700 border-teal-200', dot: 'bg-teal-500 animate-pulse' },
   review: { pill: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500' },
   pending: { pill: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'border border-slate-400' },
-  merged: { pill: 'bg-violet-50 text-violet-700 border-violet-200', dot: 'bg-violet-500' },
+  merged: { pill: 'bg-gray-100 text-gray-600 border-gray-200', dot: 'bg-gray-500' },
   cancelled: { pill: 'bg-orange-50 text-orange-700 border-orange-200', dot: 'bg-orange-500' },
   done: { pill: 'bg-gray-100 text-gray-600 border-gray-200', dot: 'bg-gray-400' },
 };
@@ -133,7 +134,10 @@ export const SearchResultList: React.FC<ResultListProps> = ({ idPrefix, items, a
           >
             <Icon className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${active ? 'text-primary-600' : 'text-slate-400'}`} aria-hidden="true" />
             <span className="min-w-0 flex-1">
-              <span data-search-option-title className="block break-words text-sm font-medium leading-5 text-slate-900">{getItemTitle(item)}</span>
+              {/* A plan without a name would otherwise print its whole prompt; its first line stays on one line. */}
+              <span data-search-option-title
+                className={`block text-sm font-medium leading-5 text-slate-900 ${isPromptTitledPlan(item) ? 'truncate' : 'break-words'}`}
+                title={isPromptTitledPlan(item) ? getItemTitle(item) : undefined}>{getItemTitle(item)}</span>
               <ResultMeta item={item} />
             </span>
           </li>
@@ -226,7 +230,7 @@ export const NarrowRepositoryTasksAction: React.FC<{ item: SearchItem | undefine
       data-testid="global-search-narrow-tasks"
       onMouseDown={e => e.preventDefault()}
       onClick={() => onOpenTasks(item)}
-      className="min-w-0 truncate text-primary-600 hover:text-primary-700 md:hidden"
+      className="min-w-0 truncate text-primary-600 hover:text-primary-700 touch:leading-8 md:hidden"
     >
       Tasks for {getRepoName(item.repo.name)} →
     </button>
@@ -290,7 +294,7 @@ export const SearchPreview: React.FC<PreviewProps> = ({ item, onOpen, onOpenTask
           >
             <ExternalLink className="h-3 w-3" aria-hidden="true" />
             GitHub
-            <kbd className="font-sans text-[10px] text-slate-400">{shortcutKey}↵</kbd>
+            <kbd className="font-sans text-[10px] text-slate-400 touch:hidden">{shortcutKey}↵</kbd>
           </a>
         )}
       </div>

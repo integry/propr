@@ -1,5 +1,6 @@
 // View model for the global search palette: one linear, keyboard-navigable
 // list of results (grouped by type) plus the category scopes above it.
+import { formatRelativeTime } from '../utils/dateFormat';
 import type { MonitoredRepo } from '../api/proprApi';
 import type { DraftListItem } from '../api/plannerApi';
 import type { GlobalSearchResults, TaskSearchResult } from '../hooks/useGlobalSearch';
@@ -170,31 +171,31 @@ export function getItemGithubUrl(item: SearchItem): string | null {
   }
 }
 
+/** The first non-empty line of a prompt, without a leading Markdown heading or list marker. */
+const firstPromptLine = (prompt: string | null | undefined): string => {
+  const line = (prompt ?? '').split(/\r?\n/).map(text => text.trim()).find(Boolean) ?? '';
+  return line.replace(/^#{1,6}\s+/, '').replace(/^(?:[-*+]|\d+\.)\s+/, '').trim();
+};
+
+/** A plan without a name reads as the first line of its prompt; its row shows that on one truncated line. */
+export const isPromptTitledPlan = (item: SearchItem): boolean => item.kind === 'plan' && !item.plan.name?.trim();
+
 export function getItemTitle(item: SearchItem): string {
   switch (item.kind) {
     case 'repository':
       return item.repo.name;
     case 'plan':
-      return item.plan.name || item.plan.initial_prompt;
+      return item.plan.name?.trim() || firstPromptLine(item.plan.initial_prompt);
     case 'task':
       return item.task.title || `Task ${item.task.id.slice(0, 8)}…`;
   }
 }
 
-export const formatTimeAgo = (dateString: string): string => {
-  const diffMins = Math.floor((Date.now() - new Date(dateString).getTime()) / 60000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h`;
-  return `${Math.floor(diffHours / 24)}d`;
-};
+/** A result's age in the shared format: `just now`, `5m ago`, `2d ago`, then `Nov 2, 2026`. */
+export const formatTimeAgo = (dateString: string): string => formatRelativeTime(dateString);
 
-/** The full relative-time phrase for prose: "5m ago", but never "just now ago". */
-export const formatTimeAgoPhrase = (dateString: string): string => {
-  const age = formatTimeAgo(dateString);
-  return age === 'just now' ? age : `${age} ago`;
-};
+/** The same age for prose rows ("Updated 5m ago"); kept as its own name for callers. */
+export const formatTimeAgoPhrase = formatTimeAgo;
 
 /**
  * The modifier label to advertise for Ctrl/Cmd shortcuts. Both keys work
@@ -263,7 +264,7 @@ const STATUS_TONES: Record<string, SearchStatusTone> = {
 /**
  * The standard status pill for a task or plan status: a dot plus a capitalised
  * label, coloured by the Studio logic (active work teal, a human bottleneck
- * amber, failure red, merged violet, finished work quiet gray).
+ * amber, failure red, merged and finished work quiet gray).
  */
 export function getSearchStatus(status: string): { label: string; tone: SearchStatusTone } {
   const words = status.replace(/_/g, ' ');

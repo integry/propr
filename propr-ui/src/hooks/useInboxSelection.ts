@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useListSearchParams } from '../components/TaskList/hooks';
+import type { SelectionHistoryOptions } from './useTaskSelection';
 
 /** Tailwind `xl`: wide enough to show the queue and a triage verdict side by side. */
 export const INBOX_SPLIT_QUERY = '(min-width: 1280px)';
@@ -11,16 +12,21 @@ const matchesSplit = (): boolean =>
 export interface InboxSelection {
   /** The notification open beside the queue, from `?notification=`. */
   selectedId: string | null;
-  /** Opens a notification beside the queue, or closes the pane with `null`. Keeps every other query param. */
-  select: (notificationId: string | null) => void;
+  /**
+   * Opens a notification beside the queue, or closes the pane with `null`.
+   * Keeps every other query param. `push` adds a history entry (opening an
+   * item from the queue), so Back returns to the queue; otherwise it replaces.
+   */
+  select: (notificationId: string | null, options?: SelectionHistoryOptions) => void;
   /** Whether the viewport is wide enough for the queue and a verdict side by side. */
   isSplitViewport: boolean;
 }
 
 /**
  * The notification selected on `/inbox`, kept in the URL so a reload or a
- * shared link restores it. Selection replaces the history entry, so stepping
- * through the queue with j/k does not fill the back button.
+ * shared link restores it. Opening an item from the queue pushes a history
+ * entry, so Back returns to the queue; stepping through it with j/k, the
+ * progression after a dismissal and closing replace it.
  */
 export function useInboxSelection(): InboxSelection {
   const [searchParams, setSearchParams] = useListSearchParams();
@@ -57,7 +63,7 @@ export function useInboxSelection(): InboxSelection {
     return () => query.removeEventListener('change', update);
   }, []);
 
-  const select = useCallback((notificationId: string | null) => {
+  const select = useCallback((notificationId: string | null, options?: SelectionHistoryOptions) => {
     writtenRef.current.add(notificationId);
     setPending({ id: notificationId });
     setSearchParams(previous => {
@@ -65,7 +71,7 @@ export function useInboxSelection(): InboxSelection {
       if (notificationId) next.set('notification', notificationId);
       else next.delete('notification');
       return next;
-    }, { replace: true });
+    }, { replace: !options?.push });
   }, [setSearchParams]);
 
   return { selectedId, select, isSplitViewport };

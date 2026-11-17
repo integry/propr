@@ -22,19 +22,26 @@ import {
   selectValue,
 } from './TaskList/utils';
 import { useDebouncedCallback, useListSearchParams } from './TaskList/hooks';
+import { useListScrollRestoration } from './TaskList/useListScrollRestoration';
+import { TASK_SEARCH_MAX_LENGTH } from './TaskList/searchLimits';
 import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import type { TaskUpdatePayload } from '@propr/shared';
 import { useCurrentUser } from '../contexts/AuthContext';
 
-const createRepoOptions = (repositories: Array<{ repository: string; total: number }>): RepoOption[] => {
-  const totalCount = repositories.reduce((sum, repo) => sum + repo.total, 0);
-
+/**
+ * The repository filter's options. They carry no counts: the stats endpoint
+ * counts the Analytics page's tasks for its 20 busiest repositories (goal
+ * tasks aside), and ignores the status, assignee and search filters the list
+ * applies, so its figure cannot match the list's own `N tasks` total. A badge
+ * that disagrees with the footer (`All Repos 32,696` beside `4,402 tasks`)
+ * only raises the question of what it counts.
+ */
+const createRepoOptions = (repositories: Array<{ repository: string }>): RepoOption[] => {
   const allOption: RepoOption = {
     name: 'all',
     enabled: true,
     displayName: 'All Repos',
-    count: totalCount,
   };
 
   const repoOptions: RepoOption[] = [...repositories]
@@ -42,7 +49,6 @@ const createRepoOptions = (repositories: Array<{ repository: string; total: numb
     .map(repo => ({
       name: repo.repository,
       enabled: true,
-      count: repo.total,
     }));
 
   return [allOption, ...repoOptions];
@@ -152,7 +158,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   // Derive values directly from URL parameters
   const urlFilter = searchParams.get('status') || 'all';
   const urlRepoFilter = searchParams.get('repository') || 'all';
-  const urlSearchParam = searchParams.get('search') || '';
+  // A link may carry a longer search than the API takes; only its first 500 characters apply.
+  const urlSearchParam = (searchParams.get('search') || '').slice(0, TASK_SEARCH_MAX_LENGTH);
   const urlAssigneeFilter = searchParams.get('assignee') || 'all';
   // Note: URL uses 1-based page, internal state uses 0-based
   const urlPage = Math.max(0, parseInt(searchParams.get('page') || '1', 10) - 1);
@@ -195,7 +202,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   );
 
   // Helper to update URL params (only used when useUrlState is true)
-  const updateSearchParams = useCallback((updates: Record<string, string | null>) => {
+  // Filters replace the history entry; a new page pushes one (see setCurrentPage).
+  const updateSearchParams = useCallback((updates: Record<string, string | null>, push = false) => {
     if (!useUrlState) return;
     setSearchParams(prev => {
       const newParams = new URLSearchParams(prev);
@@ -207,7 +215,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         }
       });
       return newParams;
-    }, { replace: true });
+    }, { replace: !push });
   }, [useUrlState, setSearchParams]);
 
   // Unified setters that work with both URL and local state
@@ -235,8 +243,9 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const setCurrentPage = useCallback((pageOrUpdater: number | ((prev: number) => number)) => {
     if (useUrlState) {
       const newPage = typeof pageOrUpdater === 'function' ? pageOrUpdater(urlPage) : pageOrUpdater;
-      // Convert 0-based internal page to 1-based URL page
-      updateSearchParams({ page: (newPage + 1).toString() });
+      // Convert 0-based internal page to 1-based URL page. Each page is its own
+      // history entry, so Back from a task opened on page 2 returns to page 2.
+      updateSearchParams({ page: (newPage + 1).toString() }, true);
     } else {
       setLocalCurrentPage(pageOrUpdater);
     }
@@ -372,6 +381,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   useRowKeyboardNavigation(groupedTasks, selectedTaskId, onSelectTask);
 
   const scopeState = resolveTaskScopeState(loadedScope, queryScope, tasks, groupedTasks, error);
+  // Back to this list (from a task's page, or from the next page) returns to where it was scrolled.
+  const scrollRestoration = useListScrollRestoration(scopeState.kind === 'ready' && !hideFilters);
 
   // Shared filter props
   const filterProps = {
@@ -464,7 +475,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
         padding is the list's run-out: scrolled to the end, the last row stops
         2rem above the footer's border instead of sitting on it.
       */}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-8" data-testid="task-list-scroll">
+      <div {...scrollRestoration} className="min-h-0 flex-1 overflow-y-auto pb-8" data-testid="task-list-scroll">
         {currentError && <div className="px-4 pt-4 sm:px-6"><DashboardErrorState error={currentError} /></div>}
         {visibleTasks.length === 0 ? (
           <div className="text-center py-20 mx-4 sm:mx-6 bg-gray-50 rounded-lg border border-dashed border-gray-300">

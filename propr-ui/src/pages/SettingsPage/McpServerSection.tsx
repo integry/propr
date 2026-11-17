@@ -136,7 +136,7 @@ function McpDetails({ data, saving, revoking, isOperatorManaged, onUpdateScopes,
             <button
               type="button"
               onClick={() => { void navigator.clipboard.writeText(connectionUrl); }}
-              className="shrink-0 text-[12px] text-slate-600 underline hover:text-slate-900"
+              className="touch-hit shrink-0 text-[12px] text-slate-600 underline hover:text-slate-900"
             >
               Copy
             </button>
@@ -152,7 +152,7 @@ function McpDetails({ data, saving, revoking, isOperatorManaged, onUpdateScopes,
           <p className="mt-1.5 text-[12px] leading-5 text-slate-500">Clients cannot be granted scopes beyond this ceiling.</p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
             {MCP_ALL_SCOPES.map(scope => (
-              <label key={scope} className="flex items-center gap-2 text-[12px] text-slate-700">
+              <label key={scope} className="touch-hit-label flex items-center gap-2 text-[12px] text-slate-700">
                 <input
                   type="checkbox"
                   checked={settings.scopeCeiling.includes(scope)}
@@ -171,11 +171,12 @@ function McpDetails({ data, saving, revoking, isOperatorManaged, onUpdateScopes,
           </div>
         </div>
       )}
-      <div className="flex max-w-2xl items-center justify-between gap-3 border-t border-slate-200 pt-4">
+      {/* On a touch layout the destructive action takes its own row, well apart from the navigation link. */}
+      <div className="flex max-w-2xl items-center justify-between gap-3 border-t border-slate-200 pt-4 touch:flex-col touch:items-start touch:gap-6">
         {/* The /mcp/apps page is served by the API app, whose origin can differ
             from the SPA origin, so the link must target the resolved MCP origin. */}
         {status.origin && !status.tunnelMode ? (
-          <a href={`${status.origin}/mcp/apps`} className="text-[12px] text-primary-600 underline hover:text-primary-700">
+          <a href={`${status.origin}/mcp/apps`} className="touch-hit text-[12px] text-primary-600 underline hover:text-primary-700">
             View connected apps →
           </a>
         ) : (
@@ -185,7 +186,7 @@ function McpDetails({ data, saving, revoking, isOperatorManaged, onUpdateScopes,
           type="button"
           disabled={revoking}
           onClick={onRevokeAll}
-          className="text-[12px] text-red-600 underline disabled:opacity-50 hover:text-red-800"
+          className="touch-hit text-[12px] text-red-600 underline disabled:opacity-50 hover:text-red-800"
         >
           {revoking ? 'Revoking…' : 'Revoke all connections'}
         </button>
@@ -329,7 +330,7 @@ export default function McpServerSection({ onError }: McpServerSectionProps) {
 
   return (
     <SettingsSection
-      title="MCP Server"
+      title="MCP server"
       description={<>
         Allows AI assistants like Claude Code and Claude.ai to connect to this ProPR instance via the Model Context Protocol.
         {statusDescriptionSuffix(data)}

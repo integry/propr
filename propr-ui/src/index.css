@@ -110,6 +110,43 @@ body {
 
 }
 
+/* Touch hit areas. On a touch layout (a coarse pointer or a phone-width
+   viewport, the same test as the `touch:` variant) a small control keeps its
+   visual size but answers taps across at least 32x32px: an invisible box
+   centred on it takes the hit. Positioned utilities (`absolute`, `sticky`) in
+   the utilities layer still win, and are a containing block for it too.
+   `touch-hit-label` does the same for a checkbox or radio through the label
+   that wraps it: the label grows to 32px tall and the input to 16px square. */
+@layer components {
+  @media (pointer: coarse), (max-width: 639.98px) {
+    .touch-hit {
+      position: relative;
+    }
+
+    .touch-hit::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: max(100%, 2rem);
+      height: max(100%, 2rem);
+      transform: translate(-50%, -50%);
+    }
+
+    .touch-hit-label {
+      min-height: 2rem;
+      min-width: 2rem;
+      align-items: center;
+    }
+
+    .touch-hit-label input[type='checkbox'],
+    .touch-hit-label input[type='radio'] {
+      width: 1rem;
+      height: 1rem;
+    }
+  }
+}
+
 /* Stats label styling - small, uppercase, lighter grey */
 .stat-label {
   @apply text-xs font-semibold text-slate-500 uppercase tracking-wider;

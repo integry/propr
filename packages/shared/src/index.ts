@@ -576,6 +576,7 @@ export * from './changedFileKinds.js';
 export * from './automationDefinitions.js';
 export * from './automationTemplates.js';
 export * from './automationRunProductivity.js';
+export * from './automationReportPreview.js';
 // Deprecated names remain available to existing clients.
 export * from './agentDefinitions.js';
 export * from './cronSchedule.js';

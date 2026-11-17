@@ -27,7 +27,7 @@ const WorkflowSettingsSection: React.FC<WorkflowSettingsSectionProps> = ({
   <div className={`space-y-10 ${className || ''}`}>
     <SettingsSection title="Processing">
       <SettingsField
-        label="Worker Concurrency"
+        label="Worker concurrency"
         htmlFor="worker_concurrency"
         helperText="Number of issues to process simultaneously."
       >
@@ -44,9 +44,9 @@ const WorkflowSettingsSection: React.FC<WorkflowSettingsSectionProps> = ({
       </SettingsField>
 
       <SettingsField
-        label="Default Spend Cap per Run (USD)"
+        label="Default spend cap per run (USD)"
         htmlFor="default_max_cost_usd"
-        helperText="Stops an implementation, follow-up, /fix, ultrafix cycle or review once its estimated cost reaches this amount and publishes its partial work. Leave empty or 0 for no cap. A task's own cap and the repository's .propr/workflow.yml limits.max_cost_usd take precedence."
+        helperText="Stops a run when its estimated cost reaches this amount. Empty or 0 means no cap."
       >
         <input
           type="number"
@@ -63,9 +63,9 @@ const WorkflowSettingsSection: React.FC<WorkflowSettingsSectionProps> = ({
       </SettingsField>
 
       <SettingsField
-        label="Provider Failure Replacements"
+        label="Provider failure replacements"
         htmlFor="max_provider_replacements"
-        helperText="Replacement runs started automatically when a run ends with a transient provider error (for example 5xx or overloaded). 0 disables them. Usage limits (429) are re-queued separately."
+        helperText="Automatic retries after a provider error. 0 turns them off."
       >
         <select
           id="max_provider_replacements"
@@ -77,7 +77,7 @@ const WorkflowSettingsSection: React.FC<WorkflowSettingsSectionProps> = ({
         >
           {Array.from({ length: MAX_PROVIDER_REPLACEMENTS_LIMIT + 1 }, (_, i) => i).map(n => (
             <option key={n} value={n}>
-              {n === 0 ? '0 (Disabled)' : n}{n === DEFAULT_MAX_PROVIDER_REPLACEMENTS ? ' (Default)' : ''}
+              {n === 0 ? '0 (disabled)' : n}{n === DEFAULT_MAX_PROVIDER_REPLACEMENTS ? ' (default)' : ''}
             </option>
           ))}
         </select>
@@ -88,8 +88,8 @@ const WorkflowSettingsSection: React.FC<WorkflowSettingsSectionProps> = ({
       <SettingsCheckboxField
         id="auto_resolve_merge_conflicts"
         name="auto_resolve_merge_conflicts"
-        label="Auto-Resolve Merge Conflicts (default for repositories)"
-        helperText="Default for repositories that do not set their own value in Repositories → Automation. When on, ProPR merges the base branch into its conflicted pull requests and asks an agent to resolve the conflicts. A repository set to Always or Never overrides this default."
+        label="Auto-resolve merge conflicts (default for repositories)"
+        helperText="Default for repositories that have not chosen their own setting."
         checked={settings.auto_resolve_merge_conflicts}
         onChange={onSettingChange}
         onBlur={onBlur}
@@ -98,8 +98,8 @@ const WorkflowSettingsSection: React.FC<WorkflowSettingsSectionProps> = ({
       <SettingsCheckboxField
         id="followup_requires_assignment"
         name="followup_requires_assignment"
-        label="Follow-ups Only From Assigned Users"
-        helperText="When on, a comment starts follow-up work on a task only if its author is assigned to that task; comments from other allowed users are not processed as follow-ups. Has no effect on a task nobody is assigned to: any allowed user can still start follow-ups there."
+        label="Follow-ups only from assigned users"
+        helperText="Only the people assigned to a task can start follow-ups by commenting. Unassigned tasks are not affected."
         checked={settings.followup_requires_assignment}
         onChange={onSettingChange}
         onBlur={onBlur}

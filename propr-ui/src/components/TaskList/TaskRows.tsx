@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, Images } from 'lucide-react';
@@ -9,6 +10,7 @@ import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
 import { ScoreBadge } from './ScoreBadge';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import { AssigneeStack } from '../AssigneeList';
 import {
   buildTaskRuns, describeRun, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
@@ -127,13 +129,12 @@ export const TaskTitleLink: React.FC<{
 );
 
 /**
- * The ledger's REPO cell: the name as plain monospace text. The column is the
- * container, so a chip around it only stacks identical bubbles down the list;
- * chips are for entities named inline among other text.
+ * The ledger's REPO cell: the shared repository chip, short name with the
+ * full slug in its tooltip, as on every other list and detail.
  */
 export const TaskRepository: React.FC<{ row: TaskRowView }> = ({ row }) => (
-  <span data-testid="task-repository" title={row.repository} className="block truncate font-mono text-xs text-slate-600 transition-colors hover:text-slate-900">
-    {row.repositoryName}
+  <span data-testid="task-repository" className="block min-w-0 leading-4">
+    <RepositoryChip repository={row.repository} label={row.repositoryName} />
   </span>
 );
 
@@ -256,7 +257,7 @@ export const EarlierRunsList: React.FC<{
   <ul id={id} aria-label="Earlier runs" className="task-earlier-runs">
     {runs.map(run => {
       const status = getDisplayStatus(run.task);
-      const created = new Date(run.task.createdAt).toLocaleString();
+      const created = formatDateTime(run.task.createdAt);
       const selected = run.task.id === selectedTaskId;
       const score = runScore(run);
       return (
@@ -323,7 +324,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="min-w-0"><TaskAssignees row={row} /></div>
         <div role="cell" className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-slate-700">{taskDuration(task)}</div>
         <div role="cell" className="whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
-          <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>
+          <time dateTime={task.createdAt} title={formatDateTime(task.createdAt)}>{formatRelativeTime(task.createdAt)}</time>
         </div>
         <div role="cell" className="justify-items-end"><TaskScore row={row} /></div>
       </div>

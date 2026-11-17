@@ -1,3 +1,5 @@
+import { formatRelativeTime as formatSharedRelativeTime } from '../utils/dateFormat';
+import { Fragment } from 'react';
 import { Loader2 } from 'lucide-react';
 import { IssueSummary } from '../api/proprApi';
 
@@ -28,22 +30,12 @@ export const parseApiTimestamp = (value: string | null | undefined): Date | null
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-/** Missing or unparseable timestamps render as an empty label rather than "NaN days ago". */
-export const formatRelativeTime = (dateString: string | null | undefined, now: number = Date.now()): string => {
-  const date = parseApiTimestamp(dateString);
-  if (!date) return '';
-  const diffMs = now - date.getTime();
-  const diffSeconds = Math.floor(diffMs / 1000);
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  const diffHours = Math.floor(diffMinutes / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffSeconds < 60) return 'just now';
-  if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? '' : 's'} ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
-  if (diffDays < 30) return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
-  return date.toLocaleDateString();
-};
+/**
+ * The shared relative age (`5m ago`, `Nov 2, 2026`) for an API timestamp, reading zone-less date-times as UTC.
+ * Missing or unparseable timestamps render as an empty label rather than "NaN days ago".
+ */
+export const formatRelativeTime = (dateString: string | null | undefined, now: number = Date.now()): string =>
+  formatSharedRelativeTime(parseApiTimestamp(dateString), now);
 
 // "Success is Quiet": the same pill architecture as the Task list. Review-stage
 // states share one neutral slate pill; color marks active work, merges and failures.
@@ -166,28 +158,34 @@ export const renderIssueSummary = (summary: IssueSummary | null | undefined): Re
     return <span className="font-mono text-xs text-slate-400">No issues</span>;
   }
 
+  // Each count stays whole; on a narrow row the line wraps between counts instead of running off the edge.
   return (
-    <span className="font-mono text-xs text-slate-500 whitespace-nowrap">
-      {tokens.join(' • ')}
+    <span data-testid="plan-issue-summary" className="inline-flex min-w-0 flex-wrap items-center gap-x-1 font-mono text-xs text-slate-500">
+      {/* The spaces between counts are not laid out in the flex line but keep the text "3 issues • 1 running". */}
+      {tokens.map((token, index) => (
+        <Fragment key={token}>
+          {index > 0 && ' '}
+          <span className="whitespace-nowrap">{index > 0 ? `• ${token}` : token}</span>
+        </Fragment>
+      ))}
     </span>
   );
 };
 
 /**
- * Renders the unified Status Strip combining issue metrics and status (without time)
+ * Renders the unified Status Strip combining issue metrics and status (without time).
+ * It wraps: the status badge moves under the counts rather than past the row's right edge.
  */
 export const renderStatusStrip = (
   summary: IssueSummary | null | undefined,
   effectiveStatus: string
 ): React.ReactNode => {
   return (
-    <div className="flex items-center gap-2.5">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
       {/* Issue summary - grouped tightly */}
       {renderIssueSummary(summary)}
-      {/* Separator dot */}
-      <span className="text-slate-300">•</span>
-      {/* Status badge */}
-      <span className={`px-2 py-0.5 inline-flex items-center gap-1.5 text-xs font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
+      {/* Status badge, a bordered pill set apart by the gap alone: a separator dot would dangle at the end of a wrapped line */}
+      <span className={`px-2 py-0.5 inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-xs font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
         {getStatusIcon(effectiveStatus)}
         {getStatusLabel(effectiveStatus)}
       </span>

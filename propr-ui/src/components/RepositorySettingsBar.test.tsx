@@ -5,6 +5,7 @@ import type { MonitoredRepo } from '../api/proprApi';
 import type { RepoWorkflow } from '../api/proprTypes';
 import { clearRepoWorkflowsCache } from '../hooks/useRepoWorkflows';
 import { RepositorySettingsBar } from './RepositorySettingsBar';
+import { expectExistingDocsRoute } from '../pages/SettingsPage/docsRoutes.testUtils';
 
 const getRepoWorkflows = vi.hoisted(() => vi.fn());
 vi.mock('../api/proprApi', async (importOriginal) => ({ ...await importOriginal<object>(), getRepoWorkflows }));
@@ -54,16 +55,14 @@ const controlName = 'Cancel CI during follow-up implementation for integry/propr
 const workflowsName = 'Validation workflows to cancel for integry/propr';
 
 describe('RepositorySettingsBar follow-up CI cancellation', () => {
-  it('renders the option off by default with helper text about restarting checks', () => {
+  it('renders the option off by default with one helper sentence and a docs link', () => {
     renderBar();
 
     const toggle = screen.getByRole('checkbox', { name: controlName });
     expect(toggle).not.toBeChecked();
     expect(screen.getByText('Cancel CI while follow-up implementation is in progress')).toBeInTheDocument();
-    expect(screen.getByText(/Only the validation workflows you select below are cancelled/)).toBeInTheDocument();
-    expect(screen.getByText(/If you select nothing here, the instance-wide/)).toBeInTheDocument();
-    expect(screen.getByText(/Checks start again on the new commit, or resume on the current one if no commit is produced\./)).toBeInTheDocument();
-    expect(screen.getByText(/also cancelled when a pull request is merged or closed/)).toBeInTheDocument();
+    expect(screen.getByText(/Cancels only the workflows you select below on the commit a follow-up replaces; they run again afterwards\./)).toBeInTheDocument();
+    expectExistingDocsRoute(screen.getByRole('link', { name: 'How cancelling works' }).getAttribute('href'));
     // The selection belongs to the enabled option; nothing to select while it is off.
     expect(screen.queryByRole('textbox', { name: workflowsName })).not.toBeInTheDocument();
   });

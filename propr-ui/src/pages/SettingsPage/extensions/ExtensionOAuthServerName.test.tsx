@@ -69,7 +69,7 @@ describe('OAuth actions for server names that match inherited object properties'
     expect(startExtensionOAuth).toHaveBeenCalledWith(name);
     await waitFor(() => expect(within(connection).getByRole('button', { name: 'Reconnect' })).toBeEnabled());
     fireEvent.click(within(connection).getByRole('button', { name: 'Disconnect' }));
-    const confirm = within(connection).getByRole('button', { name: 'Confirm disconnect' });
+    const confirm = within(connection).getByRole('button', { name: 'Disconnect' });
     expect(confirm).toBeEnabled();
     fireEvent.click(confirm);
     expect(disconnectExtensionOAuth).toHaveBeenCalledWith(name);

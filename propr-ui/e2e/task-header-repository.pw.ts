@@ -24,15 +24,15 @@ const openTask = async (page: Page, repository: Repository, path: string) => {
 };
 
 /**
- * The repository's block spans the header, owner above name, with nothing
- * beside it; every control sits below it, none overlapping another, and
- * nothing scrolls sideways.
+ * The repository leads the header as the shared repository chip (short name,
+ * full slug in the tooltip) with nothing beside it; every control sits below
+ * it, none overlapping another, and nothing scrolls sideways.
  */
 const measureIdentity = (identity: Locator) => identity.evaluate(element => {
   const box = (node: Element) => node.getBoundingClientRect();
   const repository = element.querySelector<HTMLElement>('[data-testid="task-repository"]')!;
-  const owner = box(repository.querySelector('[data-testid="task-repository-owner"]')!);
-  const name = repository.querySelector<HTMLElement>('[data-testid="task-repository-name"]')!;
+  const chip = repository.querySelector<HTMLElement>('[data-testid="repository-chip"]')!;
+  const name = repository.querySelector<HTMLElement>('[data-testid="repository-chip-name"]')!;
   const controls = [...element.querySelector('[data-testid="task-header-controls"]')!.querySelectorAll<HTMLElement>('a, button')]
     .filter(node => node.checkVisibility())
     .map(node => ({ label: node.getAttribute('aria-label') || node.textContent!.trim(), rect: box(node), action: !node.closest('[role="group"][aria-label="Git context"]') }));
@@ -43,9 +43,11 @@ const measureIdentity = (identity: Locator) => identity.evaluate(element => {
     linkWidth: box(repository).width,
     // The header's content box: everything the repository may use.
     availableWidth: header.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight),
-    ownerAboveName: owner.bottom <= box(name).top + 0.5 && Math.abs(owner.left - box(name).left) < 1,
-    nameLines: Math.round(box(name).height / parseFloat(getComputedStyle(name).lineHeight)),
-    nameFits: name.scrollWidth <= name.clientWidth && box(name).right <= box(element).right + 0.5,
+    chipTitle: chip.title,
+    nameText: name.textContent,
+    // Line boxes of the name's text: robust to a 12px chip whose rem line height grows with enlarged text.
+    nameLines: (() => { const range = document.createRange(); range.selectNodeContents(name); return new Set([...range.getClientRects()].map(rect => Math.round(rect.top))).size; })(),
+    chipFits: box(chip).right <= box(element).right + 0.5,
     linkHeight: box(repository).height,
     controlsBelow: controls.every(control => control.rect.top >= box(repository).bottom),
     // The task's and pane's actions; the Git cluster's chips keep their compact inline size.
@@ -56,18 +58,19 @@ const measureIdentity = (identity: Locator) => identity.evaluate(element => {
   };
 });
 
-const expectIdentityLayout = async (identity: Locator, repository: Repository, maxNameLines: number, wraps = false) => {
-  const link = identity.getByRole('link', { name: `${repository.repoOwner}/${repository.repoName}`, exact: true });
-  await expect(link).toHaveAttribute('href', `https://github.com/${repository.repoOwner}/${repository.repoName}`);
-  await expect(link).toHaveText(`${repository.repoOwner}/${repository.repoName}`);
+const expectIdentityLayout = async (identity: Locator, repository: Repository) => {
+  const slug = `${repository.repoOwner}/${repository.repoName}`;
+  const link = identity.getByRole('link', { name: slug, exact: true });
+  await expect(link).toHaveAttribute('href', `https://github.com/${slug}`);
+  // The short name, as on every list; the owner stays in the tooltip.
+  await expect(link).toHaveText(repository.repoName!);
   const layout = await measureIdentity(identity);
+  expect(layout.chipTitle).toBe(slug);
+  expect(layout.nameText).toBe(repository.repoName);
   expect(layout.linkWidth).toBeLessThanOrEqual(layout.availableWidth + 0.5);
-  if (wraps) expect(layout.nameLines).toBeGreaterThan(1);
-  // A name wraps only once it has used the header's whole width.
-  if (layout.nameLines > 1) expect(layout.linkWidth).toBeCloseTo(layout.availableWidth, 0);
-  expect(layout.ownerAboveName).toBe(true);
-  expect(layout.nameLines).toBeLessThanOrEqual(maxNameLines);
-  expect(layout.nameFits).toBe(true);
+  // From `sm` up the chip is one line; a name too long for it truncates inside the chip.
+  expect(layout.nameLines).toBe(1);
+  expect(layout.chipFits).toBe(true);
   expect(layout.linkHeight).toBeGreaterThanOrEqual(24);
   expect(layout.controlsBelow).toBe(true);
   expect(layout.smallestAction).toBeGreaterThanOrEqual(24);
@@ -76,7 +79,7 @@ const expectIdentityLayout = async (identity: Locator, repository: Repository, m
   expect(layout.overflow).toBe(false);
 };
 
-test('a laptop-width task pane gives a long repository the header width, owner above name', async ({ page }) => {
+test('a laptop-width task pane leads with the repository chip', async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 900 });
   await openTask(page, repositories.acceptance, '/tasks');
   await page.setViewportSize({ width: 1280, height: 820 });
@@ -84,7 +87,7 @@ test('a laptop-width task pane gives a long repository the header width, owner a
   for (const name of ['Prompt', 'Logs', 'Close task details']) await expect(identity.getByRole('button', { name, exact: true })).toBeVisible();
   await expect(identity.getByRole('button', { name: /Follow Up/ })).toBeVisible();
   // Medium names keep to one line once nothing shares their row.
-  await expectIdentityLayout(identity, repositories.acceptance, 1);
+  await expectIdentityLayout(identity, repositories.acceptance);
   await capture(page, 'task-repository-docked-1280');
 
   // The repository is the first stop in the header, then the Git cluster it leads.
@@ -103,7 +106,7 @@ for (const [kind, repository] of Object.entries(repositories)) {
     for (let step = 0; step < 6; step++) await page.keyboard.press('ArrowRight');
     const identity = page.getByTestId('task-split-details').getByTestId('task-header-identity');
     await expect.poll(() => identity.evaluate(element => element.getBoundingClientRect().width)).toBeLessThan(400);
-    await expectIdentityLayout(identity, repository, kind === 'longest' ? 4 : 1, kind === 'longest');
+    await expectIdentityLayout(identity, repository);
     if (kind !== 'short') await capture(page, `task-repository-docked-narrow-${kind}`);
   });
 }
@@ -114,25 +117,27 @@ for (const [kind, repository] of Object.entries(repositories)) {
     await openTask(page, repository, `/tasks/${selectedRun}`);
     const identity = page.getByTestId('task-header-identity');
     await expect(page.getByTestId('task-breadcrumb')).toBeVisible();
-    await expectIdentityLayout(identity, repository, kind === 'longest' ? 2 : 1);
+    await expectIdentityLayout(identity, repository);
     if (kind === 'acceptance') await capture(page, 'task-repository-full-page');
   });
 }
 
 for (const scale of [1.5, 2]) {
-  test(`enlarged text at ${scale * 100}% wraps a long repository inside a docked pane`, async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 820 });
+  test(`enlarged text at ${scale * 100}% keeps a long repository chip inside a docked pane`, async ({ page }) => {
+    // Tall enough that the enlarged header still leaves a usable workspace: in a shorter window the
+    // one-line compact header stands in for it (see task-details-short-viewport.pw.ts).
+    await page.setViewportSize({ width: 1280, height: 1400 });
     await openTask(page, repositories.longest, '/tasks');
     await page.addStyleTag({ content: `html { font-size: ${scale * 100}% !important; }` });
     const identity = page.getByTestId('task-split-details').getByTestId('task-header-identity');
-    await expectIdentityLayout(identity, repositories.longest, 8, true);
+    await expectIdentityLayout(identity, repositories.longest);
     if (scale === 2) await capture(page, 'task-repository-docked-text-200');
   });
 }
 
 for (const width of [320, 390]) {
   for (const [kind, repository] of Object.entries(repositories)) {
-    test(`a ${width}px phone leads the task with its ${kind} repository, owner above name`, async ({ page }) => {
+    test(`a ${width}px phone leads the task with its ${kind} repository chip, wrapping rather than truncating`, async ({ page }) => {
       await page.setViewportSize({ width, height: 760 });
       await openTask(page, repository, `/tasks/${selectedRun}`);
       const block = page.getByTestId('task-details').locator('header').filter({ visible: true }).first();
@@ -140,19 +145,19 @@ for (const width of [320, 390]) {
       await expect(link).toHaveAttribute('href', `https://github.com/${repository.repoOwner}/${repository.repoName}`);
       const layout = await link.evaluate(element => {
         const box = (node: Element) => node.getBoundingClientRect();
-        const owner = box(element.querySelector('[data-testid="task-repository-owner"]')!);
-        const name = element.querySelector<HTMLElement>('[data-testid="task-repository-name"]')!;
+        const name = element.querySelector<HTMLElement>('[data-testid="repository-chip-name"]')!;
         const status = box(element.closest('header')!.querySelector('[data-testid="task-header-status"]')!);
         return {
-          ownerAboveName: owner.bottom <= box(name).top + 0.5,
-          nameLines: Math.round(box(name).height / parseFloat(getComputedStyle(name).lineHeight)),
+          text: name.textContent,
+          // Line boxes of the name's text: robust to a 12px chip whose rem line height grows with enlarged text.
+    nameLines: (() => { const range = document.createRange(); range.selectNodeContents(name); return new Set([...range.getClientRects()].map(rect => Math.round(rect.top))).size; })(),
           nameFits: name.scrollWidth <= name.clientWidth && box(name).right <= window.innerWidth,
           height: box(element).height,
           aboveStatus: box(element).bottom <= status.top,
           overflow: document.documentElement.scrollWidth > window.innerWidth,
         };
       });
-      expect(layout.ownerAboveName).toBe(true);
+      expect(layout.text).toBe(repository.repoName);
       // Only GitHub's longest names wrap; nothing is cut short.
       expect(layout.nameLines).toBeLessThanOrEqual(kind === 'longest' ? 5 : 1);
       expect(layout.nameFits).toBe(true);

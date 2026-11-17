@@ -1,3 +1,4 @@
+import { formatTimestampsInText } from '../utils/dateFormat';
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { trustedApplicationPreviewMediaUrl, type PublishedVisualPreview } from '@propr/shared';
@@ -39,7 +40,7 @@ export default function VisualPreviewGallery({ previews, className = '' }: { pre
             Original <ExternalLink className="h-3 w-3" aria-hidden="true" />
           </a>}
         </div>
-        {preview.description && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{preview.description}</p>}
+        {preview.description && <p className="mt-1 break-words text-xs leading-5 text-slate-500">{formatTimestampsInText(preview.description)}</p>}
       </figcaption>
     </figure>)}
     {openIndex >= 0 && <PreviewLightbox previews={images} index={openIndex} onIndexChange={index => setOpenUrl(images[index]?.url ?? null)}

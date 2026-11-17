@@ -46,6 +46,8 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   review: 'Review',
   goal: 'Goal',
   implementation: 'Implement',
+  'agent-run': 'Automation',
+  agent_run: 'Automation',
 };
 
 function workflowLabel(raw: string): string {

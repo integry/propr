@@ -11,6 +11,7 @@ import type {
 } from '@propr/shared/dist/activityEvents.js';
 import type { ShellSnapshot } from '../contexts/SocketContext';
 import { useSocket } from '../contexts/useSocket';
+import { keepIfEqual } from '../utils/keepIfEqual';
 import { CONNECTED_RECONCILE_MS, useLiveRefreshScheduler } from './useLiveRefreshScheduler';
 
 /** Scope value meaning every repository. */
@@ -177,7 +178,15 @@ export function useLiveResource<T>({
     try {
       const data = await readRef.current(controller.signal);
       if (superseded()) return;
-      setState({ scopeKey: scope, data, error: null, settled: true, refreshing: false });
+      // A read equal to what is shown keeps the current data object, so a
+      // background refresh that changed nothing re-renders nothing below it.
+      setState(previous => ({
+        scopeKey: scope,
+        data: previous.scopeKey === scope ? keepIfEqual(previous.data, data) : data,
+        error: null,
+        settled: true,
+        refreshing: false,
+      }));
     } catch (error) {
       if (superseded()) return;
       const message = (error as Error)?.message || 'Request failed';
