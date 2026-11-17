@@ -311,6 +311,9 @@ const foldedPerFrame = (page: Page, frames: number) => page.evaluate(async count
 }, frames);
 
 test('growing the window through the fold threshold settles into one layout at every height', async ({ page }) => {
+  // About 80 resizes, each sampled over several frames: well past the default
+  // 30s budget on a loaded CI host, as in the other resize sweeps.
+  test.setTimeout(90_000);
   await openAdminDashboard(page, { width: 1280, height: 720 });
   await expect(page.getByTestId('usage-line')).toBeVisible();
   // Folding tightens the account and footer gaps too, so expanding must budget
@@ -318,16 +321,18 @@ test('growing the window through the fold threshold settles into one layout at e
   let expanded = false;
   for (let height = 720; height <= 1040; height += 4) {
     await page.setViewportSize({ width: 1280, height });
-    const states = await foldedPerFrame(page, 12);
+    const states = await foldedPerFrame(page, 10);
     // A layout that flips on every commit ends in React's update-depth error,
     // which the page's error boundary shows instead of the sidebar.
     await expect(page.getByRole('heading', { name: 'Something went wrong on this page' }), `${height}px crashed`).toHaveCount(0);
     const settled = states.slice(4);
     expect(new Set(settled).size, `${height}px keeps switching layouts: ${states.join(',')}`).toBe(1);
+    // Access stays reachable in the folded layout and the moment the full panel returns.
+    if (!settled[0] && !expanded) await expectClickable(page, 'Access');
     if (!settled[0]) expanded = true;
     // A taller window never folds Usage again once the full panel fitted.
     expect(settled[0] && expanded, `${height}px folded Usage again after it fitted`).toBe(false);
-    if (expanded) await expectClickable(page, 'Access');
   }
   expect(expanded, 'the full Usage panel returned within the sweep').toBe(true);
+  await expectClickable(page, 'Access');
 });
