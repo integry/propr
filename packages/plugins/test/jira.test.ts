@@ -46,11 +46,12 @@ function settings(values: PluginSettingValues): PluginSettingValues {
 }
 
 interface Call { method: string; path: string; json: PluginJsonValue | undefined }
-async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; status?: string; rest?: (call: Call) => ScriptedHttpResponse | undefined } = {}) {
+async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { connections?: string[]; status?: string; rest?: (call: Call) => ScriptedHttpResponse | undefined; state?: Map<string, PluginJsonValue>; firstIssue?: number } = {}) {
   const { manifest } = plugin();
-  let issues = 100;
+  let issues = (options.firstIssue ?? 101) - 1;
+  const api = `${new URL(String(values.siteUrl)).origin}/rest/api/3/`;
   const k = createTestPluginContext({
-    pluginId: 'jira', settings: settings(values), grantedPermissions: manifest.permissions,
+    pluginId: 'jira', settings: settings(values), state: options.state ? Object.fromEntries(options.state) : undefined, grantedPermissions: manifest.permissions,
     outboundHosts: manifest.outboundHosts, outboundHostsFromSettings: manifest.outboundHostsFromSettings, settingDefinitions: manifest.settings.properties,
     connections: options.connections ?? manifest.connections.map(c => c.name), connectionDefinitions: manifest.connections,
     propr: {
@@ -60,8 +61,8 @@ async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { conne
     },
   });
   const byId = Object.fromEntries(Object.entries(HOOKS.ids.tickets).map(([name, id]) => [id, name]));
-  const callOf = (url: string, init: PluginHttpRequestInit): Call => ({ method: init.method ?? 'GET', path: url.slice(API.length), json: init.json });
-  k.respond(API, (url, init) => {
+  const callOf = (url: string, init: PluginHttpRequestInit): Call => ({ method: init.method ?? 'GET', path: url.slice(api.length), json: init.json });
+  k.respond(api, (url, init) => {
     const call = callOf(url, init);
     const custom = options.rest?.(call);
     if (custom) return custom;
@@ -82,7 +83,7 @@ async function kit(values: PluginSettingValues = BASE_SETTINGS, options: { conne
     return { status: 400, json: { errorMessages: ['unexpected'] } };
   });
   const handlers = (await loadPluginHandlers('jira', { includeDevelopment: false }))!;
-  const jira = () => k.requests.filter(r => r.url.startsWith(API)).map(r => callOf(r.url, r.init));
+  const jira = () => k.requests.filter(r => r.url.startsWith(api)).map(r => callOf(r.url, r.init));
   return {
     ...k, jira,
     comments: () => jira().filter(c => c.method === 'POST' && c.path.endsWith('/comment')),
@@ -321,6 +322,39 @@ test('each sync-back event posts its comment and transition when switched on, on
   for (const [input] of expected) await one.syncBack(input, one.ctx);
   assert.deepEqual(one.comments().map(c => commentText(c.json).split('.')[0]), ['The pull request for this ticket was merged']);
   assert.deepEqual(one.moves().map(c => c.json), [{ transition: { id: '31' } }]);
+});
+
+test('tracked tickets are bound to their Jira site: after the site URL changes, the old site\'s tickets are not updated on the new one, and the new one\'s ticket with the same id is not a duplicate', async () => {
+  const OTHER = 'https://other.atlassian.net';
+  const id = HOOKS.ids.tickets.mapped;
+  const onSite = (site: string): PluginWebhookInput => ({ ...webhook('labelAdded', 1, `whk-issues:${site}`), body: HOOKS.requests.labelAdded.body.replaceAll(SITE, site) });
+  const a = await handedOver();
+  assert.deepEqual([...a.state.values()].flatMap(v => (Array.isArray(v) ? v : [])).map(r => (r as { t: string }).t), [`acme.atlassian.net/${id}`], 'recorded under the site and the id');
+
+  // The site URL changes: ENG-123 of acme (acme/api#101) is not commented on or moved on the other site, and nothing is marked done.
+  const b = await kit({ ...BASE_SETTINGS, siteUrl: OTHER }, { state: a.state, firstIssue: 201 });
+  for (const input of [task('started'), task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 55), pull('merged')]) {
+    assert.deepEqual(await b.syncBack(input, b.ctx), { event: input.event.domain === 'task' ? `task.${input.event.type}` : `pull_request.${input.event.type}`, ticket: 'ENG-123', skipped: 'other_site', commented: false, moved: null, problems: [] });
+  }
+  assert.deepEqual(b.requests, [], 'no site was called');
+  assert.ok(b.logs.some(line => line.level === 'warn' && line.message === 'ENG-123 was handed over from another Jira site than the configured one, so it was not updated. Set the Jira site URL back to update it'));
+  // A webhook still coming from acme is not read on the other site by its id.
+  assert.deepEqual(await b.onJiraWebhook(webhook('labelAdded'), b.ctx), { outcome: 'ignored', reason: 'other_site', ticket: null, repository: null, issue: null });
+  assert.deepEqual(b.requests, []);
+  // The other site's own ticket with the same id is handed over, not taken for acme's, and syncs back to the other site.
+  assert.deepEqual(await b.onJiraWebhook(onSite(OTHER), b.ctx), { outcome: 'created', reason: null, ticket: 'ENG-123', repository: 'acme/api', issue: 201 });
+  assert.match(String((b.issues()[0].args[1] as { body: string }).body), /\(https:\/\/other\.atlassian\.net\/browse\/ENG-123\)/);
+  await b.syncBack(task('started', {}, 201), b.ctx);
+  assert.deepEqual(b.comments().map(c => c.path), [`issue/${id}/comment`]);
+  assert.ok(b.requests.every(r => r.url.startsWith(`${OTHER}/rest/api/3/`)), 'only the other site is called');
+
+  // Set back: acme's ticket syncs again (nothing was marked done meanwhile), the other site's is left alone, and acme's ticket is still a duplicate.
+  const back = await kit(BASE_SETTINGS, { state: b.state, firstIssue: 301 });
+  assert.equal((await back.syncBack(task('started'), back.ctx) as { commented: boolean }).commented, true);
+  assert.equal((await back.syncBack(task('failed', { status: 'failed', failureCategory: 'timed_out' }, 201), back.ctx) as { skipped: string }).skipped, 'other_site');
+  assert.equal((await back.onJiraWebhook(onSite(SITE), back.ctx) as { outcome: string; issue: number }).issue, 101);
+  assert.deepEqual([back.comments().map(c => commentText(c.json).split('.')[0]), back.issues().length], [['ProPR started working on this ticket'], 0]);
+  assert.ok(back.requests.every(r => r.url.startsWith(API)));
 });
 
 test('a status no transition reaches is reported in Activity and does not block the comment or later events; a ticket already there is not moved', async () => {

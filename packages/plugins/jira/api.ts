@@ -30,6 +30,29 @@ export function jiraSite(settings: PluginSettingValues, key = 'siteUrl'): string
   return pluginHttpsUrlSettingProblem({ hosts: JIRA_SITE_HOSTS }, value.trim()) ? null : new URL(value.trim()).origin;
 }
 
+/**
+ * The id a ticket is recorded under (`ctx.state`, see `_shared/trackerRecords.ts`):
+ * the site's host and the ticket's issue id, `acme.atlassian.net/10123`. Issue
+ * ids are numbered per site, so a ticket is known by both: after the site URL
+ * setting changes, another site's ticket with the same id is neither taken for
+ * a duplicate nor updated by the sync-back of a ticket handed over from the
+ * first site.
+ */
+export const siteTicketId = (site: string, id: string): string => `${new URL(site).host}/${id}`;
+
+/**
+ * The issue id of a recorded ticket when it was handed over from the site the
+ * settings name now; null when it came from another site (or the site is not
+ * set), as it cannot be reached there.
+ */
+export function ticketOnSite(settings: PluginSettingValues, recordId: string): string | null {
+  const site = jiraSite(settings);
+  const slash = recordId.lastIndexOf('/');
+  if (!site || slash < 0) return null;
+  const id = recordId.slice(slash + 1);
+  return recordId.slice(0, slash) === new URL(site).host && /^\d{1,18}$/.test(id) ? id : null;
+}
+
 /** A refusal from Jira; `permanent` unless it may succeed later. Its message holds only a coded reason. */
 export class JiraApiError extends Error {
   readonly name = 'JiraApiError';

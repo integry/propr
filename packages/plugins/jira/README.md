@@ -130,6 +130,12 @@ token part on its own too.
   plugin store refuses any other host when the settings are saved, and the
   handlers' only outbound host is derived from it (`outboundHostsFromSettings`);
   the manifest's own `outboundHosts` is empty.
+- **Tickets are bound to their site.** Issue ids are numbered per site, so a
+  ticket is recorded as `<site host>/<issue id>` (`siteTicketId`). After the
+  site URL changes, sync-back skips tickets of the earlier site
+  (`other_site`, a warning in Activity, nothing marked done), a webhook whose
+  `issue.self` is on another host is ignored (`other_site`), and the new site's
+  ticket with the same id is not a duplicate.
 - **MCP server: not contributed.** Atlassian's Rovo MCP server
   (`https://mcp.atlassian.com/v2/mcp`) takes OAuth 2.1, or an API token only as
   `Authorization: Basic <base64(email:token)>` and only where an organization

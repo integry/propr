@@ -164,6 +164,12 @@ the comment and later events go ahead.
   most 20 mapped projects.
 - ProPR remembers several hundred handed-over tickets at once, each for a year;
   a forgotten ticket whose label is added again creates a new issue.
+- A handed-over ticket is remembered with its site. After **Jira site URL**
+  changes, tickets handed over from the earlier site are not updated (Jira
+  numbers issues per site, so the same id would name another ticket), webhooks
+  about the earlier site's tickets are ignored, and the new site's tickets are
+  handed over as new ones. Setting the URL back resumes the earlier tickets'
+  updates.
 - Jira retries a failed webhook up to five times, 5 to 15 minutes apart. ProPR
   answers at once (202) and runs the handler from its delivery queue.
 
@@ -174,6 +180,7 @@ the comment and later events go ahead.
 | `siteUrl must be on *.atlassian.net, not …` | Enter your Jira Cloud site URL; Data Center is not supported. |
 | `Jira refused reading the ticket with UNAUTHORIZED` | The email or token is wrong or revoked: enter `email:token` again under **Connections**. |
 | `Jira refused … with FORBIDDEN` or `NOT_FOUND` | The account cannot browse the project, comment or transition: check its project permissions. |
+| `… was handed over from another Jira site than the configured one` | The site URL changed after the ticket was handed over. Set it back to update the ticket, or leave it. |
 | `… project is not mapped to a repository` | Add the ticket's project to **Repository projects**. |
 | `Map a repository to a Jira project … and save first` | Save the project mapping, then choose **Reload choices** on the status settings. |
 | A delivery is refused with 401 | The webhook secret in ProPR does not match the one in Jira. |

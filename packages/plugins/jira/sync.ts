@@ -3,7 +3,7 @@ import { eventName } from '../_shared/eventSelection.js';
 import { markSyncDone, moveSuperseded, planSync, syncEventsSetting, type SyncAction, type TrackerMove } from '../_shared/trackerSync.js';
 import type { TicketRecord } from '../_shared/trackerRecords.js';
 import { adfComment } from './adf.js';
-import { commentOnTicket, deliveryFailure, ticketTransitions, transitionTicket } from './api.js';
+import { commentOnTicket, deliveryFailure, ticketOnSite, ticketTransitions, transitionTicket } from './api.js';
 import { JIRA_SETTINGS } from './settings.js';
 
 /**
@@ -18,6 +18,11 @@ import { JIRA_SETTINGS } from './settings.js';
  * A status no transition from the ticket's current status reaches is logged
  * as a warning (shown in Activity) and skipped; the comment and later events
  * go ahead.
+ *
+ * A ticket handed over from another Jira site than the one the settings name
+ * now (the site URL changed since) is not updated: its issue id would name
+ * another ticket on this site. The event is skipped with a warning and
+ * nothing is marked done, so it syncs again if the setting goes back.
  */
 
 export interface SyncResult { [key: string]: PluginJsonValue; event: string; ticket: string | null; skipped: string | null; commented: boolean; moved: string | null; problems: string[] }
@@ -33,15 +38,15 @@ const shown = (name: string) => name.replace(/["\x00-\x1f\x7f]/g, '').slice(0, 1
 
 type ActionOutcome = { commented?: true; moved?: string; problem?: string };
 
-async function run(ctx: PluginContext, ticket: TicketRecord, action: SyncAction): Promise<ActionOutcome> {
+async function run(ctx: PluginContext, ticket: TicketRecord, id: string, action: SyncAction): Promise<ActionOutcome> {
   if (action.kind === 'comment') {
-    await commentOnTicket(ctx, ticket.t, adfComment(action.message.sentence, action.message.link));
+    await commentOnTicket(ctx, id, adfComment(action.message.sentence, action.message.link));
     await markSyncDone(ctx, ticket, action.marker);
     ctx.log.info(`Commented on ${ticket.k}`, { ticket: ticket.k });
     return { commented: true };
   }
   const name = stateName(ctx, action.move);
-  const { status, transitions } = await ticketTransitions(ctx, ticket.t);
+  const { status, transitions } = await ticketTransitions(ctx, id);
   if (await moveSuperseded(ctx, ticket, action)) {
     ctx.log.info(`Did not move ${ticket.k} back: its pull request was merged already`, { ticket: ticket.k });
     return {};
@@ -60,7 +65,7 @@ async function run(ctx: PluginContext, ticket: TicketRecord, action: SyncAction)
     ctx.log.warn(problem, { ticket: ticket.k, state: shown(name) });
     return { problem };
   }
-  await transitionTicket(ctx, ticket.t, transition.id);
+  await transitionTicket(ctx, id, transition.id);
   await markSyncDone(ctx, ticket, action.marker);
   ctx.log.info(`Moved ${ticket.k} to ${shown(transition.to.name)}`, { ticket: ticket.k, state: shown(transition.to.name) });
   return { moved: transition.to.name };
@@ -75,11 +80,16 @@ export async function syncJiraTicket(input: PluginEventInput, ctx: PluginContext
   if (!outcome.plan) return { event, ticket: null, skipped: outcome.skipped, commented: false, moved: null, problems: [] };
   const { ticket, actions } = outcome.plan;
   const summary: SyncResult = { event, ticket: ticket.k, skipped: null, commented: false, moved: null, problems: [] };
+  const id = ticketOnSite(ctx.settings, ticket.t);
+  if (!id) {
+    ctx.log.warn(`${ticket.k} was handed over from another Jira site than the configured one, so it was not updated. Set the Jira site URL back to update it`, { ticket: ticket.k });
+    return { ...summary, skipped: 'other_site' };
+  }
   // Each action runs even when another failed; done ones are not repeated when the delivery is retried.
   const failures: Error[] = [];
   for (const action of actions) {
     try {
-      const done = await run(ctx, ticket, action);
+      const done = await run(ctx, ticket, id, action);
       if (done.commented) summary.commented = true;
       if (done.moved) summary.moved = done.moved;
       if (done.problem) summary.problems.push(done.problem);
