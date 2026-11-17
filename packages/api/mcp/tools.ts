@@ -143,7 +143,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   const goals = createGoalRoutes({ ...deps.goalServices, db, taskQueue, redisClient });
   const tasks = createTaskRoutes({ db, taskQueue });
   const docker = createDockerRoutes({ redisClient, stopTaskExecution: (id, options) => stopTaskExecution(id, { ...options, exactTaskId: true }) });
-  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false });
+  const changes = createFileChangesRoutes({ db, normalizeJobReferences: false, redisClient, taskQueue });
   // Dispatch already proved the caller's repository access with the grant's verified GitHub
   // client (toolExecution's policy.repository), so the route only resolves the configured spelling.
   const todos = createRepoTodoRoutes({ repositoryScope: createRepositoryScopeResolver({ checksGitHubAccess: () => false }) });

@@ -8,6 +8,7 @@ import { RedisClientType } from 'redis';
 import { Queue, Job } from 'bullmq';
 import { Knex } from 'knex';
 import { sendSafeJson } from './jsonResponse.js';
+import { sendTaskNotFound, taskReferenceExists } from './taskExistence.js';
 import { previewMediaReader, projectTaskPreviewMedia } from '../services/previewMediaProjection.js';
 import { attemptLineageFields, loadAttemptLineage } from './taskAttemptLineage.js';
 import { automationTaskKind } from './automationTaskKind.js';
@@ -47,10 +48,13 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
       let taskInfo: Record<string, unknown> | null = null;
       const redisResult = await getHistoryFromRedis(redisClient, taskId);
       if (redisResult) { history = redisResult.history; taskInfo = redisResult.taskInfo; }
+      let found = redisResult !== null;
       if (history.length === 0 && taskQueue) {
         const queueResult = await getHistoryFromQueue(taskQueue, taskId);
-        if (queueResult) { if (!taskInfo) taskInfo = queueResult.taskInfo; history = queueResult.history; }
+        if (queueResult) { found = true; if (!taskInfo) taskInfo = queueResult.taskInfo; history = queueResult.history; }
       }
+      // An id ProPR has no row, live state or job for is not a pending task.
+      if (!found && !await taskReferenceExists({ db, redisClient, taskQueue }, taskId)) { sendTaskNotFound(res); return; }
       // A task read from live state or the queue still follows up through its persisted row.
       const followupTarget = taskInfo && await loadFollowupDestination(db, taskId);
       if (taskInfo && followupTarget) taskInfo.followupTarget = followupTarget;

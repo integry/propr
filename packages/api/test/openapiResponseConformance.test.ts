@@ -81,6 +81,7 @@ function assertConforms(schema: z.ZodType, body: unknown, label: string): void {
 function redis(values: Record<string, unknown> = {}): RedisClientType {
   return {
     get: async (key: string) => key in values ? JSON.stringify(values[key]) : null,
+    exists: async (keys: string | string[]) => [keys].flat().filter(key => key in values).length,
   } as unknown as RedisClientType;
 }
 
@@ -230,11 +231,13 @@ describe('Handler responses match the published schemas', () => {
       assert.ok(body.taskInfo);
     });
 
-    it('for a task with no recorded state', async () => {
+    it('answers 404, not an empty pending task, for a task with no recorded state', async () => {
       const db = await migratedDatabase();
-      const body = await history(db, 'unknown-task');
-      assert.deepEqual(body.history, []);
-      assert.equal(body.taskInfo, null);
+      const routes = createTaskHistoryRoutes({ db, redisClient: redis(), taskQueue: { getJob: async () => undefined } as never });
+      const { response, sent } = recorder();
+      await routes.getTaskHistory({ params: { taskId: 'unknown-task' } } as unknown as FlatRequest, response);
+      assert.equal(sent.status, 404);
+      assert.deepEqual(sent.body, { error: 'Task not found', code: 'TASK_NOT_FOUND' });
     });
   });
 

@@ -233,16 +233,11 @@ it('documents canonical automation routes and deprecates only the legacy automat
   const all = operations(buildOpenApiDocument());
   const canonical = [...all].filter(([key]) => / \/api\/automation-(definitions|runs)(?:\/|$)/.test(key));
   assert.equal(canonical.length, 16);
-  // Routes added after the rename have no deprecated alias.
-  const canonicalOnly = new Set(['GET /api/automation-definitions/templates']);
+  // Every canonical route, including the template catalog, has a deprecated alias.
   for (const [key, operation] of canonical) {
     assert.deepEqual(operation.tags, ['Automations']);
     assert.equal(operation.deprecated, undefined);
     const legacy = all.get(key.replace('/automation-', '/agent-'));
-    if (canonicalOnly.has(key)) {
-      assert.equal(legacy, undefined, key);
-      continue;
-    }
     assert.ok(legacy, key);
     assert.equal(legacy.deprecated, true);
   }

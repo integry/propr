@@ -41,8 +41,8 @@ export { updateDraftContextConfig, runBackgroundGeneration, selectRefinementMode
 export * from './handlers/index.js';
 
 // Re-export plan issue handlers from separate module
+export { createGetIssuesHandler } from '../planIssueListHandler.js';
 export {
-  createGetIssuesHandler,
   createImplementIssueHandler,
   createUpdateIssueHandler
 } from '../planIssueHandlers.js';

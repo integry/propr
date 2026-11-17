@@ -91,6 +91,17 @@ export async function handleAuthError(req: Request, res: Response): Promise<void
   });
 }
 
+// GitHub owner and repository path segments. Anything else (a decoded `../`,
+// a slash, whitespace) is refused before a GitHub request is built.
+const GITHUB_OWNER_SEGMENT = /^[A-Za-z0-9_-]{1,100}$/;
+const GITHUB_REPOSITORY_SEGMENT = /^[A-Za-z0-9_.-]{1,100}$/;
+
+export function isValidGitHubRepositoryPath(owner: unknown, repo: unknown): boolean {
+  return typeof owner === 'string' && typeof repo === 'string'
+    && GITHUB_OWNER_SEGMENT.test(owner) && GITHUB_REPOSITORY_SEGMENT.test(repo)
+    && repo !== '.' && repo !== '..';
+}
+
 export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   const { redisClient, taskQueue } = deps;
   const resolveMetadataToken = deps.resolveMetadataToken ?? resolveGitHubMetadataToken;
@@ -193,8 +204,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     try {
       const { owner, repo } = req.params;
 
-      if (!owner || !repo) {
-        res.status(400).json({ error: 'Owner and repo are required' });
+      if (!isValidGitHubRepositoryPath(owner, repo)) {
+        res.status(400).json({ error: 'A valid owner and repository name are required', code: 'INVALID_REPOSITORY' });
         return;
       }
 
@@ -268,8 +279,8 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
   async function getWorkflows(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { owner, repo } = req.params;
-      if (!owner || !repo) {
-        res.status(400).json({ error: 'Owner and repo are required' });
+      if (!isValidGitHubRepositoryPath(owner, repo)) {
+        res.status(400).json({ error: 'A valid owner and repository name are required', code: 'INVALID_REPOSITORY' });
         return;
       }
       if (isDemoMode()) {
