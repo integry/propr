@@ -140,6 +140,35 @@ for (const [label, load] of builds) {
     });
 }
 
+for (const [label, { source }] of [['4.x', V4], ['2.x', V2]]) {
+    test(`the ${label} build unescapes globs in linear time with upstream's results`, () => {
+        const require = createRequire(join(root, source, 'package.json'));
+        const { REGEX_REMOVE_BACKSLASH } = require('./lib/constants.js');
+        const { removeBackslashes } = require('./lib/utils.js');
+        const upstream = str => str.replace(REGEX_REMOVE_BACKSLASH, match => (match === '\\' ? '' : match));
+        const alphabet = ['[', ']', '\\', 'a', '\n', ' '];
+        const visit = str => {
+            assert.equal(removeBackslashes(str), upstream(str), JSON.stringify(str));
+            if (str.length < 6) for (const char of alphabet) visit(str + char);
+        };
+        visit('');
+        for (const str of ['a\\*b', '[\\]]\\*', '[a\\]b]\\c', '\\[x]', 'foo/\\(bar\\)/[\\*]/baz\\']) {
+            assert.equal(removeBackslashes(str), upstream(str), str);
+        }
+
+        // Upstream's regex rescans the line from every unclosed `[` (about 1.6 s here).
+        for (const subject of [`\\${'['.repeat(65_000)}`, `\\${'[\\'.repeat(32_000)}`]) {
+            const started = process.hrtime.bigint();
+            removeBackslashes(subject);
+            const ms = Number(process.hrtime.bigint() - started) / 1e6;
+            assert.ok(ms < 200, `${subject.length} characters took ${ms.toFixed(0)} ms`);
+        }
+        const picomatch = require('./index.js');
+        assert.equal(picomatch.scan('a/\\*b/*.js', { unescape: true }).glob, '*.js');
+        assert.equal(picomatch.scan('a/[\\*]\\b', { unescape: true }).glob, '[\\*]b');
+    });
+}
+
 test('the real 2.x consumers match through the vendored build', () => {
     const micromatch = requireFrom('micromatch')('micromatch');
     assert.deepEqual(micromatch(['a.ts', 'b.js', 'c/d.ts'], '**/*.ts'), ['a.ts', 'c/d.ts']);

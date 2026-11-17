@@ -40,8 +40,8 @@ bytes.
 
 - Base: upstream [`picomatch@4.0.7`](https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz)
   (MIT, license retained in `LICENSE`). `index.js`, `posix.js` and `lib/` other
-  than `lib/parse.js` are byte-identical to it, and its `lib/` matches the
-  upstream `4.0.7` git tag.
+  than `lib/parse.js` and `lib/utils.js` are byte-identical to it, and the rest
+  of its `lib/` matches the upstream `4.0.7` git tag.
 - `package.json` (version, description, dropped scripts and dev metadata) and
   this README (replacing upstream's) are the only other differences.
 
@@ -57,7 +57,7 @@ already literalizes some risky repeated extglobs in `analyzeRepeatedExtglob`
 quantifier inside another. A 29-character subject takes about 35 s against
 `+(*)` and 11 s against `+(*a)` on unpatched 2.3.2 and 4.0.7.
 
-The only code change is in `lib/parse.js`:
+The only code change for the advisory is in `lib/parse.js`:
 
 - a new helper, `hasUnboundedWildcard(branch)`, true when a branch holds a
   bare `*` wildcard or `+` quantifier (one not opening a nested `*(...)` or
@@ -87,6 +87,21 @@ leaves that class to its `maxExtglobRecursion` check, and its bash-compatibility
 tests pin `*(f*(o))`, which has the same shape but is unambiguous. This vendored
 build does not change that; it remains an upstream issue
 ([micromatch/picomatch#175](https://github.com/micromatch/picomatch/issues/175)).
+
+## Linear-time `removeBackslashes`
+
+`lib/utils.js` also differs from upstream, in `removeBackslashes` (and its
+now-unused `REGEX_REMOVE_BACKSLASH` import) only. Upstream
+runs `REGEX_REMOVE_BACKSLASH` (`/(?:\[.*?[^\\]\]|\\(?=.))/g`), which rescans to
+the end of the line from every `[` that has no closing `]`: 65,000 `[`
+characters took about 1.6 s (CodeQL "polynomial regular expression used on
+uncontrolled data"). The replacement walks the string once with precomputed
+"next unescaped `]`" and "next line terminator" tables and returns exactly what
+the regex replacement returned (checked against it exhaustively for every
+string up to six characters over `[`, `]`, `\`, `a`, `*` and the four line
+terminators, plus random longer strings); the same input now takes about 1 ms.
+`REGEX_REMOVE_BACKSLASH` stays in `lib/constants.js`, which is unchanged, as
+part of the exported `constants`.
 
 ## Version
 
