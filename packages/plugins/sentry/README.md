@@ -105,10 +105,13 @@ only (the plugin endpoint policy).
   `production`), and the repository has a start left in **Automatic starts per
   repository per day** (default 3). The count is kept in `ctx.state` as
   `autostart:<owner/repo>`, holding the UTC date and the starts made that day.
-  A start is taken in one atomic update, after the Sentry issue is reserved,
+  A start counts against the day it is taken, not the day a retried delivery
+  was first received, and the stored date never moves back. A start is taken in one atomic update, after the Sentry issue is reserved,
   so parallel alerts cannot exceed the cap. When a guard fails, the issue is
   still created, without a label, and its body says why. If the issue cannot
-  be created, its start is given back.
+  be created, its start is given back. If taking the start fails (for example
+  the plugin's state is full), the Sentry issue's reservation is dropped and
+  the delivery fails, so a retry can still create the issue.
 - **Sync back**: subscriptions to `task.completed`, `pull_request.opened` and
   `pull_request.merged` link the pull request to the Sentry issue, as the
   tracker plugins do. On merge, one note ("ProPR's pull request

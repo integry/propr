@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import {
   PluginDeliveryError, PluginSdkError, pluginOutboundHosts, validatePluginSettings,
   type PluginEventInput, type PluginHandler, type PluginHttpRequestInit, type PluginJsonValue, type PluginSettingOptions, type PluginSettingOptionsInput,
@@ -11,6 +11,8 @@ import { PLUGINS_ROOT, getOfficialPlugin, loadPluginHandlers } from '../src/inde
 import { createTestPluginContext, type ScriptedHttpResponse } from '../testing/index.js';
 import { eventExceptions, pickFrames, trimStackTrace, type StackFrame } from '../sentry/stacktrace.js';
 import { capKey, startsUsed, utcDate } from '../sentry/autostart.js';
+import { ticketKey } from '../_shared/trackerRecords.js';
+import { recordId } from '../sentry/api.js';
 
 /**
  * The Sentry plugin's handlers against fixtures: signed Sentry webhook bodies
@@ -99,6 +101,11 @@ const issueCreated = (issue: Record<string, PluginJsonValue>, receivedAt = HOOKS
   return { ...webhook('issueCreated', { body: JSON.stringify(base), receivedAt }), deliveryId: `whk-sentry:${String(issue.id)}-${receivedAt}` };
 };
 const stormIssue = (n: number, extra: Record<string, PluginJsonValue> = {}) => ({ ...API.issues['4501'], id: String(5000 + n), shortId: `API-S${n}`, count: '1000', ...extra });
+/** Starts are charged to the time they are taken: run `fn` with the clock at `now`. */
+async function at<T>(now: number, fn: () => Promise<T>): Promise<T> {
+  mock.timers.enable({ apis: ['Date'], now });
+  try { return await fn(); } finally { mock.timers.reset(); }
+}
 
 let seq = 900;
 function event(domain: RepositoryEvent['domain'], type: string, overrides: Partial<RepositoryEvent> = {}): PluginEventInput {
@@ -211,7 +218,7 @@ test('error text cannot select the repository, labels or model, and renders iner
   assert.equal(/[<>]/.test(issue.title), false);
 });
 
-test('automatic start honours the minimum event count and the allowed environments', async () => {
+test('automatic start honours the minimum event count and the allowed environments', async () => { await at(HOOKS.receivedAt, async () => {
   const k = await kit({ ...AUTO, minEventCount: 10 });
   const started = await k.onSentryWebhook(webhook('issueCreated'), k.ctx) as { started: boolean; notStarted: string | null };
   assert.deepEqual([started.started, started.notStarted], [true, null], '42 events in production');
@@ -229,9 +236,9 @@ test('automatic start honours the minimum event count and the allowed environmen
   const anyEnvironment = await kit({ ...AUTO, environments: ['Staging', 'production'], minEventCount: 3, githubLabel: 'propr-go' });
   for (const name of ['lowCount', 'staging']) assert.equal((await anyEnvironment.onSentryWebhook(webhook(name), anyEnvironment.ctx) as { started: boolean }).started, true, name);
   assert.deepEqual(anyEnvironment.created().map(([, i]) => i.labels), [['propr-go'], ['propr-go']]);
-});
+}); });
 
-test('automatic start stops at the daily cap per repository and UTC day; past it the issue is created without the label and says why', async () => {
+test('automatic start stops at the daily cap per repository and UTC day; past it the issue is created without the label and says why', async () => { await at(HOOKS.receivedAt, async () => {
   const day = HOOKS.receivedAt;
   const storm = Array.from({ length: 6 }, (_, i) => stormIssue(i));
   const k = await kit({ ...AUTO, dailyCap: 3 }, { issues: Object.fromEntries(storm.map(s => [s.id as string, s])) });
@@ -247,8 +254,60 @@ test('automatic start stops at the daily cap per repository and UTC day; past it
   // The next UTC day starts from zero.
   const tomorrow = stormIssue(7);
   const next = await kit({ ...AUTO, dailyCap: 3 }, { issues: { [tomorrow.id as string]: tomorrow }, state: k.state });
+  mock.timers.setTime(day + 24 * 3600_000);
   assert.equal((await next.onSentryWebhook(issueCreated(tomorrow, day + 24 * 3600_000), next.ctx) as { started: boolean }).started, true);
   assert.deepEqual(next.state.get(capKey('acme/api')), { d: '2026-11-18', n: 1 });
+}); });
+
+test('a previous-day delivery retried after midnight counts against the current day and never moves the counter back', async () => {
+  const day = HOOKS.receivedAt;
+  const nextDay = day + 24 * 3600_000;
+  const [late, fresh, third] = [stormIssue(10), stormIssue(11), stormIssue(12)];
+  let failLate = true;
+  const k = await kit({ ...AUTO, dailyCap: 1 }, {
+    issues: Object.fromEntries([late, fresh, third].map(s => [s.id as string, s])),
+    rest: call => (failLate && call.path.startsWith(`organizations/acme/issues/${String(late.id)}/`) ? { status: 503, body: '' } : undefined),
+  });
+  // Received before midnight; its Sentry read fails before anything is reserved.
+  await at(day, () => assert.rejects(k.onSentryWebhook(issueCreated(late, day), k.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent));
+  failLate = false;
+  await at(nextDay, async () => {
+    assert.equal((await k.onSentryWebhook(issueCreated(fresh, nextDay), k.ctx) as { started: boolean }).started, true, 'the new day\'s start');
+    // The retry keeps its previous-day receipt time, but the cap of the day it runs in is used up.
+    const retried = await k.onSentryWebhook(issueCreated(late, day), k.ctx) as { outcome: string; started: boolean; notStarted: string | null };
+    assert.deepEqual([retried.outcome, retried.started, retried.notStarted], ['created', false, 'daily_cap']);
+    assert.deepEqual(k.state.get(capKey('acme/api')), { d: '2026-11-18', n: 1 });
+    const after = await k.onSentryWebhook(issueCreated(third, nextDay), k.ctx) as { started: boolean; notStarted: string | null };
+    assert.deepEqual([after.started, after.notStarted], [false, 'daily_cap']);
+  });
+  assert.equal(k.created().filter(([, i]) => i.labels.length).length, 1, 'one automatic start on the new day');
+  // A clock behind the stored day charges the stored day rather than resetting it.
+  await at(day, async () => {
+    const behind = stormIssue(13);
+    const skewed = await kit({ ...AUTO, dailyCap: 1 }, { issues: { [behind.id as string]: behind }, state: k.state });
+    assert.equal((await skewed.onSentryWebhook(issueCreated(behind, day), skewed.ctx) as { notStarted: string | null }).notStarted, 'daily_cap');
+    assert.deepEqual(skewed.state.get(capKey('acme/api')), { d: '2026-11-18', n: 1 });
+  });
+});
+
+test('a failure taking the start drops the reservation before any issue is asked for, so the retry creates the issue', async () => {
+  await at(HOOKS.receivedAt, async () => {
+    const k = await kit(AUTO);
+    const update = k.ctx.state.update.bind(k.ctx.state);
+    let full = true;
+    k.ctx.state.update = (async (key: string, change: Parameters<typeof update>[1]) => {
+      if (full && key === capKey('acme/api')) throw new PluginSdkError('state_limit', 'state is full');
+      return update(key, change);
+    }) as typeof update;
+    await assert.rejects(k.onSentryWebhook(webhook('issueCreated'), k.ctx), (error: unknown) => error instanceof PluginSdkError && error.code === 'state_limit');
+    assert.equal(k.created().length, 0, 'no issue was asked for');
+    const record = recordId(ORIGIN, 'acme', '4501');
+    assert.equal(JSON.stringify(k.state.get(ticketKey(record)) ?? []).includes(record), false, 'no pending reservation is left');
+    full = false;
+    const retried = await k.onSentryWebhook(webhook('issueCreated'), k.ctx) as { outcome: string; started: boolean };
+    assert.deepEqual([retried.outcome, retried.started], ['created', true]);
+    assert.equal(k.created().length, 1);
+  });
 });
 
 test('with the setting off no trigger label is ever added, whatever the count, environment or cap', async () => {
@@ -261,7 +320,7 @@ test('with the setting off no trigger label is ever added, whatever the count, e
   assert.equal([...k.state.keys()].some(key => key.startsWith('autostart:')), false, 'no start is ever counted');
 });
 
-test('an issue that could not be created gives its start back and is forgotten; Sentry refusals are not quoted', async () => {
+test('an issue that could not be created gives its start back and is forgotten; Sentry refusals are not quoted', async () => { await at(HOOKS.receivedAt, async () => {
   const k = await kit(AUTO);
   k.ctx.propr.createIssue = async () => { throw new PluginSdkError('repository_not_allowed', 'not allowed'); };
   await assert.rejects(k.onSentryWebhook(webhook('issueCreated'), k.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent);
@@ -270,7 +329,7 @@ test('an issue that could not be created gives its start back and is forgotten; 
   await assert.rejects(refused.onSentryWebhook(webhook('issueCreated'), refused.ctx), (error: unknown) => error instanceof PluginDeliveryError && error.permanent && !error.message.includes('SECRET') && /FORBIDDEN/.test(error.message));
   const limited = await kit(BASE_SETTINGS, { rest: call => (call.method === 'GET' ? { status: 429, headers: { 'retry-after': '30' }, body: '' } : undefined) });
   await assert.rejects(limited.onSentryWebhook(webhook('issueCreated'), limited.ctx), (error: unknown) => error instanceof PluginDeliveryError && !error.permanent && error.retryAfterMs === 30_000);
-});
+}); });
 
 test('sync back posts one note on merge when enabled, resolves when switched on, and nothing when off', async () => {
   const k = await kit({ ...BASE_SETTINGS, resolveOnMerge: true });

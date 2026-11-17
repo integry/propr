@@ -2,7 +2,7 @@ import { PluginDeliveryError, PluginSdkError, type PluginContext, type PluginJso
 import { githubTriggerLabel } from '../_shared/trackerIssue.js';
 import { deleteTicket, readTicket, reserveTicket, writeTicket } from '../_shared/trackerRecords.js';
 import { ISSUE_ID, deliveryFailure, getIssue, getLatestEvent, issueWebUrl, recordId, sentryOrganization, sentryOrigin, type SentryEvent, type SentryIssue } from './api.js';
-import { decideStart, releaseStart, startSentence, type NotStartedReason } from './autostart.js';
+import { decideStart, releaseStart, startSentence, type NotStartedReason, type StartDecision } from './autostart.js';
 import { sentryIssueBody, sentryIssueTitle, type SentryErrorSummary } from './issueBody.js';
 import { SENTRY_SETTINGS, autoStartSettings, mappedById, projectRepository } from './settings.js';
 import { eventExceptions } from './stacktrace.js';
@@ -138,13 +138,20 @@ export async function handleSentryWebhook(input: PluginWebhookInput, ctx: Plugin
   const seen = await reserveTicket(ctx, { t: record, k: shortId, r: repository });
   if (seen) return result('duplicate', null, { sentryIssue: seen.k, repository: seen.r, issue: seen.n ?? null });
   const settings = autoStartSettings(ctx.settings);
-  // The cap is taken only once the Sentry issue is reserved, so a duplicate never uses up a start.
-  const decision = await decideStart(ctx, settings, { repository, count: error.count, environment: error.environment, receivedAt: input.receivedAt });
+  let decision: StartDecision;
+  let request: { title: string; body: string; labels: string[] };
+  try {
+    // The cap is taken only once the Sentry issue is reserved, so a duplicate never uses up a start.
+    decision = await decideStart(ctx, settings, { repository, count: error.count, environment: error.environment }, Date.now());
+    request = { title: sentryIssueTitle(error), body: sentryIssueBody(error, startSentence(decision, settings, label)), labels: decision.start ? [label] : [] };
+  } catch (failure) {
+    // No issue was asked for yet: forget the reservation, so the delivery's retry (or a later alert) can still create it.
+    await deleteTicket(ctx, record);
+    throw failure;
+  }
   let created: { number: number };
   try {
-    created = await ctx.propr.createIssue(repository, {
-      title: sentryIssueTitle(error), body: sentryIssueBody(error, startSentence(decision, settings, label)), labels: decision.start ? [label] : [],
-    });
+    created = await ctx.propr.createIssue(repository, request);
   } catch (failure) {
     if (failure instanceof PluginSdkError && NOT_CREATED.has(failure.code)) {
       await deleteTicket(ctx, record);

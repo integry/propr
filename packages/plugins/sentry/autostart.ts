@@ -9,9 +9,12 @@ import type { AutoStartSettings } from './settings.js';
  *
  * The cap is counted in `ctx.state`, one key per repository
  * (`autostart:<owner/repo>`) holding the UTC date and the starts made that
- * day: a new day starts from zero. Taking a start is one atomic
- * `ctx.state.update`, so an alert storm delivered in parallel cannot start
- * more than the cap.
+ * day: a new day starts from zero. A start is charged to the day it is taken
+ * (not the day its webhook was received, which a retried delivery keeps), and
+ * the stored day only ever moves forward: a start taken by a clock behind the
+ * stored day counts against the stored day, so it never resets a newer count.
+ * Taking a start is one atomic `ctx.state.update`, so an alert storm
+ * delivered in parallel cannot start more than the cap.
  */
 
 export type NotStartedReason = 'setting_off' | 'event_count' | 'environment' | 'daily_cap';
@@ -33,15 +36,20 @@ export async function startsUsed(ctx: PluginContext, repository: string, date: s
   return record?.d === date ? record.n : 0;
 }
 
-/** Take one start of today's cap: true when one was left. */
-async function takeStart(ctx: PluginContext, key: string, date: string, cap: number): Promise<boolean> {
-  let taken = false;
+/**
+ * Take one start of today's cap: the day it was charged to when one was left,
+ * otherwise null. The day is `date` or, when the counter already holds a later
+ * day, that one: the counter never goes back to an earlier day.
+ */
+async function takeStart(ctx: PluginContext, key: string, date: string, cap: number): Promise<string | null> {
+  let taken: string | null = null;
   await ctx.state.update(key, current => {
     const record = capRecord(current);
-    const used = record?.d === date ? record.n : 0;
+    const day = record && record.d > date ? record.d : date;
+    const used = record?.d === day ? record.n : 0;
     if (used >= cap) return undefined;
-    taken = true;
-    return { d: date, n: used + 1 };
+    taken = day;
+    return { d: day, n: used + 1 };
   });
   return taken;
 }
@@ -56,14 +64,16 @@ export async function releaseStart(ctx: PluginContext, slot: { key: string; date
 
 /**
  * Decide whether to start: the guards in order (setting, event count,
- * environment), then the cap, which is taken only when the others pass.
+ * environment), then the cap, which is taken only when the others pass and is
+ * charged to the UTC day of `now`, the time the start is taken.
  */
-export async function decideStart(ctx: PluginContext, settings: AutoStartSettings, error: { repository: string; count: number | null; environment: string | null; receivedAt: number }): Promise<StartDecision> {
+export async function decideStart(ctx: PluginContext, settings: AutoStartSettings, error: { repository: string; count: number | null; environment: string | null }, now: number): Promise<StartDecision> {
   if (!settings.enabled) return { start: false, reason: 'setting_off' };
   if (error.count === null || error.count < settings.minEventCount) return { start: false, reason: 'event_count' };
   if (settings.environments.length && (!error.environment || !settings.environments.includes(error.environment.toLowerCase()))) return { start: false, reason: 'environment' };
-  const slot = { key: capKey(error.repository), date: utcDate(error.receivedAt) };
-  return await takeStart(ctx, slot.key, slot.date, settings.dailyCap) ? { start: true, slot } : { start: false, reason: 'daily_cap' };
+  const key = capKey(error.repository);
+  const date = await takeStart(ctx, key, utcDate(now), settings.dailyCap);
+  return date ? { start: true, slot: { key, date } } : { start: false, reason: 'daily_cap' };
 }
 
 /** The issue body's sentence about starting work, from the decision and the settings only. */
