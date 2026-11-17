@@ -328,6 +328,27 @@ async function reconcileChildEvidence(
 }
 
 /**
+ * The child list with the triggering child's merge evidence (its merge and
+ * branch) read individually when GitHub's list has not caught up with it,
+ * as reconcileChildEvidence does for the progress count. Without it, a
+ * closed plan issue whose alternate PR is the one merging could not be
+ * matched to that PR's branch. A merge the read cannot confirm leaves the
+ * list as it is.
+ */
+export async function withTriggeringChildEvidence(
+    octokit: EpicProgressOctokit,
+    { owner, repo, epicBranch, mergedChildPrNumber }: Pick<EpicMergeProgressRequest, 'owner' | 'repo' | 'epicBranch' | 'mergedChildPrNumber'>,
+    children: EpicChildPullRequest[],
+): Promise<EpicChildPullRequest[]> {
+    if (mergedChildPrNumber === null) return children;
+    const row = children.find(pr => pr.number === mergedChildPrNumber);
+    if (row?.merged && row.headRef) return children;
+    const evidence = await readMergedChild(octokit, { owner, repo, epicBranch, epicPrNumber: 0, mergedChildPrNumber }, mergedChildPrNumber);
+    if (!evidence) return children;
+    return row ? children.map(pr => pr === row ? { ...pr, ...evidence } : pr) : [...children, evidence];
+}
+
+/**
  * Plan issues as this report may count them: work shipped by a predecessor
  * is dropped, and once the epic has merged a recorded merge only counts if
  * the PR is proven inside this epic's merge. Issues a final report keeps

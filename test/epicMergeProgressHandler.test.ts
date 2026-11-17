@@ -52,6 +52,8 @@ let issueData: Record<number, Record<string, unknown>> = {};
 let epicBranchChildren: Array<Record<string, unknown>> = [];
 // Every body written to a pull request.
 const bodyWrites: string[] = [];
+// The branch a child PR comes from, as its individual read reports it.
+let childHeadRefs: Record<number, string> = {};
 
 function fakeQuery(table: string) {
     let filter: Record<string, unknown> = {};
@@ -115,6 +117,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
             return { data: {
                 merged_at: additionalChildren.find(pr => pr.number === parameters.pull_number)?.merged_at ?? childMergedAt,
                 merge_commit_sha: childMergeCommitSha,
+                ...(childHeadRefs[parameters.pull_number!] ? { head: { ref: childHeadRefs[parameters.pull_number!] } } : {}),
             } };
         }
         if (route === 'GET /repos/{owner}/{repo}') return { data: { default_branch: 'main' } };
@@ -275,6 +278,7 @@ beforeEach(() => {
     onIssueFetch = () => {};
     issueData = {};
     epicBranchChildren = [];
+    childHeadRefs = {};
     bodyWrites.length = 0;
     failingProgressUpdates = 0;
     completionNotices = 0;
@@ -485,6 +489,28 @@ for (const epicExists of [false, true]) {
         assert.match(body, /^Fixes #101$/m);
         assert.match(body, /^Fixes #100$/m);
         // #102 was closed without any merged work: still left out.
+        assert.doesNotMatch(body, /#102/);
+    });
+}
+
+for (const epicExists of [false, true]) {
+    test(`the epic PR body keeps a closed issue whose alternate PR merges before GitHub's list includes it (${epicExists ? 'body rewrite' : 'creation'})`, async () => {
+        // As above, but the list lags the merge of #203: only its own read shows it merged from #101's branch.
+        planIssueRows[1] = { ...planIssueRows[1], status: 'closed', pr_number: 202 };
+        planIssueRows[2] = { ...planIssueRows[2], status: 'closed' };
+        epicBranchChildren = [
+            { number: 201, state: 'closed', merged_at: '2026-10-10T18:00:00Z', head: { ref: '100/claude-first' } },
+            { number: 202, state: 'closed', merged_at: null, head: { ref: '101/claude-second' } },
+        ];
+        childHeadRefs = { 203: '101/codex-second' };
+        epicPrExists = epicExists;
+        const alternate = { ...payload, pull_request: { ...payload.pull_request, number: 203 } } as unknown as PullRequestEvent;
+        await handleEpicPRCreationOnMerge(alternate, 'test', logger.withCorrelation('test'));
+        const body = epicExists ? bodyWrites.at(-1)! : epicPRCreations[0].body as string;
+        assert.ok(githubRequests.includes('GET /repos/{owner}/{repo}/pulls/{pull_number}:203'));
+        assert.match(body, /^- #101: Issue$/m);
+        assert.match(body, /^Fixes #101$/m);
+        assert.match(body, /^Fixes #100$/m);
         assert.doesNotMatch(body, /#102/);
     });
 }

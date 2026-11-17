@@ -3,7 +3,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { PlanIssueStatus, type PlanIssue } from '../config/planIssueManager.js';
 import type logger from '../utils/logger.js';
 import type { EpicProgressOctokit } from './epicMergeEvidence.js';
-import { listChildPullRequests } from './epicMergeProgress.js';
+import { listChildPullRequests, withTriggeringChildEvidence } from './epicMergeProgress.js';
 import { epicIssuesWithMergedWork } from './epicProgressCount.js';
 
 export interface IssueDetails {
@@ -63,8 +63,9 @@ export function epicBodyIssueNumbers(issues: PlanIssue[], mergedIssues: Readonly
 
 /**
  * epicBodyIssueNumbers with the merged work read from the pull requests into
- * the epic branch. They are only listed when a plan issue is closed, the
- * only case they decide.
+ * the epic branch, including the triggering PR's own evidence when the list
+ * lags its merge (withTriggeringChildEvidence). They are only listed when a
+ * plan issue is closed, the only case they decide.
  */
 export async function loadEpicBodyIssueNumbers(
     octokit: EpicProgressOctokit,
@@ -72,7 +73,9 @@ export async function loadEpicBodyIssueNumbers(
     issues: PlanIssue[],
 ): Promise<number[]> {
     if (!issues.some(issue => issue.status === PlanIssueStatus.CLOSED)) return epicBodyIssueNumbers(issues);
-    const children = await listChildPullRequests(octokit, owner, repo, baseBranch);
+    // GitHub's list may not include the triggering PR yet; read its branch so an alternate PR still keeps its issue.
+    const listed = await listChildPullRequests(octokit, owner, repo, baseBranch);
+    const children = await withTriggeringChildEvidence(octokit, { owner, repo, epicBranch: baseBranch, mergedChildPrNumber }, listed);
     return epicBodyIssueNumbers(issues, epicIssuesWithMergedWork(children, mergedChildPrNumber, issues));
 }
 
