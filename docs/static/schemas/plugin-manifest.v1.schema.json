@@ -608,6 +608,10 @@
                   "connection": {
                     "type": "string",
                     "pattern": "^[a-z][a-z0-9_-]{0,47}$"
+                  },
+                  "autoApply": {
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -725,6 +729,10 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "autoApply": {
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -888,6 +896,34 @@
                     "repositories.read",
                     "notifications.send"
                   ]
+                }
+              },
+              "promptSettings": {
+                "default": [],
+                "maxItems": 16,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "setting": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,47}$"
+                    },
+                    "on": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "off": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
+                  },
+                  "required": [
+                    "setting"
+                  ],
+                  "additionalProperties": false
                 }
               }
             },

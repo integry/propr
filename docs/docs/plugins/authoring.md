@@ -592,6 +592,7 @@ Current `manifestVersion`: `1`. Versions ProPR reads: `1`.
 | `contributes.mcpServers[]{kind=https}.capability` | `string`; **required**; one of `read`, `write` | `read` or `write`. A write server reaches a run only with explicit write authorization. |
 | `contributes.mcpServers[]{kind=https}.authentication` | `string`; **required**; one of `none`, `bearer`, `oauth` | `none`, `bearer` (with a `token` connection) or `oauth` (with an `oauth` connection). |
 | `contributes.mcpServers[]{kind=https}.connection` | `string`; matches `^[a-z][a-z0-9_-]{0,47}$` | The connection that authenticates the server; required unless `authentication` is `none`. |
+| `contributes.mcpServers[]{kind=https}.autoApply` | `boolean`; default `true` | Whether the library item starts with automatic apply on (the default). Set `false` on a write server a command adds, so it reaches only runs the command authorized. |
 | `contributes.mcpServers[]{kind=package}.name` | `string`; **required**; matches `^[a-z][a-z0-9_-]{0,47}$` | Server name, unique within the plugin. Commands name it in `servers`. |
 | `contributes.mcpServers[]{kind=package}.tools` | `string[]`; **required**; at most 64 entries; each matches `^[A-Za-z0-9_.-]{1,128}$` | The tools the agent may call: an allowlist. |
 | `contributes.mcpServers[]{kind=package}.capability` | `string`; **required**; one of `read`, `write` | `read` or `write`. A write server reaches a run only with explicit write authorization. |
@@ -608,6 +609,7 @@ Current `manifestVersion`: `1`. Versions ProPR reads: `1`.
 | `contributes.mcpServers[]{kind=package}.secretEnv` | `object[]`; default `[]`; at most 16 entries | Secret variables, each filled from a `token` connection. The administrator acknowledges at install that they are readable inside the task container. |
 | `contributes.mcpServers[]{kind=package}.secretEnv[].name` | `string`; **required**; matches `^[A-Z_][A-Z0-9_]{0,99}$` | Variable name. |
 | `contributes.mcpServers[]{kind=package}.secretEnv[].connection` | `string`; **required**; matches `^[a-z][a-z0-9_-]{0,47}$` | The `token` connection whose value it receives. |
+| `contributes.mcpServers[]{kind=package}.autoApply` | `boolean`; default `true` | Whether the library item starts with automatic apply on (the default). Set `false` on a write server a command adds, so it reaches only runs the command authorized. |
 
 ### Skills and automation templates
 
@@ -637,6 +639,10 @@ Current `manifestVersion`: `1`. Versions ProPR reads: `1`.
 | `contributes.commands[].shared` | `boolean`; default `false` | A name several plugins may offer, such as `/deploy`. |
 | `contributes.commands[].specific` | `string[]`; default `[]`; at most 32 entries; each matches `^[a-z][a-z0-9-]{0,31}$` | Of a shared command: this plugin's own commands that perform the same operation. |
 | `contributes.commands[].permissions` | `string[]`; default `[]`; at most 11 entries; each one of `events.read`, `tasks.read`, `tasks.create`, `issues.read`, `issues.create`, `issues.comment`, `pull_requests.read`, `pull_requests.comment`, `labels.write`, `repositories.read`, `notifications.send` | Permissions the command uses; each must be one the plugin requests. |
+| `contributes.commands[].promptSettings` | `object[]`; default `[]`; at most 16 entries | Of a `prompt` command: plugin settings whose saved values (or defaults) the task instruction states. The comment's argument cannot change them. |
+| `contributes.commands[].promptSettings[].setting` | `string`; **required**; matches `^[A-Za-z][A-Za-z0-9_]{0,47}$` | The plugin setting to state. A repository map states the entry of the comment's repository. |
+| `contributes.commands[].promptSettings[].on` | `string`; not empty; at most 500 characters | Of a boolean setting: the sentence stated when it is on. Without it, the instruction states `<label>: on`. |
+| `contributes.commands[].promptSettings[].off` | `string`; not empty; at most 500 characters | Of a boolean setting: the sentence stated when it is off. Without it, the instruction states `<label>: off`. |
 
 ### Event subscriptions
 

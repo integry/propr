@@ -380,6 +380,10 @@
       "type": "string",
       "required": false
     },
+    "contributes.mcpServers[]{kind=https}.autoApply": {
+      "type": "boolean",
+      "required": false
+    },
     "contributes.mcpServers[]{kind=package}.name": {
       "type": "string",
       "required": true
@@ -450,6 +454,10 @@
     "contributes.mcpServers[]{kind=package}.secretEnv[].connection": {
       "type": "string",
       "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.autoApply": {
+      "type": "boolean",
+      "required": false
     },
     "contributes.skills": {
       "type": "object[]",
@@ -547,6 +555,22 @@
         "repositories.read",
         "notifications.send"
       ]
+    },
+    "contributes.commands[].promptSettings": {
+      "type": "object[]",
+      "required": false
+    },
+    "contributes.commands[].promptSettings[].setting": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.commands[].promptSettings[].on": {
+      "type": "string",
+      "required": false
+    },
+    "contributes.commands[].promptSettings[].off": {
+      "type": "string",
+      "required": false
     },
     "contributes.subscriptions": {
       "type": "object[]",

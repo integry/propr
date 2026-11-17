@@ -6,5 +6,7 @@
   "plugins/linear",
   "plugins/jira",
   "plugins/sentry",
-  "plugins/notion"
+  "plugins/notion",
+  "plugins/cloudflare",
+  "plugins/vercel"
 ]
