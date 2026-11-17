@@ -34,6 +34,8 @@ export type PullRequestAttentionReason =
     | 'check_failed'
     | 'merge_conflict'
     | 'review_below_goal'
+    /** The latest review round reached the goal, but one of its reviewers reported a blocker. */
+    | 'review_blockers'
     | 'checks_unavailable'
     /** Epic: a sub-PR needs a person. */
     | 'epic_child_needs_attention'
@@ -193,8 +195,14 @@ export interface PullRequestStatusFacts {
      * absent: it does not wait (pullRequestStatusCheckWait).
      */
     checksAwaitedForMs?: number | null;
-    /** Latest persisted review score, null when the PR was never reviewed. */
+    /**
+     * The latest review round's score, null when the PR was never reviewed. A
+     * round with several reviewers (one `/review` asking several models) gives
+     * its lowest score, whatever order they posted in (latestReviewRound).
+     */
     latestReviewScore: number | null;
+    /** Blockers every reviewer of the latest round reported together; null or absent when unknown. */
+    latestReviewBlockers?: number | null;
     /** The head the latest review score was given for; null or absent when not recorded. */
     latestReviewHeadSha?: string | null;
     /** Instance Ultrafix rating goal. */
@@ -270,6 +278,11 @@ function reviewBelowGoal(facts: PullRequestStatusFacts): boolean {
     return facts.latestReviewScore !== null && facts.latestReviewScore < facts.ratingGoal;
 }
 
+/** A reviewer of the latest round reported a blocker; the round's score cannot outweigh it. */
+function reviewHasBlockers(facts: PullRequestStatusFacts): boolean {
+    return facts.latestReviewScore !== null && (facts.latestReviewBlockers ?? 0) > 0;
+}
+
 /** The latest review score was given for an older head than the current one (a fix was pushed since). */
 function reviewForOlderHead(facts: PullRequestStatusFacts): boolean {
     return !!facts.latestReviewHeadSha && facts.latestReviewHeadSha !== facts.pullRequest.headSha;
@@ -288,7 +301,9 @@ function confirmedAttentionReason(facts: PullRequestStatusFacts): PullRequestAtt
     if (stoppedUltrafix(facts)) return 'ultrafix_stopped';
     if (facts.checks.failed > 0) return 'check_failed';
     if (facts.pullRequest.mergeable === false) return 'merge_conflict';
-    if (reviewBelowGoal(facts) && !(reviewForOlderHead(facts) && checksOutstanding(facts))) return 'review_below_goal';
+    const reviewEstablished = !(reviewForOlderHead(facts) && checksOutstanding(facts));
+    if (reviewBelowGoal(facts) && reviewEstablished) return 'review_below_goal';
+    if (reviewHasBlockers(facts) && reviewEstablished) return 'review_blockers';
     return null;
 }
 
@@ -361,7 +376,7 @@ function issueFocus(issue: EpicIssueRef | undefined): EpicStatusFocus | null {
  * and shows no progress count.
  */
 function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts): PullRequestStatus {
-    const own: PullRequestStatusFacts = { ...facts, latestReviewScore: null };
+    const own: PullRequestStatusFacts = { ...facts, latestReviewScore: null, latestReviewBlockers: null };
     const base: PullRequestStatusDetail = { ...emptyDetail(own), epic: { merged: epic.merged, total: epic.total, focus: null } };
     if (epic.merged >= epic.total) return computeSinglePullRequestStatus(own, base);
 

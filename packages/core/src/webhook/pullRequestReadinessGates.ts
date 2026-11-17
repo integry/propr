@@ -5,6 +5,7 @@
  */
 import type { AutoMergeDecision, AutoMergeReason } from '../workflow/autoMergePolicy.js';
 import type { CiMergeClassification } from './checkRunHelpers.js';
+import { latestReviewRound } from '../services/reviewScoreStore.js';
 
 export type ReadinessGateName =
     | 'open' | 'not_draft' | 'checks' | 'mergeable' | 'human_review' | 'ai_review' | 'ultrafix' | 'active_work' | 'policy';
@@ -98,6 +99,7 @@ export interface ReviewScoreFact {
     goal_reached: boolean | number | null;
     blocker_count: number;
     head_sha: string | null;
+    cycle_number?: number | null;
 }
 
 export interface ReviewSummary {
@@ -109,20 +111,21 @@ export interface ReviewSummary {
 }
 
 /**
- * The latest review job's verdict. The newest score is authoritative, as in the
- * Ultrafix loop; an Ultrafix cycle carries the job's own `goal_reached`, and a
- * plain `/review` (no recorded goal) reaches the instance goal when its score
- * meets it and no reviewer of the job reported a blocker.
+ * The latest review round's verdict (latestReviewRound), as the PR status
+ * reads it: the round's lowest score, and the goal is reached only when that
+ * score meets it and no reviewer of the round reported a blocker, whichever
+ * reviewer posted last. An Ultrafix cycle also carries the job's own
+ * `goal_reached`, which the loop decided by the same rule; it can only hold
+ * the goal back, never pass a round below it.
  */
 export function summarizeReview(scores: readonly ReviewScoreFact[], head: string, defaultGoal: number): ReviewSummary | null {
-    const latest = scores[scores.length - 1];
-    if (!latest) return null;
-    const job = scores.filter(score => score.task_id === latest.task_id);
+    const round = latestReviewRound(scores);
+    if (!round) return null;
+    const latest = round.rows[round.rows.length - 1];
     const goal = latest.goal ?? defaultGoal;
-    const goalReached = latest.goal_reached === null || latest.goal_reached === undefined
-        ? latest.score >= goal && job.every(score => score.blocker_count === 0)
-        : Boolean(latest.goal_reached);
-    return { score: latest.score, goal, goalReached, reviewedHead: latest.head_sha, matchesCurrentHead: latest.head_sha === head };
+    const jobVerdict = latest.goal_reached === null || latest.goal_reached === undefined ? true : Boolean(latest.goal_reached);
+    const goalReached = jobVerdict && round.score >= goal && round.blockerCount === 0;
+    return { score: round.score, goal, goalReached, reviewedHead: latest.head_sha, matchesCurrentHead: latest.head_sha === head };
 }
 
 /** Never blocks a PR ProPR is not reviewing: no score and no `ultrafix` label is not applicable. */
