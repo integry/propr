@@ -185,7 +185,7 @@ test('executeTool persists specific PR state failures and get_operation returns 
       if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
         requestedPull = Number(args.pull_number);
         if (requestedPull === 43) return { data: rest({ number: 43, state: 'closed', closed_at: '2026-09-27T12:00:00Z' }) };
-        if (requestedPull === 45) return { data: rest({ number: 45, title: '✅➇ [12 by Claude Opus 5.5] Add retries' } as PullRequestStateSource) };
+        if (requestedPull === 45) return { data: rest({ number: 45, title: '✅❽ [12 by Claude Opus 5.5] Add retries' } as PullRequestStateSource) };
         if ([44, 46, 47, 48, 49].includes(requestedPull)) return { data: rest({ number: requestedPull }) };
         if (requestedPull === 50) throw Object.assign(new Error('Server Error'), {
           name: 'HttpError', status: 502, response: { status: 502, headers: {}, data: { message: 'Server Error' } },
