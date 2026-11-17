@@ -8,6 +8,7 @@ import { getInstanceCatalog } from '../api/proprApi';
 import { listAutomationDefinitions, listAutomationRuns, type AutomationDefinitionRecord } from '../api/automationDefinitionsApi';
 import { AgentList } from '../components/Agents/AgentList';
 import { AgentEditor } from '../components/Agents/AgentEditor';
+import { useUnsavedEditorGuard } from '../components/Agents/useUnsavedEditorGuard';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { TASK_SPLIT_QUERY } from '../hooks/useTaskSelection';
 
@@ -249,6 +250,9 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   const catalogAgents = useCatalogAgents();
   const { host: editorHost, dockRef } = useEditorDock();
   const editing = isNew || definitionId !== null;
+  const editorKey = editing ? (definitionId ?? `new:${templateId ?? ''}`) : null;
+  const unsavedGuard = useUnsavedEditorGuard(editorKey);
+  const { guard } = unsavedGuard;
 
   // A save or delete that finishes after its editor was closed only updates the list:
   // navigating would replace whichever editor is open now and discard its edits.
@@ -262,12 +266,13 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
     if (open) navigate('/automations', { replace: true });
   }, [navigate, remove]);
 
-  const close = useCallback(() => navigate('/automations'), [navigate]);
+  // Escape and Close ask first when the form holds input that was not saved.
+  const close = useCallback(() => guard(() => navigate('/automations')), [guard, navigate]);
 
   useEffect(() => {
     if (!split || !editing) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
+      const target = event.target instanceof Element ? event.target : null;
       const typing = target?.closest('input, textarea, select, [contenteditable="true"]');
       if (event.key !== 'Escape' || event.defaultPrevented || typing || document.querySelector('[aria-modal="true"]')) return;
       event.preventDefault();
@@ -278,12 +283,21 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   }, [close, editing, split]);
 
   const list = (
-    <AgentList definitions={definitions} lastRunStates={lastRunStates} error={error} selectedId={definitionId} readOnly={isDemoMode} agents={catalogAgents} />
+    <AgentList
+      definitions={definitions}
+      lastRunStates={lastRunStates}
+      error={error}
+      selectedId={definitionId}
+      readOnly={isDemoMode}
+      agents={catalogAgents}
+      creating={isNew}
+    />
   );
 
   const editor = editing && createPortal(
     <AgentEditor
-      key={definitionId ?? `new:${templateId ?? ''}`}
+      key={editorKey ?? undefined}
+      onUnsavedChange={unsavedGuard.setUnsaved}
       definitionId={isNew ? null : definitionId}
       templateId={templateId}
       section={runId ? 'run' : section}
@@ -338,7 +352,7 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   }
 
   // The editor sits beside the layout rather than inside it, so it stays mounted when the layout changes.
-  return <>{editor}{layout}</>;
+  return <>{editor}{layout}{unsavedGuard.dialog}</>;
 };
 
 export default AgentsPage;

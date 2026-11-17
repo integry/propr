@@ -422,7 +422,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
 
   async function requireDefinition(req: Request, owner: string): Promise<StoredAgentDefinition> {
     const definition = await getAgentDefinition(String(req.params.id), owner, storeDeps);
-    if (!definition) throw new RouteError(404, 'Automation definition not found');
+    if (!definition) throw new RouteError(404, 'Automation not found');
     return definition;
   }
 
@@ -537,7 +537,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       expectedRevision: revision,
       ...(patch.extensions != null ? { guard: automationExtensionsGuard(database, owner, patch.extensions, adding) } : {}),
     });
-    if (!definition) throw new RouteError(404, 'Automation definition not found');
+    if (!definition) throw new RouteError(404, 'Automation not found');
     res.json({ definition: await attributedAgentDefinition(definition) });
   });
 
@@ -549,7 +549,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
     if (outcome === 'run_active') {
       throw new RouteError(409, 'Automation has a run in progress; cancel it before deleting the automation', 'AGENT_RUN_ACTIVE');
     }
-    if (outcome === 'not_found') throw new RouteError(404, 'Automation definition not found');
+    if (outcome === 'not_found') throw new RouteError(404, 'Automation not found');
     await removeAttachmentFiles(definition.id, 'all').catch(error => {
       logger.warn({ definitionId: definition.id, err: error }, 'Failed to remove automation definition input files');
     });
@@ -581,7 +581,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
         }
         return [...current, ...processed];
       }, storeDeps);
-      if (!changed) throw new RouteError(404, 'Automation definition not found');
+      if (!changed) throw new RouteError(404, 'Automation not found');
       const updated = changed.definition;
       const added = new Set(processed.map(attachment => attachment.id));
       res.status(201).json({
@@ -607,7 +607,7 @@ export function createAutomationDefinitionRoutes(deps: AutomationDefinitionRoute
       if (!attachment) throw new RouteError(404, 'Attachment not found');
       return current.filter(candidate => candidate.id !== attachmentId);
     }, storeDeps);
-    if (!changed || !attachment) throw new RouteError(404, 'Automation definition not found');
+    if (!changed || !attachment) throw new RouteError(404, 'Automation not found');
     // The file goes only once no stored list references it.
     await removeAttachmentFiles(definitionId, [attachment]);
     res.json({ definition: await attributedAgentDefinition(changed.definition) });

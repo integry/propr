@@ -4,6 +4,7 @@ import { FileText, Loader2, Paperclip, X } from 'lucide-react';
 import { AUTOMATION_PROMPT_MAX_LENGTH, MAX_AUTOMATION_ATTACHMENTS, MAX_AUTOMATION_PREVIOUS_REPORTS } from '@propr/shared';
 import type { AutomationDefinitionAttachment } from '../../api/automationDefinitionsApi';
 import { AGENT_CHIP_CLASSES, AGENT_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
+import { agentFieldErrorId } from './agentFormValidation';
 
 interface AgentPromptSectionProps {
   prompt: string;
@@ -15,6 +16,8 @@ interface AgentPromptSectionProps {
   onUpload: (files: File[]) => Promise<void>;
   onRemoveAttachment: (attachmentId: string) => Promise<void>;
   disabled: boolean;
+  /** What is wrong with the prompt, after a refused save. */
+  error?: string | null;
 }
 
 const formatSize = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`);
@@ -22,7 +25,7 @@ const formatSize = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${Math.rou
 /** The prompt, the input files it can refer to, and whether earlier reports are fed back in. */
 export const AgentPromptSection: React.FC<AgentPromptSectionProps> = ({
   prompt, onPromptChange, previousReportCount, onPreviousReportCountChange,
-  attachments, onUpload, onRemoveAttachment, disabled,
+  attachments, onUpload, onRemoveAttachment, disabled, error = null,
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -56,9 +59,13 @@ export const AgentPromptSection: React.FC<AgentPromptSectionProps> = ({
         label="Prompt"
         htmlFor="agent-prompt"
         hint="What the coding agent should look into and report on. Each run starts from this prompt."
+        error={error}
+        errorId={agentFieldErrorId('prompt')}
       >
-        <div className="rounded-md border border-slate-300 bg-white focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500">
+        <div className={`rounded-md border bg-white focus-within:ring-2 ${error ? 'border-red-400 focus-within:border-red-500 focus-within:ring-red-500' : 'border-slate-300 focus-within:border-teal-500 focus-within:ring-teal-500'}`}>
           <TextareaAutosize
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? agentFieldErrorId('prompt') : undefined}
             id="agent-prompt"
             value={prompt}
             onChange={event => onPromptChange(event.target.value)}

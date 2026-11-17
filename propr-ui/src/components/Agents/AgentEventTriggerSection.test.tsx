@@ -69,13 +69,13 @@ describe('automation event trigger', () => {
 
   it('asks for repositories when the automation has none', () => {
     render(<AgentEventTriggerSection enabled repositories={[]} reasonKinds={[]} automationRepositories={[]} onChange={vi.fn()} disabled={false} />);
-    expect(screen.getByTestId('agent-event-trigger-feedback')).toHaveTextContent('Choose the repositories');
+    expect(screen.getByTestId('agent-event-trigger-feedback')).toHaveTextContent('Choose at least one repository first.');
   });
 
   it('shows which event started a run', () => {
     const run = { trigger: 'event', triggerEvent: event } as Pick<AutomationRunRecord, 'trigger' | 'triggerEvent'>;
     expect(runTriggerLabel(run)).toBe('Issue #12 blocked');
-    expect(runTriggerLabel({ trigger: 'schedule', triggerEvent: null })).toBe('Schedule');
+    expect(runTriggerLabel({ trigger: 'schedule', triggerEvent: null })).toBe('Scheduled');
     render(<MemoryRouter><AgentRunTriggerEvent run={run} /></MemoryRouter>);
     const panel = screen.getByTestId('agent-run-trigger-event');
     expect(panel).toHaveTextContent('Billing epic');

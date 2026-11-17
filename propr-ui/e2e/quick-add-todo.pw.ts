@@ -117,7 +117,7 @@ for (const [device, viewport] of Object.entries({
     test('one tap on another creation link navigates to it', async ({ page }) => {
       const submissions = await fixture(page);
       const sheet = await openSheetForm(page);
-      await sheet.getByRole('link', { name: 'New Task' }).tap();
+      await sheet.getByRole('link', { name: 'New task' }).tap();
       await expect(page).toHaveURL(/\/tasks\/new$/);
       await expect(sheet).toBeHidden();
       expect(submissions).toEqual([]);

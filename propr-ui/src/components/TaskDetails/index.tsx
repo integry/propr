@@ -30,7 +30,7 @@ import { useLiveRunStop } from './useLiveRunStop';
 import { useTaskAssignment } from './useTaskAssignment';
 import LatestRunCommands from './LatestRunCommands';
 import { useTaskPullRequestScores } from './pullRequestScores';
-import { followupTargetFor, hasFollowupTarget, taskLabelMode } from './taskKind';
+import { followupTargetFor, getEmptyTraceMessage, hasFollowupTarget, isAutomationReportTask, taskLabelMode } from './taskKind';
 import { useTaskFollowup } from './useTaskFollowup';
 import FollowupHandoffBanner from './FollowupHandoffBanner';
 import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_STATIC, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
@@ -165,14 +165,6 @@ interface TaskDetailsProps {
 
 /** The timeline's and the trace's headers share a height, so their rules line up side by side. */
 const PANE_HEADER_HEIGHT = 'min-h-[2.75rem]';
-
-/** What the trace says when a run recorded no steps, rather than leaving the column blank. */
-const getEmptyTraceMessage = (isActive: boolean, status: string) => {
-  if (isActive) return 'Waiting for the agent’s first step…';
-  return status?.toUpperCase() === 'COMPLETED'
-    ? 'No execution logs recorded — task completed directly.'
-    : 'No execution logs recorded for this run.';
-};
 
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
 const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
@@ -425,7 +417,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
                   highlightedTodoId={highlightedTodoId}
                   streaming={derivedData.isTaskActive}
                   historyTruncated={taskData.liveDetails.historyTruncated}
-                  emptyMessage={getEmptyTraceMessage(derivedData.isTaskActive, derivedData.currentStatus)}
+                  emptyMessage={getEmptyTraceMessage(derivedData.isTaskActive, derivedData.currentStatus, isAutomationReportTask(taskData.taskInfo))}
                 />
               </div>
             </div>

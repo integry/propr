@@ -21,7 +21,7 @@ describe('AgentAutonomySection', () => {
 
   it('leaves only dry run reachable when acting is unavailable', () => {
     render(<AgentAutonomySection autonomy="dry_run" onChange={vi.fn()} actingAvailable={false} disabled={false} />);
-    expect(screen.getByRole('radio', { name: 'Dry run' })).toBeEnabled();
+    expect(screen.getByRole('radio', { name: 'Report only' })).toBeEnabled();
     expect(screen.getByRole('radio', { name: 'Preview & approve' })).toBeDisabled();
     expect(screen.getByRole('radio', { name: 'Auto' })).toBeDisabled();
   });

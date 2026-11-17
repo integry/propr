@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { validateAutomationSchedule } from '@propr/shared';
-import { AGENT_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
+import { AGENT_INPUT_CLASSES, AGENT_INVALID_INPUT_CLASSES, AgentFormRow } from './AgentFormRow';
+import { agentFieldErrorId, scheduleErrorMessage, SCHEDULE_FIVE_PARTS_MESSAGE } from './agentFormValidation';
 import { SCHEDULE_PRESETS, formatUtc, nextScheduledRun } from './agentPresentation';
 
 interface AgentScheduleSectionProps {
@@ -10,6 +10,10 @@ interface AgentScheduleSectionProps {
   pauseWhenUnproductive?: boolean;
   onChange: (change: { scheduleEnabled?: boolean; schedule?: string; pauseWhenUnproductive?: boolean }) => void;
   disabled: boolean;
+  /** Runs in a row with nothing new before the Inbox notice, from the instance setting. */
+  unproductiveRunThreshold: number;
+  /** The error a refused save found; an expression being typed is checked as it changes. */
+  error?: string | null;
 }
 
 const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
@@ -25,13 +29,15 @@ function useMinuteClock(): Date {
 }
 
 /** Off, or a UTC cron expression with presets, a live next-run preview and inline validation. */
-export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enabled, expression, pauseWhenUnproductive = false, onChange, disabled }) => {
+export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
+  enabled, expression, pauseWhenUnproductive = false, onChange, disabled, unproductiveRunThreshold, error: submitError = null,
+}) => {
   const now = useMinuteClock();
-  const error = enabled && expression.trim() ? validateAutomationSchedule(expression.trim()) : null;
+  const error = enabled ? (expression.trim() ? scheduleErrorMessage(expression) : submitError) : null;
   const next = enabled && !error && expression.trim() ? nextScheduledRun(expression.trim(), now) : null;
 
   return (
-    <AgentFormRow label="Schedule" hint="Run automatically on a cron schedule, evaluated in UTC. Off means the automation only runs when triggered.">
+    <AgentFormRow label="Schedule" hint="Runs on a cron schedule in UTC. Off: it runs only when started.">
       <div role="radiogroup" aria-label="Schedule" className="inline-flex overflow-hidden rounded-md border border-slate-300">
         {([false, true] as const).map(value => (
           <button
@@ -60,8 +66,8 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enab
               placeholder="0 9 * * 1-5"
               spellCheck={false}
               aria-invalid={Boolean(error)}
-              aria-describedby="agent-schedule-feedback"
-              className={`${AGENT_INPUT_CLASSES} font-mono ${error ? 'border-red-400' : ''}`}
+              aria-describedby={error ? agentFieldErrorId('schedule') : 'agent-schedule-feedback'}
+              className={`${error ? AGENT_INVALID_INPUT_CLASSES : AGENT_INPUT_CLASSES} font-mono`}
             />
             <span className="rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">UTC</span>
           </div>
@@ -78,25 +84,25 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enab
               </button>
             ))}
           </div>
-          <p id="agent-schedule-feedback" className="text-xs" data-testid="agent-schedule-feedback">
+          <p id={error ? agentFieldErrorId('schedule') : 'agent-schedule-feedback'} className="text-xs" data-testid="agent-schedule-feedback">
             {error
-              ? <span className="text-red-700">{error}</span>
+              ? <span className="font-medium text-red-700">{error}</span>
               : next
                 ? <span className="text-slate-600">Next run: <span className="font-mono text-slate-800">{formatUtc(next)}</span></span>
-                : <span className="text-slate-500">Enter a 5-field cron expression or pick a preset.</span>}
+                : <span className="text-slate-500">{SCHEDULE_FIVE_PARTS_MESSAGE.replace('Enter', 'Pick a preset or enter')}</span>}
           </p>
-          <label className="flex items-start gap-2 text-xs text-slate-700">
+          <label className="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-x-3 text-sm text-slate-800">
             <input
               type="checkbox"
               data-testid="agent-pause-when-unproductive"
               checked={pauseWhenUnproductive}
               disabled={disabled}
               onChange={event => onChange({ pauseWhenUnproductive: event.target.checked })}
-              className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-teal-600 focus-visible:ring-2 focus-visible:ring-teal-500"
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus-visible:ring-2 focus-visible:ring-teal-500"
             />
             <span>
-              Pause the schedule when scheduled runs keep producing no change
-              <span className="block text-slate-500">You are told in the Inbox either way; with this on, the schedule is also turned off then.</span>
+              Pause the schedule after {unproductiveRunThreshold} runs in a row with nothing new
+              <span className="block text-xs text-slate-500">You get an Inbox notice either way.</span>
             </span>
           </label>
         </div>

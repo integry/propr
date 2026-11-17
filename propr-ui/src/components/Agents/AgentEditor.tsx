@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useOptionalToast } from '../ui/useToast';
@@ -22,6 +22,8 @@ interface AgentEditorProps extends AgentEditorCallbacks {
   runId?: string | null;
   /** A shipped template that prefills a new automation's form. */
   templateId?: string | null;
+  /** Told whether the form holds input that closing or replacing it would lose; false again on unmount. */
+  onUnsavedChange?: (unsaved: boolean) => void;
 }
 
 /** A new agent has only its settings; a run section without a run shows the history. */
@@ -67,7 +69,9 @@ const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, s
  * history and run detail; the settings form stays mounted (hidden) while
  * another tab shows, so unsaved edits survive a look at the runs.
  */
-export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerControls, section: requestedSection = 'settings', runId = null, templateId = null, ...callbacks }) => {
+export const AgentEditor: React.FC<AgentEditorProps> = ({
+  definitionId, headerControls, section: requestedSection = 'settings', runId = null, templateId = null, onUnsavedChange, ...callbacks
+}) => {
   const { isDemoMode } = useDemoMode();
   const navigate = useNavigate();
   const openRun = useCallback((run: AutomationRunRecord) => {
@@ -78,6 +82,9 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
   const notify = useCallback<AgentEditorNotify>((message, type) => { addToast?.({ type, message, duration: 3_000 }); }, [addToast]);
   const editor = useAgentEditor(definitionId, callbacks, { openRun, notify, templateId });
   const section = resolveSection(definitionId, requestedSection, runId);
+  const unsaved = editor.hasUnsavedInput && !isDemoMode;
+  useEffect(() => { onUnsavedChange?.(unsaved); }, [onUnsavedChange, unsaved]);
+  useEffect(() => () => onUnsavedChange?.(false), [onUnsavedChange]);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const { definition } = editor;
   const readOnly = isDemoMode || editor.saving;

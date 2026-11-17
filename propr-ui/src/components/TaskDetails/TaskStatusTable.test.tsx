@@ -362,6 +362,30 @@ describe.each(['rail', 'branch'] as const)('%s automation report labels', (varia
     }
   });
 
+  it('does not repeat the preparation step for the extensions a run resolved', () => {
+    const base: HistoryItem[] = [
+      { state: 'pending', timestamp: at(0) },
+      { state: 'processing', timestamp: at(1), reason: 'Preparing agent workspace' },
+      { state: 'claude_execution', timestamp: at(2), reason: 'Running agent claude' },
+    ];
+    const { unmount } = render(<TaskStatusTable variant={variant} commandMode="automation-report" history={base} />);
+    const preparing = screen.getAllByText('Preparing Analysis').length;
+    unmount();
+
+    const resolved = (servers: string[]): HistoryItem => ({
+      state: 'processing', timestamp: at(2), reason: 'Extensions resolved',
+      metadata: { event: 'extensions.resolved', servers, skills: [], skipped: [] } as HistoryItem['metadata'],
+    });
+    const { unmount: unmountEmpty } = render(<TaskStatusTable variant={variant} commandMode="automation-report" history={[...base, resolved([])]} />);
+    expect(screen.getAllByText('Preparing Analysis')).toHaveLength(preparing);
+    expect(screen.queryByText('Extensions Applied')).not.toBeInTheDocument();
+    unmountEmpty();
+
+    render(<TaskStatusTable variant={variant} commandMode="automation-report" history={[...base, resolved(['github'])]} />);
+    expect(screen.getAllByText('Preparing Analysis')).toHaveLength(preparing);
+    expect(screen.getAllByText('Extensions Applied').length).toBeGreaterThan(0);
+  });
+
   it('keeps cancellation and failure wording for a report run', () => {
     render(<TaskStatusTable variant={variant} commandMode="automation-report" history={[
       { state: 'claude_execution', timestamp: at(1), reason: 'Running agent codex' },

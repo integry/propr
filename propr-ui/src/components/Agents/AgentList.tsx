@@ -13,6 +13,7 @@ import {
   repoShortName,
   runnerLabel,
   scheduleSummary,
+  scheduleTooltip,
 } from './agentPresentation';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
 import { AgentTemplateLinks } from './AgentTemplates';
@@ -29,6 +30,8 @@ interface AgentListProps {
   now?: number;
   /** The instance's configured agents, to name an agent picked without a model. */
   agents?: readonly InstanceCatalogAgent[];
+  /** The new-automation form is open beside the list and offers the templates itself. */
+  creating?: boolean;
 }
 
 const MAX_REPO_CHIPS = 3;
@@ -71,7 +74,7 @@ const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?
           ))}
           {extraRepos > 0 && <span>+{extraRepos}</span>}
           <CodeChip>{runnerLabel(definition, agents)}</CodeChip>
-          <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" aria-hidden="true" />{scheduleSummary(definition, now)}</span>
+          <span className="inline-flex items-center gap-1" title={scheduleTooltip(definition) ?? undefined} data-testid="agent-schedule-summary"><Clock className="h-3 w-3" aria-hidden="true" />{scheduleSummary(definition, now)}</span>
           <CreatorMarker creator={definition.createdBy} />
         </div>
       </Link>
@@ -82,7 +85,9 @@ const AgentRow: React.FC<{ definition: AutomationDefinitionRecord; lastRunState?
 /** The saved agents, searchable, with a launchpad empty state when there are none. */
 const NO_AGENTS: readonly InstanceCatalogAgent[] = [];
 
-export const AgentList: React.FC<AgentListProps> = ({ definitions, lastRunStates, error, selectedId, readOnly = false, now = Date.now(), agents = NO_AGENTS }) => {
+export const AgentList: React.FC<AgentListProps> = ({
+  definitions, lastRunStates, error, selectedId, readOnly = false, now = Date.now(), agents = NO_AGENTS, creating = false,
+}) => {
   const [query, setQuery] = useState('');
   const visible = useMemo(() => definitions?.filter(definition => matches(definition, query.trim(), agents)) ?? [], [agents, definitions, query]);
 
@@ -113,12 +118,13 @@ export const AgentList: React.FC<AgentListProps> = ({ definitions, lastRunStates
           <div className="flex flex-col items-center px-6 py-16 text-center">
             <Workflow className="h-10 w-10 text-slate-300" strokeWidth={1.5} aria-hidden="true" />
             <h2 className="mt-4 text-base font-semibold text-slate-900">No automations yet</h2>
-            <p className="mt-2 max-w-md text-sm text-slate-500">
-              An automation is a saved prompt that a coding agent runs on demand or on a schedule against your repositories, writing a report.
-              It can stop there, wait for your approval, or act on the report through ProPR tools.
-            </p>
-            <div className="mt-5">{newAgent}</div>
-            <AgentTemplateLinks readOnly={readOnly} />
+            <p className="mt-2 max-w-md text-sm text-slate-500">A saved prompt that runs on a schedule or on demand and writes a report.</p>
+            {!creating && (
+              <>
+                <div className="mt-5">{newAgent}</div>
+                <AgentTemplateLinks readOnly={readOnly} />
+              </>
+            )}
           </div>
         ) : visible.length === 0 ? (
           <p className="px-4 py-6 text-sm text-slate-500">

@@ -34,7 +34,7 @@ const expectPrefilled = () => {
   expect(screen.getByLabelText('Description')).toHaveValue(triage.description);
   expect(screen.getByLabelText('Prompt')).toHaveValue(triage.prompt);
   expect(screen.getByLabelText('Cron expression')).toHaveValue(triage.schedule);
-  expect(screen.getByRole('radio', { name: 'Dry run' })).toBeChecked();
+  expect(screen.getByRole('radio', { name: 'Report only' })).toBeChecked();
   const review = screen.getByTestId('agent-template-review');
   for (const label of ['Repositories', 'Schedule', 'Autonomy']) expect(review).toHaveTextContent(`${label}:`);
 };
@@ -70,6 +70,26 @@ describe('AgentEditor templates', () => {
       name: triage.name, description: triage.description, prompt: triage.prompt, schedule: triage.schedule,
       autonomy: 'dry_run', capabilities: triage.capabilities, previousReportCount: triage.previousReportCount, repositories: [],
     }));
+  });
+
+  it('asks before a template replaces a typed name and prompt, and keeps them when declined', async () => {
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My own review' } });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Look at the open PRs' } });
+    const option = () => within(screen.getByTestId('agent-template-picker')).getByRole('button', { name: new RegExp(triage.name) });
+
+    fireEvent.click(option());
+    const question = screen.getByRole('dialog', { name: `Replace what you entered with “${triage.name}”?` });
+    fireEvent.click(within(question).getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByLabelText('Name')).toHaveValue('My own review');
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Look at the open PRs');
+
+    fireEvent.click(option());
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Use template' }));
+    expectPrefilled();
+    // Filled from the template and not edited since: another template applies without asking.
+    fireEvent.click(option());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('opens prefilled from the template named in the link', () => {

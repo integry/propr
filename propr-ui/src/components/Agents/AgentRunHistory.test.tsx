@@ -58,7 +58,7 @@ describe('AgentRunHistory', () => {
     expect(rows[0]).toHaveTextContent('Awaiting approval');
     expect(rows[0]).toHaveTextContent('5m');
     expect(rows[1]).toHaveTextContent('3h ago');
-    expect(within(rows[1]).getByText('Schedule')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Scheduled')).toBeInTheDocument();
     expect(rows[1]).toHaveTextContent('Completed');
     expect(rows[1]).toHaveTextContent('2m');
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();

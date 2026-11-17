@@ -191,7 +191,8 @@ test.describe('automation runs on a phone', () => {
       await expect(rows.nth(0).getByText('Running', { exact: true })).toBeVisible();
       await expect(rows.nth(1).getByText('Cancelled', { exact: true })).toBeVisible();
       await expect(rows.nth(2).getByText('Completed', { exact: true })).toBeVisible();
-      await expect(rows.nth(2).getByTestId('agent-run-preview')).toHaveText('Hover to preview the report');
+      // No hover hint: touch has no hover, and the row opens the run with its report.
+      await expect(rows.nth(2).getByTestId('agent-run-preview')).toHaveText('');
 
       // Focusing a row (as a keyboard or switch user does) reads its report preview.
       await rows.nth(2).focus();

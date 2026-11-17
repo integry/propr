@@ -114,7 +114,7 @@ function forbidRecursion(principal: McpPrincipal): void {
 
 async function ownedDefinition(deps: ToolDeps, principal: McpPrincipal, definitionId: string, write: boolean): Promise<StoredAgentDefinition> {
   const definition = await getAgentDefinition(definitionId, principal.user.id, { database: deps.db });
-  if (!definition) throw new McpError('NOT_FOUND', 'Automation definition not found.', 404);
+  if (!definition) throw new McpError('NOT_FOUND', 'Automation not found.', 404);
   await authorizeRepositories(deps, principal, definition.repositories, write);
   return definition;
 }

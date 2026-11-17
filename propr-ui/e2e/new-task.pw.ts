@@ -9,9 +9,9 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
     if (device === 'mobile') {
       // On phones, creation starts from the bottom bar's Create sheet.
       await page.getByRole('navigation', { name: 'Primary navigation', exact: true }).getByRole('button', { name: 'Create', exact: true }).click();
-      await page.getByRole('dialog', { name: 'Create' }).getByRole('link', { name: 'New Task', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Create' }).getByRole('link', { name: 'New task', exact: true }).click();
     } else {
-      await page.getByRole('button', { name: 'New Task', exact: true }).click();
+      await page.getByRole('button', { name: 'New task', exact: true }).click();
     }
     await expect(page.getByRole('heading', { name: 'New task', exact: true })).toBeVisible();
     await page.getByText('Select a repository', { exact: true }).click();
@@ -23,7 +23,7 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
     await expect(dialog.getByLabel('Agent', { exact: true })).toBeHidden();
     await expect(dialog.getByRole('button', { name: 'Plan first', exact: true })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Plan first', exact: true })).toBeEnabled();
-    await expect(dialog.getByRole('link', { name: /New Plan|New Goal/ })).toHaveCount(0);
+    await expect(dialog.getByRole('link', { name: /New plan|New goal/i })).toHaveCount(0);
     await screenshot(page, `new-task-${device}`);
     await page.getByRole('button', { name: 'Run task', exact: true }).click();
     await expect(page.getByRole('link', { name: 'View issue #42' })).toBeVisible();
@@ -84,7 +84,7 @@ test('repository and todo launchers prefill the request without completing the t
 test('task modal traps focus and dismisses back to the task list', async ({ page }) => {
   await fixture(page);
   await page.goto('/tasks');
-  await page.getByRole('button', { name: 'New Task', exact: true }).click();
+  await page.getByRole('button', { name: 'New task', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New task' });
   await expect(dialog.getByLabel('Prompt', { exact: true })).toBeFocused();
   const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
@@ -97,5 +97,5 @@ test('task modal traps focus and dismisses back to the task list', async ({ page
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(/\/tasks$/);
-  await expect(page.getByRole('button', { name: 'New Task', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'New task', exact: true })).toBeEnabled();
 });

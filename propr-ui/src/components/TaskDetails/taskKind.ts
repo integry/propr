@@ -64,3 +64,25 @@ export function followupTargetFor(
 /** How the dialog names a follow-up's thread, with the repository in full. */
 export const describeFollowupTarget = (target: FollowupTarget): string =>
   `${target.kind === 'pull_request' ? 'PR' : 'Issue'} ${target.repository}#${target.number}`;
+
+/** What the trace says when a run recorded no steps, rather than leaving the column blank. */
+export const getEmptyTraceMessage = (isActive: boolean, status: string, automationReport = false) => {
+  if (isActive) return 'Waiting for the agent’s first step…';
+  // An automation report's agent steps are not streamed here; the report itself is on the automation's run page.
+  if (automationReport) return 'This report’s agent steps were not recorded. The report is on the automation’s run page.';
+  return status?.toUpperCase() === 'COMPLETED'
+    ? 'No execution logs recorded — task completed directly.'
+    : 'No execution logs recorded for this run.';
+};
+
+const EXTENSIONS_RESOLVED_EVENT = 'extensions.resolved';
+
+/** A timeline entry recording which library extensions a run resolved; it repeats the `processing` state it is past. */
+export const isExtensionsResolvedEvent = (metadata: { event?: unknown } | undefined): boolean => metadata?.event === EXTENSIONS_RESOLVED_EVENT;
+
+/** An extensions entry that resolved nothing: left out of the timeline, so it does not repeat the preparation step. */
+export const resolvedNoExtensions = (metadata: { event?: unknown; servers?: unknown; skills?: unknown; skipped?: unknown } | undefined): boolean => {
+  if (!isExtensionsResolvedEvent(metadata)) return false;
+  const empty = (value: unknown) => !Array.isArray(value) || value.length === 0;
+  return empty(metadata?.servers) && empty(metadata?.skills) && empty(metadata?.skipped);
+};

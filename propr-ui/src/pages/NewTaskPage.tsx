@@ -20,6 +20,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
 import { TaskExtensionsOptions } from '../components/Extensions/TaskExtensionsOptions';
 import { useTaskExtensionChoices } from '../components/Extensions/useTaskExtensionsPreview';
+import { useDiscardConfirmation } from '../components/ui/useDiscardConfirmation';
 
 const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50';
 interface Prefill { initialRepository?: string; initialPrompt?: string; todoIds?: string[] }
@@ -316,11 +317,21 @@ function NewTaskLauncher({ scope }: { scope: string }) {
   const navigate = useNavigate();
   const [dirty, setDirty] = useState(false);
   const repoOptions = useDecoratedRepoOptions(useMemo(() => catalog?.repositories.map(({ name, enabled }) => ({ name, enabled })), [catalog]));
-  const requestClose = async () => {
-    if (launcher.busy || processingFiles) return;
-    if (!snapshot && dirty && !window.confirm('Discard this unsaved task? Your prompt, attachments, and form changes will be lost.')) return;
+  const { confirmDiscard, dialog: discardDialog } = useDiscardConfirmation();
+  const close = async () => {
     await launcher.dismiss();
     navigate('/tasks', { replace: true });
+  };
+  const requestClose = async () => {
+    if (launcher.busy || processingFiles) return;
+    if (!snapshot && dirty) {
+      confirmDiscard(
+        { title: 'Discard this unsaved task?', message: 'Your prompt, attachments, and form changes will be lost.' },
+        () => void close(),
+      );
+      return;
+    }
+    await close();
   };
 
   return <CreationDialog title="New task" icon={Zap} description="Describe the change you want. Run task creates an issue and starts implementation."
@@ -360,5 +371,6 @@ function NewTaskLauncher({ scope }: { scope: string }) {
       </div>
       <TaskLauncherActions {...launcher} onCancel={() => void requestClose()} />
     </form>
+    {discardDialog}
   </CreationDialog>;
 }
