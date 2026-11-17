@@ -7,7 +7,8 @@ import { AGENT_RUN_MCP_CLIENT_ID } from './agentRunGrants.js';
 
 const refShape = { branch: z.string().min(1).max(255).optional(), ref: z.string().min(1).max(255).optional() };
 
-function assertRelativePath(path: string): void {
+/** Repository-relative paths only: no absolute path, `..` segment, backslash or NUL. */
+export function assertRelativePath(path: string): void {
   if (path.startsWith('/') || path.split('/').includes('..') || path.includes('\\') || path.includes('\0')) throw new McpError('INVALID_PATH', 'Use a repository-relative path without traversal.');
 }
 

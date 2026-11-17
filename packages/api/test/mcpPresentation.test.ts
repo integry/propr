@@ -265,3 +265,79 @@ test('a wait_goal timeout summary reports the returned lifecycle state without d
 
   assert.match(summarize('running'), /The timeout itself is not a goal failure; the goal is currently running\./);
 });
+
+const read = (name: string) => ({ name, readOnly: true }) as McpTool;
+const presentationConfig = { instanceId: 'example', origin: 'https://api.example' };
+
+test('read summaries count the entity a tool lists, with correct singular and plural', () => {
+  const summary = (name: string, args: Record<string, unknown>, data: Record<string, unknown>) => presentResult(read(name), args, data, presentationConfig).summary;
+  // The grouping keys and the repositories in scope are arrays too; neither is what was listed.
+  assert.equal(summary('get_cost_breakdown', { groupBy: ['outcome'] }, {
+    period: '30d', repository: 'granted', group_by: ['outcome'], rows: [{ outcome: 'merged' }, { outcome: 'failed' }], totals: {}, repositories: ['acme/api'],
+  }), 'Cost breakdown grouped by outcome: 2 rows for 30d.');
+  assert.match(summary('list_pull_requests', {}, { repositories: ['acme/api'], pullRequests: [{ number: 1 }, { number: 2 }], nextOffset: null }),
+    /^list pull requests: 2 pull requests in this page\.$/);
+  assert.match(summary('list_pull_requests', {}, { repositories: ['acme/api', 'acme/web'], pullRequests: [{ number: 1 }], nextOffset: 20 }),
+    /^list pull requests: 1 pull request in this page\. More follow\.$/);
+  assert.equal(summary('list_tasks', {}, { tasks: [], nextOffset: null }), 'list tasks: 0 tasks in this page.');
+  assert.equal(summary('list_task_submissions', {}, { submissions: [{}], nextOffset: null }), 'list task submissions: 1 task submission in this page.');
+  assert.equal(summary('list_todo_categories', {}, { items: [{}, {}] }), 'list todo categories: 2 TODO categories in this page.');
+  assert.equal(summary('list_repositories', {}, { repositories: [{}], nextOffset: null }), 'list repositories: 1 repository in this page.');
+  assert.equal(summary('get_pull_request_discussion', { pullRequest: 4 }, { head: 'a', comments: [{}], nextPage: null, nextCursor: null }),
+    'get pull request discussion: 1 comment in this page.');
+  assert.equal(summary('resolve_reference', {}, { match: 'exact', candidates: [{}] }), 'exact: 1 candidate.');
+  assert.equal(summary('get_agent_activity', { taskId: 't-1' }, { activity: [{}] }), '1 recent activity entry for task t-1.');
+});
+
+test('single-object reads summarize the object instead of counting a nested array', () => {
+  const summary = (name: string, args: Record<string, unknown>, data: Record<string, unknown>) => presentResult(read(name), args, data, presentationConfig).summary;
+  const gates = Array.from({ length: 9 }, (_, index) => ({ gate: `g${index}`, status: 'pass', reason: 'ok' }));
+  const readiness = { repository: 'acme/api', number: 12, verdict: 'waiting', gates, blockingReasons: [], waitingReasons: ['checks_pending'] };
+  assert.equal(summary('get_pull_request_readiness', { pullRequest: 12 }, readiness), 'PR #12 is waiting: checks pending.');
+  assert.equal(summary('get_pull_request_readiness', { number: 12 }, { ...readiness, verdict: 'blocked', blockingReasons: ['merge_conflict', 'draft'] }),
+    'PR #12 is blocked: merge conflict, draft.');
+  assert.equal(summary('get_pull_request_readiness', { number: 12 }, { ...readiness, verdict: 'ready', waitingReasons: [] }), 'PR #12 is ready to integrate.');
+  assert.equal(summary('get_pull_request_readiness', { number: 12 }, { ...readiness, verdict: 'merged' }), 'PR #12 is merged.');
+  assert.equal(summary('get_pull_request', { repository: 'acme/api', pullRequest: 12 }, {
+    number: 12, title: 'Bound retries', state: 'open', draft: false, merged: false, reviews: [], checks: [], scoreHistory: [],
+  }), 'PR #12 "Bound retries": open.');
+  assert.equal(summary('get_pull_request', { pullRequest: 11 }, { number: 11, title: 'Old', state: 'closed', merged: true, reviews: [{}] }), 'PR #11 "Old": merged.');
+  assert.equal(summary('get_repository_configuration', { repository: 'acme/api' }, {
+    name: 'acme/api', baseBranch: 'main', enabled: true, nonBlockingChecks: [], cancelCiDuringFollowupWorkflows: [],
+  }), 'Repository configuration for acme/api on main, enabled.');
+  // An unrecognized single read never reports a count of whatever array it carries.
+  assert.equal(summary('get_execution_settings', {}, { settings: [] }), 'get execution settings: retrieved.');
+  for (const name of ['get_pull_request', 'get_pull_request_readiness', 'get_repository_configuration', 'get_execution_settings']) {
+    assert.doesNotMatch(summary(name, { number: 1 }, { number: 1, title: 't', state: 'open', verdict: 'unknown', waitingReasons: [], gates: [], items: [] }), /\bitems\b/);
+  }
+});
+
+test('links.ui is the configured frontend URL for every tool and omitted without one', () => {
+  const original = process.env.FRONTEND_URL;
+  const links = (name: string, args: Record<string, unknown> = {}, data: Record<string, unknown> = {}) => presentResult(read(name), args, data, presentationConfig).links;
+  try {
+    process.env.FRONTEND_URL = 'https://app.example/';
+    for (const name of ['get_setup_status', 'list_repositories', 'list_models', 'get_cost_breakdown', 'get_repository_configuration', 'list_plans']) {
+      assert.equal(links(name).ui, 'https://app.example', name);
+      assert.equal(links(name).instance, 'https://api.example');
+    }
+    assert.equal(links('list_notifications').ui, 'https://app.example/inbox');
+    assert.equal(links('get_task', { taskId: 't-1' }).ui, 'https://app.example/tasks/t-1');
+    assert.equal(links('get_task_submission', { submissionId: 's-1' }).ui, 'https://app.example');
+    assert.equal(links('get_pull_request', { repository: 'acme/api', pullRequest: 4 }).ui, 'https://github.com/acme/api/pull/4');
+    assert.equal(links('get_pull_request_readiness', { repository: 'acme/api', number: 4 }).ui, 'https://github.com/acme/api/pull/4');
+
+    delete process.env.FRONTEND_URL;
+    for (const name of ['get_setup_status', 'list_repositories', 'list_models', 'get_cost_breakdown', 'list_notifications']) {
+      const unconfigured = links(name);
+      assert.equal('ui' in unconfigured, false, name);
+      assert.equal(unconfigured.resource.startsWith('propr://instances/example/'), true);
+    }
+    assert.equal('ui' in links('get_task_submission', { submissionId: 's-1' }), false);
+    // Entity pages keep their existing instance-origin base.
+    assert.equal(links('get_goal', { goalId: 'g-1' }).ui, 'https://api.example/goals/g-1');
+  } finally {
+    if (original === undefined) delete process.env.FRONTEND_URL;
+    else process.env.FRONTEND_URL = original;
+  }
+});

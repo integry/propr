@@ -182,10 +182,13 @@ test('get_agent_activity returns compact newest-first narration for direct and o
       () => tool.run({ principal: { user: { id: 'owner-2' } } as McpPrincipal, args: taskArgs }),
       /Target not found/,
     );
-    assert.throws(
-      () => tool.schema.parse({ repository, goalId: directGoalId, taskId: 'goal-task-direct' }),
-      /Provide exactly one/,
-    );
+    // The rule is checked after the schema so it fails with the INVALID_INPUT envelope, not SDK plain text.
+    for (const args of [{ repository, goalId: directGoalId, taskId: 'goal-task-direct' }, { repository }]) {
+      assert.throws(
+        () => tool.validate!(tool.schema.parse(args)),
+        (error: unknown) => (error as { code?: string }).code === 'INVALID_INPUT' && /Provide exactly one of goalId or taskId\./.test((error as Error).message),
+      );
+    }
   } finally {
     await db.destroy();
   }

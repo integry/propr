@@ -247,6 +247,12 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         await db('task_history').insert({ task_id: taskId, state: 'completed' });
         const changes = await call('get_task_changes', { repository, taskId, detail: 'diff', path: 'src/retry.ts' });
         assert.equal(changes.files[0].diff, '+Handle transient failures\n'); assert.equal(cacheReads.at(-1), taskId);
+        // Path traversal is refused like read_repository_file does, instead of an empty file list.
+        for (const path of ['../../.env', '/etc/passwd', 'src\\retry.ts']) {
+          const refused = await client.callTool({ name: 'get_task_changes', arguments: { repository, taskId, detail: 'diff', path } });
+          assert.equal(refused.isError, true, path);
+          assert.equal((refused.structuredContent as { error: { code: string } }).error.code, 'INVALID_PATH', path);
+        }
         const followup = await call('send_task_followup', { repository, taskId, message: 'Please cover transient errors' }, true); assert.equal(followup.state, 'queued', JSON.stringify(followup));
         assert.equal((await call('get_operation', { operationId: followup.operationId })).state, 'queued');
         const nextTask = followup.result.jobId;

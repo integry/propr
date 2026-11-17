@@ -180,7 +180,7 @@ test('the pull request inventory walks a wide grant in repository windows', asyn
   const tool = { name: 'list_pull_requests', readOnly: true } as McpTool;
   assert.match(presentResult(tool, {}, { repositories: first.repositories, pullRequests: [], repositoriesNotScanned: 4,
     nextRepositoryOffset: 20 }, mcpConfig).summary,
-  /^0 pull requests across 19 repositories\. 4 granted repositories were not scanned; work there may be missing\. Continue with repositoryOffset 20\.$/);
+  /^list pull requests: 0 pull requests in this page\. 4 granted repositories were not scanned; work there may be missing\. Continue with repositoryOffset 20\.$/);
 });
 
 test('current activity paginates sections and reports truncation', async t => {
