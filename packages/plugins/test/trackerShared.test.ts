@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { PLUGIN_PROPR_LIMITS, PluginDeliveryError, type PluginJsonValue } from '@propr/shared';
 import { createTestPluginContext } from '../testing/index.js';
 import { ISSUE_BODY_BYTES, handOffTicket, inertQuote, ticketIssueBody, type TicketHandOff } from '../_shared/trackerIssue.js';
-import { PULL_LIMIT, SHARD_BYTES, findTicketByPullRequest, progressKey, readProgress, readTicket, ticketKey, updateProgress, withPullRequest, type ProgressRecord, type TicketRecord } from '../_shared/trackerRecords.js';
+import { PULL_LIMIT, SHARD_BYTES, doneMarkers, findTicketByPullRequest, linkedPulls, progressKey, readProgress, readTicket, ticketKey, updateProgress, withPullRequest, type ProgressRecord, type TicketRecord } from '../_shared/trackerRecords.js';
 
 /**
  * The shared issue tracker helper (Linear, Jira) at its edges: deliveries
@@ -122,6 +122,26 @@ test('a ticket keeps every linked pull request, forgetting finished ones first p
   await updateProgress(k.ctx, 'ticket-pr', p => ({ ...p, p: withPullRequest(p, 55) }));
   await updateProgress(k.ctx, 'ticket-pr', p => ({ ...p, p: withPullRequest(p, 56) }));
   for (const pr of [55, 56]) assert.equal((await findTicketByPullRequest(k.ctx, 'acme/api', pr))?.t, 'ticket-pr', `#${pr}`);
+});
+
+test('a linked pull request\'s merge and close markers outlive the rolling history and go with the pull request', async () => {
+  const k = createTestPluginContext({ pluginId: 'linear' });
+  const mark = (marker: string) => updateProgress(k.ctx, 'ticket-f', p => ({ ...p, d: [...p.d, marker] }));
+  await updateProgress(k.ctx, 'ticket-f', p => ({ ...p, p: [55] }));
+  for (const marker of ['opened:55:move', 'merged:55:comment', 'merged:55:move']) await mark(marker);
+  // Later pull requests fill the history; linking one rebuilds the record without `f`.
+  for (let pr = 56; pr < 56 + PULL_LIMIT - 1; pr += 1) {
+    await updateProgress(k.ctx, 'ticket-f', p => ({ t: p.t, p: withPullRequest(p, pr), d: p.d }));
+    for (const step of ['opened', 'merged']) for (const kind of ['comment', 'move']) await mark(`${step}:${pr}:${kind}`);
+  }
+  let progress = await readProgress(k.ctx, 'ticket-f');
+  assert.equal(progress.d.some(m => m.includes(':55:')), false, 'gone from the history');
+  assert.deepEqual(doneMarkers(progress).filter(m => m.includes(':55:')).sort(), ['merged:55:comment', 'merged:55:move']);
+  // #55, finished, is the one forgotten when one more pull request is linked; its markers go with it.
+  await updateProgress(k.ctx, 'ticket-f', p => ({ ...p, p: withPullRequest(p, 99) }));
+  progress = await readProgress(k.ctx, 'ticket-f');
+  assert.equal(linkedPulls(progress).includes(55), false);
+  assert.equal(doneMarkers(progress).some(m => m.includes(':55:')), false);
 });
 
 test('a full progress shard keeps a ticket with a pull request still open over one whose pull requests all finished', async () => {

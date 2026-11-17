@@ -15,7 +15,11 @@ import { PluginDeliveryError, type PluginContext, type PluginJsonValue } from '@
  *   requests linked to it (every one, not just the latest, so an earlier
  *   pull request that merges or closes after a later one opened still syncs
  *   back) and which sync-back actions were done, so a redelivered event posts
- *   no second comment.
+ *   no second comment. The done markers are a rolling history (`d`); the
+ *   merge and close markers of every pull request still linked are also kept
+ *   apart (`f`), however many markers later ones added, so a retried opening
+ *   delivery never moves a ticket back after its merge, and a finished pull
+ *   request is still known to be finished.
  *
  * Shards are chosen by ticket id (FNV-1a) and hold at most `SHARD_BYTES`
  * each, within the state limits (`PLUGIN_STATE_LIMITS`). Ticket records are
@@ -34,8 +38,12 @@ import { PluginDeliveryError, type PluginContext, type PluginJsonValue } from '@
 
 export type TicketStatus = 'pending' | 'created';
 export interface TicketRecord { t: string; k: string; r: string; s: TicketStatus; n?: number; at: number }
-/** `p`: the ticket's linked pull requests, oldest first. */
-export interface ProgressRecord { t: string; p?: number[]; d: string[]; at: number }
+/**
+ * `p`: the ticket's linked pull requests, oldest first. `d`: the done markers,
+ * the latest `DONE_LIMIT`. `f`: the merge and close markers of the linked pull
+ * requests, kept while they are linked (see `doneMarkers`).
+ */
+export interface ProgressRecord { t: string; p?: number[]; d: string[]; f?: string[]; at: number }
 
 export const TICKET_SHARDS = 8;
 export const PROGRESS_SHARDS = 6;
@@ -77,12 +85,27 @@ export function linkedPulls(progress: { p?: unknown }): number[] {
   const value = Array.isArray(progress.p) ? progress.p : [progress.p];
   return value.filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0);
 }
+/** A merge or close marker (`merged:55:move`): whether a pull request finished, and whether its opening move is superseded. */
+const PULL_FLAG = /^(?:merged|closed):(\d+):/;
+/**
+ * Every done marker of a ticket: the rolling history and the merge and close
+ * markers of its linked pull requests, which outlive that history.
+ */
+export function doneMarkers(progress: { d?: unknown; f?: unknown }): string[] {
+  const strings = (value: unknown) => (Array.isArray(value) ? value.filter((m): m is string => typeof m === 'string') : []);
+  return [...new Set([...strings(progress.f), ...strings(progress.d)])];
+}
+/** The merge and close markers among `markers` of the pull requests in `pulls`. */
+const pullFlags = (markers: string[], pulls: number[]) => markers.filter(marker => {
+  const pr = PULL_FLAG.exec(marker)?.[1];
+  return pr !== undefined && pulls.includes(Number(pr));
+});
 /** Whether a pull request's merge or close was synced. */
 const pullFinished = (done: string[], pr: number) => done.some(marker => marker.startsWith(`merged:${pr}:`) || marker.startsWith(`closed:${pr}:`));
 /** Whether every pull request a ticket linked merged or closed: its sync is over. */
 const progressFinished = (progress: ProgressRecord) => {
   const pulls = linkedPulls(progress);
-  return pulls.length > 0 && pulls.every(pr => pullFinished(progress.d, pr));
+  return pulls.length > 0 && pulls.every(pr => pullFinished(doneMarkers(progress), pr));
 };
 
 /**
@@ -94,8 +117,9 @@ export function withPullRequest(progress: ProgressRecord, pr: number): number[] 
   const pulls = linkedPulls(progress);
   if (pulls.includes(pr)) return undefined;
   const next = [...pulls, pr];
+  const done = doneMarkers(progress);
   while (next.length > PULL_LIMIT) {
-    const finished = next.findIndex(n => n !== pr && pullFinished(progress.d, n));
+    const finished = next.findIndex(n => n !== pr && pullFinished(done, n));
     next.splice(finished >= 0 ? finished : 0, 1);
   }
   return next;
@@ -182,13 +206,18 @@ export async function readProgress(ctx: PluginContext, id: string): Promise<Prog
 /**
  * Change a ticket's progress in one atomic shard update: `change` gets the
  * current progress and returns the new one, or undefined for no change. A
- * full shard forgets finished tickets' progress first, then the oldest.
+ * full shard forgets finished tickets' progress first, then the oldest. The
+ * merge and close markers of the pull requests still linked are kept in `f`
+ * whatever `change` returned for it, and dropped with their pull request.
  */
 export async function updateProgress(ctx: PluginContext, id: string, change: (progress: ProgressRecord) => Omit<ProgressRecord, 'at'> | undefined): Promise<void> {
   await updateList<ProgressRecord>(ctx, progressKey(id), current => {
-    const record = change(current.find(entry => entry.t === id) ?? { t: id, d: [], at: 0 });
+    const previous = current.find(entry => entry.t === id) ?? { t: id, d: [], at: 0 };
+    const record = change(previous);
     if (!record) return undefined;
+    const flags = pullFlags([...new Set([...doneMarkers(previous), ...doneMarkers(record)])], linkedPulls(record));
     const next = { ...record, t: id, d: record.d.slice(-DONE_LIMIT), at: Date.now() } as ProgressRecord;
+    if (flags.length) next.f = flags; else delete next.f;
     const list = [...oldestFirst(current.filter(entry => entry.t !== id)), next];
     while (bytes(list) > SHARD_BYTES && list.length > 1) {
       const finished = list.findIndex(entry => entry !== next && progressFinished(entry));

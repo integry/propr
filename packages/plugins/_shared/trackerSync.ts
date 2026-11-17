@@ -1,5 +1,5 @@
 import { PLUGIN_HANDLER_TIMEOUT_MS, PluginDeliveryError, PluginSdkError, type PluginContext, type PluginEventInput, type PluginSettingValues, type RepositoryEvent } from '@propr/shared';
-import { findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, withPullRequest, type TicketRecord } from './trackerRecords.js';
+import { doneMarkers, findTicketByIssue, findTicketByPullRequest, readProgress, updateProgress, withPullRequest, type TicketRecord } from './trackerRecords.js';
 
 /**
  * Sync-back for issue tracker plugins (Linear, Jira): which ProPR events
@@ -207,7 +207,7 @@ export async function planSync(ctx: PluginContext, input: PluginEventInput, sett
   const { event } = input;
   const step = event.domain === 'task' ? await taskStep(ctx, event) : event.domain === 'pull_request' ? await pullRequestStep(ctx, event) : null;
   if (!step) return { plan: null, skipped: event.domain === 'task' || event.domain === 'pull_request' ? 'not_tracked' : 'not_a_sync_event' };
-  const done = (await readProgress(ctx, step.ticket.t)).d;
+  const done = doneMarkers(await readProgress(ctx, step.ticket.t));
   const actions: SyncAction[] = [];
   const comment = `${step.marker}:comment`;
   if (settings.events.includes(step.event) && !done.includes(comment)) actions.push({ kind: 'comment', marker: comment, message: await step.message() });
@@ -225,10 +225,10 @@ export async function planSync(ctx: PluginContext, input: PluginEventInput, sett
  * between this read and the tracker's own update is not prevented.)
  */
 export async function moveSuperseded(ctx: PluginContext, ticket: TicketRecord, action: Extract<SyncAction, { kind: 'move' }>): Promise<boolean> {
-  return !!action.supersededBy && (await readProgress(ctx, ticket.t)).d.includes(action.supersededBy);
+  return !!action.supersededBy && doneMarkers(await readProgress(ctx, ticket.t)).includes(action.supersededBy);
 }
 
 /** Record that an action was done, so a redelivery does not repeat it. */
 export async function markSyncDone(ctx: PluginContext, ticket: TicketRecord, marker: string): Promise<void> {
-  await updateProgress(ctx, ticket.t, progress => (progress.d.includes(marker) ? undefined : { ...progress, d: [...progress.d, marker] }));
+  await updateProgress(ctx, ticket.t, progress => (doneMarkers(progress).includes(marker) ? undefined : { ...progress, d: [...progress.d, marker] }));
 }

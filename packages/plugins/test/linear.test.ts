@@ -10,7 +10,7 @@ import {
 import { PLUGINS_ROOT, getOfficialPlugin, loadPluginHandlers } from '../src/index.js';
 import { createTestPluginContext, type ScriptedHttpResponse } from '../testing/index.js';
 import { inertQuote, ticketIssueTitle } from '../_shared/trackerIssue.js';
-import { TICKET_SHARDS, ticketKey, type TicketRecord } from '../_shared/trackerRecords.js';
+import { TICKET_SHARDS, linkedPulls, readProgress, ticketKey, type TicketRecord } from '../_shared/trackerRecords.js';
 import { PENDING_HAND_OFF_MS, PENDING_RETRY_MS } from '../_shared/trackerSync.js';
 
 /**
@@ -418,6 +418,29 @@ test('an opening delivery retried by hand after the merge was synced does not mo
   await k.syncBack(pull('merged'), k.ctx);
   await k.syncBack(task('completed', { status: 'completed', pullRequest: 'opened' }, 101, 56), k.ctx);
   assert.deepEqual(k.moves().map(g => g.variables.stateId), ['st-eng-review', 'st-eng-done', 'st-eng-review']);
+});
+
+test('an opening delivery retried by hand after its merge and six later pull requests still does not move the ticket back', async () => {
+  // The opening comment of #55 fails until `refusing` is cleared; its move succeeds.
+  let refusing = true;
+  const k = await handedOver(BASE_SETTINGS, { graphql: gql => (refusing && gql.query.includes('commentCreate') && String(gql.variables.body).startsWith('ProPR opened') ? GQL.rateLimited : undefined) });
+  const opened = (pr: number) => task('completed', { status: 'completed', pullRequest: 'opened' }, 101, pr);
+  for (const attempt of [1, 2, 3]) await assert.rejects(k.syncBack({ ...opened(55), attempt }, k.ctx), PluginDeliveryError);
+  await k.syncBack(pull('merged'), k.ctx);
+  refusing = false;
+  // Six more pull requests open and merge: 24 markers, more than the rolling history keeps of #55's.
+  for (const pr of [56, 57, 58, 59, 60, 61]) {
+    await k.syncBack(opened(pr), k.ctx);
+    await k.syncBack(pull('merged', {}, pr), k.ctx);
+  }
+  const progress = await readProgress(k.ctx, HOOKS.ids.tickets.mapped);
+  assert.ok(linkedPulls(progress).includes(55), '#55 is still linked');
+  assert.equal(progress.d.some(marker => marker.includes(':55:')), false, 'the history no longer has #55\'s markers');
+  const [commentsBefore, movesBefore] = [k.comments().length, k.moves().length];
+  const retried = await k.syncBack({ ...opened(55), attempt: 4 }, k.ctx) as { commented: boolean; moved: string | null };
+  assert.deepEqual(k.moves().slice(movesBefore), [], 'no move back to the opening state');
+  assert.deepEqual([retried.commented, retried.moved], [true, null]);
+  assert.deepEqual(k.comments().slice(commentsBefore).map(g => String(g.variables.body).split('.')[0]), ['ProPR opened a pull request for this ticket']);
 });
 
 test('a merge synced while an opening delivery is under way is not undone by its move', async () => {
