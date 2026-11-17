@@ -134,6 +134,58 @@ describe('run summary selection', () => {
         assert.equal(isRunStatusNote('Nothing else to do.', { afterNotification: true }), true);
     });
 
+    test('a new fix summary that also points back to the earlier summary is kept', () => {
+        const fixed = 'Fixed the retry assertion exposed by the background run. All 28 suites now pass. The earlier summary still applies.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('suite failed'),
+            toolUse('t2', 'One suite failed; fixing it.'), toolResult('t2'),
+            assistantText(fixed),
+        ];
+        assert.equal(isRunStatusNote(fixed, { afterNotification: true }), false);
+        assert.equal(isRunStatusNote(fixed), false);
+        assert.equal(isRunStatusNote('Fixed the retry assertion; nothing else to do.', { afterNotification: true }), false);
+        // Back-references without a reported change stay status notes.
+        assert.equal(isRunStatusNote('All 28 suites now pass. The earlier summary still applies.', { afterNotification: true }), true);
+        assert.equal(isRunStatusNote('All 28 suites now pass. The earlier summary still applies.'), true);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fixed)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.summary, fixed);
+        assert.equal(response.commitMessage?.split('\n')[0], fixed);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fixed);
+
+        const claudeResult = agentResultToClaudeResponse({
+            success: true, model: 'claude-opus-5-5', executionTimeMs: 1000, logs: '', exitCode: 0, modelUsed: 'claude-opus-5-5',
+            modifiedFiles: ['a.ts'], commitMessage: null, summary: fixed, conversationLog,
+        });
+        const commitMessage = buildCommitMessage({
+            changesSummary: fixed, unprocessedComments: [], pullRequestNumber: 12, claudeResult, llm: 'claude-opus-5-5', authorsText: '@octo',
+        });
+        assert.notEqual(commitMessage.split('\n')[0], 'feat(ai): Apply follow-up changes from PR comment');
+        assert.match(commitMessage, /Fixed the retry assertion exposed by the background run/);
+    });
+
+    test('a newer concise fix summary beats an older long one when the last reply is a status note', () => {
+        const fixed = 'Fixed the retry assertion. All 28 suites now pass.';
+        const status = 'The monitor expired; my summary above still holds.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('suite failed'),
+            toolUse('t2', 'One suite failed; fixing it.'), toolResult('t2'),
+            assistantText(fixed),
+            notification('Monitor "suites" timed out'),
+            assistantText(status),
+        ];
+        const { response } = processDockerResult(execution([...conversationLog, result(status)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, fixed);
+        assert.equal(response.commitMessage?.split('\n')[0], fixed);
+        assert.equal(selectRunSummary({ resultText: status, conversationLog }).summary, fixed);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fixed);
+    });
+
     test('a long notification reply rejected as a summary does not return through the recent-message fallback', () => {
         const watcherReply = `The watcher timed out. ${'It was the background watcher on the full suite, which had already reported its last batch before the limit, so the timeout says nothing about the code and needs no re-arming. '.repeat(3)}`.trim();
         assert.ok(watcherReply.length > 320);

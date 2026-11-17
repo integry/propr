@@ -180,7 +180,12 @@ function isNotificationOnlyReply(text: string): boolean {
     const prose = plainProse(text);
     const first = firstSentence(prose);
     if (!ABOUT_NOTIFICATION.test(first)) return false;
-    return !sentences(prose).some(sentence => COMPLETED_CHANGE.test(sentence));
+    return !reportsCompletedChange(text);
+}
+
+/** Some sentence of the message's prose reports a change the agent made. */
+function reportsCompletedChange(text: string): boolean {
+    return sentences(plainProse(text)).some(sentence => COMPLETED_CHANGE.test(sentence));
 }
 
 /** Longest sentence still read as a bare status line rather than a report. */
@@ -216,8 +221,13 @@ export function isRunStatusNote(text: string | null | undefined, options: { afte
     if (reportsUnfinishedWork(trimmed)) return true;
     const short = isShort(trimmed);
     if (isStatusOnlyProse(trimmed)) return true;
-    if (options.afterNotification && (BACK_REFERENCE.test(trimmed) || isNotificationOnlyReply(trimmed) || (short && NO_ACTION.test(trimmed)))) return true;
-    if (!short) return false;
+    // Wording matches anywhere in the text ("the earlier summary still
+    // applies", "nothing else to do") only mark a status note when no sentence
+    // reports a completed change: a new fix that also points back is a report.
+    const reportsChange = reportsCompletedChange(trimmed);
+    if (options.afterNotification && (isNotificationOnlyReply(trimmed)
+        || (!reportsChange && (BACK_REFERENCE.test(trimmed) || (short && NO_ACTION.test(trimmed)))))) return true;
+    if (!short || reportsChange) return false;
     return BACK_REFERENCE.test(trimmed)
         || ANNOUNCES_SUMMARY.test(trimmed)
         || COMPLETION_ONLY.test(trimmed);
@@ -250,8 +260,9 @@ export interface RunSummarySelection {
 /**
  * Picks the run's summary from its conversation. The reported result (the
  * last message) is kept unless it is a status note; then the most recent
- * substantive turn answer wins, then the longest of the last few assistant
- * messages, then any earlier short answer that is not itself a status note.
+ * earlier turn answer that is not itself a status note wins, short or long,
+ * so a newer concise fix summary beats an older long one; only when no turn
+ * answer qualifies is the longest of the last few assistant messages used.
  */
 export function selectRunSummary(params: {
     resultText?: string | null;
@@ -272,8 +283,9 @@ export function selectRunSummary(params: {
 
     const earlier = candidates.slice(0, -1).reverse()
         .filter(candidate => !isRunStatusNote(candidate.text, candidate));
-    const substantive = earlier.find(candidate => !isShort(candidate.text));
-    if (substantive) return { summary: substantive.text, unfinishedWork };
+    // Chronology before length: the newest qualifying answer reports the
+    // latest repair and verification, even when an older answer is longer.
+    if (earlier[0]) return { summary: earlier[0].text, unfinishedWork };
 
     // Judge each message in its own turn, so a reply to a notification that
     // was rejected above cannot come back as the longest recent message.
@@ -281,7 +293,5 @@ export function selectRunSummary(params: {
         .filter(message => message.text !== finalText && !isShort(message.text) && !isRunStatusNote(message.text, message))
         .map(message => message.text);
     const longest = recent.reduce<string | null>((best, text) => (!best || text.length > best.length ? text : best), null);
-    if (longest) return { summary: longest, unfinishedWork };
-
-    return { summary: earlier[0]?.text ?? null, unfinishedWork };
+    return { summary: longest, unfinishedWork };
 }
