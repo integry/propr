@@ -146,7 +146,7 @@ test('Cloudflare: a default /deploy checks the Pages production branch first and
   const skill = readFileSync(path.join(assets.skills.find(s => s.name === 'cloudflare-deploy')!.path, 'SKILL.md'), 'utf8');
   // The production-branch check comes before the create-deployment call, and refuses whatever target was asked for.
   const check = skill.indexOf('take its `production_branch`');
-  assert.ok(check > 0 && check < skill.indexOf('find the "create\n     deployment" endpoint'), 'production branch is read before creating a deployment');
+  assert.ok(check > 0 && check < skill.indexOf('find the "create deployment" endpoint'), 'production branch is read before creating a deployment');
   assert.match(skill, /When the pull request's\n\s+head branch is the production branch, or the production branch cannot\n\s+be read, deploy nothing/);
   assert.doesNotMatch(skill, /builds the pull request's branch as a preview/);
   // Workers Builds: a production-branch build is never reported as a preview.
@@ -157,6 +157,36 @@ test('Cloudflare: a default /deploy checks the Pages production branch first and
       assert.match(instruction, /Before creating a Pages deployment, read the project's production branch; when the pull request's head branch is the production branch, or the production branch cannot be read, deploy nothing/);
       assert.match(instruction, /never report a Workers Builds build of the production branch as a preview/);
       assert.doesNotMatch(instruction, /a Pages project builds the pull request's branch as a preview/);
+    }
+  }
+});
+
+test('Cloudflare: Pages builds a branch name, so a same-named branch at another commit (a fork pull request) is refused before deploying and a deployment of another commit is never reported', () => {
+  const { manifest, assets } = plugin('cloudflare');
+  const skill = readFileSync(path.join(assets.skills.find(s => s.name === 'cloudflare-deploy')!.path, 'SKILL.md'), 'utf8');
+  const flat = skill.replace(/\s+/g, ' ');
+  // The connected repository is checked against the head repository before the create-deployment call.
+  const verify = flat.indexOf('Verify the source before deploying.');
+  const create = flat.indexOf('find the "create deployment" endpoint');
+  const commitCheck = flat.indexOf('`deployment_trigger.metadata.commit_hash` with the head commit');
+  assert.ok(verify > 0 && verify < create, 'the source is verified before creating a deployment');
+  assert.ok(create < commitCheck, 'the deployed commit is checked after creating it');
+  assert.match(flat, /takes only a `branch`, not a commit/);
+  assert.match(flat, /take the connected repository from the project's `source\.config` \(`owner` and `repo_name`\)/);
+  assert.match(flat, /Deploy nothing, and say why, when the head commit cannot be established, when the project has no readable `source\.config`, or when the connected repository is not the pull request's head repository/);
+  assert.match(flat, /A pull request from a fork is refused this way: the connected base repository may have a branch of the same name at different code/);
+  // A deployment Cloudflare built from another commit (the same branch name moved, or another repository's branch) is not reported as this pull request's preview.
+  assert.match(flat, /when it is missing or differs \(for example the branch moved after the check\), do not report the deployment as a preview of this pull request/);
+  // Workers Builds: matched by the exact head commit, never by branch name.
+  assert.match(flat, /find the build whose commit is exactly the pull request's head commit \(its full SHA, not just the branch name\)/);
+  assert.match(flat, /a build of the same branch name at another commit is not this pull request's preview/);
+  assert.match(flat, /the commit deployed \(the one Cloudflare reports, which must be the pull request's head commit\)/);
+  for (const command of ['deploy', 'deploy-cloudflare']) {
+    for (const settings of [{}, { allowProductionDeploys: true }]) {
+      const instruction = testCommandInstruction(manifest, command, { settings, repository: 'Owner/App' });
+      assert.match(instruction, /Pages builds a branch name, not a commit, from the repository the project is connected to, so also verify the source before creating a Pages deployment: when the project's connected repository \(its source owner and repository name\) is not this pull request's head repository, which includes every pull request from a fork, or the head commit cannot be established, deploy nothing and say why\./);
+      assert.match(instruction, /After creating it, read the deployment's commit: when it is not this pull request's head commit, do not report it as this pull request's preview/);
+      assert.match(instruction, /report only a build of exactly the head commit, never another build of the same branch name/);
     }
   }
 });

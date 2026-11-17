@@ -41,22 +41,40 @@ deploy itself.
      head branch is the production branch, or the production branch cannot
      be read, deploy nothing: a deployment of that branch is a production
      deployment, whatever target was asked for. Say so, and that production
-     follows the project's production branch. Otherwise find the "create
-     deployment" endpoint for Pages projects with `search` and call it
-     through `cloudflare-write` with `branch` set to the pull request's head
-     branch. Cloudflare builds that non-production branch's head commit as a
-     preview deployment. Poll the deployment
-     (read it by id through `cloudflare`) until its latest stage succeeds or
-     fails, at most about ten minutes; on failure, read the deployment's logs
-     and quote the error.
+     follows the project's production branch.
+     **Verify the source before deploying.** Pages' "create deployment"
+     endpoint takes only a `branch`, not a commit: Cloudflare builds whatever
+     that branch's head is in the repository the project is connected to.
+     Establish the pull request's head repository and head commit (its full
+     SHA) first, and take the connected repository from the project's
+     `source.config` (`owner` and `repo_name`). Deploy nothing, and say why,
+     when the head commit cannot be established, when the project has no
+     readable `source.config`, or when the connected repository is not the
+     pull request's head repository, compared ignoring case. A pull request
+     from a fork is refused this way: the connected base repository may have
+     a branch of the same name at different code.
+     Otherwise find the "create deployment" endpoint for Pages projects with
+     `search` and call it through `cloudflare-write` with `branch` set to the
+     pull request's head branch. Cloudflare builds that non-production
+     branch's head commit as a preview deployment. Read the new deployment
+     (by id through `cloudflare`) and compare its
+     `deployment_trigger.metadata.commit_hash` with the head commit; when it
+     is missing or differs (for example the branch moved after the check),
+     do not report the deployment as a preview of this pull request: say
+     which commit it built and that the command can be run again. Poll the
+     deployment until its latest stage succeeds or fails, at most about ten
+     minutes; on failure, read the deployment's logs and quote the error.
    - **Worker with Workers Builds:** a push to a non-production branch already
      builds a Preview. Read the Worker's production branch from its Workers
      Builds trigger first; when the pull request's head branch is that
      branch, a build of it is a production deployment, so do not report it as
-     a preview. Otherwise find the build of the pull request's head commit
-     with `search` and `execute` (Workers Builds endpoints) and report its
-     Preview URL and status. Workers Builds starts on a push; when no build of the
-     head commit exists, say so rather than uploading code.
+     a preview. Otherwise find the build whose commit is exactly the pull
+     request's head commit (its full SHA, not just the branch name) with
+     `search` and `execute` (Workers Builds endpoints) and report its
+     Preview URL and status; a build of the same branch name at another
+     commit is not this pull request's preview. Workers Builds starts on a
+     push; when no build of the head commit exists, say so rather than
+     uploading code.
    - **Pages with Direct Upload only, or a Worker without Workers Builds:**
      deploying needs files built on a machine with Wrangler; deploy nothing,
      and say that the project needs a Git connection (or Workers Builds) for
@@ -69,7 +87,8 @@ deploy itself.
    the merge into the production branch.
 5. **Report.** Reply with the deployment URL first (the preview URL, and the
    branch alias when Cloudflare gives one), then: preview or production, the
-   project, the commit deployed and the deployment id. How to roll back:
+   project, the commit deployed (the one Cloudflare reports, which must be
+   the pull request's head commit) and the deployment id. How to roll back:
    - a preview never receives production traffic, so nothing needs rolling
      back; it can be deleted from the project's **Deployments** list;
    - Pages production: **Deployments → … → Rollback to this deployment** on a

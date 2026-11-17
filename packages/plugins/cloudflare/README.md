@@ -49,9 +49,14 @@ the pull request's branch through Pages' "create deployment" endpoint (with
 `branch`), which Cloudflare builds as a preview. The agent reads the
 project's production branch first and deploys nothing when the pull request's
 head branch is the production branch, since that deployment would be
-production. A **Worker with Workers
-Builds** already builds a Preview of each push to a non-production branch;
-the agent reports it. Projects without a Git connection (Direct Upload, or a
+production. Because Pages builds a branch name and not a commit, the agent
+also deploys nothing when the project's connected repository is not the pull
+request's head repository (every pull request from a fork) or cannot be
+read, and after deploying it reports the deployment as this pull request's
+preview only when Cloudflare's recorded commit is the head commit. A **Worker
+with Workers Builds** already builds a Preview of each push to a
+non-production branch; the agent reports the build of exactly the head
+commit. Projects without a Git connection (Direct Upload, or a
 Worker deployed with Wrangler only) are not deployed: that needs Wrangler on a
 build machine, which the agent does not run. Cloudflare builds production from
 the production branch only, so the agent never deploys a pull request branch
@@ -135,6 +140,10 @@ before a release:
       `cloudflare-write` and the skill; the reply has a `*.pages.dev` preview
       URL for the head commit, and the project's production deployment is
       unchanged.
+- [ ] Comment `/deploy-cloudflare` on a pull request from a fork whose
+      branch name also exists in the connected repository: nothing is
+      deployed, and the reply says the project is connected to a different
+      repository.
 - [ ] Comment `/deploy production` with the production setting off: the reply
       refuses and names the setting; no deployment is created.
 - [ ] Map a repository to a project that does not exist: nothing is
