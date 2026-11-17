@@ -3,14 +3,15 @@
  *
  * A step refused at worker admission for disk pressure is a wait for the loop
  * (see `ultrafixDiskPressureWait.ts`): it posts one "waiting for free disk
- * space" notice on the first refusal and none after, instead of a refusal
- * comment per attempt. Any other failure is a failed step for the breaker.
+ * space" notice once, instead of a refusal comment per attempt. The notice
+ * counts as given only once GitHub accepted it: a failed publication is
+ * retried on the next refusal of the same wait. Any other failure is a failed step for the breaker.
  */
 
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import { isWorktreeDiskPressureError } from '@propr/core';
-import { buildDiskPressureWaitNotice } from './ultrafixDiskPressureWait.js';
+import { buildDiskPressureWaitNotice, markDiskPressureNoticePosted, needsDiskPressureWaitNotice } from './ultrafixDiskPressureWait.js';
 import { recordFailedUltrafixStep, recordUltrafixDiskPressureRefusal, type FailedStepJobData } from './ultrafixFailedStep.js';
 import { postPrComment } from './ultrafixLoopGithub.js';
 
@@ -32,12 +33,17 @@ export async function handleExhaustedUltrafixStep(
                 { pullRequestNumber: data.pullRequestNumber, action: wait.action, refusals: wait.refusals, retryAt: wait.retryAt, exhausted: wait.exhausted === true },
                 'Ultrafix step refused for disk pressure: waiting for free disk space',
             );
-            // Later refusals stay quiet; running out of retries ends the loop with its own stop notice.
-            if (wait.refusals === 1 && !wait.exhausted) {
-                await post({
-                    owner: data.repoOwner!, repo: data.repoName!, pullRequestNumber: data.pullRequestNumber!,
-                    body: buildDiskPressureWaitNotice(wait.action), correlatedLogger,
+            // Once published, later refusals stay quiet; running out of retries ends the loop with its own stop notice.
+            if (needsDiskPressureWaitNotice(wait)) {
+                const owner = data.repoOwner!, repo = data.repoName!, pr = data.pullRequestNumber!;
+                const commentId = await post({
+                    owner, repo, pullRequestNumber: pr, body: buildDiskPressureWaitNotice(wait.action), correlatedLogger,
                 });
+                if (commentId === null) {
+                    correlatedLogger.warn({ pullRequestNumber: pr, refusals: wait.refusals }, 'Ultrafix disk-space waiting notice not published: retrying on the next refusal');
+                } else if (!await markDiskPressureNoticePosted(redis, { owner, repo, pr }, data.ultrafixMeta?.workEpoch ?? 0, wait)) {
+                    correlatedLogger.warn({ pullRequestNumber: pr, commentId }, 'Ultrafix disk-space waiting notice posted, but the loop moved on before it was recorded');
+                }
             }
             return { reportedOnPullRequest: true };
         }

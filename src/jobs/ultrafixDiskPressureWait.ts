@@ -15,8 +15,8 @@
  */
 
 import type { Redis } from 'ioredis';
-import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
-import { getActionCounts, loadState } from './ultrafixOrchestrationService.js';
+import { replaceUltrafixStateIfUnchanged, saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
+import { getActionCounts, getUltrafixStateKey, loadState } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationService.js';
 
 /** Loop-state fields that keep the stop notice of a loop ending between reviews truthful. */
@@ -39,6 +39,8 @@ export interface UltrafixDiskPressureWait {
     retryAt: string;
     /** Space did not return within the retry schedule: the loop stops. */
     exhausted?: boolean;
+    /** The waiting notice was published on the pull request; until then each refusal tries again. */
+    noticePosted?: boolean;
 }
 
 const MINUTE_MS = 60_000;
@@ -82,8 +84,45 @@ export function recordDiskPressureRefusalInState(
         since: previous?.since ?? new Date(now).toISOString(),
         retryAt: new Date(now + (delayMs ?? 0)).toISOString(),
         ...(delayMs === undefined ? { exhausted: true } : {}),
+        ...(previous?.noticePosted ? { noticePosted: true } : {}),
     };
     return { ...state, diskPressureWait: wait };
+}
+
+/** Whether the waiting notice still has to be published for this wait. */
+export function needsDiskPressureWaitNotice(wait: UltrafixDiskPressureWait): boolean {
+    return !wait.noticePosted && !wait.exhausted;
+}
+
+/** Bound on re-reads when the loop state changes underneath the notice marker. */
+const MAX_NOTICE_MARK_ATTEMPTS = 3;
+
+/**
+ * Record that the waiting notice of `wait` was published, so later refusals of
+ * the same wait stay quiet. Written only while the step's epoch is current and
+ * the loop is still in that same wait (same refused step, same start, no step
+ * completed since), against the exact state it read. Returns whether the
+ * marker is stored.
+ */
+export async function markDiskPressureNoticePosted(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    workEpoch: number,
+    wait: UltrafixDiskPressureWait,
+): Promise<boolean> {
+    for (let attempt = 1; attempt <= MAX_NOTICE_MARK_ATTEMPTS; attempt++) {
+        const raw = await redis.get(getUltrafixStateKey(identity.owner, identity.repo, identity.pr));
+        if (!raw) return false;
+        const state = JSON.parse(raw) as UltrafixLoopState;
+        if (!state.active || (state.workEpoch ?? 0) !== workEpoch) return false;
+        const current = getDiskPressureWait(state);
+        if (!current || current.since !== wait.since || current.action !== wait.action
+            || current.completedSteps !== wait.completedSteps) return false;
+        if (current.noticePosted) return true;
+        const next: UltrafixLoopState = { ...state, diskPressureWait: { ...current, noticePosted: true } };
+        if (await replaceUltrafixStateIfUnchanged(redis, identity, { workEpoch, rawState: raw }, JSON.stringify(next))) return true;
+    }
+    return false;
 }
 
 /** How long the re-arm must still hold the loop for disk space (0: retry or stop now). */

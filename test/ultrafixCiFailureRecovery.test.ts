@@ -1603,6 +1603,10 @@ describe('Ultrafix steps refused at admission for disk pressure', () => {
         prHead = 'red-head-sha';
         mockOctokitRequest.mock.restore();
         mockOctokitRequest.mock.resetCalls();
+        // GitHub accepts every comment with an id, as it does in production.
+        mockOctokitRequest.mock.mockImplementation(async (route: string) => (
+            route.startsWith('GET') ? { data: { labels: prLabels.map(name => ({ name })) } } : { data: { id: 9001 } }
+        ));
         mockSafeRemoveLabel.mock.resetCalls();
         setCheckRunDeps({
             areAllChecksPassing: mockAreAllChecksPassing,
@@ -1725,6 +1729,47 @@ describe('Ultrafix steps refused at admission for disk pressure', () => {
         assert.doesNotMatch(stops[0], /unknown|Max cycles|failed \d+ times in a row/);
         assert.deepEqual(mockSafeRemoveLabel.mock.calls.map(call => call.arguments[1]), ['ultrafix'], 'the label is removed');
         assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 171), null);
+    });
+
+    test('a waiting notice GitHub rejected is published on the next refusal, exactly once', async () => {
+        const redis = await strandLoopAfterCiFailure(173);
+        await checksTurnGreen(redis, 173);
+        const failingPost = mock.fn(async () => null);
+        const okPost = mock.fn(async () => 4242);
+
+        // 1st refusal: GitHub rejects the notice. The refusal stays reported, the notice stays pending.
+        let pending = pendingSteps(173, 'review');
+        pending[0].state = 'failed';
+        assert.deepEqual(
+            await handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never, post: failingPost }),
+            { reportedOnPullRequest: true },
+        );
+        assert.equal(failingPost.mock.callCount(), 1);
+        let wait = getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!);
+        assert.equal(wait?.refusals, 1);
+        assert.notEqual(wait?.noticePosted, true, 'a rejected notice is not recorded as given');
+
+        // 2nd refusal: the notice is published now and recorded.
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[0]);
+        assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        pending = pendingSteps(173, 'review');
+        pending[0].state = 'failed';
+        await handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never, post: okPost });
+        assert.equal(okPost.mock.callCount(), 1);
+        assert.match((okPost.mock.calls[0].arguments as unknown as [{ body: string }])[0].body, new RegExp(WAIT_NOTICE));
+        wait = getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!);
+        assert.equal(wait?.refusals, 2);
+        assert.equal(wait?.noticePosted, true);
+
+        // 3rd refusal: stays quiet.
+        mock.timers.tick(ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[1]);
+        assert.deepEqual((await sweep(redis)).map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        pending = pendingSteps(173, 'review');
+        pending[0].state = 'failed';
+        await handleExhaustedUltrafixStep(redis as never, pending[0].data, diskPressureError(), { correlatedLogger: logger as never, post: okPost });
+        assert.equal(okPost.mock.callCount(), 1, 'the published notice is not repeated');
+        assert.equal(failingPost.mock.callCount(), 1);
+        assert.equal(getDiskPressureWait((await loadState(redis as never, OWNER, REPO, 173))!)?.refusals, 3);
     });
 
     test('a refusal of a job that is not a current Ultrafix step is left to the ordinary refusal comment', async () => {
