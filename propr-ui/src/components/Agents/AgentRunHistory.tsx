@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { History, Loader2, Timer } from 'lucide-react';
 import { getAutomationRun, listAutomationRuns, type AutomationRunRecord } from '../../api/automationDefinitionsApi';
 import { ListSkeleton } from '../ui/Skeleton';
+import { useAutomationListQuery } from './automationListQuery';
 import { SystemAlert } from '../ui/SystemAlert';
 import { AgentRunNoChangeBadge } from './AgentRunNoChangeBadge';
 import { AgentRunStateBadge } from './AgentRunStateBadge';
@@ -72,10 +73,11 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
 }) => {
   const preview = recalledReportPreview(run.id);
   const started = runStartedAt(run);
+  const listQuery = useAutomationListQuery();
   return (
     <li>
       <Link
-        to={runPath(definitionId, run.id)}
+        to={`${runPath(definitionId, run.id)}${listQuery}`}
         data-testid="agent-run-row"
         onMouseEnter={() => onPreview(run)}
         onFocus={() => onPreview(run)}

@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { AlertTriangle, ChevronRight, Loader2, Play, RotateCw } from 'lucide-react';
 import { CONFLICT_MESSAGE } from './useAgentEditor';
+import { useAutomationListQuery } from './automationListQuery';
 
 export const BUTTON_CLASSES = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-50';
 
@@ -48,6 +49,7 @@ const TAB_CLASSES = 'border-b-2 px-1 pb-2 pt-2.5 text-sm font-medium focus:outli
 /** Settings and Runs of a saved agent; a run detail belongs to the Runs tab. */
 export const AgentDetailTabs: React.FC<{ definitionId: string; section: AgentDetailSection }> = ({ definitionId, section }) => {
   const base = `/automations/${encodeURIComponent(definitionId)}`;
+  const listQuery = useAutomationListQuery();
   const tab = (to: string, label: string, active: boolean) => (
     <NavLink
       to={to}
@@ -60,8 +62,8 @@ export const AgentDetailTabs: React.FC<{ definitionId: string; section: AgentDet
   );
   return (
     <nav aria-label="Automation sections" className="flex flex-none gap-5 border-b border-slate-200 bg-white px-4">
-      {tab(base, 'Settings', section === 'settings')}
-      {tab(`${base}/runs`, 'Runs', section !== 'settings')}
+      {tab(`${base}${listQuery}`, 'Settings', section === 'settings')}
+      {tab(`${base}/runs${listQuery}`, 'Runs', section !== 'settings')}
     </nav>
   );
 };
@@ -80,12 +82,13 @@ const runShortLabel = (runId: string): string => `Run ${runId.slice(0, 8)}`;
  */
 export const AgentRunBreadcrumb: React.FC<{ definitionId: string; name: string; runId: string }> = ({ definitionId, name, runId }) => {
   const base = `/automations/${encodeURIComponent(definitionId)}`;
+  const listQuery = useAutomationListQuery();
   const separator = <ChevronRight className="h-3.5 w-3.5 flex-none text-slate-300" aria-hidden="true" />;
   return (
     <nav aria-label="Breadcrumb" className="flex-none border-b border-slate-200 bg-white px-4" data-testid="agent-run-breadcrumb">
       <ol className="flex min-w-0 items-center gap-1.5 text-sm">
-        <li className="min-w-0"><Link to={base} title={name} className={CRUMB_LINK_CLASSES} data-testid="agent-run-breadcrumb-automation">{name}</Link></li>
-        <li className="flex flex-none items-center gap-1.5">{separator}<Link to={`${base}/runs`} className={`${CRUMB_LINK_CLASSES} px-1.5`}>Runs</Link></li>
+        <li className="min-w-0"><Link to={`${base}${listQuery}`} title={name} className={CRUMB_LINK_CLASSES} data-testid="agent-run-breadcrumb-automation">{name}</Link></li>
+        <li className="flex flex-none items-center gap-1.5">{separator}<Link to={`${base}/runs${listQuery}`} className={`${CRUMB_LINK_CLASSES} px-1.5`}>Runs</Link></li>
         <li className="flex flex-none items-center gap-1.5">
           {separator}
           <span aria-current="page" className="block whitespace-nowrap py-3 font-medium text-slate-900" title={runId} data-testid="agent-run-breadcrumb-current">{runShortLabel(runId)}</span>

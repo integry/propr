@@ -177,11 +177,13 @@ describe('AgentsPage', () => {
     await screen.findByText('Agent 0');
     fireEvent.change(screen.getByLabelText('Search automations'), { target: { value: 'Quarterly' } });
 
-    expect(await screen.findByRole('link', { name: /Quarterly audit/ })).toBeInTheDocument();
+    // The search applies one debounce after typing; wait on text, not on 200 links' accessible names.
+    await waitFor(() => expect(screen.queryByText('Agent 0')).not.toBeInTheDocument());
+    expect(screen.getByRole('link', { name: /Quarterly audit/ })).toBeInTheDocument();
     expect(listAutomationDefinitions).toHaveBeenCalledWith({ limit: 200, offset: 0 });
     expect(listAutomationDefinitions).toHaveBeenCalledWith({ limit: 200, offset: 200 });
     fireEvent.change(screen.getByLabelText('Search automations'), { target: { value: 'Agent 199' } });
-    expect(screen.getAllByRole('link', { name: /Agent 199/ })).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByRole('link', { name: /Agent 199/ })).toHaveLength(1));
   });
 
   it('lists a creation that finishes after its editor was closed without leaving the agent now open', async () => {

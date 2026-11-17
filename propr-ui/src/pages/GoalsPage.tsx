@@ -34,8 +34,7 @@ import { ListSkeleton } from '../components/ui/Skeleton';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { NOT_FOUND_TITLE, NotFound } from '../components/NotFound';
 import { isNotFoundMessage } from '../utils/notFound';
-import { useIsMobile } from '../hooks/useIsMobile';
-import { ListSearchInput } from '../components/ListSearchInput';
+import { ListPageHeader } from '../components/ListPageHeader';
 import { useLiveResource } from '../hooks/useLiveResource';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { getModelDisplayName } from '../utils/modelDisplay';
@@ -632,7 +631,6 @@ function GoalQueueRow({ goal, goalAgents }: { goal: Goal; goalAgents: Array<{ ty
 
 function GoalList() {
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useListSearchParams();
   const [isCreating, setIsCreating] = useState(false);
   const repositoryFilter = searchParams.get('repository') || 'all';
@@ -726,49 +724,32 @@ function GoalList() {
     setIsCreating(false);
   }, []);
   return <div className="flex h-full w-full min-w-0 flex-col bg-white">
-    <header className="flex-none border-b border-gray-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
-      <div className="flex items-center justify-between gap-2 sm:gap-4">
-      <h1 id="goals-title" className="flex-none text-lg font-bold text-gray-800 sm:text-2xl">Goals</h1>
-      {goals.length > 0 && <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:gap-4">
-        {!isMobile && <ListSearchInput
-          value={searchQuery}
-          onChange={setSearchQuery}
-          onClear={clearSearch}
-          label="Search goals"
-          className="hidden min-w-0 max-w-64 flex-1 sm:block"
-        />}
-        <div className="flex min-w-0 items-center justify-end gap-2 sm:flex-1 sm:max-w-[480px]">
-          <Filter className="hidden h-4 w-4 flex-none text-gray-500 sm:block" aria-hidden="true" />
-          <select
-            value={statusFilter}
-            onChange={event => setStatusFilter(event.target.value)}
-            aria-label="Filter goals by status"
-            className="w-[120px] flex-none rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500 sm:w-auto sm:px-3 sm:py-2"
-          >
-            {goalStatusFilters.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <div role="group" aria-label="Filter goals by repository" className="min-w-0 max-w-[220px] flex-1 sm:max-w-[320px]">
-            <RepositorySelector
-              repos={repositoryOptions}
-              selectedRepo={repositoryFilter}
-              onRepoChange={setRepositoryFilter}
-              labelLayout="stacked"
-              className="w-full min-w-0"
-            />
-          </div>
+    <ListPageHeader
+      title="Goals"
+      titleId="goals-title"
+      showControls={goals.length > 0}
+      search={{ value: searchQuery, onChange: setSearchQuery, onClear: clearSearch, label: 'Search goals' }}
+      filters={<div className="flex min-w-0 items-center justify-end gap-2 sm:flex-1 sm:max-w-[480px]">
+        <Filter className="hidden h-4 w-4 flex-none text-gray-500 sm:block" aria-hidden="true" />
+        <select
+          value={statusFilter}
+          onChange={event => setStatusFilter(event.target.value)}
+          aria-label="Filter goals by status"
+          className="w-[120px] flex-none rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500 sm:w-auto sm:px-3 sm:py-2"
+        >
+          {goalStatusFilters.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <div role="group" aria-label="Filter goals by repository" className="min-w-0 max-w-[220px] flex-1 sm:max-w-[320px]">
+          <RepositorySelector
+            repos={repositoryOptions}
+            selectedRepo={repositoryFilter}
+            onRepoChange={setRepositoryFilter}
+            labelLayout="stacked"
+            className="w-full min-w-0"
+          />
         </div>
       </div>}
-      </div>
-      {/* A phone has no room for search beside the filters, so it takes its own row. */}
-      {isMobile && goals.length > 0 && <ListSearchInput
-        value={searchQuery}
-        onChange={setSearchQuery}
-        onClear={clearSearch}
-        label="Search goals"
-        className="mt-2 sm:hidden"
-        touch
-      />}
-    </header>
+    />
     <section aria-labelledby="goals-title" className="min-h-0 flex-1 overflow-auto pb-6">
       {error && <p role="alert" className="mx-4 my-3 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">{error}</p>}
       {hasSuccessfulRead && <span className="sr-only">{visibleGoals.length} of {goals.length}</span>}

@@ -14,6 +14,7 @@ import { AUTONOMY_BADGE_CLASSES, AUTONOMY_LABELS } from './agentPresentation';
 import { CANCELLABLE_RUN_STATES, formatTimestamp, isTerminalRunState, runTriggerSummary } from './agentRunPresentation';
 import { AgentRunTriggerEvent } from './AgentRunTriggerEvent';
 import { useAgentRun } from './useAgentRun';
+import { useAutomationListQuery } from './automationListQuery';
 
 interface AgentRunDetailProps {
   definitionId: string;
@@ -167,6 +168,7 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
   useDocumentTitle(`Run · ${agentName}`);
   const { run, foreignDefinitionId, loadError, actionError, pendingAction, reload, act } = useAgentRun(definitionId, runId);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const listQuery = useAutomationListQuery();
 
   if (foreignDefinitionId !== null) {
     return (
@@ -174,7 +176,7 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
         <SystemAlert>
           <p>This run belongs to a different automation, so it is not shown under {agentName}.</p>
           <Link
-            to={`/automations/${encodeURIComponent(foreignDefinitionId)}/runs/${encodeURIComponent(runId)}`}
+            to={`/automations/${encodeURIComponent(foreignDefinitionId)}/runs/${encodeURIComponent(runId)}${listQuery}`}
             className="mt-1 inline-block font-medium underline"
           >
             Open it under its own automation

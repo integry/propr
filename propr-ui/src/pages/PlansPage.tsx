@@ -7,8 +7,7 @@ import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftReposit
 import { Filter } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
-import { useIsMobile } from '../hooks/useIsMobile';
-import { ListSearchInput } from '../components/ListSearchInput';
+import { ListPageHeader } from '../components/ListPageHeader';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
@@ -21,7 +20,6 @@ const DEFAULT_PAGE_SIZE = 50;
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useListSearchParams();
   const { onDraftUpdate, onActivityUpdate, subscribeToActivity, unsubscribeFromActivity, isConnected } = useSocket();
 
@@ -384,63 +382,39 @@ const PlansPage: React.FC = () => {
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col bg-white">
-      {/* Anchored Header - compact on mobile */}
-      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-        <div className="flex items-center justify-between gap-2 sm:gap-4">
-          <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
-          <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
-            {!isMobile && (
-              <ListSearchInput
-                value={searchQuery}
-                onChange={setSearchQuery}
-                onClear={handleSearchClear}
-                label="Search plans"
-                // The search gives up width before the filters do (up to 16rem), so both fit beside the title.
-                className="hidden min-w-0 flex-1 sm:block sm:max-w-64"
+      <ListPageHeader
+        title="Plans"
+        search={{ value: searchQuery, onChange: setSearchQuery, onClear: handleSearchClear, label: 'Search plans' }}
+        filters={
+          <div className="flex items-center gap-2 min-w-0 sm:flex-shrink-0">
+            <Filter size={16} className="text-gray-500 hidden sm:block" />
+            <select
+              value={statusFilter}
+              onChange={(e) => handleStatusFilterChange(e.target.value)}
+              className="w-[120px] sm:w-auto px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+            >
+              <option value="all">All Statuses</option>
+              <option value="draft">Draft</option>
+              <option value="review">Ready for Review</option>
+              <option value="generating">Generating</option>
+              <option value="refining">Refining</option>
+              <option value="executed">Issues Created</option>
+              <option value="pr_created">PR Created</option>
+              <option value="merged">Merged</option>
+            </select>
+            {allRepositories.length > 0 && (
+              <RepositorySelector
+                repos={repoFilterOptions}
+                selectedRepo={repoFilter}
+                onRepoChange={handleFilterChange}
+                variant="default"
+                labelLayout="stacked"
+                className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[220px] xl:w-[320px] xl:max-w-[320px]"
               />
             )}
-            {/* Filters row - inline on all screen sizes */}
-            <div className="flex items-center gap-2 min-w-0 sm:flex-shrink-0">
-              <Filter size={16} className="text-gray-500 hidden sm:block" />
-              <select
-                value={statusFilter}
-                onChange={(e) => handleStatusFilterChange(e.target.value)}
-                className="w-[120px] sm:w-auto px-2 sm:px-3 py-1.5 sm:py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="draft">Draft</option>
-                <option value="review">Ready for Review</option>
-                <option value="generating">Generating</option>
-                <option value="refining">Refining</option>
-                <option value="executed">Issues Created</option>
-                <option value="pr_created">PR Created</option>
-                <option value="merged">Merged</option>
-              </select>
-              {allRepositories.length > 0 && (
-                <RepositorySelector
-                  repos={repoFilterOptions}
-                  selectedRepo={repoFilter}
-                  onRepoChange={handleFilterChange}
-                  variant="default"
-                  labelLayout="stacked"
-                  className="flex-1 min-w-0 max-w-[220px] sm:flex-none sm:w-[220px] xl:w-[320px] xl:max-w-[320px]"
-                />
-              )}
-            </div>
           </div>
-        </div>
-        {/* A phone has no room for search beside the filters, so it takes its own row. */}
-        {isMobile && (
-          <ListSearchInput
-            value={searchQuery}
-            onChange={setSearchQuery}
-            onClear={handleSearchClear}
-            label="Search plans"
-            className="mt-2 sm:hidden"
-            touch
-          />
-        )}
-      </div>
+        }
+      />
 
       {/* Scrollable Content Area */}
       {blockingBody ?? (
