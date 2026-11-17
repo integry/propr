@@ -342,6 +342,24 @@ describe('run summary selection', () => {
         }
     });
 
+    test('a completed change that quotes waiting wording in a blockquote or fence is not an unfinished run', () => {
+        for (const done of [
+            'Updated the progress message to:\n\n> Waiting for the completion notification.',
+            'Updated the progress message to:\n\n> > Still running the suites.',
+            'Updated the progress message to:\n\n```\nWaiting for the completion notification.\n```',
+            'Updated the progress message to:\n\n~~~text\nStill running (7 of ~110 suites done).\n~~~',
+        ]) {
+            assert.equal(reportsUnfinishedWork(done), false, done);
+            const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(done), result(done)]), 'prompt', 'claude-opus-5-5', 1);
+            assert.equal(response.success, true, done);
+            assert.equal(response.terminationReason, undefined, done);
+            assert.equal(response.summary, done);
+        }
+        // The agent's own prose around a quoted example still counts.
+        assert.equal(reportsUnfinishedWork('Still running the suites. The progress message reads:\n\n> Working.'), true);
+        assert.equal(reportsUnfinishedWork('```\nnpm test\n```\n\nWaiting for the completion notification.'), true);
+    });
+
     test('ordinary runs keep the reported result unchanged', () => {
         const short = 'Fixed the typo in README.md.';
         const { response } = processDockerResult(execution([toolUse('t1'), toolResult('t1'), assistantText(short), result(short)]), 'prompt', 'claude-opus-5-5', 1);
@@ -435,6 +453,34 @@ describe('run summary selection', () => {
         assert.equal(response.success, true);
         assert.equal(response.summary, fresh);
         assert.match(response.commitMessage?.split('\n')[0] ?? '', /^The background job now retries failed requests/);
+        assert.equal(selectRunSummary({ conversationLog }).summary, fresh);
+    });
+
+    test('a product description of a background job written after a notification replaces the older summary', () => {
+        const fresh = 'The background job is a persistent worker that retries failed requests.';
+        const conversationLog = [
+            toolUse('t1'), toolResult('t1'),
+            assistantText(SUMMARY),
+            notification('background job failed'),
+            toolUse('t2', 'Failed requests were dropped; fixing it.'), toolResult('t2'),
+            assistantText(fresh),
+        ];
+        for (const declarative of [
+            fresh,
+            'The background job was a one-shot script; it is now a persistent worker.',
+            'The monitor is the only place that tracks lease renewals.',
+        ]) assert.equal(isRunStatusNote(declarative, { afterNotification: true }), false, declarative);
+        // Identifying the notification itself is still a reply to it.
+        for (const reply of [
+            'That notification is the depth-measurement probe I started earlier.',
+            'The notification was from the background suite I started earlier.',
+            'The timeout was just the watcher on the full suite.',
+        ]) assert.equal(isRunStatusNote(reply, { afterNotification: true }), true, reply);
+
+        const { response } = processDockerResult(execution([...conversationLog, result(fresh)]), 'prompt', 'claude-opus-5-5', 1);
+        assert.equal(response.success, true);
+        assert.equal(response.summary, fresh);
+        assert.equal(response.commitMessage?.split('\n')[0], fresh);
         assert.equal(selectRunSummary({ conversationLog }).summary, fresh);
     });
 

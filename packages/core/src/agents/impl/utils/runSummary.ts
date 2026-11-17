@@ -57,6 +57,13 @@ const SUBJECT_WORD = `(?!${CLAUSE_OPENER}(?![\\w-]))`;
  */
 const NOTIFIER_TO_PREDICATE = `(?:\\s+${SUBJECT_WORD}\\S+|,\\s+[^,;]+,(?=\\s)){0,8}?`;
 /**
+ * A notifier identified as a notifier or by its source ("That notification is
+ * the probe I started", "The notice was from the watcher"). An article alone
+ * identifies nothing: "The background job is a persistent worker that retries
+ * failed requests" describes the product.
+ */
+const NOTIFIER_IDENTIFICATION = `(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:from\\b|(?:the|my|a|an)\\s+(?:${SUBJECT_WORD}[\\w-]+\\s+){0,4}?${NOTIFIER}\\b)`;
+/**
  * A sentence about a notification event itself ("The monitor timed out after
  * the batch finished", "That notification is the probe I started"). Only the
  * event, in the past tense or as an identification, counts, and only as the
@@ -65,7 +72,7 @@ const NOTIFIER_TO_PREDICATE = `(?:\\s+${SUBJECT_WORD}\\S+|,\\s+[^,;]+,(?=\\s)){0
  * that timed out") describes the product.
  */
 const NOTIFICATION_EVENT = new RegExp([
-    `^(?:(?:the|that|this|my|its|a|an|one)\\s+)?(?:${SUBJECT_WORD}[\\w"'\u2019-]+\\s+){0,3}?${NOTIFIER}\\b${NOTIFIER_TO_PREDICATE}\\s+(?:(?:only|just|also|simply)\\s+)?(?:timed out|expired|fired|finished|completed|ended|stopped|exited|reported|came from|comes from|(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an|from)\\b)`,
+    `^(?:(?:the|that|this|my|its|a|an|one)\\s+)?(?:${SUBJECT_WORD}[\\w"'\u2019-]+\\s+){0,3}?${NOTIFIER}\\b${NOTIFIER_TO_PREDICATE}\\s+(?:(?:only|just|also|simply)\\s+)?(?:timed out|expired|fired|finished|completed|ended|stopped|exited|reported|came from|comes from|${NOTIFIER_IDENTIFICATION})`,
     `^(?:it|that|this)\\s+(?:is|was)\\s+(?:(?:only|just)\\s+)?(?:the|my|a|an)\\s+(?:${SUBJECT_WORD}[\\w-]+\\s+){0,4}?${NOTIFIER}\\b`
 ].join('|'), 'i');
 /** A sentence that dismisses a notification as needing nothing from the agent. */
@@ -252,14 +259,38 @@ function sentences(text: string): string[] {
 }
 
 /**
+ * The message without Markdown blockquotes and fenced code blocks: quoted or
+ * example content ("Updated the progress message to:\n\n> Waiting for the
+ * completion notification.") is product text, not the agent's own statement.
+ * An unclosed fence runs to the end of the message, as Markdown renders it.
+ */
+function withoutQuotedBlocks(text: string): string {
+    const kept: string[] = [];
+    let fence: string | null = null;
+    for (const line of text.split('\n')) {
+        const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+        if (fence) {
+            if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.trim().slice(marker.length).trim()) fence = null;
+            continue;
+        }
+        if (marker) { fence = marker; continue; }
+        if (/^\s*>/.test(line)) continue;
+        kept.push(line);
+    }
+    return kept.join('\n');
+}
+
+/**
  * True when a final message asserts the agent is still waiting for work it
  * started. Markdown formatting does not matter; the assertion must open a
- * sentence and must not sit inside quoted text.
+ * sentence of the agent's own prose, not sit inside quoted text, a blockquote
+ * or a fenced example.
  */
 export function reportsUnfinishedWork(text: string | null | undefined): boolean {
-    const prose = plainProse(text?.trim() ?? '');
+    const trimmed = text?.trim() ?? '';
+    const prose = plainProse(trimmed);
     if (!prose || prose.length > UNFINISHED_WORK_MAX_LENGTH) return false;
-    return sentences(prose).some(sentence => UNFINISHED_WORK_SENTENCE.test(sentence));
+    return sentences(plainProse(withoutQuotedBlocks(trimmed))).some(sentence => UNFINISHED_WORK_SENTENCE.test(sentence));
 }
 
 /**
