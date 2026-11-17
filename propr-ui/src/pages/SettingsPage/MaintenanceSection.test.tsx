@@ -194,6 +194,49 @@ describe('MaintenanceSection', () => {
     expect(api.resumeFollowupHandoff).toHaveBeenLastCalledWith('integry/propr', 3500, { authorizeCancelled: true });
   });
 
+  it.each([
+    ['is released and a later attempt is held', [[held], [held, { ...cancelled, taskId: 'pr-comments-batch-integry-propr-3500-b' }]]],
+    ['is replaced by a later attempt in one read', [[held, { ...cancelled, taskId: 'pr-comments-batch-integry-propr-3500-b' }]]],
+    ['leaves the list and comes back', [[held], [held, cancelled]]],
+  ])('does not carry a ticked publish choice over when its attempt %s', async (_case, reads) => {
+    const lists = vi.mocked(api.listFollowupHandoffs).mockResolvedValueOnce([held, cancelled]);
+    for (const read of reads) lists.mockResolvedValueOnce(read as api.FollowupHandoffStatus[]);
+    vi.mocked(api.releaseFollowupHandoff).mockRejectedValue(new api.FollowupHandoffRefusedError('Refused.', 'worktree_holds_unpublished_work'));
+    vi.mocked(api.resumeFollowupHandoff).mockResolvedValue({ summary, status: null });
+    render(view());
+    fireEvent.click(within(await row('integry/propr#3500')).getByRole('checkbox', { name: 'Publish the cancelled work' }));
+    // Each refused release of the other row re-reads the list without touching the choice itself.
+    for (let read = 1; read <= reads.length; read++) {
+      fireEvent.click(within(await row('integry/propr#3423')).getByRole('button', { name: 'Release' }));
+      confirmRelease();
+      await waitFor(() => expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(read + 1));
+      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Held follow-ups' })).getAllByRole('button', { name: 'Resume' })[0]).toBeEnabled());
+    }
+    const item = await row('integry/propr#3500');
+    expect(within(item).getByRole('checkbox', { name: 'Publish the cancelled work' })).not.toBeChecked();
+    fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
+    await screen.findByText(/Resumed integry\/propr#3500/);
+    expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500);
+    expect(api.resumeFollowupHandoff).not.toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true });
+  });
+
+  it('keeps a ticked publish choice while the same attempt stays held', async () => {
+    vi.mocked(api.listFollowupHandoffs).mockResolvedValue([held, cancelled]);
+    vi.mocked(api.releaseFollowupHandoff).mockRejectedValue(new api.FollowupHandoffRefusedError('Refused.', 'worktree_holds_unpublished_work'));
+    vi.mocked(api.resumeFollowupHandoff).mockResolvedValue({ summary, status: null });
+    render(view());
+    fireEvent.click(within(await row('integry/propr#3500')).getByRole('checkbox', { name: 'Publish the cancelled work' }));
+    fireEvent.click(within(await row('integry/propr#3423')).getByRole('button', { name: 'Release' }));
+    confirmRelease();
+    await waitFor(() => expect(api.listFollowupHandoffs).toHaveBeenCalledTimes(2));
+    const item = await row('integry/propr#3500');
+    await waitFor(() => expect(within(item).getByRole('button', { name: 'Resume' })).toBeEnabled());
+    expect(within(item).getByRole('checkbox', { name: 'Publish the cancelled work' })).toBeChecked();
+    fireEvent.click(within(item).getByRole('button', { name: 'Resume' }));
+    await screen.findByText(/Resumed integry\/propr#3500/);
+    expect(api.resumeFollowupHandoff).toHaveBeenCalledWith('integry/propr', 3500, { authorizeCancelled: true });
+  });
+
   it('keeps the last rows when a background read fails', async () => {
     vi.mocked(api.resumeFollowupHandoff).mockResolvedValue({ summary, status: null });
     vi.mocked(api.listFollowupHandoffs).mockResolvedValueOnce([held]).mockRejectedValueOnce(new Error('Too many requests. Try again in a minute.'));

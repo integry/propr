@@ -18,6 +18,11 @@ const REFRESH_MS = 60_000;
 
 type Handoff = api.FollowupHandoffStatus;
 const keyOf = (handoff: Handoff) => `${handoff.repository}#${handoff.pullRequest}`;
+/**
+ * One attempt on a pull request. A later follow-up on the same pull request is a
+ * different attempt, so a choice made for one must not carry over to the next.
+ */
+const attemptOf = (handoff: Handoff) => `${keyOf(handoff)}:${handoff.taskId}`;
 const prUrl = (handoff: Handoff) => `https://github.com/${handoff.repository}/pull/${handoff.pullRequest}`;
 
 /**
@@ -37,6 +42,7 @@ function HeldFollowups() {
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [forceFor, setForceFor] = useState<string | null>(null);
+  // Consent to publish cancelled work, bound to the attempt it was ticked for.
   const [publishCancelledFor, setPublishCancelledFor] = useState<string | null>(null);
   const [confirmRelease, setConfirmRelease] = useState<{ handoff: Handoff; force: boolean } | null>(null);
   const [message, setMessage] = useState('');
@@ -52,6 +58,10 @@ function HeldFollowups() {
       if (!alive.current) return;
       loaded.current = true;
       setHandoffs(next); setLoadError('');
+      // Drop consent once its attempt is gone or no longer waits for that choice.
+      setPublishCancelledFor(current => (
+        current !== null && next.some(handoff => needsCancelledChoice(handoff) && attemptOf(handoff) === current) ? current : null
+      ));
     } catch (e) {
       if (alive.current && !loaded.current) setLoadError(e instanceof Error ? e.message : 'Held follow-ups are unavailable.');
     }
@@ -80,7 +90,7 @@ function HeldFollowups() {
 
   const resume = (handoff: Handoff) => {
     const id = keyOf(handoff);
-    const authorizeCancelled = needsCancelledChoice(handoff) && publishCancelledFor === id;
+    const authorizeCancelled = needsCancelledChoice(handoff) && publishCancelledFor === attemptOf(handoff);
     void run(id, async () => {
       const { summary } = authorizeCancelled
         ? await api.resumeFollowupHandoff(handoff.repository, handoff.pullRequest, { authorizeCancelled: true })
@@ -138,7 +148,7 @@ function HeldFollowups() {
                         <button className={button} disabled={busy !== null} onClick={() => resume(handoff)}>Resume</button>
                         {needsCancelledChoice(handoff) && (
                           <label className="flex items-center gap-2 text-slate-600">
-                            <input type="checkbox" checked={publishCancelledFor === id} onChange={event => setPublishCancelledFor(event.target.checked ? id : null)} />
+                            <input type="checkbox" checked={publishCancelledFor === attemptOf(handoff)} onChange={event => setPublishCancelledFor(event.target.checked ? attemptOf(handoff) : null)} />
                             <span>Publish the cancelled work</span>
                           </label>
                         )}
