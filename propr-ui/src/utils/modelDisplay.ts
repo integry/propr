@@ -79,6 +79,10 @@ export function humanizeModelId(modelId: string): string {
  * (`openai/gpt-5.5`) is looked up without it.
  */
 export function formatModelName(modelId: string): string {
+  // A placeholder id in angle brackets, as Claude Code records `<synthetic>`
+  // for messages it wrote itself, reads as its word: `Synthetic`.
+  const placeholder = /^<([^<>]+)>$/.exec(modelId.trim());
+  if (placeholder) return humanizeModelId(placeholder[1]);
   const bare = modelId.slice(modelId.lastIndexOf('/') + 1);
   return MODEL_INFO_MAP[modelId]?.name || MODEL_INFO_MAP[bare]?.name || humanizeModelId(bare);
 }

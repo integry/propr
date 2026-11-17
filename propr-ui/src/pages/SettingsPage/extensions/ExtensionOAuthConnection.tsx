@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime } from '../../../utils/dateFormat';
 import { useState } from 'react';
 import type { ExtensionOAuthConnectionStatus } from '@propr/shared';
 import { buttonClass, dangerButtonClass } from './extensionUi';
@@ -33,7 +34,7 @@ export function ExtensionOAuthConnection({ name, status, redirectUri, busy, onCo
         <span className="text-slate-600">OAuth sign-in:</span>
         <span className={`${badge} ${shown.className}`}>{shown.label}</span>
         {status?.connectedBy && status.connectedAt !== undefined && (
-          <span className="text-slate-600">by administrator {status.connectedBy} · {new Date(status.connectedAt).toLocaleString()}</span>
+          <span className="text-slate-600">by administrator {status.connectedBy} · <span title={formatDateTime(status.connectedAt)}>{formatRelativeTime(status.connectedAt)}</span></span>
         )}
       </p>
       {state !== 'not_connected' && (

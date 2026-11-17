@@ -37,7 +37,7 @@ const STATUS_TONES: Record<SearchStatusTone, { pill: string; dot: string }> = {
   active: { pill: 'bg-teal-50 text-teal-700 border-teal-200', dot: 'bg-teal-500 animate-pulse' },
   review: { pill: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500' },
   pending: { pill: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'border border-slate-400' },
-  merged: { pill: 'bg-violet-50 text-violet-700 border-violet-200', dot: 'bg-violet-500' },
+  merged: { pill: 'bg-gray-100 text-gray-600 border-gray-200', dot: 'bg-gray-500' },
   cancelled: { pill: 'bg-orange-50 text-orange-700 border-orange-200', dot: 'bg-orange-500' },
   done: { pill: 'bg-gray-100 text-gray-600 border-gray-200', dot: 'bg-gray-400' },
 };

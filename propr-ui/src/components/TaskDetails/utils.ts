@@ -1,3 +1,4 @@
+import { formatClockTime, formatDate as formatSharedDate, formatDateTime } from '../../utils/dateFormat';
 import { formatModelName as displayModelName } from '../../utils/modelDisplay';
 import { LiveEvent } from './types';
 
@@ -25,17 +26,14 @@ export const formatDisplayPath = (fullPath: string): string => {
   return fullPath;
 };
 
-export const formatDateOnly = (dateString: string): string => {
-  return new Date(dateString).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-};
+/** `Nov 2, 2026`. */
+export const formatDateOnly = (dateString: string): string => formatSharedDate(dateString);
 
-export const formatTimeOnly = (dateString: string): string => {
-  return new Date(dateString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-};
+/** `10:12:47`, a 24-hour clock stamp. */
+export const formatTimeOnly = (dateString: string): string => formatClockTime(dateString);
 
-export const formatDate = (dateString: string): string => {
-  return new Date(dateString).toLocaleString();
-};
+/** `Nov 2, 2026, 10:12:47 AM`, the full local date and time. */
+export const formatDate = (dateString: string): string => formatDateTime(dateString);
 
 export const formatModelName = (modelId: string | undefined): string => {
   if (!modelId) return 'Unknown Model';

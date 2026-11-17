@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../../utils/dateFormat';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import { canManageHeldFollowups } from './settingsPermissions';
@@ -61,7 +62,7 @@ function HeldFollowups() {
   useEffect(() => { void refresh(); }, [refresh]);
 
   const key = (handoff: api.FollowupHandoffStatus) => `${handoff.repository}#${handoff.pullRequest}`;
-  const when = (updatedAt: number) => new Date(updatedAt).toLocaleString();
+  const when = (updatedAt: number) => formatRelativeTime(updatedAt);
   const prUrl = (handoff: api.FollowupHandoffStatus) => `https://github.com/${handoff.repository}/pull/${handoff.pullRequest}`;
 
   return (

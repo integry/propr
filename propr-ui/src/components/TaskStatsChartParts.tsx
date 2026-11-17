@@ -11,6 +11,7 @@ import {
 } from 'recharts';
 import { tooltipStyle, axisProps } from './chartConstants';
 import { formatPercent, type StatusBreakdownEntry } from './taskStatusBreakdown';
+import { formatCount } from '../utils/dateFormat';
 
 interface VolumeChartProps {
   data: Array<{ displayDate: string; count: number }>;
@@ -99,7 +100,7 @@ export const StatusSegmentedBar: React.FC<StatusSegmentedBarProps> = ({ data }) 
             key={entry.key}
             className="h-full"
             style={{ flex: `${entry.value} 0 0`, minWidth: '3px', backgroundColor: entry.color }}
-            title={`${entry.name}: ${entry.value.toLocaleString()} tasks (${formatPercent(entry.percent)})`}
+            title={`${entry.name}: ${formatCount(entry.value)} tasks (${formatPercent(entry.percent)})`}
             data-status={entry.key}
           />
         ))}
@@ -115,7 +116,7 @@ export const StatusSegmentedBar: React.FC<StatusSegmentedBarProps> = ({ data }) 
           </li>
         ))}
       </ul>
-      <span className="sr-only">{total.toLocaleString()} tasks total</span>
+      <span className="sr-only">{formatCount(total)} tasks total</span>
     </div>
   );
 };

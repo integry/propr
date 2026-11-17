@@ -6,6 +6,7 @@ import {
   formatMcpBytes,
   formatMcpCount,
   formatMcpDuration,
+  formatMcpTimestamp,
   hasActiveMcpLogFilters,
   outcomeTone,
   parseMcpLogFilters,
@@ -76,6 +77,18 @@ describe('value formatting', () => {
     expect(formatMcpCount(0)).toBe('0');
     expect(formatMcpDuration(null)).toBe(UNAVAILABLE);
     expect(formatMcpBytes(undefined)).toBe(UNAVAILABLE);
+  });
+
+  it('formats counts with the locale thousands separator', () => {
+    expect(formatMcpCount(165297)).toBe((165297).toLocaleString());
+    expect(formatMcpCount(165297)).toMatch(/^165\D297$/);
+  });
+
+  it('shows a request time as the shared relative age, then a date', () => {
+    expect(formatMcpTimestamp(NOW - 5 * 60_000, NOW)).toBe('5m ago');
+    expect(formatMcpTimestamp(NOW - 3 * 24 * 3_600_000, NOW)).toBe('3d ago');
+    expect(formatMcpTimestamp(Date.parse('2026-09-01T12:00:00.000Z'), NOW)).toMatch(/2026/);
+    expect(formatMcpTimestamp(null, NOW)).toBe(UNAVAILABLE);
   });
 
   it('formats durations and sizes at human scale', () => {

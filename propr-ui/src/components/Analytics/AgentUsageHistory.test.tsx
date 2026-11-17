@@ -169,6 +169,10 @@ describe('AgentUsageHistory', () => {
       .toHaveAttribute('title', 'Claude and GPT · Weekly Limit');
     expect(within(filters).getByRole('button', { name: /^Antigravity · Gemini 4 Argon Weekly 30%/ })).toBeInTheDocument();
     expect(filters.innerHTML).not.toMatch(/gemini-2\.5-pro|gpt-5\.3-codex/);
+    // A long quota pool name is shown whole: the chip may wrap, never truncate.
+    for (const label of within(filters).getAllByTestId('usage-series-label')) {
+      expect(label.className).not.toMatch(/truncate|max-w-/);
+    }
 
     fireEvent.click(screen.getByRole('button', { name: 'Table' }));
     const table = screen.getByTestId('agent-usage-history-table');

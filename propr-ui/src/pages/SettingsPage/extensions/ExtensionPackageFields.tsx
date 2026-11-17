@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime } from '../../../utils/dateFormat';
 import { useEffect, useId, useState } from 'react';
 import { type ExtensionLibraryPackageServer, type ExtensionPackageResolution, type ExtensionSecretAcknowledgement, type ExtensionSecretStatus } from '@propr/shared';
 import { resolveExtensionPackage } from '../../../api/extensionProfilesApi';
@@ -179,7 +180,7 @@ export function PackageServerFields({ server, status, secretsDropped = false, ac
             <span>I understand that these values are readable inside the task container.</span>
           </label>
           {acknowledgement && acknowledgementCovers(acknowledgement, server) && (
-            <p className="text-xs">Acknowledged by user {acknowledgement.actor} on {new Date(acknowledgement.at).toLocaleString()}.</p>
+            <p className="text-xs">Acknowledged by user {acknowledgement.actor} <span title={formatDateTime(acknowledgement.at)}>{formatRelativeTime(acknowledgement.at)}</span>.</p>
           )}
         </div>
       )}

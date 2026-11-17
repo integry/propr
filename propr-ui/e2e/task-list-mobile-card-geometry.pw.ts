@@ -92,7 +92,7 @@ for (const width of [320, 360, 390]) {
       expect(card.repoWidth).toBeGreaterThanOrEqual(card.tenChars - 0.5);
     }
     // The ages are the ones that overflowed in the field, not `Just now`.
-    expect(layout.cards.map(card => card.age)).toEqual(expect.arrayContaining(['12 mins ago', '14 mins ago', '58 mins ago']));
+    expect(layout.cards.map(card => card.age)).toEqual(expect.arrayContaining(['12m ago', '14m ago', '58m ago']));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await capture(page, `tasks-cards-extremes-${width}`);
 

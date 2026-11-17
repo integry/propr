@@ -1,3 +1,4 @@
+import { formatDateTime } from '../utils/dateFormat';
 import { PreviewThumbnails } from '../components/PreviewMedia';
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -262,7 +263,7 @@ export const InboxCard: React.FC<InboxCardProps> = ({ notification, onDismiss, o
         </span>
         <span className={rowLayout(`col-start-2 row-start-1 flex items-center gap-x-1.5 justify-self-end whitespace-nowrap pl-3 text-xs leading-5 text-slate-500 sm:col-start-3 sm:mr-0 sm:justify-self-start sm:pl-1.5 ${canDismiss ? 'mr-3' : ''}`)}>
           <span className={rowLayout('hidden sm:inline')}><Dot /></span>
-          <time dateTime={notification.occurredAt} title={new Date(notification.occurredAt).toLocaleString()}>
+          <time dateTime={notification.occurredAt} title={formatDateTime(notification.occurredAt)}>
             {formatRelativeTime(notification.occurredAt)}
           </time>
         </span>

@@ -314,7 +314,7 @@ describe('Dashboard', () => {
     const panel = screen.getByTestId('needs-attention-panel');
     expect(panel).toHaveTextContent('Run failed');
     expect(panel).toHaveTextContent('Checkout retries never fire');
-    expect(panel).toHaveTextContent('Waiting 3 hrs');
+    expect(panel).toHaveTextContent('Waiting 3h');
     expect(screen.getByRole('link', { name: /Review pull request/ })).toHaveAttribute('href', 'https://github.com/acme/app/pull/51');
     expect(screen.queryByTestId('needs-attention-empty')).not.toBeInTheDocument();
   });

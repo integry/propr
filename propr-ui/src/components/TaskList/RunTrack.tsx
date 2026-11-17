@@ -42,7 +42,7 @@ export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md
  * row of identical dots reads as a track rather than a masked password. The
  * older runs are counted inside the pill; the task pane's timeline carries
  * every run in full. Once the pull request merges, the newest node is a
- * violet dot: the track ends where the task did.
+ * solid slate dot: the track ends where the task did (success stays quiet).
  */
 export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
   const shown = runs.slice(-RUN_TRACK_LIMIT);
@@ -64,7 +64,7 @@ export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
               {index > 0 && <span aria-hidden="true" className="h-px w-2 bg-slate-300" />}
               <span title={merged ? `${describeRun(run)}, then merged` : describeRun(run)} className="inline-flex">
                 {merged
-                  ? <span data-outcome="merged" aria-hidden="true" className="h-2 w-2 flex-none rounded-full bg-violet-600" />
+                  ? <span data-outcome="merged" aria-hidden="true" className="h-2 w-2 flex-none rounded-full bg-slate-600" />
                   : <RunOutcomeMarker outcome={run.outcome} />}
               </span>
             </React.Fragment>

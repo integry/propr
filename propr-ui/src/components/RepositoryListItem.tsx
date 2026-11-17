@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime } from '../utils/dateFormat';
 import React from 'react';
 import { Github } from 'lucide-react';
 import { RepositoryIndexingStatus, MonitoredRepo } from '../api/proprApi';
@@ -15,14 +16,6 @@ const StatusDot: React.FC<{ status: RepoStatusType; className?: string }> = ({ s
     idle: 'bg-slate-300'
   };
   return <span className={`inline-block w-2 h-2 shrink-0 rounded-full ${dotColors[status]} ${className}`} />;
-};
-
-const formatIndexedTime = (timestamp: string): string => {
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(timestamp).getTime()) / 60000));
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`;
-  return `${Math.floor(minutes / 1440)}d ago`;
 };
 
 // Calculate progress text for indexing status
@@ -114,8 +107,8 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
             </span>
           )}
           {repoStatus?.last_indexed_at && (
-            <time dateTime={repoStatus.last_indexed_at} title={`Last indexed: ${new Date(repoStatus.last_indexed_at).toLocaleString()}`} className="ml-auto shrink-0 text-slate-500">
-              {formatIndexedTime(repoStatus.last_indexed_at)}
+            <time dateTime={repoStatus.last_indexed_at} title={`Last indexed: ${formatDateTime(repoStatus.last_indexed_at)}`} className="ml-auto shrink-0 text-slate-500">
+              {formatRelativeTime(repoStatus.last_indexed_at)}
             </time>
           )}
         </div>

@@ -31,14 +31,14 @@ async function mergedPullRequest(page: Page) {
   } }));
 }
 
-test('1440px a merged pull request ends its run track in violet and offers no follow-up actions', async ({ page }) => {
+test('1440px a merged pull request ends its run track on the merge and offers no follow-up actions', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await mergedPullRequest(page);
   await page.goto(`/tasks?task=${newest}`);
   const pane = page.getByTestId('task-details');
   await expect(pane.getByText(`Merged`).filter({ visible: true }).first()).toBeVisible();
 
-  // The row's track ends on the merge, in the violet that marks Merged alone.
+  // The row's track ends on the merge, a solid slate node (success stays quiet).
   const row = page.getByTestId('task-card').filter({ hasText: 'Repo-owned workflow file' });
   const markers = row.getByTestId('run-track').locator('[data-outcome]');
   await expect(markers.last()).toHaveAttribute('data-outcome', 'merged');

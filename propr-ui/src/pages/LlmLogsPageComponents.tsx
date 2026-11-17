@@ -1,9 +1,11 @@
 import React from 'react';
+import { PageHeading } from '../components/ui/PageHeading';
 import { CheckCircle, XCircle, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { getWorkTypeLabel } from './llmLogsUtils';
 import { ListSkeleton } from '../components/ui/Skeleton';
+import { formatCount } from '../utils/dateFormat';
 
 // Status icon component
 export const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
@@ -16,7 +18,7 @@ export const StatusIcon: React.FC<{ success: boolean }> = ({ success }) => {
 export const LlmLogsBlockingState: React.FC<{ error?: string }> = ({ error }) => (
   <div className="flex flex-col h-full bg-white">
     <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-      <h1 className="text-2xl font-bold text-gray-800">LLM Log</h1>
+      <PageHeading>LLM Log</PageHeading>
     </div>
     <div className="flex-1 overflow-auto px-6 py-6">
       {error ? (
@@ -83,7 +85,7 @@ const SyntheticRoutingDetails: React.FC<{ value: unknown }> = ({ value }) => {
 const WorkReferenceSection: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
   if (!log.workType) return null;
   return (
-    <div className="col-span-2 space-y-2">
+    <div className="space-y-2 md:col-span-2">
       <h4 className="font-medium text-gray-700">Work Reference</h4>
       <div className="bg-white p-3 rounded border border-gray-200 flex flex-wrap gap-x-6 gap-y-1">
         <div>
@@ -154,9 +156,10 @@ export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
   const reasoningLevel = stringMetadata(log.metadata?.reasoningLevel);
   const reasoningOutputTokens = numberMetadata(log.metadata?.reasoningOutputTokens);
   return (
-    <tr className="bg-gray-50">
-      <td colSpan={8} className="px-4 py-4">
-        <div className="grid grid-cols-2 gap-4 text-sm">
+    <tr className="block bg-gray-50 lg:table-row">
+      <td colSpan={8} className="block px-4 py-4 sm:px-6 lg:table-cell lg:px-4">
+        {/* Children may not widen the fixed-layout table: long ids break, metadata scrolls in its own box. */}
+        <div className="grid grid-cols-1 gap-4 text-sm *:min-w-0 [overflow-wrap:anywhere] md:grid-cols-2">
           <WorkReferenceSection log={log} />
 
           <SyntheticRoutingDetails value={log.metadata?.syntheticRouting} />
@@ -214,7 +217,7 @@ export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
 
           {/* Error Message Section (if failed) */}
           {log.errorMessage && (
-            <div className="col-span-2 space-y-2">
+            <div className="space-y-2 md:col-span-2">
               <h4 className="font-medium text-red-700">Error Message</h4>
               <div className="bg-red-50 p-3 rounded border border-red-200">
                 <pre className="text-xs font-mono text-red-800 whitespace-pre-wrap">
@@ -226,19 +229,19 @@ export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
 
           {/* Cache Info Section (if available) */}
           {(log.cacheCreationInputTokens || log.cacheReadInputTokens) && (
-            <div className="col-span-2 space-y-2">
+            <div className="space-y-2 md:col-span-2">
               <h4 className="font-medium text-gray-700">Cache Statistics</h4>
               <div className="bg-white p-3 rounded border border-gray-200 flex gap-6">
                 {log.cacheCreationInputTokens !== null && (
                   <div>
                     <span className="text-gray-500">Cache Creation Tokens:</span>{' '}
-                    <span className="font-mono text-gray-800">{log.cacheCreationInputTokens.toLocaleString()}</span>
+                    <span className="font-mono text-gray-800">{formatCount(log.cacheCreationInputTokens)}</span>
                   </div>
                 )}
                 {log.cacheReadInputTokens !== null && (
                   <div>
                     <span className="text-gray-500">Cache Read Tokens:</span>{' '}
-                    <span className="font-mono text-gray-800">{log.cacheReadInputTokens.toLocaleString()}</span>
+                    <span className="font-mono text-gray-800">{formatCount(log.cacheReadInputTokens)}</span>
                   </div>
                 )}
               </div>
@@ -247,7 +250,7 @@ export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
 
           {/* Reasoning Info Section (if available) */}
           {(reasoningLevel || reasoningOutputTokens) && (
-            <div className="col-span-2 space-y-2">
+            <div className="space-y-2 md:col-span-2">
               <h4 className="font-medium text-gray-700">Reasoning Statistics</h4>
               <div className="bg-white p-3 rounded border border-gray-200 flex flex-wrap gap-6">
                 {reasoningLevel && (
@@ -259,7 +262,7 @@ export const ExpandedRowDetails: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
                 {reasoningOutputTokens !== null && (
                   <div>
                     <span className="text-gray-500">Reasoning Output Tokens:</span>{' '}
-                    <span className="font-mono text-gray-800">{reasoningOutputTokens.toLocaleString()}</span>
+                    <span className="font-mono text-gray-800">{formatCount(reasoningOutputTokens)}</span>
                   </div>
                 )}
                 <span className="text-gray-500">
@@ -285,8 +288,8 @@ export const PaginationFooter: React.FC<{
 }> = ({ currentPage, totalPages, pageSize, pagination, loading, onPageChange }) => (
   <div className="flex-shrink-0 bg-slate-50 border-t border-gray-200">
     <div className="flex items-center justify-between px-4 sm:px-6 py-2 sm:py-4 gap-2">
-      <span className="text-xs sm:text-sm text-gray-600">
-        <span className="hidden sm:inline">Showing </span>{(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, pagination.total)}<span className="hidden sm:inline"> of {pagination.total} entries</span>
+      <span data-testid="log-pagination-summary" className="text-xs sm:text-sm text-gray-600">
+        <span className="hidden sm:inline">Showing </span>{formatCount((currentPage - 1) * pageSize + 1)}–{formatCount(Math.min(currentPage * pageSize, pagination.total))}<span className="hidden sm:inline"> of {formatCount(pagination.total)} entries</span>
       </span>
       <div className="flex items-center gap-1 sm:gap-2">
         <button
@@ -298,7 +301,7 @@ export const PaginationFooter: React.FC<{
           <span className="hidden sm:inline">Previous</span>
         </button>
         <span className="text-xs sm:text-sm text-gray-600 px-1">
-          {currentPage}/{totalPages}
+          {formatCount(currentPage)}/{formatCount(totalPages)}
         </span>
         <button
           onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}

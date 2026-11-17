@@ -1,3 +1,4 @@
+import { formatRelativeTime } from '../../utils/dateFormat';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DatabaseExportStatus, RepositoryStorageInventory, StorageCapabilities, StorageCleanupPreview } from '@propr/shared';
 import { useCurrentUser } from '../../contexts/AuthContext';
@@ -87,7 +88,7 @@ function StorageControls({ actor }: { actor: string }) {
           await checkInstance(); const value = await api.startDatabaseExport(capabilities!); if (alive.current) { setPollFailures(0); setJob(value); }
         })}>Create database export</button>
         {job && <div className="mt-3 space-y-2" role="status">
-          <p>Export: {job.state}. Expires {new Date(job.expiresAt).toLocaleTimeString()}.</p>
+          <p>Export: {job.state}. Expires {formatRelativeTime(job.expiresAt)}.</p>
           {job.state === 'ready' && <>
             <p>{bytes(job.sizeBytes)} · SQLite schema {job.schemaVersion} · {job.migration || 'No migration recorded'}</p>
             <p className="break-all text-slate-500">SHA-256: {job.sha256}</p>
@@ -106,7 +107,7 @@ function StorageControls({ actor }: { actor: string }) {
       </div>
       <div>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h5 className="font-semibold text-slate-900">Repository inventory</h5><button className={button} disabled={busy} onClick={() => void refresh()}>Refresh inventory</button></div>
-        <p className="mb-3 leading-5 text-slate-500">{inventory ? 'Partial inventory: each refresh scans a bounded batch. Unknown sizes are never counted as zero.' : 'Inventory unavailable until the runtime responds.'} Last instance use: {inventory?.lastUseAt ? new Date(inventory.lastUseAt).toLocaleString() : 'Unknown'}.</p>
+        <p className="mb-3 leading-5 text-slate-500">{inventory ? 'Partial inventory: each refresh scans a bounded batch. Unknown sizes are never counted as zero.' : 'Inventory unavailable until the runtime responds.'} Last instance use: {inventory?.lastUseAt ? formatRelativeTime(inventory.lastUseAt) : 'Unknown'}.</p>
         {inventory && <div role="region" aria-label="Repository storage inventory" tabIndex={0} className="overflow-x-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-teal-600"><table className="w-full min-w-[28rem] text-left [overflow-wrap:normal]"><thead><tr className="border-b"><th className="py-2">Repository</th><th>Category</th><th>Size</th><th>Protection</th></tr></thead><tbody>
           {inventory.repositories.map(repo => <tr key={repo.id + repo.category} className="border-b border-slate-100"><td className="py-3 pr-4">{repo.name}</td><td className="pr-4">{repo.category.replace(/_/g, ' ')}</td><td className="pr-4">{bytes(repo.estimatedBytes)}</td><td>{repo.protectedReasons.join(', ').replace(/_/g, ' ') || 'Eligible for preview'}</td></tr>)}
         </tbody></table>{inventory.repositories.length === 0 && <p className="py-3 text-slate-500">No registered repository caches in this batch. Unregistered storage is not proven empty.</p>}</div>}

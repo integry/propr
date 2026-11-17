@@ -1,4 +1,5 @@
 import type { McpAccessLogParams } from '../api/adminMcpLogsApi';
+import { formatCount, formatRelativeTime } from '../utils/dateFormat';
 
 /**
  * Pure helpers for the MCP access log page: the time windows it offers, the
@@ -91,15 +92,10 @@ export function hasActiveMcpLogFilters(filters: McpLogFilters): boolean {
     || Boolean(filters.name || filters.repository || filters.client || filters.user);
 }
 
-export function formatMcpTimestamp(occurredAt: number | null | undefined): string {
+/** The row's time as the shared relative age (`5m ago`, then `Nov 2, 2026`) (`<RelativeTime>` carries the full stamp). */
+export function formatMcpTimestamp(occurredAt: number | null | undefined, now: number = Date.now()): string {
   if (typeof occurredAt !== 'number' || !Number.isFinite(occurredAt)) return UNAVAILABLE;
-  return new Date(occurredAt).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return formatRelativeTime(occurredAt, now) || UNAVAILABLE;
 }
 
 export function formatMcpDuration(durationMs: number | null | undefined): string {
@@ -120,7 +116,7 @@ export function formatMcpBytes(bytes: number | null | undefined): string {
 
 /** A count the API reported, or the unavailable marker when it reported none. */
 export function formatMcpCount(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : UNAVAILABLE;
+  return typeof value === 'number' && Number.isFinite(value) ? formatCount(value) : UNAVAILABLE;
 }
 
 /** The name an operator recognises a connected app by, falling back to its id. */

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PageHeading } from '../components/ui/PageHeading';
 import { useSearchParams } from 'react-router-dom';
 import { Filter } from 'lucide-react';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -219,7 +220,7 @@ const McpLogsPage: React.FC = () => {
     <div className="flex h-full flex-col">
       <div className="flex-shrink-0 border-b border-gray-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
         <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-4">
-          <h1 className="flex-shrink-0 text-lg font-bold text-gray-800 sm:text-2xl">MCP Log</h1>
+          <PageHeading className="flex-shrink-0">MCP Log</PageHeading>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <Filter size={16} className="hidden text-gray-500 sm:block" aria-hidden="true" />
             <select

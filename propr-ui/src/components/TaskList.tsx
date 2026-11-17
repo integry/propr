@@ -27,14 +27,19 @@ import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
 import type { TaskUpdatePayload } from '@propr/shared';
 import { useCurrentUser } from '../contexts/AuthContext';
 
-const createRepoOptions = (repositories: Array<{ repository: string; total: number }>): RepoOption[] => {
-  const totalCount = repositories.reduce((sum, repo) => sum + repo.total, 0);
-
+/**
+ * The repository filter's options. They carry no counts: the stats endpoint
+ * counts the Analytics page's tasks for its 20 busiest repositories (goal
+ * tasks aside), and ignores the status, assignee and search filters the list
+ * applies, so its figure cannot match the list's own `N tasks` total. A badge
+ * that disagrees with the footer (`All Repos 32,696` beside `4,402 tasks`)
+ * only raises the question of what it counts.
+ */
+const createRepoOptions = (repositories: Array<{ repository: string }>): RepoOption[] => {
   const allOption: RepoOption = {
     name: 'all',
     enabled: true,
     displayName: 'All Repos',
-    count: totalCount,
   };
 
   const repoOptions: RepoOption[] = [...repositories]
@@ -42,7 +47,6 @@ const createRepoOptions = (repositories: Array<{ repository: string; total: numb
     .map(repo => ({
       name: repo.repository,
       enabled: true,
-      count: repo.total,
     }));
 
   return [allOption, ...repoOptions];

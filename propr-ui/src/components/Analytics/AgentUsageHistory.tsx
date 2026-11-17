@@ -80,7 +80,8 @@ function useUsageHistoryRead(range: UsageRange): ReadState {
   return { status: 'error', message: error || 'Failed to load usage history' };
 }
 
-const chipClass = (on: boolean) => `inline-flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors ${
+/** A legend chip shows its whole label: it may wrap inside a narrow pane, never truncate. */
+const chipClass = (on: boolean) => `inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-left text-xs transition-colors ${
   on ? 'border-slate-300 bg-white text-slate-700' : 'border-slate-200 bg-slate-50 text-slate-400 line-through decoration-slate-300'
 }`;
 
@@ -206,7 +207,7 @@ const AgentUsageHistory: React.FC = () => {
                         title={readableSeriesLabel(series)}
                       >
                         <UsageSeriesSwatch color={on ? series.color : '#CBD5E1'} dash={series.dash} />
-                        <span className="max-w-[160px] truncate">{usageMetricLabel(series)}</span>
+                        <span className="min-w-0 [overflow-wrap:anywhere]" data-testid="usage-series-label">{usageMetricLabel(series)}</span>
                         {value && <span className="tabular-nums text-slate-500">{value.trim()}</span>}
                       </button>
                     );

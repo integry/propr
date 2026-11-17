@@ -15,6 +15,7 @@
  * top, so the heading carries a title filter instead of a period toggle.
  */
 
+import { formatDateTime, formatRelativeTime } from '../../utils/dateFormat';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import { getDashboardOutcomes, getDashboardOutcomeHistory, OutcomeHistoryStaleError, type DashboardOutcomesResponse, type OutcomeItem } from '../../api/dashboardApi';
@@ -36,7 +37,6 @@ import {
 } from './sectionPrimitives';
 import {
   type DashboardSectionProps,
-  elapsedLabel,
   useDashboardSection,
   useNowTick,
   workHref,
@@ -73,14 +73,6 @@ function updateType(update: OutcomeItem, type: string | null): string {
   if (/^ci(?: checks?)?$/i.test(type ?? '') || /^CI checks? (?:passed|completed)\b/i.test(detail)) return 'CI';
   if ((type === 'Follow-up' || type === 'PR comment') && /^(?:Fixed|Implemented|Applied|Repaired|Removed)\b/i.test(detail)) return 'Fix';
   return type ?? 'Task';
-}
-
-function compactElapsedLabel(at: string): string {
-  return elapsedLabel(at)
-    .replace('less than a minute', '<1m')
-    .replace(/ mins?$/, 'm')
-    .replace(/ hrs?$/, 'h')
-    .replace(/ days?$/, 'd');
 }
 
 /** Pages belong to an entity revision and authenticated connection, never a task ID alone. */
@@ -152,7 +144,7 @@ function EarlierUpdates({ item, title, updates, history }: {
         return (
           <li key={update.id}>
             <RowLink href={workHref(update)} className="grid min-w-0 grid-cols-[3.5rem_5rem_minmax(0,1fr)_3rem] items-center gap-x-2 rounded-sm py-0.5 text-xs leading-5 text-slate-600 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
-              <time dateTime={update.occurredAt} title={new Date(update.occurredAt).toLocaleString()} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">{compactElapsedLabel(update.occurredAt)} ago</time>
+              <time dateTime={update.occurredAt} title={formatDateTime(update.occurredAt)} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">{formatRelativeTime(update.occurredAt)}</time>
               <WorkTypeBadge type={type} compact />
               <span className="min-w-0 truncate text-slate-700" title={delta}>{compactDelta(delta)}</span>
               <span className="w-12 text-right">
@@ -230,8 +222,8 @@ const CompletedRow: React.FC<{ item: OutcomeItem; onStale: () => void }> = ({ it
               </>
             )}
             trailing={(
-              <time dateTime={item.occurredAt} title={new Date(item.occurredAt).toLocaleString()}>
-                {elapsedLabel(item.occurredAt)} ago
+              <time dateTime={item.occurredAt} title={formatDateTime(item.occurredAt)}>
+                {formatRelativeTime(item.occurredAt)}
               </time>
             )}
           />

@@ -57,8 +57,12 @@ export interface RepositoryStats {
   total: number;
   completed: number;
   failed: number;
+  /** Queued or running tasks only. */
   inProgress: number;
-  successRate: number;
+  /** Tasks neither completed, failed nor in progress: cancelled, skipped, superseded. Absent from older servers. */
+  other?: number;
+  /** completed / (completed + failed), the header's success rate; null when nothing finished. */
+  successRate: number | null;
 }
 
 export interface RepositoryStatsResponse {

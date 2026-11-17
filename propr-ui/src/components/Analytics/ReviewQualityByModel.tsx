@@ -14,13 +14,20 @@
  * Effort is the secondary grouping: a model whose PRs ran at more than one
  * reasoning level gets an indented row per level beneath its totals, unknown
  * (historical) effort last; a model with one known level carries it as a tag.
+ *
+ * On a phone the matrix is wider than the pane: it scrolls sideways with the
+ * model column pinned, and the model name wraps rather than truncating, so two
+ * models whose names share a prefix stay distinguishable.
  */
 
 import React from 'react';
 import type { ReviewScoreEffortSummary, ReviewScoreModelSummary, ReviewScoreSummaryResponse } from '../../api/taskStatsApi';
 import { formatModelName } from '../../utils/modelDisplay';
+import { formatCount } from '../../utils/dateFormat';
 import { SkeletonBlock, SkeletonRegion } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
+import { HorizontalScrollTable } from './HorizontalScrollTable';
+import { PINNED_COLUMN, pinnedColumn } from './pinnedColumn';
 
 interface ReviewQualityByModelProps {
   summary: ReviewScoreSummaryResponse | null;
@@ -28,10 +35,14 @@ interface ReviewQualityByModelProps {
   error?: string | null;
 }
 
-/** Headers may wrap onto two lines, so seven columns fit the pane without scrolling sideways. */
+/** Headers may wrap onto two lines, so seven columns fit a desktop pane without scrolling sideways. */
 const HEAD = 'px-3 py-2 align-bottom text-[10px] font-bold uppercase leading-tight tracking-wider text-slate-500 sm:px-4';
-const CELL = 'whitespace-nowrap px-3 py-2 text-sm tabular-nums sm:px-4';
+/** Padding and type shared by every cell; figures add `whitespace-nowrap`, the model column wraps. */
+const CELL_BASE = 'px-3 py-2 text-sm tabular-nums sm:px-4';
+const CELL = `whitespace-nowrap ${CELL_BASE}`;
 const UNKNOWN = '—';
+/** The model column: pinned, and wrapping long names within a phone-sized share of the width. */
+const NAME_CELL = 'min-w-[7rem] max-w-[10rem] whitespace-normal [overflow-wrap:anywhere] sm:max-w-none';
 
 const COLUMNS: Array<{ label: string; hint: string }> = [
   { label: 'Evaluated PRs', hint: 'Pull requests with at least one review score in the period' },
@@ -42,7 +53,7 @@ const COLUMNS: Array<{ label: string; hint: string }> = [
   { label: 'Merge rate', hint: 'Merged pull requests among those merged or closed' },
 ];
 
-const prs = (n: number): string => `${n.toLocaleString()} PR${n === 1 ? '' : 's'}`;
+const prs = (n: number): string => `${formatCount(n)} PR${n === 1 ? '' : 's'}`;
 
 /** One figure, with the pull requests behind it in the tooltip rather than under it. */
 const Figure: React.FC<{ value: string | null; basis: string; className?: string; testId?: string }> = ({
@@ -53,7 +64,7 @@ const Figure: React.FC<{ value: string | null; basis: string; className?: string
   </td>
 );
 
-const UNTRACKED_LABEL = 'Manual / Untracked';
+const UNTRACKED_LABEL = 'Manual or untracked';
 const UNTRACKED_HINT = 'Scored pull requests with no recorded implementing run: written by hand, or by an agent outside ProPR';
 
 const score = (value: number | null | undefined): string | null =>
@@ -71,8 +82,8 @@ const Delta: React.FC<{ value: number | null | undefined; n: number }> = ({ valu
 const UNKNOWN_EFFORT = 'unknown';
 const LEVEL_LABELS: Record<string, string> = { xhigh: 'XHigh' };
 
-/** `High effort`, `XHigh effort`; effort that was never recorded is `Unknown effort`. */
-const effortLabel = (level: string): string =>
+/** `High effort`, `XHigh effort`; effort that was never recorded is `Effort not recorded`. */
+const effortLabel = (level: string): string => level === UNKNOWN_EFFORT ? 'Effort not recorded' :
   `${LEVEL_LABELS[level] ?? `${level.charAt(0).toUpperCase()}${level.slice(1)}`} effort`;
 
 const effortHint = (level: string): string => level === UNKNOWN_EFFORT
@@ -85,7 +96,7 @@ const Figures: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
   const rate = row.merge_rate.value;
   return (
     <>
-      <td className={`${CELL} text-right text-slate-800`}>{row.prs_scored.toLocaleString()}</td>
+      <td className={`${CELL} text-right text-slate-800`}>{formatCount(row.prs_scored)}</td>
       <Figure value={score(row.first_score.mean)} basis={`Mean over ${prs(row.first_score.n)} with a known initial score`} testId="review-quality-initial" />
       <Figure value={score(row.final_score.mean)} basis={`Mean over ${prs(row.final_score.n)}`} testId="review-quality-final" />
       {row.implementer_model ? (
@@ -97,7 +108,7 @@ const Figures: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
       <Figure value={score(runs?.mean)} basis={`Mean over ${prs(runs?.n ?? 0)} merged with recorded runs`} testId="review-quality-runs" />
       <Figure
         value={rate === null ? null : `${Math.round(rate * 100)}%`}
-        basis={`${row.merge_rate.merged.toLocaleString()} merged of ${prs(row.merge_rate.n)} merged or closed`}
+        basis={`${formatCount(row.merge_rate.merged)} merged of ${prs(row.merge_rate.n)} merged or closed`}
       />
     </>
   );
@@ -112,9 +123,9 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary; efforts: ReviewScoreEff
   return (
     <>
       <tr className={`border-b border-slate-100 ${efforts.length > 1 ? '' : 'last:border-b-0'}`} data-testid="review-quality-row">
-        <td className={`${CELL} min-w-0`}>
-          <span className="flex min-w-0 items-center gap-2">
-            <span className={`truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ? label : UNTRACKED_HINT}>
+        <td className={`${CELL_BASE} ${NAME_CELL} ${PINNED_COLUMN}`}>
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className={`min-w-0 [overflow-wrap:anywhere] font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ? label : UNTRACKED_HINT}>
               {label}
             </span>
             {tag && (
@@ -127,9 +138,9 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary; efforts: ReviewScoreEff
         <Figures row={row} />
       </tr>
       {efforts.length > 1 && efforts.map(effort => (
-        <tr key={effort.implementer_reasoning_level} className="border-b border-slate-100 bg-slate-50/60 text-slate-600 last:border-b-0" data-testid="review-quality-effort-row">
-          <td className={`${CELL} min-w-0 pl-7 sm:pl-8`}>
-            <span className={`block truncate text-xs ${effort.implementer_reasoning_level === UNKNOWN_EFFORT ? 'italic text-slate-500' : 'text-slate-600'}`} title={effortHint(effort.implementer_reasoning_level)}>
+        <tr key={effort.implementer_reasoning_level} className="border-b border-slate-100 bg-slate-50 text-slate-600 last:border-b-0" data-testid="review-quality-effort-row">
+          <td className={`${CELL_BASE} ${NAME_CELL} ${pinnedColumn('bg-slate-50')} pl-7 sm:pl-8`}>
+            <span className={`block [overflow-wrap:anywhere] text-xs ${effort.implementer_reasoning_level === UNKNOWN_EFFORT ? 'italic text-slate-500' : 'text-slate-600'}`} title={effortHint(effort.implementer_reasoning_level)}>
               {effortLabel(effort.implementer_reasoning_level)}
             </span>
           </td>
@@ -143,7 +154,7 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary; efforts: ReviewScoreEff
 const TableHead: React.FC = () => (
   <thead>
     <tr className="border-b border-slate-200">
-      <th className={`${HEAD} text-left`}>Model</th>
+      <th className={`${HEAD} ${PINNED_COLUMN} text-left`}>Model</th>
       {COLUMNS.map(column => (
         <th key={column.label} className={`${HEAD} text-right`} title={column.hint}>{column.label}</th>
       ))}
@@ -166,19 +177,21 @@ const ReviewQualityByModel: React.FC<ReviewQualityByModelProps> = ({ summary, lo
     return <p className="px-3 py-4 text-sm text-slate-500 sm:px-4">No review scores in this period.</p>;
   }
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[34rem]" data-testid="review-quality-table">
-        <TableHead />
-        <tbody>
-          {summary.models.map(row => (
-            <ModelRow
-              key={row.implementer_model ?? '(unknown)'}
-              row={row}
-              efforts={(summary.by_effort ?? []).filter(effort => effort.implementer_model === row.implementer_model)}
-            />
-          ))}
-        </tbody>
-      </table>
+    <div>
+      <HorizontalScrollTable testId="review-quality-scroller">
+        <table className="w-full min-w-[34rem]" data-testid="review-quality-table">
+          <TableHead />
+          <tbody>
+            {summary.models.map(row => (
+              <ModelRow
+                key={row.implementer_model ?? '(unknown)'}
+                row={row}
+                efforts={(summary.by_effort ?? []).filter(effort => effort.implementer_model === row.implementer_model)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </HorizontalScrollTable>
       <p className="border-t border-slate-100 px-3 py-2 text-xs text-slate-500 sm:px-4" data-testid="review-quality-scope">
         Covers the {prs(summary.prs_scored)} with a review score in this period; unreviewed work is not scored.
       </p>

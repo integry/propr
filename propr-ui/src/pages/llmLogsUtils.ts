@@ -1,4 +1,5 @@
 import { LlmLogEntry } from '../api/llmLogsApi';
+import { formatCount, formatRelativeTime } from '../utils/dateFormat';
 
 // Re-export pure display helpers from the shared module (no browser deps)
 export { getWorkReferenceDisplay, getWorkTypeLabel, hasDetailedInfo } from './llmLogsDisplayUtils';
@@ -42,21 +43,12 @@ export const formatTokens = (
 
   if (totalInput === 0 && totalOutput === 0) return '-';
 
-  return `${totalInput.toLocaleString()} / ${totalOutput.toLocaleString()}`;
+  return `${formatCount(totalInput)} / ${formatCount(totalOutput)}`;
 };
 
-// Format timestamp
-export const formatTimestamp = (timestamp: string | null): string => {
-  if (!timestamp) return '-';
-  const date = new Date(timestamp);
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-};
+// A log line's start as the shared relative age (`5m ago`, then `Nov 2, 2026`)
+export const formatTimestamp = (timestamp: string | null, now: number = Date.now()): string =>
+  formatRelativeTime(timestamp, now) || '-';
 
 // Format execution type for display
 export const formatType = (type: string): string => {

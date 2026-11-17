@@ -29,9 +29,8 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table.getByTestId('preview-count').first()).toHaveText('2 previews');
       // The footer counts tasks, the unit the rows are: the 10 on this page, never their 32 runs.
       await expect(page.getByTestId('pagination-summary')).toHaveText('Showing 1–10 of 1,842 tasks');
-      // The repository filter groups its digits like the footer.
-      await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
-      await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
+      // The repository filter carries no count of its own: the footer's total is the one figure for the scope.
+      await expect(page.getByRole('button', { name: /All Repos/ })).toHaveText('All Repos');
 
       // Every row is the same two lines. A single run with no summary keeps line 1 to the chip and
       // the title (cut with `…`, never wrapped), and line 2 to its type and why it failed.
@@ -52,7 +51,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       // The repository shows without its owner and fits whole; the tooltip keeps the full slug.
       const repo = singleRun.getByTestId('task-repository');
       await expect(repo).toHaveText('desktop-workspaces');
-      await expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
+      await expect(repo.getByTestId('repository-chip')).toHaveAttribute('title', 'integry/desktop-workspaces');
       expect(await repo.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
 
       const layout = await table.evaluate(element => ({
@@ -259,14 +258,16 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(details.locator('#execution-event-log-section')).toContainText('src/jobs/withdrawalHandlers.ts:14');
   // The first tier stays on the task, which is working on Run 8; the run line follows Run 3, with Run 3's own spend.
   const header = details.getByTestId('task-header-tiers');
-  await expect(header.getByTestId('task-header-identity')).toContainText('integry/propr');
+  // The shared repository chip: the short name, with the owner in its tooltip.
+  await expect(header.getByTestId('task-header-identity').getByTestId('repository-chip')).toHaveText('propr');
+  await expect(header.getByTestId('task-header-identity').getByTestId('repository-chip')).toHaveAttribute('title', 'integry/propr');
   await expect(header.getByTestId('task-status-badge')).toHaveText('Implementing');
   // Tier 1 separates the Git cluster from Implementing with spacing, no bullets and no empty icon.
   // The cluster ends with the pull request's assignment, which GitHub answered, so no read error stands in for it.
-  // The repository leads in a block of its own, owner above name; the Git cluster follows it.
+  // The repository leads as the shared chip (short name, owner in the tooltip); the Git cluster follows it.
   const repository = header.getByTestId('task-header-identity').getByRole('link', { name: 'integry/propr', exact: true });
   await expect(repository).toHaveAttribute('href', 'https://github.com/integry/propr');
-  await expect(repository).toHaveText('integry/propr');
+  await expect(repository).toHaveText('propr');
   const gitContext = header.getByTestId('task-header-identity').getByRole('group', { name: 'Git context' });
   expect(await gitContext.getByRole('link').evaluateAll(links => links.map(link => [link.textContent!.trim(), link.getAttribute('href')]))).toEqual([
     ['#2664', 'https://github.com/integry/propr/issues/2664'],
@@ -276,7 +277,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(gitContext.getByTestId('task-assignment-error')).toHaveCount(0);
   await expect(gitContext).toHaveText(new RegExp(`^#2664.*@${prAssignee.login}`));
   await expect(header.getByTestId('task-status-badge').locator('svg')).toHaveCount(0);
-  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36 mins ago): Found 2 issues');
+  await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36m ago): Found 2 issues');
   // Wrapping metadata groups use spacing so no separator can lead a new line.
   expect(await header.innerText()).not.toMatch(/[·•|]/);
   await expect(header.getByTestId('context-divider')).toHaveCount(0);

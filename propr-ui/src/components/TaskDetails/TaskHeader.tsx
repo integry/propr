@@ -20,7 +20,7 @@ const getReportStatusInfo = (normalizedStatus: string, commandMode?: string): St
     return { icon: <Play className="h-4 w-4 text-blue-600 animate-pulse" />, label: 'Generating Report', color: 'text-blue-700', bgColor: 'bg-blue-50' };
   }
   if (normalizedStatus === 'CLAUDE_EXECUTION_COMPLETED') {
-    return { icon: <CheckCircle2 className="h-4 w-4 text-green-600" />, label: 'Report Generated', color: 'text-green-700', bgColor: 'bg-green-50' };
+    return { icon: <CheckCircle2 className="h-4 w-4 text-slate-500" />, label: 'Report Generated', color: 'text-slate-600', bgColor: 'bg-slate-100' };
   }
   if (normalizedStatus === 'POST_PROCESSING') {
     return { icon: <FileText className="h-4 w-4 text-purple-600 animate-pulse" />, label: 'Storing Report', color: 'text-purple-700', bgColor: 'bg-purple-50' };
@@ -35,10 +35,10 @@ const getStatusInfo = (status: string, commandMode?: string): { icon: React.Reac
 
   if (normalizedStatus === 'COMPLETED') {
     return {
-      icon: <CheckCircle2 className="h-4 w-4 text-green-600" />,
+      icon: <CheckCircle2 className="h-4 w-4 text-slate-500" />,
       label: 'Completed',
-      color: 'text-green-700',
-      bgColor: 'bg-green-50'
+      color: 'text-slate-600',
+      bgColor: 'bg-slate-100'
     };
   }
 
@@ -80,10 +80,10 @@ const getStatusInfo = (status: string, commandMode?: string): { icon: React.Reac
 
   if (normalizedStatus === 'CLAUDE_EXECUTION_COMPLETED') {
     return {
-      icon: <CheckCircle2 className="h-4 w-4 text-green-600" />,
+      icon: <CheckCircle2 className="h-4 w-4 text-slate-500" />,
       label: commandMode === 'review' ? 'Review Done' : commandMode === 'fix' ? 'Fix Done' : 'Implementation Done',
-      color: 'text-green-700',
-      bgColor: 'bg-green-50'
+      color: 'text-slate-600',
+      bgColor: 'bg-slate-100'
     };
   }
 
@@ -236,12 +236,12 @@ export const ReturnToRunButton: React.FC<Pick<RunInspection, 'runCount' | 'headA
   </button>
 );
 
-/** The run on screen's state: `Active`, or how it ended and when, e.g. `Completed 39 mins ago`. */
+/** The run on screen's state: `Active`, or how it ended and when, e.g. `Completed 39m ago`. */
 export const RunStateLabel: React.FC<{ status: string; isActive: boolean; lastActivity?: string; commandMode?: string }> = ({ status, isActive, lastActivity, commandMode }) => {
   if (isActive) return <>Active</>;
   const ago = formatRelativeTime(lastActivity);
   const label = getStatusInfo(status, commandMode).label;
-  return <>{ago ? `${label} ${ago === 'Just now' ? 'just now' : ago}` : label}</>;
+  return <>{ago ? `${label} ${ago}` : label}</>;
 };
 
 export default TaskHeader;

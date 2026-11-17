@@ -9,6 +9,7 @@ import { useInboxTriage } from './Inbox/useInboxTriage';
 import { InboxBanners, InboxList, InboxState, InboxSystemSection } from './InboxPageComponents';
 import { isSystemNotification } from './inboxUtils';
 import { useInboxNotifications, type InboxNotificationsState } from './useInboxNotifications';
+import { PageHeading } from '../components/ui/PageHeading';
 
 /** The whole-page state that replaces the list, or null to show the list. */
 function inboxState(inbox: InboxNotificationsState): 'loading' | 'empty' | 'error' | 'offline' | null {
@@ -99,7 +100,7 @@ const InboxPage: React.FC = () => {
   return (
     <div className={`w-full min-w-0 bg-white ${isSplitViewport ? 'flex h-full min-h-0 flex-col' : 'min-h-full'}`}>
       <div className="flex min-h-14 items-center justify-between gap-3 border-b border-slate-200 px-4 py-2 sm:px-6">
-        <h1 className="min-w-0 text-xl font-bold text-slate-950 sm:text-2xl">Inbox</h1>
+        <PageHeading>Inbox</PageHeading>
         {canClearAll && (
           <InboxClearAllButton
             onConfirm={() => void inbox.clearAll()}

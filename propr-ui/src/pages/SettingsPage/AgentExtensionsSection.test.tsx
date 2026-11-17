@@ -1,3 +1,4 @@
+import { formatDate } from '../../utils/dateFormat';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionLibraryRevision } from '@propr/shared';
@@ -184,7 +185,7 @@ describe('AgentExtensionsSection', () => {
     vi.mocked(extensionLibraryHistory).mockResolvedValue({ revisions: [library] });
     const view = await section();
     fireEvent.click(within(view).getByRole('button', { name: 'Revision history' }));
-    expect(await within(view).findByRole('list', { name: 'Revision history' })).toHaveTextContent(`${new Date(0).toLocaleString()} · 1`);
+    expect(await within(view).findByRole('list', { name: 'Revision history' })).toHaveTextContent(`${formatDate(0)} · 1`);
   });
 
   it('drops a pending token when the endpoint changes, through the field or the saved-endpoint picker, or authentication is removed', async () => {

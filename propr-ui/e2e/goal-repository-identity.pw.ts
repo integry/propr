@@ -4,7 +4,8 @@ import path from 'node:path';
 
 // A completed goal's primary repository identity must read in full on the narrowest phones: at 320px
 // the one-line chip was wider than its column, clipped by an ancestor while the document reported no
-// overflow. On a phone the owner now stacks above the name and both wrap; desktop keeps the compact chip.
+// overflow. The shared repository chip shows the short name (owner in the tooltip); on a phone that name
+// wraps instead of truncating, and desktop keeps the compact one-line chip.
 
 const timestamp = '2026-10-22T23:00:00.000Z';
 const requester = { id: '583231', login: 'octocat', displayName: 'The Octocat', avatarUrl: null };
@@ -111,7 +112,9 @@ const chipGeometry = (chip: Locator) => chip.evaluate(element => {
 async function expectReadableIdentity(page: Page, repository: string, { stacked }: { stacked: boolean }) {
   const header = page.locator('header').filter({ has: page.getByRole('link', { name: '← All goals' }) });
   const chip = header.getByTestId('repository-chip');
-  await expect(chip).toHaveText(repository);
+  const name = repository.slice(repository.lastIndexOf('/') + 1);
+  await expect(chip).toHaveText(name);
+  await expect(chip).toHaveAttribute('title', repository);
   const geometry = await chipGeometry(chip);
   const content = (await header.locator('> div').boundingBox())!;
   const inside = (rect: { left: number; right: number }, bounds: { left: number; right: number }) => {
@@ -122,16 +125,12 @@ async function expectReadableIdentity(page: Page, repository: string, { stacked 
   const bounds = [{ left: content.x, right: content.x + content.width }, { left: 0, right: geometry.viewport }, ...geometry.clippers];
   for (const rect of [geometry.chip, ...geometry.lines]) for (const bound of bounds) inside(rect, bound);
   for (const part of geometry.textParts) expect(part.scrollWidth).toBeLessThanOrEqual(part.clientWidth);
-  const ownerPart = geometry.textParts.find(part => part.id === 'repository-chip-owner')!;
-  const namePart = geometry.textParts.find(part => part.id === 'repository-chip-name')!;
   if (stacked) {
-    // Owner above the name, nothing hidden behind an ellipsis: the visible text is the whole slug.
-    expect(ownerPart.bottom).toBeLessThanOrEqual(namePart.top + 0.5);
-    expect(geometry.innerText.replace(/\s+/g, '')).toBe(repository);
+    // Nothing hidden behind an ellipsis: the visible text is the whole name, wrapped as needed.
+    expect(geometry.innerText.replace(/\s+/g, '')).toBe(name);
   } else {
-    // Desktop keeps the compact one-line `owner/name` chip.
-    expect(Math.abs(ownerPart.top - namePart.top)).toBeLessThan(1);
-    expect(geometry.innerText).toBe(repository);
+    // Desktop keeps the compact one-line chip.
+    expect(geometry.innerText).toBe(name);
     expect(new Set(geometry.lines.map(line => Math.round(line.top))).size).toBe(1);
   }
   return geometry;
@@ -180,7 +179,7 @@ for (const [label, repository] of Object.entries(repositories)) {
       const geometry = await expectReadableIdentity(page, repository, { stacked: true });
       // The slug scales with the reader's text size instead of staying a fixed 12px.
       expect(await page.getByTestId('repository-chip-name').evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBe(rootFontPx * 0.75);
-      expect(geometry.lines.length).toBeGreaterThan(2);
+      expect(geometry.lines.length).toBeGreaterThan(1);
       await expectHeaderControls(page, repository);
       if (rootFontPx === 24) await capture(page, `goal-identity-${label}-320-text-150`);
     });
@@ -224,9 +223,9 @@ test('goal list keeps its compact one-line repository chip at 320px', async ({ p
   await stub(page, repositories.long);
   await page.goto('/goals');
   const chip = page.getByRole('list', { name: 'Goal work queue' }).getByTestId('repository-chip');
-  await expect(chip).toHaveText(repositories.long);
-  // The list is intentionally compact: one truncated line, no stacked owner.
-  await expect(chip.getByTestId('repository-chip-owner')).toHaveCount(0);
+  await expect(chip).toHaveText(repositories.long.slice(repositories.long.lastIndexOf('/') + 1));
+  await expect(chip).toHaveAttribute('title', repositories.long);
+  // The list is intentionally compact: one truncated line.
   const geometry = await chipGeometry(chip);
   expect(new Set(geometry.lines.map(line => Math.round(line.top))).size).toBe(1);
   expect(await chip.locator('span.truncate').evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);

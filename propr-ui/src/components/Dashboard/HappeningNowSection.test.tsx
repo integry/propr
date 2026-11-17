@@ -90,7 +90,7 @@ describe('Happening now sub-phase line', () => {
     // A quiet agent is not called stalled: the row states the fact and leaves
     // the judgement to the reader.
     expect(within(quiet).queryByTestId('running-step')).toBeNull();
-    expect(within(quiet).getByTestId('running-last-output')).toHaveTextContent('last output 18 mins ago');
+    expect(within(quiet).getByTestId('running-last-output')).toHaveTextContent('last output 18m ago');
     expect(quiet.textContent).not.toMatch(/stalled|stuck|hung/i);
   });
 

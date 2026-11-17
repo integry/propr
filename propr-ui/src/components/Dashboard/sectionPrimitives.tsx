@@ -22,7 +22,7 @@ import {
   Zap,
   type LucideIcon,
 } from 'lucide-react';
-import { RepositoryIcon } from '../RepositoryIcon';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import { ListSkeleton } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
 import { isExternalHref } from './sectionState';
@@ -43,44 +43,15 @@ export const RepositoryIconProvider: React.FC<{
 );
 
 /**
- * Repository slug as a muted monospace chip.
- *
- * The repository is the one boxed fact on a row. The identifier beside it is
- * bare text and the task type is a micro-label, so the three read as three
- * different kinds of data rather than a wall of identical gray bricks — the
- * shape tells them apart, not colour. The chip is a tint without a border and
- * a step smaller and lighter than the identifier, so it recedes behind the
- * number that actually varies from row to row. The icon rides inside the chip
- * so the two never separate when the metadata line wraps.
- *
- * The chip draws the repository name without its owner, in every section and
- * at every width. The owner is the constant: the filter above the console is
- * already scoped to this instance's repositories, so `example/` is eight
- * characters repeated down every row of every column — and in the narrow rail
- * it was eight characters spent to truncate the eight that actually identify
- * the repository, leaving `example/workspa…`. Dropping it in one column and
- * keeping it in the next was worse still: the same repository read as two
- * different entities on one screen. So the owner goes everywhere, and stays in
- * the chip's tooltip and in the icon beside it.
+ * The repository as the app's one repository chip: the name without its
+ * owner, with the full slug in the tooltip, as on the Tasks, Plans and Goals
+ * lists. The owner is the constant (the console is scoped to this instance's
+ * repositories), so repeating it down every row only truncated the part that
+ * identifies the repository. The section's fetched icons ride inside the chip.
  */
 export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }) => {
-  const icons = useContext(RepositoryIconContext);
-  const icon = icons.get(repository);
-  const name = repository.slice(repository.lastIndexOf('/') + 1);
-  return (
-    <span
-      className="inline-flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600"
-      title={repository}
-    >
-      <RepositoryIcon
-        repository={repository}
-        iconPath={icon?.iconPath}
-        revision={icon?.revision}
-        className="h-3.5 w-3.5 flex-none"
-      />
-      <span className="truncate">{name}</span>
-    </span>
-  );
+  const icon = useContext(RepositoryIconContext).get(repository);
+  return <RepositoryChip repository={repository} iconPath={icon?.iconPath} revision={icon?.revision} className="min-w-0" />;
 };
 
 /**
