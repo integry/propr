@@ -1,7 +1,7 @@
 import https from 'node:https';
 import { isIP } from 'node:net';
 import { EXTENSION_LIMITS } from '@propr/shared';
-import { extensionEndpoint, resolveExtensionEndpoint, type ExtensionLookup } from './endpointPolicy.js';
+import { extensionEndpoint, pinnedLookup, resolveExtensionEndpoint, type ExtensionLookup } from './endpointPolicy.js';
 
 /**
  * Outbound HTTPS for OAuth discovery, registration, token and revocation
@@ -37,7 +37,7 @@ export function createOAuthHttpsTransport(options: { lookup?: ExtensionLookup } 
       const unavailable = () => reject(new OAuthNetworkError('OAuth request failed'));
       const outgoing = https.request(destination, {
         method: request.method, agent: false, servername: isIP(host) ? undefined : host,
-        lookup: (_host, _options, callback) => callback(null, address, family),
+        lookup: pinnedLookup(address, family),
         headers: { ...request.headers, Host: url.host, 'User-Agent': OAUTH_USER_AGENT, ...(request.body === undefined ? {} : { 'Content-Length': String(Buffer.byteLength(request.body)) }) },
       }, response => {
         const chunks: Buffer[] = []; let bytes = 0;
