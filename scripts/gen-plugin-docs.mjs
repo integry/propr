@@ -49,6 +49,13 @@ export const CATEGORY_LABELS = {
 };
 
 const code = value => `\`${value}\``;
+/**
+ * Plugin metadata (a manifest's name or description) as literal text in a generated page, which
+ * Docusaurus compiles as MDX: on one line, with every character Markdown or MDX would read as
+ * syntax backslash-escaped, so `Acme <Cloud>` or `{beta}` is not JSX or an expression and `*` or
+ * `[` is not emphasis or a link. Table pipes are left to `cell`, which escapes them.
+ */
+export const mdxText = value => String(value ?? '').replace(/\s+/g, ' ').trim().replace(/[\\`*_[\]<>{}#!&~]/g, '\\$&');
 /** A table cell: one line, with pipes escaped (GFM unescapes them inside code spans too). */
 const cell = value => String(value ?? '').replace(/\s*\n\s*/g, ' ').replaceAll('|', '\\|');
 const row = cells => `| ${cells.map(cell).join(' | ')} |`;
@@ -181,7 +188,7 @@ export function sdkReference() {
 export function catalogPage(plugins) {
   const official = plugins.filter(plugin => !plugin.development);
   const groups = PLUGIN_CATEGORIES.map(category => ({ category, plugins: official.filter(plugin => plugin.manifest.category === category) })).filter(group => group.plugins.length);
-  const all = table(['Plugin', 'Category', 'Description'], official.map(({ id, manifest }) => [`[${manifest.name}](./${id}.md) (${code(id)})`, CATEGORY_LABELS[manifest.category], firstSentence(manifest.description)]));
+  const all = table(['Plugin', 'Category', 'Description'], official.map(({ id, manifest }) => [`[${mdxText(manifest.name)}](./${id}.md) (${code(id)})`, CATEGORY_LABELS[manifest.category], mdxText(firstSentence(manifest.description))]));
   return `---
 sidebar_label: "Catalog"
 title: "Official plugin catalog"
@@ -201,7 +208,7 @@ ${all}
 
 ## By category
 
-${groups.map(group => `### ${CATEGORY_LABELS[group.category]}\n\n${group.plugins.map(({ id, manifest }) => `- [${manifest.name}](./${id}.md): ${firstSentence(manifest.description)}`).join('\n')}`).join('\n\n')}
+${groups.map(group => `### ${CATEGORY_LABELS[group.category]}\n\n${group.plugins.map(({ id, manifest }) => `- [${mdxText(manifest.name)}](./${id}.md): ${mdxText(firstSentence(manifest.description))}`).join('\n')}`).join('\n\n')}
 `;
 }
 

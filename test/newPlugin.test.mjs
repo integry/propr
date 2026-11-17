@@ -3,12 +3,13 @@ import { execFile } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { ESLint } from 'eslint';
 import { parse as parseYaml } from 'yaml';
 import { checkPlugins } from '../scripts/check-plugins.mjs';
-import { generatePluginDocs, staleFiles } from '../scripts/gen-plugin-docs.mjs';
+import { CATALOG_PAGE, generatePluginDocs, mdxText, staleFiles } from '../scripts/gen-plugin-docs.mjs';
 import { EXAMPLE_HANDLER, parseArguments, registerPlugin, scaffoldPlugin, serializeRegistry, titleCase } from '../scripts/new-plugin.mjs';
 
 const run = promisify(execFile);
@@ -138,6 +139,47 @@ test('the docs page front matter stays valid YAML for names and descriptions wit
   // The default page parses too.
   scaffoldPlugin({ id: 'acme-plain', root, docs });
   assert.equal(frontMatter(await readFile(join(docs, 'docs/plugins/acme-plain.md'), 'utf8')).title, 'Acme Plain plugin');
+});
+
+// Docusaurus compiles docs pages, .md included, as MDX. The compiler is a docs dependency (docs/node_modules), installed
+// by `npm ci` in docs; without it the compile step is skipped and the escaped text is still checked.
+const MDX = join(REPOSITORY, 'docs/node_modules/@mdx-js/mdx/index.js');
+const REMARK_GFM = join(REPOSITORY, 'docs/node_modules/remark-gfm/index.js');
+const hasMdx = existsSync(MDX) && existsSync(REMARK_GFM);
+/** Compile a page as Docusaurus does (front matter removed first, GFM tables); returns the compile error message, or null. */
+async function mdxError(page) {
+  const [{ compile }, { default: remarkGfm }] = await Promise.all([import(pathToFileURL(MDX).href), import(pathToFileURL(REMARK_GFM).href)]);
+  return compile(page.replace(/^---\n[\s\S]*?\n---\n/, ''), { remarkPlugins: [remarkGfm] }).then(() => null, error => String(error.message ?? error));
+}
+
+test('docs pages and catalog entries stay valid MDX for names and descriptions with MDX syntax in them', async () => {
+  const { root, docs } = await workspace();
+  // Valid manifest values that MDX would otherwise read as JSX, an expression, emphasis or a link.
+  const name = 'Acme <Cloud> {beta}';
+  const description = 'Supports <widgets> and {templates} for *every* [team] & more. Second sentence.';
+  scaffoldPlugin({ id: 'acme-mdx', name, category: 'deployment', description, root, docs });
+  assert.deepEqual(checkPlugins({ root }).errors, []);
+  const page = await readFile(join(docs, 'docs/plugins/acme-mdx.md'), 'utf8');
+  const catalog = await readFile(join(docs, CATALOG_PAGE), 'utf8');
+  const label = 'Acme \\<Cloud\\> \\{beta\\}';
+  assert.equal(mdxText(name), label);
+  assert.ok(page.split('\n').includes(`# ${label}`), page);
+  assert.ok(page.includes(`The **${label}** plugin`) && page.includes(`choose **${label}** and install`), page);
+  assert.equal(frontMatter(page).sidebar_label, name);
+  const summary = 'Supports \\<widgets\\> and \\{templates\\} for \\*every\\* \\[team\\] \\& more.';
+  assert.ok(catalog.includes(`| [${label}](./acme-mdx.md) (\`acme-mdx\`) | Deployment | ${summary} |`), catalog);
+  assert.ok(catalog.includes(`- [${label}](./acme-mdx.md): ${summary}`), catalog);
+  for (const text of [page, catalog]) assert.ok(!/(^|[^\\])[<{]/.test(text.replace(/^---\n[\s\S]*?\n---\n/, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/`[^`]*`/g, '')), text);
+  assert.deepEqual(staleFiles(generatePluginDocs({ root, docs }).files), []);
+});
+
+test('the scaffolded docs page and the generated catalog compile as MDX', { skip: !hasMdx && 'docs dependencies are not installed (npm ci in docs)' }, async () => {
+  const { root, docs } = await workspace();
+  scaffoldPlugin({ id: 'acme-mdx', name: 'Acme <Cloud> {beta}', category: 'deployment', description: 'Supports <widgets> and {templates}. Second sentence.', root, docs });
+  // Negative check: the unescaped text does not compile, so passing below means the escaping is what makes it valid.
+  assert.match(await mdxError('# Acme <Cloud> {beta}\n') ?? '', /./);
+  assert.equal(await mdxError(await readFile(join(docs, 'docs/plugins/acme-mdx.md'), 'utf8')), null);
+  assert.equal(await mdxError(await readFile(join(docs, CATALOG_PAGE), 'utf8')), null);
 });
 
 test('the scaffold refuses ids that are taken, reserved or malformed, and unknown categories', async () => {

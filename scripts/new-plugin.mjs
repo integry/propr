@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLUGIN_CATEGORIES, PLUGIN_MANIFEST_VERSION, PLUGIN_SHARED_FOLDER, pluginIdSchema } from '../packages/shared/src/plugins.js';
 import { PLUGINS_ROOT } from './check-plugins.mjs';
-import { AUTHORING_PAGE, DOCS_ROOT, generatePluginDocs, writePluginDocs } from './gen-plugin-docs.mjs';
+import { AUTHORING_PAGE, DOCS_ROOT, generatePluginDocs, mdxText, writePluginDocs } from './gen-plugin-docs.mjs';
 
 export const EXAMPLE_HANDLER = 'onPullRequestMerged';
 
@@ -238,14 +238,16 @@ record the result in the pull request:
 export const yamlString = value => JSON.stringify(String(value));
 
 export function docsPageFor({ id, name, manifest }) {
+  // The page is MDX: the name is escaped in the body, and quoted (yamlString) in the front matter.
+  const label = mdxText(name);
   return `---
 sidebar_label: ${yamlString(name)}
 title: ${yamlString(`${name} plugin`)}
 description: ${yamlString(manifest.description.split(/(?<=[.!?])\s/)[0])}
 ---
-# ${name}
+# ${label}
 
-The **${name}** plugin (\`${id}\`) is an official [plugin](../features/plugins.md)
+The **${label}** plugin (\`${id}\`) is an official [plugin](../features/plugins.md)
 built only on the plugin interface. *Replace this page with what the plugin
 does, how to set it up, what it sends and what it never sends.* The folder is
 \`packages/plugins/${id}/\`; its README has the setup steps and the
@@ -253,7 +255,7 @@ smoke-test checklist.
 
 ## Setup
 
-1. In ProPR, open **Plugins**, choose **${name}** and install it. It asks for
+1. In ProPR, open **Plugins**, choose **${label}** and install it. It asks for
    one permission, \`events.read\`.
 2. In **Settings**, set **Log prefix** if you want another one.
 3. Enable the plugin.

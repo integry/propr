@@ -108,6 +108,43 @@ test('a required property added to an SDK input plugins build is a breaking chan
   assert.deepEqual(output.breaking, []);
 });
 
+test('changing the signature of an exported SDK function, keeping its name, is a breaking change', () => {
+  for (const member of ['definePluginHandler()', 'definePluginWebhookResponder()', 'clampPluginRetryAfter()', 'parsePluginRetryAfter()', 'parsePluginSettingOptions()']) {
+    assert.ok(member in CURRENT.sdk.types!, member);
+  }
+  const helper = 'export const definePluginHandler = <I extends PluginHandlerInput, R extends PluginHandlerResultValue = void>(handler: PluginHandler<I, R>): PluginHandler<I, R> => handler;';
+  const argument = breakingAfterEdit(PLUGIN_SDK_SOURCE, helper, 'export const definePluginHandler = <I extends PluginHandlerInput, R extends PluginHandlerResultValue = void>(name: string, handler: PluginHandler<I, R>): PluginHandler<I, R> => handler;');
+  assert.deepEqual(argument.breaking, [
+    'sdk: type definePluginHandler() changed from <I extends PluginHandlerInput, R extends PluginHandlerResultValue = void>(handler: PluginHandler<I, R>) => PluginHandler<I, R> to <I extends PluginHandlerInput, R extends PluginHandlerResultValue = void>(name: string, handler: PluginHandler<I, R>) => PluginHandler<I, R>',
+  ]);
+  const result = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export function parsePluginRetryAfter(value: string | null | undefined, now: number = Date.now()): number | null {', 'export function parsePluginRetryAfter(value: string | null | undefined, now: number = Date.now()): number | undefined {');
+  assert.deepEqual(result.breaking, ['sdk: type parsePluginRetryAfter() changed from (value: string | null | undefined, now: number = Date.now()) => number | null to (value: string | null | undefined, now: number = Date.now()) => number | undefined']);
+  // A type reached only through an exported function's signature is recorded too.
+  const responder = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export interface PluginWebhookRequest { webhook: string;', 'export interface PluginWebhookRequest { webhook: number;');
+  assert.deepEqual(responder.breaking, ['sdk: type PluginWebhookRequest.webhook changed from string to number']);
+  // What a plugin returns from a function it passes in is supplied; what ProPR passes the handler a helper returns is not.
+  assert.ok(SOURCE.suppliedTypes.includes('PluginWebhookResponse'), SOURCE.suppliedTypes.join(', '));
+  for (const received of ['PluginContext', 'PluginWebhookRequest']) assert.ok(!SOURCE.suppliedTypes.includes(received), received);
+  const removed = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export const clampPluginRetryAfter = (ms: number): number =>', 'const clampPluginRetryAfter = (ms: number): number =>');
+  assert.ok(removed.breaking.includes('sdk: type clampPluginRetryAfter() was removed'), removed.breaking.join('\n'));
+});
+
+test('changing an exported SDK error class\'s constructor or members is a breaking change', () => {
+  const constructor = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'constructor(message: string, options: { retryAfterMs?: number | null; permanent?: boolean } = {}) {', 'constructor(message: string, options: { retryAfterMs: number | null; permanent?: boolean }) {');
+  assert.deepEqual(constructor.breaking, [
+    'sdk: type PluginDeliveryError.constructor changed from (message: string, options: { retryAfterMs?: number | null; permanent?: boolean } = {}) => PluginDeliveryError to (message: string, options: { retryAfterMs: number | null; permanent?: boolean }) => PluginDeliveryError',
+  ]);
+  const order = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'constructor(readonly code: PluginSdkErrorCode, message: string) { super(message); }', 'constructor(message: string, readonly code: PluginSdkErrorCode) { super(message); }');
+  assert.deepEqual(order.breaking, ['sdk: type PluginSdkError.constructor changed from (readonly code: PluginSdkErrorCode, message: string) => PluginSdkError to (message: string, readonly code: PluginSdkErrorCode) => PluginSdkError']);
+  // A parameter property is a public member: no longer declaring it removes `error.code`.
+  const parameterProperty = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'constructor(readonly code: PluginSdkErrorCode, message: string) { super(message); }', 'constructor(code: PluginSdkErrorCode, message: string) { super(message); }');
+  assert.ok(parameterProperty.breaking.includes('sdk: type PluginSdkError.code was removed'), parameterProperty.breaking.join('\n'));
+  const member = breakingAfterEdit(PLUGIN_SDK_SOURCE, '  readonly permanent: boolean;\n', '  readonly permanent: boolean | undefined;\n');
+  assert.deepEqual(member.breaking, ['sdk: type PluginDeliveryError.permanent changed from readonly boolean to readonly boolean | undefined']);
+  const base = breakingAfterEdit(PLUGIN_SDK_SOURCE, 'export class PluginSdkError extends Error {', 'export class PluginSdkError {\n  readonly message: string = \'\';');
+  assert.ok(base.breaking.includes('sdk: type PluginSdkError extends was removed'), base.breaking.join('\n'));
+});
+
 test('every journal event type has a payload contract, and nothing else does', () => {
   assert.deepEqual(Object.keys(PLUGIN_EVENT_PAYLOAD_FIELDS).sort(), pluginEventNames().sort());
 });

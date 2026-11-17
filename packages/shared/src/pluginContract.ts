@@ -142,7 +142,9 @@ export interface PluginContract {
     /**
      * Declared types of the SDK, read from the sources by the contract test:
      * `Interface.member` (`?` when optional) or a type alias's name → its type
-     * text, e.g. `PluginStateStore.get` → `(key: string) => Promise<…>`.
+     * text, e.g. `PluginStateStore.get` → `(key: string) => Promise<…>`; an
+     * exported function as `name()` → its signature, and an exported class as
+     * `Class.constructor`, `Class.member` and `Class extends`.
      * Absent from `buildPluginContract()`, which runs without the compiler.
      */
     types?: Record<string, string>;

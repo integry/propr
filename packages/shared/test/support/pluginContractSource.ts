@@ -12,7 +12,9 @@ import { buildPluginContract, type PluginContract } from '../../src/pluginContra
  *   contract descriptor (`string`, `number | null`, `string[]`, …), to compare
  *   with `PLUGIN_EVENT_PAYLOAD_FIELDS` and `PLUGIN_EVENT_ENVELOPE_FIELDS`.
  * - The handler SDK: the declared type of every member of `PluginContext`,
- *   the input envelopes and every shared interface or type alias they reach
+ *   the input envelopes, the signatures of the functions and classes the SDK
+ *   module exports (`definePluginHandler`, `PluginDeliveryError`'s constructor
+ *   and members, …) and every shared interface or type alias they reach
  *   (`ctx.state` and `ctx.propr` methods with their parameters and results,
  *   the summaries those return, …), recorded in the contract's `sdk.types`.
  *
@@ -108,10 +110,84 @@ function fieldDescriptors(checker: ts.TypeChecker, declaration: ts.InterfaceDecl
 }
 
 const print = (node: ts.Node, file: ts.SourceFile) => printer.printNode(ts.EmitHint.Unspecified, node, file).replace(/\s+/g, ' ').replace(/;\s*}/g, ' }').trim();
-const signatureText = (node: ts.SignatureDeclarationBase, file: ts.SourceFile) => {
+/** `<T>(a: A) => R`; without a written result type, the one the checker infers (when given one), else `void`. */
+const signatureText = (node: ts.SignatureDeclaration, file: ts.SourceFile, checker?: ts.TypeChecker) => {
   const typeParameters = node.typeParameters ? `<${node.typeParameters.map(p => print(p, file)).join(', ')}>` : '';
-  return `${typeParameters}(${node.parameters.map(p => print(p, file)).join(', ')}) => ${node.type ? print(node.type, file) : 'void'}`;
+  const inferred = () => {
+    const signature = checker!.getSignatureFromDeclaration(node);
+    return signature ? checker!.typeToString(checker!.getReturnTypeOfSignature(signature), undefined, ts.TypeFormatFlags.NoTruncation) : 'void';
+  };
+  return `${typeParameters}(${node.parameters.map(p => print(p, file)).join(', ')}) => ${node.type ? print(node.type, file) : checker ? inferred() : 'void'}`;
 };
+
+const isExported = (node: ts.Node) => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(m => m.kind === ts.SyntaxKind.ExportKeyword);
+const isPublic = (node: ts.Node) => !(ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(m => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword));
+const isReadonly = (node: ts.Node) => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword);
+
+/**
+ * The runtime functions and classes the SDK module exports, which plugins call and construct
+ * (`definePluginHandler`, `new PluginDeliveryError(…)`, …): `name()` → a function's signature;
+ * `Class.constructor`, `Class.member` and `Class extends` for a class. Each signature node is
+ * returned too, so the walk records the shared types it names: the parameters (which plugins supply)
+ * with their polarity, and the results without it. A result is not always the plugin's to use:
+ * `definePluginHandler` hands its result straight back to ProPR, so the `ctx` that handler receives
+ * is not something plugins supply.
+ */
+function sdkExports(checker: ts.TypeChecker, sdk: ts.SourceFile): { types: Record<string, string>; reached: ts.Node[]; returned: ts.Node[] } {
+  const types: Record<string, string> = {};
+  const reached: ts.Node[] = [];
+  const returned: ts.Node[] = [];
+  const signature = (key: string, node: ts.SignatureDeclaration) => {
+    types[key] = types[key] ? `${types[key]} & ${signatureText(node, sdk, checker)}` : signatureText(node, sdk, checker);
+    reached.push(...(node.typeParameters ?? []), ...node.parameters);
+    if (node.type) returned.push(node.type);
+  };
+  const typeOf = (node: ts.Node) => checker.typeToString(checker.getTypeAtLocation(node), undefined, ts.TypeFormatFlags.NoTruncation);
+  for (const statement of sdk.statements) {
+    if (!isExported(statement)) continue;
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      const overloads = sdk.statements.filter((s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === statement.name!.text && !s.body);
+      // With overloads, callers see the overload signatures, not the implementation's.
+      if (!statement.body || !overloads.length) signature(`${statement.name.text}()`, statement);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        const initializer = declaration.initializer;
+        if (declaration.type && ts.isFunctionTypeNode(declaration.type)) signature(`${declaration.name.text}()`, declaration.type);
+        else if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) signature(`${declaration.name.text}()`, initializer);
+      }
+    } else if (ts.isClassDeclaration(statement) && statement.name) {
+      const name = statement.name.text;
+      for (const clause of statement.heritageClauses ?? []) {
+        types[`${name} ${clause.token === ts.SyntaxKind.ExtendsKeyword ? 'extends' : 'implements'}`] = clause.types.map(t => print(t, sdk)).join(', ');
+        reached.push(clause);
+      }
+      for (const member of statement.members) {
+        if (!isPublic(member) || (member.name && ts.isPrivateIdentifier(member.name))) continue;
+        const prefix = ts.canHaveModifiers(member) && (ts.getModifiers(member) ?? []).some(m => m.kind === ts.SyntaxKind.StaticKeyword) ? `${name}.static ` : `${name}.`;
+        if (ts.isConstructorDeclaration(member)) {
+          signature(`${name}.constructor`, member);
+          // `constructor(readonly code: …)` declares a public property too.
+          for (const parameter of member.parameters) {
+            if (ts.isIdentifier(parameter.name) && ts.isParameterPropertyDeclaration(parameter, member) && isPublic(parameter)) {
+              types[`${name}.${parameter.name.text}${parameter.questionToken ? '?' : ''}`] = `${isReadonly(parameter) ? 'readonly ' : ''}${parameter.type ? print(parameter.type, sdk) : typeOf(parameter)}`;
+            }
+          }
+        } else if (ts.isPropertyDeclaration(member)) {
+          types[`${prefix}${member.name.getText(sdk)}${member.questionToken ? '?' : ''}`] = `${isReadonly(member) ? 'readonly ' : ''}${member.type ? print(member.type, sdk) : typeOf(member)}`;
+          if (member.type) reached.push(member.type);
+        } else if (ts.isMethodDeclaration(member)) {
+          signature(`${prefix}${member.name.getText(sdk)}${member.questionToken ? '?' : ''}`, member);
+        } else if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
+          signature(`${prefix}${ts.isGetAccessorDeclaration(member) ? 'get' : 'set'} ${member.name.getText(sdk)}`, member);
+        } else if (!ts.isClassStaticBlockDeclaration(member) && !ts.isSemicolonClassElement(member)) {
+          throw new Error(`${name}: member kind ${ts.SyntaxKind[member.kind]} is not recorded in the plugin contract`);
+        }
+      }
+    }
+  }
+  return { types, reached, returned };
+}
 
 /**
  * The declared type text of every member of the SDK interfaces, following references into shared sources,
@@ -123,9 +199,10 @@ function sdkTypes(program: ts.Program, checker: ts.TypeChecker, sdk: ts.SourceFi
   const supplied = new Set<string>();
   const seen = new Set<string>();
   const declarations = new Map<ts.Declaration, number>();
-  const queue: { declaration: ts.Declaration; supplies: boolean }[] = SDK_ROOTS.map(name => ({ declaration: interfaceIn(sdk, name), supplies: false }));
-  const follow = (node: ts.Node, supplies: boolean) => {
-    const visit = (child: ts.Node, polarity: boolean) => {
+  // `supplies` null: recorded, but whoever builds it is not known (see `sdkExports`), so never marked supplied.
+  const queue: { declaration: ts.Declaration; supplies: boolean | null }[] = SDK_ROOTS.map(name => ({ declaration: interfaceIn(sdk, name), supplies: false }));
+  const follow = (node: ts.Node, supplies: boolean | null) => {
+    const visit = (child: ts.Node, polarity: boolean | null) => {
       const name = ts.isTypeReferenceNode(child) ? child.typeName : ts.isExpressionWithTypeArguments(child) ? child.expression : undefined;
       if (name) {
         let symbol = checker.getSymbolAtLocation(name);
@@ -136,11 +213,16 @@ function sdkTypes(program: ts.Program, checker: ts.TypeChecker, sdk: ts.SourceFi
         }
       }
       // A parameter's type is what the other side supplies.
-      const inner = ts.isParameter(child) ? !polarity : polarity;
+      const inner = ts.isParameter(child) && polarity !== null ? !polarity : polarity;
       ts.forEachChild(child, grandchild => visit(grandchild, inner));
     };
     visit(node, supplies);
   };
+  // The exported functions and classes: their signatures, and the shared types those name.
+  const exported = sdkExports(checker, sdk);
+  Object.assign(types, exported.types);
+  for (const node of exported.reached) follow(node, false);
+  for (const node of exported.returned) follow(node, null);
   while (queue.length) {
     const { declaration, supplies } = queue.shift()!;
     if (!declarations.has(declaration)) declarations.set(declaration, declarations.size);
