@@ -6,7 +6,7 @@ import type { AutomationDefinitionRecord } from '../../api/automationDefinitions
 import { ListPageHeader } from '../ListPageHeader';
 import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
-import { useDebouncedCallback, useListSearchParams } from '../TaskList/hooks';
+import { useListSearchParams } from '../TaskList/hooks';
 import { ListSkeleton } from '../ui/Skeleton';
 import { CodeChip } from '../ui/CodeChip';
 import { CreatorMarker } from '../CreatorMarker';
@@ -96,7 +96,8 @@ function useAutomationListFilters() {
     setSearchParams(current => {
       const next = new URLSearchParams(current);
       Object.entries(updates).forEach(([key, value]) => {
-        if (!value || value === ALL_REPOSITORIES) next.delete(key);
+        // "All Repos" is the repository selector's sentinel; a search for "all" is a search.
+        if (!value || (key === AUTOMATION_REPOSITORY_PARAM && value === ALL_REPOSITORIES)) next.delete(key);
         else next.set(key, value);
       });
       return next;
@@ -107,7 +108,14 @@ function useAutomationListFilters() {
     committedSearch.current = value.trim();
     updateParams({ [AUTOMATION_SEARCH_PARAM]: value.trim() || null });
   }, [updateParams]);
-  useDebouncedCallback(searchQuery, commitSearch, 400);
+  // Debounced against what the URL holds, not against the last debounced value:
+  // the clear buttons commit at once, so re-entering the previous query right
+  // after clearing still differs from the URL and has to be written.
+  useEffect(() => {
+    if (searchQuery.trim() === committedSearch.current) return;
+    const timer = setTimeout(() => commitSearch(searchQuery), 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery, commitSearch]);
 
   const setRepository = useCallback((value: string) => updateParams({ [AUTOMATION_REPOSITORY_PARAM]: value }), [updateParams]);
   const clearSearch = useCallback(() => {

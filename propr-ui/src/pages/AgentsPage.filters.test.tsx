@@ -131,6 +131,55 @@ describe('AgentsPage list filters', () => {
     expect(location()).toBe('/automations');
   });
 
+  it('searches for "all" like any other word, not as the All Repos sentinel', async () => {
+    const withAll = [...definitions, agent('a4', 'All checks', { repositories: ['integry/api'] })];
+    vi.mocked(listAutomationDefinitions).mockResolvedValue({ definitions: withAll, total: withAll.length, limit: 200, offset: 0 });
+    renderAt('/automations');
+    await screen.findByText('Dependency review');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search automations' }), { target: { value: 'all' } });
+    await waitFor(() => expect(location()).toBe('/automations?search=all'));
+    expect(rowNames()).toEqual(['All checks']);
+
+    // Choosing All Repos still clears the repository filter and leaves the search alone.
+    const filter = screen.getByRole('group', { name: 'Filter automations by repository' });
+    fireEvent.click(within(filter).getByRole('button', { name: /All Repos/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /integry.*api/ }));
+    expect(location()).toBe('/automations?search=all&repository=integry%2Fapi');
+    fireEvent.click(within(filter).getByRole('button', { name: /integry.*api/ }));
+    fireEvent.click(screen.getByRole('button', { name: /All Repos/ }));
+    expect(location()).toBe('/automations?search=all');
+    expect(rowNames()).toEqual(['All checks']);
+  });
+
+  it('applies the previous query again when it is re-entered right after Clear search', async () => {
+    renderAt('/automations');
+    await screen.findByText('Dependency review');
+    const search = screen.getByRole('textbox', { name: 'Search automations' });
+    fireEvent.change(search, { target: { value: 'triage' } });
+    await waitFor(() => expect(location()).toBe('/automations?search=triage'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(location()).toBe('/automations');
+    // Within the debounce that followed the clear.
+    fireEvent.change(search, { target: { value: 'triage' } });
+    await waitFor(() => expect(location()).toBe('/automations?search=triage'));
+    expect(rowNames()).toEqual(['Issue triage']);
+    expect(search).toHaveValue('triage');
+  });
+
+  it('applies the previous query again when it is re-entered right after Clear filters', async () => {
+    renderAt('/automations?search=labels');
+    expect(await screen.findByText('No automations match “labels”')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(location()).toBe('/automations');
+    const search = screen.getByRole('textbox', { name: 'Search automations' });
+    fireEvent.change(search, { target: { value: 'labels' } });
+    await waitFor(() => expect(location()).toBe('/automations?search=labels'));
+    expect(screen.getByText('No automations match “labels”')).toBeInTheDocument();
+  });
+
   it('restores both filters from the URL on reload and on Back', async () => {
     renderAt('/elsewhere', '/automations?repository=integry%2Fapi&search=review');
     await screen.findByText('Dependency review');
