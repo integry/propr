@@ -2,7 +2,7 @@ import type { Logger } from 'pino';
 import type { IssueJobData, RepoValidationResult, WorktreeInfo } from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { initialPullRequestStatusBlock, initialPullRequestTitle, withPullRequestStatusBlock } from '../github/pullRequestBodyWriter.js';
-import { addPullRequestProcessingLabels } from './pullRequestProcessingLabels.js';
+import { addPullRequestProcessingLabels, pullRequestLabelNames } from './pullRequestProcessingLabels.js';
 
 export interface RetryPRCreationOptions {
     worktreeInfo: WorktreeInfo;
@@ -53,7 +53,7 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
         const prNumber = prResponse.data.number;
         createdPrNumber = prNumber;
         correlatedLogger.info({ issueNumber: issueRef.number, prNumber }, 'PR creation retry successful');
-        await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber }, labels, { correlatedLogger });
+        await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber }, labels, { correlatedLogger, presentLabels: pullRequestLabelNames(prResponse.data.labels) });
 
         // Link PR to plan issue
         await linkPRToPlanIssue(repository, issueRef.number, prNumber);
@@ -82,7 +82,7 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
                 const existingPR = existingPRs.data[0];
                 correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number }, 'Found existing PR');
 
-                await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: existingPR.number }, labels, { correlatedLogger });
+                await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: existingPR.number }, labels, { correlatedLogger, presentLabels: pullRequestLabelNames(existingPR.labels) });
                 const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
                 await linkPRToPlanIssue(repository, issueRef.number, existingPR.number);
                 return { number: existingPR.number };
