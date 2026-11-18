@@ -17,8 +17,10 @@ import { ExpandButton, ExpandedRowDetails, StatusIcon, SyntheticRoutingModelSumm
 
 /**
  * The LLM call list. From `lg` up it is a fixed-layout table: every column has
- * a set width (the work reference takes what is left), so the table always fits
- * its pane, and a long value is cut with an ellipsis and its full text in the
+ * a set width that grows with the viewport (the work reference takes what is
+ * left), so the table always fits its pane. A type chip fits whole from `xl`
+ * (1280px) and a model name from 1440px, where it wraps rather than truncates;
+ * narrower, a long value is cut with an ellipsis and its full text in the
  * tooltip. Below `lg` each call is a stacked row — status, work reference and
  * time on the first line, type, model, usage and duration on the second — the
  * same switch `ListSkeleton layout="table"` makes.
@@ -34,15 +36,17 @@ const wideCell = `${cellBase} hidden xl:table-cell`;
 
 /**
  * Column widths, in table order. `null` columns share the width the others
- * leave. The fixed widths add up to 648px at `lg` and 824px from `xl`, inside a
- * 784px pane at a 1024px viewport and a 1040px pane at 1280px (sidebar 240px).
+ * leave. The fixed widths add up to 648px at `lg`, 888px at `xl` and 1000px
+ * from 1440px, inside a 784px pane at a 1024px viewport, a 1040px pane at
+ * 1280px and a 1200px pane at 1440px (sidebar 240px). The type column holds the longest
+ * label ("PR review context scout") from `xl`.
  */
 const LLM_LOG_COLUMNS: Array<{ key: string; label: string; icon?: React.ReactNode; width: string | null; xlOnly?: boolean }> = [
   { key: 'expand', label: '', width: 'w-10' },
   { key: 'status', label: 'Status', width: 'w-20' },
-  { key: 'type', label: 'Type', width: 'w-32' },
+  { key: 'type', label: 'Type', width: 'w-32 xl:w-48' },
   { key: 'work', label: 'Work Ref', icon: <Info size={14} aria-hidden="true" />, width: null },
-  { key: 'model', label: 'Model', width: 'w-44', xlOnly: true },
+  { key: 'model', label: 'Model', width: 'w-44 min-[1440px]:w-72', xlOnly: true },
   { key: 'usage', label: 'Usage', icon: <Zap size={14} aria-hidden="true" />, width: 'w-44' },
   { key: 'duration', label: 'Duration', icon: <Clock size={14} aria-hidden="true" />, width: 'w-28' },
   { key: 'time', label: 'Timestamp', width: 'w-28' },
@@ -81,9 +85,15 @@ const WorkReference: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
   );
 };
 
-const ModelName: React.FC<{ log: LlmLogEntry }> = ({ log }) => {
+/**
+ * A model name, truncated with its full name in the tooltip; `wrapWhenWide`
+ * lets the model column wrap it instead from 1440px, so it is never cut there.
+ */
+const ModelName: React.FC<{ log: LlmLogEntry; wrapWhenWide?: boolean }> = ({ log, wrapWhenWide = false }) => {
   const model = log.modelName ? formatModelName(log.modelName) : undefined;
-  return <span className="block truncate font-mono" title={model}>{model ?? '-'}</span>;
+  // Literal class names: Tailwind only generates the classes it finds in the source.
+  const wide = wrapWhenWide ? 'min-[1440px]:overflow-visible min-[1440px]:whitespace-normal min-[1440px]:break-words' : '';
+  return <span className={`block truncate font-mono ${wide}`} title={model}>{model ?? '-'}</span>;
 };
 
 const LogTime: React.FC<{ startTime: string | null }> = ({ startTime }) => (
@@ -97,8 +107,9 @@ const Usage: React.FC<{ log: LlmLogEntry }> = ({ log }) => (
     tokens={(log.inputTokens || 0) + (log.outputTokens || 0) + (log.cacheCreationInputTokens || 0) + (log.cacheReadInputTokens || 0)}
     cost={log.costUsd ?? undefined}
     usageMetricRecords={log.usageMetricRecords}
-    // A call with several usage metrics wraps inside its column rather than widening it.
-    className="max-w-full flex-wrap"
+    // A call with several usage metrics wraps whole parts inside its column
+    // rather than widening it; the badge hides the separator at a line start.
+    className="max-w-full"
   />
 );
 
@@ -145,7 +156,7 @@ const LlmLogRow: React.FC<{ log: LlmLogEntry; expanded: boolean; onToggle: (logI
         <div className="xl:hidden"><SyntheticRoutingModelSummary value={log.metadata?.syntheticRouting} /></div>
       </td>
       <td className={`${wideCell} font-mono`}>
-        <ModelName log={log} />
+        <ModelName log={log} wrapWhenWide />
         <SyntheticRoutingModelSummary value={log.metadata?.syntheticRouting} />
       </td>
       <td className={desktopCell}><Usage log={log} /></td>
