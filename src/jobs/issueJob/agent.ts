@@ -61,6 +61,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     modifiedFiles: result.modifiedFiles,
     commitMessage: result.commitMessage || null,
     ...(result.summarySelection && { summarySelection: result.summarySelection }),
+    ...(result.unfinishedReason && { unfinishedReason: result.unfinishedReason }),
     conversationLog: result.conversationLog,
     tokenUsage: result.tokenUsage,
     usageMetrics: result.usageMetrics

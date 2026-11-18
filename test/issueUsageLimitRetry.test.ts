@@ -125,8 +125,8 @@ for (const terminal of ['completed', 'failed']) {
 test('user-stop notice explains how to restart a trigger that remains applied', async () => {
     const request = mock.fn(async () => ({}));
     await postCancellationNotice(data, { ...options(), octokit: { request } });
-    const [, params] = request.mock.calls[0].arguments as unknown as [string, { body: string }];
-    assert.match(params.body, /remove and re-add the trigger label/);
+    const post = request.mock.calls.map(call => call.arguments as unknown as [string, { body: string }]).find(([route]) => route.startsWith('POST'));
+    assert.match(post![1].body, /remove and re-add the trigger label/);
 });
 
 

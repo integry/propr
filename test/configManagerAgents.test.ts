@@ -362,6 +362,23 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), false);
     });
 
+    test('removes GLM 5.3 Flash Free, which OpenCode Zen no longer serves, and routes a saved default to DeepSeek V4.1 Flash Free', () => {
+        const agent = createAgent({
+            type: 'opencode',
+            supportedModels: ['opencode-big-pickle', 'opencode-glm-5.3-flash-free', 'opencode-openai/gpt-5.5'],
+            defaultModel: 'opencode-glm-5.3-flash-free',
+            cliVersionType: 'default',
+            cliVersionResolved: AGENT_DEFAULT_VERSIONS.opencode
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.ok(!agent.supportedModels.includes('opencode-glm-5.3-flash-free'));
+        assert.ok(agent.supportedModels.includes('opencode-deepseek-v4.1-flash-free'));
+        assert.ok(agent.supportedModels.includes('opencode-openai/gpt-5.5'));
+        assert.strictEqual(agent.defaultModel, 'opencode-deepseek-v4.1-flash-free');
+        assert.strictEqual(migrateAgentConfig(agent), false);
+    });
+
     test('adds current Antigravity base models and preserves the selected default', () => {
         const existingDefault = 'antigravity-claude-opus-5.5';
         const agent = createAgent({

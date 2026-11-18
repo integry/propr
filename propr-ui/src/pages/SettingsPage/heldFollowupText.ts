@@ -8,6 +8,7 @@ import { formatDateTime, formatRelativeTime } from '../../utils/dateFormat';
  */
 
 const HELD = 'awaiting_operator';
+const ACTIVE = 'active';
 const RELEASED = 'released';
 
 /** Held for a decision, or still being recovered: what the list shows by default. */
@@ -20,7 +21,7 @@ export const needsCancelledChoice = (handoff: FollowupHandoffStatus): boolean =>
 
 const STATUS_LABELS: Record<string, string> = {
   [HELD]: 'Held',
-  active: 'In recovery',
+  [ACTIVE]: 'In recovery',
   [RELEASED]: 'Released',
 };
 
@@ -67,6 +68,18 @@ const humanize = (value: string): string => {
 };
 
 export const statusLabel = (status: string): string => STATUS_LABELS[status] ?? humanize(status);
+
+/**
+ * An active follow-up whose agent container the server saw running: the run is
+ * in progress, not being recovered. The server only checks liveness for
+ * active records (`not_checked` otherwise).
+ */
+export const isRunningFollowup = (handoff: FollowupHandoffStatus): boolean =>
+  handoff.status === ACTIVE && handoff.liveness === 'running';
+
+/** The row's state: "Running" while its agent runs, otherwise the status label. */
+export const followupStateLabel = (handoff: FollowupHandoffStatus): string =>
+  isRunningFollowup(handoff) ? 'Running' : statusLabel(handoff.status);
 export const phaseLabel = (phase: string): string => PHASE_LABELS[phase] ?? humanize(phase);
 
 /** Why it is held, what recovery is doing, or why it was released. */
@@ -74,6 +87,7 @@ export const reasonLabel = (handoff: FollowupHandoffStatus): string => {
   if (handoff.statusReason) return REASON_LABELS[handoff.statusReason] ?? `${humanize(handoff.statusReason)}.`;
   if (isHeldFollowup(handoff)) return 'It needs a decision.';
   if (handoff.status === RELEASED) return 'Released.';
+  if (isRunningFollowup(handoff)) return 'Its agent is working on this request.';
   return 'Recovery is in progress.';
 };
 

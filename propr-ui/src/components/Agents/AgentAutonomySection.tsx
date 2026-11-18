@@ -26,7 +26,7 @@ const AUTONOMY_TEXT: Record<AutomationAutonomyMode, { label: string; description
   },
 };
 
-const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-teal-500';
+const SEGMENT_CLASSES = 'touch-hit px-3 py-1 text-xs font-medium first:rounded-l-[5px] last:rounded-r-[5px] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-teal-500';
 
 /**
  * What happens once a run has produced its report: a segmented control, with the chosen mode explained beneath it.
@@ -37,7 +37,7 @@ export const AgentAutonomySection: React.FC<AgentAutonomySectionProps> = ({ auto
     label="Autonomy"
     hint={actingAvailable ? 'What happens after the report is written.' : 'The selected coding agent cannot use ProPR tools, so this automation is Report only.'}
   >
-    <div role="radiogroup" aria-label="Autonomy" className="inline-flex overflow-hidden rounded-md border border-slate-300">
+    <div role="radiogroup" aria-label="Autonomy" className="inline-flex rounded-md border border-slate-300">
       {AUTOMATION_AUTONOMY_MODES.map((mode, index) => {
         const locked = mode !== 'dry_run' && !actingAvailable;
         const selected = autonomy === mode;

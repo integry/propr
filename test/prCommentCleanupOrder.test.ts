@@ -5,12 +5,22 @@ const events: string[] = [];
 const queued: Array<{ name: string; data: any }> = [];
 const cleanupOptions: any[] = [];
 const noOp = () => undefined;
+let waitingJobs: Array<{ name: string; data: any }> = [];
+let delayedJobs: Array<{ id?: string; name: string; data: any }> = [];
+// Run timestamps of delayed jobs by id, served as BullMQ delayed-set scores.
+let delayedRunAt: Record<string, number> = {};
 
 const core = await import('@propr/core');
 await mock.module('@propr/core', {
     namedExports: {
         ...core,
-        issueQueue: { add: async (name: string, data: any) => { events.push('queued'); queued.push({ name, data }); } },
+        issueQueue: {
+            add: async (name: string, data: any) => { events.push('queued'); queued.push({ name, data }); },
+            getWaiting: async () => waitingJobs,
+            getDelayed: async () => delayedJobs,
+            keys: { delayed: 'bull:issues:delayed' },
+            client: Promise.resolve({ zscore: async (_key: string, id: string) => id in delayedRunAt ? String(delayedRunAt[id] * 0x1000) : null }),
+        },
         cleanupWorktree: async (_repo: string, _path: string, _branch: string, options: unknown) => { cleanupOptions.push(options); await new Promise(resolve => setTimeout(resolve, 5)); events.push('worktree-removed'); },
     },
 });
@@ -82,5 +92,83 @@ for (const reason of ['cancelled_by_user', 'cancelled_pr_closed', undefined]) {
             assert.deepEqual(queued[0].data.comments, [], 'the cancelled request is not replayed');
             assert.equal(queued[0].data.pullRequestNumber, 42);
         }
+    });
+}
+
+// #3686: intake queues a drain job for a comment it stores behind a running
+// job, so cleanup must not queue a second one that would only find the list empty.
+for (const queuedState of ['waiting', 'delayed'] as const) {
+    test(`cleanup leaves pending comments to the PR job already ${queuedState}`, async () => {
+        queued.length = 0;
+        const pickup = { id: 'drain-42', name: 'processPullRequestComment', data: { pullRequestNumber: 42, repoOwner: 'acme', repoName: 'web', comments: [] } };
+        waitingJobs = queuedState === 'waiting' ? [pickup] : [];
+        delayedJobs = queuedState === 'delayed' ? [pickup] : [];
+        delayedRunAt = { 'drain-42': Date.now() + 3000 };
+        try {
+            await cleanupJob({
+                stateManager: { getTaskState: async () => ({ state: 'completed' }) } as never,
+                lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
+                localRepoPath: undefined, worktreeInfo: undefined,
+                repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
+                correlatedLogger: { debug: noOp, info: noOp, warn: noOp, error: noOp } as never,
+                redisClient: { llen: async () => 1, pttl: async () => 3_600_000 } as never,
+            });
+        } finally {
+            waitingJobs = [];
+            delayedJobs = [];
+            delayedRunAt = {};
+        }
+        assert.equal(queued.length, 0);
+    });
+}
+
+test('a queued job for another pull request does not stop cleanup from queuing the follow-up', async () => {
+    queued.length = 0;
+    delayedJobs = [{ name: 'processPullRequestComment', data: { pullRequestNumber: 43, repoOwner: 'acme', repoName: 'web' } }];
+    try {
+        await cleanupJob({
+            stateManager: { getTaskState: async () => ({ state: 'completed' }) } as never,
+            lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
+            localRepoPath: undefined, worktreeInfo: undefined,
+            repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
+            correlatedLogger: { debug: noOp, info: noOp, warn: noOp, error: noOp } as never,
+            redisClient: { llen: async () => 1 } as never,
+        });
+    } finally {
+        delayedJobs = [];
+    }
+    assert.equal(queued.length, 1);
+});
+
+// A delayed PR job counts as the pickup only when it runs while the pending
+// list is retained. A usage-limit retry scheduled an hour or more out carries
+// only the comments its attempt claimed; a comment stored behind the attempt
+// after the retry was queued would expire before the retry runs.
+for (const { label, runsInMs, listTtlMs } of [
+    { label: 'a usage-limit retry an hour past the list expiry', runsInMs: 65 * 60_000, listTtlMs: 3_600_000 },
+    { label: 'a delayed job that runs after a list stored earlier expires', runsInMs: 5 * 60_000, listTtlMs: 2 * 60_000 },
+    { label: 'a delayed job whose run time cannot be read', runsInMs: undefined, listTtlMs: 3_600_000 },
+]) {
+    test(`cleanup still queues the follow-up behind ${label}`, async () => {
+        queued.length = 0;
+        const retryId = 'pr-comments-batch-acme-web-42-claude-opus-5-5-feature-ratelimit-retry';
+        delayedJobs = [{ id: retryId, name: 'processPullRequestComment', data: { pullRequestNumber: 42, repoOwner: 'acme', repoName: 'web', comments: [{ id: 1 }] } }];
+        delayedRunAt = runsInMs === undefined ? {} : { [retryId]: Date.now() + runsInMs };
+        try {
+            await cleanupJob({
+                stateManager: { getTaskState: async () => ({ state: 'completed' }) } as never,
+                lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
+                localRepoPath: undefined, worktreeInfo: undefined,
+                repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
+                correlatedLogger: { debug: noOp, info: noOp, warn: noOp, error: noOp } as never,
+                redisClient: { llen: async () => 1, pttl: async () => listTtlMs } as never,
+            });
+        } finally {
+            delayedJobs = [];
+            delayedRunAt = {};
+        }
+        assert.equal(queued.length, 1);
+        assert.equal(queued[0].name, 'processPullRequestComment');
+        assert.deepEqual(queued[0].data.comments, []);
     });
 }

@@ -16,8 +16,8 @@ WORKDIR /acceptance
 COPY package.json package-lock.json tsconfig.json ./
 # npm ci installs braces and picomatch from these reviewed lockfile-pinned tarballs.
 COPY vendor/braces-3.0.4-depthguard.1.tgz vendor/braces-3.0.4-depthguard.1.tgz
-COPY vendor/picomatch-4.0.8-extglobguard.1.tgz vendor/picomatch-4.0.8-extglobguard.1.tgz
-COPY vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz
+COPY vendor/picomatch-4.0.8-extglobguard.2.tgz vendor/picomatch-4.0.8-extglobguard.2.tgz
+COPY vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz
 COPY apps/desktop/package.json apps/desktop/package.json
 COPY packages/api/package.json packages/api/package.json
 COPY packages/cli/package.json packages/cli/package.json

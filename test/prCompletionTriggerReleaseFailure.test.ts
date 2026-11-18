@@ -143,9 +143,11 @@ test('a post-processing failure still posts its comment when the trigger release
 
     assert.equal(postProcessingResult?.success, false);
     assert.equal(postProcessingResult?.error, 'PR creation exploded');
-    assert.equal(comments.length, 1, 'the label failure does not suppress the fallback comment');
-    assert.match(comments[0], /Post-processing encountered an error/u);
-    assert.deepEqual(liveLabels.sort(), ['AI', 'AI-done']);
+    assert.equal(postProcessingResult?.failedStep, 'pull_request');
+    assert.equal(comments.length, 1, 'the fallback comment is posted');
+    // No pull request was opened (#3688): the comment names the failed step and the issue is not marked done.
+    assert.match(comments[0], /Opening the pull request failed/u);
+    assert.deepEqual(liveLabels.sort(), ['AI'], 'processing released; the trigger is kept so the issue can be retried');
 });
 
 test('validation links and assigns a PR it finds when the trigger release fails', async () => {

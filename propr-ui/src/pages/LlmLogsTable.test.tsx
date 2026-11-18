@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
 import { LlmLogTable } from './LlmLogsTable';
 import { PaginationFooter } from './LlmLogsPageComponents';
-import { formatTimestamp, formatTokens } from './llmLogsUtils';
+import { EXECUTION_TYPE_LABELS, formatTimestamp, formatTokens, formatType } from './llmLogsUtils';
 import { formatModelName } from '../utils/modelDisplay';
 
 function log(overrides: Partial<LlmLogEntry> = {}): LlmLogEntry {
@@ -108,11 +108,62 @@ describe('LlmLogTable', () => {
     expect(formatTimestamp(null)).toBe('-');
   });
 
+  it('sizes the type chip to fit whole from xl and the model in full from 1440px', () => {
+    renderTable([log({ executionType: 'pr-review-context-scout', modelName: 'antigravity-gemini-3.8-flash' })]);
+    const headers = within(screen.getByRole('table')).getAllByRole('columnheader');
+    const header = (label: string) => headers.find(node => node.textContent === label)!;
+    expect(header('Type')).toHaveClass('w-32', 'xl:w-48');
+    expect(header('Model')).toHaveClass('w-44', 'min-[1440px]:w-72');
+    const row = screen.getByTestId('llm-log-row');
+    expect(within(row).getAllByText('PR review context scout')).toHaveLength(2);
+    // Only the model column wraps from 1440px; the stacked and narrow-desktop lines keep truncating.
+    const models = within(row).getAllByText(formatModelName('antigravity-gemini-3.8-flash')).filter(node => node.classList.contains('font-mono'));
+    const wrapping = models.filter(node => node.classList.contains('min-[1440px]:whitespace-normal'));
+    expect(wrapping).toHaveLength(1);
+    expect(wrapping[0].closest('td')).toHaveClass('xl:table-cell');
+    for (const model of models) expect(model).toHaveClass('truncate');
+  });
+
   it('opens the details of a row when it is clicked', () => {
     const onToggle = vi.fn();
     renderTable([log()], new Set(), onToggle);
     fireEvent.click(screen.getByTestId('llm-log-row'));
     expect(onToggle).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('formatType', () => {
+  it('labels every execution type in sentence case with PR in capitals', () => {
+    expect(formatType('pr-review')).toBe('PR review');
+    expect(formatType('pr-review-context-scout')).toBe('PR review context scout');
+    expect(formatType('title-generation')).toBe('Title generation');
+    expect(formatType('summary-selection')).toBe('Summary selection');
+    expect(formatType('repo-chat')).toBe('Repository chat');
+    expect(formatType('other')).toBe('Other');
+  });
+
+  it('reads the same label for underscore and kebab spellings', () => {
+    expect(formatType('pr_review_context_scout')).toBe('PR review context scout');
+    expect(formatType('SUMMARY_SELECTION')).toBe('Summary selection');
+  });
+
+  it('covers every server execution type with a sentence-case label', () => {
+    const serverTypes = [
+      'implementation', 'plan-generation', 'plan-refinement', 'title-generation', 'summarization',
+      'summary-selection', 'context-analysis', 'repo-chat', 'repo-improvements', 'pr-review',
+      'pr-review-context-scout', 'usage-tips-selection', 'agent-health-check', 'other',
+    ];
+    for (const type of serverTypes) {
+      const label = EXECUTION_TYPE_LABELS[type];
+      expect(label, type).toBeDefined();
+      // Only the first word and acronyms are capitalised.
+      expect(label.split(' ').slice(1).every(word => word === 'PR' || word === word.toLowerCase()), label).toBe(true);
+    }
+  });
+
+  it('falls back to sentence case with acronyms for an unknown type', () => {
+    expect(formatType('ci_fix_attempt')).toBe('CI fix attempt');
+    expect(formatType('plan_generation_with_refinement')).toBe('Plan generation with refinement');
   });
 });
 

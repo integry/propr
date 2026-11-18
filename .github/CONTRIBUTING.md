@@ -92,12 +92,32 @@ Most pull requests in this repository are opened by ProPR itself, from branches 
 
 A release goes through these steps, in order:
 
-1. **Metadata pull request.** Bump the versions, add the `CHANGELOG.md` entry and the `release-notes/v<version>.md` summary. Before merging, `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify` checks that the release metadata is consistent.
+1. **Metadata pull request.** Bump the versions, add the `CHANGELOG.md` entry and the `release-notes/v<version>.md` summary ([below](#the-preparation-pull-request)). Before merging, `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify` checks that the release metadata is consistent.
 2. **Tag.** Push the `v<version>` tag on the merged commit.
-3. **Automatic publication.** The tag push runs the **Docker Images** workflow (`.github/workflows/docker-images.yml`), which publishes the images and the npm package, creates the GitHub release and [deploys the hosted UI](https://docs.propr.dev/docs/operations/hosted-ui-release).
+3. **Automatic publication.** The tag push runs the **Docker Images** workflow (`.github/workflows/docker-images.yml`), which validates the tag, publishes the images and the npm package, creates the GitHub release with the release summary on top and [deploys the hosted UI](https://docs.propr.dev/docs/operations/hosted-ui-release).
 4. **Release Rollout.** When Docker Images succeeds, `release-rollout.yml` starts on its own and builds the runtime images, the desktop preview pre-releases and the preview CLI bundle. Approve each protected environment as the run reaches it (below).
 5. **Follow-up issues.** The last Release Rollout job writes the follow-ups outside this repository: the ProPR Hosted repin, the site's release date and desktop downloads, and the demo move (below). Work through the issues it opened, or file the texts in its run summary by hand.
 6. **Final check.** `npm run release:rollout -- --version <version>` says where the release is live ([last step](#last-step-check-where-the-release-is-live)).
+
+### The preparation pull request
+
+The pull request that prepares the release metadata:
+
+1. Bumps the version in the root `package.json`, every release-versioned `@propr` workspace, the desktop package, the matching `package-lock.json` records and internal dependency ranges, `PROPR_VERSION` and the launcher manifest. Independently versioned packages keep their own versions.
+2. Renames `## [Unreleased]` in `CHANGELOG.md` to `## [<version>] - <date>`, adds a new empty `## [Unreleased]` above it and updates the comparison links.
+3. Writes the release summary, `release-notes/v<version>.md` (see below).
+4. Passes `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify`.
+
+### Release summary
+
+`release-notes/v<version>.md` is the top of the GitHub release. The release job reads it from the release tag and creates the release with `gh release create --notes-file … --generate-notes`, so the summary comes first and GitHub's generated "What's Changed" list of pull requests follows it. [`release-notes/v0.9.2.md`](../release-notes/v0.9.2.md) is an example.
+
+Write it from the version's `CHANGELOG.md` section, for someone deciding whether and how to upgrade. Keep it to roughly 30–50 lines: it is a summary, not a second changelog. It has two sections:
+
+- `## Highlights`: what the release means for a user, grouped by area (for example **Pull requests**, **Automations**, **Agents and models**, **Fixes and security**), in plain language. Do not copy pull request titles. Start with one sentence about the release that links to the changelog at the tag (`https://github.com/integry/propr/blob/v<version>/CHANGELOG.md`) and to the site's what's-new page (`https://propr.dev/whats-new/<version>/`).
+- `## Upgrade notes`: behaviour changes, migrations, deprecations and retirements, and anything to do before or after upgrading. Write `None.` when there are none.
+
+`npm run release:verify` fails in release-candidate mode (every pull request's **Validate Changes**) and on the release tag when the current version's file is missing or empty, lacks either section or has an empty one, does not have both links, or still contains a placeholder (`TODO`, `TBD`, `FIXME`, `XXX`, an HTML comment, an `<angle-bracket>` or `{{ }}` slot, or filler text). A release whose GitHub release already exists, for example a re-run, only gets its assets uploaded and keeps its text.
 
 ### Desktop previews and the preview CLI bundle
 
@@ -160,6 +180,6 @@ It needs no credentials and changes nothing: every check is a public read. It pr
 
 The command exits 0 only when every target is `ok`. In GitHub Actions it also adds the results as a table to the run summary. Unauthenticated GitHub API reads are limited to 60 an hour per IP address; a rate-limited read shows as `missing` with `HTTP 403 (GitHub API rate limit?)`. To check another destination, add one entry to `TARGETS` in `scripts/verify-release-rollout.mjs`, using one of the check kinds in `scripts/lib/release-rollout/run.mjs`.
 
-
+## License
 
 ProPR is licensed under the [Apache License 2.0](../LICENSE). Unless you state otherwise, contributions you submit are licensed under the same terms, as set out in section 5 of the license.

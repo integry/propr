@@ -121,7 +121,11 @@ test('dedicated review batched behind manual work retains review metadata and it
   assert.equal(JSON.parse(redis.rpush.mock.calls[0].arguments[1]).commandMode, 'review');
   assert.deepEqual(await postReview(), result);
   assert.equal(redis.rpush.mock.callCount(), 1);
-  assert.equal(add.mock.callCount(), 0);
+  // Only an active job exists, so the first request queues one drain job to pick up the stored review;
+  // the idempotent repeat adds nothing.
+  assert.equal(add.mock.callCount(), 1);
+  assert.deepEqual(add.mock.calls[0].arguments[1].comments, []);
+  assert.equal(add.mock.calls[0].arguments[1].commandMode, undefined);
 });
 
 test('concurrent desktop requests share one review submission', async () => {
