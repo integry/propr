@@ -89,8 +89,10 @@ const stripInline = (line: string): string => stripTags(stripLinks(stripLinks(li
 
 /** A heading line: one to six `#` followed by a space or the end of the line. */
 const HEADING = /^#{1,6}(?=\s|$)/u;
-/** A list item or quote: a body block that does not continue onto the next line. */
+/** A list item or quote: a line that starts a new body block. */
 const ITEM = /^(?:>|[-*+](?=\s)|\d+[.)](?=\s))/u;
+/** The `>` markers that open a (possibly nested) quote line. */
+const QUOTE_MARKERS = /^(?:>\s*)+/u;
 /** A Setext heading underline: a run of `=` (level 1) or `-` (level 2) alone on its line. */
 const SETEXT_UNDERLINE = /^(?:=+|-+)$/u;
 
@@ -170,10 +172,28 @@ const firstSentence = (text: string): string => {
 };
 
 /**
+ * Whether `line` ends the block the preview is reading. A blank line, a fence,
+ * a rule or a heading ends any block, and a list item or quote line starts a
+ * new one. Inside a quote, a further `>` line continues the quote unless what
+ * follows its markers is blank or starts a block of its own, such as the next
+ * item of a quoted list. A plain line continues the block: the next line of a
+ * paragraph, or a list item or quote wrapped onto an indented or lazy line.
+ */
+const endsBlock = (line: string, quoted: boolean): boolean => {
+  if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line) || HEADING.test(line)) return true;
+  if (quoted && QUOTE_MARKERS.test(line)) {
+    const inner = line.replace(QUOTE_MARKERS, '');
+    return !inner || FENCE.test(inner) || STRUCTURE_ONLY.test(inner) || HEADING.test(inner) || ITEM.test(inner);
+  }
+  return ITEM.test(line);
+};
+
+/**
  * A run report's one-line preview for the run history, which tells runs of
  * the same automation apart: the first sentence of the report body after its
  * heading, Markdown stripped. A body that starts with a list or a quote
- * previews its first item. Headings, ATX (`#`) or Setext (underlined with
+ * previews the first sentence of its first item, lines it wraps onto
+ * included. Headings, ATX (`#`) or Setext (underlined with
  * `===` or `---`), are skipped: the title every run of an automation
  * repeats, and section headings. A report that is only headings
  * previews its first one. The result is cut at a word boundary with `…` past
@@ -183,9 +203,10 @@ export function automationReportPreview(report: string | null | undefined, max =
   if (!report) return null;
   let title: string | null = null;
   const paragraph: string[] = [];
+  /** Whether the block being read is a quote, whose `>` lines continue it. */
+  let quoted = false;
   for (const line of normalizeSetextHeadings(report)) {
-    const breaks = !line || FENCE.test(line) || STRUCTURE_ONLY.test(line) || HEADING.test(line);
-    if (paragraph.length > 0 && (breaks || ITEM.test(line))) break;
+    if (paragraph.length > 0 && endsBlock(line, quoted)) break;
     if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line)) continue;
     const text = stripInline(line.replace(BLOCK_MARKERS, ''));
     if (!text) continue;
@@ -193,9 +214,8 @@ export function automationReportPreview(report: string | null | undefined, max =
       title ??= text;
       continue;
     }
+    if (paragraph.length === 0) quoted = QUOTE_MARKERS.test(line);
     paragraph.push(text);
-    // A list item or quote is a block of its own; a plain paragraph runs on to its next line.
-    if (ITEM.test(line)) break;
     // Earlier lines had no sentence end, so one on this line completes the first sentence.
     if (sentenceEnd(`${text} `) >= 0) break;
   }

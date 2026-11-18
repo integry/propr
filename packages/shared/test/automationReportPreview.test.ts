@@ -44,7 +44,7 @@ test('automationReportPreview skips Setext headings underlined with = or -', () 
   assert.equal(automationReportPreview('Weekly. Audit\n===\nAll clear.'), 'All clear.');
   // A rule after a blank line, a list item or inside a fence is not an underline.
   assert.equal(automationReportPreview('# Audit\nAll clear today.\n\n---\nMore'), 'All clear today.');
-  assert.equal(automationReportPreview('- lodash is outdated\nsince Monday\n---'), 'lodash is outdated');
+  assert.equal(automationReportPreview('- lodash is outdated\nsince Monday\n---'), 'lodash is outdated since Monday');
   assert.equal(automationReportPreview('```\nconst a = 1\n---\n```'), 'const a = 1');
 });
 
@@ -53,6 +53,29 @@ test('automationReportPreview previews the first item when the body starts with 
   assert.equal(automationReportPreview('# Checks\n1. Lint passed. Tests failed.\n2. Build passed'), 'Lint passed.');
   // A paragraph does not run on into a list that follows it.
   assert.equal(automationReportPreview('# Checks\nResults\n- lint: passed'), 'Results');
+});
+
+test('automationReportPreview keeps the lines a list item or quote wraps onto', () => {
+  // An indented continuation completes the first item's sentence.
+  assert.equal(
+    automationReportPreview('# Weekly audit\n\n- Dependency scanning found\n  three vulnerable packages. Upgrade them.'),
+    'Dependency scanning found three vulnerable packages.',
+  );
+  // A lazy continuation and a numbered item, stopping before the next item.
+  assert.equal(
+    automationReportPreview('# Checks\n1. Lint found\nno problems\n2. Tests passed'),
+    'Lint found no problems',
+  );
+  // A quote wrapped over several `>` lines runs on; a lazy line continues it too.
+  assert.equal(
+    automationReportPreview('# Audit\n> Dependency scanning found\n> three vulnerable\npackages. Upgrade them.'),
+    'Dependency scanning found three vulnerable packages.',
+  );
+  // A blank quote line, or the next item of a quoted list, ends the block.
+  assert.equal(automationReportPreview('# Audit\n> All clear\n>\n> Next run Monday.'), 'All clear');
+  assert.equal(automationReportPreview('# Audit\n> - lodash is outdated\n> - react is current'), 'lodash is outdated');
+  // A paragraph still does not run on into a quote that follows it.
+  assert.equal(automationReportPreview('# Audit\nAll clear\n> Quoted note.'), 'All clear');
 });
 
 test('automationReportPreview strips Markdown markers from the body', () => {
