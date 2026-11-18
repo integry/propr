@@ -1,5 +1,6 @@
 import type { PublicPluginMcpServer } from '@propr/shared';
 import type { PluginManifestView, PluginView } from '../../api/pluginsApi';
+import { formatDateTime } from '../../utils/dateFormat';
 
 export { buttonClass, dangerButtonClass, inputClass, primaryButtonClass } from '../SettingsPage/extensions/extensionUi';
 
@@ -103,4 +104,4 @@ export function secretAcknowledgementText(server: { package: string; version: st
     + 'and that they are readable by the agent CLI, its shell tools and repository setup scripts inside the task container.';
 }
 
-export const formatWhen = (at: number) => new Date(at).toLocaleString();
+export const formatWhen = (at: number) => formatDateTime(at);

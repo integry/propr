@@ -4,6 +4,7 @@ import {
   getPlugin, getPluginActivity, PluginApiError, resumePluginDeliveries, retryPluginDelivery,
   type PluginActivityView, type PluginDeliveryView, type PluginHealthView,
 } from '../../api/pluginsApi';
+import { formatDateTime } from '../../utils/dateFormat';
 import { exampleAt, renderPluginsPage } from './pluginFixtures.testUtils';
 
 vi.mock('../../api/pluginsApi', async importOriginal => ({
@@ -69,7 +70,7 @@ describe('Plugin activity', () => {
     expect(retryingItem).toHaveTextContent('Next attempt');
     expect(within(retryingItem).queryByRole('button', { name: /Retry/ })).toBeNull();
     expect(succeeded).toHaveTextContent('120 ms');
-    expect(succeeded).toHaveTextContent(new Date(AT).toLocaleString());
+    expect(succeeded).toHaveTextContent(formatDateTime(AT));
     expect(within(succeeded).getByText('Log (1 line)')).toBeInTheDocument();
     expect(succeeded).toHaveTextContent('posted to #releases');
     expect(screen.queryByTestId('plugin-health')).toBeNull();

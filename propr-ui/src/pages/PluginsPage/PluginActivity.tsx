@@ -1,6 +1,6 @@
 import { RefreshCw } from 'lucide-react';
 import type { PluginDeliveryView, PluginHealthView } from '../../api/pluginsApi';
-import { buttonClass, primaryButtonClass } from './pluginUi';
+import { buttonClass, formatWhen, primaryButtonClass } from './pluginUi';
 import type { usePluginActivity } from './usePluginActivity';
 
 type Activity = ReturnType<typeof usePluginActivity>;
@@ -13,7 +13,6 @@ const STATUS: Record<PluginDeliveryView['status'], { label: string; className: s
   failed: { label: 'Failed', className: 'bg-red-50 text-red-800' },
   skipped: { label: 'Skipped', className: 'bg-slate-200 text-slate-700' },
 };
-const time = (ms: number) => new Date(ms).toLocaleString();
 const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
 /** Degraded or Paused next to the plugin's state badge; nothing while deliveries are healthy. */
@@ -39,7 +38,7 @@ function HealthNotice({ health, busy, onResume }: { health: PluginHealthView; bu
           ? `Deliveries are paused after ${health.consecutiveFailures} failures in a row. New events wait until you resume.`
           : `Degraded: ${health.consecutiveFailures} deliveries failed in a row. Deliveries pause after ${health.pauseAfterFailures}.`}
       </p>
-      {health.lastError && <p className="[overflow-wrap:anywhere]">Last error{health.lastErrorAt ? ` (${time(health.lastErrorAt)})` : ''}: {health.lastError}</p>}
+      {health.lastError && <p className="[overflow-wrap:anywhere]">Last error{health.lastErrorAt ? ` (${formatWhen(health.lastErrorAt)})` : ''}: {health.lastError}</p>}
       {paused && <button type="button" className={primaryButtonClass} disabled={busy} onClick={onResume}>Resume deliveries</button>}
     </div>
   );
@@ -68,12 +67,12 @@ function DeliveryItem({ delivery, busy, onRetry }: { delivery: PluginDeliveryVie
         )}
       </div>
       <p className="flex flex-wrap gap-x-3 text-xs text-slate-500">
-        <span>{time(delivery.startedAt ?? delivery.createdAt)}</span>
+        <span>{formatWhen(delivery.startedAt ?? delivery.createdAt)}</span>
         {delivery.repository && <span className="[overflow-wrap:anywhere]">{delivery.repository}</span>}
         {reference && <span>{reference}</span>}
         {!gap && <span>Attempt {delivery.attempt}</span>}
         {delivery.durationMs !== null && <span>{duration(delivery.durationMs)}{delivery.timedOut ? ' (timed out)' : ''}</span>}
-        {delivery.nextAttemptAt !== null && delivery.status === 'retrying' && <span>Next attempt {time(delivery.nextAttemptAt)}</span>}
+        {delivery.nextAttemptAt !== null && delivery.status === 'retrying' && <span>Next attempt {formatWhen(delivery.nextAttemptAt)}</span>}
       </p>
       {delivery.error && <p className={`text-xs [overflow-wrap:anywhere] ${gap ? 'text-slate-600' : 'text-red-800'}`}>{delivery.error}</p>}
       {delivery.logs.length > 0 && (
