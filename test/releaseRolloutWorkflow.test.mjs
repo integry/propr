@@ -192,6 +192,22 @@ describe('Release Rollout workflow contract', () => {
     assert.deepEqual(Object.keys(secretReferences(rollout)).sort(), ['followups', 'linux-signing', 'runtime-agent', 'runtime-app-ui']);
   });
 
+  test('the follow-ups job only starts the demo deploy detached, so its timeout cannot cut the refresh', () => {
+    const demo = jobs.followups.steps.find(step => step.id === 'demo');
+    assert.match(demo.name, /^Start the demo deploy over SSH/);
+    assert.ok(jobs.followups['timeout-minutes'] <= 30);
+    assert.match(demo.run, /systemd-run --unit=\$unit --collect /);
+    assert.match(demo.run, /unit="propr-release-deploy-\$VERSION"/);
+    assert.match(demo.run, /log="\/root\/propr-deploy\/logs\/release-deploy-\$VERSION\.log"/);
+    assert.match(demo.run, /--property=StandardOutput=append:\$log --property=StandardError=append:\$log \/root\/propr-deploy\/scripts\/deploy\.sh all"/);
+    assert.doesNotMatch(demo.run, /cd \/root\/propr-deploy && \.\/scripts\/deploy\.sh all/, 'no deploy in the foreground of the SSH session');
+    assert.doesNotMatch(demo.run, /--wait\b|--pty\b/);
+    assert.match(demo.run, /-o ServerAliveInterval=30 -o ServerAliveCountMax=4/);
+    assert.match(demo.run, /echo 'result=started'/);
+    assert.match(rolloutText, /^# it starts the documented demo deploy \(\.\/scripts\/deploy\.sh all\) on the host as\n# a detached systemd unit/m);
+    assert.match(rolloutText, /^# by the job timeout\. Until demo\.propr\.dev reports the release, the demo\n# follow-up issue is still opened/m);
+  });
+
   test('grants each call only the permissions its called jobs already declare', () => {
     const permissions = Object.fromEntries(Object.entries(jobs).map(([name, job]) => [name, job.permissions]));
     assert.deepEqual(permissions, {

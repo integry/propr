@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { parse } from 'yaml';
 import {
-  REPOSITORIES, TOKEN_SECRET, demoFollowup, fleetFollowup, followups, followupsSummary, inputsFromEnv, issuesTsv, prepare,
+  REPOSITORIES, TOKEN_SECRET, demoDeploy, demoFollowup, fleetFollowup, followups, followupsSummary, inputsFromEnv, issuesTsv, prepare,
   releasePublishedAt, siteFollowup, stepDone,
 } from '../scripts/release-followups.mjs';
 
@@ -94,8 +94,26 @@ describe('release follow-up texts', () => {
     assert.match(item.body, /reports version "0\.9\.2"/);
     assert.ok(item.body.includes('`DEMO_API_IMAGE=propr/app:0.9.3`') && item.body.includes('`DEMO_UI_IMAGE=propr/ui:0.9.3`'));
     assert.match(item.body, /DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_SSH_KEY`/);
-    assert.doesNotMatch(item.body, /ran the deploy-on-release SSH step/);
-    assert.match(demoFollowup(facts({}, { demo: { status: 'stale', found: 'x', deployed: true } })).body, /ran the deploy-on-release SSH step/);
+    assert.doesNotMatch(item.body, /started the deploy-on-release step/);
+  });
+
+  test('a deploy the run started is not done: the demo issue is still written and says to check that deploy', () => {
+    const { unit, log } = demoDeploy('0.9.3');
+    assert.deepEqual({ unit, log }, { unit: 'propr-release-deploy-0.9.3', log: '/root/propr-deploy/logs/release-deploy-0.9.3.log' });
+    const started = inputsFromEnv(env({ DEMO_DEPLOY: 'started' }));
+    assert.equal(started.demoDeployStarted, true);
+    for (const result of ['skipped', 'failure', 'success', '']) assert.equal(inputsFromEnv(env({ DEMO_DEPLOY: result })).demoDeployStarted, false, result);
+    const item = demoFollowup({ ...facts(), demo: { status: 'stale', found: 'version "0.9.2"', deployStarted: true } });
+    assert.equal(item.ready, true);
+    assert.equal(item.title, 'Move demo.propr.dev to ProPR 0.9.3');
+    assert.match(item.body, /Release Rollout started the deploy-on-release step on the server/);
+    assert.match(item.body, /did not wait for it/);
+    assert.ok(item.body.includes(`systemd unit \`${unit}\``) && item.body.includes(`log \`${log}\``));
+    assert.ok(item.body.includes(`\`systemctl status ${unit}\``) && item.body.includes(`\`tail -n 50 ${log}\``));
+    assert.match(item.body, /`DEMO_API_IMAGE=propr\/app:0\.9\.3`/, 'the manual steps stay for a deploy that did not move the demo');
+    assert.doesNotMatch(item.body, /To make this automatic/);
+    assert.equal(demoFollowup({ ...facts(), demo: { status: 'ok', found: 'version 0.9.3', deployStarted: true } }).ready, false,
+      'only the demo reporting the release makes the issue unnecessary');
     assert.deepEqual(demoFollowup(facts({}, { demo: { status: 'ok', found: 'version 0.9.3' } })),
       { key: 'demo', repository: REPOSITORIES.demo, title: 'Move demo.propr.dev to ProPR 0.9.3', ready: false,
         reason: 'demo.propr.dev already reports 0.9.3', done: true });
@@ -127,7 +145,7 @@ describe('release follow-up texts', () => {
     assert.throws(() => inputsFromEnv(env({ RELEASE_TAG: 'v0.9.2' })), /one release/);
     assert.throws(() => inputsFromEnv(env({ SOURCE_REVISION: 'abc' })), /SOURCE_REVISION/);
     assert.throws(() => inputsFromEnv(env({ RUN_ID: '' })), /RUN_ID/);
-    assert.equal(inputsFromEnv(env({ TOKEN_CONFIGURED: 'true', DEMO_DEPLOY: 'success' })).tokenConfigured, true);
+    assert.equal(inputsFromEnv(env({ TOKEN_CONFIGURED: 'true', DEMO_DEPLOY: 'started' })).tokenConfigured, true);
   });
 
   test('published_at comes from the published GitHub release only', async () => {
@@ -240,10 +258,57 @@ describe('Release Rollout follow-ups job contract', () => {
   };
 
   test('without the deploy-on-release secrets the demo step succeeds and deploys nothing', () => {
-    const result = runStep('Deploy the demo', { DEPLOY_HOST: '', DEPLOY_USER: 'deploy', DEPLOY_SSH_KEY: '' });
+    const result = runStep('Start the demo deploy', { VERSION: '0.9.3', DEPLOY_HOST: '', DEPLOY_USER: 'deploy', DEPLOY_SSH_KEY: '' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.output, 'result=skipped\n');
-    assert.match(step('Deploy the demo').run, /cd \/root\/propr-deploy && \.\/scripts\/deploy\.sh all/);
+    assert.equal(result.summary, '');
+    assert.equal(step('Start the demo deploy').env.VERSION, '${{ needs.plan.outputs.version }}');
+  });
+
+  // A fake ssh that records its arguments and exits with the given status, without reading stdin.
+  const fakeSsh = status => {
+    const dir = fixture();
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    const log = join(dir, 'ssh.log');
+    writeFileSync(join(bin, 'ssh'), `#!/bin/bash\nprintf '%s\\n' "$@" > '${log}'\nexit ${status}\n`);
+    chmodSync(join(bin, 'ssh'), 0o755);
+    return { path: `${bin}:${process.env.PATH}`, args: () => readFileSync(log, 'utf8').trimEnd().split('\n') };
+  };
+  const secrets = { VERSION: '0.9.3', DEPLOY_HOST: 'demo.example', DEPLOY_USER: 'root', DEPLOY_SSH_KEY: 'not-a-real-key' };
+
+  test('with the secrets it starts the deploy detached on the host, returns at once and says where the log is', () => {
+    const ssh = fakeSsh(0);
+    const result = runStep('Start the demo deploy', secrets, ssh.path);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.output, 'result=started\n');
+    const args = ssh.args();
+    for (const option of ['BatchMode=yes', 'ConnectTimeout=30', 'ServerAliveInterval=30', 'ServerAliveCountMax=4']) {
+      assert.equal(args[args.indexOf(option) - 1], '-o', option);
+    }
+    assert.ok(args.includes('root@demo.example'));
+    const { unit, log } = demoDeploy('0.9.3');
+    const remote = args.at(-1);
+    assert.equal(remote, `mkdir -p /root/propr-deploy/logs && systemd-run --unit=${unit} --collect --setenv=HOME=/root`
+      + ` --working-directory=/root/propr-deploy --property=StandardOutput=append:${log} --property=StandardError=append:${log}`
+      + ' /root/propr-deploy/scripts/deploy.sh all');
+    assert.doesNotMatch(remote, /--wait|--pty|journalctl|tail/, 'the step does not wait for the deploy');
+    assert.ok(!existsSync(join(result.dir, 'deploy-on-release-key')), 'the key is removed');
+    assert.match(result.summary, /#### Demo deploy/);
+    assert.ok(result.summary.includes(`systemd unit \`${unit}\`; this run does not wait for it`));
+    assert.ok(result.summary.includes(`Its log is \`${log}\` on the host`));
+  });
+
+  test('a failed start is a warning, not a failed step', () => {
+    const ssh = fakeSsh(1);
+    const result = runStep('Start the demo deploy', secrets, ssh.path);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.output, 'result=failure\n');
+    assert.match(result.stdout, /::warning::The deploy-on-release SSH step could not start propr-release-deploy-0\.9\.3/);
+    assert.equal(result.summary, '');
+    const bad = runStep('Start the demo deploy', { ...secrets, VERSION: '0.9.3; reboot' }, fakeSsh(0).path);
+    assert.equal(bad.status, 0, bad.stderr);
+    assert.equal(bad.output, 'result=failure\n');
   });
 
   test('without the token the issue step succeeds and files nothing', () => {

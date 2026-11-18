@@ -119,24 +119,42 @@ export function siteFollowup(facts) {
   return { key: 'site', repository: REPOSITORIES.site, title, ready: true, body };
 }
 
-/** Move demo.propr.dev (integry/propr-deploy) to the release, unless it already reports it. */
+/** The detached demo deploy the workflow starts on the host: its systemd unit and its log file. */
+export const demoDeploy = version => ({
+  unit: `propr-release-deploy-${version}`,
+  log: `/root/propr-deploy/logs/release-deploy-${version}.log`,
+});
+
+/**
+ * Move demo.propr.dev (integry/propr-deploy) to the release, unless it already reports it. A deploy
+ * the run started is not waited for, so it does not count as done: only the demo reporting the release does.
+ */
 export function demoFollowup(facts) {
   const { version, releaseTag, runId, demo = {} } = facts;
   const title = `Move demo.propr.dev to ProPR ${version}`;
+  const deploy = demoDeploy(version);
   if (demo.status === 'ok') {
     return { key: 'demo', repository: REPOSITORIES.demo, title, ready: false, reason: `demo.propr.dev already reports ${version}`, done: true };
   }
   const body = [
     `ProPR ${version} ([\`${releaseTag}\`](${releaseUrl(releaseTag)})) is published, but ${DEMO_TARGET.url} reports ${demo.found ?? 'an older version'}.`,
-    ...(demo.deployed ? ['', 'Release Rollout ran the deploy-on-release SSH step (`./scripts/deploy.sh all`), and the demo still does not report this version.'] : []),
+    ...(demo.deployStarted ? [
+      '',
+      `Release Rollout started the deploy-on-release step on the server (\`./scripts/deploy.sh all\` as systemd unit \`${deploy.unit}\`, log \`${deploy.log}\`) and did not wait for it: the demo database refresh takes about 30 minutes, so the demo had not moved yet when the run checked. Check that deploy before anything else:`,
+      '',
+      `- \`systemctl status ${deploy.unit}\` (gone once it has finished) and \`tail -n 50 ${deploy.log}\`.`,
+      `- If it finished and \`curl -s ${DEMO_TARGET.url}\` reports \`"version":"${version}"\`, close this issue. Otherwise, once it is no longer running, follow the steps below.`,
+    ] : []),
     '',
     'On the dedicated server:',
     '',
     `1. In the host-only \`deploy.env\`, set \`DEMO_API_IMAGE=propr/app:${version}\` and \`DEMO_UI_IMAGE=propr/ui:${version}\` (or remove both pins so the demo follows \`IMAGE_TAG\`/\`latest\`). A pin left at an older version keeps the daily refresh on it.`,
     '2. Run `./scripts/deploy.sh demo`.',
     `3. Check \`curl -s ${DEMO_TARGET.url}\` reports \`"version":"${version}"\`, or run \`npm run release:rollout -- --version ${version}\` in integry/propr.`,
-    '',
-    'To make this automatic, `DEPLOYMENT.md` describes the deploy-on-release step: set `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_SSH_KEY` as integry/propr repository secrets and Release Rollout runs it.',
+    ...(demo.deployStarted ? [] : [
+      '',
+      'To make this automatic, `DEPLOYMENT.md` describes the deploy-on-release step: set `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_SSH_KEY` as integry/propr repository secrets and Release Rollout starts it.',
+    ]),
     ...footer(runId),
   ].join('\n');
   return { key: 'demo', repository: REPOSITORIES.demo, title, ready: true, body };
@@ -196,7 +214,7 @@ export function inputsFromEnv(env) {
       linux: { tag: env.LINUX_RELEASE_TAG, done: Boolean(env.LINUX_RELEASE_TAG) && stepDone(env.LINUX_PUBLICATION, env.PLAN_LINUX) },
       macos: { tag: env.MACOS_RELEASE_TAG, done: Boolean(env.MACOS_RELEASE_TAG) && stepDone(env.MACOS, env.PLAN_MACOS) },
     },
-    demoDeployed: env.DEMO_DEPLOY === 'success',
+    demoDeployStarted: env.DEMO_DEPLOY === 'started',
     tokenConfigured: env.TOKEN_CONFIGURED === 'true',
   };
 }
@@ -229,7 +247,7 @@ export async function prepare({ env, out, fetchImpl = fetch, stdout = text => pr
     releasePublishedAt({ releaseTag: input.releaseTag, token: env.GITHUB_TOKEN, fetchImpl }),
     checkStatusJson({ version: input.version, fetchImpl, cache: new Map() }, DEMO_TARGET),
   ]);
-  const items = followups({ ...input, publishedAt, publishedAtUnavailable, demo: { ...demo, deployed: input.demoDeployed } });
+  const items = followups({ ...input, publishedAt, publishedAtUnavailable, demo: { ...demo, deployStarted: input.demoDeployStarted } });
   mkdirSync(out, { recursive: true });
   for (const item of items.filter(entry => entry.ready)) writeFileSync(join(out, `${item.key}.md`), `${item.body}\n`);
   writeFileSync(join(out, 'issues.tsv'), issuesTsv(items, out));

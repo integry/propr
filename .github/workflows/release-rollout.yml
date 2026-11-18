@@ -28,7 +28,12 @@ name: Release Rollout
 # optional RELEASE_FOLLOWUP_ISSUES_TOKEN it opens them as issues; without it
 # the run summary carries their exact text to file by hand. When the optional
 # deploy-on-release secrets (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY) are set,
-# it runs the documented SSH deploy of the demo instead of asking for it.
+# it starts the documented demo deploy (./scripts/deploy.sh all) on the host as
+# a detached systemd unit, propr-release-deploy-<version>, logging to
+# /root/propr-deploy/logs/release-deploy-<version>.log, and does not wait for
+# it: the demo database refresh takes about 30 minutes and must not be cut off
+# by the job timeout. Until demo.propr.dev reports the release, the demo
+# follow-up issue is still opened and says to check that deploy.
 on:
   workflow_dispatch:
     inputs:
@@ -322,12 +327,18 @@ jobs:
           node-version-file: '.nvmrc'
           package-manager-cache: false
 
-      # The deploy-on-release step from integry/propr-deploy DEPLOYMENT.md. A
-      # failed or absent deploy is not a failed rollout: the demo follow-up
+      # The deploy-on-release step from integry/propr-deploy DEPLOYMENT.md,
+      # started detached: `deploy.sh all` rebuilds the demo database from
+      # production (about 30 minutes), and an SSH session cut by the job
+      # timeout would interrupt the refresh part-way. systemd-run returns once
+      # the unit has started; the unit keeps running after the session ends,
+      # and a second start for the same version fails while one still runs.
+      # A failed or absent start is not a failed rollout: the demo follow-up
       # issue says what is left to do.
-      - name: Deploy the demo over SSH when the deploy-on-release secrets are set
+      - name: Start the demo deploy over SSH when the deploy-on-release secrets are set
         id: demo
         env:
+          VERSION: ${{ needs.plan.outputs.version }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -338,14 +349,29 @@ jobs:
             echo 'result=skipped' >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::The plan's version \"$VERSION\" is not a release version; the demo deploy was not started."
+            echo 'result=failure' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          unit="propr-release-deploy-$VERSION"
+          log="/root/propr-deploy/logs/release-deploy-$VERSION.log"
           key="$RUNNER_TEMP/deploy-on-release-key"
           trap 'rm -f "$key"' EXIT
           (umask 077 && printf '%s\n' "$DEPLOY_SSH_KEY" > "$key")
           if ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 \
-            "$DEPLOY_USER@$DEPLOY_HOST" 'cd /root/propr-deploy && ./scripts/deploy.sh all'; then
-            echo 'result=success' >> "$GITHUB_OUTPUT"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mkdir -p /root/propr-deploy/logs && systemd-run --unit=$unit --collect --setenv=HOME=/root --working-directory=/root/propr-deploy --property=StandardOutput=append:$log --property=StandardError=append:$log /root/propr-deploy/scripts/deploy.sh all" </dev/null; then
+            echo 'result=started' >> "$GITHUB_OUTPUT"
+            {
+              echo '#### Demo deploy'
+              echo
+              echo "Started \`./scripts/deploy.sh all\` on the deploy host as systemd unit \`$unit\`; this run does not wait for it (the demo database refresh takes about 30 minutes)."
+              echo "Its log is \`$log\` on the host; check it with \`systemctl status $unit\` and \`tail -f $log\`."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo '::warning::The deploy-on-release SSH step failed; the demo follow-up is an issue.'
+            echo "::warning::The deploy-on-release SSH step could not start $unit (it may already be running); the demo follow-up is an issue."
             echo 'result=failure' >> "$GITHUB_OUTPUT"
           fi
 
