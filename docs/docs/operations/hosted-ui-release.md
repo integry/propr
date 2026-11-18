@@ -15,7 +15,7 @@ The **Docker Images** workflow (`.github/workflows/docker-images.yml`) deploys t
 2. Runs in the `hosted-ui-production` GitHub environment, which holds the only copy of the Cloudflare credentials. Only one deploy to that environment runs at a time.
 3. Checks out the release tag: the pushed tag, or `v<expected_version>` for a manual release. It confirms that `package.json` has the tag's version, then runs `npm ci`, `npm run build -w @propr/shared` and `npm run build -w propr-ui`. The UI imports `@propr/shared` through its built `dist/` entry, which a clean install does not contain; the v0.9.1 release deploy failed for that reason.
 4. Runs `wrangler deploy --config wrangler.hosted-ui.toml`, with wrangler pinned to an exact version in the workflow.
-5. Verifies the deploy. It fetches `https://app.propr.dev/`, finds the `/assets/index-*.js` entry module that `index.html` loads, and checks that the bundle contains the released version string, for example `"0.9.1"`. The check makes up to six attempts, 20 seconds apart, to allow for edge propagation. The script is `scripts/verify-hosted-ui-release.mjs`. To check a deployment yourself, run `RELEASE_VERSION=0.9.1 node scripts/verify-hosted-ui-release.mjs`.
+5. Verifies the deploy. It fetches `https://app.propr.dev/`, finds the `/assets/index-*.js` entry module that `index.html` loads, and checks that the bundle contains the released version string, for example `"0.9.2"`. The check makes up to six attempts, 20 seconds apart, to allow for edge propagation. The script is `scripts/verify-hosted-ui-release.mjs`. To check a deployment yourself, run `RELEASE_VERSION=0.9.2 node scripts/verify-hosted-ui-release.mjs`.
 
 If the environment or either secret is missing, the job prints a **Hosted UI deploy skipped** notice and finishes successfully. The images, the npm package and the GitHub release are already published at this point, so a missing deploy credential does not mark the release as failed. A failed deploy or a failed verification does fail the job. The job summary then explains how to recover: [re-deploy the release](#re-deploy-a-published-release) from `main`, or deploy by hand. Deploying the same build again is idempotent.
 
@@ -75,7 +75,7 @@ To deploy a release whose deploy was skipped, add the secrets (for example with 
 Run the **Hosted UI Deploy** workflow from `main`:
 
 ```bash
-gh workflow run hosted-ui-deploy.yml --repo integry/propr --ref main -f release_tag=v0.9.1
+gh workflow run hosted-ui-deploy.yml --repo integry/propr --ref main -f release_tag=v0.9.2
 ```
 
 Or open **Actions > Hosted UI Deploy > Run workflow**, keep **Use workflow from** on `main`, and enter the tag. The workflow:
