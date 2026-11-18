@@ -337,7 +337,7 @@ describe('preview CLI workflow output verification', () => {
     const ok = spawnSync(process.execPath, ['scripts/preview-cli-workflow.mjs', 'verify-output', '--root', good.root, '--input', good.input,
       '--trusted-main', trustedMain, '--github-output', out, '--summary', summary], { encoding: 'utf8', cwd: process.cwd() });
     assert.equal(ok.status, 0, ok.stderr);
-    assert.match(readFileSync(out, 'utf8'), new RegExp(`^version=${good.version.replaceAll('.', '\\.')}\nartifact_path=.+${good.version.replaceAll('.', '\\.')}\n$`));
+    assert.match(readFileSync(out, 'utf8'), new RegExp(`^version=${good.version.replaceAll('.', '\\.')}\nartifact_path=.+${good.version.replaceAll('.', '\\.')}\ntarball=propr-cli-${good.version.replaceAll('.', '\\.')}\\.tgz\ntarball_sha256=[0-9a-f]{64}\n$`));
     assert.ok(readFileSync(summary, 'utf8').startsWith('### Preview CLI bundle prepared (prepare-only)'));
   });
 });

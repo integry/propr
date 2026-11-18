@@ -189,7 +189,8 @@ const main = () => {
     const result = verifyOutput({ root: resolve(args.root), input: args.input, trustedMain: args['trusted-main'] });
     if (!args['github-output'] || !args.summary || existsSync(args.summary)) throw new Error('verify-output requires new output paths');
     writeFileSync(args.summary, operatorSummary(result), { flag: 'wx' });
-    appendFileSync(args['github-output'], `version=${result.version}\nartifact_path=${result.artifactPath}\n`);
+    appendFileSync(args['github-output'], `version=${result.version}\nartifact_path=${result.artifactPath}\n`
+      + `tarball=${result.tarball}\ntarball_sha256=${result.tarballSha256}\n`);
   } else {
     throw new Error('Expected trust, source-ready, or verify-output command');
   }

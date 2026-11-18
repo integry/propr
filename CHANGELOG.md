@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preview, and the preview CLI bundle. Every protected environment and its
   approval is unchanged and no new secret is introduced. A re-run skips the
   runtime images and preview pre-releases that already exist.
+- **Release follow-ups**: Release Rollout ends by writing the follow-ups
+  outside this repository (`scripts/release-followups.mjs`): the ProPR Hosted
+  repin in `integry/propr-fleet` with the preview CLI bundle run, artifact,
+  tarball sha256 and the three image references; the release `published_at`
+  and desktop pre-release tags for `integry/propr-site`; and the demo move in
+  `integry/propr-deploy` when demo.propr.dev does not report the release yet.
+  With the optional `RELEASE_FOLLOWUP_ISSUES_TOKEN` secret it opens them as
+  issues; without it the run summary carries their exact text to file by
+  hand. With the optional deploy-on-release secrets it runs the documented
+  SSH deploy of the demo. The Preview CLI Bundle workflow now outputs its
+  artifact name and id, tarball and sha256.
 
 ### Changed
 

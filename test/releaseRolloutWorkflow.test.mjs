@@ -65,6 +65,7 @@ describe('Release Rollout workflow contract', () => {
       macos: ['plan', 'runtime'],
       'cli-bundle': ['plan', 'runtime'],
       summary: ['plan', 'runtime-agent', 'runtime-app-ui', 'runtime', 'linux-draft', 'linux-signing', 'linux-publication', 'macos', 'cli-bundle'],
+      followups: ['plan', 'runtime', 'linux-publication', 'macos', 'cli-bundle', 'summary'],
     });
     // A skipped step (its artefact exists) must not skip the rest; a failure or cancellation must.
     for (const name of ['runtime-app-ui', 'runtime', 'linux-draft', 'linux-signing', 'linux-publication', 'macos', 'cli-bundle']) {
@@ -185,6 +186,26 @@ describe('Release Rollout workflow contract', () => {
       },
     });
     assert.doesNotMatch(rolloutText, /secrets: inherit/);
+    // The only other secrets are the optional follow-up ones, read by steps of the last job.
+    assert.deepEqual(secretReferences(rollout).followups,
+      ['secrets.DEPLOY_HOST', 'secrets.DEPLOY_SSH_KEY', 'secrets.DEPLOY_USER', 'secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN']);
+    assert.deepEqual(Object.keys(secretReferences(rollout)).sort(), ['followups', 'linux-signing', 'runtime-agent', 'runtime-app-ui']);
+  });
+
+  test('the follow-ups job only starts the demo deploy detached, so its timeout cannot cut the refresh', () => {
+    const demo = jobs.followups.steps.find(step => step.id === 'demo');
+    assert.match(demo.name, /^Start the demo deploy over SSH/);
+    assert.ok(jobs.followups['timeout-minutes'] <= 30);
+    assert.match(demo.run, /systemd-run --unit=\$unit --collect /);
+    assert.match(demo.run, /unit="propr-release-deploy-\$VERSION"/);
+    assert.match(demo.run, /log="\/root\/propr-deploy\/logs\/release-deploy-\$VERSION\.log"/);
+    assert.match(demo.run, /--property=StandardOutput=append:\$log --property=StandardError=append:\$log \/root\/propr-deploy\/scripts\/deploy\.sh all"/);
+    assert.doesNotMatch(demo.run, /cd \/root\/propr-deploy && \.\/scripts\/deploy\.sh all/, 'no deploy in the foreground of the SSH session');
+    assert.doesNotMatch(demo.run, /--wait\b|--pty\b/);
+    assert.match(demo.run, /-o ServerAliveInterval=30 -o ServerAliveCountMax=4/);
+    assert.match(demo.run, /echo 'result=started'/);
+    assert.match(rolloutText, /^# it starts the documented demo deploy \(\.\/scripts\/deploy\.sh all\) on the host as\n# a detached systemd unit/m);
+    assert.match(rolloutText, /^# by the job timeout\. Until demo\.propr\.dev reports the release, the demo\n# follow-up issue is still opened/m);
   });
 
   test('grants each call only the permissions its called jobs already declare', () => {
@@ -200,6 +221,7 @@ describe('Release Rollout workflow contract', () => {
       macos: { contents: 'write', 'id-token': 'write', attestations: 'write' },
       'cli-bundle': { contents: 'read' },
       summary: { contents: 'read' },
+      followups: { contents: 'read' },
     });
     const rank = { none: 0, read: 1, write: 2 };
     const mapping = { linux: 'linux-draft', signed: 'linux-signing', macos: 'macos', cli: 'cli-bundle', runtime: 'runtime-app-ui' };
@@ -399,6 +421,7 @@ describe('release rollout plan', () => {
       } });
     assert.deepEqual(rolloutOutputs(plan), {
       release_tag: 'v0.9.3', source_revision: tagged, version: '0.9.3',
+      desktop_version: '0.9.3', linux_release_tag: releases.linux.tag, macos_release_tag: releases.macos.tag,
       runtime_app_image: existing.app, runtime_ui_image: existing.ui, runtime_agent_image: existing.agent,
       publish_agent: 'false', publish_app_ui: 'false', linux: 'false', macos: 'false',
     });
@@ -411,6 +434,7 @@ describe('release rollout plan', () => {
       inspectRuntime: () => ({ app: existing.app, ui: null, agent: null }) });
     assert.deepEqual(rolloutOutputs(fresh), {
       release_tag: 'v0.9.3', source_revision: tagged, version: '0.9.3',
+      desktop_version: '0.9.3', linux_release_tag: releases.linux.tag, macos_release_tag: releases.macos.tag,
       runtime_app_image: existing.app, runtime_ui_image: '', runtime_agent_image: '',
       publish_agent: 'true', publish_app_ui: 'true', linux: 'true', macos: 'true',
     });
