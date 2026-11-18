@@ -87,18 +87,53 @@ const stripInline = (line: string): string => stripTags(stripLinks(stripLinks(li
   .replace(/\s+/gu, ' ')
   .trim();
 
+/** A heading line: one to six `#` followed by a space or the end of the line. */
+const HEADING = /^#{1,6}(?=\s|$)/u;
+/** A list item or quote: a body block that does not continue onto the next line. */
+const ITEM = /^(?:>|[-*+](?=\s)|\d+[.)](?=\s))/u;
 /**
- * A run report's one-line preview for the run history: the first line with
- * words in it, Markdown markers stripped, cut at a word boundary with `…` past
+ * The end of the first sentence: `.`, `!` or `?` (and any closing quotes or
+ * brackets) followed by whitespace. A full stop inside a token, as in `v0.9.2`
+ * or `example.com`, has no space after it and does not end the sentence.
+ */
+const SENTENCE_END = /[.!?]+["')\]]*(?=\s)/u;
+
+/** The first sentence of `text`, its closing punctuation kept. */
+const firstSentence = (text: string): string => {
+  const end = SENTENCE_END.exec(text);
+  return end ? text.slice(0, end.index + end[0].length) : text;
+};
+
+/**
+ * A run report's one-line preview for the run history, which tells runs of
+ * the same automation apart: the first sentence of the report body after its
+ * heading, Markdown stripped. A body that starts with a list or a quote
+ * previews its first item. Headings (the title every run of an automation
+ * repeats, and section headings) are skipped; a report that is only headings
+ * previews its first one. The result is cut at a word boundary with `…` past
  * `max` characters. Null for no report or a report with nothing to show.
  */
 export function automationReportPreview(report: string | null | undefined, max = AUTOMATION_REPORT_PREVIEW_MAX_CHARS): string | null {
   if (!report) return null;
+  let title: string | null = null;
+  const paragraph: string[] = [];
   for (const raw of report.split(/\r?\n/u)) {
     const line = raw.trim();
+    const breaks = !line || FENCE.test(line) || STRUCTURE_ONLY.test(line) || HEADING.test(line);
+    if (paragraph.length > 0 && (breaks || ITEM.test(line))) break;
     if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line)) continue;
     const text = stripInline(line.replace(BLOCK_MARKERS, ''));
-    if (text) return truncateAtWord(text, max);
+    if (!text) continue;
+    if (HEADING.test(line)) {
+      title ??= text;
+      continue;
+    }
+    paragraph.push(text);
+    // A list item or quote is a block of its own; a plain paragraph runs on to its next line.
+    if (ITEM.test(line)) break;
+    // Earlier lines had no sentence end, so one on this line completes the first sentence.
+    if (SENTENCE_END.test(`${text} `)) break;
   }
-  return null;
+  const body = paragraph.length > 0 ? firstSentence(paragraph.join(' ')) : title;
+  return body ? truncateAtWord(body, max) : null;
 }
