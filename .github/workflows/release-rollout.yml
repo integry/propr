@@ -10,13 +10,12 @@ name: Release Rollout
 #
 # Each step calls the existing workflow (workflow_call), so the jobs, their
 # permissions and every protected environment and approval are the ones a
-# manual dispatch uses; the chain waits at each environment. Only the two Docker
-# Hub and the two RPM signing credentials are passed, to the workflows whose
-# protected jobs already read them. They must be passed: a called workflow sees
-# only the secrets its caller passes, even those of its own job's environment,
-# and any other reads as empty. Passing them by name works for secrets that
-# exist only in that environment, and keeps every other secret out of the
-# called workflows; the other called workflows read no secrets. The
+# manual dispatch uses; the chain waits at each environment. The three calls
+# whose protected jobs read credentials (the two runtime image publications
+# read the Docker Hub ones, signing reads the RPM signing ones) use
+# `secrets: inherit`: a called workflow sees only the secrets its caller passes
+# or inherits, even those of its own job's environment, and any other reads as
+# empty. The other called workflows read no secrets and get none. The
 # single-step manual dispatches keep working unchanged.
 #
 # Re-running for a tag is safe: the plan finds runtime images and published
@@ -134,9 +133,7 @@ jobs:
     with:
       operation: publish-agent
       source_revision: ${{ needs.plan.outputs.source_revision }}
-    secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    secrets: inherit
 
   runtime-app-ui:
     name: App and UI images
@@ -148,9 +145,7 @@ jobs:
     with:
       operation: publish
       source_revision: ${{ needs.plan.outputs.source_revision }}
-    secrets:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    secrets: inherit
 
   runtime:
     name: Pass the three runtime image digests along
@@ -216,9 +211,7 @@ jobs:
       source_revision: ${{ needs.plan.outputs.source_revision }}
       # The unsigned bundle was staged earlier in this run.
       unsigned_run_id: ${{ github.run_id }}
-    secrets:
-      PROPR_DESKTOP_RPM_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}
-      PROPR_DESKTOP_RPM_PASSPHRASE: ${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}
+    secrets: inherit
 
   linux-publication:
     name: Desktop Linux signed publication

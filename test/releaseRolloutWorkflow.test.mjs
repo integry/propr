@@ -150,7 +150,7 @@ describe('Release Rollout workflow contract', () => {
     });
   });
 
-  test('keeps every protected environment where it is, introduces no secret and passes each one a called job reads', () => {
+  test('keeps every protected environment where it is, introduces no secret and inherits secrets on each call whose jobs read one', () => {
     assert.deepEqual(environments(called.runtime), {
       publish: 'desktop-linux-preview-runtime-publication', 'publish-agent': 'desktop-linux-preview-runtime-publication',
     });
@@ -162,7 +162,7 @@ describe('Release Rollout workflow contract', () => {
     assert.deepEqual(environments(called.cli), {});
     assert.deepEqual(environments(rollout), {}, 'the rollout itself adds no environment and bypasses none');
 
-    // The same jobs read the same secrets as before; callers pass only those.
+    // The same jobs read the same secrets as before.
     assert.deepEqual(secretReferences(called.runtime), {
       publish: ['secrets.DOCKERHUB_TOKEN', 'secrets.DOCKERHUB_USERNAME'],
       'publish-agent': ['secrets.DOCKERHUB_TOKEN', 'secrets.DOCKERHUB_USERNAME'],
@@ -173,23 +173,15 @@ describe('Release Rollout workflow contract', () => {
     });
     for (const key of ['linux', 'macos', 'cli']) {
       assert.deepEqual(secretReferences(called[key]), {}, key);
+    }
+    // Inherited secrets need no declaration in the called workflow.
+    for (const key of Object.keys(called)) {
       assert.equal(called[key].on.workflow_call.secrets, undefined, key);
     }
-    assert.deepEqual(Object.keys(called.runtime.on.workflow_call.secrets).sort(), ['DOCKERHUB_TOKEN', 'DOCKERHUB_USERNAME']);
-    assert.deepEqual(Object.keys(called.signed.on.workflow_call.secrets).sort(), ['PROPR_DESKTOP_RPM_PASSPHRASE', 'PROPR_DESKTOP_RPM_PRIVATE_KEY']);
-    const passed = Object.fromEntries(Object.entries(jobs).filter(([, job]) => job.secrets).map(([name, job]) => [name, job.secrets]));
-    assert.deepEqual(passed, {
-      'runtime-agent': { DOCKERHUB_USERNAME: '${{ secrets.DOCKERHUB_USERNAME }}', DOCKERHUB_TOKEN: '${{ secrets.DOCKERHUB_TOKEN }}' },
-      'runtime-app-ui': { DOCKERHUB_USERNAME: '${{ secrets.DOCKERHUB_USERNAME }}', DOCKERHUB_TOKEN: '${{ secrets.DOCKERHUB_TOKEN }}' },
-      'linux-signing': {
-        PROPR_DESKTOP_RPM_PRIVATE_KEY: '${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}',
-        PROPR_DESKTOP_RPM_PASSPHRASE: '${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}',
-      },
-    });
-    assert.doesNotMatch(rolloutText, /secrets: inherit/);
-    // A called workflow sees only the secrets its caller passes, even those of
-    // its own job's environment. Every secret a called job reads must be
-    // declared and passed by each call of that workflow, or it reads as empty.
+    // A called workflow sees only the secrets its caller passes or inherits,
+    // even those of its own job's environment, and any other reads as empty.
+    // Every call whose operation runs a called job that reads a secret
+    // inherits; the calls that read none get no secrets.
     const calledByPath = {
       './.github/workflows/preview-runtime-images.yml': called.runtime,
       './.github/workflows/desktop-linux-preview.yml': called.linux,
@@ -200,21 +192,26 @@ describe('Release Rollout workflow contract', () => {
     const calls = Object.entries(jobs).filter(([, job]) => job.uses);
     assert.deepEqual(calls.map(([, job]) => job.uses).sort(), Object.keys(calledByPath).concat(
       './.github/workflows/preview-runtime-images.yml', './.github/workflows/desktop-linux-signed-preview.yml').sort());
+    const consumers = [];
     for (const [name, job] of calls) {
       const target = calledByPath[job.uses];
       const operation = job.with?.operation;
       const read = Object.entries(secretReferences(target))
         .filter(([calledJob]) => !operation || JSON.stringify(target.jobs[calledJob].if ?? '').includes(`'${operation}'`))
-        .flatMap(([, references]) => references.map(reference => reference.slice('secrets.'.length)));
-      for (const secret of new Set(read)) {
-        assert.ok(target.on.workflow_call.secrets?.[secret], `${job.uses} declares ${secret}`);
-        assert.equal(job.secrets?.[secret], `\${{ secrets.${secret} }}`, `${name} passes ${secret}`);
+        .flatMap(([, references]) => references);
+      if (read.length > 0) {
+        consumers.push(name);
+        assert.equal(job.secrets, 'inherit', `${name} inherits the secrets its called jobs read`);
+      } else {
+        assert.equal(job.secrets, undefined, `${name} reads no secrets and gets none`);
       }
     }
+    assert.deepEqual(consumers.sort(), ['linux-signing', 'runtime-agent', 'runtime-app-ui']);
+    assert.equal(rolloutText.match(/^ +secrets: inherit$/gm)?.length, 3);
     // The only other secrets are the optional follow-up ones, read by steps of the last job.
     assert.deepEqual(secretReferences(rollout).followups,
       ['secrets.DEPLOY_HOST', 'secrets.DEPLOY_SSH_KEY', 'secrets.DEPLOY_USER', 'secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN']);
-    assert.deepEqual(Object.keys(secretReferences(rollout)).sort(), ['followups', 'linux-signing', 'runtime-agent', 'runtime-app-ui']);
+    assert.deepEqual(Object.keys(secretReferences(rollout)), ['followups']);
   });
 
   test('the follow-ups job only starts the demo deploy detached, so its timeout cannot cut the refresh', () => {

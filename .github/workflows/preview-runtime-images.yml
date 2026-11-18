@@ -19,8 +19,8 @@ on:
         type: string
   # Release Rollout (release-rollout.yml) calls publish-agent, then publish, for
   # the release tag commit. The jobs, their environment and its approval are the
-  # same as for a manual dispatch; only the two Docker Hub credentials the
-  # protected publish jobs already read are passed through.
+  # same as for a manual dispatch; the caller inherits its secrets so the
+  # protected publish jobs read the same Docker Hub credentials.
   workflow_call:
     inputs:
       operation:
@@ -31,11 +31,6 @@ on:
         description: Full lowercase commit SHA already reachable from main
         required: true
         type: string
-    secrets:
-      DOCKERHUB_USERNAME:
-        required: false
-      DOCKERHUB_TOKEN:
-        required: false
     outputs:
       runtime_app_image:
         description: propr/app:<source SHA>@sha256:<digest> two-architecture manifest (publish only)

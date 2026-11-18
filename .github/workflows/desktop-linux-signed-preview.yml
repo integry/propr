@@ -28,8 +28,8 @@ on:
   # that same run. The identity job and publish-draft accept that only for the
   # currently executing run of the reviewed main release-rollout.yml
   # (apps/desktop/scripts/release-rollout-run.mjs). Jobs, permissions and both
-  # protected environments are unchanged; only the two signing credentials the
-  # protected sign job already reads are passed through.
+  # protected environments are unchanged; the caller inherits its secrets so
+  # the protected sign job reads the same signing credentials.
   workflow_call:
     inputs:
       operation:
@@ -50,11 +50,6 @@ on:
         required: false
         type: string
         default: ''
-    secrets:
-      PROPR_DESKTOP_RPM_PRIVATE_KEY:
-        required: false
-      PROPR_DESKTOP_RPM_PASSPHRASE:
-        required: false
 
 permissions:
   contents: read
