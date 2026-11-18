@@ -368,6 +368,7 @@ async function processAdmittedMergeConflictJob(job: Job<MergeConflictJobData>): 
         let target: PullRequestGitTarget | undefined;
         let publication: PullRequestPublication | undefined;
         let jobSucceeded = false;
+        let processedHeadSha = headSha; // The resolved live head once known; failures are grouped by it.
 
         try {
             octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
@@ -382,10 +383,8 @@ async function processAdmittedMergeConflictJob(job: Job<MergeConflictJobData>): 
             const head = await resolveMergeJobHead({
                 octokit, pullRequestNumber, repoOwner, repoName, headBranch, headSha, correlationId, correlatedLogger,
             });
-            target = head.target;
-            publication = new PullRequestPublication(octokit, {
-                repoOwner, repoName, pullRequestNumber,
-            }, head.prData);
+            ({ target, headSha: processedHeadSha } = head);
+            publication = new PullRequestPublication(octokit, { repoOwner, repoName, pullRequestNumber }, head.prData);
 
             ({ prInfo, prDescription, recentComments } = await fetchMergeTitleContextInfo({
                 octokit, pullRequestNumber, repoOwner, repoName, taskId, prData: head.prData, correlatedLogger,
@@ -450,7 +449,7 @@ async function processAdmittedMergeConflictJob(job: Job<MergeConflictJobData>): 
             return await handleMergeJobError(error as Error, {
                 octokit, startingCommentId, stateManager, taskId,
                 repoOwner, repoName, baseBranch, headBranch: publication?.target.branchName ?? target?.branchName ?? headBranch,
-                pullRequestNumber, headSha, correlatedLogger,
+                pullRequestNumber, headSha: processedHeadSha, correlatedLogger,
             });
         } finally {
             // Released before the PR lock so the next job for this PR cannot cancel runs being restored.

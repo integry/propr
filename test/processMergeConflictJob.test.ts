@@ -452,6 +452,7 @@ function createMockJob(overrides: Partial<{
     headBranch: string;
     baseBranch: string;
     commandCommentId: number;
+    headSha: string;
 }> = {}) {
     return {
         id: 'test-job-123',
@@ -462,7 +463,7 @@ function createMockJob(overrides: Partial<{
             repoName: 'test-repo',
             headBranch: overrides.headBranch ?? 'feature-branch',
             baseBranch: overrides.baseBranch ?? 'main',
-            headSha: 'head-sha-123',
+            headSha: overrides.headSha ?? 'head-sha-123',
             baseSha: 'base-sha-456',
             triggerSource: 'push' as const,
             correlationId: 'test-corr-123',
@@ -756,15 +757,14 @@ describe('processMergeConflictJob', () => {
         assert.ok(body.includes('not a git repository'));
     });
 
-    test('repeated identical failure on the same head updates one report', async () => {
-        mockMergeResult = { outcome: 'failed', error: 'fatal: not a git repository' };
-        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+    function fakeCommentThread() {
         const comments: Array<{ id: number; body: string; user: { type: string } }> = [];
+        let nextId = 500;
         mockOctokit.request.mock.mockImplementation(async (route: string, ...args: unknown[]) => {
             const params = (args[0] ?? {}) as { body?: string; comment_id?: number };
             if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') return { data: comments.map(comment => ({ ...comment })) };
             if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
-                const comment = { id: 500 + comments.length, body: params.body!, user: { type: 'Bot' } };
+                const comment = { id: nextId++, body: params.body!, user: { type: 'Bot' } };
                 comments.push(comment);
                 return { data: comment };
             }
@@ -778,6 +778,13 @@ describe('processMergeConflictJob', () => {
             }
             return defaultOctokitRequest(route);
         });
+        return comments;
+    }
+
+    test('repeated identical failure on the same head updates one report', async () => {
+        mockMergeResult = { outcome: 'failed', error: 'fatal: not a git repository' };
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        const comments = fakeCommentThread();
         try {
             for (let attempt = 0; attempt < 3; attempt++) {
                 await assert.rejects(processMergeConflictJob(createMockJob()), /Merge failed/);
@@ -786,6 +793,30 @@ describe('processMergeConflictJob', () => {
             assert.match(comments[0].body, /Failed to resolve merge conflicts/);
             assert.match(comments[0].body, /Reported 3 times; last at/);
             assert.match(comments[0].body, /<!-- propr:notice kind="merge-conflict-failed" key="[0-9a-f]{16}" count="3" -->/);
+        } finally {
+            mockOctokit.request.mock.mockImplementation(async (route: string) => defaultOctokitRequest(route));
+        }
+    });
+
+    test('failure reports group by the live head the job processed, not the queued one', async () => {
+        mockMergeResult = { outcome: 'failed', error: 'fatal: not a git repository' };
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        const comments = fakeCommentThread();
+        try {
+            // Queued for an older head; the PR has since moved to head-sha-123, which is what gets processed.
+            await assert.rejects(processMergeConflictJob(createMockJob({ headSha: 'stale-queued-sha' })), /Merge failed/);
+            // A job queued for the live head fails identically on it: the same report.
+            await assert.rejects(processMergeConflictJob(createMockJob()), /Merge failed/);
+            assert.equal(comments.length, 1, 'both failures on the processed head share one report');
+            assert.match(comments[0].body, /Reported 2 times; last at/);
+
+            // The PR moves on while a job still carries the previous head: a new head is a separate report.
+            mockPullRequestHead = { ...mockPullRequestHead, sha: 'head-sha-789' };
+            await assert.rejects(processMergeConflictJob(createMockJob()), /Merge failed/);
+            assert.equal(comments.length, 2, 'a failure on a different processed head is reported separately');
+            assert.match(comments[0].body, /count="2" -->/, 'the earlier head\'s report is not overwritten');
+            assert.match(comments[1].body, /Failed to resolve merge conflicts/);
+            assert.doesNotMatch(comments[1].body, /Reported \d+ times/);
         } finally {
             mockOctokit.request.mock.mockImplementation(async (route: string) => defaultOctokitRequest(route));
         }

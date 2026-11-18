@@ -84,6 +84,17 @@ describe('scheduling utilities', () => {
             assert.strictEqual(iso('resets Jan 2, 1am (UTC)'), '2027-01-02T01:00:00.000Z');
         });
 
+        it('finds the next early-morning reset in a zone ahead of UTC whose local date differs', () => {
+            // 16:57 UTC is 18:57 in Riga: today's 1am there (Nov 15 23:00 UTC) has passed.
+            assert.strictEqual(iso('resets 1am (Europe/Riga)'), '2026-11-16T23:00:00.000Z');
+            assert.strictEqual(iso('resets 1:30am (Asia/Tokyo)'), '2026-11-17T16:30:00.000Z');
+            // 23:30 UTC is already Nov 17 in Riga; its 1am is 1.5 hours away.
+            const lateNow = Date.UTC(2026, 10, 16, 22, 30);
+            assert.strictEqual(parseResetTimeFromMessage('resets 1am (Europe/Riga)', lateNow), Date.UTC(2026, 10, 16, 23, 0) / 1000);
+            // A zone behind UTC: 02:00 UTC on Nov 17 is still Nov 16 evening in New York.
+            assert.strictEqual(parseResetTimeFromMessage('resets 11pm (America/New_York)', Date.UTC(2026, 10, 17, 2, 0)), Date.UTC(2026, 10, 17, 4, 0) / 1000);
+        });
+
         it('should return future time (tomorrow if past)', () => {
             // This test verifies the reset time is always in the future
             const result = parseResetTimeFromMessage('resets 1am (UTC)');

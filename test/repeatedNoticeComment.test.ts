@@ -54,7 +54,7 @@ await mock.module('@propr/core', { namedExports: {
     TaskStates: { CANCELLED: 'cancelled', COMPLETED: 'completed', FAILED: 'failed' },
 } });
 const { publishRepeatedNotice, buildRepeatedNoticeBody, normalizeNoticeText } = await import('../src/jobs/repeatedNoticeComment.js');
-const { handleUsageLimitError, postCancellationNotice } = await import('../src/jobs/errorHandlers.js');
+const { handleUsageLimitError, postCancellationNotice, rateLimitNoticeFingerprint } = await import('../src/jobs/errorHandlers.js');
 
 const target = { owner: 'acme', repo: 'widgets', issueNumber: 42 };
 const log = { info() {}, warn() {}, error() {} };
@@ -141,6 +141,31 @@ test('repeated usage limits of one issue leave one rate-limit notice with the la
     assert.match(body, /⌛ \*\*Rate Limit Reached\*\*/);
     assert.ok(body.includes(`**Reset time:** ${formatRetryTime(laterReset)}`), body);
     assert.match(body, /Reported 3 times/);
+});
+
+test('a new reset time in another meridiem or with minutes still updates the one rate-limit notice', async () => {
+    const thread = fakeThread();
+    const options = { octokit: thread.octokit, correlatedLogger: log, stateManager, taskId: 'issue-task' } as any;
+    const reset = Math.floor(Date.now() / 1000) + 3 * 60 * 60;
+    const messages = [
+        "You've hit your limit · resets 11am (UTC)",
+        "You've hit your limit · resets 1pm (UTC)",
+        "You've hit your limit · resets 1:30pm (UTC)",
+        "You've hit your limit · resets Nov 20, 1am (Europe/Riga)",
+    ];
+    for (const [index, rawErrorMessage] of messages.entries()) {
+        const error = Object.assign(new Error('usage limit'), { resetTimestamp: reset + index * 60, rawErrorMessage });
+        await handleUsageLimitError(error, { id: `job-${index}`, name: 'processGitHubIssue', data: issue } as any, issue as any, options);
+    }
+    assert.equal(thread.comments.length, 1);
+    assert.ok(thread.comments[0].body.includes('resets Nov 20, 1am (Europe/Riga)'), 'the newest reset text is shown');
+    assert.match(thread.comments[0].body, /Reported 4 times/);
+});
+
+test('the rate-limit fingerprint drops the reset clause but keeps which limit was hit', () => {
+    assert.equal(rateLimitNoticeFingerprint("You've hit your limit · resets 11am (UTC)"), rateLimitNoticeFingerprint("You've hit your limit · resets 1:30pm (UTC)"));
+    assert.equal(rateLimitNoticeFingerprint('Weekly limit reached · resets Nov 20 at 10am'), rateLimitNoticeFingerprint('Weekly limit reached · resets Nov 21, 1am (UTC)'));
+    assert.notEqual(rateLimitNoticeFingerprint("You've hit your weekly limit · resets Nov 20, 1am (UTC)"), rateLimitNoticeFingerprint("You've hit your session limit · resets 1am (UTC)"));
 });
 
 test('a weekly limit notice shows the weekly reset date, not a time later today', async () => {

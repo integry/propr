@@ -59,14 +59,14 @@ function resetClauseTimestamp(match: RegExpMatchArray, nowMs: number): number | 
         return Math.floor(resetMs / 1000);
     }
 
-    let resetMs = wallClockToUtcMs([now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour24, minutes], timeZone);
-    // A time of day without a date is the next occurrence of that time.
-    while (resetMs <= nowMs) {
-        const next = new Date(resetMs + 24 * 60 * 60 * 1000);
-        resetMs = wallClockToUtcMs([next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate(), hour24, minutes], timeZone);
+    // A time of day without a date is its next occurrence. Candidate days are
+    // calendar days in the reset's zone, which can differ from the UTC date.
+    const local = new Date(nowMs + (zoneOffsetMs(nowMs, timeZone) ?? 0));
+    for (let dayDelta = -1; dayDelta <= 2; dayDelta++) {
+        const resetMs = wallClockToUtcMs([local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + dayDelta, hour24, minutes], timeZone);
+        if (resetMs > nowMs) return Math.floor(resetMs / 1000);
     }
-    while (resetMs - 24 * 60 * 60 * 1000 > nowMs) resetMs -= 24 * 60 * 60 * 1000;
-    return Math.floor(resetMs / 1000);
+    return null;
 }
 
 /**

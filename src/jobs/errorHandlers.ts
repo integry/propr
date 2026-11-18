@@ -112,6 +112,18 @@ function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number):
 *The task will automatically resume after the rate limit resets. No action needed.*`;
 }
 
+/** A "resets …" clause as `parseResetTimeFromMessage` reads it: optional date, time, optional zone. */
+const RESET_CLAUSE_TEXT = /\breset(?:s)?(?:\s+at)?\s+(?:[a-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?\d{1,2}(?::\d{2})?\s*(?:am|pm)(?:\s*\([^)]+\))?/gi;
+
+/**
+ * The limit a usage-limit message reports, without when it resets: a later
+ * report of the same limit with a new reset time ("1pm", "1:30pm", another
+ * day) is a repeat, while a different limit (weekly vs five-hour) is not.
+ */
+export function rateLimitNoticeFingerprint(message: string): string {
+    return message.replace(RESET_CLAUSE_TEXT, 'resets <reset>').replace(/\d+/g, '#');
+}
+
 async function postRateLimitNotice(octokit: Octokit, issueRef: IssueJobData, options: {
     error: UsageLimitError; delay: number; retryTimestamp: number; correlatedLogger: Logger;
 }): Promise<void> {
@@ -127,7 +139,7 @@ async function postRateLimitNotice(octokit: Octokit, issueRef: IssueJobData, opt
         // limit, updates one notice with the latest reset time and a count.
         await publishRepeatedNotice(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number }, {
             kind: 'rate-limit', scope: 'issue', body: formatRateLimitComment(error, retryTimestamp),
-            fingerprint: (error.rawErrorMessage || 'Usage limit reached').replace(/\d+/g, '#'),
+            fingerprint: rateLimitNoticeFingerprint(error.rawErrorMessage || 'Usage limit reached'),
         }, { log: correlatedLogger, withinMs: RATE_LIMIT_NOTICE_WINDOW_MS });
     } catch (commentError) {
         correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to issue.');
