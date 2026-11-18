@@ -20,14 +20,28 @@ const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor
 
 /**
  * Inspect ref output rather than promise resolution: simple-git can resolve a
- * nonzero exit without stderr (including show-ref in an empty repository).
- * Listing heads gives us exact names and reports corrupt refs as Git errors.
- * Let those errors propagate rather than treating an unreadable repo as empty.
+ * nonzero exit without stderr (`rev-parse --quiet` for an absent ref).
+ * `rev-parse --verify` reads the ref itself, as `git worktree add -b` does when
+ * it refuses an existing branch. Listing refs (show-ref, for-each-ref) can skip
+ * a branch whose tip object is missing, which then looked absent here while Git
+ * still refused to create it, failing every later run on the branch (#3687).
+ * A branch whose tip is missing is reported as a bad ref rather than absent,
+ * and an unreadable ref database propagates as a Git error.
  */
 async function localBranchExists(git: SimpleGit, branchName: string): Promise<boolean> {
     const ref = `refs/heads/${branchName}`;
-    const refs = await git.raw(['show-ref', '--heads']);
-    return refs.split('\n').some(line => line.split(' ')[1] === ref);
+    const tip = (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', ref])).trim();
+    if (!tip) return false;
+    const commit = (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', `${tip}^{commit}`])).trim();
+    if (!commit) {
+        throw new Error(`Local branch '${branchName}' is a bad ref: its tip ${tip} is missing from the clone; nothing was changed, repair or delete ${ref} by hand`);
+    }
+    return true;
+}
+
+/** Git's refusal to create a branch that already exists, as `worktree add -b` reports it. */
+export function isBranchAlreadyExistsError(message: string): boolean {
+    return /a branch named '[^']+' already exists/.test(message);
 }
 
 /**
@@ -46,22 +60,24 @@ export async function addWorktreeWithoutTracking(
     },
 ): Promise<string> {
     const { startPoint, resetBranch = false } = options;
-    if (resetBranch) {
-        const exists = await localBranchExists(git, branchName);
-        if (exists) {
-            await realignDivergedLocalBranch(git, branchName, startPoint);
-            return git.raw(['worktree', 'add', worktreePath, branchName]);
+    const reuseExisting = async () => {
+        await realignDivergedLocalBranch(git, branchName, startPoint);
+        return git.raw(['worktree', 'add', worktreePath, branchName]);
+    };
+    if (resetBranch && await localBranchExists(git, branchName)) return reuseExisting();
+    try {
+        return await git.raw(['worktree', 'add', '--no-track', '-b', branchName, worktreePath, startPoint]);
+    } catch (error) {
+        // The branch appeared after the check (a concurrent writer) or the check
+        // and Git disagree: reuse it the same safe way instead of failing every
+        // later run on it. A fresh-branch caller never reuses one.
+        if (!resetBranch || !isBranchAlreadyExistsError((error as Error).message || '')) throw error;
+        if (!await localBranchExists(git, branchName)) {
+            throw new Error(`Local branch '${branchName}' blocks the worktree but cannot be read; nothing was changed, inspect refs/heads/${branchName} in the clone`);
         }
+        logger.warn({ branchName, startPoint }, 'Branch appeared after the existence check; reusing the existing local branch');
+        return reuseExisting();
     }
-    return git.raw([
-        'worktree',
-        'add',
-        '--no-track',
-        '-b',
-        branchName,
-        worktreePath,
-        startPoint,
-    ]);
 }
 
 /**
