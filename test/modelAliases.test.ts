@@ -254,6 +254,11 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
             assert.strictEqual(result.agentAlias, 'opencode', label);
             assert.strictEqual(result.model, 'opencode-big-pickle', label);
         }
+        for (const label of ['opencode-glm53-flash-free', 'glm53-flash-free', 'opencode-glm-5.3-flash-free']) {
+            const result = await resolveLlmLabel(label);
+            assert.strictEqual(result.agentAlias, 'opencode', label);
+            assert.strictEqual(result.model, 'opencode-deepseek-v4.1-flash-free', label);
+        }
     });
 
     await t.test('Step 1: resolves prefixed OpenCode provider model IDs', async () => {

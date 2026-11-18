@@ -327,7 +327,10 @@ for (const width of [1440, 390]) {
     for (const [property, value] of Object.entries({ 'border-left-width': '2px', 'border-left-style': 'solid', 'border-left-color': 'rgb(226, 232, 240)', 'padding-left': '12px' }))
       await expect(updates).toHaveCSS(property, value);
     const lineHeights = await updates.locator('a').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
-    expect(lineHeights.every(height => height <= 28)).toBe(true);
+    // Rows stay compact on desktop; touch layouts (phone widths) give each row a 32px tap target.
+    const rowHeight = width < 640 ? 32 : 28;
+    expect(lineHeights.every(height => height <= rowHeight)).toBe(true);
+    if (width < 640) expect(lineHeights.every(height => height >= 32)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await capture(page, `dashboard-updates-expanded-${width}`, true);
     await disclosure.click();

@@ -85,16 +85,26 @@ export const UsageBadge: React.FC<UsageBadgeProps> = ({
     }
   }
 
+  // Each part is a whole flex item; the separator is the item's left border,
+  // not a text character. The list is pulled 1px left under the badge's clipped
+  // edge, so the part that starts a line (the first, or one that wrapped) has
+  // its border hidden: no line ever starts or ends with a separator.
   return (
     <code
-      className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 bg-slate-100 text-slate-600 text-xs font-mono rounded-md border border-slate-200 ${className}`}
+      data-testid="usage-badge"
+      className={`inline-flex max-w-full overflow-hidden py-0.5 bg-slate-100 text-slate-600 text-xs font-mono rounded-md border border-slate-200 ${className}`}
     >
-      {parts.map((part, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && <span className="text-slate-300">|</span>}
-          {part}
-        </React.Fragment>
-      ))}
+      <span className="-ml-px flex min-w-0 flex-wrap items-center gap-y-0.5">
+        {parts.map((part, i) => (
+          <span
+            key={i}
+            data-testid="usage-badge-part"
+            className="min-w-0 max-w-full truncate whitespace-nowrap border-l border-slate-300 px-1.5"
+          >
+            {part}
+          </span>
+        ))}
+      </span>
     </code>
   );
 };

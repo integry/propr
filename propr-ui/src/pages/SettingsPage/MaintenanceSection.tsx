@@ -9,7 +9,7 @@ import { ListSkeleton } from '../../components/ui/Skeleton';
 import { AgentConfirmDialog } from '../../components/Agents/AgentConfirmDialog';
 import { useSettingsSectionVisible } from './settingsSectionVisibility';
 import {
-  isHeldFollowup, isOpenFollowup, needsCancelledChoice, nextStep, phaseLabel, reasonLabel, statusLabel, updatedLabel,
+  followupStateLabel, isHeldFollowup, isOpenFollowup, isRunningFollowup, needsCancelledChoice, nextStep, phaseLabel, reasonLabel, updatedLabel,
 } from './heldFollowupText';
 
 const button = 'max-w-full rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50';
@@ -27,6 +27,7 @@ const attemptOf = (handoff: Handoff) => `${keyOf(handoff)}:${handoff.taskId}`;
 const isOpenAttempt = (handoffs: Handoff[], attempt: string) =>
   handoffs.some(handoff => isOpenFollowup(handoff) && attemptOf(handoff) === attempt);
 const staleRelease = (id: string) => `${id} changed while you were deciding. Nothing was released; check it and choose again.`;
+const taskPath = (handoff: Handoff) => `/tasks/${encodeURIComponent(handoff.taskId)}`;
 const prUrl = (handoff: Handoff) => `https://github.com/${handoff.repository}/pull/${handoff.pullRequest}`;
 
 /**
@@ -253,7 +254,9 @@ function FollowupSummary({ handoff }: { handoff: Handoff }) {
           {keyOf(handoff)}
         </a>
         <span className="text-slate-500">
-          {released ? '' : `${statusLabel(handoff.status)} · ${phaseLabel(handoff.phase)} · `}<time dateTime={updated.iso} title={updated.absolute}>{updated.relative}</time>
+          {!released && (isRunningFollowup(handoff)
+            ? <><Link className="text-teal-700 underline-offset-2 hover:underline" to={taskPath(handoff)}>Running</Link>{` · ${phaseLabel(handoff.phase)} · `}</>
+            : `${followupStateLabel(handoff)} · ${phaseLabel(handoff.phase)} · `)}<time dateTime={updated.iso} title={updated.absolute}>{updated.relative}</time>
         </span>
       </div>
       <p className="mt-1 leading-5 text-slate-600">
@@ -263,7 +266,7 @@ function FollowupSummary({ handoff }: { handoff: Handoff }) {
       </p>
       <p className="mt-1 leading-5 text-slate-500">
         Task{' '}
-        <Link className="break-all text-teal-700 underline-offset-2 hover:underline" to={`/tasks/${encodeURIComponent(handoff.taskId)}`}>{handoff.taskId}</Link>
+        <Link className="break-all text-teal-700 underline-offset-2 hover:underline" to={taskPath(handoff)}>{handoff.taskId}</Link>
       </p>
     </>
   );

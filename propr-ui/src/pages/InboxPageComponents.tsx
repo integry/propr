@@ -326,7 +326,7 @@ export const InboxCard: React.FC<InboxCardProps> = ({ notification, onDismiss, o
           <button
             type="button"
             onClick={dismiss}
-            className={rowLayout('relative z-10 col-start-3 row-start-1 -my-1.5 -mr-2 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:my-0 sm:mr-0 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100')}
+            className={rowLayout('touch-hit relative z-10 col-start-3 row-start-1 -my-1.5 -mr-2 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:my-0 sm:mr-0 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100')}
             aria-label={`Dismiss ${notification.title}`}
             title="Dismiss"
           >

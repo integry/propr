@@ -23,7 +23,7 @@ const baseRun = {
 
 const completed = {
   ...baseRun, id: 'c0a1d2e3-0000-4000-8000-000000000001', trigger: 'schedule', state: 'completed',
-  report: '## Validation passed on every Linux target with no regressions in the final report, including the arm64 and riscv64 cross builds and the long-running storage soak\n\n- amd64: passed\n- arm64: passed',
+  report: '## Linux final report validation\n\nValidation passed on every Linux target with no regressions in the final report, including the arm64 and riscv64 cross builds and the long-running storage soak. Details follow.\n\n- amd64: passed\n- arm64: passed',
   createdAt: now - minutes(95), startedAt: now - minutes(94), reportedAt: now - minutes(80), finishedAt: now - minutes(80), updatedAt: now - minutes(80),
 };
 const cancelled = {
@@ -298,4 +298,38 @@ test('the run history keeps its columns where they fit, and unsaved edits surviv
   await expect(header).toBeHidden();
   await page.getByRole('navigation', { name: 'Automation sections' }).getByRole('link', { name: 'Settings' }).click();
   await expect(page.getByTestId('agent-editor').getByLabel('Name')).toHaveValue('Renamed but not saved');
+});
+
+test('rows with absolute and relative start dates share the same column tracks', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await runsFixture(page);
+  const days = (count: number) => count * 24 * 60 * 60_000;
+  const mixed = [
+    { ...completed, id: 'aaaa0000-0000-4000-8000-000000000011', report: '# Weekly audit\n\nThree packages are outdated. Upgrade soon.', startedAt: now - minutes(300), createdAt: now - minutes(300), reportedAt: now - minutes(298), finishedAt: now - minutes(298) },
+    { ...completed, id: 'aaaa0000-0000-4000-8000-000000000012', trigger: 'manual', report: '# Weekly audit\n\nNothing new since last week.', startedAt: now - days(19), createdAt: now - days(19), reportedAt: now - days(19) + minutes(2), finishedAt: now - days(19) + minutes(2) },
+    { ...cancelled, id: 'aaaa0000-0000-4000-8000-000000000013', startedAt: now - minutes(3), createdAt: now - minutes(3), finishedAt: now - minutes(2) },
+  ];
+  await page.route(`**/api/automation-definitions/${definition.id}/runs**`, route => route.fulfill({
+    json: { runs: mixed.map(listed), total: mixed.length, limit: 20, offset: 0, nextOffset: null },
+  }));
+  await page.goto(`/automations/${definition.id}/runs`);
+
+  const rows = page.getByTestId('agent-run-row');
+  await expect(rows).toHaveCount(3);
+  const started = rows.locator('time');
+  await expect(started.nth(0)).toHaveText('5h ago');
+  await expect(started.nth(1)).not.toHaveText(/ago$/);
+  await expect(started.nth(2)).toHaveText('3m ago');
+  // Each run previews its own body sentence, not the title every run shares.
+  await expect(rows.nth(0).getByTestId('agent-run-preview')).toHaveText('Three packages are outdated.');
+  await expect(rows.nth(1).getByTestId('agent-run-preview')).toHaveText('Nothing new since last week.');
+
+  // Every column starts at the same x in every row and in the header, whatever the date format.
+  const header = page.getByTestId('agent-run-history').locator('[aria-hidden="true"]').first();
+  const lefts = async (container: Locator) => container.locator(':scope > *')
+    .evaluateAll(cells => cells.map(cell => Math.round(cell.getBoundingClientRect().left * 100) / 100));
+  const expected = await lefts(header);
+  expect(expected).toHaveLength(5);
+  for (let index = 0; index < 3; index += 1) expect(await lefts(rows.nth(index)), `row ${index}`).toEqual(expected);
+  await capture(page.getByTestId('agent-runs-pane'), 'automation-run-history-mixed-dates-1440');
 });

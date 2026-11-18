@@ -54,10 +54,38 @@ export const formatTimestamp = (timestamp: string | null, now: number = Date.now
 const TYPE_ACRONYMS = new Set(['pr', 'ci', 'ai', 'llm', 'mcp', 'api', 'ui', 'url', 'id']);
 
 /**
- * An execution type for display, in sentence case with its acronyms in
- * capitals: `pr_review_context_scout` reads "PR review context scout".
+ * The display label of every execution type the server records (see
+ * `ExecutionType` in packages/core and the job-specific types such as
+ * `pr-review-context-scout`). One table for the type chips and the type filter.
+ */
+export const EXECUTION_TYPE_LABELS: Readonly<Record<string, string>> = {
+  implementation: 'Implementation',
+  'plan-generation': 'Plan generation',
+  'plan-refinement': 'Plan refinement',
+  'title-generation': 'Title generation',
+  summarization: 'Summarization',
+  'summary-selection': 'Summary selection',
+  'context-analysis': 'Context analysis',
+  'repo-chat': 'Repository chat',
+  'repo-improvements': 'Repository improvements',
+  'pr-review': 'PR review',
+  'pr-review-context-scout': 'PR review context scout',
+  'usage-tips-selection': 'Usage tips selection',
+  'agent-health-check': 'Agent health check',
+  other: 'Other',
+};
+
+/** An execution type key normalised to the kebab case of the label table. */
+const typeKey = (type: string): string => type.trim().toLowerCase().replace(/[_\s]+/g, '-');
+
+/**
+ * An execution type for display: the label from `EXECUTION_TYPE_LABELS`, or,
+ * for a type the table does not know yet, the type in sentence case with its
+ * acronyms in capitals (`ci_fix_attempt` reads "CI fix attempt").
  */
 export const formatType = (type: string): string => {
+  const known = EXECUTION_TYPE_LABELS[typeKey(type)];
+  if (known) return known;
   return type
     .split(/[-_\s]+/)
     .filter(Boolean)
