@@ -11,13 +11,21 @@ description: "How the release workflow deploys app.propr.dev, the scoped Cloudfl
 
 The **Docker Images** workflow (`.github/workflows/docker-images.yml`) deploys the hosted UI in its `deploy-hosted-ui` job. That job calls the reusable **Hosted UI Deploy** workflow (`.github/workflows/hosted-ui-deploy.yml`), the same workflow you dispatch to re-deploy a release, so the two paths cannot drift. The deploy:
 
-1. Runs only after `publish-github-release` succeeds, for a `v*.*.*` tag push and for the manual `workflow_dispatch` release path. If an earlier release job fails or is skipped, the deploy is skipped too.
+1. Runs only after `publish-github-release` succeeds, for a `v*.*.*` tag push and for the manual `workflow_dispatch` release path. If the GitHub release fails or is skipped, or the run is cancelled, the deploy is skipped too. It also waits for `promote-latest` to finish, so every other release surface is done before the deploy can fail. It still deploys if `latest` promotion failed, or was skipped (a manual release without `push_latest`).
 2. Runs in the `hosted-ui-production` GitHub environment, which holds the only copy of the Cloudflare credentials. Only one deploy to that environment runs at a time.
 3. Checks out the release tag: the pushed tag, or `v<expected_version>` for a manual release. It confirms that `package.json` has the tag's version, then runs `npm ci`, `npm run build -w @propr/shared` and `npm run build -w propr-ui`. The UI imports `@propr/shared` through its built `dist/` entry, which a clean install does not contain; the v0.9.1 release deploy failed for that reason.
 4. Runs `wrangler deploy --config wrangler.hosted-ui.toml`, with wrangler pinned to an exact version in the workflow.
 5. Verifies the deploy. It fetches `https://app.propr.dev/`, finds the `/assets/index-*.js` entry module that `index.html` loads, and checks that the bundle contains the released version string, for example `"0.9.2"`. The check makes up to six attempts, 20 seconds apart, to allow for edge propagation. The script is `scripts/verify-hosted-ui-release.mjs`; the bundle check itself is in `scripts/lib/hosted-ui-bundle.mjs`, which the release rollout check (`npm run release:rollout -- --version 0.9.2`, see the Releases section of `.github/CONTRIBUTING.md`) also uses. To check a deployment yourself, run `RELEASE_VERSION=0.9.2 node scripts/verify-hosted-ui-release.mjs`.
 
-If the environment or either secret is missing, the job prints a **Hosted UI deploy skipped** notice and finishes successfully. The images, the npm package and the GitHub release are already published at this point, so a missing deploy credential does not mark the release as failed. A failed deploy or a failed verification does fail the job. The job summary then explains how to recover: [re-deploy the release](#re-deploy-a-published-release) from `main`, or deploy by hand. Deploying the same build again is idempotent.
+### When the Cloudflare credentials are missing
+
+If the `hosted-ui-production` environment or either secret is missing, the job fails before it checks out or builds anything. It adds a **Hosted UI not deployed** error annotation and a line in the run summary: "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set in the hosted-ui-production environment; app.propr.dev was not deployed." `app.propr.dev` keeps serving the previous release.
+
+The release itself is not blocked or rolled back. By then the images, the npm package, the GitHub release and the `latest` tags are already published. The run is red so that nobody reads a skipped deploy as a deployed one. Releases up to and including v0.9.2 printed a notice and ended green instead.
+
+To deploy the release, [add the secrets](#add-the-token-to-the-github-environment), then either re-run the failed **Deploy hosted UI (app.propr.dev)** job of the release run, or [re-deploy the release](#re-deploy-a-published-release) from `main`. Both read the secrets when they run, then build, deploy and verify as usual.
+
+A failed deploy or a failed verification also fails the job. The job summary then explains how to recover: [re-deploy the release](#re-deploy-a-published-release) from `main`, or deploy by hand. Deploying the same build again is idempotent.
 
 ## Create the Cloudflare API token
 
@@ -68,7 +76,7 @@ To do the same by hand:
 
 Store these only as **environment** secrets. Do not add them as repository or organization secrets, because every job could then read them, including PR and build jobs. The workflow contract test (`test/hostedUiReleaseDeploy.test.mjs`) fails if any other job in the release workflow refers to the Cloudflare credentials.
 
-To deploy a release whose deploy was skipped, add the secrets (for example with `scripts/setup-hosted-ui-environment.sh`) and then [re-deploy the release](#re-deploy-a-published-release).
+To deploy a release whose deploy failed because the secrets were missing, add the secrets (for example with `scripts/setup-hosted-ui-environment.sh`). Then re-run the failed job or [re-deploy the release](#re-deploy-a-published-release).
 
 ## Re-deploy a published release
 
@@ -81,11 +89,11 @@ gh workflow run hosted-ui-deploy.yml --repo integry/propr --ref main -f release_
 Or open **Actions > Hosted UI Deploy > Run workflow**, keep **Use workflow from** on `main`, and enter the tag. The workflow:
 
 1. Refuses to run from any ref other than `main`, and refuses a `release_tag` that is not `v<semver>` (for example `v0.9.1`) or that does not exist in the repository. It also refuses a tag without a published GitHub release, such as a tag whose release run failed before publishing or whose release is still a draft.
-2. Runs in `hosted-ui-production`, the same environment and secrets as the release job. If the secrets are missing it skips with the same notice.
+2. Runs in `hosted-ui-production`, the same environment and secrets as the release job. If the secrets are missing it fails with the same **Hosted UI not deployed** error.
 3. Checks out the tag, not `main`, and confirms that the root `package.json` version equals the tag version.
 4. Runs `npm ci`, builds `@propr/shared` and then the UI, deploys with the pinned wrangler version, and verifies that `app.propr.dev` serves the release.
 
-Do not re-run the failed job of the release's own workflow run. A re-run uses the workflow file from the release tag, so it repeats whatever was wrong with that tag's deploy steps. The dispatch uses `main`'s copy of the steps against the tag's code.
+A re-run of the release run's job uses the workflow file from the release tag. That is fine when the only problem was missing credentials, as long as the tag's workflow fails on missing credentials (releases after v0.9.2). For v0.9.2 and earlier, a re-run would just skip again. If the deploy steps themselves were wrong, a re-run repeats the same mistake. In those cases, dispatch from `main`, which runs `main`'s copy of the steps against the tag's code.
 
 ## Manual deploy
 
