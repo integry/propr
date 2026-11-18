@@ -11,15 +11,15 @@ import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
  * (integry/propr#3643, integry/propr-site#222 and #226) was dropped.
  */
 
-type PRInfo = { number: number; url: string; title: string };
+type PRInfo = { number: number; url: string; title: string; labels?: string[] };
 
 let validation: { isValid: boolean; pr?: PRInfo } = { isValid: false };
 const labelRequests: Array<{ issue_number: number; labels: string[] }> = [];
 let labelFailures = 0;
 
 const githubOctokit = {
-    create: (async () => ({ data: { number: 77 } })) as () => Promise<{ data: { number: number } }>,
-    existing: [] as Array<{ number: number }>,
+    create: (async () => ({ data: { number: 77 } })) as () => Promise<{ data: { number: number; labels?: Array<{ name: string }> } }>,
+    existing: [] as Array<{ number: number; labels?: Array<{ name: string }> }>,
     async request(route: string, options: Record<string, unknown> = {}) {
         if (route === 'POST /repos/{owner}/{repo}/pulls') return await this.create();
         if (route === 'GET /repos/{owner}/{repo}/pulls') return { data: this.existing };
@@ -125,6 +125,25 @@ describe('labels of a pull request recovered by final validation', () => {
         assert.deepEqual(labelRequests, [{ issue_number: 55, labels: ['AI', 'llm-claude-opus-5-5'] }]);
     });
 
+    test('a pull request found during final validation that already has its labels is not labelled again (#3691)', async () => {
+        validation = { isValid: true, pr: { number: 55, url: 'https://github.com/integry/propr/pull/55', title: 'Fix', labels: ['AI', 'llm-claude-opus-5-5', 'ultrafix'] } };
+        await validate();
+        assert.deepEqual(labelRequests, []);
+    });
+
+    test('final validation sends only the labels the found pull request is missing', async () => {
+        validation = { isValid: true, pr: { number: 55, url: 'https://github.com/integry/propr/pull/55', title: 'Fix', labels: ['AI'] } };
+        await validate();
+        assert.deepEqual(labelRequests, [{ issue_number: 55, labels: ['llm-claude-opus-5-5'] }]);
+    });
+
+    test('the API retry does not re-send labels the existing pull request already has', async () => {
+        githubOctokit.create = async () => { throw Object.assign(new Error('A pull request already exists'), { status: 422 }); };
+        githubOctokit.existing = [{ number: 81, labels: [{ name: 'AI' }, { name: 'llm-claude-opus-5-5' }] }];
+        await validate();
+        assert.deepEqual(labelRequests, []);
+    });
+
     test('without a model the processing label is still added', async () => {
         await validate({ PR_LABEL: 'AI' });
         assert.deepEqual(labelRequests, [{ issue_number: 77, labels: ['AI'] }]);
@@ -138,6 +157,11 @@ describe('addPullRequestProcessingLabels', () => {
         labelFailures = 2;
         assert.equal(await addPullRequestProcessingLabels(githubOctokit as never, ref, ['AI'], { correlatedLogger: logger, retryDelayMs: 0 }), true);
         assert.deepEqual(labelRequests, [{ issue_number: 90, labels: ['AI'] }]);
+    });
+
+    test('makes no call when the pull request already has every label', async () => {
+        assert.equal(await addPullRequestProcessingLabels(githubOctokit as never, ref, ['AI', 'llm-x'], { correlatedLogger: logger, retryDelayMs: 0, presentLabels: ['llm-x', 'AI'] }), true);
+        assert.deepEqual(labelRequests, []);
     });
 
     test('logs and reports a lasting failure instead of throwing', async () => {

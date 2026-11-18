@@ -352,7 +352,7 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
 
         // Link PR to plan issue if found during validation
         if (finalPRValidation.pr?.number) {
-            await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: finalPRValidation.pr.number }, await recoveredPullRequestLabels(options), { correlatedLogger });
+            await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: finalPRValidation.pr.number }, await recoveredPullRequestLabels(options), { correlatedLogger, presentLabels: finalPRValidation.pr.labels });
             const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
             await linkPRToPlanIssue(repository, issueRef.number, finalPRValidation.pr.number);
             correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: finalPRValidation.pr.number }, 'Linked PR to plan issue (found during validation)');
