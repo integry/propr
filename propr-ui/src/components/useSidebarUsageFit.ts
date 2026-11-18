@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { SIDEBAR_DENSE_ROW_SAVING_PX, SIDEBAR_ROW_ATTRIBUTE } from './SidebarNavigation';
+import { SIDEBAR_DENSE_ROW_SAVING_REM, SIDEBAR_ROW_ATTRIBUTE } from './SidebarNavigation';
 
 /** Rounding slack, so a sub-pixel difference never flips the layout back and forth. */
 const SLACK_PX = 1;
@@ -47,10 +47,11 @@ export function useSidebarUsageFit(): SidebarUsageFit {
     if (overflowing) return;
     const free = column.clientHeight - nav.offsetHeight - bottom.offsetHeight;
     // The bottom block is compared whole, so its margins count as well as Usage,
-    // and every navigation row grows back by the same fixed amount; with both
-    // budgeted, expanding cannot overflow again.
+    // and every navigation row grows back by the same rem-based amount (larger
+    // with enlarged text); with both budgeted, expanding cannot overflow again.
     const rows = nav.querySelectorAll(`[${SIDEBAR_ROW_ATTRIBUTE}]`).length;
-    const growth = fullBottomHeight.current - bottom.offsetHeight + rows * SIDEBAR_DENSE_ROW_SAVING_PX;
+    const remPx = parseFloat(getComputedStyle(nav.ownerDocument.documentElement).fontSize) || 16;
+    const growth = fullBottomHeight.current - bottom.offsetHeight + rows * SIDEBAR_DENSE_ROW_SAVING_REM * remPx;
     if (free >= growth + SLACK_PX) {
       compactRef.current = false;
       setCompact(false);

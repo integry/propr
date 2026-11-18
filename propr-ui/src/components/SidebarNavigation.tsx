@@ -148,11 +148,13 @@ function PlansBadge({ name, count }: { name: string; count: number }) {
 }
 
 /**
- * How much shorter each row is while Usage is folded: 2px less padding above and
- * below. Folding must free room for every item in a 720px window, and expanding
- * again budgets for the rows growing back (see useSidebarUsageFit).
+ * How much shorter each row is while Usage is folded, in rem: 0.125rem less
+ * padding above and below (2px each at the default 16px root size). Folding must
+ * free room for every item in a 720px window, and expanding again budgets for
+ * the rows growing back (see useSidebarUsageFit). The padding is rem-based, so
+ * enlarged text grows the saving with it.
  */
-export const SIDEBAR_DENSE_ROW_SAVING_PX = 4;
+export const SIDEBAR_DENSE_ROW_SAVING_REM = 0.25;
 /** Marks each navigation row, so the fit measurement can count them. */
 export const SIDEBAR_ROW_ATTRIBUTE = 'data-sidebar-row';
 const rowAttribute = { [SIDEBAR_ROW_ATTRIBUTE]: '' };
