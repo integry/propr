@@ -452,12 +452,17 @@ jobs:
     # The build, deploy and verification steps live in the reusable workflow
     # so this release job and a manual re-deploy from main cannot drift. Its
     # job runs in the protected hosted-ui-production environment, the only
-    # place the Cloudflare credentials can be read; nothing is passed from here.
+    # place the Cloudflare credentials are stored. A called workflow sees only
+    # the secrets its caller passes or inherits, even for its own environment's
+    # secrets: without this, CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID read
+    # as empty there (the v0.9.2 release deploy). inherit passes them without
+    # naming them in this file, and this calling job runs no steps of its own.
     permissions:
       contents: read
     uses: ./.github/workflows/hosted-ui-deploy.yml
     with:
       release_tag: ${{ needs.validate-release.outputs.release_tag }}
+    secrets: inherit
 
   promote-latest:
     name: Promote latest images on Docker Hub

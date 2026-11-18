@@ -149,7 +149,7 @@ describe('Release Rollout workflow contract', () => {
     });
   });
 
-  test('keeps every protected environment where it is and introduces no secret', () => {
+  test('keeps every protected environment where it is, introduces no secret and passes each one a called job reads', () => {
     assert.deepEqual(environments(called.runtime), {
       publish: 'desktop-linux-preview-runtime-publication', 'publish-agent': 'desktop-linux-preview-runtime-publication',
     });
@@ -186,6 +186,30 @@ describe('Release Rollout workflow contract', () => {
       },
     });
     assert.doesNotMatch(rolloutText, /secrets: inherit/);
+    // A called workflow sees only the secrets its caller passes, even those of
+    // its own job's environment. Every secret a called job reads must be
+    // declared and passed by each call of that workflow, or it reads as empty.
+    const calledByPath = {
+      './.github/workflows/preview-runtime-images.yml': called.runtime,
+      './.github/workflows/desktop-linux-preview.yml': called.linux,
+      './.github/workflows/desktop-linux-signed-preview.yml': called.signed,
+      './.github/workflows/desktop-macos-preview.yml': called.macos,
+      './.github/workflows/preview-cli-bundle.yml': called.cli,
+    };
+    const calls = Object.entries(jobs).filter(([, job]) => job.uses);
+    assert.deepEqual(calls.map(([, job]) => job.uses).sort(), Object.keys(calledByPath).concat(
+      './.github/workflows/preview-runtime-images.yml', './.github/workflows/desktop-linux-signed-preview.yml').sort());
+    for (const [name, job] of calls) {
+      const target = calledByPath[job.uses];
+      const operation = job.with?.operation;
+      const read = Object.entries(secretReferences(target))
+        .filter(([calledJob]) => !operation || JSON.stringify(target.jobs[calledJob].if ?? '').includes(`'${operation}'`))
+        .flatMap(([, references]) => references.map(reference => reference.slice('secrets.'.length)));
+      for (const secret of new Set(read)) {
+        assert.ok(target.on.workflow_call.secrets?.[secret], `${job.uses} declares ${secret}`);
+        assert.equal(job.secrets?.[secret], `\${{ secrets.${secret} }}`, `${name} passes ${secret}`);
+      }
+    }
     // The only other secrets are the optional follow-up ones, read by steps of the last job.
     assert.deepEqual(secretReferences(rollout).followups,
       ['secrets.DEPLOY_HOST', 'secrets.DEPLOY_SSH_KEY', 'secrets.DEPLOY_USER', 'secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN']);

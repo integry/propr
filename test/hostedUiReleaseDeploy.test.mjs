@@ -49,7 +49,10 @@ describe('hosted UI release deploy workflow contract', () => {
     assert.equal(job.name, 'Deploy hosted UI (app.propr.dev)');
     assert.equal(job.uses, './.github/workflows/hosted-ui-deploy.yml');
     assert.deepEqual(job.with, { release_tag: '${{ needs.validate-release.outputs.release_tag }}' });
-    assert.equal(job.secrets, undefined, 'no caller secrets: the environment-scoped job reads its own');
+    // A called workflow sees only the secrets its caller passes or inherits,
+    // even those of its own job's environment; without this the Cloudflare
+    // secrets read as empty on the release path (v0.9.2).
+    assert.equal(job.secrets, 'inherit', 'the called deploy job must receive its environment secrets');
     assert.equal(job.steps, undefined);
     assert.deepEqual(Object.keys(deployWorkflow.on).sort(), ['workflow_call', 'workflow_dispatch']);
     for (const trigger of ['workflow_call', 'workflow_dispatch']) {
@@ -74,7 +77,9 @@ describe('hosted UI release deploy workflow contract', () => {
       if (name === 'deploy-hosted-ui') continue;
       assert.doesNotMatch(JSON.stringify(other), /CLOUDFLARE|hosted-ui-production|wrangler|hosted-ui-deploy/i, `${name} must not see the Cloudflare deploy`);
     }
-    assert.doesNotMatch(JSON.stringify(job), /CLOUDFLARE|secrets/);
+    // The release job inherits the secrets without naming the credentials.
+    assert.doesNotMatch(JSON.stringify(job), /CLOUDFLARE|secrets\./);
+    assert.equal(deployWorkflow.on.workflow_call.secrets, undefined, 'inherited secrets need no declaration');
     assert.equal(deployJob.env, undefined, 'no job-level env exposes secrets to every step');
     assert.equal(deployWorkflow.env, undefined);
     const secretSteps = steps.filter(candidate => JSON.stringify(candidate).includes('secrets.')).map(candidate => candidate.name);

@@ -30,6 +30,8 @@ jobs:
     # The Cloudflare token lives only in this protected environment, so no
     # build, PR or other release job can read it. Its deployment policy allows
     # the release tags (v*) and main, the ref manual deploys are dispatched from.
+    # When called (workflow_call), this job reads the environment secrets only
+    # if the caller passes them: the release job uses `secrets: inherit`.
     environment:
       name: hosted-ui-production
       url: https://app.propr.dev/
