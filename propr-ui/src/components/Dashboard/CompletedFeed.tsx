@@ -143,7 +143,7 @@ function EarlierUpdates({ item, title, updates, history }: {
           ? update.detail : `${type} run`;
         return (
           <li key={update.id}>
-            <RowLink href={workHref(update)} className="grid min-w-0 grid-cols-[5.25rem_5rem_minmax(0,1fr)_3rem] items-center gap-x-2 rounded-sm py-0.5 text-xs leading-5 text-slate-600 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+            <RowLink href={workHref(update)} className="grid min-w-0 grid-cols-[5.25rem_5rem_minmax(0,1fr)_3rem] items-center gap-x-2 rounded-sm py-0.5 text-xs leading-5 touch:min-h-8 text-slate-600 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
               <time dateTime={update.occurredAt} title={formatDateTime(update.occurredAt)} className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">{formatRelativeTime(update.occurredAt)}</time>
               <WorkTypeBadge type={type} compact />
               <span className="min-w-0 truncate text-slate-700" title={delta}>{compactDelta(delta)}</span>
@@ -184,7 +184,7 @@ function OutcomeDetail({ item, title, earlierCount, expanded, updatesId, onToggl
           aria-expanded={expanded}
           aria-controls={updatesId}
           onClick={onToggle}
-          className="flex-none rounded-sm hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          className="touch-hit flex-none rounded-sm hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         >
           <span aria-hidden="true">{expanded ? '▾' : '↳'} </span>
           {expanded ? 'Hide ' : ''}{earlierCount} earlier {earlierCount === 1 ? 'update' : 'updates'}

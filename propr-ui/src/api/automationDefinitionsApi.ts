@@ -78,7 +78,7 @@ export interface AutomationRunRecord {
   actionTaskId: string | null;
   /** Only in the run detail. */
   report?: string | null;
-  /** Only in the run list: the report's first meaningful line as plain text, when the run has a report. */
+  /** Only in the run list: the first sentence of the report body after its heading (the heading when there is no body) as plain text, when the run has a report. */
   reportPreview?: string;
   reportTruncated: boolean;
   actionSummary: string | null;

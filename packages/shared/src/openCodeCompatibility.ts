@@ -3,6 +3,8 @@
 // free model run on a current one. Routes are deliberately absent from the
 // selectable catalog.
 const RETIRED_OPENCODE_FREE_MODELS: ReadonlyArray<readonly [id: string, shortAlias: string, successor: string]> = [
+    // No longer served by OpenCode Zen (2026-11-18); the paid glm-5.3-flash remains.
+    ['opencode-glm-5.3-flash-free', 'glm53-flash-free', 'opencode-deepseek-v4.1-flash-free'],
     // Retired by OpenCode CLI 1.19.5.
     ['opencode-ling-3.0-flash-fin-free', 'ling30-flash-fin-free', 'opencode-deepseek-v4.1-flash-free'],
     ['opencode-mimo-v2.5-free', 'mimo-v25-free', 'opencode-mimo-v2.6-flash-free'],
