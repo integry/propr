@@ -14,9 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   30-second timeouts never fire, and the retry stalled on the same fetch.
   Before the retry, `scripts/ci-install-chromium.sh` now moves the mirrors apt
   prefers in the runner's `mirror+file:` list (for example
-  `us-east-2.ec2.archive.ubuntu.com`) behind the others. If no other mirror is
-  listed, it puts `archive.ubuntu.com` first. The retry therefore downloads
-  from a different source. If the list is missing or cannot be rewritten, the
+  `us-east-2.ec2.archive.ubuntu.com`) behind the others. If every listed
+  mirror is tied, or only one is listed, it puts `archive.ubuntu.com` first, or
+  `security.ubuntu.com` when `archive.ubuntu.com` is already listed. The retry
+  therefore downloads from a different source. If the list is missing or cannot be rewritten, the
   step warns and retries as before. Two timed-out attempts still fail the
   step, and the self-hosted path is unchanged.
 

@@ -152,6 +152,28 @@ describe('hosted Chromium install', () => {
     ].join('\n');
     const MIRROR_WRITE = 'sudo -n -- tee /etc/apt/apt-mirrors.txt';
 
+    // The mirrors apt may fetch from first in a `mirror+file:` list: the lowest
+    // explicit priority, or, when no entry has one, any entry (apt breaks the
+    // tie with a per-machine seed).
+    const firstChoices = (list) => {
+        const entries = list.split('\n').filter(line => line.trim() && !line.trimStart().startsWith('#')).map((line) => {
+            const [uri, ...tags] = line.trim().split(/\s+/);
+            const priority = tags.find(tag => /^priority:\d+$/.test(tag));
+            return { uri: uri.replace(/^[a-z+]+:\/\//, '').replace(/\/+$/, ''), priority: priority ? Number(priority.slice(9)) : null };
+        });
+        const ranked = entries.filter(entry => entry.priority !== null);
+        if (ranked.length === 0) return entries.map(entry => entry.uri);
+        const best = Math.min(...ranked.map(entry => entry.priority));
+        return ranked.filter(entry => entry.priority === best).map(entry => entry.uri);
+    };
+    // Whichever mirror the timed-out attempt used, the retry cannot start there.
+    const assertRetryAvoids = (before, after, name) => {
+        const stalled = firstChoices(before);
+        const retry = firstChoices(after);
+        assert.equal(retry.length, 1, `${name}: the retry has one first choice`);
+        assert.ok(!stalled.includes(retry[0]), `${name}: the retry starts at ${retry[0]}, which the first attempt may have used`);
+    };
+
     test('retries from a different apt mirror than the one that stalled', () => {
         const recovered = runInstall({ statuses: [124, 0], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
         assert.equal(recovered.status, 0, recovered.stderr);
@@ -202,14 +224,18 @@ describe('hosted Chromium install', () => {
             ].join('\n'),
             // One mirror only: archive.ubuntu.com goes ahead of it.
             'single.txt': 'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n',
-            // No priorities, archive.ubuntu.com already listed: nothing is added.
+            // No priorities, archive.ubuntu.com already listed: apt may have used
+            // either, so security.ubuntu.com goes first.
             'unranked.txt': 'http://azure.archive.ubuntu.com/ubuntu/\nhttps://archive.ubuntu.com/ubuntu\n',
+            // archive.ubuntu.com is the only mirror: it is the one that stalled.
+            'archive-only.txt': 'http://archive.ubuntu.com/ubuntu/\tpriority:1\n',
         };
         const sources = {
             'sources.list': 'deb mirror+file:{mirrors}/tied.txt noble main\n# deb http://ignored.example/ubuntu noble main\n',
             'sources.list.d/single.list': 'deb [arch=amd64] mirror+file:{mirrors}/single.txt noble main\n'
                 + 'deb-src mirror+file:{mirrors}/single.txt noble main\n',
             'sources.list.d/unranked.sources': 'Types: deb\nURIs: mirror+file:{mirrors}/unranked.txt\nSuites: noble\n',
+            'sources.list.d/archive-only.list': 'deb mirror+file:{mirrors}/archive-only.txt noble main\n',
         };
         const run = runInstall({ statuses: [124, 0], sources, mirrors });
         assert.equal(run.status, 0, run.stderr);
@@ -227,14 +253,40 @@ describe('hosted Chromium install', () => {
             '',
         ].join('\n'));
         assert.equal(run.mirrorList('unranked.txt'), [
-            'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1',
-            'https://archive.ubuntu.com/ubuntu\tpriority:2',
+            'http://security.ubuntu.com/ubuntu/\tpriority:1',
+            'http://azure.archive.ubuntu.com/ubuntu/\tpriority:2',
+            'https://archive.ubuntu.com/ubuntu\tpriority:3',
             '',
         ].join('\n'));
+        assert.equal(run.mirrorList('archive-only.txt'), [
+            'http://security.ubuntu.com/ubuntu/\tpriority:1',
+            'http://archive.ubuntu.com/ubuntu/\tpriority:2',
+            '',
+        ].join('\n'));
+        for (const [name, before] of Object.entries(mirrors)) assertRetryAvoids(before, run.mirrorList(name), name);
+        assert.doesNotMatch(run.stdout, /the retry may reuse the slow mirror/);
         // Each list is rewritten once, even when several sources share it.
-        for (const name of ['tied.txt', 'single.txt', 'unranked.txt']) {
+        for (const name of Object.keys(mirrors)) {
             assert.equal(run.calls.filter(call => call === `sudo -n -- tee /etc/apt/${name}`).length, 1, name);
         }
+
+        const hosted = runInstall({ statuses: [124, 0], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
+        assertRetryAvoids(HOSTED_MIRRORS, hosted.mirrorList('apt-mirrors.txt'), 'apt-mirrors.txt');
+    });
+
+    test('warns when every fallback is already one of the tied mirrors', () => {
+        const tied = 'http://azure.archive.ubuntu.com/ubuntu/\nhttp://archive.ubuntu.com/ubuntu/\nhttp://security.ubuntu.com/ubuntu/\n';
+        const run = runInstall({ statuses: [124, 0], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': tied } });
+        assert.equal(run.status, 0, run.stderr);
+        assert.deepEqual(run.attempts, [ATTEMPT, ATTEMPT]);
+        assert.match(run.stdout, /::warning::Every mirror in \/etc\/apt\/apt-mirrors\.txt is tied with the fallbacks; the retry may reuse the slow mirror\./);
+        // No mirror is invented beyond the fallbacks; the list keeps its entries.
+        assert.equal(run.mirrorList('apt-mirrors.txt'), [
+            'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1',
+            'http://archive.ubuntu.com/ubuntu/\tpriority:2',
+            'http://security.ubuntu.com/ubuntu/\tpriority:3',
+            '',
+        ].join('\n'));
     });
 
     test('still retries when the mirror list cannot be used, and says so', () => {

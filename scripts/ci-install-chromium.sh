@@ -51,14 +51,19 @@ stop_apt() {
 # ties with a per-machine seed, so the same mirror wins every time. Before the
 # retry, every mirror apt currently prefers moves behind the others. The retry
 # then fetches from a different source, and the slow mirror is only a last
-# resort. If no other mirror is listed, archive.ubuntu.com goes first.
-FALLBACK_MIRROR="http://archive.ubuntu.com/ubuntu/"
+# resort. When every listed mirror is tied (or there is only one), any of them
+# may have been the slow one, so the first fallback below that is not listed
+# goes first: archive.ubuntu.com, or security.ubuntu.com (which the hosted
+# images also list as a full mirror) when archive.ubuntu.com is listed.
+FALLBACK_MIRRORS="http://archive.ubuntu.com/ubuntu/ http://security.ubuntu.com/ubuntu/"
 
 # Prints the rewritten list, then one "demoted <uri>" line per moved mirror on
-# file descriptor 3.
+# file descriptor 3, or "unresolved" when every fallback is already a tied
+# entry and the retry may reuse the slow mirror.
 rewrite_mirror_list() {
-  awk -v fallback="$FALLBACK_MIRROR" '
+  awk -v fallbacks="$FALLBACK_MIRRORS" '
     function bare(uri) { sub(/^[a-z+]+:\/\//, "", uri); sub(/\/+$/, "", uri); return uri }
+    BEGIN { nf = split(fallbacks, fallback, " ") }
     /^[[:space:]]*(#|$)/ { comments = comments $0 "\n"; next }
     {
       n++; uri[n] = $1; tags[n] = ""; prio[n] = -1
@@ -66,7 +71,7 @@ rewrite_mirror_list() {
         if ($i ~ /^priority:[0-9]+$/) prio[n] = substr($i, 10) + 0
         else tags[n] = tags[n] "\t" $i
       }
-      if (bare($1) == bare(fallback)) listed = 1
+      for (f = 1; f <= nf; f++) if (bare($1) == bare(fallback[f])) listed[f] = 1
     }
     END {
       if (n == 0) exit 3
@@ -88,7 +93,13 @@ rewrite_mirror_list() {
       }
       printf "%s", comments
       p = 1
-      if (k == 0 && !listed) printf "%s\tpriority:%d\n", fallback, p++
+      # Every entry is one apt may have used, so none of them is known to be a
+      # different source: an unlisted fallback goes first.
+      if (k == 0) {
+        for (f = 1; f <= nf && listed[f]; f++);
+        if (f <= nf) printf "%s\tpriority:%d\n", fallback[f], p++
+        else print "unresolved" > "/dev/fd/3"
+      }
       for (i = 1; i <= k; i++) printf "%s%s\tpriority:%d\n", uri[kept[i]], tags[kept[i]], p++
       for (i = 1; i <= n; i++) if (demoted[i]) {
         printf "%s%s\tpriority:%d\n", uri[i], tags[i], p++
@@ -119,8 +130,12 @@ demote_preferred_mirrors() {
       rm -f "$demoted"
       continue
     fi
-    while read -r _ uri; do
-      echo "::warning::The retry fetches from other apt mirrors before $uri (from $list)."
+    while read -r kind uri; do
+      if [[ "$kind" == unresolved ]]; then
+        echo "::warning::Every mirror in $list is tied with the fallbacks; the retry may reuse the slow mirror."
+      else
+        echo "::warning::The retry fetches from other apt mirrors before $uri (from $list)."
+      fi
     done <"$demoted"
     rm -f "$demoted"
   done <<<"$lists"
