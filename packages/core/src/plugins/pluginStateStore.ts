@@ -32,8 +32,6 @@ export interface PluginStateWriteGuard {
   signal?: AbortSignal;
 }
 
-const isSqlite = (database: Knex) => ['better-sqlite3', 'sqlite3'].includes(String(database.client.config.client));
-
 function requireLive(guard: PluginStateWriteGuard): void {
   if (guard.signal?.aborted) throw new PluginSdkError('unavailable', 'This handler run has ended');
 }
@@ -56,13 +54,13 @@ const json = <T>(value: string | null, fallback: T): T => {
  * exist (the same one, not a reinstall) and keep it until commit. Uninstall
  * deletes the installation row before the state rows, so an operation either
  * commits first (a write is then deleted with the rest), or finds the
- * installation gone. SQLite runs write transactions one at a time. Returns
+ * installation gone. The instance database is SQLite, which runs write
+ * transactions one at a time, so no row lock is taken. Returns
  * what the installation authorizes right now (enabled, grants, repository
  * limit), read in the same transaction, for a caller about to act on it.
  */
 export async function requireInstallation(trx: Knex.Transaction, pluginId: string, guard: PluginStateWriteGuard): Promise<PluginInstallationAuthority> {
-  const query = trx('plugin_installations').where({ plugin_id: pluginId });
-  const row = await (isSqlite(trx) ? query : query.forShare()).first('installed_at', 'enabled', 'granted_permissions', 'repositories') as AuthorityRow | undefined;
+  const row = await trx('plugin_installations').where({ plugin_id: pluginId }).first('installed_at', 'enabled', 'granted_permissions', 'repositories') as AuthorityRow | undefined;
   if (!row || Number(row.installed_at) !== guard.installedAt) throw new PluginSdkError('unavailable', 'The plugin is no longer installed');
   requireLive(guard);
   const permissions = json<unknown>(row.granted_permissions, []);
@@ -80,14 +78,12 @@ export async function requireInstallation(trx: Knex.Transaction, pluginId: strin
  * a limit throws `state_limit` and changes nothing. With a `guard`, every
  * operation (read, write, delete, list) runs in a transaction that requires
  * its installation to still exist, and is refused (a change rolled back)
- * when the handler run ends before it commits. `update` holds the
- * installation row exclusively for its read and write (SQLite runs write
- * transactions one at a time), so updates never interleave across processes.
+ * when the handler run ends before it commits. `update` reads and writes in
+ * one transaction (SQLite runs write transactions one at a time), so updates
+ * never interleave across processes.
  */
 export function pluginStateStore(database: Knex, pluginId: string, now: () => number = Date.now, guard?: PluginStateWriteGuard): PluginStateStore {
-  const fenced = <R>(run: (trx: Knex.Transaction) => Promise<R>, exclusive = false): Promise<R> => database.transaction(async trx => {
-    // Taken before requireInstallation's shared lock: two updates both upgrading a shared lock would deadlock.
-    if (exclusive && !isSqlite(trx)) await trx('plugin_installations').where({ plugin_id: pluginId }).forUpdate().first('plugin_id');
+  const fenced = <R>(run: (trx: Knex.Transaction) => Promise<R>): Promise<R> => database.transaction(async trx => {
     if (guard) await requireInstallation(trx, pluginId, guard);
     const result = await run(trx);
     // Cancellation observed during the operation: throwing rolls a change back.
@@ -134,7 +130,7 @@ export function pluginStateStore(database: Knex, pluginId: string, now: () => nu
         const text = serialize(next);
         await write(trx, stateKey, text, checkSize(text));
         return JSON.parse(text) as PluginJsonValue;
-      }, true);
+      });
     },
     async delete(key: string): Promise<boolean> {
       const stateKey = checkKey(key);

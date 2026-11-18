@@ -25,7 +25,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 import { commentAuthorMayFollowUp, commentSeatConsumed, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
-import { resolveCommentPluginCommand, type PluginCommandResolution, type PluginCommandRun } from '../plugins/pluginCommands.js';
+import { authorizeCommentPluginCommand, resolveCommentPluginCommand, type MatchedPluginCommand, type PluginCommandRun } from '../plugins/pluginCommands.js';
 import { enqueueCommentPluginCommand } from '../plugins/pluginCommandDeliveries.js';
 
 export interface UltrafixDeps {
@@ -787,7 +787,7 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
     return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
 }
 
-type PluginCommandCommentOptions = Omit<SlashCommentOptions, 'parsedCommand'> & { resolution: Exclude<PluginCommandResolution, { status: 'none' }> };
+type PluginCommandCommentOptions = Omit<SlashCommentOptions, 'parsedCommand'> & { resolution: MatchedPluginCommand };
 
 /**
  * A plugin command on a pull request: the same claim and assignment gate as a
@@ -796,10 +796,12 @@ type PluginCommandCommentOptions = Omit<SlashCommentOptions, 'parsedCommand'> & 
  * `needsWrite` command, its single-use write grant) come from the plugin's
  * manifest. It is never batched into another job, so the additions cannot
  * reach other requests. A `handler` command records a delivery to the
- * plugin's handler instead.
+ * plugin's handler instead. A `needsWrite` command's write permission is
+ * read and its grant created only once the comment is claimed and passed the
+ * gate, so a redelivered or refused comment leaves no unused grant.
  */
 async function processPluginCommandComment(opts: PluginCommandCommentOptions): Promise<DeliveryDisposition> {
-    const { resolution, comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck } = opts;
+    const { comment, commentAuthor, eventType, payload, config, correlationId, correlatedLogger, configuredBotUsernames, gateCheck } = opts;
     const { redisClient } = config;
     const { owner, repo, prNumber } = gateCheck.repoContext;
     const trackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
@@ -813,6 +815,7 @@ async function processPluginCommandComment(opts: PluginCommandCommentOptions): P
             await redisClient.del(trackingKey);
             return refusal;
         }
+        const resolution = await authorizeCommentPluginCommand(opts.resolution);
         if (resolution.status === 'refused') {
             correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, plugin: resolution.pluginId, command: resolution.command }, 'Plugin command refused');
             const octokit = await getAuthenticatedOctokit();

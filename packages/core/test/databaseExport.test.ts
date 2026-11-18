@@ -28,6 +28,7 @@ async function fixture(t: test.TestContext) {
     CREATE TABLE extension_oauth_audit(id INTEGER PRIMARY KEY, server_name TEXT, action TEXT, actor TEXT);
     CREATE TABLE plugin_installations(plugin_id TEXT PRIMARY KEY, settings TEXT);
     CREATE TABLE plugin_secrets(plugin_id TEXT, connection_name TEXT, sealed TEXT);
+    CREATE TABLE plugin_webhook_keys(plugin_id TEXT PRIMARY KEY, installed_at INTEGER, key_hash TEXT, key TEXT);
     CREATE TABLE plugin_audit(id INTEGER PRIMARY KEY, plugin_id TEXT, action TEXT, actor TEXT);
     CREATE TABLE task_submissions(id TEXT, payload TEXT, extension_authorization TEXT);
     CREATE TABLE system_configs(key TEXT PRIMARY KEY, value TEXT);
@@ -47,6 +48,7 @@ async function fixture(t: test.TestContext) {
   db.prepare('INSERT INTO extension_oauth_audit(server_name, action, actor) VALUES(?,?,?)').run('documentation', 'connect', '1');
   db.prepare('INSERT INTO plugin_installations VALUES(?,?)').run('example-pack', JSON.stringify({ verbosity: 'quiet' }));
   db.prepare('INSERT INTO plugin_secrets VALUES(?,?,?)').run('example-pack', 'example-token', 'plugin-connection-secret-canary');
+  db.prepare('INSERT INTO plugin_webhook_keys VALUES(?,?,?,?)').run('example-pack', 1, 'webhook-key-hash-canary', 'webhook-installation-key-canary');
   db.prepare('INSERT INTO plugin_audit(plugin_id, action, actor) VALUES(?,?,?)').run('example-pack', 'install', '1');
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('agents', JSON.stringify([{ id: 'agent', alias: 'My agent', configPath: '/provider-home-canary', envVars: { API_KEY: 'operator-env-canary' } }]));
   db.prepare('INSERT INTO system_configs VALUES(?,?)').run('operator_extension_catalog', JSON.stringify({ executable: '/usr/bin/env', args: ['CATALOG_ARGUMENT_SENTINEL', '/opt/propr/CATALOG_PATH_SENTINEL'], secretEnv: { API_KEY: 'OPERATOR_DOCS_KEY' } }));
@@ -130,6 +132,10 @@ test('real WAL writer: coherent restorable customer database, integrity, metadat
       assert.equal(JSON.parse(db.prepare('SELECT settings FROM plugin_installations').get().settings).verbosity, 'quiet');
       assert.equal(db.prepare('SELECT action FROM plugin_audit').get().action, 'install');
       assert.equal(data.includes(Buffer.from('plugin-connection-secret-canary')), false);
+      // The webhook installation key is the URL's unguessable segment: erased, so a restore gets a new one on first use.
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM plugin_webhook_keys').get().n, 0);
+      assert.equal(data.includes(Buffer.from('webhook-installation-key-canary')), false);
+      assert.equal(data.includes(Buffer.from('webhook-key-hash-canary')), false);
       assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM system_configs WHERE key='agents'").get().value), [{ id: 'agent', alias: 'My agent' }]);
       db.prepare('INSERT INTO customer(body) VALUES(?)').run('restored write');
     } finally { db.close(); }

@@ -192,7 +192,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 // Import module under test AFTER mocks
 const { processCommentEvent, setUltrafixDeps } = await import('../packages/core/src/webhook/commentEventHandler.js');
 const { processIssueCommentCommand } = await import('../packages/core/src/webhook/issueCommentCommands.js');
-const { resolvePluginCommand, setPluginCommandResolver } = await import('../packages/core/src/plugins/pluginCommands.js');
+const { resolvePluginCommand, setPluginCommandResolver, setPluginCommandWriteAuthorizer } = await import('../packages/core/src/plugins/pluginCommands.js');
 const { setPluginCommandEnqueuer } = await import('../packages/core/src/plugins/pluginCommandDeliveries.js');
 const { pullRequestJobAllowed } = await import('../src/jobs/prCommentLabelGate.js');
 const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('../src/jobs/pluginCommandTask.js');
@@ -247,6 +247,32 @@ const fakeDatabase = ((table: string) => {
 setPluginCommandResolver(request => resolvePluginCommand(request, { database: fakeDatabase, catalog: async () => [example], library: async () => LIBRARY as never }));
 
 const EXPECTED_EXTENSIONS = { servers: ['example-remote'], skills: ['11111111-1111-4111-8111-111111111111'] };
+const defaultResolver = (request: Parameters<typeof resolvePluginCommand>[0]) => resolvePluginCommand(request, { database: fakeDatabase, catalog: async () => [example], library: async () => LIBRARY as never });
+const GRANT = { id: '6f1c9a52-7d8e-4b4a-9a43-3f0a6c2b1d10', number: 0, servers: ['example-local'] };
+/**
+ * Resolve as a `needsWrite` command an administrator allowed, with its write
+ * authorization still pending, and record each settlement with whether the
+ * comment's claim (`claimKey`) was held at that moment.
+ */
+function pendingWriteCommand(store: () => Map<string, string>, claimKey: string, outcome: 'granted' | 'refused' = 'granted') {
+    const settled: boolean[] = [];
+    setPluginCommandResolver(async request => {
+        const resolution = await defaultResolver(request);
+        if (resolution.status !== 'resolved') return resolution;
+        return { ...resolution, pendingWrite: { repository: request.repository, number: request.number!, author: request.author!, servers: GRANT.servers } };
+    });
+    setPluginCommandWriteAuthorizer(async resolution => {
+        settled.push(store().has(claimKey));
+        const { run, pendingWrite } = resolution;
+        if (outcome === 'refused') return { status: 'refused', pluginId: run.pluginId, pluginName: run.pluginName, command: run.command, message: `/${run.command} needs write access: only people with write permission can run it. Nothing was started.` };
+        return { status: 'resolved', run: { ...run, writeGrant: { ...GRANT, repository: pendingWrite!.repository, number: pendingWrite!.number } } };
+    });
+    return settled;
+}
+function restoreResolution() {
+    setPluginCommandResolver(defaultResolver);
+    setPluginCommandWriteAuthorizer(null);
+}
 
 beforeEach(() => {
     installation = { enabled: true, repositories: ['testowner/testrepo'] };
@@ -261,6 +287,7 @@ beforeEach(() => {
 
 after(async () => {
     setPluginCommandResolver(null);
+    setPluginCommandWriteAuthorizer(null);
     setPluginCommandEnqueuer(null);
     await shutdownQueue();
     await closeConnection();
@@ -395,6 +422,35 @@ describe('plugin prompt command on a pull request', () => {
         assert.strictEqual(queued().length, 1);
     });
 
+    test('a write command\'s permission and grant are settled only once the comment is claimed: a redelivery settles nothing', async () => {
+        const shared = config();
+        const settled = pendingWriteCommand(() => shared.redisClient._store, 'pr-comment-processed:testowner:testrepo:42:502');
+        try {
+            assert.strictEqual((await processCommentEvent(prComment('/example-notes', 502), 'issue_comment', 'corr-write-a', shared)).status, 'accepted');
+            assert.strictEqual((await processCommentEvent(prComment('/example-notes', 502), 'issue_comment', 'corr-write-b', shared)).reason, 'duplicate_delivery');
+            assert.deepStrictEqual(settled, [true], 'settled once, while the claim was held');
+            const [job] = queued();
+            assert.strictEqual(queued().length, 1);
+            assert.deepStrictEqual((job.data.pluginCommand as { writeGrant?: unknown }).writeGrant, { ...GRANT, repository: 'testowner/testrepo', number: 42 });
+        } finally {
+            restoreResolution();
+        }
+    });
+
+    test('a write command refused after the claim replies with the refusal and queues nothing', async () => {
+        const shared = config();
+        const settled = pendingWriteCommand(() => shared.redisClient._store, 'pr-comment-processed:testowner:testrepo:42:503', 'refused');
+        try {
+            assert.strictEqual((await processCommentEvent(prComment('/example-notes', 503), 'issue_comment', 'corr-write-refused', shared)).reason, 'plugin_command_refused');
+            assert.deepStrictEqual(settled, [true]);
+            assert.strictEqual(queued().length, 0);
+            const replies = mockOctokit.request.mock.calls.filter(call => call.arguments[0] === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments');
+            assert.match(String((replies.at(-1)?.arguments[1] as { body?: string })?.body), /only people with write permission can run it/);
+        } finally {
+            restoreResolution();
+        }
+    });
+
     test('built-in commands keep their behaviour and never consult plugins', async () => {
         let consulted = 0;
         setPluginCommandResolver(async request => { consulted += 1; return resolvePluginCommand(request, { database: fakeDatabase, catalog: async () => [example], library: async () => LIBRARY as never }); });
@@ -463,6 +519,32 @@ describe('plugin prompt command on an issue', () => {
         assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'c', f.deps as never)).reason, 'filtered_author');
         assert.strictEqual(f.enqueued.length, 0);
         assert.strictEqual(f.requests.length, 0);
+    });
+
+    test('a write command\'s permission and grant are settled only once the comment is claimed: a redelivery settles nothing', async () => {
+        const f = deps();
+        const settled = pendingWriteCommand(() => f.deps.redis._store, 'issue-comment-command:testowner:testrepo:7:601');
+        try {
+            assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-issue-write-a', f.deps as never)).status, 'accepted');
+            assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes cover the CLI'), 'corr-issue-write-b', f.deps as never)).reason, 'duplicate_delivery');
+            assert.deepStrictEqual(settled, [true], 'settled once, while the claim was held');
+            assert.strictEqual(f.enqueued.length, 1);
+            assert.deepStrictEqual((f.enqueued[0].data.pluginCommand as { writeGrant?: unknown }).writeGrant, { ...GRANT, repository: 'testowner/testrepo', number: 7 });
+        } finally {
+            restoreResolution();
+        }
+    });
+
+    test('a filtered author\'s write command settles nothing', async () => {
+        const f = deps();
+        const settled = pendingWriteCommand(() => f.deps.redis._store, 'issue-comment-command:testowner:testrepo:7:601');
+        mockFilterCommentByAuthor.mock.mockImplementation(() => ({ shouldFilter: true, reason: 'in_blacklist' }));
+        try {
+            assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'corr-issue-write-filtered', f.deps as never)).reason, 'filtered_author');
+            assert.deepStrictEqual(settled, []);
+        } finally {
+            restoreResolution();
+        }
     });
 
     test('an issue that already has a task is told so instead of getting a second one', async () => {

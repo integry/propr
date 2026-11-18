@@ -16,7 +16,7 @@ import { up as deliveriesMigration } from '../src/db/migrations/20261115000000_p
 import { up as webhookKeysMigration } from '../src/db/migrations/20261116000000_plugin_webhook_keys.js';
 import { up as commandSettingsMigration } from '../src/db/migrations/20261116120000_plugin_command_settings.js';
 import { PluginError, PluginStore } from '../src/plugins/pluginStore.js';
-import { resolvePluginCommand, type PluginCommandRequest } from '../src/plugins/pluginCommands.js';
+import { authorizePluginCommandWrite, matchPluginCommand, resolvePluginCommand, type PluginCommandRequest } from '../src/plugins/pluginCommands.js';
 import { consumePluginCommandWriteGrant } from '../src/plugins/pluginCommandSettings.js';
 import { PluginCommandRunner, enqueuePluginCommandDelivery } from '../src/plugins/pluginCommandDeliveries.js';
 import { listPluginActivity, prunePluginDeliveries } from '../src/plugins/pluginDeliveries.js';
@@ -37,16 +37,16 @@ async function fixture(t: TestContext, manifests: PluginManifest[] = [fixtureMan
   const enable = async (id: string) => { await store.install('1', id); return store.setEnabled('1', id, true); };
   const writers = new Set<string>(['maintainer']);
   const permissionChecks: string[] = [];
-  const resolve = (body: string, request: Partial<PluginCommandRequest> = {}) => resolvePluginCommand(
-    { body, repository: 'owner/app', target: 'pull_request', author: 'maintainer', number: 42, ...request },
-    {
-      database, catalog, library: async () => (await store.library.head()).snapshot,
-      writePermission: async (repository, login) => { permissionChecks.push(`${repository}:${login}`); return writers.has(login); },
-    },
-  );
+  const deps = {
+    database, catalog, library: async () => (await store.library.head()).snapshot,
+    writePermission: async (repository: string, login: string) => { permissionChecks.push(`${repository}:${login}`); return writers.has(login); },
+  };
+  const request = (body: string, overrides: Partial<PluginCommandRequest> = {}): PluginCommandRequest => ({ body, repository: 'owner/app', target: 'pull_request', author: 'maintainer', number: 42, ...overrides });
+  const resolve = (body: string, overrides: Partial<PluginCommandRequest> = {}) => resolvePluginCommand(request(body, overrides), deps);
+  const match = (body: string, overrides: Partial<PluginCommandRequest> = {}) => matchPluginCommand(request(body, overrides), deps);
   const managed = async (id: string, item: string) => (await store.library.head()).snapshot.servers.find(s => s.managedBy?.plugin === id && s.managedBy.item === item)!;
   const audit = async (id: string) => (await store.get('1', id)).audit.map(event => ({ action: event.action, detail: event.detail }));
-  return { database, store, catalog, enable, resolve, managed, audit, permissionChecks };
+  return { database, store, catalog, enable, resolve, match, deps, managed, audit, permissionChecks };
 }
 
 test('a needsWrite command is refused until an administrator allows it, and then only for commenters with write permission', async t => {
@@ -82,6 +82,41 @@ test('a needsWrite command is refused until an administrator allows it, and then
     { command: 'deploy-one-release', allowWrite: false, previous: true },
     { command: 'deploy-one-release', allowWrite: true, previous: false },
   ]);
+});
+
+test('matching a needsWrite command reads no permission and creates no grant; authorizing it, after intake claimed the comment, does both', async t => {
+  const f = await fixture(t);
+  await f.enable(ONE);
+  await f.store.setCommandWrite('1', ONE, 'deploy-one-release', true);
+  const grants = async () => Number((await f.database('plugin_command_write_grants').count({ n: '*' }).first())?.n);
+
+  // Comment intake matches before it claims the comment: a redelivered or gate-refused comment stops here.
+  const matched = await f.match('/deploy-one-release v2');
+  assert.equal(matched.status, 'resolved');
+  if (matched.status !== 'resolved') return;
+  const writeServer = await f.managed(ONE, 'deploy-one-api');
+  assert.deepEqual(matched.pendingWrite, { repository: 'owner/app', number: 42, author: 'maintainer', servers: [writeServer.name] });
+  assert.equal(matched.run.writeGrant, undefined);
+  assert.deepEqual(f.permissionChecks, [], 'GitHub is not asked');
+  assert.equal(await grants(), 0, 'no grant row');
+
+  const authorized = await authorizePluginCommandWrite(matched, f.deps);
+  assert.equal(authorized.status, 'resolved');
+  if (authorized.status !== 'resolved') return;
+  assert.deepEqual(authorized.run.writeGrant && { ...authorized.run.writeGrant, id: 'id' }, { id: 'id', repository: 'owner/app', number: 42, servers: [writeServer.name] });
+  assert.equal('pendingWrite' in authorized, false);
+  assert.deepEqual(f.permissionChecks, ['owner/app:maintainer']);
+  assert.equal(await grants(), 1);
+
+  // A commenter without write permission is refused at authorization, with no grant.
+  const outsider = await authorizePluginCommandWrite(await f.match('/deploy-one-release', { author: 'drive-by' }), f.deps);
+  assert.equal(outsider.status, 'refused');
+  if (outsider.status === 'refused') assert.match(outsider.message, /^\/deploy-one-release of the .+ plugin needs write access: only people with write permission on owner\/app can run it\. Nothing was started\.$/);
+  assert.equal(await grants(), 1);
+  // Anything else passes through unchanged, without a permission read.
+  const refused = { status: 'refused' as const, pluginId: ONE, pluginName: 'One', command: 'deploy-one-release', message: 'no' };
+  assert.equal(await authorizePluginCommandWrite(refused, f.deps), refused);
+  assert.deepEqual(f.permissionChecks, ['owner/app:maintainer', 'owner/app:drive-by']);
 });
 
 test('the write grant is consumed once, by the run it was made for: a retry or a later run gets none', async t => {
@@ -358,20 +393,4 @@ test('an issue comment and a review comment with the same number are two command
   assert.deepEqual((await pluginStateStore(f.database, ONE).get('seen') as Array<{ id: string; repository: string }>).map(s => [s.id, s.repository]), [['cmd-issue-7070', 'owner/app']]);
   assert.deepEqual((await pluginStateStore(f.database, TWO).get('seen') as Array<{ id: string; repository: string }>).map(s => [s.id, s.repository]), [['cmd-review-7070', 'owner/other']]);
   await runner.stop();
-});
-
-test('a pull request comment accepted under the former id (`cmd-pull_request-<id>`) stays a duplicate of either kind', async t => {
-  const f = await fixture(t);
-  await f.enable(ONE);
-  const delivery = { pluginId: ONE, pluginName: 'Deploy one', command: 'deploy-one', handler: 'deploy', argument: '' };
-  await f.database('plugin_command_acceptances').insert({ delivery_id: 'cmd-pull_request-6060', plugin_id: ONE, command: 'deploy-one', created_at: Date.now() });
-  const context = { repository: 'owner/app', number: 42, target: 'pull_request' as const, actor: 'maintainer', commentId: 6060 };
-  assert.equal(await enqueuePluginCommandDelivery(f.database, delivery, { ...context, commentType: 'issue' }), false);
-  assert.equal(await enqueuePluginCommandDelivery(f.database, delivery, { ...context, commentType: 'review' }), false);
-  // An issue's comments kept their id: an acceptance from before is the same record.
-  await f.database('plugin_command_acceptances').insert({ delivery_id: 'cmd-issue-6061', plugin_id: ONE, command: 'deploy-one', created_at: Date.now() });
-  assert.equal(await enqueuePluginCommandDelivery(f.database, delivery, { ...context, target: 'issue', number: 7, commentType: 'issue', commentId: 6061 }), false);
-  assert.equal((await listPluginActivity(f.database, ONE)).deliveries.length, 0);
-  // Other comments are new commands.
-  assert.equal(await enqueuePluginCommandDelivery(f.database, delivery, { ...context, commentType: 'review', commentId: 6062 }), true);
 });

@@ -556,6 +556,7 @@ jobs:
               scripts/ci-runner-evidence.sh \
               scripts/ci-rootless-preflight.sh \
               scripts/smoke-check-app-agent-build-context.sh \
+              scripts/smoke-check-app-plugins.sh \
               scripts/smoke-check-app-sharp.sh \
               scripts/smoke-test-images.sh \
               scripts/smoke-test-preview-agent-image.sh \
@@ -1061,6 +1062,29 @@ jobs:
           }
           if [ $PLUGIN_DOCS_FAILED -eq 0 ]; then
             echo "✅ Plugin docs are current" >> build_log.txt
+          fi
+
+          # The registry package's own lint (its handlers, shared helpers and
+          # test kit, with the root config's no-core-imports rule for plugin
+          # folders). The root lint covers src/ only.
+          echo -e "\n--- Plugins: Lint ---" >> build_log.txt
+          PLUGINS_LINT_FAILED=0
+          if ! build_shared_once; then
+            echo "❌ Shared Package Build FAILED (plugins dependency)" >> build_log.txt
+            echo "$SHARED_OUTPUT" >> build_log.txt
+            PLUGINS_LINT_FAILED=1
+            EXIT_CODE=1
+          fi
+          if [ $PLUGINS_LINT_FAILED -eq 0 ]; then
+            PLUGINS_LINT_OUTPUT=$(npm run lint -w @propr/plugins -- --max-warnings 0 2>&1) || {
+              echo "❌ Plugins Lint FAILED" >> build_log.txt
+              echo "$PLUGINS_LINT_OUTPUT" >> build_log.txt
+              PLUGINS_LINT_FAILED=1
+              EXIT_CODE=1
+            }
+          fi
+          if [ $PLUGINS_LINT_FAILED -eq 0 ]; then
+            echo "✅ Plugins Lint passed" >> build_log.txt
           fi
 
           # --- API REFERENCE ---

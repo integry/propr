@@ -685,10 +685,10 @@ export { PluginWebhookRunner, type PluginWebhookRunnerOptions } from './plugins/
 export { PluginWebhookReceiver, type PluginWebhookReceiverOptions, type PluginWebhookReply } from './plugins/pluginWebhookReceiver.js';
 export { PLUGIN_WEBHOOK_ROUTE, pluginWebhookEndpoints, regeneratePluginWebhookKey, type PluginWebhookEndpoints } from './plugins/pluginWebhooks.js';
 export {
-    applicablePluginCommands, candidatePluginCommandName, listPluginCommandHelp, pluginCommandConflicts, pluginCommandExtensions, resolveCommentPluginCommand, resolvePluginCommand, setPluginCommandResolver,
+    applicablePluginCommands, authorizeCommentPluginCommand, authorizePluginCommandWrite, candidatePluginCommandName, listPluginCommandHelp, matchPluginCommand, pluginCommandConflicts, pluginCommandExtensions, resolveCommentPluginCommand, resolvePluginCommand, setPluginCommandResolver, setPluginCommandWriteAuthorizer,
     pluginCommandWriteServers, sharedCommandChoiceMessage,
     type PluginCommandDelivery, type PluginCommandHelp, type PluginCommandRun, type PluginCommandResolution, type PluginCommandRequest, type PluginCommandResolver,
-    type PluginCommandWriteGrant, type RepositoryWritePermission,
+    type PluginCommandWriteGrant, type RepositoryWritePermission, type MatchedPluginCommand, type PendingPluginCommandWrite, type PluginCommandWriteAuthorizer,
 } from './plugins/pluginCommands.js';
 export {
     PLUGIN_COMMAND_WRITE_GRANT_TTL_MS, consumePluginCommandWriteGrant, createPluginCommandWriteGrant, readPluginCommandAccess, type PluginCommandAccess,

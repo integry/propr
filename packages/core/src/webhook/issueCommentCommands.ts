@@ -6,7 +6,7 @@ import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilte
 import { commentSeatConsumed } from './followupAssignmentGate.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
-import { resolveCommentPluginCommand, type PluginCommandDelivery } from '../plugins/pluginCommands.js';
+import { authorizeCommentPluginCommand, resolveCommentPluginCommand, type PluginCommandDelivery } from '../plugins/pluginCommands.js';
 import { enqueueCommentPluginCommand, type PluginCommandContext } from '../plugins/pluginCommandDeliveries.js';
 import {
   issueCommandIntentKey, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
@@ -163,14 +163,14 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   const repository = `${owner}/${repo}`;
   const { comment, issue } = payload;
   const author = comment.user.login;
-  const resolution = await resolveCommentPluginCommand({ body: comment.body, repository, target: 'issue', author, number: issue.number });
-  if (resolution.status === 'none') return IGNORED;
+  const matched = await resolveCommentPluginCommand({ body: comment.body, repository, target: 'issue', author, number: issue.number });
+  if (matched.status === 'none') return IGNORED;
 
   // The trigger access rules of comment commands.
   if (filterCommentByAuthor(author, comment.user.type ?? null, correlationId).shouldFilter) return { status: 'ignored', reason: 'filtered_author' };
   if (checkCommentIgnore(comment.body, await (deps.ignoreKeywords ?? defaultIgnoreKeywords)(), correlationId).shouldIgnore) return { status: 'ignored', reason: 'ignore_keyword' };
   // A handler command starts no task: its delivery is recorded once per comment (a redelivery finds it recorded).
-  if (resolution.status === 'handler') return deliverHandlerCommand(resolution.delivery, { repository, number: issue.number, target: 'issue', commentType: 'issue', actor: author, commentId: comment.id }, log, commentSeatConsumed(author, comment.user.type ?? null));
+  if (matched.status === 'handler') return deliverHandlerCommand(matched.delivery, { repository, number: issue.number, target: 'issue', commentType: 'issue', actor: author, commentId: comment.id }, log, commentSeatConsumed(author, comment.user.type ?? null));
 
   // This attempt's token: its comment claim, the issue's dedupe window and
   // its command record are released or replaced only while they still hold it.
@@ -238,6 +238,9 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   try {
     const github = await (deps.github ?? defaultGitHub)();
     const reply = (text: string) => github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issue.number, body: `@${author} ${text}` });
+    // Settled only now that this attempt holds the comment's claim: a redelivery
+    // reads no write permission and creates no write grant.
+    const resolution = await authorizeCommentPluginCommand(matched);
     // Reports the command as not started. Its own pending record, left by an
     // earlier attempt whose label could still start it, is retired first, so
     // no later label event runs a command ProPR refused, nor a job a label

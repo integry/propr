@@ -269,12 +269,12 @@ const isNotice = (value: unknown): value is PluginDegradedNotice => {
   const notice = value as Partial<PluginDegradedNotice> | null;
   return Boolean(notice) && typeof notice!.pluginId === 'string' && typeof notice!.installedAt === 'number' && typeof notice!.degradedAt === 'number';
 };
-/** The notices owed, oldest first: `degraded_notice` holds a JSON list (a single notice, as an earlier copy stored it, counts as one). */
+/** The notices owed, oldest first: `degraded_notice` holds a JSON list. */
 function owedNotices(text: string | null | undefined): PluginDegradedNotice[] {
   if (!text) return [];
   try {
     const value: unknown = JSON.parse(text);
-    return (Array.isArray(value) ? value : [value]).filter(isNotice);
+    return Array.isArray(value) ? value.filter(isNotice) : [];
   } catch { return []; }
 }
 const sameNotice = (a: PluginDegradedNotice, b: PluginDegradedNotice) => a.pluginId === b.pluginId && a.installedAt === b.installedAt && a.degradedAt === b.degradedAt;

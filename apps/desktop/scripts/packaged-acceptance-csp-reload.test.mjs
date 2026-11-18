@@ -562,27 +562,15 @@ test('exact observer preserves native denied evidence across real Chromium navig
     response.end(`<meta http-equiv="Content-Security-Policy" content="${policy}"><title>CSP fixture</title>`);
   });
   const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const close = server => new Promise((resolve, reject) => {
-    server.close(error => error ? reject(error) : resolve());
-    server.closeAllConnections();
-  });
-  // Teardown is bounded: an unbounded browser.close() in an after hook once
-  // held this CI job for ten minutes with only the main Chromium process left,
-  // which skipped the whole unsigned packaging matrix. The browser runs as an
-  // owned server process so a stuck close can be escalated to SIGKILL.
-  const within = (promise, ms) => Promise.race([promise.then(() => true, () => true),
-    new Promise(resolve => setTimeout(resolve, ms, false).unref())]);
-  let browserServer;
-  t.after(async () => {
-    if (browserServer && !await within(browserServer.close(), 10_000)) browserServer.process().kill('SIGKILL');
-    await Promise.all([api, document].filter(server => server.listening).map(close));
-  });
+  const close = server => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   await listen(api);
+  t.after(() => close(api));
   const fixtureOrigin = `http://127.0.0.1:${api.address().port}`;
   await listen(document);
+  t.after(() => close(document));
   const documentOrigin = `http://127.0.0.1:${document.address().port}`;
-  browserServer = await chromium.launchServer({ args: ['--no-sandbox'] });
-  const browser = await chromium.connect(browserServer.wsEndpoint());
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  t.after(() => browser.close());
   t.diagnostic(`Chromium ${browser.version()}`);
   const page = await browser.newPage();
   await page.goto(documentOrigin + '/denied');

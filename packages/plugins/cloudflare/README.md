@@ -21,22 +21,25 @@ User documentation:
 Tests: `packages/plugins/test/deployPlugins.test.ts` (manifest, allow-lists
 against the fixture, the instruction `/deploy` queues for each setting, the
 skill and the template) and `packages/core/test/deployPlugins.test.ts`
-(install, connect and enable give the read item auto-applied and the write
-item not; `/deploy` write authorization; two deployment plugins sharing
+(install, connect and enable give both items, neither auto-applied; `/deploy` write authorization; two deployment plugins sharing
 `/deploy`; the template offered only while enabled).
 
 ## What it contributes
 
-- **`cloudflare` (read, applied automatically):** `https://mcp.cloudflare.com/mcp`
+- **`cloudflare` (read, not applied automatically):** `https://mcp.cloudflare.com/mcp`
   with the **read-only API token**, tools `docs`, `search`, `execute`,
-  `whoami`. `execute` can call any endpoint, but Cloudflare refuses every
-  change made with a token that has Read permissions only.
+  `whoami`. `execute` can call any endpoint, and Cloudflare refuses every
+  change made with a token that has Read permissions only. Because only the
+  token keeps it read-only (an Edit token pasted into this field would give
+  every run write access), ordinary runs do not get it: a `/deploy` run adds
+  it. An administrator who has checked the token can turn on automatic apply
+  for it in Skills & MCP servers, for example for the template's report.
 - **`cloudflare-write` (write, never applied automatically):** the same server
   with the **deploy API token**, tools `search`, `execute`, `whoami`. Only a
   `/deploy` run gets it, and only when an administrator switched on
   "Allow this command to use write access" for the command and the commenter
   has write permission on the repository. The run uses its single-use grant;
-  a retry or later follow-up gets the read server only.
+  a retry or later follow-up gets neither server.
 - **Skill `cloudflare-deploy`** and the **template**.
 - **Commands** (`prompt`, pull requests only, `needsWrite`): `/deploy` (shared
   with other deployment plugins) and `/deploy-cloudflare`. The task's
@@ -127,10 +130,10 @@ before a release:
 
 - [ ] Install, set both tokens, the account id and a project mapping, and
       enable. The extension library shows `cloudflare` (read, automatic apply
-      on) and `cloudflare-write` (write, automatic apply off), both managed by
+      off) and `cloudflare-write` (write, automatic apply off), both managed by
       the plugin, and the `cloudflare-deploy` skill.
-- [ ] Start an ordinary task in the repository: the run lists `cloudflare`,
-      not `cloudflare-write`.
+- [ ] Start an ordinary task in the repository: the run lists neither
+      `cloudflare` nor `cloudflare-write`.
 - [ ] Comment `/deploy-cloudflare` on a pull request before switching on
       write access: ProPR replies that an administrator has not allowed it,
       and no task starts.

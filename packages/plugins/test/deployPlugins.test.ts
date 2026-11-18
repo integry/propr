@@ -8,7 +8,7 @@ import { testCommandInstruction } from '../testing/index.js';
 
 /**
  * The deployment plugins (Cloudflare and Vercel) are declarative: a read
- * server applied automatically, a write server only `/deploy` adds, a skill, a
+ * server (applied automatically for Vercel only), a write server only `/deploy` adds, a skill, a
  * report template and the shared `/deploy` with a specific command. Their
  * allow-lists are checked against the vendor's documented tools, captured in
  * `<plugin>/fixtures/tools.json`, and the instruction `/deploy` queues is
@@ -20,14 +20,14 @@ const documented = (id: string) => JSON.parse(readFileSync(path.join(PLUGINS_ROO
 const plugin = (id: string) => getOfficialPlugin(id, { includeDevelopment: false })!;
 
 const PLUGINS = [
-  { id: 'cloudflare', name: 'Cloudflare', account: 'accountId', read: 'cloudflare', write: 'cloudflare-write', skill: 'cloudflare-deploy', url: 'https://mcp.cloudflare.com/mcp', docs: 'https://github.com/cloudflare/mcp' },
-  { id: 'vercel', name: 'Vercel', account: 'teamId', read: 'vercel', write: 'vercel-write', skill: 'vercel-deploy', url: 'https://mcp.vercel.com', docs: 'https://vercel.com/docs/agent-resources/vercel-mcp/tools' },
+  { id: 'cloudflare', name: 'Cloudflare', account: 'accountId', read: 'cloudflare', write: 'cloudflare-write', skill: 'cloudflare-deploy', readAutoApply: false, url: 'https://mcp.cloudflare.com/mcp', docs: 'https://github.com/cloudflare/mcp' },
+  { id: 'vercel', name: 'Vercel', account: 'teamId', read: 'vercel', write: 'vercel-write', skill: 'vercel-deploy', readAutoApply: true, url: 'https://mcp.vercel.com', docs: 'https://vercel.com/docs/agent-resources/vercel-mcp/tools' },
 ] as const;
 
 const servers = (manifest: PluginManifest) => Object.fromEntries(manifest.contributes.mcpServers.map(s => [s.name, s]));
 
 for (const p of PLUGINS) {
-  test(`${p.name}: a read server applied automatically and a write server never applied automatically, a skill, a template and /deploy; no handlers`, () => {
+  test(`${p.name}: a read server (applied automatically only when its tools only read) and a write server never applied automatically, a skill, a template and /deploy; no handlers`, () => {
     const { manifest, assets } = plugin(p.id);
     assert.equal(manifest.category, 'deployment');
     assert.equal(assets.handlers, null, 'no handlers module');
@@ -39,7 +39,7 @@ for (const p of PLUGINS) {
     assert.deepEqual(projects.type === 'object' && projects.format, 'repository-map');
     const { mcpServers, skills, commands, subscriptions, webhooks, automationTemplates } = manifest.contributes;
     assert.deepEqual([subscriptions, webhooks], [[], []]);
-    assert.deepEqual(mcpServers.map(s => [s.name, s.kind === 'https' && s.url, s.capability, s.autoApply]), [[p.read, p.url, 'read', true], [p.write, p.url, 'write', false]]);
+    assert.deepEqual(mcpServers.map(s => [s.name, s.kind === 'https' && s.url, s.capability, s.autoApply]), [[p.read, p.url, 'read', p.readAutoApply], [p.write, p.url, 'write', false]]);
     // The two servers use separate credentials: the write one never reaches a run through the read one's sign-in or token.
     const [read, write] = mcpServers;
     assert.ok(read.kind === 'https' && write.kind === 'https' && read.connection && write.connection && read.connection !== write.connection);
@@ -72,8 +72,10 @@ for (const p of PLUGINS) {
         assert.ok(!read.tools.includes(tool) && !write.tools.includes(tool), `${tool} is not offered`);
       }
     } else {
-      // Cloudflare's execute tool can call any endpoint: the read server's token has Read permissions only.
+      // Cloudflare's execute tool can call any endpoint: the read server's token has Read permissions only, and because
+      // only the token keeps it read-only, the read server is not applied to ordinary runs automatically.
       assert.equal(byName.get('execute')!.access, 'token');
+      assert.ok(read.tools.includes('execute') && read.autoApply === false, 'a read server with a token-scoped tool is not applied automatically');
       const connection = (name: string) => manifest.connections.find(c => c.name === name)!;
       const readToken = connection(read.kind === 'https' ? read.connection! : '');
       const deployToken = connection(write.kind === 'https' ? write.connection! : '');

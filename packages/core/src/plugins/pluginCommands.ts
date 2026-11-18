@@ -57,11 +57,24 @@ export interface PluginCommandRun {
 /** A `handler` command to deliver to its plugin's handler. */
 export interface PluginCommandDelivery { pluginId: string; pluginName: string; command: string; handler: string; argument: string }
 
+/**
+ * The write authorization a matched `needsWrite` command still needs: the
+ * commenter's write permission (a GitHub call) and its single-use grant (a
+ * database row). Settled by `authorizePluginCommandWrite` only once the
+ * comment is claimed and passed its gates, so a redelivered or refused
+ * comment calls GitHub for nothing and leaves no unused grant.
+ */
+export interface PendingPluginCommandWrite { repository: string; number: number; author: string; servers: string[] }
+
 export type PluginCommandResolution =
   | { status: 'none' }
   | { status: 'refused'; pluginId: string | null; pluginName: string | null; command: string; message: string }
-  | { status: 'resolved'; run: PluginCommandRun }
+  | { status: 'resolved'; run: PluginCommandRun; pendingWrite?: PendingPluginCommandWrite }
   | { status: 'handler'; delivery: PluginCommandDelivery };
+/** A resolution that names a command of an enabled plugin. */
+export type MatchedPluginCommand = Exclude<PluginCommandResolution, { status: 'none' }>;
+/** What settling a pending write authorization can turn a resolution into. */
+type WriteAuthorizationOutcome = Extract<PluginCommandResolution, { status: 'refused' | 'resolved' }>;
 
 export interface PluginCommandRequest {
   body: string | null | undefined;
@@ -174,22 +187,36 @@ export const githubWritePermission: RepositoryWritePermission = async (repositor
   }
 };
 
-/** Why a `needsWrite` command may not run for this comment, or null when it may. */
-async function writeRefusal(request: PluginCommandRequest, match: Match, access: PluginCommandAccess, deps: PluginCommandDependencies): Promise<string | null> {
+const writeNeeded = (run: Pick<PluginCommandRun, 'command' | 'pluginName'>) => `/${run.command} of the ${run.pluginName} plugin needs write access`;
+
+/** Why a `needsWrite` command may not run for this comment from what ProPR stores, or null when only the commenter's permission is left to check. */
+function storedWriteRefusal(request: PluginCommandRequest, match: Match, access: PluginCommandAccess): string | null {
   const { manifest, command } = match;
-  const who = `/${command.name} of the ${manifest.name} plugin needs write access`;
+  const who = writeNeeded({ command: command.name, pluginName: manifest.name });
   if (!access.writeAllowed.has(commandKey(manifest.id, command.name))) {
     return `${who}, and an administrator has not allowed it: "Allow this command to use write access" is off for /${command.name} on the Plugins page. Nothing was started.`;
   }
   if (!request.author || request.number === undefined) return `${who}, and ProPR could not tell who ran it. Nothing was started.`;
-  if (!await (deps.writePermission ?? githubWritePermission)(request.repository, request.author)) {
-    return `${who}: only people with write permission on ${request.repository} can run it. Nothing was started.`;
-  }
   return null;
 }
 
-/** Resolve one comment against the enabled plugins' commands. */
+/**
+ * Resolve one comment against the enabled plugins' commands, and settle a
+ * `needsWrite` command's write authorization at once. Comment intake instead
+ * calls `matchPluginCommand` first and `authorizePluginCommandWrite` once the
+ * comment is claimed.
+ */
 export async function resolvePluginCommand(request: PluginCommandRequest, deps: PluginCommandDependencies): Promise<PluginCommandResolution> {
+  const matched = await matchPluginCommand(request, deps);
+  return matched.status === 'none' ? matched : authorizePluginCommandWrite(matched, deps);
+}
+
+/**
+ * Which command one comment runs, and what it would run with, reading only
+ * ProPR's own state: no GitHub call and nothing written. A `needsWrite`
+ * command an administrator allowed comes back with `pendingWrite`.
+ */
+export async function matchPluginCommand(request: PluginCommandRequest, deps: PluginCommandDependencies): Promise<PluginCommandResolution> {
   const name = candidatePluginCommandName(request.body);
   if (!name) return { status: 'none' };
   const rows = await deps.database('plugin_installations').where({ enabled: true }).select() as PluginInstallationRow[];
@@ -211,7 +238,7 @@ export async function resolvePluginCommand(request: PluginCommandRequest, deps: 
     return { status: 'handler', delivery: { pluginId: manifest.id, pluginName: manifest.name, command: name, handler: command.handler!, argument } };
   }
   if (command.needsWrite) {
-    const message = await writeRefusal(request, chosen, access, deps);
+    const message = storedWriteRefusal(request, chosen, access);
     if (message) return { status: 'refused', pluginId: manifest.id, pluginName: manifest.name, command: name, message };
   }
   const library = deps.library ? await deps.library() : await defaultLibrary(deps.database);
@@ -222,13 +249,25 @@ export async function resolvePluginCommand(request: PluginCommandRequest, deps: 
     }),
     extensions: pluginCommandExtensions(manifest.id, command, library),
   };
-  if (command.needsWrite) {
-    const servers = pluginCommandWriteServers(manifest.id, command, library);
-    const scope = { pluginId: manifest.id, command: name, repository: request.repository, number: request.number! };
-    const id = await createPluginCommandWriteGrant(deps.database, { ...scope, actor: request.author!, servers }, deps.now?.());
-    run.writeGrant = { id, repository: request.repository, number: request.number!, servers };
+  if (!command.needsWrite) return { status: 'resolved', run };
+  return { status: 'resolved', run, pendingWrite: { repository: request.repository, number: request.number!, author: request.author!, servers: pluginCommandWriteServers(manifest.id, command, library) } };
+}
+
+/**
+ * Settle a matched command's pending write authorization: refused unless the
+ * commenter has write permission on the repository; otherwise its single-use
+ * write grant is created and the run carries it. Any other resolution is
+ * returned unchanged. A failed permission read or grant write throws.
+ */
+export async function authorizePluginCommandWrite<R extends MatchedPluginCommand>(resolution: R, deps: Pick<PluginCommandDependencies, 'database' | 'writePermission' | 'now'>): Promise<R | WriteAuthorizationOutcome> {
+  if (resolution.status !== 'resolved' || !resolution.pendingWrite) return resolution;
+  const { run, pendingWrite: write } = resolution;
+  if (!await (deps.writePermission ?? githubWritePermission)(write.repository, write.author)) {
+    return { status: 'refused', pluginId: run.pluginId, pluginName: run.pluginName, command: run.command, message: `${writeNeeded(run)}: only people with write permission on ${write.repository} can run it. Nothing was started.` };
   }
-  return { status: 'resolved', run };
+  const scope = { pluginId: run.pluginId, command: run.command, repository: write.repository, number: write.number };
+  const id = await createPluginCommandWriteGrant(deps.database, { ...scope, actor: write.author, servers: write.servers }, deps.now?.());
+  return { status: 'resolved', run: { ...run, writeGrant: { id, repository: write.repository, number: write.number, servers: write.servers } } };
 }
 
 async function defaultLibrary(database: Knex): Promise<Pick<ExtensionLibraryRevision, 'servers' | 'skills'>> {
@@ -291,18 +330,38 @@ let resolver: PluginCommandResolver | null = null;
 export function setPluginCommandResolver(next: PluginCommandResolver | null): void { resolver = next; }
 
 /**
- * The resolution comment intake uses. A comment that cannot name a plugin
- * command costs nothing. When the plugin state cannot be read the command is
- * treated as unknown, as it would have been before plugins.
+ * The resolution comment intake uses, before it claims the comment: which
+ * command runs, without a GitHub call or a write (`matchPluginCommand`). A
+ * comment that cannot name a plugin command costs nothing. When the plugin
+ * state cannot be read the command is treated as unknown, as it would have
+ * been before plugins.
  */
 export async function resolveCommentPluginCommand(request: PluginCommandRequest): Promise<PluginCommandResolution> {
   if (!candidatePluginCommandName(request.body)) return { status: 'none' };
   try {
     if (resolver) return await resolver(request);
     const { db } = await import('../db/connection.js');
-    return await resolvePluginCommand(request, { database: db });
+    return await matchPluginCommand(request, { database: db });
   } catch (error) {
     logger.warn({ repository: request.repository, target: request.target, error: error instanceof Error ? error.message : String(error) }, '[plugins] Could not resolve a plugin command; treating it as unknown');
     return { status: 'none' };
   }
+}
+
+export type PluginCommandWriteAuthorizer = (resolution: Extract<PluginCommandResolution, { status: 'resolved' }>) => Promise<WriteAuthorizationOutcome>;
+let writeAuthorizer: PluginCommandWriteAuthorizer | null = null;
+/** Replace how comment intake settles a pending write authorization (tests), or restore the default with null. */
+export function setPluginCommandWriteAuthorizer(next: PluginCommandWriteAuthorizer | null): void { writeAuthorizer = next; }
+
+/**
+ * Comment intake's write authorization of a resolved command, once the
+ * comment is claimed and passed its gates (`authorizePluginCommandWrite` on
+ * the instance database). Throws when the permission or the grant cannot be
+ * settled, so intake releases its claim and the delivery is tried again.
+ */
+export async function authorizeCommentPluginCommand<R extends MatchedPluginCommand>(resolution: R): Promise<R | WriteAuthorizationOutcome> {
+  if (resolution.status !== 'resolved' || !resolution.pendingWrite) return resolution;
+  if (writeAuthorizer) return writeAuthorizer(resolution);
+  const { db } = await import('../db/connection.js');
+  return authorizePluginCommandWrite(resolution, { database: db });
 }

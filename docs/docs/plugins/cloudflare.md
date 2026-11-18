@@ -14,8 +14,11 @@ handlers. The agent performs the deploy, so the same write-authorization rules
 apply as to any write server.
 
 - **Read server** `cloudflare`: Cloudflare's API MCP server,
-  `https://mcp.cloudflare.com/mcp`, with a **read-only API token**. Applied
-  automatically to runs in the plugin's repositories.
+  `https://mcp.cloudflare.com/mcp`, with a **read-only API token**. Not
+  applied automatically: a `/deploy` run adds it. Its `execute` tool can call
+  any endpoint, so only the token keeps it read-only; an administrator who has
+  checked that the token has Read permissions only can turn on automatic apply
+  for it in Skills & MCP servers.
 - **Write server** `cloudflare-write`: the same server with a **deploy API
   token**. Never applied automatically; only a `/deploy` run allowed to use
   write access gets it, for that one run.
@@ -25,7 +28,9 @@ apply as to any write server.
 - **Commands** `/deploy` (shared with other deployment plugins) and
   `/deploy-cloudflare`, on pull requests.
 - **Automation template** "Deploy preview when review reaches the goal
-  (Cloudflare)": a dry-run report, offered while the plugin is enabled.
+  (Cloudflare)": a dry-run report, offered while the plugin is enabled. It
+  reports previews as "unknown" unless automatic apply is on for the read
+  server.
 
 ## How a preview is made
 
@@ -109,9 +114,9 @@ smoke-test checklist.
 
 ## No Netlify plugin
 
-Netlify publishes an official MCP server (the `@netlify/mcp` npm package and a
-remote server at `https://mcp.netlify.com/mcp`), but it cannot make a preview
-deploy. Its only deploy operation, `deploy-site`, builds the project and
+Netlify publishes an official MCP server (the `@netlify/mcp` npm package,
+which would qualify as a package server, and a remote server at
+`https://mcp.netlify.com/mcp`), but neither can make a preview deploy. Its only deploy operation, `deploy-site`, builds the project and
 publishes it: the remote server describes it as making the deploy "what
 visitors see", and the npm package's variant uploads a local folder to the
 site's builds endpoint. There is no draft or preview deploy operation, and

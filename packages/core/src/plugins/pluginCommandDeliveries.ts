@@ -42,14 +42,6 @@ type StoredCommandInput = Omit<PluginCommandContext, 'commentType'> & { command:
 
 export const pluginCommandDeliveryId = (commentType: PluginCommandCommentType, commentId: number) => `cmd-${commentType}-${commentId}`;
 /**
- * The id acceptances were keyed by before the comment type was part of it
- * (`cmd-<target>-<comment id>`). On an issue it is the current id (only issue
- * comments are posted there); `cmd-pull_request-<id>` is no longer written,
- * and could be either kind of pull request comment.
- */
-const legacyPluginCommandDeliveryId = (target: CommandTarget, commentId: number) => `cmd-${target}-${commentId}`;
-
-/**
  * Record a command delivery, pending. False when the plugin is no longer
  * enabled, or this comment was already accepted for any plugin (a redelivery).
  */
@@ -60,10 +52,6 @@ export async function enqueuePluginCommandDelivery(database: Knex, delivery: Plu
     const installed = await trx('plugin_installations').where({ plugin_id: delivery.pluginId, enabled: true }).first('plugin_id');
     if (!installed) return false;
     const deliveryId = pluginCommandDeliveryId(commentType, context.commentId);
-    // A pull request comment accepted under the former id, which did not say which kind of
-    // comment it was, stays a duplicate: it is never written again, so only such records match.
-    const legacyId = legacyPluginCommandDeliveryId(context.target, context.commentId);
-    if (legacyId !== deliveryId && await trx('plugin_command_acceptances').where({ delivery_id: legacyId }).first('delivery_id')) return false;
     // The comment's acceptance, whichever plugin it went to: a redelivery after the
     // shared owner changed (or the plugin was uninstalled) finds it and records nothing.
     const accepted = await trx('plugin_command_acceptances').insert({ delivery_id: deliveryId, plugin_id: delivery.pluginId, command: delivery.command, created_at: now })
