@@ -758,13 +758,13 @@ describe('processMergeConflictJob', () => {
     });
 
     function fakeCommentThread() {
-        const comments: Array<{ id: number; body: string; user: { type: string } }> = [];
+        const comments: Array<{ id: number; body: string; user: { type: string; login: string } }> = [];
         let nextId = 500;
         mockOctokit.request.mock.mockImplementation(async (route: string, ...args: unknown[]) => {
             const params = (args[0] ?? {}) as { body?: string; comment_id?: number };
             if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') return { data: comments.map(comment => ({ ...comment })) };
             if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
-                const comment = { id: nextId++, body: params.body!, user: { type: 'Bot' } };
+                const comment = { id: nextId++, body: params.body!, user: { type: 'Bot', login: 'propr-dev[bot]' } };
                 comments.push(comment);
                 return { data: comment };
             }

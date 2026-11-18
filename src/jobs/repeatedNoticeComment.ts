@@ -14,6 +14,7 @@
  * dropped.
  */
 import { createHash } from 'node:crypto';
+import * as core from '@propr/core';
 
 export interface NoticeOctokit {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -71,7 +72,20 @@ export interface PublishRepeatedNoticeResult {
 }
 
 const MARKER_PREFIX = '<!-- propr:notice';
-const MAX_COMMENT_PAGES = 10;
+const COMMENTS_PER_PAGE = 100;
+const DEFAULT_BOT_USERNAME = 'propr-dev[bot]';
+
+/**
+ * The logins ProPR posts as: the detected or configured App bot, as in the
+ * CI-failure grouping. Read at call time, since detection runs at startup.
+ */
+export function proprBotUsernames(): Set<string> {
+    // Namespace access: suites that mock the core module without this export still load.
+    const getBotUsername = (core as { getBotUsername?: () => string | undefined }).getBotUsername;
+    return new Set(
+        [getBotUsername?.(), process.env.GITHUB_BOT_USERNAME, DEFAULT_BOT_USERNAME].filter((name): name is string => Boolean(name)),
+    );
+}
 
 /** Removes the parts of a notice that change on every repeat of one event. */
 export function normalizeNoticeText(text: string): string {
@@ -106,22 +120,28 @@ interface ExistingNotice {
     count: number;
 }
 
-/** The latest bot-authored comment carrying this notice's marker, if any. */
+/** Only ProPR's own comments: the marker is copyable text, so a person or another bot quoting it is never edited. */
+function isProprComment(user: { login?: unknown } | null | undefined, botUsernames: Set<string>): boolean {
+    return typeof user?.login === 'string' && botUsernames.has(user.login);
+}
+
+function lastTouched(comment: { updated_at?: unknown; created_at?: unknown }): number {
+    return Date.parse(String(comment.updated_at ?? comment.created_at ?? ''));
+}
+
+/** The latest ProPR-authored comment carrying this notice's marker, if any. */
 export function findRepeatedNotice(
     comments: unknown[], notice: RepeatedNotice,
-    { excludeCommentId, notBefore }: { excludeCommentId?: number; notBefore?: number } = {},
+    { excludeCommentId, notBefore, botUsernames = proprBotUsernames() }: { excludeCommentId?: number; notBefore?: number; botUsernames?: Set<string> } = {},
 ): ExistingNotice | null {
     const identity = markerIdentity(notice.kind, repeatedNoticeKey(notice));
     let found: ExistingNotice | null = null;
     for (const comment of comments) {
         if (typeof comment !== 'object' || comment === null) continue;
-        const { id, body, user, updated_at: updatedAt, created_at: createdAt } = comment as {
-            id?: unknown; body?: unknown; user?: { type?: unknown } | null; updated_at?: unknown; created_at?: unknown;
-        };
+        const { id, body, user } = comment as { id?: unknown; body?: unknown; user?: { login?: unknown } | null };
         if (typeof id !== 'number' || id === excludeCommentId || typeof body !== 'string') continue;
-        // Only the app's own comments: a person quoting the marker is never edited.
-        if (user?.type !== 'Bot') continue;
-        const touched = Date.parse(String(updatedAt ?? createdAt ?? ''));
+        if (!isProprComment(user, botUsernames)) continue;
+        const touched = lastTouched(comment);
         if (notBefore !== undefined && Number.isFinite(touched) && touched < notBefore) continue;
         const at = body.lastIndexOf(identity);
         if (at === -1) continue;
@@ -131,16 +151,24 @@ export function findRepeatedNotice(
     return found;
 }
 
-async function listThreadComments(octokit: NoticeOctokit, target: RepeatedNoticeTarget): Promise<unknown[]> {
+/**
+ * Every comment on the thread, oldest first. The newest comments are the last
+ * page, so the whole thread is read: a cap would miss a notice posted after
+ * it on a long thread and post a new one on every repeat. `since` limits the
+ * read to comments touched inside the repeat window when there is one.
+ */
+async function listThreadComments(octokit: NoticeOctokit, target: RepeatedNoticeTarget, notBefore?: number): Promise<unknown[]> {
     const comments: unknown[] = [];
-    for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+    const since = notBefore === undefined ? undefined : new Date(notBefore).toISOString();
+    for (let page = 1; ; page++) {
         const response = await octokit.request<{ data?: unknown }>('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: target.owner, repo: target.repo, issue_number: target.issueNumber, per_page: 100, page,
+            owner: target.owner, repo: target.repo, issue_number: target.issueNumber, per_page: COMMENTS_PER_PAGE, page,
+            ...(since ? { since } : {}),
         });
         const data = response?.data;
         if (!Array.isArray(data)) break;
         comments.push(...data);
-        if (data.length < 100) break;
+        if (data.length < COMMENTS_PER_PAGE) break;
     }
     return comments;
 }
@@ -158,10 +186,11 @@ export async function publishRepeatedNotice(
     const { ownCommentId, log } = options;
     const now = options.now ?? new Date();
     let existing: ExistingNotice | null = null;
+    const notBefore = options.withinMs === undefined ? undefined : now.getTime() - options.withinMs;
     try {
-        existing = findRepeatedNotice(await listThreadComments(octokit, target), notice, {
+        existing = findRepeatedNotice(await listThreadComments(octokit, target, notBefore), notice, {
             excludeCommentId: ownCommentId,
-            notBefore: options.withinMs === undefined ? undefined : now.getTime() - options.withinMs,
+            notBefore,
         });
     } catch (error) {
         log?.warn({ kind: notice.kind, error: (error as Error).message }, 'Could not read earlier notices; posting a new one');

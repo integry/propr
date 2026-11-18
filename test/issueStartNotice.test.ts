@@ -26,14 +26,14 @@ await mock.module('../src/jobs/blockedRunText.js', { namedExports: { workflowRep
 
 const { executeWorktreeOperations } = await import('../src/jobs/issueJob/worktree.js');
 
-type Comment = { id: number; body: string; user: { type: string } };
+type Comment = { id: number; body: string; user: { type: string; login: string } };
 
 function thread() {
     const comments: Comment[] = [];
     const request = async (route: string, params: { body?: string; comment_id?: number }) => {
         if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') return { data: comments.map(comment => ({ ...comment })) };
         if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
-            const comment = { id: comments.length + 1, body: params.body!, user: { type: 'Bot' } };
+            const comment = { id: comments.length + 1, body: params.body!, user: { type: 'Bot', login: 'propr-dev[bot]' } };
             comments.push(comment);
             return { data: comment };
         }

@@ -14,10 +14,13 @@ function fakeThread(initial: Comment[] = []) {
         routes.push(route);
         if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') {
             const page = Number(params.page ?? 1);
-            return { data: page === 1 ? comments.map(comment => ({ ...comment })) : [] };
+            const perPage = Number(params.per_page ?? 30);
+            const since = params.since === undefined ? -Infinity : Date.parse(String(params.since));
+            const visible = comments.filter(comment => Date.parse(comment.updated_at) >= since);
+            return { data: visible.slice((page - 1) * perPage, page * perPage).map(comment => ({ ...comment })) };
         }
         if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
-            const comment = { id: nextId++, body: String(params.body), user: { type: 'Bot', login: 'propr[bot]' }, updated_at: new Date().toISOString() };
+            const comment = { id: nextId++, body: String(params.body), user: { type: 'Bot', login: 'propr-dev[bot]' }, updated_at: new Date().toISOString() };
             comments.push(comment);
             return { data: comment };
         }
@@ -91,11 +94,47 @@ test('a person quoting the marker is never edited, and an old notice outside the
     const marked = buildRepeatedNoticeBody(notice, 1);
     const thread = fakeThread([
         { id: 1, body: marked, user: { type: 'User', login: 'someone' }, updated_at: new Date().toISOString() },
-        { id: 2, body: marked, user: { type: 'Bot', login: 'propr[bot]' }, updated_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+        { id: 2, body: marked, user: { type: 'Bot', login: 'propr-dev[bot]' }, updated_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
     ]);
     await publishRepeatedNotice(thread.octokit, target, notice, { withinMs: 60 * 60 * 1000 });
     assert.equal(thread.comments.length, 3);
     assert.deepEqual(thread.comments.slice(0, 2).map(comment => comment.body), [marked, marked]);
+});
+
+test('another bot quoting the marker is never edited; the earlier ProPR notice is updated', async () => {
+    const notice = { kind: 'merge-conflict-failed', scope: 'sha-1', body: '❌ failed' };
+    const marked = buildRepeatedNoticeBody(notice, 1);
+    const quoted = `> ${marked}\n\nSee above.`;
+    const now = new Date().toISOString();
+    const thread = fakeThread([
+        { id: 1, body: marked, user: { type: 'Bot', login: 'propr-dev[bot]' }, updated_at: now },
+        { id: 2, body: quoted, user: { type: 'Bot', login: 'other-app[bot]' }, updated_at: now },
+    ]);
+    const result = await publishRepeatedNotice(thread.octokit, target, notice);
+    assert.deepEqual(result, { commentId: 1, repeated: true, count: 2 });
+    assert.equal(thread.comments.length, 2);
+    assert.equal(thread.comments[1].body, quoted, 'the other bot comment is untouched');
+    assert.match(thread.comments[0].body, /count="2" -->$/);
+});
+
+test('a notice after the first 1,000 comments is still found and updated on a repeat', async () => {
+    const old = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const history = Array.from({ length: 1050 }, (_, index) => ({
+        id: 100_000 + index, body: `comment ${index}`, user: { type: 'User', login: 'someone' }, updated_at: old,
+    }));
+    for (const withinMs of [undefined, 60 * 60 * 1000]) {
+        const thread = fakeThread(history);
+        const notice = { kind: 'started', scope: 'task-1', body: 'AI processing has started' };
+        const first = await publishRepeatedNotice(thread.octokit, target, notice, { withinMs });
+        const second = await publishRepeatedNotice(thread.octokit, target, notice, { withinMs });
+        const third = await publishRepeatedNotice(thread.octokit, target, notice, { withinMs });
+        assert.equal(first.repeated, false);
+        assert.deepEqual([second, third], [
+            { commentId: first.commentId, repeated: true, count: 2 },
+            { commentId: first.commentId, repeated: true, count: 3 },
+        ], `withinMs=${withinMs}`);
+        assert.equal(thread.comments.length, 1051);
+    }
 });
 
 test('an attempt comment is removed when an earlier identical notice is updated instead', async () => {
