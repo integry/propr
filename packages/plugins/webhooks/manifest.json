@@ -15,6 +15,7 @@
       "type": "signing_secret",
       "name": "target-1-secret",
       "label": "Target 1 signing secret",
+      "required": true,
       "help": "A random secret of at least 32 characters, also configured on the receiving endpoint. Every delivery to target 1 is signed with it (HMAC-SHA256 in the X-ProPR-Signature header); without it nothing is sent to target 1.",
       "helpUrl": "https://github.com/integry/propr/blob/main/docs/docs/plugins/webhooks.md#verifying-a-delivery"
     },

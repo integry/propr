@@ -125,6 +125,14 @@ export async function createPluginCommandWriteGrant(database: Knex, scope: Plugi
 }
 
 /**
+ * Delete a write grant no run will use: intake created it and then queued no
+ * job carrying it. A grant already consumed is kept (it records its run).
+ */
+export async function discardPluginCommandWriteGrant(database: Knex, id: string): Promise<boolean> {
+  return (await database('plugin_command_write_grants').where({ id }).whereNull('consumed_at').delete()) > 0;
+}
+
+/**
  * Consume a write grant for the run starting now: the write servers it
  * covers, or null when it was already consumed (a retry or a later run), has
  * expired, or was made for another command run. Single use: of concurrent

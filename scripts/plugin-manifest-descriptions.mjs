@@ -28,6 +28,7 @@ export const MANIFEST_FIELD_DESCRIPTIONS = {
   'connections[]{type=*}.label': 'Label of the field on the Plugins page.',
   'connections[]{type=*}.help': 'What to paste or sign in with, shown under the field.',
   'connections[]{type=*}.helpUrl': 'Where the administrator obtains the credential.',
+  'connections[]{type=*}.required': 'Whether the plugin needs the connection to work. On a `token` or `signing_secret` connection, `true` means it must be set before the plugin can be enabled (a token an MCP server uses is always required; `false` is refused there). On an `oauth` connection an MCP server signs in with, `false` marks the sign-in optional; otherwise the plugin shows Degraded until it is signed in, which happens after enabling, so it never blocks enabling. Leave it out for optional connections such as extra destinations.',
   'connections[]{type=oauth}.registrations': 'OAuth client registration methods allowed, in the order the sign-in tries them.',
   'connections[]{type=oauth}.scopes': 'OAuth scopes to request. Ask for the narrowest scopes the plugin needs.',
   'connections[]{type=token}.secretUrl': 'The secret is a URL (an incoming webhook URL) instead of a token. Handlers send to it with `PLUGIN_CONNECTION_URL` and never learn it.',

@@ -90,6 +90,21 @@ test('a webhook URL is stored only on the vendor\'s documented host and path, an
   }
 });
 
+test('Discord and Teams need their default webhook URL to be enabled and while enabled; the other webhook URLs are optional', async t => {
+  const s = await setup(t);
+  for (const [id, url] of [['discord', 'https://discord.com/api/webhooks/1/tok'], ['teams', 'https://default01.cd.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/a/triggers/manual/paths/invoke?sig=s']] as const) {
+    const installed = await s.store.install('1', id);
+    assert.deepEqual(installed.enableBlockers, ['Connection Default webhook URL (default-webhook) is not set'], id);
+    assert.deepEqual(installed.connections.filter(c => c.required).map(c => c.name), ['default-webhook'], `${id}: webhook-2..4 are optional`);
+    await assert.rejects(s.store.setEnabled('1', id, true), refused(409, /Connection Default webhook URL \(default-webhook\) is not set/), id);
+    await s.store.setConnection('1', id, 'default-webhook', url);
+    assert.equal((await s.store.setEnabled('1', id, true)).state, 'enabled', `${id}: enabled with only the default webhook set`);
+    await assert.rejects(s.store.setConnection('1', id, 'default-webhook', null), refused(409, /required while the plugin is enabled/), id);
+  }
+  // Slack is not marked: in app mode it posts with the bot token and needs no webhook URL.
+  assert.deepEqual((await s.store.install('1', 'slack')).enableBlockers, []);
+});
+
 test('the real ctx.http posts to the stored URL without a credential header, and the handler never sees the URL', async t => {
   const s = await setup(t);
   await s.store.install('1', 'slack');

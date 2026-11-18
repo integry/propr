@@ -15,6 +15,7 @@
       "type": "token",
       "name": "default-webhook",
       "label": "Default webhook URL",
+      "required": true,
       "help": "Paste a Discord channel webhook URL, such as https://discord.com/api/webhooks/…/…. Every event goes here unless Repository destinations sends its repository elsewhere. The URL is a secret: ProPR stores it sealed and never shows it again.",
       "helpUrl": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
       "secretUrl": {

@@ -26,6 +26,7 @@
       "type": "signing_secret",
       "name": "webhook-secret",
       "label": "Webhook signing secret",
+      "required": true,
       "help": "The signing secret Linear shows on the webhook's page (Settings, API, Webhooks). ProPR checks the Linear-Signature header (HMAC-SHA256 of the body) of every request with it before the plugin sees the request.",
       "helpUrl": "https://linear.app/developers/webhooks"
     }

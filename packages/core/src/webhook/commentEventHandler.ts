@@ -25,7 +25,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 import { commentAuthorMayFollowUp, commentSeatConsumed, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
-import { authorizeCommentPluginCommand, resolveCommentPluginCommand, type MatchedPluginCommand, type PluginCommandRun } from '../plugins/pluginCommands.js';
+import { authorizeCommentPluginCommand, discardCommentPluginCommandWriteGrant, resolveCommentPluginCommand, type MatchedPluginCommand, type PluginCommandRun } from '../plugins/pluginCommands.js';
 import { enqueueCommentPluginCommand } from '../plugins/pluginCommandDeliveries.js';
 
 export interface UltrafixDeps {
@@ -789,6 +789,33 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
 
 type PluginCommandCommentOptions = Omit<SlashCommentOptions, 'parsedCommand'> & { resolution: MatchedPluginCommand };
 
+/** The deterministic job ID of a plugin command's pull request follow-up: one per comment revision. */
+function pluginCommandCommentJobId(
+    context: { owner: string; repo: string; prNumber: number }, comment: Pick<PRComment, 'id' | 'body' | 'updated_at'>, eventType: CommentEventType, commentRevisionIdentity?: string,
+): string {
+    const slug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
+    return `pr-plugin-command-${context.owner}-${context.repo}-${context.prNumber}-${comment.id}-${slug}`;
+}
+
+/**
+ * Release the write grant of a command run whose follow-up was not queued.
+ * The queue add can fail after Redis accepted the job, so the grant is
+ * deleted only once the job ID is read back without a job carrying it; when
+ * that read fails, or the job carries it, the grant stays and expires on its
+ * own. A job already stored under the ID from an earlier attempt carries that
+ * attempt's grant, not this one. Never throws: the intake error is reported.
+ */
+async function discardUnqueuedWriteGrant(run: PluginCommandRun, jobId: string, log: { warn(fields: object, message: string): void }): Promise<void> {
+    try {
+        const job = await (await getIssueQueue()).getJob(jobId);
+        const carried = (job?.data as Partial<CommentJobData> | undefined)?.pluginCommand?.writeGrant?.id;
+        if (carried === run.writeGrant!.id) return;
+        await discardCommentPluginCommandWriteGrant(run);
+    } catch (error) {
+        log.warn({ plugin: run.pluginId, command: run.command, jobId, error: error instanceof Error ? error.message : String(error) }, 'Could not settle the unused write grant of a plugin command that was not queued; it expires on its own');
+    }
+}
+
 /**
  * A plugin command on a pull request: the same claim and assignment gate as a
  * built-in command. A `prompt` command then queues one one-shot follow-up job
@@ -809,6 +836,8 @@ async function processPluginCommandComment(opts: PluginCommandCommentOptions): P
         correlatedLogger.debug({ repository: `${owner}/${repo}`, pullRequestNumber: prNumber, commentId: comment.id }, 'Plugin command comment already processed, skipping redelivery');
         return { status: 'ignored', reason: 'duplicate_delivery' };
     }
+    // The run once authorized: its write grant, if any, is this attempt's to release when no job carries it.
+    let grantedRun: PluginCommandRun | undefined;
     try {
         const refusal = await checkFollowupAssignmentGate(gateCheck);
         if (refusal) {
@@ -833,6 +862,7 @@ async function processPluginCommandComment(opts: PluginCommandCommentOptions): P
             return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
         }
         const { run } = resolution;
+        grantedRun = run;
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, plugin: run.pluginId, command: run.command }, `Plugin command /${run.command} detected, enqueuing follow-up job`);
         await enqueueNewCommentJob(comment, commentAuthor, { eventType, prNumber, owner, repo }, {
             payload, redisClient, onSubmissionAttempt: config.onSubmissionAttempt, PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
@@ -840,6 +870,7 @@ async function processPluginCommandComment(opts: PluginCommandCommentOptions): P
         });
     } catch (error) {
         await redisClient.del(trackingKey);
+        if (grantedRun?.writeGrant) await discardUnqueuedWriteGrant(grantedRun, pluginCommandCommentJobId({ owner, repo, prNumber }, comment, eventType), correlatedLogger);
         throw error;
     }
     return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
@@ -1192,7 +1223,7 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
     const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
     const commentRevisionSlug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
     const jobId = options.jobId ?? (pluginCommand
-        ? `pr-plugin-command-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
+        ? pluginCommandCommentJobId({ owner, repo, prNumber }, comment, eventType, commentRevisionIdentity)
         : manualCommand
         ? `pr-comments-batch-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
         : `pr-comments-batch-${owner}-${repo}-${prNumber}-${Date.now()}`);

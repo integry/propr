@@ -15,6 +15,7 @@
       "type": "token",
       "name": "default-webhook",
       "label": "Default webhook URL",
+      "required": true,
       "help": "Paste the URL of a Teams Workflows webhook (the \"When a Teams webhook request is received\" trigger), such as https://….environment.api.powerplatform.com/powerautomate/automations/direct/workflows/…. Every event goes here unless Repository destinations sends its repository elsewhere. The URL is a secret: ProPR stores it sealed and never shows it again.",
       "helpUrl": "https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook",
       "secretUrl": {

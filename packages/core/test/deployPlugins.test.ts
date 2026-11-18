@@ -101,9 +101,9 @@ async function fixture(t: TestContext) {
   return { database, plugins, library, catalog, synthetic, setUp, signIn, resolve, managed, skill, ordinaryRun };
 }
 
-test('connecting and enabling each deployment plugin gives its read and write items; only Vercel\'s read item is applied automatically', async t => {
+test('connecting and enabling each deployment plugin gives its read and write items; only the read items are applied automatically', async t => {
   const f = await fixture(t);
-  for (const [id, read, write, readAutoApply] of [[CF, 'cloudflare', 'cloudflare-write', false], [VC, 'vercel', 'vercel-write', true]] as const) {
+  for (const [id, read, write, readAutoApply] of [[CF, 'cloudflare', 'cloudflare-write', true], [VC, 'vercel', 'vercel-write', true]] as const) {
     const enabled = await f.setUp[id]();
     assert.equal(enabled.state, 'enabled', id);
     assert.ok(enabled.connections.every(c => c.state === 'connected'), `${id}: every connection is connected`);
@@ -113,11 +113,11 @@ test('connecting and enabling each deployment plugin gives its read and write it
     assert.deepEqual([writeItem.capability, writeItem.autoApply, writeItem.managedBy?.active], ['write', false, true], `${id} write item`);
     assert.equal((await f.skill(id)).autoApply, true);
   }
-  // An ordinary run gets Vercel's read server and neither write server, even with write allowed. Cloudflare's read
-  // server is not applied automatically: its execute tool calls any endpoint, so only its token keeps it read-only.
-  assert.deepEqual((await f.ordinaryRun()).sort(), ['vercel']);
+  // An ordinary run gets both read servers and neither write server. Cloudflare's read server offers no execute tool
+  // (which calls any endpoint), so it is read-only by its tools and applied automatically like Vercel's.
+  assert.deepEqual((await f.ordinaryRun()).sort(), ['cloudflare', 'vercel']);
   const unrestricted = resolveExtensionSet(await f.library.readLibrary('1'), { repository: 'owner/app', agentAlias: 'claude', runtime: 'claude' });
-  assert.deepEqual(unrestricted.servers.map(s => s.name).sort(), ['vercel'], 'an item that is not auto-applied stays out of runs that do not add it');
+  assert.deepEqual(unrestricted.servers.map(s => s.name).sort(), ['cloudflare', 'vercel'], 'a write item that is not auto-applied stays out of runs that do not add it');
 
   // An administrator's later choice of automatic apply survives a resync (here, a settings change).
   const { snapshot, revision } = await f.library.head().then(async head => ({ snapshot: head.snapshot, revision: (await f.library.readLibrary('1')).revision }));
@@ -142,14 +142,12 @@ test('the read server sends the read-only token and lists only its allow-list; t
     await f.library.activateGrant(token, prepared, context);
     return { token, servers: prepared.set.servers.map(s => s.name) };
   };
-  // Not applied automatically: an ordinary run gets no Cloudflare server until an administrator turns automatic apply on.
-  assert.deepEqual((await grant({ agentAlias: 'claude', runtime: 'claude', repositories: ['owner/app'], allowWrite: false })).servers, []);
-  const head = await f.library.head();
-  await f.library.saveLibrary('1', { version: 1, servers: head.snapshot.servers.map(s => (s.name === 'cloudflare' ? { ...s, autoApply: true } : s)), skills: head.snapshot.skills }, {}, (await f.library.readLibrary('1')).revision);
+  // Applied automatically: an ordinary run gets the read server, which lists only its read tools, never execute.
   const ordinary = await grant({ agentAlias: 'claude', runtime: 'claude', repositories: ['owner/app'], allowWrite: false });
   assert.deepEqual(ordinary.servers, ['cloudflare']);
   const listed = await extensionGatewayCall(f.library, ordinary.token, 'cloudflare', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, upstream) as { result: { tools: { name: string }[] } };
-  assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), ['docs', 'execute', 'search', 'whoami']);
+  assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), ['docs', 'search', 'whoami']);
+  await assert.rejects(extensionGatewayCall(f.library, ordinary.token, 'cloudflare', { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'execute', arguments: {} } }, upstream), /tool unavailable/);
   assert.deepEqual(tokens, [READ_TOKEN]);
   await assert.rejects(extensionGatewayCall(f.library, ordinary.token, 'cloudflare-write', { jsonrpc: '2.0', id: 2, method: 'tools/list' }, upstream));
 

@@ -79,8 +79,13 @@ export async function requireInstallation(trx: Knex.Transaction, pluginId: strin
  * operation (read, write, delete, list) runs in a transaction that requires
  * its installation to still exist, and is refused (a change rolled back)
  * when the handler run ends before it commits. `update` reads and writes in
- * one transaction (SQLite runs write transactions one at a time), so updates
- * never interleave across processes.
+ * one transaction, so updates never interleave across processes (the API
+ * process's webhook handlers and the daemon's event handlers). This relies on
+ * the instance database's SQLite retry layer (`installSqliteRetry`), which
+ * opens the transaction with `BEGIN IMMEDIATE`: the write lock is taken before
+ * the read, so an update from another process waits for it. A deferred
+ * `BEGIN` would instead fail the write with SQLITE_BUSY when the other process
+ * committed after the read (`pluginStateCrossConnection.test.ts`).
  */
 export function pluginStateStore(database: Knex, pluginId: string, now: () => number = Date.now, guard?: PluginStateWriteGuard): PluginStateStore {
   const fenced = <R>(run: (trx: Knex.Transaction) => Promise<R>): Promise<R> => database.transaction(async trx => {

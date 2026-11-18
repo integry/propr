@@ -18,6 +18,7 @@
       "type": "token",
       "name": "api-token",
       "label": "Account email and API token",
+      "required": true,
       "help": "The Atlassian account email, a colon and an API token of that account (from id.atlassian.com, Security, API tokens), such as name@example.com:ATATT3x…. The account needs Browse projects, Add comments and Transition issues in the mapped projects. ProPR sends it only to the Jira site URL below, as HTTP Basic credentials, as Atlassian documents for API tokens; the handlers never see it.",
       "helpUrl": "https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/",
       "authorization": "basic"
@@ -26,6 +27,7 @@
       "type": "signing_secret",
       "name": "webhook-secret",
       "label": "Webhook secret",
+      "required": true,
       "help": "The secret entered when registering the webhook in Jira (Settings, System, WebHooks). Jira signs every request with it in the X-Hub-Signature header (sha256= and the HMAC-SHA256 of the body); ProPR checks it before the plugin sees the request.",
       "helpUrl": "https://developer.atlassian.com/cloud/jira/platform/webhooks/"
     }

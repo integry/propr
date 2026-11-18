@@ -18,6 +18,7 @@
       "type": "token",
       "name": "auth-token",
       "label": "Internal integration token",
+      "required": true,
       "help": "The token of a Sentry internal integration (Settings, Developer Settings, Custom Integrations, Create New Integration, Internal Integration). Give it Project: Read and Issue & Event: Read & Write. ProPR sends it only to the Sentry URL below, as a Bearer token; the handlers never see it.",
       "helpUrl": "https://docs.sentry.io/organization/integrations/integration-platform/internal-integration/"
     },
@@ -25,6 +26,7 @@
       "type": "signing_secret",
       "name": "client-secret",
       "label": "Integration client secret",
+      "required": true,
       "help": "The Client Secret of the same internal integration. Sentry signs every webhook with it in the Sentry-Hook-Signature header (the hex HMAC-SHA256 of the body); ProPR checks it before the plugin sees the request.",
       "helpUrl": "https://docs.sentry.io/organization/integrations/integration-platform/webhooks/"
     },
@@ -32,6 +34,7 @@
       "type": "oauth",
       "name": "sentry-account",
       "label": "Sentry account for the agent",
+      "required": false,
       "help": "Optional. Sign in to Sentry so the agent can read the linked issue through Sentry's hosted MCP server (mcp.sentry.dev). Only read tools are offered. Sentry's hosted MCP server serves sentry.io organizations only.",
       "helpUrl": "https://docs.sentry.io/product/sentry-mcp/"
     }

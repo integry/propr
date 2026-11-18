@@ -5,7 +5,7 @@ import {
   PLUGIN_PERMISSIONS, parsePluginManifest, pluginHttpsUrlHost, pluginSecretUrlHostAllowed, pluginSecretUrlProblem, pluginManifestSchema, pluginOutboundHosts, pluginSharedCommandSiblings, publicPluginManifest,
   type PluginManifestInput,
 } from '../src/plugins.js';
-import { pluginSettingProblem, validatePluginSettings } from '../src/pluginInstallations.js';
+import { neededPluginOAuthConnections, pluginConnectionNeeded, pluginSettingProblem, requiredPluginConnections, validatePluginSettings } from '../src/pluginInstallations.js';
 import { PLUGIN_SETTING_OPTIONS_LIMITS, parsePluginSettingOptions } from '../src/pluginSdk.js';
 
 const INTEGRITY = `sha512-${'A'.repeat(86)}==`;
@@ -95,6 +95,35 @@ test('contributions must reference declared connections of the right type', () =
   rejects(variant(m => { m.contributes.mcpServers[1].connection = 'bot-token'; }), /no authentication and takes no connection/);
   rejects(variant(m => { m.contributes.webhooks[0].verification.connection = 'bot-token'; }), /Webhook events references connection bot-token, which is token, not signing_secret/);
   rejects(variant(m => { m.contributes.mcpServers[2].secretEnv[0].connection = 'nowhere'; }), /Variable ACME_TOKEN of server acme-local references connection nowhere/);
+});
+
+test('a manifest marks the connections the plugin needs: required ones block enabling, optional ones count for nothing', () => {
+  const parse = (manifest: unknown) => { const result = parsePluginManifest(manifest); assert.ok(result.ok, JSON.stringify(result)); return result.manifest; };
+  // Defaults: a token an MCP server uses is required; the signing secret is not; the oauth sign-in a server uses is needed but never blocks enabling.
+  const plain = parse(valid());
+  assert.deepEqual(requiredPluginConnections(plain), ['bot-token']);
+  assert.deepEqual(neededPluginOAuthConnections(plain.connections, plain.contributes.mcpServers), ['workspace']);
+  // A handler-critical signing secret (or token) marked required blocks enabling too; an optional sign-in is not needed.
+  const marked = parse(variant(m => { m.connections[2].required = true; m.connections[0].required = false; }));
+  assert.deepEqual(requiredPluginConnections(marked), ['bot-token', 'events-secret']);
+  assert.deepEqual(neededPluginOAuthConnections(marked.connections, marked.contributes.mcpServers), []);
+  // The public projection carries the flag, so the Plugins page computes the same.
+  const view = publicPluginManifest(marked);
+  assert.deepEqual(neededPluginOAuthConnections(view.connections, view.contributes.mcpServers), []);
+  // An oauth connection marked required is never an enable blocker.
+  const oauthRequired = parse(variant(m => { m.connections[0].required = true; }));
+  assert.deepEqual(requiredPluginConnections(oauthRequired), ['bot-token']);
+  rejects(variant(m => { m.connections[1].required = false; }), /Connection bot-token is used by an MCP server, so it is always required/);
+  rejects(variant(m => { m.contributes.mcpServers.splice(0, 1); m.contributes.commands[0].servers = []; m.connections[0].required = true; }), /Connection workspace is used by no MCP server, so it cannot be signed in and cannot be required/);
+  rejects(variant(m => { m.connections[2].required = 'yes'; }), /^connections\.2\.required:/);
+});
+
+test('an unset connection counts against the plugin only when it is needed', () => {
+  const status = (name: string, required: boolean, state: 'connected' | 'not_connected' | 'needs_sign_in') => ({ name, required, state });
+  assert.equal(pluginConnectionNeeded(status('webhook-2', false, 'not_connected'), []), false, 'an optional destination left unset');
+  assert.equal(pluginConnectionNeeded(status('default-webhook', true, 'not_connected'), []), true);
+  assert.equal(pluginConnectionNeeded(status('account', false, 'not_connected'), ['account']), true, 'a needed sign-in');
+  assert.equal(pluginConnectionNeeded(status('optional-account', false, 'needs_sign_in'), []), true, 'a sign-in whose refresh failed');
 });
 
 test('webhooks declare a handler and a built-in verification scheme', () => {

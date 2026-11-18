@@ -23,7 +23,8 @@ delivery rules (`packages/plugins/_shared/`); only the message format differs.
 2. In ProPR, open **Plugins**, choose **Discord** and install it. It asks for one
    permission, `events.read`.
 3. Under **Connections**, paste the URL into **Default webhook URL**. ProPR
-   stores it sealed and never shows it again.
+   stores it sealed and never shows it again. It is required to enable the
+   plugin; the other webhook URLs are optional.
 4. Optionally add webhooks of other channels as **Webhook URL 2** to **4** and
    map repositories to them in **Repository destinations**.
 5. In **Settings**, keep or narrow **Events to post**, and set **ProPR address**
@@ -126,9 +127,11 @@ delivery appears in the plugin's **Activity**.
   HTTP 404 (…); it is not retried. Check its webhook URL and that the channel
   still exists`. The service's own short error code is included when it gives
   one; its URL never is.
-- **Missing or refused URL.** An unset webhook URL fails the delivery with `The
-  Discord webhook URL of the default webhook is not set. Set it under
-  Connections`. A stored URL that no longer passes the host check fails it
+- **Missing or refused URL.** The plugin cannot be enabled without the
+  default webhook URL, and it cannot be cleared while the plugin is enabled.
+  An unset webhook URL fails the delivery with `The Discord webhook URL of
+  the default webhook is not set. Set it under Connections` (or the name of
+  the optional webhook Repository destinations sends to). A stored URL that no longer passes the host check fails it
   too. After fixing the setting, use **Retry** on the failed delivery.
 
 A retried message can be posted twice if the service accepted it but its answer

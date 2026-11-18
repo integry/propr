@@ -1,4 +1,4 @@
-import type { PublicPluginMcpServer } from '@propr/shared';
+import { neededPluginOAuthConnections, pluginConnectionNeeded, type PublicPluginMcpServer } from '@propr/shared';
 import type { PluginManifestView, PluginView } from '../../api/pluginsApi';
 import { formatDateTime } from '../../utils/dateFormat';
 
@@ -26,12 +26,22 @@ export const BADGES: Record<PluginBadge, { label: string; className: string }> =
   degraded: { label: 'Degraded', className: 'bg-red-50 text-red-800' },
 };
 
-const disconnected = (view: PluginView) => view.connections.some(c => c.state !== 'connected');
+/**
+ * The connections the plugin needs to work: required to enable, a needed
+ * `oauth` sign-in, or a sign-in whose refresh failed. Optional connections
+ * (extra webhook destinations, another mode's secrets, an optional sign-in)
+ * left unset are not counted.
+ */
+export function neededConnections(view: PluginView): PluginView['connections'] {
+  const oauth = view.manifest ? neededPluginOAuthConnections(view.manifest.connections, mcpServersOf(view.manifest)) : [];
+  return view.connections.filter(c => pluginConnectionNeeded(c, oauth));
+}
+const disconnected = (view: PluginView) => neededConnections(view).some(c => c.state !== 'connected');
 
 /**
  * The one state badge of a plugin. An upgrade awaiting approval wins; an
- * enabled plugin missing a connection, or no longer in the registry, is
- * degraded; a disabled one missing a connection needs it.
+ * enabled plugin missing a needed connection, or no longer in the registry,
+ * is degraded; a disabled one missing a needed connection needs it.
  */
 export function pluginBadge(view: PluginView): PluginBadge {
   if (!view.installation) return 'not_installed';

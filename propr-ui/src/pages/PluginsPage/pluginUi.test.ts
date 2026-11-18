@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { describePluginContributions, pluginBadge, safeHttpsUrl, secretAcknowledgementText } from './pluginUi';
+import type { PluginView } from '../../api/pluginsApi';
+import { describePluginContributions, neededConnections, pluginBadge, safeHttpsUrl, secretAcknowledgementText } from './pluginUi';
 import { exampleAt, examplePlugin } from './pluginFixtures.testUtils';
 
 describe('plugin page helpers', () => {
@@ -12,6 +13,34 @@ describe('plugin page helpers', () => {
     expect(pluginBadge({ ...enabled, connections: enabled.connections.map(c => ({ ...c, state: 'needs_sign_in' as const })) })).toBe('degraded');
     expect(pluginBadge({ ...enabled, available: false })).toBe('degraded');
     expect(pluginBadge({ ...enabled, needsApproval: true })).toBe('needs_approval');
+  });
+
+  it('ignores optional connections left unset: a correctly configured plugin is Enabled, not Degraded', () => {
+    // Like Discord with only its default webhook set: extra webhook URLs are optional tokens no server uses.
+    const withOptional = (view: PluginView, oauthRequired?: boolean): PluginView => ({
+      ...view,
+      manifest: {
+        ...view.manifest!,
+        connections: [
+          ...view.manifest!.connections.map(c => (c.type === 'oauth' && oauthRequired !== undefined ? { ...c, required: oauthRequired } : c)),
+          { type: 'token', name: 'webhook-2', label: 'Webhook URL 2', help: 'Optional.', helpUrl: 'https://example.com/docs/webhooks' },
+        ],
+      },
+      connections: [...view.connections, { name: 'webhook-2', type: 'token', label: 'Webhook URL 2', state: 'not_connected', required: false }],
+    });
+    const enabled = withOptional(exampleAt('enabled'));
+    expect(pluginBadge(enabled)).toBe('enabled');
+    expect(neededConnections(enabled).map(c => c.name)).toEqual(['example-account', 'example-token']);
+    expect(pluginBadge(withOptional(exampleAt('connected')))).toBe('off');
+    // A required connection still counts.
+    expect(pluginBadge(withOptional(exampleAt('installed')))).toBe('needs_connection');
+    const unset = (view: PluginView, name: string): PluginView => ({ ...view, connections: view.connections.map(c => (c.name === name ? { ...c, state: 'not_connected' as const } : c)) });
+    // The sign-in a contributed server uses is needed unless the manifest marks it optional (Sentry's agent sign-in).
+    expect(pluginBadge(unset(enabled, 'example-account'))).toBe('degraded');
+    const optionalSignIn = withOptional(exampleAt('enabled'), false);
+    expect(pluginBadge(unset(optionalSignIn, 'example-account'))).toBe('enabled');
+    // A sign-in whose refresh failed is degraded even when optional.
+    expect(pluginBadge({ ...optionalSignIn, connections: optionalSignIn.connections.map(c => (c.name === 'example-account' ? { ...c, state: 'needs_sign_in' as const } : c)) })).toBe('degraded');
   });
 
   it('describes what the plugin adds in plain words', () => {

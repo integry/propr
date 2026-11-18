@@ -13,7 +13,7 @@
       "type": "token",
       "name": "read-token",
       "label": "Read-only API token",
-      "help": "A Cloudflare account API token with Account Settings Read, Cloudflare Pages Read, Workers Scripts Read and Workers CI Read only, for the read server a /deploy run gets (and ordinary runs too, only if an administrator turns on its automatic apply). Cloudflare refuses any change made with it. Without Client IP Address Filtering, which Cloudflare's MCP server does not support. ProPR sends it only to https://mcp.cloudflare.com/mcp, as a Bearer token.",
+      "help": "A Cloudflare account API token with Account Settings Read only, for the read server, which runs get automatically: its tools only search Cloudflare's documentation and API specification and name the token's account (whoami); it has no tool that calls other endpoints. Cloudflare refuses any change made with it. Without Client IP Address Filtering, which Cloudflare's MCP server does not support. ProPR sends it only to https://mcp.cloudflare.com/mcp, as a Bearer token.",
       "helpUrl": "https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/"
     },
     {
@@ -60,13 +60,11 @@
         "tools": [
           "docs",
           "search",
-          "execute",
           "whoami"
         ],
         "capability": "read",
         "authentication": "bearer",
-        "connection": "read-token",
-        "autoApply": false
+        "connection": "read-token"
       },
       {
         "kind": "https",

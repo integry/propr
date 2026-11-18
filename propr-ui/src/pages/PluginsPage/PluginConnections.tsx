@@ -3,7 +3,7 @@ import type { PluginConnectionView, PluginView } from '../../api/pluginsApi';
 import { ExtensionOAuthConnection } from '../SettingsPage/extensions/ExtensionOAuthConnection';
 import { ExternalLink, PluginStep } from './PluginBits';
 import { PluginWebhookUrls } from './PluginWebhookUrls';
-import { dangerButtonClass, formatWhen, inputClass, primaryButtonClass, safeHttpsUrl } from './pluginUi';
+import { dangerButtonClass, formatWhen, inputClass, neededConnections, primaryButtonClass, safeHttpsUrl } from './pluginUi';
 
 export interface PluginConnectionActions {
   /** Null when the instance has no public base URL: OAuth Connect is unavailable. */
@@ -46,8 +46,10 @@ function SecretField({ connection, actions, locked, webhookHosts }: { connection
   );
 }
 
-function ConnectionRow({ connection, help, helpUrl, actions, locked, webhookHosts }: {
+function ConnectionRow({ connection, help, helpUrl, actions, locked, webhookHosts, optional }: {
   connection: PluginConnectionView; help?: string; helpUrl: string | null; actions: PluginConnectionActions; locked: boolean;
+  /** The plugin works without it: it does not keep the step to do or the badge from Enabled. */
+  optional: boolean;
   /** The hosts a webhook URL connection (a token with `secretUrl`) accepts. */
   webhookHosts?: string[];
 }) {
@@ -55,7 +57,7 @@ function ConnectionRow({ connection, help, helpUrl, actions, locked, webhookHost
     <li data-testid="plugin-connection" data-state={connection.state} className="space-y-2 rounded-md border border-slate-200 p-3">
       <p className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-slate-900">{connection.label}</span>
-        <span className="text-xs text-slate-500">{webhookHosts ? 'Webhook URL' : TYPE_LABELS[connection.type]}{connection.required ? ' · required to enable' : ''}</span>
+        <span className="text-xs text-slate-500">{webhookHosts ? 'Webhook URL' : TYPE_LABELS[connection.type]}{connection.required ? ' · required to enable' : optional ? ' · optional' : ''}</span>
       </p>
       {help && <p className="text-slate-600 [overflow-wrap:anywhere]">{help}</p>}
       {helpUrl && <p className="text-xs"><ExternalLink href={helpUrl}>How to get it</ExternalLink></p>}
@@ -71,7 +73,9 @@ function ConnectionRow({ connection, help, helpUrl, actions, locked, webhookHost
 export function PluginConnections({ view, actions }: { view: PluginView; actions: PluginConnectionActions }) {
   const installed = Boolean(view.installation);
   const declared = view.manifest?.connections ?? [];
-  const done = installed && view.connections.every(c => c.state === 'connected');
+  // Optional connections left unset do not keep the step to do.
+  const needed = neededConnections(view);
+  const done = installed && needed.every(c => c.state === 'connected');
   return (
     <PluginStep number={2} title="Connect" done={done}>
       {!installed && <p className="text-slate-500">Install the plugin first.</p>}
@@ -82,7 +86,7 @@ export function PluginConnections({ view, actions }: { view: PluginView; actions
             const manifest = declared.find(c => c.name === connection.name);
             return (
               <ConnectionRow key={connection.name} connection={connection} help={manifest?.help} helpUrl={safeHttpsUrl(manifest?.helpUrl)}
-                actions={actions} locked={Boolean(view.installation?.enabled && connection.required)} webhookHosts={manifest?.secretUrl?.hosts} />
+                actions={actions} locked={Boolean(view.installation?.enabled && connection.required)} webhookHosts={manifest?.secretUrl?.hosts} optional={!needed.includes(connection)} />
             );
           })}
         </ul>

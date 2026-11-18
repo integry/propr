@@ -6,7 +6,7 @@ import { filterCommentByAuthor, checkCommentIgnore } from '../utils/commentFilte
 import { commentSeatConsumed } from './followupAssignmentGate.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
-import { authorizeCommentPluginCommand, resolveCommentPluginCommand, type PluginCommandDelivery } from '../plugins/pluginCommands.js';
+import { authorizeCommentPluginCommand, discardCommentPluginCommandWriteGrant, resolveCommentPluginCommand, type PluginCommandDelivery, type PluginCommandRun } from '../plugins/pluginCommands.js';
 import { enqueueCommentPluginCommand, type PluginCommandContext } from '../plugins/pluginCommandDeliveries.js';
 import {
   issueCommandIntentKey, issueJobCarriesCommand, pendingIssueCommandIntent, readIssueCommandIntent, recordIssueCommandIntent,
@@ -221,6 +221,11 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
   let recorded: string | null = null;
   let replaced: StoredIssueCommandIntent | null = null;
   let labelMayBePublished = false;
+  // The authorized run, and whether its intent record (which carries the
+  // run's write grant to a label-path job or this attempt's job) may have
+  // been written. Until then nothing but this attempt holds the grant.
+  let authorized: PluginCommandRun | undefined;
+  let intentMayBeRecorded = false;
   const alreadyStarted = (): DeliveryDisposition => {
     log.info({ repository, issueNumber: issue.number, commentId: comment.id }, 'Plugin command already started through its processing label');
     return { status: 'ignored', reason: 'duplicate_delivery' };
@@ -260,6 +265,7 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       return await refuse(resolution.message, 'plugin_command_refused');
     }
     const { run } = resolution;
+    authorized = run;
     const primaryLabels = await (deps.primaryLabels ?? defaultPrimaryLabels)();
     // New work starts with the first label; work started through any configured
     // label family makes the issue busy.
@@ -307,7 +313,10 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       // command, a dispatcher settled it, or another command recorded its own)
       // is reconciled again, not overwritten.
       recorded = intentValue;
+      intentMayBeRecorded = true;
       if (await recordIssueCommandIntent(deps.redis, intentKey, intentValue, earlier?.raw ?? null)) break;
+      // The conditional write did not happen: the record does not name this attempt's run.
+      intentMayBeRecorded = false;
       recorded = null;
       await deps.redis.eval(RELEASE_OWNED_SCRIPT, 1, dedupeKey, token);
       dedupeToken = null;
@@ -373,5 +382,16 @@ export async function processIssueCommentCommand(payload: IssueCommentEvent, cor
       if (release.status === 'rejected') log.warn({ repository, issueNumber: issue.number, err: release.reason }, 'Could not release a plugin command reservation');
     }
     throw error;
+  } finally {
+    // A write grant created for a command that ended before its intent was
+    // recorded (refused, already started elsewhere, or failed early) is
+    // referenced by no record and no job: delete it. Once the record may
+    // exist, a label-path or uncertain queue add may carry the grant, so it
+    // is kept and expires on its own.
+    if (authorized?.writeGrant && !intentMayBeRecorded) {
+      await discardCommentPluginCommandWriteGrant(authorized).catch((err: unknown) => {
+        log.warn({ repository, issueNumber: issue.number, plugin: authorized!.pluginId, command: authorized!.command, err }, 'Could not delete the unused write grant of a plugin command that did not start; it expires on its own');
+      });
+    }
   }
 }

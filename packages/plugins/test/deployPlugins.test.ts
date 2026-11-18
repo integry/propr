@@ -20,7 +20,7 @@ const documented = (id: string) => JSON.parse(readFileSync(path.join(PLUGINS_ROO
 const plugin = (id: string) => getOfficialPlugin(id, { includeDevelopment: false })!;
 
 const PLUGINS = [
-  { id: 'cloudflare', name: 'Cloudflare', account: 'accountId', read: 'cloudflare', write: 'cloudflare-write', skill: 'cloudflare-deploy', readAutoApply: false, url: 'https://mcp.cloudflare.com/mcp', docs: 'https://github.com/cloudflare/mcp' },
+  { id: 'cloudflare', name: 'Cloudflare', account: 'accountId', read: 'cloudflare', write: 'cloudflare-write', skill: 'cloudflare-deploy', readAutoApply: true, url: 'https://mcp.cloudflare.com/mcp', docs: 'https://github.com/cloudflare/mcp' },
   { id: 'vercel', name: 'Vercel', account: 'teamId', read: 'vercel', write: 'vercel-write', skill: 'vercel-deploy', readAutoApply: true, url: 'https://mcp.vercel.com', docs: 'https://vercel.com/docs/agent-resources/vercel-mcp/tools' },
 ] as const;
 
@@ -72,10 +72,12 @@ for (const p of PLUGINS) {
         assert.ok(!read.tools.includes(tool) && !write.tools.includes(tool), `${tool} is not offered`);
       }
     } else {
-      // Cloudflare's execute tool can call any endpoint: the read server's token has Read permissions only, and because
-      // only the token keeps it read-only, the read server is not applied to ordinary runs automatically.
+      // Cloudflare's execute tool can call any endpoint, so only a token would keep it read-only: the read server does
+      // not offer it. Every tool the read server offers only reads, whatever token is pasted, so it is applied automatically.
       assert.equal(byName.get('execute')!.access, 'token');
-      assert.ok(read.tools.includes('execute') && read.autoApply === false, 'a read server with a token-scoped tool is not applied automatically');
+      for (const tool of read.tools) assert.equal(byName.get(tool)!.access, 'read', `${tool} on the read server reads`);
+      assert.deepEqual(read.tools, ['docs', 'search', 'whoami']);
+      assert.ok(write.tools.includes('execute'), 'the deploy server makes the API calls, reads included');
       const connection = (name: string) => manifest.connections.find(c => c.name === name)!;
       const readToken = connection(read.kind === 'https' ? read.connection! : '');
       const deployToken = connection(write.kind === 'https' ? write.connection! : '');
@@ -161,6 +163,19 @@ test('Cloudflare: a default /deploy checks the Pages production branch first and
       assert.doesNotMatch(instruction, /a Pages project builds the pull request's branch as a preview/);
     }
   }
+});
+
+test('Cloudflare: the read server cannot call the API, so the skill makes every call through the write server and the template does not claim to check previews', () => {
+  const { manifest, assets } = plugin('cloudflare');
+  const flat = readFileSync(path.join(assets.skills.find(s => s.name === 'cloudflare-deploy')!.path, 'SKILL.md'), 'utf8').replace(/\s+/g, ' ');
+  assert.match(flat, /The read-only `cloudflare` server has `docs`, `search` and `whoami` only, so it cannot call the API/);
+  assert.match(flat, /Use `cloudflare-write`'s `execute` for every API call/);
+  assert.doesNotMatch(flat, /through `cloudflare`\)/, 'no read is sent through the read server');
+  const folder = assets.automationTemplates[0]?.path ?? path.join(PLUGINS_ROOT, 'cloudflare', manifest.contributes.automationTemplates[0].path);
+  const prompt = readFileSync(path.join(folder, 'prompt.md'), 'utf8');
+  assert.doesNotMatch(prompt, /`execute`/);
+  assert.match(prompt, /Do not look for an existing Cloudflare preview/);
+  assert.doesNotMatch(prompt, /### Already deployed/);
 });
 
 test('Cloudflare: Pages builds a branch name, so a same-named branch at another commit (a fork pull request) is refused before deploying and a deployment of another commit is never reported', () => {

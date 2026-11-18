@@ -15,27 +15,27 @@ User documentation:
 | --- | --- |
 | `manifest.json` | Two API token connections, the read server `cloudflare` and the deploy server `cloudflare-write` (both Cloudflare's API MCP server), the skill, the template, `/deploy` and `/deploy-cloudflare`, and the settings. |
 | `skills/cloudflare-deploy/` | How to deploy this repository type: detect Pages or Worker and the framework, never create a project, deploy a preview unless production is allowed and asked for, report the URL and how to roll back. |
-| `automation-templates/deploy-preview-ready/` | "Deploy preview when review reaches the goal (Cloudflare)": a dry-run report of pull requests whose review reached the goal and that have no preview yet. It never deploys. |
+| `automation-templates/deploy-preview-ready/` | "Deploy preview when review reaches the goal (Cloudflare)": a dry-run report of pull requests whose review reached the goal. It cannot check for an existing preview (the read server cannot read deployments) and never deploys. |
 | `fixtures/tools.json` | The tools of Cloudflare's API MCP server as its README lists them, with their access, captured 2026-11-17. |
 
 Tests: `packages/plugins/test/deployPlugins.test.ts` (manifest, allow-lists
 against the fixture, the instruction `/deploy` queues for each setting, the
 skill and the template) and `packages/core/test/deployPlugins.test.ts`
-(install, connect and enable give both items, neither auto-applied; `/deploy` write authorization; two deployment plugins sharing
+(install, connect and enable give both items, only the read item auto-applied; `/deploy` write authorization; two deployment plugins sharing
 `/deploy`; the template offered only while enabled).
 
 ## What it contributes
 
-- **`cloudflare` (read, not applied automatically):** `https://mcp.cloudflare.com/mcp`
-  with the **read-only API token**, tools `docs`, `search`, `execute`,
-  `whoami`. `execute` can call any endpoint, and Cloudflare refuses every
-  change made with a token that has Read permissions only. Because only the
-  token keeps it read-only (an Edit token pasted into this field would give
-  every run write access), ordinary runs do not get it: a `/deploy` run adds
-  it. An administrator who has checked the token can turn on automatic apply
-  for it in Skills & MCP servers, for example for the template's report.
+- **`cloudflare` (read, applied automatically):** `https://mcp.cloudflare.com/mcp`
+  with the **read-only API token**, tools `docs`, `search` and `whoami` only.
+  None of them can call an arbitrary endpoint, so the server stays read-only
+  whatever token is pasted into the field: by its tools, not by the token.
+  `execute`, which calls any endpoint, is offered by the write server only.
 - **`cloudflare-write` (write, never applied automatically):** the same server
-  with the **deploy API token**, tools `search`, `execute`, `whoami`. Only a
+  with the **deploy API token**, tools `search`, `execute`, `whoami`. The agent
+  makes every API call of a deploy through it, the reads (project, production
+  branch, connected repository, the new deployment, Workers Builds) as well
+  as the deploy call. Only a
   `/deploy` run gets it, and only when an administrator switched on
   "Allow this command to use write access" for the command and the commenter
   has write permission on the repository. The run uses its single-use grant;
@@ -82,7 +82,7 @@ MCP server does not support it):
 
 | Token | Permissions |
 | --- | --- |
-| Read-only API token (`read-token`) | Account Settings Read, Cloudflare Pages Read, Workers Scripts Read, Workers CI Read |
+| Read-only API token (`read-token`) | Account Settings Read |
 | Deploy API token (`deploy-token`) | Account Settings Read, Cloudflare Pages Edit, Workers Scripts Read, Workers CI Read |
 
 Cloudflare Pages Edit is the narrowest permission that creates a Pages
@@ -113,7 +113,7 @@ the account id from an account token.
 | --- | --- | --- |
 | Server | `https://mcp.cloudflare.com/mcp`, Cloudflare's API MCP server (Streamable HTTP) | [Cloudflare's own MCP servers](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/) |
 | Authentication | A Cloudflare API token as a Bearer token; user and account tokens are supported (OAuth is the alternative Cloudflare documents for interactive clients) | [Cloudflare's own MCP servers](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/), [cloudflare/mcp README](https://github.com/cloudflare/mcp) |
-| Tools | `docs`, `search`, `execute`, `whoami` | [cloudflare/mcp README](https://github.com/cloudflare/mcp) |
+| Tools | `docs`, `search`, `execute`, `whoami` (the read server offers `docs`, `search`, `whoami`) | [cloudflare/mcp README](https://github.com/cloudflare/mcp) |
 | Pages deployment | `POST /accounts/{account_id}/pages/projects/{project_name}/deployments` with `branch`; needs Pages Write | [Create deployment](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/) |
 | Workers previews | Workers Builds builds non-production branches as Previews | [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) |
 | Token permissions | Cloudflare Pages Read/Edit, Workers Scripts Read/Edit, Account Settings Read, Workers CI Read | [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) |
@@ -130,10 +130,10 @@ before a release:
 
 - [ ] Install, set both tokens, the account id and a project mapping, and
       enable. The extension library shows `cloudflare` (read, automatic apply
-      off) and `cloudflare-write` (write, automatic apply off), both managed by
+      on) and `cloudflare-write` (write, automatic apply off), both managed by
       the plugin, and the `cloudflare-deploy` skill.
-- [ ] Start an ordinary task in the repository: the run lists neither
-      `cloudflare` nor `cloudflare-write`.
+- [ ] Start an ordinary task in the repository: the run lists `cloudflare`
+      with only `docs`, `search` and `whoami`, and not `cloudflare-write`.
 - [ ] Comment `/deploy-cloudflare` on a pull request before switching on
       write access: ProPR replies that an administrator has not allowed it,
       and no task starts.

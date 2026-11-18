@@ -35,6 +35,26 @@ describe('Plugin webhook URL connections', () => {
     vi.mocked(getPluginActivity).mockResolvedValue({ health: { state: 'healthy', consecutiveFailures: 0, pauseAfterFailures: 10, lastError: null, lastErrorAt: null, degradedAt: null, pausedAt: null }, deliveries: [] });
   });
 
+  it('marks the Connect step done and the plugin Enabled with an optional webhook URL left unset, and labels it optional', async () => {
+    const view = withWebhookUrl();
+    const enabled = exampleAt('enabled');
+    vi.mocked(getPlugin).mockResolvedValue({ plugin: {
+      ...view, state: 'enabled', installation: enabled.installation, contributions: enabled.contributions,
+      connections: view.connections.map(c => (c.name === 'default-webhook' ? { name: 'default-webhook', type: 'token' as const, label: 'Default webhook URL', state: 'not_connected' as const, required: false } : c)),
+      audit: [],
+    } });
+    renderPluginsPage('/plugins/example-pack');
+    await screen.findByRole('heading', { level: 1, name: /Example pack/ });
+    const connect = screen.getAllByTestId('plugin-step').find(s => s.querySelector('h2')?.textContent?.includes('Connect'))!;
+    expect(connect).toHaveAttribute('data-done', 'true');
+    const optional = within(connect).getAllByTestId('plugin-connection').find(item => item.textContent?.includes('Default webhook URL'))!;
+    expect(optional).toHaveTextContent('Webhook URL · optional');
+    const token = within(connect).getAllByTestId('plugin-connection').find(item => item.textContent?.includes('Example API token'))!;
+    expect(token).toHaveTextContent('· required to enable');
+    expect(token).not.toHaveTextContent('optional');
+    expect(screen.queryByText('Degraded')).toBeNull();
+  });
+
   it('labels a secret URL connection as a webhook URL, names its accepted hosts and never shows the stored URL', async () => {
     vi.mocked(getPlugin).mockResolvedValue({ plugin: { ...withWebhookUrl(), audit: [] } });
     renderPluginsPage('/plugins/example-pack');

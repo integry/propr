@@ -113,7 +113,18 @@ export function pluginHttpsUrlHost(value: unknown): string | null {
   return typeof value === 'string' && value && !pluginHttpsUrlProblem(value) ? new URL(value).hostname.toLowerCase() : null;
 }
 
-const connectionBase = { name: keySchema, label: textSchema(100), help: textSchema(), helpUrl: httpsUrlSchema };
+/**
+ * `required` says whether the plugin needs the connection to work.
+ * A `token` or `signing_secret` connection with `required: true` must be set
+ * before the plugin can be enabled, like a token a contributed MCP server
+ * uses (which is always required): use it for a connection every handler
+ * delivery needs, such as the default webhook URL. An `oauth` connection a
+ * contributed server uses is needed unless `required: false` marks it
+ * optional; it is signed in after enabling, so it never blocks enabling,
+ * but the plugin shows Degraded while it is not signed in. Leave it out
+ * for optional connections (extra destinations, a second mode's secrets).
+ */
+const connectionBase = { name: keySchema, label: textSchema(100), help: textSchema(), helpUrl: httpsUrlSchema, required: z.boolean().optional() };
 
 /**
  * A host pattern of a secret URL connection: a hostname, or `*.` and a
@@ -455,8 +466,12 @@ function checkConnectionReferences(manifest: z.infer<typeof pluginManifestObject
     else if (actual !== type) issue(`${what} references connection ${name}, which is ${actual}, not ${type}`, path);
     else if (secretUrls.has(name)) issue(`${what} references connection ${name}, whose value is a secret URL, not a token`, path);
   };
+  const serverTokens = new Set(manifest.contributes.mcpServers.flatMap(server => (server.kind === 'package' ? server.secretEnv.map(s => s.connection) : server.authentication === 'bearer' && server.connection ? [server.connection] : [])));
+  const signedIn = new Set(manifest.contributes.mcpServers.flatMap(server => (server.kind === 'https' && server.authentication === 'oauth' && server.connection ? [server.connection] : [])));
   manifest.connections.forEach((connection, index) => {
     if (connection.type === 'token' && connection.secretUrl && connection.authorization) issue(`Connection ${connection.name} is a secret URL; it sends no Authorization header, so it takes no authorization`, ['connections', index, 'authorization']);
+    if (connection.type === 'token' && connection.required === false && serverTokens.has(connection.name)) issue(`Connection ${connection.name} is used by an MCP server, so it is always required`, ['connections', index, 'required']);
+    if (connection.type === 'oauth' && connection.required === true && !signedIn.has(connection.name)) issue(`Connection ${connection.name} is used by no MCP server, so it cannot be signed in and cannot be required`, ['connections', index, 'required']);
   });
   manifest.contributes.mcpServers.forEach((server, index) => {
     const at = ['contributes', 'mcpServers', index];

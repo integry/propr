@@ -91,3 +91,25 @@ test('every optionsFrom and subscription of an official plugin names an exported
     for (const name of named) assert.equal(typeof handlers?.[name], 'function', `${manifest.id}: ${name}`);
   }
 });
+
+test('each official plugin names the connections it needs: required ones block enabling, the rest are optional', async () => {
+  const { neededPluginOAuthConnections, requiredPluginConnections } = await import('@propr/shared');
+  const needs = Object.fromEntries(officialPlugins({ includeDevelopment: false }).map(({ manifest }) => [manifest.id, {
+    required: requiredPluginConnections(manifest),
+    signIn: neededPluginOAuthConnections(manifest.connections, manifest.contributes.mcpServers),
+  }]));
+  assert.deepEqual(needs, {
+    webhooks: { required: ['target-1-secret'], signIn: [] },
+    // Slack's needs depend on its mode (webhook URL or bot token), so none is marked; deliveries report what is missing.
+    slack: { required: [], signIn: [] },
+    discord: { required: ['default-webhook'], signIn: [] },
+    teams: { required: ['default-webhook'], signIn: [] },
+    linear: { required: ['api-key', 'webhook-secret'], signIn: [] },
+    jira: { required: ['api-token', 'webhook-secret'], signIn: [] },
+    // The agent sign-in is optional: an error still becomes an issue without it.
+    sentry: { required: ['auth-token', 'client-secret'], signIn: [] },
+    notion: { required: [], signIn: ['notion-account'] },
+    cloudflare: { required: ['read-token', 'deploy-token'], signIn: [] },
+    vercel: { required: [], signIn: ['vercel-read', 'vercel-deploy'] },
+  });
+});

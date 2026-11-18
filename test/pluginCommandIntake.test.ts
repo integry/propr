@@ -192,7 +192,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 // Import module under test AFTER mocks
 const { processCommentEvent, setUltrafixDeps } = await import('../packages/core/src/webhook/commentEventHandler.js');
 const { processIssueCommentCommand } = await import('../packages/core/src/webhook/issueCommentCommands.js');
-const { resolvePluginCommand, setPluginCommandResolver, setPluginCommandWriteAuthorizer } = await import('../packages/core/src/plugins/pluginCommands.js');
+const { resolvePluginCommand, setPluginCommandResolver, setPluginCommandWriteAuthorizer, setPluginCommandWriteGrantDiscarder } = await import('../packages/core/src/plugins/pluginCommands.js');
 const { setPluginCommandEnqueuer } = await import('../packages/core/src/plugins/pluginCommandDeliveries.js');
 const { pullRequestJobAllowed } = await import('../src/jobs/prCommentLabelGate.js');
 const { pluginCommandExtensionBase, pluginCommandIssuePrompt } = await import('../src/jobs/pluginCommandTask.js');
@@ -272,6 +272,13 @@ function pendingWriteCommand(store: () => Map<string, string>, claimKey: string,
 function restoreResolution() {
     setPluginCommandResolver(defaultResolver);
     setPluginCommandWriteAuthorizer(null);
+    setPluginCommandWriteGrantDiscarder(null);
+}
+/** Record the write grants intake deletes as unused. */
+function discardedGrants(): string[] {
+    const discarded: string[] = [];
+    setPluginCommandWriteGrantDiscarder(async run => { discarded.push(run.writeGrant!.id); });
+    return discarded;
 }
 
 beforeEach(() => {
@@ -288,6 +295,7 @@ beforeEach(() => {
 after(async () => {
     setPluginCommandResolver(null);
     setPluginCommandWriteAuthorizer(null);
+    setPluginCommandWriteGrantDiscarder(null);
     setPluginCommandEnqueuer(null);
     await shutdownQueue();
     await closeConnection();
@@ -437,6 +445,45 @@ describe('plugin prompt command on a pull request', () => {
         }
     });
 
+    test('a write command whose follow-up could not be queued deletes its unused grant; a queued one keeps it', async () => {
+        const shared = config();
+        pendingWriteCommand(() => shared.redisClient._store, 'pr-comment-processed:testowner:testrepo:42:504');
+        const discarded = discardedGrants();
+        try {
+            mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('queue down'); });
+            await assert.rejects(processCommentEvent(prComment('/example-notes', 504), 'issue_comment', 'corr-write-unqueued', shared), /queue down/);
+            assert.deepStrictEqual(discarded, [GRANT.id], 'no job carries the grant: it is deleted');
+            // The redelivery queues the follow-up with its own grant, which is kept.
+            assert.strictEqual((await processCommentEvent(prComment('/example-notes', 504), 'issue_comment', 'corr-write-queued', shared)).status, 'accepted');
+            assert.deepStrictEqual(discarded, [GRANT.id]);
+        } finally {
+            restoreResolution();
+        }
+    });
+
+    test('a write command whose queue add failed after the job was stored keeps the grant the job carries', async () => {
+        const shared = config();
+        pendingWriteCommand(() => shared.redisClient._store, 'pr-comment-processed:testowner:testrepo:42:505');
+        const discarded = discardedGrants();
+        try {
+            mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: unknown, options?: { jobId?: string }) => {
+                mockStoredJobs.set(options!.jobId!, { name, data });
+                throw new Error('connection reset');
+            });
+            await assert.rejects(processCommentEvent(prComment('/example-notes', 505), 'issue_comment', 'corr-write-uncertain', shared), /connection reset/);
+            assert.deepStrictEqual(discarded, [], 'the stored job carries the grant');
+            // Negative check: a job stored under the ID by an earlier attempt carries that attempt's grant, not this one.
+            const [jobId] = [...mockStoredJobs.keys()];
+            const stored = mockStoredJobs.get(jobId)!;
+            mockStoredJobs.set(jobId, { ...stored, data: { ...(stored.data as object), pluginCommand: { writeGrant: { id: 'an-earlier-grant' } } } });
+            mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('Job already exists'); });
+            await assert.rejects(processCommentEvent(prComment('/example-notes', 505), 'issue_comment', 'corr-write-taken', shared), /Job already exists/);
+            assert.deepStrictEqual(discarded, [GRANT.id]);
+        } finally {
+            restoreResolution();
+        }
+    });
+
     test('a write command refused after the claim replies with the refusal and queues nothing', async () => {
         const shared = config();
         const settled = pendingWriteCommand(() => shared.redisClient._store, 'pr-comment-processed:testowner:testrepo:42:503', 'refused');
@@ -530,6 +577,26 @@ describe('plugin prompt command on an issue', () => {
             assert.deepStrictEqual(settled, [true], 'settled once, while the claim was held');
             assert.strictEqual(f.enqueued.length, 1);
             assert.deepStrictEqual((f.enqueued[0].data.pluginCommand as { writeGrant?: unknown }).writeGrant, { ...GRANT, repository: 'testowner/testrepo', number: 7 });
+        } finally {
+            restoreResolution();
+        }
+    });
+
+    test('a write command refused before its intent is recorded deletes its unused grant; once recorded the grant is kept', async () => {
+        const busy = deps({ hasQueuedIssueJob: async () => true });
+        pendingWriteCommand(() => busy.deps.redis._store, 'issue-comment-command:testowner:testrepo:7:601');
+        const discarded = discardedGrants();
+        try {
+            assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'corr-issue-write-busy', busy.deps as never)).reason, 'job_already_queued');
+            assert.deepStrictEqual(discarded, [GRANT.id], 'refused before recording: nothing carries the grant');
+            // Recorded, then the queue add failed with the label requested: a label event may still carry the grant.
+            const failing = deps({ enqueue: async () => { throw new Error('queue down'); } });
+            await assert.rejects(processIssueCommentCommand(issueComment('/example-notes'), 'corr-issue-write-failed', failing.deps as never), /queue down/);
+            assert.deepStrictEqual(discarded, [GRANT.id], 'kept once the intent may carry it');
+            // Started: the job carries the grant.
+            const started = deps();
+            assert.strictEqual((await processIssueCommentCommand(issueComment('/example-notes'), 'corr-issue-write-started', started.deps as never)).status, 'accepted');
+            assert.deepStrictEqual(discarded, [GRANT.id]);
         } finally {
             restoreResolution();
         }

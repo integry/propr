@@ -405,11 +405,17 @@ type in **Search by name**.
 | Badge | Meaning |
 | --- | --- |
 | Not installed | Available in this ProPR, not installed. |
-| Off | Installed, every connection set, not enabled. |
-| Needs connection | Installed and not enabled, with a connection still to set or sign in. |
-| Enabled | Enabled, every connection set. |
+| Off | Installed, every needed connection set, not enabled. |
+| Needs connection | Installed and not enabled, with a needed connection still to set or sign in. |
+| Enabled | Enabled, every needed connection set. Optional connections (extra webhook destinations, another mode's secrets, an optional sign-in) may stay unset. |
 | Needs approval | An upgrade asks for permissions or a secret acknowledgement not yet approved. |
-| Degraded | Enabled while a connection is missing or needs a new sign-in, or no longer in this ProPR's registry. |
+| Degraded | Enabled while a needed connection is missing or a sign-in needs renewing, or no longer in this ProPR's registry. |
+
+A connection is **needed** when enabling waits for it (marked "required to
+enable"), when it is an OAuth sign-in a contributed MCP server uses (unless the
+manifest marks it optional), or when its sign-in failed to refresh. Other
+connections are marked **optional**: the **Connect** step is done once every
+needed connection is set.
 
 ### Walkthrough
 
@@ -575,9 +581,13 @@ Enabling is refused with HTTP 409 and the reasons (also listed as
 `enableBlockers` when the plugin is read) while:
 
 - a `required` setting has no value,
-- a required `token` connection is not set (a `token` connection is required
-  when a contributed MCP server uses it, as a `bearer` server's connection or a
-  package server's secret variable), or
+- a required `token` or `signing_secret` connection is not set (a `token`
+  connection is required when a contributed MCP server uses it, as a `bearer`
+  server's connection or a package server's secret variable; any `token` or
+  `signing_secret` connection is required when the manifest marks it
+  `required`, such as the default webhook URL of Discord and Microsoft Teams,
+  the first target's signing secret of Outbound webhooks, and the API tokens
+  and webhook secrets of Linear, Jira and Sentry), or
 - a package server's secret acknowledgement is missing.
 
 While a plugin is enabled, its required settings and required connections

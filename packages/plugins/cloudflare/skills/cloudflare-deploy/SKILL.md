@@ -14,9 +14,10 @@ Cloudflare's API MCP server has four tools: `docs` (search Cloudflare's
 documentation), `search` (JavaScript over the API's OpenAPI `spec.paths` to
 find an endpoint), `execute` (JavaScript calling `cloudflare.request()` with
 the endpoint you found) and `whoami` (the account the token belongs to). The
-`cloudflare` server's token can only read; the `cloudflare-write` server's
-token can also create Pages deployments. Use `cloudflare-write` only for the
-deploy itself.
+read-only `cloudflare` server has `docs`, `search` and `whoami` only, so it
+cannot call the API; `cloudflare-write` also has `execute`. Use
+`cloudflare-write`'s `execute` for every API call, and for nothing but the
+reads below and the one deploy call.
 
 1. **Detect the repository type.** Read the repository, do not change it:
    - a Wrangler configuration (`wrangler.toml`, `wrangler.json` or
@@ -29,15 +30,16 @@ deploy itself.
 2. **Find the configured project; never create one.** Use the default
    project the settings give for this repository, otherwise the `name` from
    the Wrangler configuration. Check that it exists in the account with a
-   read call through `execute` (list the account's Pages projects or Worker
-   scripts; pass `account_id` from the settings, or take it from `whoami`).
+   read call through `cloudflare-write`'s `execute` (list the account's
+   Pages projects or Worker scripts; pass `account_id` from the settings,
+   or take it from `whoami`).
    When no project is configured, the configured one does not exist, or
    several match, deploy nothing and say so. Never call an endpoint that
    creates, renames or deletes a project, and never change settings,
    environment variables, secrets, routes, domains or DNS.
 3. **Deploy a preview.**
-   - **Pages, connected to Git:** first read the project (through
-     `cloudflare`) and take its `production_branch`. When the pull request's
+   - **Pages, connected to Git:** first read the project (a read call
+     through `execute`) and take its `production_branch`. When the pull request's
      head branch is the production branch, or the production branch cannot
      be read, deploy nothing: a deployment of that branch is a production
      deployment, whatever target was asked for. Say so, and that production
@@ -54,10 +56,10 @@ deploy itself.
      from a fork is refused this way: the connected base repository may have
      a branch of the same name at different code.
      Otherwise find the "create deployment" endpoint for Pages projects with
-     `search` and call it through `cloudflare-write` with `branch` set to the
+     `search` and call it through `execute` with `branch` set to the
      pull request's head branch. Cloudflare builds that non-production
      branch's head commit as a preview deployment. Read the new deployment
-     (by id through `cloudflare`) and compare its
+     (by id, a read call through `execute`) and compare its
      `deployment_trigger.metadata.commit_hash` with the head commit; when it
      is missing or differs (for example the branch moved after the check),
      do not report the deployment as a preview of this pull request: say

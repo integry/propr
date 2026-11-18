@@ -116,6 +116,10 @@
         "maxLength": 2048
       }
     },
+    "connections[]{type=oauth}.required": {
+      "type": "boolean",
+      "required": false
+    },
     "connections[]{type=oauth}.registrations": {
       "type": "string[]",
       "required": false,
@@ -166,6 +170,10 @@
       "bounds": {
         "maxLength": 2048
       }
+    },
+    "connections[]{type=token}.required": {
+      "type": "boolean",
+      "required": false
     },
     "connections[]{type=token}.secretUrl": {
       "type": "object",
@@ -228,6 +236,10 @@
       "bounds": {
         "maxLength": 2048
       }
+    },
+    "connections[]{type=signing_secret}.required": {
+      "type": "boolean",
+      "required": false
     },
     "settings": {
       "type": "object",

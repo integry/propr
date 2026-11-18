@@ -1,7 +1,7 @@
 {
   "id": "cloudflare-deploy-preview-ready",
   "name": "Deploy preview when review reaches the goal (Cloudflare)",
-  "description": "Hourly on weekdays, list open pull requests whose ProPR review reached its goal and that have no Cloudflare preview of their head commit, with the /deploy-cloudflare command for each.",
+  "description": "Hourly on weekdays, list open pull requests whose ProPR review reached its goal, with the /deploy-cloudflare command for each. Existing Cloudflare previews are not checked.",
   "category": "reporting",
   "capabilities": ["repository_read", "propr_mcp"],
   "schedule": "0 9-17 * * 1-5",
@@ -9,7 +9,7 @@
   "previousReportCount": 1,
   "reviewBeforeSaving": [
     { "field": "repositories", "note": "Choose the repositories deployed with Cloudflare; use the same repositories as the plugin's limit." },
-    { "field": "schedule", "note": "Runs at minute 0 of every hour from 09:00 to 17:00 UTC, Monday to Friday. Each run reads pull requests and deployments; it never deploys." },
+    { "field": "schedule", "note": "Runs at minute 0 of every hour from 09:00 to 17:00 UTC, Monday to Friday. Each run reads pull requests only; it never deploys." },
     { "field": "autonomy", "note": "Starts as Dry run. This template only reports: raising the mode creates nothing, because a deploy needs a person with write permission to run /deploy-cloudflare." }
   ]
 }

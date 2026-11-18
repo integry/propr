@@ -1007,6 +1007,8 @@ export interface PluginDetailResponse {
           hosts: string[];
           pathPrefixes?: string[];
         };
+        /** true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it. */
+        required?: boolean;
         /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`). */
         authorization?: "bearer" | "raw" | "basic";
         [key: string]: unknown;
@@ -1095,7 +1097,7 @@ export interface PluginDetailResponse {
       label: string;
       /** An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh. */
       state: "connected" | "not_connected" | "needs_sign_in";
-      /** A `token` connection a contributed MCP server uses; enabling waits for it. */
+      /** Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required. */
       required: boolean;
       /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
       setBy?: string;
@@ -1303,6 +1305,8 @@ export interface PluginView {
         hosts: string[];
         pathPrefixes?: string[];
       };
+      /** true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it. */
+      required?: boolean;
       /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`). */
       authorization?: "bearer" | "raw" | "basic";
       [key: string]: unknown;
@@ -1391,7 +1395,7 @@ export interface PluginView {
     label: string;
     /** An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh. */
     state: "connected" | "not_connected" | "needs_sign_in";
-    /** A `token` connection a contributed MCP server uses; enabling waits for it. */
+    /** Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required. */
     required: boolean;
     /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
     setBy?: string;

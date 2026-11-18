@@ -17,7 +17,7 @@ import { up as webhookKeysMigration } from '../src/db/migrations/20261116000000_
 import { up as commandSettingsMigration } from '../src/db/migrations/20261116120000_plugin_command_settings.js';
 import { PluginError, PluginStore } from '../src/plugins/pluginStore.js';
 import { authorizePluginCommandWrite, matchPluginCommand, resolvePluginCommand, type PluginCommandRequest } from '../src/plugins/pluginCommands.js';
-import { consumePluginCommandWriteGrant } from '../src/plugins/pluginCommandSettings.js';
+import { consumePluginCommandWriteGrant, discardPluginCommandWriteGrant } from '../src/plugins/pluginCommandSettings.js';
 import { PluginCommandRunner, enqueuePluginCommandDelivery } from '../src/plugins/pluginCommandDeliveries.js';
 import { listPluginActivity, prunePluginDeliveries } from '../src/plugins/pluginDeliveries.js';
 import { pluginStateStore } from '../src/plugins/pluginStateStore.js';
@@ -139,6 +139,22 @@ test('the write grant is consumed once, by the run it was made for: a retry or a
   const late = await f.resolve('/deploy-one-release');
   if (late.status !== 'resolved') return assert.fail('resolved');
   assert.equal(await consumePluginCommandWriteGrant(f.database, late.run.writeGrant!.id, { ...scope, taskId: 'task-2' }, Date.now() + 25 * 60 * 60 * 1000), null);
+});
+
+test('an unused write grant of a command that was not queued is deleted; a consumed grant stays as the record of its run', async t => {
+  const f = await fixture(t);
+  await f.enable(ONE);
+  await f.store.setCommandWrite('1', ONE, 'deploy-one-release', true);
+  const unused = await f.resolve('/deploy-one-release');
+  const used = await f.resolve('/deploy-one-release');
+  if (unused.status !== 'resolved' || used.status !== 'resolved') return assert.fail('resolved');
+  const scope = { pluginId: ONE, command: 'deploy-one-release', repository: 'Owner/App', number: 42 };
+  assert.equal(await discardPluginCommandWriteGrant(f.database, unused.run.writeGrant!.id), true);
+  assert.equal(await f.database('plugin_command_write_grants').where({ id: unused.run.writeGrant!.id }).first(), undefined);
+  assert.equal(await consumePluginCommandWriteGrant(f.database, unused.run.writeGrant!.id, { ...scope, taskId: 'late' }), null, 'a deleted grant authorizes nothing');
+  assert.deepEqual(await consumePluginCommandWriteGrant(f.database, used.run.writeGrant!.id, { ...scope, taskId: 'task-1' }), used.run.writeGrant!.servers);
+  assert.equal(await discardPluginCommandWriteGrant(f.database, used.run.writeGrant!.id), false);
+  assert.equal((await f.database('plugin_command_write_grants').where({ id: used.run.writeGrant!.id }).first()).consumed_by, 'task-1');
 });
 
 test('with the grant the run resolves exactly the plugin\'s write server; other write servers stay out', async t => {

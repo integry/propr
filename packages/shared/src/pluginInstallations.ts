@@ -24,7 +24,7 @@ export type PluginConnectionState = 'connected' | 'not_connected' | 'needs_sign_
 export interface PluginConnectionStatus {
   name: string; type: PluginConnectionType; label: string;
   state: PluginConnectionState;
-  /** A `token` connection a contributed MCP server uses; enabling waits for it. */
+  /** Enabling waits for it: a `token` a contributed MCP server uses, or a `token` or `signing_secret` the manifest marks `required`. */
   required: boolean;
   /** Who set the value and when; for an `oauth` connection, who configured its pre-registered client. */
   setBy?: string; setAt?: number;
@@ -125,14 +125,42 @@ export interface PluginDetail extends PluginView { audit: PluginAuditEvent[] }
 export function pluginPackageSecretServers(manifest: PluginManifest) {
   return manifest.contributes.mcpServers.flatMap(server => (server.kind === 'package' && server.secretEnv.length ? [server] : []));
 }
-/** `token` connections a contributed MCP server needs: a bearer server's connection or a package server's secret variable. */
+/**
+ * Connections enabling waits for: a `token` a contributed MCP server needs (a
+ * bearer server's connection or a package server's secret variable), and a
+ * `token` or `signing_secret` the manifest marks `required`. `oauth`
+ * connections never block enabling: their sign-in needs the enabled plugin's
+ * managed servers (see `neededPluginOAuthConnections`).
+ */
 export function requiredPluginConnections(manifest: PluginManifest): string[] {
   const names = new Set<string>();
   for (const server of manifest.contributes.mcpServers) {
     if (server.kind === 'https' && server.authentication === 'bearer' && server.connection) names.add(server.connection);
     if (server.kind === 'package') for (const secret of server.secretEnv) names.add(secret.connection);
   }
-  return manifest.connections.filter(c => c.type === 'token' && names.has(c.name)).map(c => c.name);
+  return manifest.connections.filter(c => (c.type === 'token' && names.has(c.name)) || (c.type !== 'oauth' && c.required === true)).map(c => c.name);
+}
+
+/**
+ * `oauth` connections the plugin needs signed in: each one a contributed
+ * remote server signs in with, unless the manifest marks it `required: false`.
+ * Takes the manifest or its public projection.
+ */
+export function neededPluginOAuthConnections(
+  connections: readonly { type: string; name: string; required?: boolean }[],
+  servers: readonly { kind: string; authentication?: string; connection?: string }[],
+): string[] {
+  const signedIn = new Set(servers.flatMap(s => (s.kind === 'https' && s.authentication === 'oauth' && s.connection ? [s.connection] : [])));
+  return connections.filter(c => c.type === 'oauth' && c.required !== false && signedIn.has(c.name)).map(c => c.name);
+}
+/**
+ * Whether an unconnected connection keeps the plugin from working: it is
+ * required to enable, a needed `oauth` connection (`neededOAuth`), or a sign-in
+ * whose refresh failed. Optional connections left unset (extra destinations,
+ * another mode's secrets) do not count.
+ */
+export function pluginConnectionNeeded(status: Pick<PluginConnectionStatus, 'name' | 'state' | 'required'>, neededOAuth: readonly string[]): boolean {
+  return status.required || status.state === 'needs_sign_in' || neededOAuth.includes(status.name);
 }
 
 /** The settings a fresh installation starts with: every default the manifest declares. */

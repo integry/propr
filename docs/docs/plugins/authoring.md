@@ -520,6 +520,7 @@ Current `manifestVersion`: `1`. Versions ProPR reads: `1`.
 | `connections[]{type=oauth}.label` | `string`; **required**; not empty; at most 100 characters | Label of the field on the Plugins page. |
 | `connections[]{type=oauth}.help` | `string`; **required**; not empty; at most 500 characters | What to paste or sign in with, shown under the field. |
 | `connections[]{type=oauth}.helpUrl` | `string`; **required**; at most 2048 characters; an https:// URL | Where the administrator obtains the credential. |
+| `connections[]{type=oauth}.required` | `boolean` | Whether the plugin needs the connection to work. On a `token` or `signing_secret` connection, `true` means it must be set before the plugin can be enabled (a token an MCP server uses is always required; `false` is refused there). On an `oauth` connection an MCP server signs in with, `false` marks the sign-in optional; otherwise the plugin shows Degraded until it is signed in, which happens after enabling, so it never blocks enabling. Leave it out for optional connections such as extra destinations. |
 | `connections[]{type=oauth}.registrations` | `string[]`; default `["metadata_document","dynamic","preregistered"]`; at least 1 entry; at most 3 entries; each one of `metadata_document`, `dynamic`, `preregistered` | OAuth client registration methods allowed, in the order the sign-in tries them. |
 | `connections[]{type=oauth}.scopes` | `string[]`; at most 32 entries; each matches `^[\x21\x23-\x5b\x5d-\x7e]{1,256}$` | OAuth scopes to request. Ask for the narrowest scopes the plugin needs. |
 | `connections[]{type=token}.type` | `"token"`; **required** | Connection type: `oauth` (a sign-in), `token` (a pasted secret) or `signing_secret` (a shared secret that verifies inbound webhooks and signs outbound requests). |
@@ -527,6 +528,7 @@ Current `manifestVersion`: `1`. Versions ProPR reads: `1`.
 | `connections[]{type=token}.label` | `string`; **required**; not empty; at most 100 characters | Label of the field on the Plugins page. |
 | `connections[]{type=token}.help` | `string`; **required**; not empty; at most 500 characters | What to paste or sign in with, shown under the field. |
 | `connections[]{type=token}.helpUrl` | `string`; **required**; at most 2048 characters; an https:// URL | Where the administrator obtains the credential. |
+| `connections[]{type=token}.required` | `boolean` | Whether the plugin needs the connection to work. On a `token` or `signing_secret` connection, `true` means it must be set before the plugin can be enabled (a token an MCP server uses is always required; `false` is refused there). On an `oauth` connection an MCP server signs in with, `false` marks the sign-in optional; otherwise the plugin shows Degraded until it is signed in, which happens after enabling, so it never blocks enabling. Leave it out for optional connections such as extra destinations. |
 | `connections[]{type=token}.secretUrl` | `object` | The secret is a URL (an incoming webhook URL) instead of a token. Handlers send to it with `PLUGIN_CONNECTION_URL` and never learn it. |
 | `connections[]{type=token}.secretUrl.hosts` | `string[]`; **required**; at least 1 entry; at most 8 entries; each at most 253 characters | Hosts the URL must be on: host names, or `*.` and a name for any name under it. |
 | `connections[]{type=token}.secretUrl.pathPrefixes` | `string[]`; at least 1 entry; at most 8 entries; each at most 200 characters; each matches `^\/[A-Za-z0-9_.~/-]*$` | Paths the URL must start with, such as `/services/`. |
@@ -536,6 +538,7 @@ Current `manifestVersion`: `1`. Versions ProPR reads: `1`.
 | `connections[]{type=signing_secret}.label` | `string`; **required**; not empty; at most 100 characters | Label of the field on the Plugins page. |
 | `connections[]{type=signing_secret}.help` | `string`; **required**; not empty; at most 500 characters | What to paste or sign in with, shown under the field. |
 | `connections[]{type=signing_secret}.helpUrl` | `string`; **required**; at most 2048 characters; an https:// URL | Where the administrator obtains the credential. |
+| `connections[]{type=signing_secret}.required` | `boolean` | Whether the plugin needs the connection to work. On a `token` or `signing_secret` connection, `true` means it must be set before the plugin can be enabled (a token an MCP server uses is always required; `false` is refused there). On an `oauth` connection an MCP server signs in with, `false` marks the sign-in optional; otherwise the plugin shows Degraded until it is signed in, which happens after enabling, so it never blocks enabling. Leave it out for optional connections such as extra destinations. |
 
 ### Settings
 

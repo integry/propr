@@ -6,7 +6,7 @@ import {
 import logger from '../utils/logger.js';
 import { officialPluginCatalog, type PluginCatalogSource } from './pluginCatalog.js';
 import { installationRecord, type PluginInstallationRow } from './pluginState.js';
-import { commandKey, createPluginCommandWriteGrant, readPluginCommandAccess, type PluginCommandAccess } from './pluginCommandSettings.js';
+import { commandKey, createPluginCommandWriteGrant, discardPluginCommandWriteGrant, readPluginCommandAccess, type PluginCommandAccess } from './pluginCommandSettings.js';
 
 /**
  * Slash commands contributed by plugins (`contributes.commands`), resolved
@@ -364,4 +364,25 @@ export async function authorizeCommentPluginCommand<R extends MatchedPluginComma
   if (writeAuthorizer) return writeAuthorizer(resolution);
   const { db } = await import('../db/connection.js');
   return authorizePluginCommandWrite(resolution, { database: db });
+}
+
+export type PluginCommandWriteGrantDiscarder = (run: PluginCommandRun) => Promise<void>;
+let grantDiscarder: PluginCommandWriteGrantDiscarder | null = null;
+/** Replace how comment intake deletes an unused write grant (tests), or restore the default with null. */
+export function setPluginCommandWriteGrantDiscarder(next: PluginCommandWriteGrantDiscarder | null): void { grantDiscarder = next; }
+
+/**
+ * Delete the write grant `authorizeCommentPluginCommand` created for `run`
+ * when intake then queued no job carrying it, so no unused grant waits out
+ * its expiry. Only call it on evidence that no job carries the grant: a run
+ * whose grant is gone gets read servers only. A grant a replaced authorizer
+ * (tests) made is not in the instance database, so nothing is deleted then.
+ * Throws when the delete fails; the grant then expires on its own.
+ */
+export async function discardCommentPluginCommandWriteGrant(run: PluginCommandRun): Promise<void> {
+  if (!run.writeGrant) return;
+  if (grantDiscarder) return grantDiscarder(run);
+  if (writeAuthorizer) return;
+  const { db } = await import('../db/connection.js');
+  await discardPluginCommandWriteGrant(db, run.writeGrant.id);
 }

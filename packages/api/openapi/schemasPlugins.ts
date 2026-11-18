@@ -14,6 +14,7 @@ const PluginManifestSummary = z.object({
     type: z.enum(PLUGIN_CONNECTION_TYPES), name: z.string(), label: z.string(), help: z.string(), helpUrl: z.string(),
     secretUrl: z.object({ hosts: z.array(z.string()), pathPrefixes: z.array(z.string()).optional() }).optional()
       .describe('A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored.'),
+    required: z.boolean().optional().describe('true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it.'),
     authorization: z.enum(['bearer', 'raw', 'basic']).optional().describe('How the plugin\'s handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`).'),
   }).loose()),
   settings: z.object({ type: z.literal('object'), properties: z.record(z.string(), z.object({}).loose()), required: z.array(z.string()) }).describe('The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`).'),
@@ -47,7 +48,7 @@ const PluginInstallation = z.object({
 const PluginConnectionStatus = z.object({
   name: z.string(), type: z.enum(PLUGIN_CONNECTION_TYPES), label: z.string(),
   state: z.enum(['connected', 'not_connected', 'needs_sign_in']).describe('An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh.'),
-  required: z.boolean().describe('A `token` connection a contributed MCP server uses; enabling waits for it.'),
+  required: z.boolean().describe('Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required.'),
   setBy: z.string().optional().describe('Who set the value; for an `oauth` connection, who configured its pre-registered client.'), setAt: z.number().optional(),
 });
 const managedState = { enabled: z.boolean().describe('The library item\'s own enabled switch.'), active: z.boolean().describe('False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies.') };

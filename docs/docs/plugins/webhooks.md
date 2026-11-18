@@ -26,7 +26,8 @@ interface: a manifest, one [handler](../features/plugins.md#handlers) and
 4. Under **Connections**, set **Target 1 signing secret**, and one for each
    other target you use. Use a random value of at least 32 characters, for
    example `openssl rand -hex 32`, and configure the same value on the
-   receiving endpoint. A target without a secret receives nothing.
+   receiving endpoint. A target without a secret receives nothing. Target 1's
+   secret is required to enable the plugin.
 5. Optionally limit the plugin to some repositories, then **Enable** it.
 
 Deliveries start with the next event. Earlier events are not replayed. Each
