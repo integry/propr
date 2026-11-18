@@ -134,7 +134,13 @@ test('review batched behind manual work preserves command metadata', async () =>
   const result = await postFollowup({ body: '/review gpt-5\nCheck errors', target: 'pull_request' }, 'completed-task');
   assert.equal(result.json.state, 'batched');
   assert.equal(result.json.jobId, undefined, 'do not return a nonexistent job ID for a batched command');
-  assert.equal(add.mock.callCount(), 0);
+  // Only an active job exists, so a drain job is queued to pick up the stored command.
+  assert.equal(add.mock.callCount(), 1);
+  const [drainName, drain, drainOptions] = add.mock.calls[0].arguments;
+  assert.equal(drainName, 'processPullRequestComment');
+  assert.deepEqual(drain.comments, []);
+  assert.equal(drain.commandMode, undefined);
+  assert.ok(drainOptions.delay! > 0);
   assert.equal(redis.rpush.mock.callCount(), 1);
   const pending = JSON.parse(redis.rpush.mock.calls[0].arguments[1]);
   assert.equal(pending.commandMode, 'review');
