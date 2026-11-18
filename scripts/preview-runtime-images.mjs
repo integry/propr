@@ -457,14 +457,48 @@ const validateCandidate = (directory, sourceRevision) => {
   return metadata;
 };
 
-const inspectRemoteIfPresent = (image, sourceRevision, expectedArchitectures = ARCHITECTURES) => {
+// Release builds name their linux/amd64-only app/UI commit tag release-<sha>
+// (scripts/build-images.sh), so the bare <sha> tag of those repositories is
+// this publication's. Releases built before that change wrote an amd64-only
+// image there; it is never overwritten, so that source cannot get previews.
+const existingTagConflict = (reference, image, error) => new Error([
+  `${reference} already exists but is not the source-bound two-architecture preview manifest`,
+  `(${error instanceof Error ? error.message : String(error)}).`,
+  'It is never overwritten. Releases built before app/UI release commit tags moved to release-<sha>',
+  `pushed a linux/amd64-only ${image} image under the bare commit tag; publish previews from a later source revision.`,
+].join(' '));
+
+const inspectRemoteIfPresent = (image, sourceRevision, expectedArchitectures = ARCHITECTURES, spawn = spawnSync, registry = runRegctl) => {
   const reference = `docker.io/propr/${image}:${sourceRevision}`;
-  const probe = spawnSync('regctl', ['manifest', 'get', reference, '--format', 'raw-body'], { encoding: 'utf8' });
-  if (probe.status === 0) return inspectRuntimeReference(reference, image, sourceRevision, expectedArchitectures);
+  const probe = spawn('regctl', ['manifest', 'get', reference, '--format', 'raw-body'], { encoding: 'utf8' });
+  if (probe.status === 0) {
+    try {
+      return inspectRuntimeReference(reference, image, sourceRevision, expectedArchitectures, registry);
+    } catch (error) {
+      if (Object.hasOwn(IMAGES, image)) throw existingTagConflict(reference, image, error);
+      throw error;
+    }
+  }
   const failure = `${probe.stdout || ''}\n${probe.stderr || ''}`;
   if (/manifest unknown|name unknown|not found|404/i.test(failure)
     && !/unauthorized|denied|authentication|insufficient.scope/i.test(failure)) return null;
   throw new Error(`Unable to safely inspect existing ${reference}: ${failure.trim()}`);
+};
+
+// Read-only, credential-free lookup of the three published preview runtime
+// images for one source revision. Each entry is the exact digest-pinned
+// reference when the immutable tag already holds a valid image, or null when
+// the tag does not exist yet. A tag that exists but does not satisfy the
+// preview contract throws: it would make publication fail later anyway.
+export const inspectPublishedRuntime = (sourceRevision, { spawn = spawnSync, registry = runRegctl } = {}) => {
+  requireSourceRevision(sourceRevision);
+  const referenceOf = (image, architectures) =>
+    inspectRemoteIfPresent(image, sourceRevision, architectures, spawn, registry)?.reference ?? null;
+  return {
+    app: referenceOf('app', ARCHITECTURES),
+    ui: referenceOf('ui', ARCHITECTURES),
+    agent: referenceOf(AGENT_IMAGE, AGENT_ARCHITECTURES),
+  };
 };
 
 const publishImages = ({ sourceRevision, input, githubOutput, stepSummary }) => {

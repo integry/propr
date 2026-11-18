@@ -1,0 +1,290 @@
+name: Release Rollout
+
+# Starts the desktop previews and the preview CLI bundle from one release tag.
+# The source revision of every step is the tag commit. The chain runs in order
+# and passes each output along:
+#
+#   plan -> runtime images: managed agent (publish-agent), then app/UI (publish)
+#        -> in parallel: Linux unsigned draft -> signing -> signed publication,
+#                        the macOS preview, and the preview CLI bundle
+#
+# Each step calls the existing workflow (workflow_call), so the jobs, their
+# permissions and every protected environment and approval are the ones a
+# manual dispatch uses; the chain waits at each environment. Only the two Docker
+# Hub and the two RPM signing credentials are passed, to the workflows whose
+# protected jobs already read them. The single-step manual dispatches keep
+# working unchanged.
+#
+# Re-running for a tag is safe: the plan finds runtime images and published
+# preview prereleases that already exist for the tag commit, and those steps
+# are skipped and their existing digests passed along. To resume a run that
+# stopped part-way (for example a rejected approval), re-run its failed jobs:
+# a fresh run rebuilds, and staging refuses draft bytes that differ.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to roll out, for example v0.9.3 (its tag commit is the source revision)
+        required: true
+        type: string
+  workflow_run:
+    workflows: [Docker Images]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-rollout-${{ inputs.release_tag || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Resolve the tag commit and the artefacts that already exist
+    # Automatic runs follow only a successful Docker Images run for a release
+    # tag push; a manual Docker Images dispatch is followed by a manual run.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.plan.outputs.release_tag }}
+      source_revision: ${{ steps.plan.outputs.source_revision }}
+      version: ${{ steps.plan.outputs.version }}
+      runtime_app_image: ${{ steps.plan.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.plan.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.plan.outputs.runtime_agent_image }}
+      publish_agent: ${{ steps.plan.outputs.publish_agent }}
+      publish_app_ui: ${{ steps.plan.outputs.publish_app_ui }}
+      linux: ${{ steps.plan.outputs.linux }}
+      macos: ${{ steps.plan.outputs.macos }}
+    steps:
+      - name: Checkout the reviewed main revision with full history and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Install pinned OCI inspection client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Bind the tag commit to main and find existing runtime images and preview releases
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-rollout-plan.mjs plan
+
+  runtime-agent:
+    name: Managed agent image
+    needs: plan
+    if: needs.plan.outputs.publish_agent == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/preview-runtime-images.yml
+    with:
+      operation: publish-agent
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  runtime-app-ui:
+    name: App and UI images
+    needs: [plan, runtime-agent]
+    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' && needs.plan.outputs.publish_app_ui == 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/preview-runtime-images.yml
+    with:
+      operation: publish
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  runtime:
+    name: Pass the three runtime image digests along
+    needs: [plan, runtime-agent, runtime-app-ui]
+    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      runtime_app_image: ${{ steps.runtime.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.runtime.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.runtime.outputs.runtime_agent_image }}
+    steps:
+      - name: Checkout the reviewed main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Use this run's publication, else the existing image, for each digest
+        id: runtime
+        env:
+          SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
+          PUBLISHED_APP_IMAGE: ${{ needs.runtime-app-ui.outputs.runtime_app_image }}
+          PUBLISHED_UI_IMAGE: ${{ needs.runtime-app-ui.outputs.runtime_ui_image }}
+          PUBLISHED_AGENT_IMAGE: ${{ needs.runtime-agent.outputs.runtime_agent_image }}
+          EXISTING_APP_IMAGE: ${{ needs.plan.outputs.runtime_app_image }}
+          EXISTING_UI_IMAGE: ${{ needs.plan.outputs.runtime_ui_image }}
+          EXISTING_AGENT_IMAGE: ${{ needs.plan.outputs.runtime_agent_image }}
+        run: node scripts/release-rollout-plan.mjs runtime
+
+  linux-draft:
+    name: Desktop Linux unsigned draft
+    needs: [plan, runtime]
+    if: ${{ !cancelled() && !failure() && needs.runtime.result == 'success' && needs.plan.outputs.linux == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-linux-preview.yml
+    with:
+      operation: stage-draft
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      runtime_app_image: ${{ needs.runtime.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ needs.runtime.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ needs.runtime.outputs.runtime_agent_image }}
+
+  linux-signing:
+    name: Desktop Linux signing
+    needs: [plan, linux-draft]
+    if: ${{ !cancelled() && !failure() && needs.linux-draft.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/desktop-linux-signed-preview.yml
+    with:
+      operation: sign-draft
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      # The unsigned bundle was staged earlier in this run.
+      unsigned_run_id: ${{ github.run_id }}
+    secrets:
+      PROPR_DESKTOP_RPM_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}
+      PROPR_DESKTOP_RPM_PASSPHRASE: ${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}
+
+  linux-publication:
+    name: Desktop Linux signed publication
+    needs: [plan, linux-signing]
+    if: ${{ !cancelled() && !failure() && needs.linux-signing.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/desktop-linux-signed-preview.yml
+    with:
+      operation: publish-draft
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      # The signing and installed-RPM acceptance jobs ran earlier in this run.
+      signing_run_id: ${{ github.run_id }}
+
+  macos:
+    name: Desktop macOS preview
+    needs: [plan, runtime]
+    if: ${{ !cancelled() && !failure() && needs.runtime.result == 'success' && needs.plan.outputs.macos == 'true' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/desktop-macos-preview.yml
+    with:
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      runtime_app_image: ${{ needs.runtime.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ needs.runtime.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ needs.runtime.outputs.runtime_agent_image }}
+
+  cli-bundle:
+    name: Preview CLI bundle
+    needs: [plan, runtime]
+    if: ${{ !cancelled() && !failure() && needs.runtime.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/preview-cli-bundle.yml
+    with:
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      app_image: ${{ needs.runtime.outputs.runtime_app_image }}
+      ui_image: ${{ needs.runtime.outputs.runtime_ui_image }}
+      agent_image: ${{ needs.runtime.outputs.runtime_agent_image }}
+
+  summary:
+    name: Summarize the rollout
+    needs: [plan, runtime-agent, runtime-app-ui, runtime, linux-draft, linux-signing, linux-publication, macos, cli-bundle]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Write one line per step
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+          SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
+          AGENT_IMAGE: ${{ needs.runtime.outputs.runtime_agent_image }}
+          APP_IMAGE: ${{ needs.runtime.outputs.runtime_app_image }}
+          UI_IMAGE: ${{ needs.runtime.outputs.runtime_ui_image }}
+          RUNTIME_AGENT: ${{ needs.runtime-agent.result }}
+          RUNTIME_APP_UI: ${{ needs.runtime-app-ui.result }}
+          LINUX_DRAFT: ${{ needs.linux-draft.result }}
+          LINUX_SIGNING: ${{ needs.linux-signing.result }}
+          LINUX_PUBLICATION: ${{ needs.linux-publication.result }}
+          MACOS: ${{ needs.macos.result }}
+          CLI_BUNDLE: ${{ needs.cli-bundle.result }}
+          PLAN_LINUX: ${{ needs.plan.outputs.linux }}
+          PLAN_MACOS: ${{ needs.plan.outputs.macos }}
+          PLAN_AGENT: ${{ needs.plan.outputs.publish_agent }}
+          PLAN_APP_UI: ${{ needs.plan.outputs.publish_app_ui }}
+        run: |
+          set -euo pipefail
+          # A step the plan skipped because its artefact exists says so.
+          state() { if [ "$2" = false ] && [ "$1" = skipped ]; then echo 'already published'; else echo "$1"; fi; }
+          {
+            echo "### Release rollout for $RELEASE_TAG"
+            echo
+            echo "Source revision (tag commit): \`$SOURCE_REVISION\`"
+            echo
+            echo '| Step | Result |'
+            echo '| --- | --- |'
+            echo "| Managed agent image | $(state "$RUNTIME_AGENT" "$PLAN_AGENT") |"
+            echo "| App and UI images | $(state "$RUNTIME_APP_UI" "$PLAN_APP_UI") |"
+            echo "| Desktop Linux unsigned draft | $(state "$LINUX_DRAFT" "$PLAN_LINUX") |"
+            echo "| Desktop Linux signing | $(state "$LINUX_SIGNING" "$PLAN_LINUX") |"
+            echo "| Desktop Linux signed publication | $(state "$LINUX_PUBLICATION" "$PLAN_LINUX") |"
+            echo "| Desktop macOS preview | $(state "$MACOS" "$PLAN_MACOS") |"
+            echo "| Preview CLI bundle | $CLI_BUNDLE |"
+            echo
+            if [ -n "$AGENT_IMAGE$APP_IMAGE$UI_IMAGE" ]; then
+              echo 'Runtime images:'
+              echo
+              for image in "$AGENT_IMAGE" "$APP_IMAGE" "$UI_IMAGE"; do echo "- \`$image\`"; done
+              echo
+            fi
+            echo 'Check where the release is live with `npm run release:rollout -- --version <x.y.z>`.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -17,6 +17,35 @@ on:
         description: Full lowercase commit SHA already reachable from main
         required: true
         type: string
+  # Release Rollout (release-rollout.yml) calls publish-agent, then publish, for
+  # the release tag commit. The jobs, their environment and its approval are the
+  # same as for a manual dispatch; only the two Docker Hub credentials the
+  # protected publish jobs already read are passed through.
+  workflow_call:
+    inputs:
+      operation:
+        description: prepare, publish, prepare-agent, or publish-agent (validated by the identity job)
+        required: true
+        type: string
+      source_revision:
+        description: Full lowercase commit SHA already reachable from main
+        required: true
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+    outputs:
+      runtime_app_image:
+        description: propr/app:<source SHA>@sha256:<digest> two-architecture manifest (publish only)
+        value: ${{ jobs.publish.outputs.runtime_app_image }}
+      runtime_ui_image:
+        description: propr/ui:<source SHA>@sha256:<digest> two-architecture manifest (publish only)
+        value: ${{ jobs.publish.outputs.runtime_ui_image }}
+      runtime_agent_image:
+        description: propr/agent:<source SHA>@sha256:<digest> linux/amd64 managed agent (publish-agent only)
+        value: ${{ jobs.publish-agent.outputs.runtime_agent_image }}
 
 permissions:
   contents: read

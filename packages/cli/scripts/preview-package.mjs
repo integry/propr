@@ -50,10 +50,14 @@ export function validatePreviewSource(input, trustedMain, root, env = process.en
     throw new Error('origin must be the canonical integry/propr repository');
   }
   if (git(['rev-parse', 'refs/remotes/origin/main']) !== trustedMain) throw new Error('Trusted revision must match the fetched origin/main');
+  // Release Rollout's automatic runs are workflow_run events; they are trusted
+  // only from the reviewed main copy of release-rollout.yml.
+  const releaseRollout = env.GITHUB_EVENT_NAME === 'workflow_run'
+    && env.GITHUB_WORKFLOW_REF === 'integry/propr/.github/workflows/release-rollout.yml@refs/heads/main';
   if (env.GITHUB_ACTIONS === 'true' && (env.GITHUB_REPOSITORY !== 'integry/propr'
     || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_SHA !== trustedMain
-    || env.GITHUB_EVENT_NAME !== 'workflow_dispatch')) {
-    throw new Error('CI preparation requires workflow_dispatch from integry/propr main at the trusted revision');
+    || (env.GITHUB_EVENT_NAME !== 'workflow_dispatch' && !releaseRollout))) {
+    throw new Error('CI preparation requires workflow_dispatch (or the main Release Rollout) from integry/propr main at the trusted revision');
   }
   validateIdentity({ sourceRevision: input.sourceRevision, workflowRevision: trustedMain,
     dispatchRef: 'refs/heads/main', operation: 'prepare-agent' }, root);

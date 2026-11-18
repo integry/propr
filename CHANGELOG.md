@@ -17,6 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the site, and prints `ok`, `missing` or `stale` for each. It uses only
   public, unauthenticated reads, exits non-zero unless every target is `ok`,
   supports `--json`, and writes a table to the run summary in GitHub Actions.
+- **Release Rollout workflow**: `.github/workflows/release-rollout.yml`
+  builds the desktop previews and the preview CLI bundle from one release tag.
+  It replaces seven manual dispatches with hand-copied digests and run ids.
+  It starts by itself when Docker Images succeeds for a tag push, or by hand
+  with `release_tag`. It uses the tag commit as the source revision and calls
+  the existing workflows in order: the runtime images (agent, then app/UI),
+  then in parallel the Linux draft, signing and signed publication, the macOS
+  preview, and the preview CLI bundle. Every protected environment and its
+  approval is unchanged and no new secret is introduced. A re-run skips the
+  runtime images and preview pre-releases that already exist.
+
+### Changed
+
+- **Release app/UI commit tag**: a release now tags its linux/amd64-only
+  `propr/app` and `propr/ui` images `release-<commit SHA>` instead of the bare
+  commit SHA. The bare `propr/app:<SHA>` and `propr/ui:<SHA>` tags are left to
+  the two-architecture preview runtime manifests that the desktop previews and
+  the preview CLI bundle pin. The `<version>` and `latest` tags are unchanged,
+  and docs, agent and launcher images keep the bare SHA tag.
 
 ## [0.9.2] - 2026-11-18
 
