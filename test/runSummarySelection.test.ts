@@ -177,3 +177,95 @@ test('the follow-up comment shows the selection, not an older transcript heurist
     assert.match(comment, new RegExp(`## Summary of Changes\\n\\n${summary.replace('.', '\\.')}\\n`));
   }
 });
+
+const WAITING = 'The full test suite is still running in the background; I will report once it finishes.';
+const waitingRun = (overrides: Partial<AgentExecutionResult> = {}) => run({
+  conversationLog: ['Running the tests now.', SUMMARY, WAITING].map(claudeText), summary: WAITING, commitMessage: WAITING,
+  modifiedFiles: ['src/worker.ts', 'test/worker.test.ts'], ...overrides,
+});
+
+test('the selection prompt asks whether the last message says the run is unfinished', () => {
+  const prompt = buildSummarySelectionPrompt(candidates);
+  assert.match(prompt, /looks unfinished/);
+  assert.match(prompt, /"unfinished": <true or false>/);
+});
+
+test('a finished verdict selects the summary and sets no unfinished flag', async () => {
+  const { deps: d, runAnalysis } = deps('{"index": 2, "unfinished": false, "reason": ""}');
+  const result = await applyRunSummarySelection(run(), context, d);
+  assert.equal(result.summary, SUMMARY);
+  assert.equal(result.unfinishedReason, undefined);
+  assert.equal(runAnalysis.mock.callCount(), 1);
+});
+
+test('a reply without the unfinished field reads as finished', async () => {
+  const result = await applyRunSummarySelection(run(), context, deps('{"index": 2}').deps);
+  assert.equal(result.unfinishedReason, undefined);
+});
+
+test('an unfinished verdict keeps the selected summary and records a one-line reason from the same call', async () => {
+  const { deps: d, runAnalysis } = deps('{"index": 2, "unfinished": true, "reason": "Still waiting\\nfor the background test run."}');
+  const result = await applyRunSummarySelection(waitingRun(), context, d);
+  assert.equal(runAnalysis.mock.callCount(), 1);
+  assert.equal(result.summary, SUMMARY);
+  assert.equal(result.summarySelection, 'selected');
+  assert.equal(result.unfinishedReason, 'Still waiting for the background test run.');
+  assert.equal(agentResultToClaudeResponse(result).unfinishedReason, 'Still waiting for the background test run.');
+});
+
+test('an unfinished verdict with no reason gets a default reason, also when no candidate is a summary', async () => {
+  const result = await applyRunSummarySelection(waitingRun(), context, deps('{"index": null, "unfinished": true}').deps);
+  assert.equal(result.summary, NO_RUN_SUMMARY_TEXT);
+  assert.match(result.unfinishedReason ?? '', /still in progress/);
+});
+
+test('a long unfinished reason is capped', () => {
+  return selectRunSummary(candidates, { ask: async () => JSON.stringify({ index: 1, unfinished: true, reason: 'w'.repeat(1000) }) })
+    .then(selection => {
+      assert.equal(selection.outcome, 'selected');
+      assert.ok(((selection as { unfinished?: { reason: string } }).unfinished?.reason.length ?? 0) <= 301);
+    });
+});
+
+test('a failed call leaves the run exactly as reported, with no unfinished flag', async () => {
+  const original = waitingRun();
+  const result = await applyRunSummarySelection(original, context, deps(async () => { throw new Error('boom'); }).deps);
+  assert.equal(result, original);
+  assert.equal(result.unfinishedReason, undefined);
+});
+
+test('no configured model leaves an unfinished-looking run unchanged', async () => {
+  const original = waitingRun();
+  const result = await applyRunSummarySelection(original, context, { loadSettings: async () => ({ agent_alias: '' }) as never });
+  assert.equal(result, original);
+});
+
+test('the follow-up comment of an unfinished run warns and lists the committed files', async () => {
+  const claudeResult = {
+    success: true, summary: WAITING, summarySelection: 'selected', unfinishedReason: 'Still waiting for the background test run.',
+    modifiedFiles: ['src/worker.ts'], commitMessage: null, executionTime: 1, conversationLog: [],
+  } as never;
+  const comment = await buildCompletionComment({ commitHash: 'abcdef1234567890' }, [], {
+    changesSummary: '', commitMessage: 'feat(ai): x', llm: 'm', authorsText: '@a',
+  }, claudeResult);
+  assert.doesNotMatch(comment, /✅/);
+  assert.match(comment, /The run ended before the agent confirmed completion\.\*\* Still waiting for the background test run\./);
+  assert.match(comment, /## Last Agent Update\n\n/);
+  assert.match(comment, /## Committed Changes\n\n- `src\/worker\.ts`/);
+});
+
+test('the issue completion report of an unfinished run is not a clean success', async () => {
+  const { generateCompletionComment } = await import('../packages/core/src/utils/github/logFiles.ts');
+  const issueRef = { number: 7, repoOwner: 'o', repoName: 'r' };
+  const unfinished = await generateCompletionComment({
+    success: true, summary: WAITING, unfinishedReason: 'Still waiting for the background test run.', modifiedFiles: ['src/worker.ts'],
+  }, issueRef);
+  assert.match(unfinished, /AI Processing Ended Unconfirmed/);
+  assert.doesNotMatch(unfinished, /Status: Success/);
+  assert.match(unfinished, /The run ended before the agent confirmed completion/);
+  assert.match(unfinished, /\*\*Committed changes:\*\*\n- `src\/worker\.ts`/);
+  const finished = await generateCompletionComment({ success: true, summary: SUMMARY, modifiedFiles: ['src/worker.ts'] }, issueRef);
+  assert.match(finished, /AI Processing Completed/);
+  assert.match(finished, /Status: Success/);
+  assert.doesNotMatch(finished, /confirmed completion/);
+});
