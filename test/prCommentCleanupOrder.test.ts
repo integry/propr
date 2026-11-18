@@ -5,12 +5,18 @@ const events: string[] = [];
 const queued: Array<{ name: string; data: any }> = [];
 const cleanupOptions: any[] = [];
 const noOp = () => undefined;
+let waitingJobs: Array<{ name: string; data: any }> = [];
+let delayedJobs: Array<{ name: string; data: any }> = [];
 
 const core = await import('@propr/core');
 await mock.module('@propr/core', {
     namedExports: {
         ...core,
-        issueQueue: { add: async (name: string, data: any) => { events.push('queued'); queued.push({ name, data }); } },
+        issueQueue: {
+            add: async (name: string, data: any) => { events.push('queued'); queued.push({ name, data }); },
+            getWaiting: async () => waitingJobs,
+            getDelayed: async () => delayedJobs,
+        },
         cleanupWorktree: async (_repo: string, _path: string, _branch: string, options: unknown) => { cleanupOptions.push(options); await new Promise(resolve => setTimeout(resolve, 5)); events.push('worktree-removed'); },
     },
 });
@@ -84,3 +90,46 @@ for (const reason of ['cancelled_by_user', 'cancelled_pr_closed', undefined]) {
         }
     });
 }
+
+// #3686: intake queues a drain job for a comment it stores behind a running
+// job, so cleanup must not queue a second one that would only find the list empty.
+for (const queuedState of ['waiting', 'delayed'] as const) {
+    test(`cleanup leaves pending comments to the PR job already ${queuedState}`, async () => {
+        queued.length = 0;
+        const pickup = { name: 'processPullRequestComment', data: { pullRequestNumber: 42, repoOwner: 'acme', repoName: 'web', comments: [] } };
+        waitingJobs = queuedState === 'waiting' ? [pickup] : [];
+        delayedJobs = queuedState === 'delayed' ? [pickup] : [];
+        try {
+            await cleanupJob({
+                stateManager: { getTaskState: async () => ({ state: 'completed' }) } as never,
+                lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
+                localRepoPath: undefined, worktreeInfo: undefined,
+                repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
+                correlatedLogger: { debug: noOp, info: noOp, warn: noOp, error: noOp } as never,
+                redisClient: { llen: async () => 1 } as never,
+            });
+        } finally {
+            waitingJobs = [];
+            delayedJobs = [];
+        }
+        assert.equal(queued.length, 0);
+    });
+}
+
+test('a queued job for another pull request does not stop cleanup from queuing the follow-up', async () => {
+    queued.length = 0;
+    delayedJobs = [{ name: 'processPullRequestComment', data: { pullRequestNumber: 43, repoOwner: 'acme', repoName: 'web' } }];
+    try {
+        await cleanupJob({
+            stateManager: { getTaskState: async () => ({ state: 'completed' }) } as never,
+            lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
+            localRepoPath: undefined, worktreeInfo: undefined,
+            repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
+            correlatedLogger: { debug: noOp, info: noOp, warn: noOp, error: noOp } as never,
+            redisClient: { llen: async () => 1 } as never,
+        });
+    } finally {
+        delayedJobs = [];
+    }
+    assert.equal(queued.length, 1);
+});
