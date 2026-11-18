@@ -42,7 +42,7 @@ export function formatText(results) {
 
 export const formatJson = (version, results) => JSON.stringify({ version, ok: allOk(results), targets: results }, null, 2);
 
-const cell = text => String(text).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+const cell = text => String(text).replace(/[\\|]/g, '\\$&').replace(/\r?\n/g, ' ');
 const ICON = { [STATUS.ok]: '✅', [STATUS.missing]: '❌', [STATUS.stale]: '⚠️' };
 
 /** Markdown for the GitHub Actions run summary. */

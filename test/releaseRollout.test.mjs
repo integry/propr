@@ -400,6 +400,8 @@ describe('verify-release-rollout CLI', () => {
     const results = [{ id: 'a', status: 'ok', found: 'x' }, { id: 'longer', status: 'missing', found: 'y | z' }];
     assert.equal(formatText(results), 'ok       a       x\nmissing  longer  y | z');
     assert.match(formatSummary('1.0.0', results), /y \\\| z/);
+    const backslash = formatSummary('1.0.0', [{ id: 'b', status: 'stale', found: 'C:\\dir\\| x' }]);
+    assert.ok(backslash.includes('| C:\\\\dir\\\\\\| x |'), backslash);
   });
 
   test('npm run release:rollout runs this script', () => {
