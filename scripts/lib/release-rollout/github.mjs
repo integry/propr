@@ -16,10 +16,16 @@ const unreadable = (what, response) => missing(`${what} returned HTTP ${response
 
 const normalise = text => text.replace(/\r\n/g, '\n').trim();
 
-/** The checked-in summary as of the release tag, else the local checkout's copy. */
+/**
+ * The checked-in summary as of the release tag, else (only when the tag has no
+ * such file, HTTP 404) the local checkout's copy. Any other unsuccessful read
+ * returns `{ error }`: the authoritative copy is unknown, so the local one
+ * must not stand in for it.
+ */
 async function readSummary(ctx, repo, tag, path) {
   const atTag = await get(ctx, `${GITHUB_RAW}/${repo}/${encodeURIComponent(tag)}/${path}`);
   if (atTag.ok) return { text: atTag.text, source: `${path} at ${tag}` };
+  if (atTag.status !== 404) return { error: unreadable(`${path} at ${tag}`, atTag) };
   try {
     return { text: await (ctx.readFile ?? readFile)(join(ctx.repoRoot, path), 'utf8'), source: `${path} (local checkout)` };
   } catch {
@@ -37,6 +43,7 @@ export async function checkGithubRelease(ctx, target) {
   if (release.draft !== false) return stale(`${tag} is a draft`);
   const path = fill(target.summaryPath, ctx.version);
   const summary = await readSummary(ctx, target.repo, tag, path);
+  if (summary?.error) return summary.error;
   if (!summary || !normalise(summary.text)) return missing(`${tag} published ${release.published_at}; no checked-in summary ${path} at ${tag} or in this checkout`);
   if (!normalise(release.body ?? '').startsWith(normalise(summary.text))) {
     return stale(`${tag} published ${release.published_at}; body does not start with ${summary.source}`);

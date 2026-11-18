@@ -73,6 +73,21 @@ describe('GitHub release target', () => {
     assert.match(result.found, /local checkout/);
   });
 
+  test('does not fall back to the local summary when the tag read fails other than 404', async () => {
+    const REVISED = '## Highlights\n\nRevised locally.\n';
+    let localReads = 0;
+    const { result } = await run(['github-release'], {
+      [RELEASE]: published(`${REVISED}\n## What's Changed\n* PR`),
+      [RAW_SUMMARY]: text('Service Unavailable', 503),
+    }, {
+      repoRoot: '/repo',
+      readFile: async () => { localReads += 1; return REVISED; },
+    });
+    assert.equal(result.status, 'missing');
+    assert.match(result.found, /release-notes\/v0\.9\.2\.md at v0\.9\.2 returned HTTP 503/);
+    assert.equal(localReads, 0);
+  });
+
   test('missing when there is no release, or no checked-in summary', async () => {
     assert.equal((await run(['github-release'], {})).result.status, 'missing');
     const { result } = await run(['github-release'], { [RELEASE]: published(SUMMARY) });
