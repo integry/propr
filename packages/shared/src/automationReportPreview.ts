@@ -91,17 +91,37 @@ const stripInline = (line: string): string => stripTags(stripLinks(stripLinks(li
 const HEADING = /^#{1,6}(?=\s|$)/u;
 /** A list item or quote: a body block that does not continue onto the next line. */
 const ITEM = /^(?:>|[-*+](?=\s)|\d+[.)](?=\s))/u;
+const SENTENCE_PUNCTUATION = new Set(['.', '!', '?']);
+const SENTENCE_CLOSERS = new Set(['"', "'", ')', ']']);
+
 /**
  * The end of the first sentence: `.`, `!` or `?` (and any closing quotes or
- * brackets) followed by whitespace. A full stop inside a token, as in `v0.9.2`
- * or `example.com`, has no space after it and does not end the sentence.
+ * brackets) followed by whitespace, as an index just past the closing
+ * punctuation, or -1 when there is none. A full stop inside a token, as in
+ * `v0.9.2` or `example.com`, has no space after it and does not end the
+ * sentence. One linear scan: a run of punctuation and closers not followed by
+ * whitespace is skipped whole, as no later start inside it can end differently.
  */
-const SENTENCE_END = /[.!?]+["')\]]*(?=\s)/u;
+const sentenceEnd = (text: string): number => {
+  let i = 0;
+  while (i < text.length) {
+    if (!SENTENCE_PUNCTUATION.has(text[i])) {
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length && SENTENCE_PUNCTUATION.has(text[j])) j += 1;
+    while (j < text.length && SENTENCE_CLOSERS.has(text[j])) j += 1;
+    if (j < text.length && /\s/u.test(text[j])) return j;
+    i = j;
+  }
+  return -1;
+};
 
 /** The first sentence of `text`, its closing punctuation kept. */
 const firstSentence = (text: string): string => {
-  const end = SENTENCE_END.exec(text);
-  return end ? text.slice(0, end.index + end[0].length) : text;
+  const end = sentenceEnd(text);
+  return end >= 0 ? text.slice(0, end) : text;
 };
 
 /**
@@ -132,7 +152,7 @@ export function automationReportPreview(report: string | null | undefined, max =
     // A list item or quote is a block of its own; a plain paragraph runs on to its next line.
     if (ITEM.test(line)) break;
     // Earlier lines had no sentence end, so one on this line completes the first sentence.
-    if (SENTENCE_END.test(`${text} `)) break;
+    if (sentenceEnd(`${text} `) >= 0) break;
   }
   const body = paragraph.length > 0 ? firstSentence(paragraph.join(' ')) : title;
   return body ? truncateAtWord(body, max) : null;

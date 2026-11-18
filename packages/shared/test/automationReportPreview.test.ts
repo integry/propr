@@ -83,3 +83,15 @@ test('automationReportPreview stays linear on repeated unmatched brackets', () =
     assert.ok(performance.now() - started < 500, `took too long on ${input.slice(0, 8)}…`);
   }
 });
+
+test('automationReportPreview stays linear on long runs of sentence punctuation', () => {
+  const inputs = [`# Title\n${'!'.repeat(100_000)}x`, `# Title\n${'.)'.repeat(50_000)}x`, `# Title\n${'?'.repeat(50_000)}${')'.repeat(50_000)}x`];
+  for (const input of inputs) {
+    const started = performance.now();
+    automationReportPreview(input);
+    assert.ok(performance.now() - started < 500, `took too long on ${input.slice(8, 16)}…`);
+  }
+  assert.equal(automationReportPreview('# Title\nDone!!! Then more.'), 'Done!!!');
+  assert.equal(automationReportPreview('# Title\nShipped v0.9.2 ("final"). Rest.'), 'Shipped v0.9.2 ("final").');
+  assert.equal(automationReportPreview('# Title\nWait?!) next'), 'Wait?!)');
+});
