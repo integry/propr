@@ -138,12 +138,20 @@ describe('review input capacity resolution', () => {
         assert.equal(sol62.safeInputTokens, terra.safeInputTokens);
         const sol61 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.1-sol' });
         assert.equal(sol61.contextWindow, 272000);
+
+        // The explanation names the window actually used for the allowance.
+        assert.match(terra.basis, /\(500K;/);
+        assert.match(sol62.basis, /\(500K;/);
+        assert.doesNotMatch(sol62.basis, /272K/);
+        assert.match(astra62.basis, /\(272K;/);
+        assert.match(sol61.basis, /\(272K;/);
     });
 
     test('keeps documented conservative fallbacks for unknown models and runtimes', () => {
         const unknownCodex = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-9-preview' });
         assert.equal(unknownCodex.source, 'fallback');
         assert.equal(unknownCodex.contextWindow, 272000);
+        assert.match(unknownCodex.basis, /historical 272K Codex window/);
 
         const unknownClaude = resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-future-9' });
         assert.equal(unknownClaude.source, 'fallback');
