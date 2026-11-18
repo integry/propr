@@ -75,8 +75,8 @@ test('get_task and list_tasks report automatic-replacement lineage in both direc
     ]);
 
     const attempts = [
-      { taskId: 'attempt-1', attemptNumber: 1, replacementCause: null, state: 'failed', createdAt: '2026-10-06 08:00:00' },
-      { taskId: 'attempt-2', attemptNumber: 2, replacementCause: 'provider_transient', state: 'processing', createdAt: '2026-10-06 09:00:00' },
+      { taskId: 'attempt-1', attemptNumber: 1, replacementCause: null, state: 'failed', createdAt: '2026-10-06T08:00:00.000Z' },
+      { taskId: 'attempt-2', attemptNumber: 2, replacementCause: 'provider_transient', state: 'processing', createdAt: '2026-10-06T09:00:00.000Z' },
     ];
     const replaced = (await call('get_task', { repository, taskId: 'attempt-1' })).data;
     assert.deepEqual(replaced.lineage, {
@@ -131,5 +131,55 @@ test('a full list_tasks page of replacement attempts stays within the tool resul
     assert.equal(page.data.tasks.length, 100);
     assert.ok(page.data.tasks.every((row: Json) => row.attemptNumber === 3 && row.replacesTaskId && row.replacedByTaskId));
     assert.ok(page.bytes < MAX_TOOL_RESULT_BYTES, `${page.bytes} bytes`);
+  } finally { await db.destroy(); }
+});
+
+test('list_tasks names the agent a running task executes with when submission routing did not record one', async () => {
+  const { db, call } = await harness();
+  try {
+    await db('tasks').insert([
+      // A PR follow-up picks its agent at execution time; only the history records it.
+      { task_id: 'pr-comment-acme-repo-12', repository, task_type: 'pr-comment', created_at: '2026-11-02 10:00:00',
+        initial_job_data: JSON.stringify({ pullRequestNumber: 12, modelName: 'gpt-5.6' }) },
+      { task_id: 'routed', repository, task_type: 'issue', issue_number: 9, created_at: '2026-11-02 09:00:00',
+        initial_job_data: JSON.stringify({ agentAlias: 'claude', modelName: 'opus' }) },
+      { task_id: 'unknown-agent', repository, task_type: 'issue', issue_number: 10, created_at: '2026-11-02 08:00:00' },
+    ]);
+    await db('task_history').insert([
+      { task_id: 'pr-comment-acme-repo-12', state: 'processing', reason: 'started', timestamp: '2026-11-02 10:00:05',
+        metadata: JSON.stringify({ model: 'gpt-5.6', executionRouting: { model: 'gpt-5.6', agentAlias: 'codex' } }) },
+      { task_id: 'pr-comment-acme-repo-12', state: 'claude_execution', reason: 'running', timestamp: '2026-11-02 10:00:10',
+        metadata: JSON.stringify({ sessionId: 's-1', model: 'gpt-5.6' }) },
+      { task_id: 'routed', state: 'processing', reason: 'started', timestamp: '2026-11-02 09:00:05',
+        metadata: JSON.stringify({ executionRouting: { model: 'opus', agentAlias: 'other' } }) },
+      { task_id: 'unknown-agent', state: 'pending', reason: 'queued', timestamp: '2026-11-02 08:00:05' },
+    ]);
+    const rows = (await call('list_tasks', { repository, state: 'active' })).data.tasks as Json[];
+    const byId = new Map(rows.map(row => [row.task_id, row]));
+    assert.equal(byId.get('pr-comment-acme-repo-12')!.state, 'claude_execution');
+    assert.equal(byId.get('pr-comment-acme-repo-12')!.agent_alias, 'codex', 'the execution routing names the agent');
+    assert.equal(byId.get('routed')!.agent_alias, 'claude', 'a recorded submission agent is kept');
+    assert.equal(byId.get('unknown-agent')!.agent_alias, null, 'no evidence stays unknown rather than guessed');
+    // List timestamps are ISO 8601 UTC, not the stored SQLite text.
+    assert.equal(byId.get('pr-comment-acme-repo-12')!.created_at, '2026-11-02T10:00:00.000Z');
+    assert.equal(byId.get('pr-comment-acme-repo-12')!.updated_at, '2026-11-02T10:00:10.000Z');
+  } finally { await db.destroy(); }
+});
+
+test('list_tasks reports the executed model with an agent filled from execution evidence', async () => {
+  const { db, call } = await harness();
+  try {
+    // Submission recorded only a model; execution routing then ran a different model with its agent.
+    await db('tasks').insert({ task_id: 'rerouted', repository, task_type: 'issue', issue_number: 11,
+      created_at: '2026-11-02 11:00:00', initial_job_data: JSON.stringify({ modelName: 'opus' }) });
+    await db('task_history').insert([
+      { task_id: 'rerouted', state: 'processing', reason: 'started', timestamp: '2026-11-02 11:00:05',
+        metadata: JSON.stringify({ model: 'gpt-5.6', executionRouting: { model: 'gpt-5.6', agentAlias: 'codex' } }) },
+      { task_id: 'rerouted', state: 'claude_execution', reason: 'running', timestamp: '2026-11-02 11:00:10',
+        metadata: JSON.stringify({ sessionId: 's-2', model: 'gpt-5.6' }) },
+    ]);
+    const [row] = (await call('list_tasks', { repository, state: 'active' })).data.tasks as Json[];
+    assert.equal(row.task_id, 'rerouted');
+    assert.deepEqual([row.agent_alias, row.model_name], ['codex', 'gpt-5.6'], 'agent and model come from one executed identity');
   } finally { await db.destroy(); }
 });

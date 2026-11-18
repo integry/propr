@@ -1,6 +1,8 @@
 import React from 'react';
 import { MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE, PLAN_ISSUE_BLOCKED_REASON_KINDS, type PlanIssueBlockedReasonKind } from '@propr/shared';
-import { AgentFormRow } from './AgentFormRow';
+import { BLOCKED_KIND_LABELS } from '../TaskPlanner/planQueueLabels';
+import { AgentFieldError, AgentFormRow } from './AgentFormRow';
+import { AGENT_FORM_FIELD_IDS, agentFieldErrorId } from './agentFormValidation';
 
 interface AgentEventTriggerSectionProps {
   enabled: boolean;
@@ -12,20 +14,14 @@ interface AgentEventTriggerSectionProps {
   automationRepositories: string[];
   onChange: (change: { blockedTrigger?: boolean; blockedTriggerRepositories?: string[]; blockedTriggerReasonKinds?: PlanIssueBlockedReasonKind[] }) => void;
   disabled: boolean;
+  /** The error a refused save found, shown under the trigger. */
+  error?: string | null;
 }
 
 const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
-const CHECKBOX_CLASSES = 'h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-50';
+const CHECKBOX_CLASSES = 'mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-50';
 
-const REASON_KIND_LABELS: Record<PlanIssueBlockedReasonKind, string> = {
-  closed_unmerged: 'Closed without merging',
-  missing_from_plan: 'Missing from the plan',
-  dispatch_failed: 'Could not be started',
-  agent_blocked: 'Agent reported a blocker',
-  awaiting_human_merge: 'Waiting for a human merge',
-  label_handoff: 'Processing labels not released',
-  setup_not_ready: 'Model and branch setup not ready',
-};
+const CHECKBOX_ROW_CLASSES = 'grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-x-3 text-sm text-slate-800';
 
 function toggled<T extends string>(list: readonly T[], value: T, on: boolean, order: readonly T[]): T[] {
   const next = new Set(list);
@@ -36,7 +32,7 @@ function toggled<T extends string>(list: readonly T[], value: T, on: boolean, or
 
 /** Opt-in event trigger: run once whenever an epic queue issue in one of the automation's repositories becomes blocked. */
 export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> = ({
-  enabled, repositories, reasonKinds, automationRepositories, onChange, disabled,
+  enabled, repositories, reasonKinds, automationRepositories, onChange, disabled, error = null,
 }) => {
   const noRepositories = automationRepositories.length === 0;
   const isAutomationRepository = (repository: string) =>
@@ -46,9 +42,16 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
   return (
     <AgentFormRow
       label="Event trigger"
-      hint={`Run once for each epic queue issue that becomes blocked, with the event as input. The run is unattended, like a scheduled one. At most ${MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE} runs per issue of a plan.`}
+      hint={`Runs when a plan issue becomes blocked. Up to ${MAX_AUTOMATION_EVENT_RUNS_PER_ISSUE} runs per issue.`}
     >
-      <div role="radiogroup" aria-label="Event trigger" className="inline-flex overflow-hidden rounded-md border border-slate-300">
+      <div
+        id={AGENT_FORM_FIELD_IDS.eventTrigger}
+        role="radiogroup"
+        aria-label="Event trigger"
+        aria-invalid={Boolean(error) || undefined}
+        aria-describedby={error ? agentFieldErrorId('eventTrigger') : undefined}
+        className={`inline-flex overflow-hidden rounded-md border ${error ? 'border-red-400' : 'border-slate-300'}`}
+      >
         {([false, true] as const).map(value => (
           <button
             key={String(value)}
@@ -63,18 +66,19 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
           </button>
         ))}
       </div>
+      {error && !filterLost && <AgentFieldError id={agentFieldErrorId('eventTrigger')}>{error}</AgentFieldError>}
 
       {enabled && (
         <div className="mt-3 space-y-3" data-testid="agent-event-trigger-filters">
           {noRepositories ? (
-            <p className="text-xs text-red-700" data-testid="agent-event-trigger-feedback">Choose the repositories this automation concerns; the trigger only reacts to plans in them.</p>
+            !error && <p className="text-xs text-slate-600" data-testid="agent-event-trigger-feedback">Choose at least one repository first.</p>
           ) : (
             <fieldset>
-              <legend className="text-xs font-medium text-slate-700">Repositories <span className="font-normal text-slate-500">(none checked: all of this automation&apos;s)</span></legend>
-              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+              <legend className="text-xs font-medium text-slate-700">Repositories <span className="font-normal text-slate-500">(all if none ticked)</span></legend>
+              <ul className="mt-1.5 space-y-1.5">
                 {automationRepositories.map(repository => (
                   <li key={repository}>
-                    <label className="inline-flex items-center gap-1.5 text-sm text-slate-800">
+                    <label className={CHECKBOX_ROW_CLASSES}>
                       <input
                         type="checkbox"
                         className={CHECKBOX_CLASSES}
@@ -82,7 +86,7 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
                         disabled={disabled}
                         onChange={event => onChange({ blockedTriggerRepositories: toggled(repositories, repository, event.target.checked, automationRepositories) })}
                       />
-                      <span className="font-mono text-xs">{repository}</span>
+                      <span className="min-w-0 break-all font-mono text-xs leading-5">{repository}</span>
                     </label>
                   </li>
                 ))}
@@ -106,11 +110,11 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
             </fieldset>
           )}
           <fieldset>
-            <legend className="text-xs font-medium text-slate-700">Blocker reasons <span className="font-normal text-slate-500">(none checked: any reason)</span></legend>
-            <ul className="mt-1 grid gap-1 sm:grid-cols-2">
+            <legend className="text-xs font-medium text-slate-700">Reasons <span className="font-normal text-slate-500">(any if none ticked)</span></legend>
+            <ul className="mt-1.5 space-y-1.5">
               {PLAN_ISSUE_BLOCKED_REASON_KINDS.map(kind => (
                 <li key={kind}>
-                  <label className="inline-flex items-center gap-1.5 text-sm text-slate-800">
+                  <label className={CHECKBOX_ROW_CLASSES}>
                     <input
                       type="checkbox"
                       className={CHECKBOX_CLASSES}
@@ -118,7 +122,7 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
                       disabled={disabled}
                       onChange={event => onChange({ blockedTriggerReasonKinds: toggled(reasonKinds, kind, event.target.checked, PLAN_ISSUE_BLOCKED_REASON_KINDS) })}
                     />
-                    {REASON_KIND_LABELS[kind]}
+                    <span>{BLOCKED_KIND_LABELS[kind]}</span>
                   </label>
                 </li>
               ))}

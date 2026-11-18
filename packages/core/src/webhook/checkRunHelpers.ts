@@ -503,6 +503,14 @@ export async function observePRHead(
     return now;
 }
 
+/** Forgets the PR's head observation: its head has CI now, so a later return to a head without CI waits a fresh grace period. */
+export async function clearPRHeadObservation(
+    store: Pick<Redis, 'del'>,
+    head: { owner: string; repoName: string; prNumber: number },
+): Promise<void> {
+    await store.del(headObservationKey(head.owner, head.repoName, head.prNumber));
+}
+
 export interface CiMergeReadiness {
     ready: boolean;
     reason: 'checks_passing' | 'checks_not_passing' | 'no_ci' | 'waiting_for_ci' | 'unavailable';
@@ -591,7 +599,7 @@ export async function getCiMergeReadiness(
         if (hasCheckSignal(signals)) {
             // The PR's head now has CI, so any earlier no-CI observation is over:
             // a later return to that earlier head must wait out a fresh grace period.
-            await (options.observations ?? getUltrafixStateRedis()).del(headObservationKey(owner, repoName, prNumber));
+            await clearPRHeadObservation(options.observations ?? getUltrafixStateRedis(), { owner, repoName, prNumber });
             const { ready, reason } = classifyCiMergeReadiness(signals, { now, nonBlockingPatterns: await loadNonBlockingChecks(owner, repoName) });
             return { ready, reason };
         }

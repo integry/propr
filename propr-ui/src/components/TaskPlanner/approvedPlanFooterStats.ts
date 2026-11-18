@@ -1,23 +1,38 @@
 import { PlanIssue } from '../../api/planIssuesApi';
 import type { IssueCreationProgress } from './planIssuesManagerUtils';
+import type { RowQueueStatus } from './planQueueLabels';
 
+/**
+ * How the plan's issues stand, each issue counted once. Running, in review, merged and closed follow
+ * the Plans list (the server's issue summary); its "pending" is split here by the execution queue into
+ * queued, blocked, skipped and plain pending, so the two views always add up to the same totals.
+ */
 export interface FooterStats {
   total: number;
   merged: number;
   underReview: number;
-  pending: number;
   processing: number;
+  queued: number;
+  blocked: number;
+  skipped: number;
+  /** Pending issues the execution queue does not hold. */
+  pending: number;
+  closed: number;
 }
 
-export function buildFooterStats(issues: PlanIssue[]): FooterStats {
-  const underReviewStatuses = new Set(['under_review', 'in_refinement', 'pr_open', 'pr_review']);
-  return {
-    total: issues.length,
-    merged: issues.filter(i => i.status === 'merged').length,
-    underReview: issues.filter(i => underReviewStatuses.has(i.status as string)).length,
-    pending: issues.filter(i => i.status === 'pending').length,
-    processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
-  };
+/** Same buckets as the server's issue summary: a follow-up in refinement counts as running. */
+const RUNNING_STATUSES = new Set<string>(['processing', 'in_refinement', 'refinement_processing']);
+
+export function buildFooterStats(issues: PlanIssue[], queueStatusOf: (issue: PlanIssue) => RowQueueStatus | null = () => null): FooterStats {
+  const stats: FooterStats = { total: issues.length, merged: 0, underReview: 0, processing: 0, queued: 0, blocked: 0, skipped: 0, pending: 0, closed: 0 };
+  for (const issue of issues) {
+    if (issue.status === 'merged') stats.merged++;
+    else if (issue.status === 'closed') stats.closed++;
+    else if (issue.status === 'under_review') stats.underReview++;
+    else if (RUNNING_STATUSES.has(issue.status)) stats.processing++;
+    else if (issue.status === 'pending') stats[queueStatusOf(issue) ?? 'pending']++;
+  }
+  return stats;
 }
 
 export interface CreationFooterStats {

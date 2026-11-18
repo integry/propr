@@ -34,6 +34,10 @@ export function CreationDialog({ title, icon: Icon, description, closeLabel, onC
     });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      // A dialog opened on top of this one (a discard question) handles its own Escape and Tab.
+      const target = event.target instanceof Element ? event.target : null;
+      const modal = target?.closest('[aria-modal="true"]');
+      if (modal && paneRef.current && !modal.contains(paneRef.current) && !paneRef.current.contains(modal)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         closeRef.current();

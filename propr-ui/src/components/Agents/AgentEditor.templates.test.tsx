@@ -26,15 +26,18 @@ const saved: AutomationDefinitionRecord = {
   autonomyMode: 'dry_run', enabled: true, revision: 1, createdAt: 0, updatedAt: 0,
 };
 
-const renderEditor = (props: { definitionId?: string | null; templateId?: string | null } = {}) =>
-  render(<AgentEditor definitionId={props.definitionId ?? null} templateId={props.templateId} onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
+const renderEditor = (props: { definitionId?: string | null; templateId?: string | null; onUnsavedChange?: (unsaved: boolean) => void } = {}) =>
+  render(<AgentEditor definitionId={props.definitionId ?? null} templateId={props.templateId} onUnsavedChange={props.onUnsavedChange} onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
 
 const expectPrefilled = () => {
   expect(screen.getByLabelText('Name')).toHaveValue(triage.name);
   expect(screen.getByLabelText('Description')).toHaveValue(triage.description);
   expect(screen.getByLabelText('Prompt')).toHaveValue(triage.prompt);
-  expect(screen.getByLabelText('Cron expression')).toHaveValue(triage.schedule);
-  expect(screen.getByRole('radio', { name: 'Dry run' })).toBeChecked();
+  // A suggested schedule the Repeat controls can produce opens in them.
+  expect(screen.getByRole('radio', { name: 'Repeat' })).toBeChecked();
+  expect(screen.getByLabelText('Every')).toHaveValue('weeks');
+  expect(screen.getByLabelText('Hour (UTC)')).toHaveValue('7');
+  expect(screen.getByRole('radio', { name: 'Report only' })).toBeChecked();
   const review = screen.getByTestId('agent-template-review');
   for (const label of ['Repositories', 'Schedule', 'Autonomy']) expect(review).toHaveTextContent(`${label}:`);
 };
@@ -70,6 +73,53 @@ describe('AgentEditor templates', () => {
       name: triage.name, description: triage.description, prompt: triage.prompt, schedule: triage.schedule,
       autonomy: 'dry_run', capabilities: triage.capabilities, previousReportCount: triage.previousReportCount, repositories: [],
     }));
+  });
+
+  it('asks before a template replaces a typed name and prompt, and keeps them when declined', async () => {
+    renderEditor();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My own review' } });
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Look at the open PRs' } });
+    const option = () => within(screen.getByTestId('agent-template-picker')).getByRole('button', { name: new RegExp(triage.name) });
+
+    fireEvent.click(option());
+    const question = screen.getByRole('dialog', { name: `Replace what you entered with “${triage.name}”?` });
+    fireEvent.click(within(question).getByRole('button', { name: 'Keep editing' }));
+    expect(screen.getByLabelText('Name')).toHaveValue('My own review');
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Look at the open PRs');
+
+    fireEvent.click(option());
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Use template' }));
+    expectPrefilled();
+    // Filled from the template and not edited since: another template applies without asking.
+    fireEvent.click(option());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['a repository', async () => {
+      fireEvent.click(await screen.findByRole('button', { name: /Add repository/ }));
+      fireEvent.click(await screen.findByTestId('repo-item'));
+      expect(within(screen.getByRole('list', { name: 'Selected repositories' })).getByText('integry/propr')).toBeInTheDocument();
+    }],
+    ['a coding agent', async () => {
+      const agentSelect = await screen.findByTitle('Select AI agent');
+      await waitFor(() => expect(screen.getByRole('option', { name: 'Claude' })).toBeInTheDocument());
+      fireEvent.change(agentSelect, { target: { value: 'claude-main' } });
+    }],
+  ])('still counts %s chosen before a template as unsaved input', async (_label, choose) => {
+    const onUnsavedChange = vi.fn();
+    renderEditor({ onUnsavedChange });
+    await choose();
+    await waitFor(() => expect(onUnsavedChange).toHaveBeenLastCalledWith(true));
+    onUnsavedChange.mockClear();
+
+    // The template keeps the choice and replaces nothing typed, so it applies without asking.
+    fireEvent.click(within(screen.getByTestId('agent-template-picker')).getByRole('button', { name: new RegExp(triage.name) }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expectPrefilled();
+    // Closing now must still ask: the kept choice would be lost.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(onUnsavedChange).not.toHaveBeenCalledWith(false);
   });
 
   it('opens prefilled from the template named in the link', () => {

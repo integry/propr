@@ -48,7 +48,11 @@ The reverse proxy must route `/api/mcp`, `/.well-known/*`, `/authorize`,
 to this API. Preserve the MCP protocol and parameter headers. Do not cache
 private responses or buffer streaming output. The canonical public origin
 must match the externally visible API origin; frontend UI links continue to
-use `FRONTEND_URL`. Set the existing `GH_OAUTH_CALLBACK_URL` to the instance's
+use `FRONTEND_URL`. Every tool result's `links.ui` is a page under
+`FRONTEND_URL` (or the GitHub page for a pull request, or the API-served
+artifact viewer); without `FRONTEND_URL`, results that are not a task, plan,
+goal or submission omit `links.ui` rather than point at the API origin, which
+serves no UI. Set the existing `GH_OAUTH_CALLBACK_URL` to the instance's
 GitHub callback `/api/auth/github/callback`, and register that exact URL in
 the GitHub OAuth application. This GitHub callback is distinct from the
 chat client's OAuth callback.
@@ -354,8 +358,11 @@ native goal tasks remain private and can only be mutated through goal controls.
 
 Instance administrators with `instance.manage_runtime` also get the
 maintenance tools: `list_followup_handoffs` and `get_followup_handoff` show the
-pull request follow-ups whose publication is still owed, including holds that
-wait for an operator and block every later command on their pull request;
+pull request follow-ups whose publication is still owed: handoffs in automatic
+recovery and holds that wait for an operator and block every later command on
+their pull request. Released handoffs are left out of the list unless
+`includeReleased` is true; page it with `offset` and `limit` (default 20, at
+most 100) and the returned `nextOffset`;
 `resume_followup_handoff` re-arms one and runs its recovery pass, and
 `release_followup_handoff` stops tracking it so the next command can run (the
 branch is freed, files and commits are never deleted; a worktree that still
@@ -761,7 +768,8 @@ Stable codes introduced by the observable operator surface are:
 
 | Code | Meaning |
 | --- | --- |
-| `INVALID_INPUT` | Arguments failed schema or semantic validation. |
+| `INVALID_INPUT` | Arguments failed schema or semantic validation, including a missing or doubled exactly-one-of argument (`taskId` or `pullRequest` for `list_visual_previews`, `pullRequest` or `issue` for `get_comment_attachment`, `goalId` or `taskId` for `get_agent_activity`). |
+| `NOT_FOUND` | The target does not exist or is not visible to you, for example an unknown pull request number. |
 | `GITHUB_*`: `GITHUB_AUTH_FAILED`, `GITHUB_FORBIDDEN`, `GITHUB_NOT_FOUND`, `GITHUB_RATE_LIMITED`, `GITHUB_REJECTED`, `GITHUB_UNAVAILABLE`, `GITHUB_RESPONSE_INVALID` | GitHub rejected, denied, could not find, throttled or could not serve the request, or returned a response the tool could not act on. |
 | `UPSTREAM_*`: `UPSTREAM_TIMEOUT`, `UPSTREAM_UNREACHABLE` | A non-GitHub upstream timed out or could not be reached. |
 | `DATABASE_BUSY` | SQLite is temporarily busy; retry after the indicated delay. |
@@ -834,6 +842,8 @@ and also require execute scope. Read owned upload artifacts in 48 KiB chunks.
 the native 10 MiB limit) in 48 KiB chunks. Owned MCP uploads have authenticated
 browser download links under `/mcp/artifacts/{id}`. Task changes default to a
 file summary; request `detail: "diff"` with an exact path for 16 KiB chunks.
+An absolute `path`, a `..` segment or a backslash is `INVALID_PATH`, as for
+`read_repository_file`.
 No tool downloads arbitrary remote URLs. Secret entry and browser push/login
 flows stay in the browser. Tool responses are bounded at 256 KiB and redact
 credential fields and recognizable token strings.
@@ -848,9 +858,25 @@ List tools return bounded summaries rather than requiring one read per item.
 Task and goal entries include a concise title/summary, agent and model, linked
 pull request state, lifecycle timestamps, elapsed milliseconds, and a failure
 reason when applicable. Plan entries aggregate issue progress, agent/model
-assignments, and pull requests; TODO entries include their category and linked
+assignments, and pull requests; `pull_request_count` counts every pull request
+and `pull_requests_truncated` is true when the bounded `pull_requests` list
+leaves some out (`get_plan` lists every issue with its pull request). A task's
+`agent_alias` falls back to the agent its execution recorded when submission
+routing named none, and the task then reports the model that agent ran. TODO entries include their category and linked
 plan. Full objectives, prompts, and TODO bodies remain available from the
 corresponding `get_*` tool without inflating large list pages.
+
+Every timestamp in an MCP result is ISO 8601 UTC ending in `Z`, whichever store
+wrote it (SQLite `YYYY-MM-DD HH:MM:SS` text, zone-less ISO text and epoch
+milliseconds are converted at the MCP boundary; field names do not change).
+Stored values and the REST API keep their own formats.
+
+Submission reads (`get_task_submission`, `list_task_submissions`) report
+`state` and `submissionState` from the task the submission follows once it was
+dispatched: a submission whose task is running, completed, failed or cancelled
+reports that stage rather than `queued`. A goal's pull request artifact whose
+merge ProPR has observed is reported as `merged` (not draft) and is not counted
+in `artifactStats.openPullRequests`.
 
 `get_agent_activity` reads exactly one authorized `goalId` or `taskId`. It
 defaults to the 20 most recent entries and returns newest-first, timestamped
@@ -980,8 +1006,11 @@ It answers with `asOf`, the `repositories` it actually read, and five sections:
 section carries `count`, `items` and `truncated`. Blockers are the work waiting
 on a human: failed tasks, a goal paused with no result, and blocking Inbox
 cards. Routine notification noise is filtered out; `includeRoutine: true` keeps
-it. A repository the credential can no longer read is skipped, and
-`repositoriesTruncated` reports that the fan-out hit its 20-repository bound.
+it. A repository the credential can no longer read is skipped. Running, queued
+and blocked work is read with one query across every granted repository, up to
+100 (the largest grant); past that bound `repositoriesTruncated` is true,
+`repositoriesNotScanned` counts the repositories left out, and the summary says
+so. `get_recent_activity` covers the same repositories.
 
 When the question is specifically about implementation work and the pull
 requests it produced, `get_work_overview` is the shorter starting point. It
@@ -1142,7 +1171,8 @@ read-scope tools consume it:
   `outcome` `events` or `timeout`. A timeout returns the cursor unchanged.
 
 Both filter with `domains` (`pull_request`, `epic_queue`, `plan_issue`),
-`types`, `pullRequest` and `planId`:
+`types`, `pullRequest` and `planId` (a plan UUID, as for
+`list_plan_blocked_events`):
 
 | Domain | Types |
 | --- | --- |
@@ -1189,7 +1219,7 @@ readiness instead of re-reading everything:
 1. Call `wait_repository_events` with the arguments above (no cursor the
    first time).
 2. On `outcome` `events`, call `get_pull_request_readiness` with
-   `{ "repository": "acme/web", "number": 42 }` and act on the verdict.
+   `{ "repository": "acme/web", "pullRequest": 42 }` and act on the verdict.
 3. Call `wait_repository_events` again with `afterCursor` set to the returned
    `cursor`. On `timeout`, call it again with the same cursor.
 
@@ -1253,7 +1283,14 @@ Each result carries `head`, `reviewDecision`, `checksSummary`, `labels` and a
 `propr` block correlating it back to the `taskId`, `goalId`, `planIssueId`,
 `issueNumber`, `agentAlias` and `modelName` that produced it, plus
 `ultrafixActive`. `ultrafixActive` is `null` when GitHub truncated the label
-list — undetermined, not absent. Then read the discussion newest-first:
+list — undetermined, not absent. Each GraphQL scan is per repository, so one
+call covers at most 20 granted repositories. Continue while
+`nextRepositoryOffset` is not null: call again with `repositoryOffset` set to
+it (and `offset` 0) to reach the next window; `null` means the last window has
+been read. `repositoriesNotScanned` is per call — it counts every granted
+repository outside this call's window, including those of earlier windows —
+so the last window can report a positive count with `nextRepositoryOffset:
+null`; do not use it to decide whether to continue. Then read the discussion newest-first:
 
 ```json
 { "repository": "acme/web", "pullRequest": 42, "order": "newest", "limit": 10 }
@@ -1262,7 +1299,9 @@ list — undetermined, not absent. Then read the discussion newest-first:
 `get_pull_request_discussion` returns the current `head`, parsed ProPR reviews
 with their `currentFindingIds`, `selectableFindingIds`, `reviewedHead` and
 `matchesCurrentHead`, and a
-`nextCursor` for older comments. Comment prose is untrusted data.
+`nextCursor` for older comments. Comment prose is untrusted data. A `cursor`
+that is not a `nextCursor` this tool returned fails with `CURSOR_INVALID`
+(400); read again without `cursor` to restart from the newest comment.
 
 The conversation never contains GitHub code review. Read submitted reviews
 with `"source": "reviews"` and inline review comments (with their file, line
@@ -1298,11 +1337,12 @@ arm or withdraw auto-merge, and it leaves ProPR's own state untouched,
 including the marker that records when ProPR first saw a head without CI.
 
 ```json
-{ "repository": "acme/web", "number": 42 }
+{ "repository": "acme/web", "pullRequest": 42 }
 ```
 
-Your GitHub access to the repository is checked the same way as for
-`get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
+`pullRequest` names the pull request as in every other pull request tool;
+the original `number` argument is still accepted as an alias. Your GitHub
+access to the repository is checked the same way as for `get_pull_request`. The evaluation then runs as the ProPR GitHub App, so it
 sees what the auto-merge path sees, including legacy commit statuses and the
 repository's non-blocking checks.
 

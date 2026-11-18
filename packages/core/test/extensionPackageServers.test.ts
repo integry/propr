@@ -86,8 +86,10 @@ async function fixture(t: TestContext) {
 /** Speak MCP to the bridge as the agent CLI would, against the package installed in the worker cache. */
 async function bridgeSession(t: TestContext, bridgeConfig: string, env: Record<string, string>, installDirectory: string) {
   const config = JSON.parse(Buffer.from(bridgeConfig, 'base64url').toString());
-  // The task container mounts the install at /opt/propr/packages/<n>; outside a container use the worker path.
+  // The task container mounts the install at /opt/propr/packages/<n> and runs the image's /usr/local/bin/node;
+  // outside a container use the worker path and this suite's Node, which may live anywhere (NVM, toolcache).
   config.args[0] = config.args[0].replace(/^\/opt\/propr\/packages\/\d+/, installDirectory);
+  if (config.executable === '/usr/local/bin/node') config.executable = process.execPath;
   const child = spawn(process.execPath, [path.resolve(import.meta.dirname, '../../../scripts/extension-stdio-bridge.mjs'), Buffer.from(JSON.stringify(config)).toString('base64url')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const reader = createInterface({ input: child.stdout }); const pending = new Map<number, (rpc: any) => void>();
   reader.on('line', line => { const rpc = JSON.parse(line); pending.get(rpc.id)?.(rpc); pending.delete(rpc.id); });

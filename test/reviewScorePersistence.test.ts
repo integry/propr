@@ -188,10 +188,10 @@ describe('review score persistence', () => {
             ultrafix: { ultrafixCycle: 2, ultrafixGoal: 8 } };
         const verdicts = (results: ReturnType<typeof result>[]) =>
             [...new Set(buildReviewScoreInputs(results, context, CREATED_AT).map(input => input.goalReached))];
-        // Every reviewer clean, and the newest (highest comment ID) review meets the goal.
+        // Every reviewer clean, and every review meets the goal.
         assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result(reviewBody(8, 0, 0), true, { commentId: 13 })]), [true]);
-        // The newest review's score is authoritative, not the best one.
-        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 13 }), result(reviewBody(7, 0, 0), true, { commentId: 12 })]), [true]);
+        // The lowest review decides, as the PR status shows it, whichever posted last.
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 13 }), result(reviewBody(7, 0, 0), true, { commentId: 12 })]), [false]);
         assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result(reviewBody(7, 0, 0), true, { commentId: 13 })]), [false]);
         // A failed or unparseable sibling leaves the result set incomplete.
         assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result('', false, { commentId: 13 })]), [false]);
@@ -203,13 +203,13 @@ describe('review score persistence', () => {
         assert.equal(buildReviewScoreInputs([result(reviewBody(9, 0, 0))], { ...context, ultrafix: undefined }, CREATED_AT)[0].goalReached, null);
     });
 
-    test('a job\'s scores are stored in publication order, so the newest posted review is the final score', async () => {
+    test('a job\'s scores are stored in publication order, so the newest posted review is the last row', async () => {
         const context = { repository: 'acme/repo', pullRequestNumber: 40, taskId: 'ultrafix-review', headSha: null,
             ultrafix: { ultrafixCycle: 2, ultrafixGoal: 8 } };
         // The newest review (comment 13) scored 9 but arrives first in the results.
         const results = [result(reviewBody(9, 0, 0), true, { commentId: 13 }), result(reviewBody(7, 0, 0), true, { commentId: 12 })];
         assert.deepEqual(buildReviewScoreInputs(results, context, CREATED_AT).map(input => [input.score, input.goalReached]),
-            [[7, true], [9, true]]);
+            [[7, false], [9, false]]);
         // An unposted review never outranks a posted one.
         assert.deepEqual(buildReviewScoreInputs([
             result(reviewBody(5, 0, 0), true, { commentId: 20 }), result(reviewBody(6, 0, 0), true, {}),

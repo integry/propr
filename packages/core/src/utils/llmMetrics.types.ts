@@ -79,6 +79,7 @@ export type ExecutionType =
     | 'plan-refinement'
     | 'title-generation'
     | 'summarization'
+    | 'summary-selection'
     | 'context-analysis'
     | 'repo-chat'
     | 'repo-improvements'

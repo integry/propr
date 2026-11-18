@@ -19,6 +19,7 @@
  * day that can still change.
  */
 
+import { formatShortDate } from '../../utils/dateFormat';
 import React from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { tooltipStyle } from '../chartConstants';
@@ -29,8 +30,7 @@ export interface DailyCompletion {
   count: number;
 }
 
-const shortDate = (date: string): string =>
-  new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const shortDate = (date: string): string => formatShortDate(`${date}T00:00:00Z`, { timeZone: 'UTC' });
 
 /** What recharts hands a dot renderer, narrowed to the parts this one uses. */
 interface DotRenderProps {

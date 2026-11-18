@@ -5,8 +5,10 @@ import type { Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { costExportCsv, createCostExportRoutes, loadCostExport, parseCostGroupBy, type CostExport } from '../routes/costExport.js';
 import { addStatsTools } from '../mcp/toolsStats.js';
+import { redact } from '../mcp/adapter.js';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { McpTool, ToolDeps } from '../mcp/tools.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 const NOW = new Date('2026-11-12T12:00:00.000Z');
 const daysAgo = (days: number, hour = 10): string =>
@@ -244,7 +246,7 @@ function fakeResponse() {
 }
 
 test('the routes read the analytics window, repository filter and group_by, and reject bad input', async () => {
-  const routes = createCostExportRoutes({ db, now: () => NOW });
+  const routes = createCostExportRoutes({ repositoryScope: unscopedRepositoryResolver, db, now: () => NOW });
   const call = async (handler: 'getCost' | 'getCostCsv', query: Record<string, unknown>) => {
     const { res, response } = fakeResponse();
     await routes[handler]({ query } as unknown as Request, res);
@@ -267,13 +269,13 @@ test('the routes read the analytics window, repository filter and group_by, and 
 });
 
 test('repeated or nested repository parameters are rejected rather than widened to every repository', async () => {
-  const routes = createCostExportRoutes({ db, now: () => NOW });
+  const routes = createCostExportRoutes({ repositoryScope: unscopedRepositoryResolver, db, now: () => NOW });
   for (const handler of ['getCost', 'getCostCsv'] as const) {
     for (const repository of [['acme/alpha', 'acme/beta'], ['acme/alpha'], { name: 'acme/alpha' }]) {
       const { res, response } = fakeResponse();
       await routes[handler]({ query: { period: '7d', repository } } as unknown as Request, res);
       assert.equal(response.statusCode, 400, `${handler} ${JSON.stringify(repository)}`);
-      assert.deepEqual(response.body, { error: 'Repository must be a string' });
+      assert.equal((response.body as { error?: string }).error, 'Repository must be a string');
     }
   }
 });
@@ -298,4 +300,25 @@ test('the MCP tool scopes to the grant without a repository, and to the exact re
   assert.deepEqual((await run({})).group_by, ['day']);
   assert.throws(() => tool.schema.parse({ groupBy: ['cost'] }));
   assert.throws(() => tool.schema.parse({ extra: true }));
+});
+
+test('MCP result redaction keeps the token columns of get_cost_breakdown, matching GET /api/stats/cost', async () => {
+  const tools: McpTool[] = [];
+  addStatsTools(tools, { db } as ToolDeps, async () => ['acme/alpha'], () => NOW);
+  const tool = tools.find(candidate => candidate.name === 'get_cost_breakdown')!;
+  const args = { repository: 'acme/alpha', period: '7d', groupBy: ['outcome'] };
+  const data = redact((await tool.run({ principal: {} as McpPrincipal, args: tool.schema.parse(args) })).data) as CostExport;
+  const { res, response } = fakeResponse();
+  await createCostExportRoutes({ repositoryScope: unscopedRepositoryResolver, db, now: () => NOW }).getCost({ query: { period: '7d', repository: 'acme/alpha', group_by: 'outcome' } } as unknown as Request, res);
+  assert.equal(response.statusCode, 200, JSON.stringify(response.body));
+  const api = response.body as CostExport;
+  assert.deepEqual(data.rows, api.rows);
+  assert.deepEqual(data.totals, api.totals);
+  const failed = data.rows.find(row => row.outcome === 'failed')!;
+  assert.equal(failed.input_tokens, 50);
+  assert.equal(failed.output_tokens, 5);
+  for (const key of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) {
+    assert.ok(data.rows.every(row => key in row), key);
+    assert.ok(key in data.totals, key);
+  }
 });

@@ -31,7 +31,7 @@ export const acknowledgedNames = (draft: ExtensionLibraryServer, acknowledged: b
 
 /** How a row names the server's kind: HTTPS, local package with its pinned version, or operator catalog. */
 export const serverKindLabel = (server: ExtensionLibraryServer) => (server.kind === 'https' ? (server.authentication === 'oauth' ? 'HTTPS endpoint · OAuth' : 'HTTPS endpoint')
-  : server.kind === 'package' ? `Local · ${server.package}@${server.version}` : `Operator catalog: ${server.catalogId}`);
+  : server.kind === 'package' ? `Local · ${server.package}@${server.version}` : `Preinstalled: ${server.catalogId}`);
 
 /** Why a local package server cannot be saved yet, or null. */
 export function packageProblem(draft: ExtensionLibraryServer, acknowledged: boolean): string | null {

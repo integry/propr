@@ -60,6 +60,12 @@ const TasksPage: React.FC = () => {
   useEffect(() => {
     selectedTaskIdRef.current = selectedTaskId;
   }, [selectedTaskId]);
+  // Opening a task from the list adds a history entry, so Back returns to the
+  // same list page, filter and scroll position; moving on to another task while
+  // one is open replaces it, so j/k does not fill the back button.
+  const openFromList = useCallback((nextTaskId: string) => {
+    select(nextTaskId, { push: selectedTaskIdRef.current === null });
+  }, [select]);
   const handleDeleted = useCallback((deletedTaskId: string) => {
     if (selectedTaskIdRef.current === deletedTaskId) select(null);
     setListRefreshKey(key => key + 1);
@@ -99,7 +105,7 @@ const TasksPage: React.FC = () => {
           <TaskList
             limit={TASKS_PER_PAGE}
             selectedTaskId={openTaskId}
-            onSelectTask={isSplitViewport ? select : undefined}
+            onSelectTask={isSplitViewport ? openFromList : undefined}
             refreshKey={listRefreshKey}
             onGroupsChange={setPageGroups}
           />

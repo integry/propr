@@ -3,7 +3,7 @@ import { splitWorkTitle } from './workTitle';
 
 describe('splitWorkTitle', () => {
   it('parses titles with and without the PR status slot', () => {
-    for (const slot of ['', '🔨 ', '⚠️⑥ ', '\u26A0⑥ ', '✅⑧ ', '✅ ']) {
+    for (const slot of ['', '🔨 ', '⚠️❻ ', '\u26A0❻ ', '✅❽ ', '✅ ', '✅➇ ', '⚠️⑥ ']) {
       expect(splitWorkTitle(`${slot}[3475 by Claude Opus 5.5] Let an automation run`, 'issue'))
         .toEqual({ type: 'Implement', title: 'Let an automation run' });
       expect(splitWorkTitle(`Fix PR #3510: ${slot}[3510 by Claude Opus 5.5] Apply library extensions`, 'pr-comment'))
@@ -28,6 +28,8 @@ describe('splitWorkTitle', () => {
     expect(splitWorkTitle('[870 by Claude Opus] Update checkout', 'issue')).toEqual({ type: 'Implement', title: 'Update checkout' });
     expect(splitWorkTitle('Continue #12: Finish the migration', null)).toEqual({ type: 'Continue', title: 'Finish the migration' });
     expect(splitWorkTitle('Agent: Weekly report', null)).toEqual({ type: 'Automation', title: 'Weekly report' });
+    // The recorded task type of an automation run names it the way the task list does.
+    expect(splitWorkTitle('Weekly report', 'agent-run')).toEqual({ type: 'Automation', title: 'Weekly report' });
   });
 
   it('keeps ordinary bracketed text that is not a generated model tag', () => {

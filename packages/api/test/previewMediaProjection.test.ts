@@ -15,6 +15,7 @@ import { createPreviewMediaReader, goalPreviewSource, projectNotificationPreview
 import { createRepositoryMediaRoutes } from '../routes/repositoryMediaRoutes.js';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
 import { createNotificationProjectionTestHarness, countNotificationEvents } from './notificationProjectionTestHarness.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 after(async () => {
   await closeConnection();
@@ -309,7 +310,7 @@ test('repository gallery scopes tasks and owned goals, paginates, reports empty/
       { goal_id: 'private', owner_id: 'bob', repository: 'acme/web', final_pr_number: 82 },
       { goal_id: 'failed-read', owner_id: 'alice', repository: 'acme/web', final_pr_number: 99 },
     ]);
-    const route = createRepositoryMediaRoutes({ db, reader }).getMedia;
+    const route = createRepositoryMediaRoutes({ repositoryScope: unscopedRepositoryResolver, db, reader }).getMedia;
     const req = { user: { id: 'alice' }, query: { repository: 'acme/web' } } as unknown as Request;
     const first = response(); await route(req, first.res);
     assert.equal(first.state.body.previews?.length, 50);

@@ -4,8 +4,8 @@
  * review score as one circled digit), then a single space, then the title.
  *
  *     🔨 [3475 by Claude Opus 5.5] Let an automation run when …
- *     ⚠️⑥ [3475 by Claude Opus 5.5] …
- *     ✅⑧ [3510 by Claude Opus 5.5] Apply library extensions automatically …
+ *     ⚠️❻ [3475 by Claude Opus 5.5] …
+ *     ✅❽ [3510 by Claude Opus 5.5] Apply library extensions automatically …
  *
  * An epic pull request follows its emoji with how many of its issues are
  * merged into the epic branch, and shows no score. While it is working, a pie
@@ -47,16 +47,25 @@ const EPIC_NONE = '\u25CB';
 const EPIC_QUARTER = '\u25D4';
 const EPIC_HALF = '\u25D1';
 const EPIC_THREE_QUARTERS = '\u25D5';
-/** ① (U+2460) to ⑩ (U+2469). */
-const CIRCLED_ONE = 0x2460;
+/**
+ * The score is written with the Dingbats negative circled digits ❶ (U+2776)
+ * to ❿ (U+277F): a white digit on a filled circle, which stays readable at
+ * title size (#3658). Two older ranges are still read, so an older title gets
+ * the new digit on its next update: the Enclosed Alphanumerics ① (U+2460) to
+ * ⑩ (U+2469), drawn sideways by some platform fonts (#3576), and the Dingbats
+ * sans-serif ➀ (U+2780) to ➉ (U+2789), whose thin ring hides the digit.
+ */
+const CIRCLED_ONE = 0x2776;
 
 /**
  * The slot, anchored at the start of the title and followed by exactly one
  * space. ⚠ is accepted with and without its variation selector. The score is
- * only recognised beside ⚠️ and ✅. An epic's ` merged/total` may follow; a
- * working epic's circle is recognised only with it.
+ * only recognised beside ⚠️ and ✅, as ❶–❿ or the older ①–⑩ and ➀–➉. An epic's
+ * ` merged/total` may follow; a working epic's circle is recognised only with it.
+ * Every non-ASCII character is escaped: the desktop renderer can decode the
+ * bundle as Latin-1, where a literal ❶ turns into an out-of-order range.
  */
-export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:(?:\u{1F528}|(?:⚠️?|✅)[①-⑩]?)(?: \d{1,6}\/\d{1,6})?|[\u25CB\u25D4\u25D1\u25D5] \d{1,6}\/\d{1,6}) /u;
+export const PR_TITLE_STATUS_SLOT_PATTERN = /^(?:(?:\u{1F528}|(?:\u26A0\uFE0F?|\u2705)[\u2460-\u2469\u2776-\u277F\u2780-\u2789]?)(?: \d{1,6}\/\d{1,6})?|[\u25CB\u25D4\u25D1\u25D5] \d{1,6}\/\d{1,6}) /u;
 
 /** The circle a working epic shows for `merged` of `total` issues merged. */
 function epicWorkingCircle(merged: number, total: number): string {

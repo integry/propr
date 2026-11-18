@@ -4,6 +4,8 @@ import type { RedisClientType } from 'redis';
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import type { LiveDetailsSnapshot } from '../routes/dashboardLiveActivity.js';
 import { up as createGoalBlockers } from '../../core/src/db/migrations/20261003050000_create_goal_blockers.js';
+import type { RepositoryScopeResolver } from '../repositoryScope.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 export const NOW = new Date('2026-09-23T12:00:00.000Z');
 export const minutesAgo = (minutes: number): string => new Date(NOW.getTime() - minutes * 60_000).toISOString();
@@ -155,6 +157,7 @@ export function createTestDashboardRoutes(
   database: Knex,
   queue: QueueStub = {},
   liveDetails?: (taskId: string) => Promise<LiveDetailsSnapshot | null>,
+  repositoryScope: RepositoryScopeResolver = unscopedRepositoryResolver,
 ): ReturnType<typeof createDashboardRoutes> {
   const workerIds = Array.from({ length: queue.workers ?? 1 }, (_, index) => `worker:${index}`);
   const capacityPerWorker = queue.capacityPerWorker === undefined ? 1 : queue.capacityPerWorker;
@@ -165,6 +168,7 @@ export function createTestDashboardRoutes(
       : Object.fromEntries(workerIds.map(id => [id, String(capacityPerWorker)]))),
   } as unknown as RedisClientType;
   return createDashboardRoutes({
+    repositoryScope,
     db: database,
     redisClient,
     taskQueue: {

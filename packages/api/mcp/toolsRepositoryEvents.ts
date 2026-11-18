@@ -26,7 +26,7 @@ const filterShape = () => ({
   domains: z.array(z.enum(REPOSITORY_EVENT_DOMAINS)).min(1).max(REPOSITORY_EVENT_DOMAINS.length).optional(),
   types: z.array(z.enum(REPOSITORY_EVENT_ALL_TYPES as [string, ...string[]])).min(1).max(REPOSITORY_EVENT_MAX_TYPE_FILTERS).optional(),
   pullRequest: z.number().int().positive().optional().describe('Only events of this pull request.'),
-  planId: z.string().min(1).max(255).optional().describe('Only events of this plan.'),
+  planId: z.uuid().optional().describe('Only events of this plan (its UUID).'),
   limit: z.number().int().min(1).max(REPOSITORY_EVENT_LIST_MAX_LIMIT).default(REPOSITORY_EVENT_LIST_DEFAULT_LIMIT),
 });
 

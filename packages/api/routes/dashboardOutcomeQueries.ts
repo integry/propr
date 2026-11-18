@@ -19,16 +19,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { OUTCOME_TABLES as T, seedOutcomeProjection } from '../services/dashboardReadService.js';
+import { whereRepositoryMatches } from './repositoryPredicate.js';
 export { OUTCOME_TABLES, installOutcomeProjection, rebuildOutcomeProjection, outcomeProjectionStatus } from '../services/dashboardReadService.js';
-import {
-  chunk,
-  mapTaskRow,
-  QUEUED_TASK_STATES,
-  RUNNING_TASK_STATES,
-  TASK_COLUMNS,
-  type DashboardTaskRow,
-  type RawTaskRow,
-} from './dashboardQueries.js';
+import { chunk, mapTaskRow, QUEUED_TASK_STATES, RUNNING_TASK_STATES, TASK_COLUMNS, type DashboardTaskRow, type RawTaskRow } from './dashboardQueries.js';
 
 interface CompletionRow extends DashboardTaskRow {
   completionId: number;
@@ -200,7 +193,7 @@ function entityCompletions(db: Knex, repository: string, taskId?: string): Knex.
   const completed = db('tasks as t').join('completion_runs as h', 'h.task_id', 't.task_id')
     .where('h.completion_rank', 1)
     .where(query => query.whereNull('t.task_type').orWhereNot('t.task_type', 'goal'))
-    .modify(query => { if (repository && repository !== 'all') query.where('t.repository', repository); })
+    .modify(query => { if (repository && repository !== 'all') whereRepositoryMatches(query, 't.repository', repository); })
     .select(TASK_COLUMNS).select('h.history_id');
   const validJob = "CASE WHEN json_valid(initial_job_data) THEN initial_job_data ELSE '{}' END";
   const validResult = "CASE WHEN json_valid(final_result) THEN final_result ELSE '{}' END";
@@ -471,7 +464,7 @@ export async function loadOutcomeSummaries(db: Knex, repository: string, options
   return db.transaction(async tx => {
     await requireOutcomeProjection(tx);
     const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
-    const query = tx(T.entities).modify(q => { if (repository !== 'all') q.where({ repository }); })
+    const query = tx(T.entities).modify(q => { if (repository !== 'all') whereRepositoryMatches(q, 'repository', repository); })
       .orderBy([...runOrder, { column: 'entity_id', order: 'asc' }]);
     const search = options.search?.trim().toLowerCase();
     if (!search) return (await query.select('payload').limit(limit) as Array<{ payload: string }>).map(row => JSON.parse(row.payload));
@@ -493,7 +486,7 @@ export async function loadOutcomeHistory(db: Knex, repository: string,
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 50);
   return db.transaction(async tx => {
     await requireOutcomeProjection(tx);
-    const entity = await tx(T.entities).where({ entity_id: entityId, repository }).first();
+    const entity = await whereRepositoryMatches(tx(T.entities).where({ entity_id: entityId }), 'repository', repository).first();
     if (!entity) throw new OutcomeProjectionError(404, 'OUTCOME_NOT_FOUND');
     if (entity.revision !== revision) throw new OutcomeProjectionError(409, 'OUTCOME_HISTORY_STALE');
     let boundary: HistoryCursor = { v: 1, entity: entityId, repository, revision,

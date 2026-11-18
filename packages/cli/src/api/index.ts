@@ -21,6 +21,8 @@ export {
   NetworkError,
   TimeoutError,
   RequestCancelledError,
+  InvalidApiResponseError,
+  INVALID_API_RESPONSE_MESSAGE,
   createApiError,
 } from "./errors.js";
 

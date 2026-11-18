@@ -20,23 +20,36 @@ ProPR computes one status for every pull request it created: is it being worked 
 
 A review score alone never makes a pull request `ready`. If Ultrafix reaches its goal on a commit whose checks are still running, the status stays `working`; as soon as one of those checks fails, it becomes `needs_attention`, even while the others are still running. Checks listed in the repository's [non-blocking checks](./pr-followup.md) are ignored, as they are everywhere else in ProPR. ProPR reads up to 300 check runs and up to 300 commit statuses on the head; if a commit has more, the ones it read keep their counts, the rest are never counted as passed, and since it can't confirm that they all passed the status is `needs_attention` with "checks could not be read" rather than `ready`. The same goes for ProPR's own records: if the review score, the Ultrafix state or the queued work can't be read, no status is computed. The body keeps its previous line, and MCP returns `proprStatus: null`.
 
-Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI, checking for conflicts), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged and which sub-PR or issue the line names (see [Epic pull requests](#epic-pull-requests)).
+Besides the state, the status has a `detail` object for display: the current activity (implementing, follow-up in progress, review in progress, resolving conflicts, waiting for CI, checking for conflicts), the Ultrafix cycle and maximum while a loop runs, the latest review score and the rating goal, a checks summary (passed, failed and pending counts, plus `skipped` and `cancelled` when there are any), the reason for `needs_attention`, and, for epic pull requests, how many of the epic's issues have merged and which sub-PR or issue the line names (see [Epic pull requests](#epic-pull-requests)).
 
 ## The status line in the pull request body
 
 ProPR keeps a single line as the first thing in the body of every open pull request it created, in every repository:
 
-> **ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated 09:41 UTC
+> **ProPR** 🔨 Follow-up in progress · Ultrafix cycle 3 of 10 · last review 6/10 · checks: 31 passed, 4 pending · updated Nov 16 09:41 UTC
 
-> **ProPR** ✅ Ready · review 8/10 · checks: 35 passed · updated 10:02 UTC
+> **ProPR** 🔨 Ultrafix cycle 4 of 10 · last review 6/10 · checks: 35 passed · updated Nov 16 09:55 UTC
 
-> **ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated 10:15 UTC
+> **ProPR** ✅ Ready · review 8/10 · checks: 35 passed, 12 skipped · updated Nov 16 10:02 UTC
+
+> **ProPR** ⚠️ Needs you · review 6/10, goal 8 · checks: 35 passed · updated Nov 16 10:08 UTC
+
+> **ProPR** ⚠️ Needs you · Ultrafix stopped after 10 cycles at 6/10 · updated Nov 16 10:15 UTC
+
+The time is always in UTC and always carries its date, because the line only changes when the status does and may be read days later.
+
+The check counts:
+
+- **passed** counts only checks that concluded successfully. Skipped checks are counted separately as **skipped**, and only when there are any. Checks listed in the repository's non-blocking checks are not counted at all.
+- A cancelled check run is not a failure. If a newer run of the same check replaced it, it isn't counted at all. A run whose name still contains a workflow expression such as `${{ matrix.os }}` was cancelled before its matrix was expanded; it isn't counted only when a newer run of the same workflow followed it. Otherwise it counts as cancelled, but its name is not listed ("checks cancelled"). A cancelled run that nothing replaced is shown as **cancelled** (for example "cancelled: e2e"). Nothing will run it again, so the pull request still needs you, as it would for a failed check.
+- Failed check names whose name still contains `${{` are counted in the "+N" but never listed by name.
 
 How the line behaves:
 
 - A new issue pull request opens with the line already in it. After that, ProPR updates it whenever the status or its detail changes: a follow-up or review starts or finishes, a review score is recorded, an Ultrafix cycle advances or waits for CI, a loop ends, a check run is created or completes, a commit status on the head changes, the PR is pushed to, or conflicts appear.
 - The line sits between two hidden HTML comments (`<!-- propr:pr-status -->` and `<!-- /propr:pr-status -->`). ProPR only ever rewrites text between them. Everything else in the body stays exactly as it was, including your edits, the implementation summary, the visual preview section, continuation markers, the epic issue list and `Fixes #` lines. If you move the line further down the body, it is updated where you put it.
 - Editing a pull request body adds nothing to the timeline, so the line can change often without filling the conversation. When the only change would be the "updated" time, nothing is sent to GitHub.
+- When only the check counts change (or the failed or cancelled check names), ProPR edits the body at most once every 30 seconds, so a CI run of many checks costs a few edits rather than one per check. The latest counts are written when the 30 seconds are up. Any other change, such as working becoming needs you or ready, a new review score or the next Ultrafix cycle, is written straight away.
 - ProPR ignores the `edited` webhooks its own status updates cause, so they never start more work. It recognises them by the line it recorded writing, not by the shape of the edit: if a person deletes the line or types a status of their own, ProPR writes the current status back, and that edit starts no other work either.
 - When the pull request is merged or closed, the line is removed.
 - GitHub works out whether a pull request conflicts with its base in the background and sends no event when it is done. While it is working, the line reads "Checking for conflicts", and ProPR checks again after about 3, 10, 30 and 60 seconds. If GitHub still hasn't decided after that, the next change updates the line.
@@ -54,30 +67,32 @@ GitHub's pull request list shows only titles, labels and a check icon, so ProPR 
 | State | Title |
 | --- | --- |
 | `working` | `🔨 [3475 by Claude Opus 5.5] Let an automation run when a plan issue is blocked` |
-| `needs_attention` | `⚠️⑥ [3475 by Claude Opus 5.5] …`, with the latest review score (① to ⑩) when there is one |
-| `ready` | `✅⑧ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
+| `needs_attention` | `⚠️❻ [3475 by Claude Opus 5.5] …`, with the latest review score (❶ to ❿) when there is one |
+| `ready` | `✅❽ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
 
-The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
+The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. The score uses the solid circled digits ❶ to ❿, a white digit on a filled circle that stays readable at title size. A title still showing an older ① to ⑩ or ❶ to ❿ score is recognised and gets the new digit on its next rename, so it never shows two scores. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
 
 Every title change adds a "changed the title" entry to the timeline, so the title changes far less often than the body line:
 
 - A new pull request is created with `🔨` already in its title, so creation costs no rename.
 - The title changes only when the state changes, or when the score beside ⚠️ or ✅ changes. Activity inside `working` (a review starting, the next Ultrafix cycle, waiting for CI) never renames the pull request; that detail is in the body line.
-- ProPR writes ⚠️ or ✅ only once the state has held for about 30 seconds and nothing for the pull request is queued or about to start. The short gap between an Ultrafix review and its fix, or between a failed check and its CI follow-up, costs no rename. Going back to `🔨` (for example when you post a follow-up on a `✅⑧` pull request) is immediate.
+- ProPR writes ⚠️ or ✅ only once the state has held for about 30 seconds and nothing for the pull request is queued or about to start. The short gap between an Ultrafix review and its fix, or between a failed check and its CI follow-up, costs no rename. Going back to `🔨` (for example when you post a follow-up on a `✅❽` pull request) is immediate.
 - No change is sent when the title is already right. When ProPR changes both the body line and the title, it does so in one update.
 - ProPR only ever replaces the slot it recognises at the start of the title. Your edits to the rest of the title are kept. If you remove the slot, it stays off until the state changes. ProPR also leaves the title alone when adding the slot would take it past GitHub's 256-character limit.
 - When the pull request is merged or closed, ProPR removes the slot: one final rename, so closed pull request lists and release notes stay clean.
 - ProPR ignores the `edited` webhooks its own renames cause, so they start no work and no further update.
 
-The emoji never reaches anything derived from the title. ProPR's merges (the MCP `merge_pull_request` tool, ProPR's own merge after checks pass, and native auto-merge) pass an explicit commit title without the slot: the title plus ` (#N)` for squash merges. Task titles such as `Fix PR #N: …`, notifications, `[Epic]` detection and the web UI read the title without the slot.
+ProPR keeps the emoji out of what it derives from the title itself. ProPR's merges (the MCP `merge_pull_request` tool, ProPR's own merge after checks pass, and native auto-merge) pass an explicit commit title without the slot: the title plus ` (#N)` for squash merges. Task titles such as `Fix PR #N: …`, notifications, `[Epic]` detection and the web UI read the title without the slot.
+
+A merge made on GitHub is different. GitHub builds its default merge commit message from the title as it is at that moment, before ProPR can remove the slot, so a pull request merged on GitHub while its title still has the slot keeps it in that message (for example `✅➈ [3582 by …`). To keep it out, edit the commit message in GitHub's merge dialog, merge through ProPR, or turn off `prTitleStatus` for the repository.
 
 ### The title setting
 
-The repository setting **Show the PR state as a leading emoji in the pull request title** (`prTitleStatus`) controls the title slot only. It doesn't affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. With it off, titles are created and left exactly as they are. Turning it off removes the slot from open pull requests on their next change.
+The repository setting **Show status in pull request titles** (`prTitleStatus`) controls the title slot only. It doesn't affect the line in the body, which is always written. It is **on by default** and applies to every branch entry of the repository. With it off, titles are created and left exactly as they are. Turning it off removes the slot from open pull requests on their next change.
 
 | Where | How |
 | --- | --- |
-| Web UI | Repositories → repository → Automation → **Show the PR state as a leading emoji in the pull request title** |
+| Web UI | Repositories → repository → Automation → **Show status in pull request titles** |
 | MCP | `update_repository_configuration` with `prTitleStatus: false` or `true`; `get_repository_configuration` reads it |
 | CLI | `propr repo toggle owner/repo --pr-title-status off` (or `--pr-title-status <on\|off>` on `propr repo add`) |
 | REST | `prTitleStatus` on the repository entries of `POST /api/config/repos` |
@@ -88,7 +103,7 @@ An epic pull request collects the sub-PRs of a plan: its own branch only receive
 
 | State | When |
 | --- | --- |
-| `working` | Not every issue is merged, and a sub-PR or an issue of the epic is being worked on (a sub-PR whose own status is `working`, or an issue that started and has no sub-PR yet), ProPR is working on the epic PR itself, or the plan's queue is about to start its next issue (a queue that has not finished setting up starts nothing, so it does not count). |
+| `working` | Not every issue is merged, and a sub-PR or an issue of the epic is being worked on (a sub-PR whose own status is `working`, or an issue that started and has no sub-PR yet), ProPR is working on the epic PR itself, or the plan's queue starts an issue now: its prerequisites are merged and the queue has a free slot, rather than waiting on a sub-PR that is not merged yet (a queue that has not finished setting up starts nothing, so it does not count). |
 | `needs_attention` | Not every issue is merged and nothing is running: a sub-PR needs you, an issue's run stopped on a blocker the agent reported, a sub-PR is `ready` and waits to be merged into the epic branch, the plan's queue is paused, the epic PR conflicts with its base, or nothing is left to start. Also when every issue is merged but a check on the epic PR's head failed or it conflicts with its base. |
 | `ready` | Every issue is merged into the epic branch, every check on the epic PR's current head completed and passed, and it does not conflict with its base. |
 
@@ -98,11 +113,11 @@ ProPR reads the status of up to 10 of an epic's open sub-PRs per update, and kee
 
 The body line leads with the progress, then says what is running or what waits on you:
 
-> **ProPR** 🔨 3 of 5 issues merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10) · updated 09:41 UTC
+> **ProPR** 🔨 3 of 5 issues merged · #3475 in progress (Ultrafix cycle 4 of 10, last review 6/10) · updated Nov 16 09:41 UTC
 
-> **ProPR** ⚠️ 3 of 5 issues merged · #3523 (issue #3475) waits to be merged into the epic branch · updated 09:41 UTC
+> **ProPR** ⚠️ 3 of 5 issues merged · #3523 (issue #3475) waits to be merged into the epic branch · updated Nov 16 09:41 UTC
 
-> **ProPR** ✅ 5 of 5 issues merged · checks: 12 passed · updated 10:02 UTC
+> **ProPR** ✅ 5 of 5 issues merged · checks: 12 passed · updated Nov 16 10:02 UTC
 
 With `prTitleStatus` on, the title slot is followed by `merged/total`. While the epic is `working`, a pie circle chosen from that count takes the place of 🔨, so an epic in progress is told apart from an ordinary working pull request at a glance:
 
@@ -119,7 +134,7 @@ When ProPR rewrites the epic body (its issue list and `Fixes #` lines), it keeps
 
 ### What the epic progress comment says now
 
-Independently of `prTitleStatus`, the epic progress comment ("N out of M PRs merged", the progress bar and "Merged child PRs") also says what is happening, below "Merged child PRs":
+Independently of `prTitleStatus`, the epic progress comment ("N of M issues merged", the progress bar and "Merged child PRs") also says what is happening, below "Merged child PRs":
 
 ```
 Merged child PRs: #3490, #3504, #3507, #3515, #3518

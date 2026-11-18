@@ -99,7 +99,7 @@ export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_C
 export type { ContextLevel } from './config/modelLimits.js';
 
 export { db, closeConnection, createKnexConfigForMigrations, runMigrations } from './db/connection.js';
-export { applyDatabaseMigrations, type MigrationDatabase, type MigrationGateOptions } from './db/migrationGate.js';
+export { applyDatabaseMigrations, assertDatabaseNotNewerThanCode, DatabaseNewerThanCodeError, findNewerMigrations, type AppliedMigrationSource, type MigrationDatabase, type MigrationGateOptions } from './db/migrationGate.js';
 export { installSqliteRetry, retryOnSqliteContention, replayableTransaction, isSqliteContentionError, isSqliteSnapshotConflict, sqliteRetryDelayMs } from './db/sqliteRetry.js';
 export type { SqliteRetryOptions } from './db/sqliteRetry.js';
 
@@ -445,6 +445,7 @@ export type { AgentImageBuildDiskSpace } from './agents/agentImageBuildCapacity.
 export * from './goalExports.js';
 export * from './agents/syntheticRouting.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason, taskTerminalReasonForAgentTermination } from './agents/termination.js';
+export { applyRunSummarySelection, selectRunSummary, buildSummaryCandidates, NO_RUN_SUMMARY_TEXT } from './agents/runSummarySelection.js';
 export { AgentActivityWatchdog, AGENT_WATCHDOG_MESSAGE_PREFIX, describeAgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export type { AgentWatchdogRule, AgentWatchdogSettings, AgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export {

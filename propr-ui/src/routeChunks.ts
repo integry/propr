@@ -57,7 +57,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/desktop/pairing', load: loadDesktopPairingPage },
   { matches: pathname => pathname === '/revert', load: loadRevertPage },
   { matches: pathname => pathname === '/inbox', load: loadInboxPage },
-  { matches: pathname => pathname === '/repositories', load: loadRepositoriesPage },
+  { matches: pathname => pathname === '/repositories' || pathname.startsWith('/repositories/'), load: loadRepositoriesPage },
   { matches: pathname => pathname === '/tasks' || pathname.startsWith('/tasks/'), load: loadTasksPage },
   { matches: pathname => pathname === '/goals' || pathname.startsWith('/goals/'), load: loadGoalsPage },
   { matches: pathname => pathname === '/automations' || pathname.startsWith('/automations/'), load: loadAgentsPage },

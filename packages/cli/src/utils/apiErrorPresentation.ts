@@ -1,6 +1,7 @@
 import {
   ApiError,
   ForbiddenError,
+  InvalidApiResponseError,
   UnauthorizedError,
 } from "../api/errors.js";
 
@@ -104,7 +105,10 @@ export function presentApiError(
 ): CliApiErrorClassification {
   const classification = classifyApiError(error);
 
-  if (classification.kind === "unauthorized") {
+  if (error instanceof InvalidApiResponseError) {
+    // The remote is not a ProPR API: one line naming the fix, no wrapper.
+    console.error(`Error: ${error.message}`);
+  } else if (classification.kind === "unauthorized") {
     console.error(LOGIN_REQUIRED_ERROR);
   } else if (classification.kind === "forbidden") {
     console.error(options.forbiddenMessage);

@@ -241,8 +241,8 @@ for (const viewport of [
     const disabledCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /vibe models$/ }) });
     const rateLimitedCard = configuration.locator('.coding-agent-card').filter({ has: page.getByRole('button', { name: /antigravity models$/ }) });
     await expect(codexCard.getByRole('alert')).toContainText('Your login session has expired.');
-    await expect(codexCard.getByRole('alert')).toContainText('Authentication Expired');
-    await expect(rateLimitedCard.getByRole('alert')).toContainText('Rate Limit Exceeded');
+    await expect(codexCard.getByRole('alert')).toContainText('Authentication expired');
+    await expect(rateLimitedCard.getByRole('alert')).toContainText('Rate limit exceeded');
     await expectHeaderRails(configuration);
     await expect(codexCard.getByRole('button', { name: 'Log in', exact: true })).toBeVisible();
     await expect(claudeCard.getByText('Ready', { exact: true })).toBeVisible();

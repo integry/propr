@@ -34,7 +34,7 @@ export function createPrCommand(): Command {
     .description("Whether a pull request is ready to integrate, with a coded reason per gate (read-only)")
     .argument("<number>", "Pull request number")
     .option("-p, --project <project>", "Repository (owner/repo); defaults to the configured project")
-    .option("--json", "Output raw JSON response")
+    .option("-j, --json", "Output raw JSON response")
     .addHelpText("after", `
 Examples:
   $ propr pr readiness 42

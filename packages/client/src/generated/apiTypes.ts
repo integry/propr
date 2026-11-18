@@ -700,6 +700,8 @@ export interface FollowupHandoffRecoverySummary {
 }
 
 export interface FollowupHandoffReleaseRequest {
+  /** Task id of the attempt the caller decided about. The release (and `force`) applies only while that attempt is the current handoff on the pull request; otherwise it is refused with reason `superseded` and nothing is released. */
+  taskId?: string;
   /** Also release a branch whose retained worktree still holds unpublished work. Never deletes worktree files, and never overrides a live or unverifiable agent. */
   force?: boolean;
 }
@@ -712,6 +714,8 @@ export interface FollowupHandoffReleaseResult {
 }
 
 export interface FollowupHandoffResumeRequest {
+  /** Task id of the attempt the caller decided about. With `authorizeCancelled`, the authorization applies only while that attempt is the current handoff on the pull request; otherwise it is refused with code `superseded` and nothing is authorized. */
+  taskId?: string;
   /** Set `true` to explicitly authorize publishing work the user cancelled. Without it, resume re-arms the operator-held record and refuses cancelled work with code `requires_cancellation_authorization`. */
   authorizeCancelled?: boolean;
 }
@@ -1880,11 +1884,21 @@ export interface DeleteTaskQuery {
   force?: "true" | "false";
 }
 
+/** Query parameters of `getApiPlannerDraftsIdIssues`. */
+export interface PlanIssuesQuery {
+  /** Zero-based page. With `page` or `limit` the response is a page object; anything but a non-negative integer is a 400. */
+  page?: number;
+  /** Page size, 1 or more, capped at 100; defaults to 50. Anything else is a 400. */
+  limit?: number;
+  /** Paged responses only: keep issues with this plan status (an unknown value is ignored). */
+  status?: string;
+}
+
 /** Query parameters of `getCostExport`, `getCostExportCsv`. */
 export interface CostExportQuery {
   /** Bounds executions by when they started; omitted means all time. */
   period?: "24h" | "7d" | "30d" | "90d" | "1y" | "all";
-  /** `owner/repo`, or `all` (default). */
+  /** `owner/repo` of a configured repository (any capitalization; the response echoes its configured name), or `all` (default). */
   repository?: string;
   /** Comma-separated list of `day`, `repository`, `agent`, `model`, `reasoning_level`, `execution_type`, `outcome`; defaults to `day`. */
   group_by?: string;
@@ -1962,10 +1976,10 @@ export interface RepositoryEventsQuery {
 export interface ListTasksQuery {
   /** `all` (default), `active`, `waiting`, `attention`, or a worker state. */
   status?: string;
-  /** `owner/name`, or `all` (default). */
+  /** `owner/name` of a configured repository (any capitalization), or `all` (default). */
   repository?: string;
   search?: string;
-  /** Page size; defaults to 50. */
+  /** Page size; defaults to 50, at most 200. */
   limit?: number;
   offset?: number;
   /** Only runs whose pull request awaits review. */

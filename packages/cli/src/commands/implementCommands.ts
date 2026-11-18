@@ -9,6 +9,7 @@ import { Command } from "commander";
 import {
   implementIssue,
   getTaskStatus,
+  NotFoundError,
   TaskState,
   TaskStatus,
 } from "../api/index.js";
@@ -28,6 +29,11 @@ const POLL_INTERVAL_MS = 3000;
  * Maximum wait time in milliseconds (10 minutes).
  */
 const MAX_WAIT_MS = 600000;
+
+/**
+ * How long a newly accepted task may be unknown to the API before polling fails.
+ */
+const NOT_FOUND_GRACE_MS = 60000;
 
 /**
  * Parses an issue identifier in the format "draft-id/issue-number" or "draft-id:issue-number".
@@ -83,7 +89,16 @@ async function pollTaskStatus(taskId: string): Promise<TaskStatus> {
   let lastState = "";
 
   while (Date.now() - startTime < MAX_WAIT_MS) {
-    const status = await getTaskStatus(taskId);
+    let status: TaskStatus;
+    try {
+      status = await getTaskStatus(taskId);
+    } catch (error) {
+      // The API answers 404 for a task it cannot find anywhere yet. A task
+      // that was just accepted can be in that window, so keep waiting for it.
+      if (!(error instanceof NotFoundError) || Date.now() - startTime >= NOT_FOUND_GRACE_MS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      continue;
+    }
 
     if (status.currentState !== lastState) {
       console.log(`Status: ${formatState(status.currentState)}`);
@@ -142,7 +157,7 @@ Argument:
 Examples:
   $ propr issue implement abc123/1
   $ propr issue implement abc123:42 --wait
-  $ propr issue implement abc123/1 -a claude -m claude-sonnet-4-20250514 --wait
+  $ propr issue implement abc123/1 -a claude -m claude-sonnet-5-5 --wait
   $ propr issue implement abc123/1 --epic --auto-merge
   $ propr issue implement abc123/1 --max-cost 5
 `)

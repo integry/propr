@@ -144,6 +144,8 @@ function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): s
 }
 
 function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: string, changesSummary: string): string {
+    // The summary-selection call already decided; the comment shows its choice so it agrees with the commit.
+    if (claudeResult.summarySelection && claudeResult.summary) return claudeResult.summary;
     const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
     const primarySummary = (claudeResult.summary || claudeResult.finalResult?.result || changesSummary || '').trim();
     const conversationSummary = getLatestUsefulConversationSummary(claudeResult);

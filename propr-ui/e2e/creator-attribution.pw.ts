@@ -32,7 +32,7 @@ const goal = (index: number, createdBy: Creator) => ({
   title: index === 0 ? longTitle : `Goal number ${index + 1}`,
   objective: 'Ship the change with every check green and a reviewed pull request ready to merge into the base branch.',
   launchStrategy: 'orchestrate', initialPrompt: '/goal Ship', attachments: [],
-  baseBranch: null, branchName: `goal/${index}`, worktreePath: `/tmp/goal-${index}`,
+  baseBranch: null, branchName: `goal/${index}`,
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' },
   requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,

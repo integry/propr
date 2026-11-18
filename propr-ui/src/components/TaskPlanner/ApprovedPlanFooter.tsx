@@ -4,12 +4,27 @@ import type { CreationFooterStats, FooterStats } from './approvedPlanFooterStats
 
 const Separator = () => <span className="text-gray-400">·</span>;
 
+/** Footer parts in the Plans list's order, then the queue's own buckets; zero counts are left out. */
+const ISSUE_STAT_PARTS: Array<{ key: Exclude<keyof FooterStats, 'total'>; label: string; className: string }> = [
+  { key: 'processing', label: 'Running', className: 'text-teal-700' },
+  { key: 'underReview', label: 'In Review', className: 'text-amber-700' },
+  { key: 'queued', label: 'Queued', className: 'text-gray-500' },
+  { key: 'blocked', label: 'Blocked', className: 'text-amber-700' },
+  { key: 'skipped', label: 'Skipped', className: 'text-gray-500' },
+  { key: 'pending', label: 'Pending', className: 'text-gray-500' },
+  { key: 'merged', label: 'Merged', className: 'text-slate-500' },
+  { key: 'closed', label: 'Closed', className: 'text-gray-500' },
+];
+
 const IssueStatsSummary: React.FC<{ stats: FooterStats }> = ({ stats }) => (
   <>
     <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
-    {stats.merged > 0 && <><Separator /><span className="text-slate-500">{stats.merged} Merged</span></>}
-    {stats.processing > 0 && <><Separator /><span className="text-teal-700">{stats.processing} Running</span></>}
-    {stats.pending > 0 && <><Separator /><span className="text-gray-500">{stats.pending} Pending</span></>}
+    {ISSUE_STAT_PARTS.filter(part => stats[part.key] > 0).map(part => (
+      <React.Fragment key={part.key}>
+        <Separator />
+        <span className={`whitespace-nowrap ${part.className}`} data-testid={`plan-footer-${part.key}`}>{stats[part.key]} {part.label}</span>
+      </React.Fragment>
+    ))}
   </>
 );
 

@@ -27,6 +27,7 @@ import { createDesktopAuthRoutes } from '../routes/desktopAuthRoutes.js';
 import { createTaskHistoryRoutes } from '../routes/taskHistoryRoutes.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 /**
  * The handlers and the schemas in openapi/schemas.ts are maintained
@@ -80,6 +81,7 @@ function assertConforms(schema: z.ZodType, body: unknown, label: string): void {
 function redis(values: Record<string, unknown> = {}): RedisClientType {
   return {
     get: async (key: string) => key in values ? JSON.stringify(values[key]) : null,
+    exists: async (keys: string | string[]) => [keys].flat().filter(key => key in values).length,
   } as unknown as RedisClientType;
 }
 
@@ -114,7 +116,7 @@ describe('Handler responses match the published schemas', () => {
     await db('plan_issues').insert({
       draft_id: 'draft-1', repository: 'acme/app', issue_number: 12, task_id: 'run-completed', status: 'merged',
     });
-    const routes = createTaskRoutes({ db });
+    const routes = createTaskRoutes({ repositoryScope: unscopedRepositoryResolver, db });
 
     for (const query of [{}, { status: 'failed' }, { groupBy: 'task', limit: '2' }]) {
       const { response, sent } = recorder();
@@ -229,11 +231,13 @@ describe('Handler responses match the published schemas', () => {
       assert.ok(body.taskInfo);
     });
 
-    it('for a task with no recorded state', async () => {
+    it('answers 404, not an empty pending task, for a task with no recorded state', async () => {
       const db = await migratedDatabase();
-      const body = await history(db, 'unknown-task');
-      assert.deepEqual(body.history, []);
-      assert.equal(body.taskInfo, null);
+      const routes = createTaskHistoryRoutes({ db, redisClient: redis(), taskQueue: { getJob: async () => undefined } as never });
+      const { response, sent } = recorder();
+      await routes.getTaskHistory({ params: { taskId: 'unknown-task' } } as unknown as FlatRequest, response);
+      assert.equal(sent.status, 404);
+      assert.deepEqual(sent.body, { error: 'Task not found', code: 'TASK_NOT_FOUND' });
     });
   });
 

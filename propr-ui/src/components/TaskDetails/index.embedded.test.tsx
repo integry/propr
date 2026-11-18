@@ -89,7 +89,7 @@ afterEach(() => {
 describe('TaskDetails embedded beside the task list', () => {
   it('shows the task it is given, leaves the title to the list and reports a delete instead of navigating', async () => {
     const onDeleted = vi.fn();
-    document.title = 'Tasks | ProPR';
+    document.title = 'Tasks · ProPR';
     render(
       <MemoryRouter initialEntries={['/tasks?task=pane-task']}>
         <Routes><Route path="/tasks" element={<TaskDetails taskId="pane-task" embedded onDeleted={onDeleted} />} /></Routes>
@@ -97,7 +97,7 @@ describe('TaskDetails embedded beside the task list', () => {
       </MemoryRouter>,
     );
     expect(loadedTaskIds).toContain('pane-task');
-    expect(document.title).toBe('Tasks | ProPR');
+    expect(document.title).toBe('Tasks · ProPR');
     // A pane is never wide enough for the timeline/output split: no desktop-only column classes.
     expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('[@container_task-workspace_(min-width:960px)]:grid');
     expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('[@container_task-workspace_(min-width:960px)]:grid-cols-[max(30%,576px)_minmax(0,1fr)]');

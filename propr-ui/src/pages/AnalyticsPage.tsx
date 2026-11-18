@@ -20,6 +20,7 @@
  */
 
 import React, { useCallback } from 'react';
+import { PageHeading } from '../components/ui/PageHeading';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -60,6 +61,7 @@ import {
 } from '../api/taskStatsApi';
 import { PageLoadingStatus } from '../components/ui/Skeleton';
 import { SystemAlert } from '../components/ui/SystemAlert';
+import { formatCount } from '../utils/dateFormat';
 
 /** A pane of the console: a heading bar and its content, ruled off from the pane above. */
 const Pane: React.FC<{
@@ -83,7 +85,7 @@ const buildMetrics = (
   const fromTasks = (value: string | undefined) => (tasks.loading ? null : value ?? UNAVAILABLE);
   const fromOverview = (value: string | undefined) => (overview.loading ? null : value ?? UNAVAILABLE);
   return [
-    { label: 'Total tasks', testId: 'metric-total-tasks', value: fromTasks(summary?.total.toLocaleString()) },
+    { label: 'Total tasks', testId: 'metric-total-tasks', value: fromTasks(summary ? formatCount(summary.total) : undefined) },
     {
       label: 'Success rate',
       testId: 'metric-success-rate',
@@ -123,14 +125,14 @@ const buildDeliveryMetrics = (overview: { data: StatsOverviewResponse | null; lo
       testId: 'metric-runs-per-task',
       hint: 'Total runs divided by total tasks: the iteration multiplier. A task often takes several runs — implement, review, fix',
       value: read(runs?.per_task == null ? undefined : `${runs.per_task.toFixed(1)}×`),
-      detail: runs ? `${runs.total.toLocaleString()} runs · ${runs.tasks.toLocaleString()} tasks` : undefined,
+      detail: runs ? `${formatCount(runs.total)} runs · ${formatCount(runs.tasks)} tasks` : undefined,
     },
     {
       label: 'First-time pass',
       testId: 'metric-first-time-pass',
       hint: 'Merged pull requests that needed no fix: one implementation task, no follow-up fix and no Ultrafix fix',
       value: read(pass?.rate == null ? undefined : formatShare(pass.rate)),
-      detail: pass && pass.n > 0 ? `${pass.passed.toLocaleString()} of ${pass.n.toLocaleString()} merged PRs` : undefined,
+      detail: pass && pass.n > 0 ? `${formatCount(pass.passed)} of ${formatCount(pass.n)} merged PRs` : undefined,
     },
     {
       label: 'Time to merge',
@@ -190,7 +192,7 @@ const AnalyticsPage: React.FC = () => {
 
       <div className="flex flex-none flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-6">
         <div className="min-w-0">
-          <h1 className="text-lg font-bold text-slate-900">Analytics</h1>
+          <PageHeading>Analytics</PageHeading>
           {/* Static: the pressed timeframe and the activity heading already say which period. */}
           <p className="text-sm text-slate-500" data-testid="analytics-timeframe-summary">
             Aggregate activity across all repositories

@@ -27,6 +27,7 @@ import { startConnectMcpRegistration, type ConnectRegistrationManager } from './
 import { getConnectMcpState } from './mcp/tunnelMode.js';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
+import { apiSecurityHeaders, bodyParserErrorHandler, installApiFinalHandler } from './apiErrorBoundary.js';
 import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
@@ -202,6 +203,10 @@ const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: Comment
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 export const app = express();
+app.disable('x-powered-by');
+// JSON for every error and unmatched route, after every layer including late mounts.
+installApiFinalHandler(app);
+app.use(apiSecurityHeaders);
 app.use(refusePublicFleetData);
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
@@ -263,7 +268,10 @@ app.use((req, res, next) => {
   };
   cors({
     origin: validateRequestCorsOrigin,
-    credentials: true,
+    // The validator answers only true or a rejection, so a request with an
+    // Origin that reaches the headers is an allowed one. Without an Origin no
+    // credentialed cross-origin read exists to permit.
+    credentials: req.get('origin') !== undefined,
     maxAge: CORS_PREFLIGHT_MAX_AGE_SECONDS,
   })(req, res, next);
 });
@@ -286,6 +294,7 @@ app.use((req, res, next) => {
   if (isMcpEndpointPath(req.path)) return next();
   return defaultJsonParser(req, res, next);
 });
+app.use(bodyParserErrorHandler);
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
@@ -417,8 +426,8 @@ export function setupRoutes(): void {
   const previewMediaRoutes = createPreviewMediaRoutes();
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
-  const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
-  const fileChangesRoutes = createFileChangesRoutes({ db });
+  const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db, taskQueue });
+  const fileChangesRoutes = createFileChangesRoutes({ db, redisClient, taskQueue });
   const taskAssignmentRoutes = createTaskAssignmentRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
   const executionRoutes = createExecutionRoutes({ redisClient, db });

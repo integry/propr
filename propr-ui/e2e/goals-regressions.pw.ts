@@ -9,7 +9,7 @@ const goal = {
   title: 'Launch Customer Analytics Dashboard',
   objective: 'Ship the dashboard with bounded queue content beside the desktop navigation.',
   launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard', attachments: [],
-  baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/goal-dashboard',
+  baseBranch: null, branchName: 'goal/dashboard',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' },
   requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
@@ -202,9 +202,9 @@ test('keeps the goal work queue within the available 1024px desktop content widt
 test('dismisses the repository picker before the dirty goal creator on Escape', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 820 });
   await page.goto('/goals');
-  await page.getByRole('button', { name: 'New Goal', exact: true }).click();
+  await page.getByRole('button', { name: 'New goal', exact: true }).click();
 
-  const creator = page.getByRole('dialog', { name: 'Start a goal' });
+  const creator = page.getByRole('dialog', { name: 'New goal' });
   await expect(creator).toBeVisible();
   await creator.getByLabel('Prompt').fill('Preserve this browser-tested draft');
   await creator.getByRole('button', { name: /acme.*web/i }).click();
@@ -252,7 +252,7 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
   test(`goal creation uses collapsed session settings and docked attachments on ${device}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.goto('/goals?new=1');
-    const dialog = page.getByRole('dialog', { name: 'Start a goal' });
+    const dialog = page.getByRole('dialog', { name: 'New goal' });
     const prompt = dialog.getByLabel('Prompt', { exact: true });
     await expect(prompt).toBeFocused();
     await expect(dialog.getByLabel('Agent', { exact: true })).toBeHidden();

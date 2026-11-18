@@ -184,19 +184,19 @@ describe('Layout desktop instance selector', () => {
     await waitFor(() => expect(mocks.reportConnectedRendererReady).toHaveBeenCalledOnce());
   });
 
-  it('keeps Coding Agents and Access in the resource group for permitted users', () => {
+  it('keeps Coding agents and Access in the resource group for permitted users', () => {
     mocks.canManage = true;
     renderLayout(desktopValue());
-    expect(screen.getByRole('link', { name: 'Coding Agents' })).toHaveAttribute('href', '/ai-agents');
+    expect(screen.getByRole('link', { name: 'Coding agents' })).toHaveAttribute('href', '/ai-agents');
     expect(screen.getByRole('link', { name: 'Access' })).toHaveAttribute('href', '/admin/members');
     expect(screen.getByRole('link', { name: 'Repositories' }).nextElementSibling).toBe(
-      screen.getByRole('link', { name: 'Coding Agents' }),
+      screen.getByRole('link', { name: 'Coding agents' }),
     );
   });
 
   it('keeps restricted routes permission-gated on desktop', () => {
     renderLayout(desktopValue());
-    expect(screen.queryByRole('link', { name: 'Coding Agents' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Coding agents' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Access' })).not.toBeInTheDocument();
   });
 

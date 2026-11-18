@@ -7,22 +7,33 @@ import {
 import { SETTINGS_CATALOG, type SettingEntry } from './settingsCatalog.js';
 import { ok, type McpTool, type ToolDeps } from './tools.js';
 
-const normalizeSettingQuery = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+/** Lower-case, accents removed ("Café" → "cafe"); the catalog is written in plain ASCII. */
+const foldSettingText = (value: string): string => value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+const normalizeSettingQuery = (value: string): string => foldSettingText(value).replace(/[^a-z0-9]+/g, ' ').trim();
+/** Letters or digits outside a-z and 0-9 (Cyrillic, CJK, ...) can match no catalog entry. */
+const hasNonCatalogTerm = (value: string): boolean => /[^a-z0-9]/.test(foldSettingText(value).replace(/[^\p{L}\p{N}]/gu, ''));
+
+/** A query term matches a field containing it, or its singular ("ceilings" finds "ceiling"). */
+const termMatches = (field: string, term: string): boolean =>
+  field.includes(term) || (term.length > 3 && term.endsWith('s') && field.includes(term.slice(0, -1)));
 
 function settingScore(entry: SettingEntry, query: string): number {
-  const terms = normalizeSettingQuery(query).split(' ').filter(Boolean);
+  const normalizedQuery = normalizeSettingQuery(query);
+  // Punctuation alone, or a term no entry can contain, names no setting.
+  if (!normalizedQuery || hasNonCatalogTerm(query)) return 0;
+  const terms = normalizedQuery.split(' ');
   const fields = [entry.label, ...entry.aliases, entry.id, ...(entry.env ?? [])];
   let best = 0;
   for (const [index, field] of fields.entries()) {
     const normalized = normalizeSettingQuery(field);
     const priority = index === 0 ? 40 : index <= entry.aliases.length ? 30 : index === entry.aliases.length + 1 ? 20 : 10;
-    if (normalized === normalizeSettingQuery(query)) best = Math.max(best, 400 + priority);
-    else if (normalized.startsWith(normalizeSettingQuery(query))) best = Math.max(best, 300 + priority);
-    else if (normalized.includes(normalizeSettingQuery(query))) best = Math.max(best, 200 + priority);
-    else if (terms.every(term => normalized.includes(term))) best = Math.max(best, 100 + priority);
+    if (normalized === normalizedQuery) best = Math.max(best, 400 + priority);
+    else if (normalized.startsWith(normalizedQuery)) best = Math.max(best, 300 + priority);
+    else if (normalized.includes(normalizedQuery)) best = Math.max(best, 200 + priority);
+    else if (terms.every(term => termMatches(normalized, term))) best = Math.max(best, 100 + priority);
   }
   const haystack = normalizeSettingQuery(fields.join(' '));
-  return best || (terms.every(term => haystack.includes(term)) ? 50 : 0);
+  return best || (terms.every(term => termMatches(haystack, term)) ? 50 : 0);
 }
 
 function environmentChangeInstruction(entry: SettingEntry, query: string): string {

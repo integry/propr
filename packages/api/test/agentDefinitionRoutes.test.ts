@@ -678,6 +678,32 @@ describe('automation definition routes', () => {
     assert.equal(detail.body.run.report, 'All quiet.');
   });
 
+  test('run history carries a one-line plain-text report preview', async () => {
+    const definition = await createDefinition('alice');
+    const reported = (await triggerRun(definition.id)).body.run.id as string;
+    await transitionAgentRun(reported, ['queued'], 'running', {}, { database });
+    await transitionAgentRun(reported, ['running'], 'report_ready', {
+      report: '## Dependency **audit**\n\n- lodash is two majors behind\n- nothing else',
+    }, { database });
+    const long = (await triggerRun(definition.id, 'long-report')).body.run.id as string;
+    await transitionAgentRun(long, ['queued'], 'running', {}, { database });
+    await transitionAgentRun(long, ['running'], 'report_ready', { report: `- ${'finding '.repeat(40)}\nsecond line` }, { database });
+    const unreported = (await triggerRun(definition.id, 'no-report')).body.run.id as string;
+
+    const history = await call(routes.listRuns, request('alice', { params: { id: definition.id } }));
+    const runs = new Map((history.body.runs as Array<Record<string, unknown>>).map(run => [run.id, run]));
+    assert.equal(runs.get(reported)?.reportPreview, 'Dependency audit');
+    assert.equal('report' in (runs.get(reported) ?? {}), false);
+    const truncated = runs.get(long)?.reportPreview as string;
+    assert.ok(truncated.length <= 160, truncated);
+    assert.ok(truncated.startsWith('finding finding'), truncated);
+    assert.ok(truncated.endsWith('…'), truncated);
+    assert.equal('reportPreview' in (runs.get(unreported) ?? {}), false);
+
+    const detail = await call(routes.getRun, request('alice', { params: { runId: reported } }));
+    assert.equal('reportPreview' in detail.body.run, false);
+  });
+
   test('run payloads carry the unproductive-run flags and the derived no-change reason', async () => {
     const definition = await createDefinition('alice');
     const fresh = (await triggerRun(definition.id)).body.run as Record<string, unknown>;
@@ -820,12 +846,11 @@ test('canonical REST routes and deprecated aliases share all handlers and upload
   assertNoDuplicateRoutes(routes);
   const canonical = routes.filter(([, path]) => /^\/api\/automation-(definitions|runs)(?:\/|$)/.test(path));
   assert.equal(canonical.length, 16);
-  // Routes added after the rename have no deprecated alias.
-  const canonicalOnly = new Set(['/api/automation-definitions/templates']);
-  for (const [method, path] of canonical.filter(([, path]) => canonicalOnly.has(path))) {
-    assert.ok(!routes.some(([verb, route]) => verb === method && route === path.replace('/automation-', '/agent-')), path);
-  }
-  for (const [method, path, ...chain] of canonical.filter(([, path]) => !canonicalOnly.has(path))) {
+  // Every canonical route, including the template catalog, has its alias; the
+  // literal `templates` alias must precede `/:id` so it is not read as an id.
+  const index = (path: string) => routes.findIndex(([verb, route]) => verb === 'get' && route === path);
+  assert.ok(index('/api/agent-definitions/templates') >= 0 && index('/api/agent-definitions/templates') < index('/api/agent-definitions/:id'));
+  for (const [method, path, ...chain] of canonical) {
     const legacyPath = path.replace('/automation-', '/agent-');
     const legacy = routes.find(([verb, route]) => verb === method && route === legacyPath);
     assert.ok(legacy, `${method} ${legacyPath}`);

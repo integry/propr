@@ -46,6 +46,8 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   review: 'Review',
   goal: 'Goal',
   implementation: 'Implement',
+  'agent-run': 'Automation',
+  agent_run: 'Automation',
 };
 
 function workflowLabel(raw: string): string {
@@ -63,7 +65,7 @@ function taskTypeLabel(taskType: string | null | undefined): string | null {
 }
 
 export function splitWorkTitle(title: string | null | undefined, taskType?: string | null): WorkTitle {
-  // A PR title may lead with its status slot (`✅⑧ `); older task titles copied it after the prefix.
+  // A PR title may lead with its status slot (`✅❽ `); older task titles copied it after the prefix.
   let rest = stripStatusSlot((title ?? '').trim());
   let type: string | null = null;
 

@@ -1,6 +1,8 @@
 import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
+import type { RedisClientType } from 'redis';
+import type { Queue } from 'bullmq';
 import {
   getStoredFileChanges,
   storeFileChanges,
@@ -10,10 +12,14 @@ import {
   isValidCommitHash,
   FileChangesData
 } from '@propr/core';
+import { sendTaskNotFound, taskReferenceExists } from './taskExistence.js';
 
 interface FileChangesRoutesDeps {
   db: Knex;
   normalizeJobReferences?: boolean;
+  /** Live state and queue sources consulted before answering 404 for an unknown task. */
+  redisClient?: Pick<RedisClientType, 'exists'>;
+  taskQueue?: Pick<Queue, 'getJob'>;
 }
 
 export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
@@ -41,6 +47,11 @@ export function createFileChangesRoutes(deps: FileChangesRoutesDeps) {
       if (commitChanges) {
         console.log(`[file-changes] Retrieved ${commitChanges.files.length} file changes from commit hash`);
         res.json(commitChanges);
+        return;
+      }
+
+      if (!await taskReferenceExists(deps, taskId, jobId)) {
+        sendTaskNotFound(res);
         return;
       }
 

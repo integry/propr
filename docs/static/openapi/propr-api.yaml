@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 348
-    documented: 110
+    total: 349
+    documented: 111
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -288,7 +288,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FollowupHandoffReleaseResult"
         "400":
-          description: Invalid target or non-boolean flag.
+          description: Invalid target, non-boolean flag or invalid `taskId`.
           content:
             application/json:
               schema:
@@ -304,7 +304,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LegacyError"
         "409":
-          description: "Refused; `reason` names why: `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered`, `worktree_registrations_unavailable`, `cancelled_claims_withdrawal_failed` or `superseded` (the handoff changed concurrently, for example an operator re-armed it)."
+          description: "Refused; `reason` names why: `agent_still_running`, `liveness_unavailable`, `lease_held_by_live_writer`, `worktree_holds_unpublished_work`, `branch_still_registered`, `worktree_registrations_unavailable`, `cancelled_claims_withdrawal_failed` or `superseded` (the handoff changed concurrently, for example an operator re-armed it, or `taskId` no longer names the current attempt)."
           content:
             application/json:
               schema:
@@ -367,7 +367,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FollowupHandoffResumeResult"
         "400":
-          description: Invalid target or non-boolean flag.
+          description: Invalid target, non-boolean flag or invalid `taskId`.
           content:
             application/json:
               schema:
@@ -383,7 +383,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LegacyError"
         "409":
-          description: "The handoff cannot be resumed. `code` names why: `requires_cancellation_authorization`, `cancellation_authorization_unavailable` (also returned while another writer holds the PR lease), `lease_held_by_live_writer`, `released` or `superseded`."
+          description: "The handoff cannot be resumed. `code` names why: `requires_cancellation_authorization`, `cancellation_authorization_unavailable` (also returned while another writer holds the PR lease), `lease_held_by_live_writer`, `released` or `superseded` (also returned when `taskId` no longer names the current attempt)."
           content:
             application/json:
               schema:
@@ -739,6 +739,27 @@ paths:
     get:
       operationId: getApiAgentDefinitionsContract
       summary: GET /api/agent-definitions/contract
+      description: This route is registered but not documented yet.
+      tags:
+        - Automations
+      deprecated: true
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/templates:
+    get:
+      operationId: getApiAgentDefinitionsTemplates
+      summary: GET /api/agent-definitions/templates
       description: This route is registered but not documented yet.
       tags:
         - Automations
@@ -7357,8 +7378,8 @@ paths:
   /api/planner/drafts/{id}/issues:
     get:
       operationId: getApiPlannerDraftsIdIssues
-      summary: GET /api/planner/drafts/{id}/issues
-      description: This route is registered but not documented yet.
+      summary: List the issues of a plan
+      description: "Every published issue of the plan. Without `page` and `limit` the response is a bare array (kept for the released CLI and existing UI clients); with either one it is `{ issues, total, page, limit, hasMore }`. In both forms each issue carries `execution`: its standing in the plan's epic execution exactly as `GET …/execution-queue` reports it (`state`, including `skipped`, while `status` keeps the plan status; `schedule`; the execution's `dependsOn` edges, the chain of a sequential execution; `waitingOn` naming the unfinished prerequisites, through skipped ones; `waitingOnSkipped`; `skipSatisfiesDependents`; `executionId`, `executionMode`, `queueStatus`), or null when the issue is not in the execution. `depends_on_issues` stays the plan's declared dependencies."
       tags:
         - Planner
       security:
@@ -7368,17 +7389,44 @@ paths:
         - name: id
           in: path
           required: true
+          description: The plan (draft) id.
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page. With `page` or `limit` the response is a page object; anything but a non-negative integer is a 400.
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1 or more, capped at 100; defaults to 50. Anything else is a 400.
+          schema:
+            type: integer
+            minimum: 1
+        - name: status
+          in: query
+          required: false
+          description: "Paged responses only: keep issues with this plan status (an unknown value is ignored)."
           schema:
             type: string
       responses:
         "200":
-          description: Success. The response body is not documented yet.
+          description: The issues, as a bare array or a page.
+        "400":
+          description: "`page` or `limit` is invalid."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: PlanIssuesQuery
       x-propr-auth: member
-      x-undocumented: true
       x-legacy-error: true
   /api/planner/drafts/{id}/issues/{issueNumber}:
     patch:
@@ -7979,7 +8027,7 @@ paths:
     get:
       operationId: getPullRequestReadiness
       summary: Get the readiness verdict of a pull request
-      description: "Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. The caller needs read access to the repository on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after it is proven. See the gate and reason-code tables in the API reference."
+      description: "Read-only: one verdict (`ready`, `waiting`, `blocked`, `merged`, `closed`, `unknown`) with a coded reason per gate, evaluated with the ProPR GitHub App identity from the same signals auto-merge uses (check runs, legacy commit statuses, non-blocking checks, mergeability, reviews, the latest ProPR AI review, Ultrafix state, active ProPR work and, when auto-merge is requested, the auto-merge policy). It never writes to GitHub or Redis, never updates the branch, never merges and never arms or withdraws auto-merge. Only an enabled repository configured on this instance is evaluated (matched case-insensitively; the response echoes its configured name), and the caller needs read access to it on GitHub (the check MCP `get_pull_request_readiness` applies); the App identity is used only after both are proven. See the gate and reason-code tables in the API reference."
       tags:
         - Tasks
       security:
@@ -8014,7 +8062,7 @@ paths:
         "401":
           $ref: "#/components/responses/EnvelopeUnauthorized"
         "404":
-          description: "`REPOSITORY_NOT_ACCESSIBLE`: the caller cannot read the repository on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it."
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the repository is not configured and enabled here, or the caller cannot read it on GitHub, so nothing is evaluated; or `PULL_REQUEST_NOT_FOUND`: the pull request does not exist or the GitHub App cannot see it."
           content:
             application/json:
               schema:
@@ -8721,7 +8769,7 @@ paths:
         - name: repository
           in: query
           required: false
-          description: "`owner/repo`, or `all` (default)."
+          description: "`owner/repo` of a configured repository (any capitalization; the response echoes its configured name), or `all` (default)."
           schema:
             type: string
         - name: group_by
@@ -8745,6 +8793,12 @@ paths:
                 $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: `repository` is not configured here, or the caller cannot read it on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-query-type: CostExportQuery
@@ -8777,7 +8831,7 @@ paths:
         - name: repository
           in: query
           required: false
-          description: "`owner/repo`, or `all` (default)."
+          description: "`owner/repo` of a configured repository (any capitalization; the response echoes its configured name), or `all` (default)."
           schema:
             type: string
         - name: group_by
@@ -8801,6 +8855,12 @@ paths:
                 $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: `repository` is not configured here, or the caller cannot read it on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-query-type: CostExportQuery
@@ -9695,7 +9755,7 @@ paths:
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "404":
-          description: Not found, or the task belongs to another user's goal.
+          description: No task, task history, live worker state or queued job has this id.
           content:
             application/json:
               schema:
@@ -9734,7 +9794,7 @@ paths:
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "404":
-          description: Not found, or the task belongs to another user's goal.
+          description: No task, task history, live worker state or queued job has this id.
           content:
             application/json:
               schema:
@@ -9767,10 +9827,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JsonObject"
+        "400":
+          description: The task id is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
         "404":
-          description: Not found, or the task belongs to another user's goal.
+          description: No task, task history, live worker state or queued job has this id.
           content:
             application/json:
               schema:
@@ -9825,7 +9891,7 @@ paths:
     get:
       operationId: listTasks
       summary: List task runs
-      description: Newest first. Filter by status, repository or search text, and page with `limit` and `offset`. With `groupBy=task`, paging counts tasks (the pull request or issue a run belongs to) and a page returns every matching run of its tasks.
+      description: Newest first. Filter by status, repository or search text, and page with `limit` (at most 200) and `offset`. The repository filter matches a configured repository case-insensitively. With `groupBy=task`, paging counts tasks (the pull request or issue a run belongs to) and a page returns every matching run of its tasks.
       tags:
         - Tasks
       security:
@@ -9841,7 +9907,7 @@ paths:
         - name: repository
           in: query
           required: false
-          description: "`owner/name`, or `all` (default)."
+          description: "`owner/name` of a configured repository (any capitalization), or `all` (default)."
           schema:
             type: string
         - name: search
@@ -9853,11 +9919,11 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Page size; defaults to 50.
+          description: Page size; defaults to 50, at most 200.
           schema:
             type: integer
             minimum: 1
-            maximum: 1000
+            maximum: 200
         - name: offset
           in: query
           required: false
@@ -9925,6 +9991,12 @@ paths:
                 $ref: "#/components/schemas/LegacyError"
         "401":
           $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: "`REPOSITORY_NOT_ACCESSIBLE`: the repository filter names a repository that is not configured here, or that the caller cannot read on GitHub."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-query-type: ListTasksQuery
@@ -12673,6 +12745,11 @@ components:
     FollowupHandoffReleaseRequest:
       type: object
       properties:
+        taskId:
+          description: Task id of the attempt the caller decided about. The release (and `force`) applies only while that attempt is the current handoff on the pull request; otherwise it is refused with reason `superseded` and nothing is released.
+          type: string
+          minLength: 1
+          maxLength: 200
         force:
           description: Also release a branch whose retained worktree still holds unpublished work. Never deletes worktree files, and never overrides a live or unverifiable agent.
           type: boolean
@@ -12692,6 +12769,11 @@ components:
     FollowupHandoffResumeRequest:
       type: object
       properties:
+        taskId:
+          description: Task id of the attempt the caller decided about. With `authorizeCancelled`, the authorization applies only while that attempt is the current handoff on the pull request; otherwise it is refused with code `superseded` and nothing is authorized.
+          type: string
+          minLength: 1
+          maxLength: 200
         authorizeCancelled:
           description: Set `true` to explicitly authorize publishing work the user cancelled. Without it, resume re-arms the operator-held record and refuses cancelled work with code `requires_cancellation_authorization`.
           type: boolean

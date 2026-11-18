@@ -102,9 +102,14 @@ type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 're
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { id?: number; login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
 
-function getCommentRevisionIdentity(comment: Pick<PRComment, 'updated_at' | 'body'>, eventType: CommentEventType): string {
+/**
+ * Identifies one revision of a comment: its edit time and a digest of its body.
+ * A comment without an edit time (some polled and synthetic comments) is
+ * identified by the digest alone, so job and task ids never carry `undefined`.
+ */
+export function getCommentRevisionIdentity(comment: Pick<PRComment, 'body'> & { updated_at?: string | null }, eventType: CommentEventType): string {
     const contentDigest = createHash('sha256').update(`${eventType}\0${comment.body}`).digest('hex').slice(0, 12);
-    return `${comment.updated_at}:${contentDigest}`;
+    return comment.updated_at ? `${comment.updated_at}:${contentDigest}` : contentDigest;
 }
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
@@ -200,6 +205,13 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
         prNumber = prPayload.pull_request.number;
         commentId = prPayload.comment.id;
     } else { correlatedLogger.warn({ eventType }, 'Unknown event type for comment edit'); return; }
+
+    // ProPR adds later failing checks of the same head to its CI-failure
+    // comment; the follow-up already requested for that commit keeps running.
+    if (getSystemBotUsernames().has(payload.comment.user?.login ?? '') && isCiFailureFollowupComment(payload.comment.body)) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId }, 'ProPR listed another failed check on its CI-failure comment; no new follow-up');
+        return;
+    }
 
     correlatedLogger.info({ repository: repoFullName, pullRequestNumber: prNumber, commentId }, 'Comment edited, restarting any active jobs for this PR');
     const allJobs = await getExistingPRCommentJobs(prNumber, owner, repo);

@@ -61,7 +61,7 @@ test('GitHub refusing to arm at all is reported as unavailable so callers merge 
 
 test('the merge commit headline carries no title status slot', async () => {
     graphql.mock.resetCalls();
-    currentPullRequest = { node_id: 'PR_node', title: '✅⑧ [12 by Claude Opus 5.5] Add retries', head: { sha: 'evaluated-head', label: 'acme:feature' }, base: { ref: 'main' } };
+    currentPullRequest = { node_id: 'PR_node', title: '✅❽ [12 by Claude Opus 5.5] Add retries', head: { sha: 'evaluated-head', label: 'acme:feature' }, base: { ref: 'main' } };
     await enableAutoMerge({ owner: 'acme', repoName: 'repo', prNumber: 7, mergeMethod: 'SQUASH', expectedHead });
     assert.equal(graphql.mock.calls[0].arguments[1].commitHeadline, '[12 by Claude Opus 5.5] Add retries (#7)');
     assert.equal(graphql.mock.calls[0].arguments[1].commitBody, null);

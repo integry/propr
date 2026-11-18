@@ -143,9 +143,9 @@ describe('PlansPage', () => {
     const repoTrigger = screen.getByRole('button', { name: /All Repos/i });
 
     // The header intentionally uses the inline layout (PR #1462 follow-up
-    // rolled back the stacked w-full variant): fixed-width search, a
-    // width-capped status select, and a shrinkable repo selector.
-    expect(searchInput).toHaveClass('w-64');
+    // rolled back the stacked w-full variant): a search capped at 16rem that
+    // gives up width first, a width-capped status select, and a shrinkable repo selector.
+    expect(searchInput.parentElement).toHaveClass('min-w-0', 'flex-1', 'max-w-64');
     expect(statusSelect).toHaveClass('w-[120px]');
     expect(repoTrigger.parentElement).toHaveClass('min-w-0');
   });

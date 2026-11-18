@@ -35,7 +35,7 @@ const library: ExtensionLibraryRevision = {
 
 const section = async () => {
   render(<MemoryRouter><AgentExtensionsSection /></MemoryRouter>);
-  await screen.findByText(/Revision 3/);
+  await screen.findByTestId('extension-library-status');
   return screen.getByRole('region', { name: 'Skills & MCP servers' });
 };
 
@@ -76,7 +76,7 @@ describe('managed library items', () => {
     expect(within(form).queryByLabelText(/^Exact version/)).toBeNull();
     expect(within(form).queryByLabelText(/^Arguments/)).toBeNull();
     expect(within(form).queryAllByRole('textbox').map(input => input.getAttribute('aria-label') ?? input.closest('label')?.textContent)).toEqual([
-      expect.stringMatching(/Unlisted repository/), expect.stringMatching(/Unlisted agent alias/),
+      expect.stringMatching(/Other repository/), expect.stringMatching(/Other agent/),
     ]);
     fireEvent.click(within(form).getByLabelText('example/docs', { exact: true }));
     fireEvent.click(within(form).getByRole('checkbox', { name: /Apply automatically/ }));

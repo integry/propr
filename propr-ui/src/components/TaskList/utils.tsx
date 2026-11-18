@@ -1,5 +1,6 @@
 import { stripStatusSlot } from '@propr/shared';
 import type { Task } from './types';
+import { GitMerge } from 'lucide-react';
 
 /**
  * Checks if a task should be visually dimmed based on its plan issue status.
@@ -20,7 +21,7 @@ export const shouldDimTask = (task: Task): boolean => {
  * @returns Clean title in format "issueId: title" or the original title if no pattern matches
  */
 /**
- * The title without a PR status slot (`🔨 `, `✅⑧ `), at its start or right
+ * The title without a PR status slot (`🔨 `, `✅❽ `), at its start or right
  * after a `Followup:` / `New Issue:` prefix.
  */
 const withoutStatusSlot = (title: string): string => {
@@ -74,8 +75,9 @@ export const getStatusPill = (status: string, runType?: string | null) => {
       );
     case 'merged':
       return (
-        <span className={`${baseClasses} bg-violet-50 text-violet-700 border border-violet-200`}>
-           <span className="w-1.5 h-1.5 rounded-full bg-violet-500"></span>
+        // Success is quiet: merged is neutral grey like Completed; the merge mark tells the two apart.
+        <span className={`${baseClasses} bg-gray-100 text-gray-600 border border-gray-200`}>
+           <GitMerge data-testid="status-merged-icon" className="h-3 w-3 text-gray-500" aria-hidden="true" />
            Merged
         </span>
       );
@@ -107,7 +109,7 @@ export const getStatusPill = (status: string, runType?: string | null) => {
     case 'waiting':
     case 'pending':
     case 'queued':
-      // Neutral slate: purple belongs to Merged alone. The hollow dot marks a run that has not started.
+      // Neutral slate. The hollow dot marks a run that has not started.
       return (
         <span className={`${baseClasses} bg-slate-100 text-slate-600 border border-slate-200`}>
            <span className="w-1.5 h-1.5 rounded-full border border-slate-400"></span>
@@ -124,25 +126,8 @@ export const getStatusPill = (status: string, runType?: string | null) => {
   }
 };
 
-export const formatRelativeTime = (dateString: string | undefined): string => {
-  if (!dateString) return '';
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-  if (diffInSeconds < 60) return 'Just now';
-
-  const minutes = Math.floor(diffInSeconds / 60);
-  if (minutes < 60) return `${minutes} min${minutes > 1 ? 's' : ''} ago`;
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hr${hours > 1 ? 's' : ''} ago`;
-
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days > 1 ? 's' : ''} ago`;
-
-  return date.toLocaleDateString();
-};
+/** The shared relative age (`5m ago`, `Nov 2, 2026`); see `utils/dateFormat.ts`. */
+export { formatRelativeTime } from '../../utils/dateFormat';
 
 /**
  * Elapsed time in the largest two units it actually needs.

@@ -2,6 +2,7 @@ import { GitHubAccountIdentity } from '../components/GitHubAccountIdentity';
 import { useCurrentUser } from '../contexts/AuthContext';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { API_BASE_URL } from '../api/apiClient';
 import { pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import {
@@ -47,6 +48,7 @@ const PairingFeedback = ({ cancelled, completed, userPresent, pairingPresent, er
 );
 
 const DesktopPairingPage = () => {
+  useDocumentTitle('Desktop pairing');
   const user = useCurrentUser();
   const userId = user?.id;
   const [searchParams] = useSearchParams();

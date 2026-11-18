@@ -92,7 +92,7 @@ export const REVIEW_OUTPUT_TOKEN_RESERVE = 32000;
 /** Conservative window for a model the routed runtime does not know. */
 export const REVIEW_FALLBACK_CONTEXT_WINDOW = 200000;
 
-// Claude Code 2.1.323 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
+// Claude Code 2.1.326 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
 // catalog: models flagged `native_1m` run with a 1,000,000-token window; the
 // other models run with the runtime's 200,000-token default unless the model
 // name carries the `[1m]` suffix. ProPR does not add that suffix, and
@@ -112,14 +112,27 @@ const CLAUDE_CODE_DEFAULT_WINDOW = 200000;
 // window before auto-compacting a session.
 const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 
-// Codex CLI 0.168.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
+// Codex CLI 0.169.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
 // models.json: every listed model except GPT-6.1 Terra (500,000) has a default
 // `context_window` of 272,000, even where the provider advertises a larger
 // model maximum (GPT-6 Astra lists `max_context_window` 872,000 and the ProPR
 // catalog 1,050,000). The larger window is opt-in through
 // `model_context_window`, which ProPR never sets, so the runtime default is
 // the verified capacity.
+//
+// GPT-6.2 Astra and GPT-6.2 Sol are not in that bundled catalog: signed-in
+// accounts get them from the server. Their windows were NOT read from server
+// model metadata or observed at runtime. The only runtime evidence (issue
+// #3679, 2026-11-17, Codex 0.169.0 with a ChatGPT sign-in) is that
+// `codex exec --model gpt-6.2-astra|gpt-6.2-sol` answered with exit 0 and no
+// metadata warning. The values below come from the issue's acceptance
+// criteria: Astra 6.2 reuses the GPT-6 Astra window (272,000) and Sol 6.2 the
+// GPT-6.1 Terra window (500,000). To confirm them, read the server-provided
+// `context_window` for these slugs from a signed-in Codex session, or check
+// the bundled models.json of a Codex release that includes openai/codex#62106.
 const CODEX_RUNTIME_WINDOWS: Record<string, number> = {
+  'gpt-6.2-astra': 272000,
+  'gpt-6.2-sol': 500000,
   'gpt-6-astra': 272000,
   'gpt-6.1-sol': 272000,
   'gpt-6.1-terra': 500000,
@@ -193,16 +206,24 @@ function resolveClaudeCodeCapacity(route: ReviewRouteDescriptor): ReviewInputCap
     'anthropic-calibrated');
 }
 
+/** 272000 → "272K", 1000000 → "1M": keeps capacity explanations in step with the window used. */
+function formatTokenWindow(tokens: number): string {
+  if (tokens >= 1000000 && tokens % 1000000 === 0) return `${tokens / 1000000}M`;
+  if (tokens % 1000 === 0) return `${tokens / 1000}K`;
+  return tokens.toLocaleString('en-US');
+}
+
 function resolveCodexCapacity(route: ReviewRouteDescriptor): ReviewInputCapacity {
   const id = route.model.trim().toLowerCase();
   const verifiedWindow = CODEX_RUNTIME_WINDOWS[id];
   const contextWindow = verifiedWindow ?? CODEX_FALLBACK_WINDOW;
   const reserve = CODEX_BASE_INSTRUCTIONS_RESERVE + Math.ceil(contextWindow * RUNTIME_COMPACTION_HEADROOM_RATIO);
+  const windowLabel = formatTokenWindow(contextWindow);
   return verifiedWindow
     ? buildCapacity(route, contextWindow, reserve, 'runtime-verified',
-      'Codex runtime default window (272K; larger windows are opt-in and not enabled by ProPR).', 'openai-o200k')
+      `Codex runtime default window (${windowLabel}; larger windows are opt-in and not enabled by ProPR).`, 'openai-o200k')
     : buildCapacity(route, contextWindow, reserve, 'fallback',
-      'Model not in the Codex runtime catalog; using the historical 272K Codex window.', 'openai-o200k');
+      `Model not in the Codex runtime catalog; using the historical ${windowLabel} Codex window.`, 'openai-o200k');
 }
 
 function resolveUnverifiedRuntimeCapacity(route: ReviewRouteDescriptor): ReviewInputCapacity {

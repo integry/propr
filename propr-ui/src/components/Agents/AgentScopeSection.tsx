@@ -45,7 +45,7 @@ export const AgentScopeSection: React.FC<AgentScopeSectionProps> = ({ repositori
                   type="button"
                   onClick={() => onChange(repositories.filter(candidate => candidate !== repository))}
                   aria-label={`Remove ${repository}`}
-                  className="rounded-sm text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                  className="touch-hit rounded-sm text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
                 >
                   <X className="h-3 w-3" aria-hidden="true" />
                 </button>

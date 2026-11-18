@@ -66,7 +66,7 @@ test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
 });
 
-test('the sidebar names the feature Automations, apart from Coding Agents', async ({ page }) => {
+test('the sidebar names the feature Automations, apart from Coding agents', async ({ page }) => {
   await page.goto('/agents');
   await expect(page).toHaveURL(/\/automations$/);
   await expect(page.getByRole('link', { name: 'Automations', exact: true }).first()).toBeVisible();
@@ -77,15 +77,15 @@ test('the sidebar names the feature Automations, apart from Coding Agents', asyn
 test('the header creates automations, leaving the list toolbar to search', async ({ page }) => {
   await page.goto('/automations');
   const toolbar = page.locator('header.desktop-content-toolbar');
-  await expect(toolbar.getByRole('button', { name: 'New Automation' })).toBeVisible();
-  await expect(toolbar.getByRole('button', { name: 'New Task' })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'New automation' })).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'New task' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'New automation' })).toHaveCount(0);
   const search = page.getByRole('textbox', { name: 'Search automations' });
   // The placeholder fits without truncation now that the toolbar holds only the title and search.
   expect(await search.evaluate((input: HTMLInputElement) => input.scrollWidth <= input.clientWidth)).toBe(true);
   await capture(page, 'automations-header-action');
 
-  await toolbar.getByRole('button', { name: 'New Automation' }).click();
+  await toolbar.getByRole('button', { name: 'New automation' }).click();
   await expect(page).toHaveURL(/\/automations\/new$/);
   const form = page.getByTestId('agent-editor');
   const top = async (locator: Locator) => (await locator.boundingBox())!.y;
@@ -130,7 +130,7 @@ test('the autonomy control is one Tab stop and the arrow keys move the selection
   await page.goto('/automations/new');
   const form = page.getByTestId('agent-editor');
   const autonomy = form.getByRole('radiogroup', { name: 'Autonomy' });
-  const dryRun = autonomy.getByRole('radio', { name: 'Dry run' });
+  const dryRun = autonomy.getByRole('radio', { name: 'Report only' });
   const preview = autonomy.getByRole('radio', { name: 'Preview & approve' });
   const auto = autonomy.getByRole('radio', { name: 'Auto' });
   await expect(dryRun).toBeChecked();
@@ -196,10 +196,10 @@ test.describe('mobile creation sheet', () => {
 
   for (const width of [320, 390]) {
     for (const [route, label, destination] of [
-      ['/automations', 'New Automation', '/automations/new'],
-      ['/tasks', 'New Task', '/tasks/new'],
-      ['/plans', 'New Plan', '/studio/new'],
-      ['/goals', 'New Goal', '/goals?new=1'],
+      ['/automations', 'New automation', '/automations/new'],
+      ['/tasks', 'New task', '/tasks/new'],
+      ['/plans', 'New plan', '/studio/new'],
+      ['/goals', 'New goal', '/goals?new=1'],
     ]) {
       test(`${label} opens from the Create sheet by touch at ${width}px`, async ({ page }) => {
         await page.setViewportSize({ width, height: 844 });
@@ -209,13 +209,13 @@ test.describe('mobile creation sheet', () => {
         await expect(create).toBeVisible();
         await create.tap();
         const sheet = page.getByRole('dialog', { name: 'Create' });
-        await expect(sheet.getByRole('link', { name: /^New / })).toHaveText(['New Task', 'New Goal', 'New Plan', 'New Automation']);
-        if (label === 'New Automation') await capture(page, `create-sheet-${width}`);
+        await expect(sheet.getByRole('link', { name: /^New / })).toHaveText(['New task', 'New goal', 'New plan', 'New automation']);
+        if (label === 'New automation') await capture(page, `create-sheet-${width}`);
         await sheet.getByRole('link', { name: label, exact: true }).tap();
         await expect(sheet).toBeHidden();
-        if (label === 'New Goal') {
+        if (label === 'New goal') {
           // Goals consumes ?new=1 after opening its creation dialog.
-          const dialog = page.getByRole('dialog', { name: 'Start a goal' });
+          const dialog = page.getByRole('dialog', { name: 'New goal' });
           await expect(dialog).toBeVisible();
           await dialog.getByRole('button', { name: 'Cancel', exact: true }).tap();
           await expect(page).toHaveURL(/\/goals$/);
@@ -225,7 +225,7 @@ test.describe('mobile creation sheet', () => {
         }
         await expect(navigation.getByRole('link', { name: 'Dashboard', exact: true })).toBeVisible();
         await expect(navigation.getByRole('link', { name: 'Tasks', exact: true })).toBeVisible();
-        if (label === 'New Automation') await capture(page, `automation-new-${width}`);
+        if (label === 'New automation') await capture(page, `automation-new-${width}`);
 
         const bounds = await navigation.evaluate(nav => Array.from(nav.children).map(tab => {
           const label = tab.lastElementChild as HTMLElement;
@@ -287,7 +287,7 @@ test('an administrator adds additional extensions to an automation and sees skip
   const form = page.getByTestId('agent-editor');
   const items = form.getByRole('group', { name: 'Additional extensions' });
   await items.scrollIntoViewIfNeeded();
-  await expect(form.getByText(/on top of the items that apply automatically/)).toBeVisible();
+  await expect(form.getByText('Extra skills and MCP servers for this automation. Claude and Codex only.')).toBeVisible();
   await expect(items.getByLabel(/Documentation review/)).toHaveAccessibleName(/already applies automatically/);
   await expect(items.getByLabel(/retired-docs/)).toHaveAccessibleName(/skipped: switched off in the library/);
   // An item limited to other repositories is not offered.

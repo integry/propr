@@ -42,7 +42,9 @@ test('sanitized context carries every lockfile file: tarball with its pinned byt
   await prepareSignedRpmAcceptanceContext({ root: repoRoot, context });
   const lock = JSON.parse(await readFile(join(repoRoot, 'package-lock.json'), 'utf8'));
   const dependencies = lockfileFileDependencies(lock);
-  assert.ok(dependencies.some(({ name }) => name === 'node_modules/braces'), 'braces must still resolve from a vendored tarball');
+  for (const name of ['node_modules/braces', 'node_modules/picomatch', 'node_modules/micromatch/node_modules/picomatch']) {
+    assert.ok(dependencies.some(dependency => dependency.name === name), `${name} must still resolve from a vendored tarball`);
+  }
   const workdir = await imageBeforeNpmCi(await readFile(dockerfile, 'utf8'), context, join(directory, 'image'));
   assert.deepEqual(await assertLockfileFileDependencies(workdir), dependencies);
   for (const { path } of dependencies) {
@@ -55,7 +57,7 @@ test('Docker inputs without the vendored tarball fail before npm ci', () => with
   await prepareSignedRpmAcceptanceContext({ root: repoRoot, context });
   const source = (await readFile(dockerfile, 'utf8')).split('\n').filter(line => !/^COPY\s+vendor\//.test(line)).join('\n');
   const workdir = await imageBeforeNpmCi(source, context, join(directory, 'image'));
-  await assert.rejects(assertLockfileFileDependencies(workdir), /missing vendor\/braces-3\.0\.4-depthguard\.1\.tgz/);
+  await assert.rejects(assertLockfileFileDependencies(workdir), /missing vendor\/(braces|picomatch)-[^ ]+\.tgz/);
 }));
 
 test('context preparation rejects a missing or altered lockfile tarball', () => withDirectory(async directory => {
@@ -93,7 +95,8 @@ test('sanitized context excludes host profiles, credentials, signing bundles and
   for (const path of sent) {
     assert.ok(SIGNED_RPM_ACCEPTANCE_CONTEXT.some(allowed => path === allowed || path.startsWith(`${allowed}/`)), `${path} is not allowlisted`);
   }
-  assert.deepEqual(sent.filter(path => path.startsWith('vendor/')), ['vendor/braces-3.0.4-depthguard.1.tgz']);
+  assert.deepEqual(sent.filter(path => path.startsWith('vendor/')).sort(), ['vendor/braces-3.0.4-depthguard.1.tgz',
+    'vendor/picomatch-4.0.8-extglobguard.1.tgz', 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz']);
   const tarball = await readFile(join(context, 'vendor/braces-3.0.4-depthguard.1.tgz'));
   const lock = JSON.parse(await readFile(join(context, 'package-lock.json'), 'utf8'));
   assert.equal(`sha512-${createHash('sha512').update(tarball).digest('base64')}`, lock.packages['node_modules/braces'].integrity);

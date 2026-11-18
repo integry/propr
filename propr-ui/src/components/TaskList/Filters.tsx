@@ -4,8 +4,10 @@ import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { ListSearchInput } from '../ListSearchInput';
+import { TASK_SEARCH_MAX_LENGTH } from './searchLimits';
 import { AssigneeFilter } from './AssigneeFilter';
 import './task-queue.css';
+import { PageHeading } from '../ui/PageHeading';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -92,15 +94,15 @@ export const Filters: React.FC<FiltersProps> = ({
   const showRepoFilter = reposLoading || availableRepos.length > 1;
   const assigneeProps = { assigneeFilter, setAssigneeFilter, people: assigneePeople, canFilterToMe };
 
-  // A phone fits the title and both dropdowns on one line once the repository
-  // picker drops its task count there (the open list still shows it). The
-  // picker takes whatever the title and status filter leave. The assignee
+  // A phone fits the title and both dropdowns on one line. The repository
+  // picker carries no count badge (see createRepoOptions in TaskList.tsx) and
+  // takes whatever the title and status filter leave. The assignee
   // filter joins them inline only where there is room; a phone puts it on
   // the search row instead.
   const header = (
     <div className={hideFilters ? undefined : 'task-filters'}>
       <div className="task-filter-layout flex items-center justify-between gap-2 sm:gap-4">
-        {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
+        {!hideFilters && <PageHeading className="flex-shrink-0">Tasks</PageHeading>}
         <div className="task-filter-controls flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
           {!hideFilters && (
             <>
@@ -111,6 +113,7 @@ export const Filters: React.FC<FiltersProps> = ({
                   onChange={setSearchQuery}
                   onClear={() => setSearchQuery('')}
                   label="Search tasks"
+                  maxLength={TASK_SEARCH_MAX_LENGTH}
                   className="task-search hidden sm:block min-w-[13rem] flex-1 max-w-xs"
                 />
               )}
@@ -164,6 +167,7 @@ export const Filters: React.FC<FiltersProps> = ({
           onChange={setSearchQuery}
           onClear={() => setSearchQuery('')}
           label="Search tasks"
+          maxLength={TASK_SEARCH_MAX_LENGTH}
           className="min-w-0 flex-1"
           touch
         />

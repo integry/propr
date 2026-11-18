@@ -29,6 +29,15 @@ import {
   type TaskPushFailure,
 } from "../api/index.js";
 
+/** The largest task page the server returns for one request. */
+export const TASK_LIST_MAX_LIMIT = 200;
+
+function parseTaskListLimit(value: string): number {
+  const limit = parsePositiveInteger(value, "Limit");
+  if (limit > TASK_LIST_MAX_LIMIT) throw new Error(`Limit must be at most ${TASK_LIST_MAX_LIMIT}.`);
+  return limit;
+}
+
 const TASK_LIST_STATUSES = [
   "pending",
   "queued",
@@ -86,6 +95,14 @@ function formatDuration(durationMs: number | null): string {
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
+}
+
+/** History step durations: sub-second steps keep milliseconds, longer ones read as `5m 40s`. */
+function formatHistoryDuration(durationMs: unknown): string {
+  const value = typeof durationMs === "number" ? durationMs : Number(durationMs);
+  if (!Number.isFinite(value)) return String(durationMs);
+  if (value < 1000) return `${Math.max(0, Math.round(value))}ms`;
+  return formatDuration(Math.round(value / 1000) * 1000);
 }
 
 function formatUpdatedAt(value: string | null): string {
@@ -469,7 +486,7 @@ function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): v
           console.log(`  Model: ${entry.metadata.model}`);
         }
         if (entry.metadata.duration !== undefined) {
-          console.log(`  Duration: ${entry.metadata.duration}ms`);
+          console.log(`  Duration: ${formatHistoryDuration(entry.metadata.duration)}`);
         }
         if (entry.metadata.tokenUsage) {
           const usage = entry.metadata.tokenUsage;
@@ -575,7 +592,7 @@ Examples:
       "Filter by status (pending, queued, processing, completed, failed, cancelled, or all)",
       "all"
     )
-    .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
+    .option("-l, --limit <limit>", `Maximum number of tasks to show (1-${TASK_LIST_MAX_LIMIT})`, "50")
     .option("--search <term>", "Search tasks by term")
     .option("--assignee <assignee>", "Filter by assignee: all, me, unassigned, or comma-separated GitHub logins")
     .option("-j, --json", "Output as JSON for programmatic use")
@@ -630,7 +647,7 @@ Examples:
             listOptions.repository = project;
           }
 
-          listOptions.limit = parsePositiveInteger(options.limit, "Limit");
+          listOptions.limit = parseTaskListLimit(options.limit);
 
           if (options.search) {
             listOptions.search = options.search;
@@ -699,7 +716,7 @@ Examples:
     .option("-s, --state <state>", "Fetch one authoritative lifecycle state instead of all active states")
     .option("--status <state>", "Alias for --state")
     .option("-p, --project <project>", "Filter active tasks by project (owner/repo)")
-    .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
+    .option("-l, --limit <limit>", `Maximum number of tasks to show (1-${TASK_LIST_MAX_LIMIT})`, "50")
     .option("-j, --json", "Output the documented version 1 inspection JSON shape")
     .addHelpText("after", `
 Without a task ID, this command fetches each active state from the server:
@@ -763,7 +780,7 @@ Examples:
         }
 
         const project = resolveOptionalProject(options);
-        const limit = parsePositiveInteger(options.limit, "Limit");
+        const limit = parseTaskListLimit(options.limit);
         const results = await Promise.all(states.map((state) => listTasks({
           status: state,
           repository: project,
@@ -845,6 +862,11 @@ Examples:
     .action(async (taskId: string, options: { json?: boolean }) => {
       try {
         const status = await getTaskStatus(taskId);
+        // The status endpoint answers an unknown ID with an empty pending
+        // record; no history and no task info means there is no such task.
+        if ((status.history?.length ?? 0) === 0 && !status.taskInfo) {
+          throw new TaskInspectionNotFoundError(taskId);
+        }
 
         if (printOutput(status, options.json ?? false)) {
           return;
@@ -863,6 +885,7 @@ Examples:
             fallbackMessage: `Error fetching task: ${errorMessage}`,
           });
         } else if (
+          error instanceof TaskInspectionNotFoundError ||
           classification.status === 404 ||
           (classification.status === undefined &&
             (errorMessage.includes("404") || errorMessage.includes("not found")))
@@ -960,18 +983,19 @@ Example:
   task
     .command("delete <task-id>")
     .description("Delete a task from the system permanently")
-    .option("-f, --force", "Force deletion even for active tasks")
+    .option("-f, --force", "Skip the confirmation prompt and allow deleting active tasks")
     .addHelpText("after", `
 Argument:
   task-id    The unique identifier of the task to delete
 
 Note:
+  Without --force, the CLI asks for confirmation before deleting.
   Active tasks require --force flag to delete.
   Consider using 'propr task stop' first for running tasks.
 
 Examples:
-  $ propr task delete abc123-task-id           # With confirmation
-  $ propr task delete abc123-task-id --force   # Force delete active task
+  $ propr task delete abc123-task-id           # Prompts for confirmation
+  $ propr task delete abc123-task-id --force   # No prompt; also deletes an active task
 `)
     .action(async (taskId: string, options: { force?: boolean }) => {
       try {

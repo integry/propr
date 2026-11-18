@@ -1,3 +1,4 @@
+import { formatDate } from '../../utils/dateFormat';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionLibraryRevision } from '@propr/shared';
@@ -28,7 +29,7 @@ const usage = { automations: [{ id: 'a1', name: 'Weekly', servers: ['docs'], ski
 
 const section = async () => {
   render(<AgentExtensionsSection />);
-  await screen.findByText(/Revision 3/);
+  await screen.findByTestId('extension-library-status');
   return screen.getByRole('region', { name: 'Skills & MCP servers' });
 };
 const deferred = <T,>() => {
@@ -46,7 +47,8 @@ describe('AgentExtensionsSection', () => {
 
   it('lists servers and skills as rows with their limits, automatic use, explanation and no profile wording', async () => {
     const view = await section();
-    expect(within(view).getByRole('list', { name: 'How extensions apply' })).toHaveTextContent('disable-extensions');
+    expect(within(view).getByTestId('extension-library-status')).toHaveTextContent('Changes apply to new runs.');
+    expect(within(view).queryByRole('list', { name: 'How extensions apply' })).toBeNull();
     const server = within(view).getByTestId('extension-server');
     expect(server).toHaveTextContent('docs');
     expect(server).toHaveTextContent('HTTPS endpoint');
@@ -93,7 +95,7 @@ describe('AgentExtensionsSection', () => {
     fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Edit' }));
     const form = within(view).getByTestId('extension-server-form');
     expect(within(form).getByLabelText(/^Bearer token/)).toHaveValue('');
-    expect(form).toHaveTextContent('(configured; write-only)');
+    expect(form).toHaveTextContent('(saved)');
     fireEvent.change(within(form).getByLabelText(/^Server name/), { target: { value: 'docs-2' } });
     expect(form).toHaveTextContent('clears the stored token');
     fireEvent.change(within(form).getByLabelText(/^Server name/), { target: { value: 'docs' } });
@@ -147,7 +149,7 @@ describe('AgentExtensionsSection', () => {
     expect(row).toHaveTextContent('Off');
     expect(row).toHaveTextContent('which currently runs without it');
     expect(saveExtensionLibrary).not.toHaveBeenCalled();
-    expect(within(view).getByText(/Revision 4/)).toBeInTheDocument();
+    expect(within(view).getByTestId('extension-library-status')).toHaveAttribute('data-revision', '4');
     vi.mocked(setExtensionItemEnabled).mockResolvedValue({ library: { ...library, revision: 5 } });
     fireEvent.click(box);
     await waitFor(() => expect(box).toBeChecked());
@@ -161,10 +163,10 @@ describe('AgentExtensionsSection', () => {
     const box = within(view).getByRole('checkbox', { name: 'Enabled: Documentation review' });
     fireEvent.click(box);
     expect(box).not.toBeChecked();
-    await act(async () => request.reject(new Error('A current durable instance administrator is required.')));
+    await act(async () => request.reject(new Error('Only instance administrators can do this.')));
     expect(box).toBeChecked();
     expect(box).toBeEnabled();
-    expect(within(view).getByRole('alert')).toHaveTextContent('Documentation review could not be switched off: A current durable instance administrator is required.');
+    expect(within(view).getByRole('alert')).toHaveTextContent('Documentation review could not be switched off: Only instance administrators can do this.');
   });
 
   it('removes an item only after confirmation and shows the refusal naming the automations', async () => {
@@ -173,7 +175,7 @@ describe('AgentExtensionsSection', () => {
     const row = within(view).getByTestId('extension-server');
     fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
     expect(saveExtensionLibrary).not.toHaveBeenCalled();
-    fireEvent.click(within(row).getByRole('button', { name: 'Confirm removal' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
     expect(await within(view).findByRole('alert')).toHaveTextContent('"Weekly" (docs)');
     expect(vi.mocked(saveExtensionLibrary).mock.calls[0][0].servers).toEqual([]);
     expect(within(view).getByTestId('extension-server')).toBeInTheDocument();
@@ -183,7 +185,7 @@ describe('AgentExtensionsSection', () => {
     vi.mocked(extensionLibraryHistory).mockResolvedValue({ revisions: [library] });
     const view = await section();
     fireEvent.click(within(view).getByRole('button', { name: 'Revision history' }));
-    expect(await within(view).findByText(/Revision 3 .* administrator 1 · 1 servers · 1 skills/)).toBeInTheDocument();
+    expect(await within(view).findByRole('list', { name: 'Revision history' })).toHaveTextContent(`${formatDate(0)} · 1`);
   });
 
   it('drops a pending token when the endpoint changes, through the field or the saved-endpoint picker, or authentication is removed', async () => {
@@ -231,7 +233,7 @@ describe('AgentExtensionsSection', () => {
     fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Edit' }));
     vi.mocked(getExtensionLibrary).mockResolvedValue({ instanceId: 'instance', library: { ...library, revision: 5, servers: [{ ...docs, repositories: [] }] }, bundles: [], catalog: [], usage });
     fireEvent.click(within(view).getByRole('button', { name: 'Reload' }));
-    expect(await within(view).findByText(/Revision 5/)).toBeInTheDocument();
+    await waitFor(() => expect(within(view).getByTestId('extension-library-status')).toHaveAttribute('data-revision', '5'));
     expect(within(view).queryByTestId('extension-server-form')).toBeNull();
     expect(within(view).getByTestId('extension-server')).toHaveTextContent('All repositories');
     fireEvent.click(within(within(view).getByTestId('extension-skill')).getByRole('button', { name: 'Edit' }));
@@ -245,7 +247,7 @@ describe('AgentExtensionsSection', () => {
     vi.mocked(setExtensionItemEnabled).mockResolvedValueOnce({ library: { ...library, revision: 4, servers: [{ ...docs, repositories: ['example/other'] }] } });
     fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Edit' }));
     fireEvent.click(within(view).getByRole('checkbox', { name: 'Enabled: Documentation review' }));
-    expect(await within(view).findByText(/Revision 4/)).toBeInTheDocument();
+    await waitFor(() => expect(within(view).getByTestId('extension-library-status')).toHaveAttribute('data-revision', '4'));
     const serverForm = within(view).getByTestId('extension-server-form');
     fireEvent.click(within(serverForm).getByRole('button', { name: 'Save server' }));
     expect(await within(serverForm).findByRole('alert')).toHaveTextContent('Server docs was changed elsewhere after you opened it.');
@@ -254,7 +256,7 @@ describe('AgentExtensionsSection', () => {
     vi.mocked(setExtensionItemEnabled).mockResolvedValueOnce({ library: { ...library, revision: 5, servers: [{ ...docs, repositories: ['example/other'] }], skills: [{ ...library.skills[0], autoApply: true }] } });
     fireEvent.click(within(within(view).getByTestId('extension-skill')).getByRole('button', { name: 'Edit' }));
     fireEvent.click(within(view).getByRole('checkbox', { name: 'Enabled: docs' }));
-    expect(await within(view).findByText(/Revision 5/)).toBeInTheDocument();
+    await waitFor(() => expect(within(view).getByTestId('extension-library-status')).toHaveAttribute('data-revision', '5'));
     const skillForm = within(view).getByTestId('extension-skill-form');
     fireEvent.click(within(skillForm).getByRole('button', { name: 'Save skill' }));
     expect(await within(skillForm).findByRole('alert')).toHaveTextContent('This skill was changed elsewhere after you opened it.');
@@ -266,7 +268,7 @@ describe('AgentExtensionsSection', () => {
     vi.mocked(setExtensionItemEnabled).mockResolvedValueOnce({ library: { ...library, revision: 4, skills: [{ ...library.skills[0], enabled: false }] } });
     fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Edit' }));
     fireEvent.click(within(view).getByRole('checkbox', { name: 'Enabled: Documentation review' }));
-    expect(await within(view).findByText(/Revision 4/)).toBeInTheDocument();
+    await waitFor(() => expect(within(view).getByTestId('extension-library-status')).toHaveAttribute('data-revision', '4'));
     fireEvent.click(within(within(view).getByTestId('extension-server-form')).getByRole('button', { name: 'Save server' }));
     await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledWith(expect.objectContaining({ servers: [docs], skills: [{ ...library.skills[0], enabled: false }] }), 4, {}));
   });
@@ -281,11 +283,11 @@ describe('AgentExtensionsSection', () => {
     const both = { ...library, revision: 5, servers: [{ ...docs, enabled: false }], skills: [{ ...library.skills[0], enabled: false }] };
     await act(async () => second.resolve({ library: both }));
     await act(async () => first.resolve({ library: { ...library, revision: 4, servers: [{ ...docs, enabled: false }] } }));
-    expect(within(view).getByText(/Revision 5/)).toBeInTheDocument();
+    expect(within(view).getByTestId('extension-library-status')).toHaveAttribute('data-revision', '5');
     expect(within(view).getByRole('checkbox', { name: 'Enabled: docs' })).not.toBeChecked();
     expect(within(view).getByRole('checkbox', { name: 'Enabled: Documentation review' })).not.toBeChecked();
     fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Remove' }));
-    fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Confirm removal' }));
+    fireEvent.click(within(within(view).getByTestId('extension-server')).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(saveExtensionLibrary).toHaveBeenCalledWith(expect.anything(), 5, {}));
   });
 });

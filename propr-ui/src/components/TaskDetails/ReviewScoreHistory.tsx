@@ -7,6 +7,7 @@
  * that is the task's last entry, after every run and review (see PullRequestOutcomeEntry).
  */
 
+import { formatDateTime, formatRelativeTime } from '../../utils/dateFormat';
 import React from 'react';
 import type { PullRequestScoresResponse } from '../../api/taskStatsApi';
 import { formatModelName } from '../../utils/modelDisplay';
@@ -61,8 +62,8 @@ const ReviewScoreHistory: React.FC<ReviewScoreHistoryProps> = ({ prNumber, histo
           <span className="font-semibold tabular-nums text-slate-900">{entry.score}/10</span>
           {entry.reviewer_model && <span className="text-slate-500">{formatModelName(entry.reviewer_model)}</span>}
           {entry.head_sha && <span className="font-mono text-[10px] text-slate-400">{entry.head_sha.slice(0, 7)}</span>}
-          <time className="ml-auto text-slate-400" dateTime={entry.created_at}>
-            {new Date(entry.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+          <time className="ml-auto text-slate-400" dateTime={entry.created_at} title={formatDateTime(entry.created_at)}>
+            {formatRelativeTime(entry.created_at)}
           </time>
         </li>
       ))}

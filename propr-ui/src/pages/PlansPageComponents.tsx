@@ -4,6 +4,7 @@ import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import { DraftListItem } from '../api/proprApi';
 import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
 import { CreatorMarker } from '../components/CreatorMarker';
+import { RepositoryChip } from '../components/ui/RepositoryChip';
 import {
   getEffectiveStatus,
   renderStatusStrip,
@@ -108,16 +109,16 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
     <div className="hover:bg-gray-50 group border-b border-slate-100 flex items-center px-2 sm:px-4 py-3 gap-2 sm:gap-4">
       {/* Repository column - hidden on mobile, fixed width on desktop */}
       <div className="hidden sm:block flex-shrink-0 w-[140px]">
-        <Link to={`/studio/${draft.draft_id}`} className="block truncate text-xs font-mono text-slate-600" title={draft.repository}>
-          {repoName}
+        <Link to={`/studio/${draft.draft_id}`} className="block min-w-0 leading-4">
+          <RepositoryChip repository={draft.repository} label={repoName} />
         </Link>
       </div>
       {/* Plan title and status - takes all remaining space */}
       <div className="flex-1 min-w-0">
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository - shown inline on mobile only */}
-          <div className="sm:hidden mb-1 truncate text-xs font-mono text-slate-600">
-            {repoName}
+          <div className="sm:hidden mb-1 min-w-0 leading-4">
+            <RepositoryChip repository={draft.repository} label={repoName} />
           </div>
           {/* Plan Title - always a single plain-text line */}
           <div className="mb-1 truncate max-w-2xl text-sm font-medium text-gray-900" title={title}>

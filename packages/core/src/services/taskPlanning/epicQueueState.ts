@@ -225,7 +225,7 @@ export function epicScheduleIssues(queue: EpicExecutionQueue): EpicScheduleIssue
 /** The execution's current schedule, including the issues that run without a queue claim. */
 export function epicQueueSchedule(queue: EpicExecutionQueue): EpicSchedule {
   return scheduleEpicIssues({ issues: epicScheduleIssues(queue), mergedOutside: queue.mergedOutside,
-    limit: executionLimit(queue.mode, queue.maxParallel) });
+    limit: executionLimit(queue.mode, queue.maxParallel), inOrder: queue.mode === 'sequential' });
 }
 
 export function summarizeEpicQueue(queue: EpicExecutionQueue | null) {

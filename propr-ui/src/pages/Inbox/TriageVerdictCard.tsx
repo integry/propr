@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../utils/dateFormat';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, ExternalLink, SquareArrowOutUpRight } from 'lucide-react';
@@ -258,7 +259,7 @@ const TriageVerdictCard: React.FC<TriageVerdictCardProps> = ({
             <span className={`h-2 w-2 flex-none rounded-full ${status.className}`} aria-hidden="true" />
             <span className="truncate">{notificationKindLabel(notification)} · {status.label}</span>
           </span>
-          <time className="flex-none" dateTime={notification.occurredAt} title={new Date(notification.occurredAt).toLocaleString()}>
+          <time className="flex-none" dateTime={notification.occurredAt} title={formatDateTime(notification.occurredAt)}>
             {formatRelativeTime(notification.occurredAt)}
           </time>
           {/* Done removes the item for good, so it neither looks like nor sits beside Close, which only hides the pane. */}

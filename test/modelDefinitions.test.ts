@@ -39,6 +39,11 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
 
 test('current GPT-6 Codex models are in the catalog with runtime requirements', () => {
     const expectedModels = [
+        // GPT-6.2 Astra and Sol are absent from the Codex 0.169.0 bundled
+        // catalog but run on it for signed-in accounts (verified 2026-11-17)
+        ['gpt-6.2-astra', 'llm-codex-astra', '0.169.0'],
+        ['gpt-6.2-sol', 'llm-codex-gpt62-sol', '0.169.0'],
+        ['gpt-6-astra', 'llm-codex-gpt6-astra', '0.153.1'],
         ['gpt-6.1-sol', 'llm-codex-gpt61-sol', '0.153.0'],
         // GPT-6.1 Terra first ships in the models.json bundled with Codex 0.165.0
         ['gpt-6.1-terra', 'llm-codex-gpt61-terra', '0.165.0'],
@@ -66,7 +71,7 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.323');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.326');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, AGENT_DEFAULT_VERSIONS.claude);
 });
 
@@ -159,6 +164,9 @@ test('OpenCode catalog matches the current built-in free model set', () => {
         'opencode-deepseek-v4.1-flash-free',
         'opencode-flint-40b-free',
         'opencode-glm-5.3-flash-free',
+        'opencode-hy4-flash-free',
+        'opencode-iceman-free',
+        'opencode-longcat-2.5-free',
         'opencode-mimo-v2.6-flash-free',
         'opencode-nemotron-3.5-lightning-free',
         'opencode-nemotron-3.5-super-vl-free',
@@ -188,12 +196,26 @@ test('retired OpenCode free models route to a current catalog model', () => {
     assert.ok(!agentSupportsSavedModel({ type: 'claude', supportedModels: agent.supportedModels }, 'opencode-ling-3.0-flash-fin-free'));
 });
 
-test('GPT-6 Astra is the preferred Codex default', () => {
-    assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6-astra');
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6-astra');
-    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-astra');
-    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.openRouterId, 'openai/gpt-6-astra');
-    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.minAgentVersion, '0.153.1');
+test('GPT-6.2 Astra is the preferred Codex default', () => {
+    assert.strictEqual(CODEX_MODELS[0]?.id, 'gpt-6.2-astra');
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultModels[0], 'gpt-6.2-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.githubLabel, 'llm-codex-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.shortAlias, 'astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.openRouterId, 'openai/gpt-6.2-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-astra']?.minAgentVersion, '0.169.0');
+});
+
+test('GPT-6.2 Sol supersedes GPT-6.1 Sol; GPT-6 Astra and GPT-6.1 Sol stay as legacy entries', () => {
+    const ids = CODEX_MODELS.map(model => model.id);
+    assert.strictEqual(ids[1], 'gpt-6.2-sol');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.2-sol']?.shortAlias, 'gpt62-sol');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.shortAlias, 'gpt6-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6-astra']?.githubLabel, 'llm-codex-gpt6-astra');
+    assert.strictEqual(MODEL_INFO_MAP['gpt-6.1-sol']?.shortAlias, 'gpt61-sol');
+    assert.ok(ids.indexOf('gpt-6-astra') > ids.indexOf('gpt-6-luna'));
+    assert.ok(ids.indexOf('gpt-6.1-sol') > ids.indexOf('gpt-6-luna'));
+    assert.strictEqual(CODEX_MODELS.filter(model => model.shortAlias === 'astra').length, 1);
+    assert.ok(!ids.some(id => id.startsWith('gpt-6.2') && id.endsWith('-pro')));
 });
 
 test('Claude Code CLI default supports every catalog model', () => {
@@ -207,7 +229,7 @@ test('Claude Code CLI default supports every catalog model', () => {
 });
 
 test('Codex CLI defaults agree and support every catalog model', () => {
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.168.0');
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.169.0');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
     for (const { id, minAgentVersion } of CODEX_MODELS) {
         if (!minAgentVersion) continue;
@@ -242,7 +264,7 @@ test('Gemini 4 Argon is one namespaced Antigravity model with 1M limits', () => 
     assert.strictEqual(model?.shortAlias, 'argon');
     assert.strictEqual(model?.openRouterId, 'google/gemini-4-argon');
     assert.strictEqual(model?.minAgentVersion, '1.4.0');
-    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.8');
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.10');
     assert.strictEqual(model?.contextWindow, '1M');
     assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);

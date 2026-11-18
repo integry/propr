@@ -10,8 +10,8 @@ it('uses the latest recorded model when task identity is unavailable', () => {
   const result = getHistoryDerivedData(['claude-opus-5-5', 'gpt-6-astra'].map(model => ({ state: 'PROCESSING', timestamp: '2026-10-13T12:00:00Z', metadata: { model } })), null);
   expect(result.modelName).toBe('GPT-6 Astra');
 });
-it('keeps unresolved routing unknown', () => {
-  expect(getHistoryDerivedData([], null).modelName).toBe('Unknown Model');
+it('leaves a run without a model unnamed, so the header draws no model chip', () => {
+  expect(getHistoryDerivedData([], null).modelName).toBe('');
 });
 
 const execution = (session: string, state: string, timestamp: string) => ({

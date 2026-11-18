@@ -15,6 +15,7 @@ import type { ToolDeps, McpTool } from '../mcp/tools.js';
 const repository = 'acme/repo';
 const forbiddenRepository = 'acme/forbidden';
 const ownerId = '123';
+const PLAN_ID = '6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -96,12 +97,14 @@ test('list_repository_events, wait_repository_events and the REST routes share o
     assert.deepEqual(history.data.events.map((event: Json) => event.type), ['opened']);
 
     await append({ type: 'merged' });
-    await append({ domain: 'epic_queue', type: 'advanced', entityId: 'exec-1', prNumber: undefined, planId: 'plan-1' });
+    await append({ domain: 'epic_queue', type: 'advanced', entityId: 'exec-1', prNumber: undefined, planId: PLAN_ID });
     const later = await call('list_repository_events', { repository, afterCursor: start.data.cursor });
     assert.deepEqual(later.data.events.map((event: Json) => event.type), ['merged', 'advanced']);
     assert.match(later.summary, /2 repository events/);
-    const filtered = await call('list_repository_events', { repository, afterCursor: start.data.cursor, domains: ['epic_queue'], planId: 'plan-1' });
+    const filtered = await call('list_repository_events', { repository, afterCursor: start.data.cursor, domains: ['epic_queue'], planId: PLAN_ID });
     assert.deepEqual(filtered.data.events.map((event: Json) => event.type), ['advanced']);
+    // planId is a plan UUID, validated like list_plan_blocked_events.planId.
+    await assert.rejects(call('list_repository_events', { repository, planId: 'plan-1' }), (error: Json) => error.name === 'ZodError');
 
     // A wait returns at once on existing events, and times out with the unchanged cursor.
     const immediate = await call('wait_repository_events', { repository, afterCursor: start.data.cursor, types: ['merged'] });

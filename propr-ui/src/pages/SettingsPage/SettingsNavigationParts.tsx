@@ -47,7 +47,8 @@ export const MobileCategoryHeader: React.FC<{ label: string; isReadOnly: boolean
         <ChevronLeft aria-hidden="true" className="h-5 w-5" />
         Settings
       </button>
-      <span className="min-w-0 flex-1 truncate pr-2 text-center text-sm font-semibold text-slate-900">{label}</span>
+      {/* Long titles wrap onto a second line instead of being cut off. */}
+      <span data-settings-mobile-title className="min-w-0 flex-1 break-words px-1 text-center text-sm font-semibold leading-tight text-slate-900 [text-wrap:balance]">{label}</span>
       {/* Balances the back button so the title stays centred. */}
       <span aria-hidden="true" className="w-[5.5rem] flex-shrink-0" />
     </div>

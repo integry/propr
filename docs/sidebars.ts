@@ -122,6 +122,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'concepts/repository-best-practices',
         'concepts/security-overview',
+        'concepts/software-factory',
         'concepts/glossary',
       ],
     },

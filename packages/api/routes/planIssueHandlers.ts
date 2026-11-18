@@ -2,8 +2,8 @@ import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import {
   db,
-  getPlanIssuesByDraft, getPlanIssuesByDraftPaginated,
-  getPlanIssue, reconcileDraftPlanIssueRefinement,
+  getPlanIssuesByDraftPaginated,
+  getPlanIssue,
   updatePlanIssue,
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
@@ -36,7 +36,6 @@ import {
   type UpdateIssueRequestBody,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
-import { withRecordedPullRequestActivity } from './planIssuePullRequestActivity.js';
 import { enqueueAutoMergeImplementation, enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors, parseEpicScheduling } from './planIssueEpicQueue.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
@@ -302,34 +301,6 @@ export function sendImplementIssueError(res: Response, error: unknown): void {
   res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to implement issue' });
 }
 
-export function createGetIssuesHandler(deps: PlanIssueDeps) {
-  return async function getIssues(req: FlatRequest, res: Response): Promise<void> {
-    try {
-      const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id']);
-      if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
-      const { page, limit, status } = req.query;
-      // Settle refinement whose follow-up work ended before filtering, counting or paging.
-      await reconcileDraftPlanIssueRefinement(req.params.id);
-      const hasPagination = page !== undefined || limit !== undefined;
-      if (hasPagination) {
-        const pageNum = page ? parseInt(page as string, 10) : 0;
-        const limitNum = limit ? parseInt(limit as string, 10) : 50;
-        const options: { page?: number; limit?: number; status?: PlanIssueStatus } = { page: isNaN(pageNum) ? 0 : pageNum, limit: isNaN(limitNum) ? 50 : Math.min(limitNum, 100) };
-        if (status) {
-          const validStatuses: PlanIssueStatus[] = Object.values(PlanIssueStatus);
-          if (validStatuses.includes(status as PlanIssueStatus)) options.status = status as PlanIssueStatus;
-        }
-        const result = await getPlanIssuesByDraftPaginated(req.params.id, options);
-        res.json({ ...result, issues: (await withRecordedPullRequestActivity(db, result.issues)).map((issue) => resolveIssueForResponse(issue)) });
-      } else {
-        res.json((await withRecordedPullRequestActivity(db, await getPlanIssuesByDraft(req.params.id))).map((issue) => resolveIssueForResponse(issue)));
-      }
-    } catch (error) {
-      console.error('Get issues error:', error);
-      res.status(500).json({ error: 'Failed to fetch issues' });
-    }
-  };
-}
 export function createImplementIssueHandler(deps: PlanIssueDeps, { enqueueEpics = true }: { enqueueEpics?: boolean } = {}) {
   return async function implementIssue(req: FlatRequest, res: Response): Promise<void> {
     const draftId = req.params.id;

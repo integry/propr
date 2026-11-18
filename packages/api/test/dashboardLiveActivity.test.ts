@@ -15,6 +15,7 @@ import {
   seedTask,
 } from './dashboardTestHarness.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
+import { unscopedRepositoryResolver } from './repositoryScopeTestHelpers.js';
 
 let database: Knex;
 
@@ -143,7 +144,7 @@ test('the production projector reports an empty stream only when its persisted f
       return Reflect.apply(target, thisArg, args);
     },
   });
-  const dashboard = createDashboardRoutes({
+  const dashboard = createDashboardRoutes({ repositoryScope: unscopedRepositoryResolver,
     db,
     redisClient,
     taskQueue: { isPaused: async () => false, getActiveCount: async () => 0 } as never,

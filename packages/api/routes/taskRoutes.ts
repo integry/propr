@@ -4,7 +4,8 @@ import { Queue } from 'bullmq';
 import { getAuthenticatedOctokit, logger, syncTaskAssignees } from '@propr/core';
 import { ACTIVE_TASK_LIFECYCLE_STATES, parseTaskAssignmentFilter } from '@propr/shared';
 import { getTasksFromDb, type TaskQuery } from './taskHelpers.js';
-import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
+import { validateTaskId, validateStringLength, validatePositiveInteger } from './validation.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, buildRevertJobData, verifyCommitBelongsToPr, resolveRepoAndCheckAccess } from './revertHelpers.js';
 import { createTaskFollowupRoutes, type TaskFollowupDeps } from './taskFollowupRoutes.js';
 import { createTaskFollowupRunRoutes } from './taskFollowupRunRoutes.js';
@@ -12,7 +13,12 @@ export { resolveFollowupThread } from './taskFollowupRoutes.js';
 
 interface TaskRoutesDeps extends TaskFollowupDeps {
   taskQueue?: Queue;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
 }
+
+/** The largest task page one request may read. */
+export const TASK_LIST_MAX_LIMIT = 200;
 
 function taskGroupingError(groupBy: string, task: string): string | null {
   if (groupBy && groupBy !== 'task') return 'groupBy must be "task"';
@@ -46,10 +52,11 @@ function parseAssignmentQuery(req: Request, task: string): { ok: true; query: As
 
 export function createTaskRoutes(deps: TaskRoutesDeps) {
   const { db, taskQueue } = deps;
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
-      const { status = 'all', repository = 'all', search = '', forReview = '', excludeMerged = '', groupBy = '', task = '' } = req.query as Record<string, string>;
+      const { status = 'all', search = '', forReview = '', excludeMerged = '', groupBy = '', task = '' } = req.query as Record<string, string>;
       const groupingError = taskGroupingError(groupBy, task);
       if (groupingError) {
         res.status(400).json({ error: groupingError });
@@ -62,7 +69,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       }
 
       // Validate limit parameter
-      const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: 1000 });
+      const limitValidation = validatePositiveInteger(req.query.limit, 'Limit', { max: TASK_LIST_MAX_LIMIT });
       if (!limitValidation.valid) {
         res.status(400).json({ error: limitValidation.error });
         return;
@@ -77,19 +84,15 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       }
       const offset = offsetValidation.value ?? 0;
 
-      // Validate repository filter
-      const repoValidation = validateRepositoryFilter(repository);
-      if (!repoValidation.valid) {
-        res.status(400).json({ error: repoValidation.error });
-        return;
-      }
-
       // Validate search parameter length
       const searchValidation = validateStringLength(search, 'Search', { maxLength: 500 });
       if (!searchValidation.valid) {
         res.status(400).json({ error: searchValidation.error });
         return;
       }
+
+      const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: '/api/tasks' });
+      if (repository === null) return;
 
       const result = await getTasksFromDb({
         db,

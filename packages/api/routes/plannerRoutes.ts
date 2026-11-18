@@ -2,11 +2,12 @@ import type { Request, Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { Knex } from 'knex';
 import multer from 'multer';
+import { ALL_REPOSITORIES, repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import { createListBlockedEventsHandler, createRetryQueueIssueHandler, createSkipQueueIssueHandler } from './planExecutionQueueActionHandlers.js';
 import path from 'path';
 import fs from 'fs-extra';
 import crypto from 'crypto';
-import { validatePagination, validateRepository, validateRepositoryFilter, validateEnum, validateUUID, ALLOWED_EXTENSIONS } from './validation.js';
+import { validatePagination, validateRepository, validateEnum, validateUUID, ALLOWED_EXTENSIONS } from './validation.js';
 import {
   checkDbAndAuth,
   sendCheckError,
@@ -76,10 +77,15 @@ const upload = multer({
 export const attachmentUpload = upload.single('file');
 export const goalAttachmentUpload = upload.array('files', 10);
 
-interface PlannerRoutesDeps { db: Knex; enqueueEpics?: boolean; }
+interface PlannerRoutesDeps {
+  db: Knex; enqueueEpics?: boolean;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
+}
 
 export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const { db } = deps;
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
   const ownershipVerifier = (draftId: string, userId: string, fields?: string[]) => verifyDraftOwnership(db!, draftId, userId, fields);
   const sendExecutionSettingsResponse = (res: Response, updatedConfig: DraftExecutionConfig): void => { res.json({ success: true, useEpic: updatedConfig.useEpic ?? false, autoMerge: updatedConfig.autoMerge ?? false, runUltrafix: updatedConfig.runUltrafix ?? false, ultrafixGoal: updatedConfig.ultrafixGoal ?? null, ultrafixMaxCycles: updatedConfig.ultrafixMaxCycles ?? null }); };
   async function listRepositories(req: Request, res: Response): Promise<void> {
@@ -108,21 +114,20 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       if (!paginationResult.valid) { res.status(400).json({ error: paginationResult.error }); return; }
       const { page, limit, offset } = paginationResult.params!;
 
-      const repoValidation = validateRepositoryFilter(req.query.repository);
-      if (!repoValidation.valid) { res.status(400).json({ error: repoValidation.error }); return; }
-
       const validStatuses = ['draft', 'review', 'generating', 'refining', 'executed', 'approved', 'merged', 'pr_created'] as const;
       const statusValidation = validateEnum(req.query.status, ['all', ...validStatuses], 'Status');
       if (!statusValidation.valid) { res.status(400).json({ error: statusValidation.error }); return; }
 
-      const repository = req.query.repository as string | undefined;
+      const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: '/api/planner/drafts' });
+      if (repository === null) return;
       const search = req.query.search as string | undefined;
       const status = req.query.status as string | undefined;
       const excludeStatuses = req.query.excludeStatuses as string | undefined;
       let query = db!('task_drafts');
       if (!isDemoMode()) query = query.where({ user_id: req.user!.id });
 
-      if (repository && repository !== 'all') query = query.andWhere('repository', repository);
+      // Drafts keep the spelling they were created with.
+      if (repository !== ALL_REPOSITORIES) query = query.andWhereRaw('repository = ? COLLATE NOCASE', [repository]);
       if (status && status !== 'all' && (validStatuses as readonly string[]).includes(status)) query = query.andWhere('status', status);
 
       if (excludeStatuses) {

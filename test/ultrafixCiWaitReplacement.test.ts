@@ -21,8 +21,9 @@ await mock.module('../src/jobs/ultrafixOrchestrationService.js', {
 
 const postPrComment = mock.fn(async () => 9001 as number | null);
 const updatePrComment = mock.fn(async () => true);
+const removeUltrafixLabel = mock.fn(async () => undefined);
 await mock.module('../src/jobs/ultrafixLoopContinuationHelpers.js', {
-    namedExports: { postPrComment, updatePrComment },
+    namedExports: { postPrComment, updatePrComment, removeUltrafixLabel },
 });
 
 const {
@@ -252,6 +253,7 @@ describe('Ultrafix CI wait comment is replaced by its outcome', () => {
         assert.equal(update.commentId, 4242);
         assert.match(update.body, /Ultrafix stopped before reaching its goal/);
         assert.match(update.body, /CI did not settle/);
+        assert.ok(removeUltrafixLabel.mock.callCount() >= 1, 'the stopped loop no longer carries the ultrafix label');
     });
 
     test('wait -> timeout: posts the stop comment when the waiting comment cannot be edited', async () => {

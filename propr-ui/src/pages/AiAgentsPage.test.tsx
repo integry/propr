@@ -131,7 +131,7 @@ describe('AiAgentsPage model selection', () => {
 
     expect(document.querySelectorAll('[data-mock-panel-group]')).toHaveLength(1);
     expect(group.querySelectorAll(':scope > [data-mock-panel="true"]')).toHaveLength(2);
-    expect(configurationPanel).toContainElement(screen.getByRole('heading', { name: 'Agent Configuration' }));
+    expect(configurationPanel).toContainElement(screen.getByRole('heading', { name: 'Coding agents', level: 2 }));
     expect(configurationPanel).toContainElement(screen.getByTestId('ai-agents-configuration-scroll'));
     expect(configurationPanel).toContainElement(screen.getByRole('button', { name: '+ Add Agent' }));
     expect(playgroundPanel).toContainElement(screen.getByRole('heading', { name: 'Playground', level: 2 }));

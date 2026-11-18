@@ -5,6 +5,7 @@ import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { getDisplayTitle } from './taskHeaderText';
 import { ProviderLogo } from '../ui/ProviderLogo';
+import { RepositoryChip } from '../ui/RepositoryChip';
 import AttemptLineage from './AttemptLineage';
 import AssignmentControl from './AssignmentControl';
 import type { TaskAssignment } from './useTaskAssignment';
@@ -62,15 +63,11 @@ const ContextGroup: React.FC<{ label: string; children: React.ReactNode }> = ({ 
   );
 };
 
-/** Lets a long repository name break after `-`, `_` or `.` before it breaks anywhere else. */
-const withNameBreaks = (name: string) =>
-  name.split(/(?<=[-_.])/).map((part, index) => <React.Fragment key={index}>{index > 0 && <wbr />}{part}</React.Fragment>);
-
 /**
- * Where the task lives: its owner on one line, its repository's name on the
- * next, rather than one `owner/name` string broken wherever it runs out of
- * room. A name too long for its width still wraps inside it. A task without
- * both (an automation report, say) has no repository to show or link to.
+ * Where the task lives, as the app's one repository chip: the short name, the
+ * full `owner/name` slug in its tooltip and accessible name, linking to GitHub.
+ * On a phone the name wraps inside the chip rather than truncating. A task
+ * without both (an automation report, say) has no repository to show or link to.
  */
 export const RepoIdentity: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
   const { repoOwner, repoName } = taskInfo;
@@ -82,17 +79,10 @@ export const RepoIdentity: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => 
       target="_blank"
       rel="noopener noreferrer"
       aria-label={repo}
-      title={repo}
       data-testid="task-repository"
-      className="group flex w-fit min-w-0 max-w-full flex-col rounded text-gray-700 transition-colors hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      className="group flex min-h-6 w-fit min-w-0 max-w-full items-center rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
     >
-      <span data-testid="task-repository-owner" className="flex min-w-0 items-center gap-1 text-xs leading-4 text-slate-500 group-hover:text-blue-600">
-        <GitHubIcon size={12} className="shrink-0" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">{repoOwner}<span aria-hidden="true" className="text-slate-400">/</span></span>
-      </span>
-      <span data-testid="task-repository-name" className="min-w-0 text-sm font-semibold leading-5 text-gray-900 [overflow-wrap:anywhere] group-hover:text-blue-600">
-        {withNameBreaks(repoName)}
-      </span>
+      <RepositoryChip repository={repo} stackOnNarrow className="group-hover:border-slate-300 group-hover:text-blue-600" />
     </a>
   );
 };
@@ -132,10 +122,10 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
   );
 };
 
-// Model chip component
+// Model chip component: the run's model and runtime; a run without a model shows only the runtime.
 const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean; compact?: boolean }> = ({ modelName, duration, synthetic, compact }) => (
   <>
-    <span
+    {modelName && <span
       className={`inline-flex min-w-0 items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800 [&>svg]:shrink-0${compact ? ' max-w-full shrink-0' : ''}`}
       title={getDisplayModelName(modelName)}
     >
@@ -143,7 +133,7 @@ const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthet
         ? <Layers3 className="h-3 w-3" aria-label="Synthetic pool" />
         : <ProviderLogo provider={modelName} className="w-3 h-3" />}
       <span className={compact ? "truncate" : undefined}>{getDisplayModelName(modelName)}</span>
-    </span>
+    </span>}
     {duration !== null && duration !== undefined && (
       <span className="shrink-0 text-gray-500 font-mono text-xs">{formatRelativeTime(duration)}</span>
     )}
@@ -340,7 +330,7 @@ const GitGroup: React.FC<{
  * title, truncated. Scrolled down a task, the title is what you lose track of;
  * the repository is only the fallback for a task without one.
  */
-const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number } }> = ({ taskInfo, prInfo }) => {
+const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: string; number?: number }; heading?: boolean }> = ({ taskInfo, prInfo, heading }) => {
   const pr = prInfo?.url
     ? { url: prInfo.url, number: prInfo.number }
     : taskInfo?.type === 'pr-comment' && taskInfo.number
@@ -366,11 +356,10 @@ const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: s
           {label && <span aria-hidden="true">:</span>}
         </span>
       )}
-      {label && (
-        <span className="min-w-0 max-w-[280px] truncate font-medium text-gray-900" title={title.text ? title.tooltip : repo}>
-          {label}
-        </span>
-      )}
+      {label && React.createElement(heading ? 'h2' : 'span', {
+        className: 'min-w-0 max-w-[280px] truncate font-medium text-gray-900 sm:max-w-none',
+        title: title.text ? title.tooltip : repo,
+      }, label)}
     </div>
   );
 };
@@ -422,6 +411,8 @@ interface ContextStripProps {
   synthetic?: boolean;
   /** Mobile only: the collapsed header's one line, the pull request then the task's title, truncated. */
   mobileCompact?: boolean;
+  /** Compact only: the title is the page's heading, as when the compact line stands in for the full header. */
+  compactHeading?: boolean;
   /**
    * One part of the strip: `repository` is the repository on its own,
    * `git` is the rest of where the task lives (PR, issue, commit),
@@ -445,11 +436,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   budget,
   synthetic,
   mobileCompact,
+  compactHeading,
   part,
   lead,
   assignment,
 }) => {
-  if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} />;
+  if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} heading={compactHeading} />;
   if (part === 'repository') return taskInfo ? <RepoIdentity taskInfo={taskInfo} /> : null;
 
   const showGit = part !== 'telemetry';

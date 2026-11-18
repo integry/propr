@@ -55,7 +55,7 @@ describe('ExperimentalSettingsSection', () => {
     expect(within(section).getByRole('checkbox', { name: 'Enable voice briefings' })).not.toBeChecked();
     const summary = within(section).getByRole('checkbox', { name: 'Dashboard AI summaries' });
     expect(summary).not.toBeChecked();
-    expect(within(section).getByText(/summarization model/)).toHaveTextContent(/LLM call/);
+    expect(within(section).getByText('Shows a one-line activity summary on the dashboard for everyone. Each update costs one LLM call.')).toBeInTheDocument();
 
     fireEvent.click(summary);
     expect(onChange).toHaveBeenCalledWith(true);

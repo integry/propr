@@ -18,22 +18,22 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   // A vertical rail lists the settings domains, with no arbitrary counts.
   const rail = page.getByRole('tablist', { name: 'Settings categories' });
   await expect(rail.getByRole('tab')).toHaveText([
-    'AI Models & Reasoning', 'Workflow & PR Rules', 'Ultrafix & Escalation',
-    'Sandbox & Network', 'Agent Extensions & Packages', 'Integrations & MCP', 'Notifications',
+    'AI models & reasoning', 'Workflow & PR rules', 'Ultrafix & escalation',
+    'Sandbox & network', 'Agent extensions & packages', 'Integrations & MCP', 'Notifications',
     'Maintenance', 'Experimental',
   ]);
-  // AI Models & Reasoning opens by default.
-  await expect(rail.getByRole('tab', { name: 'AI Models & Reasoning' })).toHaveAttribute('aria-selected', 'true');
+  // AI models & reasoning opens by default.
+  await expect(rail.getByRole('tab', { name: 'AI models & reasoning' })).toHaveAttribute('aria-selected', 'true');
   const tabBoxes = await Promise.all((await rail.getByRole('tab').all()).map(tab => tab.boundingBox()));
   for (const box of tabBoxes.slice(1)) {
     expect(Math.abs(box!.x - tabBoxes[0]!.x)).toBeLessThanOrEqual(1);
     expect(box!.y).toBeGreaterThan(tabBoxes[0]!.y);
   }
   // The rail names the open domain; the pane does not repeat it as a heading.
-  await expect(page.getByRole('heading', { name: 'AI Models & Reasoning' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'AI models & reasoning' })).toHaveCount(0);
 
   // The form is contained rather than stretching across a 1600px canvas.
-  const select = page.getByLabel('Plan Generation Model');
+  const select = page.getByLabel('Plan generation model');
   await expect(select).toBeVisible();
   const width = await select.evaluate(element => element.getBoundingClientRect().width);
   expect(width).toBeLessThanOrEqual(672);
@@ -44,11 +44,11 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   }
   await capture(page, 'settings-ai-models');
 
-  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
+  await page.getByRole('tab', { name: 'Workflow & PR rules' }).click();
   await expect(page).toHaveURL(/\/settings\?tab=workflow$/);
-  await expect(page.getByLabel('Worker Concurrency')).toBeVisible();
+  await expect(page.getByLabel('Worker concurrency')).toBeVisible();
   // Ultrafix, sandbox and usage-tip settings no longer share this page.
-  for (const label of ['Max Cycles', 'Network mode', 'Show usage tips']) {
+  for (const label of ['Max cycles', 'Network mode', 'Show usage tips']) {
     await expect(page.getByLabel(label, { exact: true })).toBeHidden();
   }
   await capture(page, 'settings-workflow');
@@ -77,7 +77,7 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   await expect(whitelist.getByRole('button', { name: /^Remove (alice|bob|carol)$/ })).toHaveCount(3);
   await capture(page, 'settings-workflow-lists', whitelist);
 
-  await page.getByRole('tab', { name: 'Sandbox & Network' }).click();
+  await page.getByRole('tab', { name: 'Sandbox & network' }).click();
   const network = page.getByRole('region', { name: 'Agent network' });
   await expect(network.getByLabel('Network mode')).toHaveValue('restricted');
   await expect(network.getByLabel('Additional allowed hosts')).toHaveValue('registry.example.com\n*.internal.example.com');
@@ -90,11 +90,11 @@ test('lays settings out as a vertical rail beside one contained, single-column f
     await network.screenshot({ animations: 'disabled', path: path.resolve('../.propr/previews/settings-agent-network.png') });
   }
 
-  await page.getByRole('tab', { name: 'Ultrafix & Escalation' }).click();
+  await page.getByRole('tab', { name: 'Ultrafix & escalation' }).click();
   // A newly opened category starts at its top, not at the previous one's scroll offset.
   await expect.poll(() => page.locator('[data-settings-scroll]').evaluate(element => element.scrollTop)).toBe(0);
-  await expect(page.getByLabel('Target Review Score')).toHaveValue('7');
-  await expect(page.getByLabel('Target Review Score').locator('option:checked')).toHaveText('7/10 (Default)');
+  await expect(page.getByLabel('Target review score')).toHaveValue('7');
+  await expect(page.getByLabel('Target review score').locator('option:checked')).toHaveText('7/10 (default)');
   await expect(page.getByRole('region', { name: 'Agent watchdog' })).toBeHidden();
   await capture(page, 'settings-ultrafix');
 
@@ -107,10 +107,10 @@ test('lays settings out as a vertical rail beside one contained, single-column f
   await expect(page.getByRole('region', { name: 'Instance data', exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Integrations & MCP' }).click();
-  await expect(page.getByRole('heading', { name: 'LLM Usage Tracking' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'LLM usage tracking' })).toBeVisible();
   await expect(page.getByText('Agent Tank connected')).toBeVisible();
   await capture(page, 'settings-integrations');
-  await capture(page, 'settings-mcp', page.getByRole('region', { name: 'MCP Server', exact: true }));
+  await capture(page, 'settings-mcp', page.getByRole('region', { name: 'MCP server', exact: true }));
 
   // Card Hell stays banned: these blocks are separated by rules, not boxes.
   const storage = page.getByRole('region', { name: 'Managed preview storage' });
@@ -137,7 +137,7 @@ test('balances a widescreen canvas with an inspector beside the form', async ({ 
   await installSettingsFixture(page);
   await page.goto('/settings?tab=sandbox');
 
-  const inspector = page.getByRole('complementary', { name: 'About Sandbox & Network' });
+  const inspector = page.getByRole('complementary', { name: 'About Sandbox & network' });
   await expect(inspector).toBeVisible();
   await expect(inspector).toContainText('per-run proxy');
   await expect(inspector.getByRole('link', { name: 'Restricted network mode' }))
@@ -157,8 +157,8 @@ test('balances a widescreen canvas with an inspector beside the form', async ({ 
   expect(Math.abs(status.x - rail.x)).toBeLessThanOrEqual(2);
   await capture(page, 'settings-widescreen-sandbox');
 
-  await page.getByRole('tab', { name: 'Ultrafix & Escalation' }).click();
-  await expect(page.getByRole('complementary', { name: 'About Ultrafix & Escalation' })).toContainText('6 → 7 resets patience');
+  await page.getByRole('tab', { name: 'Ultrafix & escalation' }).click();
+  await expect(page.getByRole('complementary', { name: 'About Ultrafix & escalation' })).toContainText('6 → 7 resets patience');
   await capture(page, 'settings-widescreen-ultrafix');
 
   // Search results mix categories, so the inspector steps aside.
@@ -168,7 +168,7 @@ test('balances a widescreen canvas with an inspector beside the form', async ({ 
   // Below 2xl the inspector folds away and the form keeps its width.
   await page.getByRole('searchbox', { name: 'Search settings' }).fill('');
   await page.setViewportSize({ width: 1440, height: 900 });
-  await expect(page.getByRole('complementary', { name: 'About Ultrafix & Escalation' })).toBeHidden();
+  await expect(page.getByRole('complementary', { name: 'About Ultrafix & escalation' })).toBeHidden();
 });
 
 test('keeps helper text inside the block it belongs to', async ({ page }) => {
@@ -210,22 +210,22 @@ test('drills into settings on a phone instead of scrolling a tab strip', async (
   await capture(page, 'settings-mobile-menu');
 
   // Screen 2: one category under a back button.
-  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
+  await page.getByRole('tab', { name: 'Workflow & PR rules' }).click();
   const back = page.getByRole('button', { name: 'Back to Settings' });
   await expect(back).toBeVisible();
-  await expect(page.getByLabel('Worker Concurrency')).toBeVisible();
+  await expect(page.getByLabel('Worker concurrency')).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Search settings' })).toBeHidden();
-  await expect(page.locator('[data-settings-mobile-header]')).toContainText('Workflow & PR Rules');
+  await expect(page.locator('[data-settings-mobile-header]')).toContainText('Workflow & PR rules');
   await capture(page, 'settings-mobile-category');
 
   await back.click();
   await expect(tabs.first()).toBeVisible();
-  await expect(page.getByLabel('Worker Concurrency')).toBeHidden();
+  await expect(page.getByLabel('Worker concurrency')).toBeHidden();
 
   // A link that names a category opens straight into it, without overflowing.
   await page.goto('/settings?tab=models');
   await expect(page.getByRole('button', { name: 'Back to Settings' })).toBeVisible();
-  const select = page.getByLabel('Plan Generation Model');
+  const select = page.getByLabel('Plan generation model');
   await expect(select).toBeVisible();
   const overflow = await page.evaluate(() => {
     const element = document.scrollingElement!;
@@ -242,11 +242,11 @@ test('walks the phone category list with the keyboard before opening one', async
   await page.goto('/settings');
 
   const tabs = page.getByRole('tablist', { name: 'Settings categories' });
-  await tabs.getByRole('tab', { name: 'AI Models & Reasoning' }).focus();
+  await tabs.getByRole('tab', { name: 'AI models & reasoning' }).focus();
   await page.keyboard.press('ArrowDown');
 
   // Arrows only move focus: the list stays up and the route is unchanged.
-  const workflow = tabs.getByRole('tab', { name: 'Workflow & PR Rules' });
+  const workflow = tabs.getByRole('tab', { name: 'Workflow & PR rules' });
   await expect(workflow).toBeFocused();
   await expect(workflow).toBeVisible();
   expect(new URL(page.url()).search).toBe('');
@@ -255,14 +255,14 @@ test('walks the phone category list with the keyboard before opening one', async
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\?tab=workflow$/);
   await expect(page.getByRole('button', { name: 'Back to Settings' })).toBeVisible();
-  await expect(page.getByLabel('Worker Concurrency')).toBeVisible();
+  await expect(page.getByLabel('Worker concurrency')).toBeVisible();
 });
 
 test('fast analysis model describes the review context scout', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 820 });
   await installSettingsFixture(page);
   await page.goto('/settings?tab=models');
-  const field = page.getByLabel('Fast Analysis Model');
+  const field = page.getByLabel('Fast analysis model');
   await expect(field).toBeVisible();
   await expect(field).toHaveValue('codex:gpt-5-codex');
   await expect(page.getByText('Used by /review to gather repository context before the review.')).toBeVisible();
@@ -275,7 +275,7 @@ test('fast analysis model describes the review context scout', async ({ page }) 
       animations: 'disabled', path: path.join(directory, 'fast-analysis-model.png'),
     });
   }
-  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
+  await page.getByRole('tab', { name: 'Workflow & PR rules' }).click();
   await expect(page.getByLabel('Auto-Followup Score Threshold')).toHaveCount(0);
 });
 
@@ -284,12 +284,12 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   await installSettingsFixture(page);
   await page.goto('/settings?tab=ultrafix');
   const section = page.getByRole('region', { name: 'Ultrafix', exact: true });
-  await expect(section.getByLabel('Automatic Escalation')).not.toBeChecked();
-  for (const label of ['Add escalation model', 'Escalation Patience', 'Max Reasoning Levels per Model']) {
+  await expect(section.getByLabel('Automatic escalation')).not.toBeChecked();
+  for (const label of ['Add escalation model', 'Escalation patience', 'Max reasoning levels per model']) {
     await expect(section.getByLabel(label)).toHaveCount(0);
   }
-  const pause = section.getByLabel('Pause Between Cycles');
-  const toggle = section.getByLabel('Automatic Escalation');
+  const pause = section.getByLabel('Pause between cycles');
+  const toggle = section.getByLabel('Automatic escalation');
   expect(await pause.evaluate((element, nextId) => Boolean(
     element.compareDocumentPosition(document.getElementById(nextId)!) & Node.DOCUMENT_POSITION_FOLLOWING
   ), 'ultrafix_escalation_enabled')).toBe(true);
@@ -303,19 +303,19 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   await section.getByLabel('Add escalation model').selectOption('claude:claude-sonnet-5-5');
   await section.getByRole('button', { name: 'Remove escalation model 3' }).click();
   await expect(section.getByLabel('Escalation model 3', { exact: true })).toHaveCount(0);
-  await section.getByLabel('Escalation Patience').fill('4');
-  await section.getByLabel('Max Reasoning Levels per Model').fill('0');
+  await section.getByLabel('Escalation patience').fill('4');
+  await section.getByLabel('Max reasoning levels per model').fill('0');
   await expect(models).toHaveValue('codex:gpt-6-astra');
   await expect(section.getByLabel('Escalation model 2', { exact: true })).toHaveValue('claude:claude-opus-5-5');
-  await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
-  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  await expect(section.getByLabel('Automatic escalation')).toBeChecked();
+  await expect(section.getByLabel('Max reasoning levels per model')).toHaveValue('0');
   const saved = page.waitForResponse(response => {
     const request = response.request();
     return new URL(response.url()).pathname === '/api/config/settings'
       && request.method() === 'POST'
       && request.postDataJSON().settings.ultrafix_escalation_max_reasoning_levels === 0;
   });
-  await section.getByLabel('Max Reasoning Levels per Model').blur();
+  await section.getByLabel('Max reasoning levels per model').blur();
   const response = await saved;
   expect(response.ok()).toBe(true);
   expect(response.request().postDataJSON().settings).toMatchObject({
@@ -326,11 +326,11 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   });
   await expect(page.getByRole('status').filter({ hasText: 'All changes saved' })).toBeVisible();
   await page.reload();
-  await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
+  await expect(section.getByLabel('Automatic escalation')).toBeChecked();
   await expect(models).toHaveValue('codex:gpt-6-astra');
   await expect(section.getByLabel('Escalation model 2', { exact: true })).toHaveValue('claude:claude-opus-5-5');
-  await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
-  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  await expect(section.getByLabel('Escalation patience')).toHaveValue('4');
+  await expect(section.getByLabel('Max reasoning levels per model')).toHaveValue('0');
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     const boxes = await Promise.all([
@@ -349,13 +349,13 @@ test('ultrafix escalation controls retain ordered models and support direct hand
       await mkdir(path.resolve('../.propr/previews'), { recursive: true });
       if (width === 1280) await page.setViewportSize({ width, height: 1400 });
       const preview = width === 390
-        ? section.locator('label').filter({ hasText: 'Escalation Models (in order)' }).locator('..')
+        ? section.locator('label').filter({ hasText: 'Escalation models (in order)' }).locator('..')
         : section;
       await preview.screenshot({ path: `../.propr/previews/ultrafix-escalation-${width}.png`, animations: 'disabled' });
     }
   }
   await toggle.uncheck();
-  for (const label of ['Escalation model 1', 'Add escalation model', 'Escalation Patience', 'Max Reasoning Levels per Model']) {
+  for (const label of ['Escalation model 1', 'Add escalation model', 'Escalation patience', 'Max reasoning levels per model']) {
     await expect(section.getByLabel(label, { exact: true })).toHaveCount(0);
   }
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
@@ -364,8 +364,8 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   }
   await toggle.check();
   await expect(models).toHaveValue('codex:gpt-6-astra');
-  await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
-  await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+  await expect(section.getByLabel('Escalation patience')).toHaveValue('4');
+  await expect(section.getByLabel('Max reasoning levels per model')).toHaveValue('0');
 });
 
 test('agent watchdog thresholds save as overrides of the environment defaults', async ({ page }) => {

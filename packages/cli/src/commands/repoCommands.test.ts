@@ -132,7 +132,7 @@ test('repo list displays the override and unresolved conservative fallback', asy
     visualPreview: { enabled: true, types: ['image', 'video'], githubAttachmentPlan: 'auto' },
   }] }), { headers: { 'content-type': 'application/json' } });
   await createRepoCommand().parseAsync(['list'], { from: 'user' });
-  assert.match(output.join('\n'), /auto: Auto unresolved; using conservative Free limits/);
+  assert.match(output.join('\n'), /auto: Using the Free plan limits/);
   assert.match(output.join('\n'), /Images: 10 MiB; videos: 10 MiB/);
 });
 

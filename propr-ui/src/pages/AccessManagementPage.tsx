@@ -1,5 +1,7 @@
+import { RelativeTime } from '../components/ui/RelativeTime';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { History, ShieldCheck, Trash2, UserPlus } from 'lucide-react';
+import { History, Trash2, UserPlus } from 'lucide-react';
+import { PageHeading } from '../components/ui/PageHeading';
 import {
   addInstanceMember,
   claimBootstrapAdmin,
@@ -8,12 +10,7 @@ import {
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
-import {
-  addToTriggerWhitelist,
-  getTriggerWhitelist,
-  isLoginInWhitelist,
-  removeFromTriggerWhitelist
-} from '../api/triggerWhitelistApi';
+import { addToTriggerWhitelist, getTriggerWhitelist, isLoginInWhitelist, removeFromTriggerWhitelist } from '../api/triggerWhitelistApi';
 import type {
   InstanceMember,
   InstanceMembersResponse,
@@ -23,6 +20,7 @@ import type {
 import { useCurrentUser, useRefreshCurrentUser } from '../contexts/AuthContext';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { ListSkeleton } from '../components/ui/Skeleton';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const EMPTY_RESPONSE: InstanceMembersResponse = {
   members: [],
@@ -52,9 +50,10 @@ function getCollectionState(loading: boolean, itemCount: number, error: string):
   return itemCount === 0 ? 'empty' : 'ready';
 }
 
-const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="mb-6 border-l-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">Demo mode is read-only. Instance access can be inspected but not changed.</p> : null;
+const DemoReadOnlyNotice: React.FC = () => useDemoMode().isDemoMode ? <p className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:px-6">Demo mode is read-only. Access can be inspected but not changed.</p> : null;
 
 const AccessManagementPage: React.FC = () => {
+  useDocumentTitle('Access');
   const currentUser = useCurrentUser();
   const refreshCurrentUser = useRefreshCurrentUser();
   const { isDemoMode } = useDemoMode();
@@ -219,30 +218,25 @@ const AccessManagementPage: React.FC = () => {
   const auditState = getCollectionState(auditLoading, auditEntries.length, auditError);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
-      <div className="mb-8 flex items-start gap-3">
-        <div className="rounded-lg bg-red-50 p-2 text-primary-600">
-          <ShieldCheck className="h-6 w-6" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Instance access</h1>
-          <p className="mt-1 text-sm text-gray-600">
-            Administrators manage installation settings. Members can use ProPR but cannot change the installation.
-          </p>
-        </div>
-      </div>
+    <div className="flex min-h-full w-full min-w-0 flex-col bg-white">
+      <header className="flex-none border-b border-slate-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
+        <PageHeading>Access</PageHeading>
+        <p className="mt-1 text-sm text-slate-600">
+          Administrators manage installation settings. Members can use ProPR but cannot change the installation.
+        </p>
+      </header>
 
       <DemoReadOnlyNotice />
 
       {data.bootstrapAdmins.length > 0 && (
-        <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+        <div className="border-b border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 sm:px-6">
           Environment administrators: {data.bootstrapAdmins.map(name => `@${name}`).join(', ')}.
           These assignments remain authoritative while <code>PROPR_ADMIN_USERS</code> is configured.
         </div>
       )}
 
       {canStoreBootstrapRole && (
-        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 sm:px-6">
           <h2 className="font-medium text-amber-900">Store your administrator role</h2>
           <p className="mt-1 text-sm text-amber-800">
             Your access currently comes from <code>PROPR_ADMIN_USERS</code>. Store it against your numeric
@@ -260,19 +254,19 @@ const AccessManagementPage: React.FC = () => {
       )}
 
       {error && (
-        <div role="alert" className="mb-6 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div role="alert" className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:px-6">
           {error}
         </div>
       )}
 
       {whitelistNotice && (
-        <div role="status" className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+        <div role="status" className="border-b border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 sm:px-6">
           {whitelistNotice}
         </div>
       )}
 
       {whitelistOffer && (
-        <div role="status" className="mb-6 flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center">
+        <div role="status" className="flex flex-col gap-3 border-b border-blue-200 bg-blue-50 px-4 py-3 sm:flex-row sm:items-center sm:px-6">
           <p className="flex-1 text-sm text-blue-900">
             {whitelistOffer.action === 'add'
               ? <>@{whitelistOffer.username} is not on the trigger whitelist, so they cannot start ProPR tasks from GitHub. Add them to it too?</>
@@ -299,7 +293,7 @@ const AccessManagementPage: React.FC = () => {
         </div>
       )}
 
-      <form onSubmit={addMember} className="mb-8 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+      <form onSubmit={addMember} className="border-b border-slate-200 px-4 py-4 sm:px-6">
         <h2 className="font-medium text-gray-900">Assign an instance role</h2>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <label className="flex-1">
@@ -334,28 +328,27 @@ const AccessManagementPage: React.FC = () => {
             Add user
           </button>
         </div>
-        <p className="mt-3 text-xs text-gray-500">
-          Instance roles and the GitHub trigger whitelist are separate. After adding or removing a user, you
-          can confirm a matching trigger whitelist change when access is restricted. An empty whitelist allows
-          every GitHub user to trigger ProPR. Manage the full whitelist in Settings.
+        <p className="mt-3 max-w-[75ch] text-xs text-gray-500">
+          Instance roles and the GitHub trigger whitelist are separate. After adding or removing a user, you can
+          update the whitelist to match; manage it in Settings → Workflow &amp; PR rules → GitHub trigger whitelist.
         </p>
       </form>
 
-      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200 px-5 py-4">
-          <h2 className="font-medium text-gray-900">Assigned instance roles</h2>
+      <section aria-labelledby="access-assigned-roles" className="border-b border-slate-200">
+        <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 sm:px-6">
+          <h2 id="access-assigned-roles" className="font-medium text-gray-900">Assigned instance roles</h2>
           <p className="mt-1 text-sm text-gray-500">Roles assigned directly to users, separate from environment administrator access.</p>
         </div>
         {memberState === 'loading' ? (
-          <ListSkeleton rows={3} layout="row" label="Loading access assignments…" className="px-5 py-4" />
+          <ListSkeleton rows={3} layout="row" label="Loading access assignments…" className="px-4 py-4 sm:px-6" />
         ) : memberState === 'error' ? null
         : memberState === 'empty' ? (
           <div className="p-8 text-center text-sm text-gray-500">No instance roles assigned yet.</div>
         ) : (
-          <ul className="divide-y divide-gray-200">
+          <ul className="divide-y divide-slate-200">
             {data.members.map(member => {
               return (
-                <li key={member.githubUserId} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center">
+                <li key={member.githubUserId} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:px-6">
                   <div className="min-w-0 flex-1">
                     <div className="font-medium text-gray-900">
                       @{member.githubUsername}
@@ -396,34 +389,32 @@ const AccessManagementPage: React.FC = () => {
             })}
           </ul>
         )}
-      </div>
+      </section>
 
-      <div className="mt-8 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="flex items-center gap-2 border-b border-gray-200 px-5 py-4">
-          <History className="h-4 w-4 text-gray-500" />
-          <h2 className="font-medium text-gray-900">Recent role changes</h2>
+      <section aria-labelledby="access-role-changes" className="border-b border-slate-200">
+        <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:px-6">
+          <History className="h-4 w-4 text-gray-500" aria-hidden="true" />
+          <h2 id="access-role-changes" className="font-medium text-gray-900">Recent role changes</h2>
         </div>
-        {auditError && <div role="alert" className="border-b border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700">{auditError}</div>}
+        {auditError && <div role="alert" className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:px-6">{auditError}</div>}
         {auditState === 'loading' ? (
-          <ListSkeleton rows={3} layout="row" label="Loading role changes…" className="px-5 py-4" />
+          <ListSkeleton rows={3} layout="row" label="Loading role changes…" className="px-4 py-4 sm:px-6" />
         ) : auditState === 'error' ? null
         : auditState === 'empty' ? (
-          <div className="p-6 text-sm text-gray-500">No role changes recorded yet.</div>
+          <div className="px-4 py-6 text-sm text-gray-500 sm:px-6">No role changes recorded yet.</div>
         ) : (
           <ul className="divide-y divide-gray-100">
             {auditEntries.map(entry => (
-              <li key={entry.id} className="px-5 py-3 text-sm text-gray-700">
+              <li key={entry.id} className="px-4 py-3 text-sm text-gray-700 sm:px-6">
                 <span className="font-medium">@{entry.actorGithubUsername}</span>
                 {' '}{auditDescription(entry)}{' '}
                 <span className="font-medium">@{entry.targetGithubUsername}</span>
-                <span className="ml-2 text-xs text-gray-500">
-                  {new Date(entry.createdAt).toLocaleString()}
-                </span>
+                <RelativeTime value={entry.createdAt} className="ml-2 text-xs text-gray-500" />
               </li>
             ))}
           </ul>
         )}
-      </div>
+      </section>
     </div>
   );
 };

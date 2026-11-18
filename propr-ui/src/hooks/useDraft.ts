@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { getDraft, PlannerDraft } from '../api/proprApi';
 import { useSocket } from '../contexts/useSocket';
 import { DraftUpdatePayload } from '@propr/shared';
+import { keepIfEqual } from '../utils/keepIfEqual';
 
 interface UseDraftOptions {
   initialData?: PlannerDraft | null;
@@ -123,7 +124,8 @@ export const useDraft = (draftId: string, options: UseDraftOptions = {}): UseDra
       if (!isCurrent() || isSuperseded()) return;
       const parsedDraft = parseJsonFields(data as unknown as Record<string, unknown>) as unknown as PlannerDraft;
       activeRunIdRef.current = parsedDraft.generation_trace?.runId;
-      setDraft(parsedDraft);
+      // A background read equal to the shown draft keeps it, so issue bodies are not re-rendered.
+      setDraft(current => (current ? keepIfEqual(current, parsedDraft) : parsedDraft));
     } catch (err) {
       if (isCurrent() && !isSuperseded()) setError((err as Error).message || 'Failed to fetch draft');
     } finally {

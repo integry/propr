@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { keepIfEqual } from '../../utils/keepIfEqual';
 import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
 import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
 import { SETTINGS_LABEL } from './settingsStyles';
@@ -194,8 +195,9 @@ const AgentRuntimePackagesSection: React.FC = () => {
     const timer = window.setInterval(async () => {
       try {
         const next = await getAgentRuntimePackageState();
-        setState(next);
-        if (next.status === 'ready' || next.status === 'disabled') setPackages(next.packages);
+        // Polled while a build runs; an equal read keeps the current objects.
+        setState(current => keepIfEqual(current, next));
+        if (next.status === 'ready' || next.status === 'disabled') setPackages(current => keepIfEqual(current, next.packages));
       } catch (requestError) {
         setError((requestError as Error).message);
       }
@@ -306,7 +308,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
 
   return (
     <SettingsSection
-      title="Agent Runtime Packages"
+      title="Agent runtime packages"
       description={<AgentRuntimePackagesDescription />}
       status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
     >

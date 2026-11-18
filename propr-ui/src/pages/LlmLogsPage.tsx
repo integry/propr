@@ -1,27 +1,13 @@
 import { formatModelName } from '../utils/modelDisplay';
+import { PageHeading } from '../components/ui/PageHeading';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getLlmLogs, LlmLogEntry, LlmLogsPagination } from '../api/llmLogsApi';
-import { Filter, Clock, Cpu, Zap, Info, X } from 'lucide-react';
-import {
-  formatDuration,
-  formatTimestamp,
-  formatType,
-  getContextDisplay,
-  getWorkReferenceDisplay,
-  getWorkTypeLabel,
-  hasDetailedInfo,
-} from './llmLogsUtils';
-import {
-  StatusIcon,
-  ExpandButton,
-  ExpandedRowDetails,
-  PaginationFooter,
-  SyntheticRoutingModelSummary,
-  LlmLogsBlockingState,
-} from './LlmLogsPageComponents';
-import { UsageBadge } from '../components/ui/UsageBadge';
+import { Filter, Cpu, Zap, X } from 'lucide-react';
+import { formatType } from './llmLogsUtils';
+import { PaginationFooter, LlmLogsBlockingState } from './LlmLogsPageComponents';
+import { LlmLogTable } from './LlmLogsTable';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 import { useAgentTankSuggestion } from '../hooks/useAgentTankSuggestion';
 
@@ -192,7 +178,7 @@ const LlmLogsPage: React.FC = () => {
       {/* Anchored Header - compact on mobile */}
       <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
         <div className="flex items-center justify-between gap-2 sm:gap-4">
-          <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">LLM Log</h1>
+          <PageHeading className="flex-shrink-0">LLM Log</PageHeading>
           <div className="flex items-center gap-2 sm:gap-4">
             <Filter size={16} className="text-gray-500 hidden sm:block" />
 
@@ -291,124 +277,7 @@ const LlmLogsPage: React.FC = () => {
             <p className="text-gray-500">No LLM calls yet — once an agent runs a plan or reviews a PR, every model call appears here with its cost and token usage.</p>
           </div>
         ) : (
-          <div className="flex flex-col h-full bg-white">
-            <div className="flex-1 overflow-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
-                      {/* Expand/Collapse column */}
-                    </th>
-                    <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Type
-                    </th>
-                    <th className="hidden sm:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Info size={14} />
-                        Work Ref
-                      </div>
-                    </th>
-                    <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Model
-                    </th>
-                    <th className="px-2 sm:px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Zap size={14} />
-                        Usage
-                      </div>
-                    </th>
-                    <th className="hidden md:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="flex items-center gap-1">
-                        <Clock size={14} />
-                        Duration
-                      </div>
-                    </th>
-                    <th className="hidden lg:table-cell px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Timestamp
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {visibleLogs.map((log) => (
-                    <React.Fragment key={log.logId}>
-                      <tr
-                        className={`hover:bg-gray-50 ${hasDetailedInfo(log) ? 'cursor-pointer' : ''}`}
-                        onClick={() => hasDetailedInfo(log) && toggleRowExpansion(log.logId)}
-                      >
-                        <td className="px-2 py-3 sm:py-4 whitespace-nowrap">
-                          {hasDetailedInfo(log) && (
-                            <ExpandButton
-                              isExpanded={expandedRows.has(log.logId)}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleRowExpansion(log.logId);
-                              }}
-                            />
-                          )}
-                        </td>
-                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
-                          <div className="flex items-center" title={log.success ? 'Success' : log.errorMessage || 'Failed'}>
-                            <StatusIcon success={log.success} />
-                          </div>
-                        </td>
-                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
-                          <span className="px-1.5 sm:px-2 py-0.5 sm:py-1 text-xs font-medium rounded-full bg-indigo-100 text-indigo-800">
-                            {formatType(log.executionType)}
-                          </span>
-                        </td>
-                        <td className="hidden sm:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                          {log.workType ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className={`inline-block px-1.5 py-0.5 text-xs font-medium rounded ${
-                                log.workType === 'task' ? 'bg-blue-100 text-blue-800' :
-                                log.workType === 'plan' ? 'bg-purple-100 text-purple-800' :
-                                'bg-gray-100 text-gray-800'
-                              }`}>
-                                {getWorkTypeLabel(log.workType)}
-                              </span>
-                              <span className="truncate max-w-[200px]" title={getWorkReferenceDisplay(log)}>
-                                {getWorkReferenceDisplay(log)}
-                              </span>
-                            </div>
-                          ) : (
-                            <span title={log.repository || log.draftId || log.sessionId || undefined}>
-                              {getContextDisplay(log)}
-                            </span>
-                          )}
-                        </td>
-                        <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                          <div>{log.modelName ? formatModelName(log.modelName) : '-'}</div>
-                          <SyntheticRoutingModelSummary value={log.metadata?.syntheticRouting} />
-                        </td>
-                        <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">
-                          <UsageBadge
-                            tokens={
-                              (log.inputTokens || 0)
-                              + (log.outputTokens || 0)
-                              + (log.cacheCreationInputTokens || 0)
-                              + (log.cacheReadInputTokens || 0)
-                            }
-                            cost={log.costUsd ?? undefined}
-                            usageMetricRecords={log.usageMetricRecords}
-                          />
-                        </td>
-                        <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                          {formatDuration(log.durationMs)}
-                        </td>
-                        <td className="hidden lg:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {formatTimestamp(log.startTime)}
-                        </td>
-                      </tr>
-                      {expandedRows.has(log.logId) && <ExpandedRowDetails log={log} />}
-                    </React.Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <LlmLogTable logs={visibleLogs} expandedRows={expandedRows} onToggle={toggleRowExpansion} />
         )}
       </div>
 

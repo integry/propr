@@ -1,8 +1,10 @@
 import NewTaskPage from './pages/NewTaskPage';
 import { DesktopNativeNavigationObserver } from './desktop/DesktopNativeNavigationObserver'
 import React, { Suspense, useEffect, useState } from 'react'
-import { BrowserRouter, HashRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
+import { BrowserRouter, HashRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
+import { NotFound } from './components/NotFound'
+import { useDocumentTitle } from './hooks/useDocumentTitle'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketBootstrap } from './contexts/SocketBootstrap'
 import { SocketProvider } from './contexts/SocketProvider'
@@ -120,7 +122,10 @@ const PermissionRequired: React.FC<{
   children: React.ReactNode;
 }> = ({ permission, children }) => {
   const user = useCurrentUser();
-  if (userHasPermission(user, permission)) return children;
+  const allowed = userHasPermission(user, permission);
+  // The page names itself in the tab; this screen stands in for it.
+  useDocumentTitle('Administrator access required', !allowed);
+  if (allowed) return children;
   return (
     <div className="mx-auto max-w-2xl py-20 text-center">
       <h1 className="text-2xl font-semibold text-gray-900">Administrator access required</h1>
@@ -145,13 +150,7 @@ export const HostedFlowRouteSync: React.FC<{ hostname?: string }> = ({ hostname 
 };
 
 export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname }) => (
-  <div className="text-center py-20">
-    <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
-    <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
-    <Link to={pathWithActiveHostedTunnelFlow('/', hostname)} className="text-primary-600 hover:text-primary-700 underline">
-      Back to dashboard
-    </Link>
-  </div>
+  <NotFound backTo={pathWithActiveHostedTunnelFlow('/', hostname)} />
 );
 
 const AppContent: React.FC = () => {
@@ -199,8 +198,11 @@ const AppContent: React.FC = () => {
                     />
                     <Route path="/inbox" element={<Layout><InboxPage /></Layout>} />
                     <Route path="/analytics" element={<Layout><AnalyticsPage /></Layout>} />
+                    {/* One route for the list and a selected repository
+                        (`/repositories/<owner>/<repo>`), so selecting one keeps
+                        the page mounted. */}
                     <Route
-                      path="/repositories"
+                      path="/repositories/*"
                       element={
                         <Layout>
                           <RepositoriesPage />

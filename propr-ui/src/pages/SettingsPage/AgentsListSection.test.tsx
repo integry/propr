@@ -67,7 +67,7 @@ describe('AgentsListSection web login', () => {
       <AgentsListSection
         agents={[{
           ...agents[0],
-          supportedModels: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.2', 'gpt-5-nano'],
+          supportedModels: ['gpt-6.2-astra', 'gpt-5.6-sol', 'gpt-5.2', 'gpt-5-nano'],
         }]}
         loading={false}
         saving={false}
@@ -79,7 +79,7 @@ describe('AgentsListSection web login', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Select GPT-6 Astra from codex in Playground' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select GPT-6.2 Astra from codex in Playground' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Select GPT-5.2 from codex in Playground' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Show 2 legacy models' }));
@@ -142,6 +142,35 @@ describe('AgentsListSection web login', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show 1 legacy model' }));
 
     expect(screen.getByRole('button', { name: 'Select Claude Fable 5.1 from claude in Playground' })).toBeInTheDocument();
+  });
+
+  it('shows GPT-6.2 Astra and Sol as current and folds GPT-6 Astra and GPT-6.1 Sol with the legacy models', () => {
+    render(
+      <AgentsListSection
+        agents={[{
+          ...agents[0],
+          supportedModels: ['gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-6.1-sol'],
+        }]}
+        loading={false}
+        saving={false}
+        error={null}
+        success={null}
+        warning={null}
+        onSaveAgents={vi.fn()}
+        onSelectModel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Select GPT-6.2 Astra from codex in Playground' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select GPT-6.2 Sol from codex in Playground' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select GPT-6.1 Terra from codex in Playground' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Select GPT-6 Astra from codex in Playground' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Select GPT-6.1 Sol from codex in Playground' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 legacy models' }));
+
+    expect(screen.getByRole('button', { name: 'Select GPT-6 Astra from codex in Playground' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select GPT-6.1 Sol from codex in Playground' })).toBeInTheDocument();
   });
 
   it('offers login for supported agents and opens their dialog', () => {

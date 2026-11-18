@@ -56,13 +56,18 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 ];
 
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
-// Recommended: gpt-6-astra (default), gpt-6.1-sol (balanced), gpt-6.1-terra (lower cost), gpt-6-luna (fast/low-cost)
+// Recommended: gpt-6.2-astra (default), gpt-6.2-sol (balanced), gpt-6.1-terra (lower cost), gpt-6-luna (fast/low-cost)
+// GPT-6.2 Astra and Sol are not in the Codex CLI 0.169.0 bundled catalog, but
+// signed-in accounts take the model list from the server and run them on 0.169.0.
 export const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-6-astra', name: 'GPT-6 Astra', shortName: 'GPT-6 Astra', shortAlias: 'astra', githubLabel: 'llm-codex-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-astra', minAgentVersion: '0.153.1' },
-  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', shortName: 'GPT-6.1 Sol', shortAlias: 'gpt61-sol', githubLabel: 'llm-codex-gpt61-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.1-sol', minAgentVersion: '0.153.0' },
+  { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', shortName: 'GPT-6.2 Astra', shortAlias: 'astra', githubLabel: 'llm-codex-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-astra', minAgentVersion: '0.169.0' },
+  { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', shortName: 'GPT-6.2 Sol', shortAlias: 'gpt62-sol', githubLabel: 'llm-codex-gpt62-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-sol', minAgentVersion: '0.169.0' },
   { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', shortName: 'GPT-6.1 Terra', shortAlias: 'gpt61-terra', githubLabel: 'llm-codex-gpt61-terra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.1-terra', minAgentVersion: '0.165.0' },
-  { id: 'gpt-6-sol', name: 'GPT-6 Sol', shortName: 'GPT-6 Sol', shortAlias: 'gpt6-sol', githubLabel: 'llm-codex-gpt6-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-sol', minAgentVersion: '0.155.0' },
   { id: 'gpt-6-luna', name: 'GPT-6 Luna', shortName: 'GPT-6 Luna', shortAlias: 'gpt6-luna', githubLabel: 'llm-codex-gpt6-luna', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-luna', minAgentVersion: '0.155.0' },
+  // Superseded by GPT-6.2 Astra and GPT-6.2 Sol; legacy entries that stay selectable
+  { id: 'gpt-6-astra', name: 'GPT-6 Astra', shortName: 'GPT-6 Astra', shortAlias: 'gpt6-astra', githubLabel: 'llm-codex-gpt6-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-astra', minAgentVersion: '0.153.1' },
+  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', shortName: 'GPT-6.1 Sol', shortAlias: 'gpt61-sol', githubLabel: 'llm-codex-gpt61-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.1-sol', minAgentVersion: '0.153.0' },
+  { id: 'gpt-6-sol', name: 'GPT-6 Sol', shortName: 'GPT-6 Sol', shortAlias: 'gpt6-sol', githubLabel: 'llm-codex-gpt6-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-sol', minAgentVersion: '0.155.0' },
   { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', shortName: 'GPT-5.6 Sol', shortAlias: 'gpt56-sol', githubLabel: 'llm-codex-gpt56-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-sol', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', shortName: 'GPT-5.6 Terra', shortAlias: 'gpt56-terra', githubLabel: 'llm-codex-gpt56-terra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-terra', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', shortName: 'GPT-5.6 Luna', shortAlias: 'gpt56-luna', githubLabel: 'llm-codex-gpt56-luna', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-luna', minAgentVersion: '0.144.0' },
@@ -103,8 +108,8 @@ export const ANTIGRAVITY_RETAINED_MODELS: ModelInfo[] = [
 // OpenCode built-in free models. IDs are namespaced for ProPR and converted
 // back to OpenCode's provider/model syntax at CLI execution time.
 // These are available from `opencode models` without provider login.
-// Verified against `opencode models` and live runs with OpenCode CLI 1.19.5
-// (2026-10-29). OpenCode rotates these server-side; retired IDs route to a
+// Verified against `opencode models` and live runs with OpenCode CLI 1.19.6
+// (2026-11-17). OpenCode rotates these server-side; retired IDs route to a
 // current model through openCodeCompatibility.ts.
 export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-big-pickle', name: 'Big Pickle', shortName: 'Big Pickle', shortAlias: 'big-pickle', githubLabel: 'llm-opencode-big-pickle', contextWindow: '200K', maxTokens: 200000, openRouterId: 'opencode/big-pickle' },
@@ -112,6 +117,9 @@ export const OPENCODE_MODELS: ModelInfo[] = [
   { id: 'opencode-deepseek-v4.1-flash-free', name: 'DeepSeek V4.1 Flash Free', shortName: 'DeepSeek V4.1 Flash Free', shortAlias: 'deepseek-v41-flash-free', githubLabel: 'llm-opencode-deepseek-v41-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'deepseek/deepseek-v4.1-flash' },
   { id: 'opencode-flint-40b-free', name: 'Flint 40B Free', shortName: 'Flint 40B Free', shortAlias: 'flint-40b-free', githubLabel: 'llm-opencode-flint-40b-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'recursive/flint-v1.0:free' },
   { id: 'opencode-glm-5.3-flash-free', name: 'GLM 5.3 Flash Free', shortName: 'GLM 5.3 Flash Free', shortAlias: 'glm53-flash-free', githubLabel: 'llm-opencode-glm53-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'z-ai/glm-5.3-flash' },
+  { id: 'opencode-hy4-flash-free', name: 'Hy4 Flash Free', shortName: 'Hy4 Flash Free', shortAlias: 'hy4-flash-free', githubLabel: 'llm-opencode-hy4-flash-free', contextWindow: '1M', maxTokens: 1048576, openRouterId: 'tencent/hy4-flash' },
+  { id: 'opencode-iceman-free', name: 'Iceman Free', shortName: 'Iceman Free', shortAlias: 'iceman-free', githubLabel: 'llm-opencode-iceman-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'opencode/iceman-free' },
+  { id: 'opencode-longcat-2.5-free', name: 'LongCat 2.5 Free', shortName: 'LongCat 2.5 Free', shortAlias: 'longcat25-free', githubLabel: 'llm-opencode-longcat25-free', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'meituan/longcat-2.5' },
   { id: 'opencode-mimo-v2.6-flash-free', name: 'MiMo V2.6 Flash Free', shortName: 'MiMo V2.6 Flash Free', shortAlias: 'mimo-v26-flash-free', githubLabel: 'llm-opencode-mimo-v26-flash-free', contextWindow: '200K', maxTokens: 200000, openRouterId: 'xiaomi/mimo-v2.6-flash' },
   { id: 'opencode-nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning Free', shortName: 'Nemotron 3.5 Lightning Free', shortAlias: 'nemotron35-lightning-free', githubLabel: 'llm-opencode-nemotron35-lightning-free', contextWindow: '262K', maxTokens: 262144, openRouterId: 'nvidia/nemotron-3.5-lightning:free' },
   { id: 'opencode-nemotron-3.5-super-vl-free', name: 'Nemotron 3.5 Super VL Free', shortName: 'Nemotron 3.5 Super VL Free', shortAlias: 'nemotron35-super-vl-free', githubLabel: 'llm-opencode-nemotron35-super-vl-free', contextWindow: '1M', maxTokens: 1048576, openRouterId: 'nvidia/nemotron-3.5-super-vl:free' },
@@ -176,7 +184,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.323'
+    defaultCliVersion: '2.1.326'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -184,7 +192,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.168.0'
+    defaultCliVersion: '0.169.0'
   },
   antigravity: {
     dockerImage: 'propr/agent:latest',
@@ -192,7 +200,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.8'
+    defaultCliVersion: '1.5.10'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',
@@ -200,7 +208,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: OPENCODE_MODELS.map(m => m.id),
     defaultAlias: 'opencode',
     npmPackage: 'opencode-ai',
-    defaultCliVersion: '1.19.5'
+    defaultCliVersion: '1.19.6'
   },
   vibe: {
     dockerImage: 'propr/agent:latest',

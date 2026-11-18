@@ -49,10 +49,10 @@ async function openTask(page: Page) {
 async function openFollowup(page: Page): Promise<Locator> {
   const details = page.getByTestId('task-split-details');
   const direct = details.locator('button[title^="Follow Up"]').filter({ visible: true });
-  await expect(direct.or(details.getByRole('button', { name: /more actions/i }).filter({ visible: true })).first()).toBeVisible();
+  await expect(direct.or(details.getByRole('button', { name: /more task actions/i }).filter({ visible: true })).first()).toBeVisible();
   if (await direct.count()) await direct.first().click();
   else {
-    await details.getByRole('button', { name: /more actions/i }).filter({ visible: true }).first().click();
+    await details.getByRole('button', { name: /more task actions/i }).filter({ visible: true }).first().click();
     await page.getByRole('menuitem', { name: /Follow Up/ }).click();
   }
   const dialog = page.getByRole('dialog', { name: 'Follow Up on Task' });

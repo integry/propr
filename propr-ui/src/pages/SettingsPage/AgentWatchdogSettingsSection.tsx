@@ -29,7 +29,7 @@ const FIELDS: FieldSpec[] = [
   {
     name: 'agent_degenerate_output_limit',
     label: 'Whitespace-only output limit',
-    helperText: 'Stop a run after this many consecutive whitespace-only text deltas. Empty deltas never count. 0 disables.',
+    helperText: 'Stop a run after this many blank outputs in a row. 0 turns it off.',
     unit: 'count',
   },
 ];
@@ -91,7 +91,7 @@ export function AgentWatchdogSettingsSection({ values, defaults, onCommit }: Age
   return (
     <SettingsSection
       title="Agent watchdog"
-      description="Stops agent runs that go silent or emit only whitespace, so they release their worker slot and repository capacity instead of waiting for the execution timeout. Leave a field empty to use the environment default."
+      description="Stops runs that go silent. Leave a field empty for the default."
     >
       {FIELDS.map(field => {
         const fallback = defaults?.[field.name];

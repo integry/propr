@@ -421,7 +421,7 @@ export interface TaskStatus {
  * // Implement with a specific model
  * const result = await implementIssue("draft-123", 1, {
  *   agent_alias: "claude-code",
- *   model_name: "claude-sonnet-4-20250514"
+ *   model_name: "claude-sonnet-5-5"
  * });
  *
  * // Implement with Epic PR and auto-merge

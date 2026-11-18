@@ -183,6 +183,27 @@ describe('useLiveResource', () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps the data object when a refresh returns equal data, and replaces it when the data changed', async () => {
+    let body = { goal: { id: 'goal-1', transcript: ['first message'] } };
+    const read = vi.fn(async () => structuredClone(body));
+    const view = renderHook(() => useLiveResource({ read, scopeKey: 'goal-1', interest: { domains: ['goal'] } }));
+    await flush();
+    const first = view.result.current.data;
+    expect(first).toEqual(body);
+
+    await emitActivity(activityEvent({ domain: 'goal' }));
+    await advance(100);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(view.result.current.data).toBe(first);
+
+    body = { goal: { id: 'goal-1', transcript: ['first message', 'second message'] } };
+    await emitActivity(activityEvent({ domain: 'goal' }));
+    await advance(100);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(view.result.current.data).not.toBe(first);
+    expect(view.result.current.data).toEqual(body);
+  });
+
   it('drops events outside the declared repository and domains without reading', async () => {
     const read = vi.fn(async () => ({ ok: true }));
     renderHook(() => useLiveResource({

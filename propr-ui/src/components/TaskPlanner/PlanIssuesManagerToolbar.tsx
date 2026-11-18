@@ -172,7 +172,7 @@ const ExecutionModeToggle: React.FC<ExecutionModeToggleProps> = ({ useEpic, disa
             disabled={disabled}
             title={title}
             onClick={() => { if (!selected) onChange?.(value); }}
-            className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-2 sm:px-2.5 py-1 text-xs sm:text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`touch-hit inline-flex items-center gap-1.5 whitespace-nowrap rounded px-2 sm:px-2.5 py-1 text-xs sm:text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               selected ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             }`}
           >

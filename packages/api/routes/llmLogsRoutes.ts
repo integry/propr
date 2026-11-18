@@ -116,7 +116,7 @@ interface UsageMetricRecordRow {
  */
 const PLAN_EXEC_TYPES = new Set(['plan-generation', 'plan-refinement', 'title-generation']);
 // Keep task-analysis here solely to display historical persisted logs as task work.
-const TASK_EXEC_TYPES = new Set(['implementation', 'task-analysis', 'context-analysis', 'pr-review']);
+const TASK_EXEC_TYPES = new Set(['implementation', 'task-analysis', 'context-analysis', 'pr-review', 'summary-selection']);
 
 /** Extract an issue number from a structured draft_id using the repo as anchor. */
 function extractIssueFromDraftId(draftId: string | null | undefined, repo: string | null): number | null {

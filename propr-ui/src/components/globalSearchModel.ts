@@ -1,5 +1,6 @@
 // View model for the global search palette: one linear, keyboard-navigable
 // list of results (grouped by type) plus the category scopes above it.
+import { formatRelativeTime } from '../utils/dateFormat';
 import type { MonitoredRepo } from '../api/proprApi';
 import type { DraftListItem } from '../api/plannerApi';
 import type { GlobalSearchResults, TaskSearchResult } from '../hooks/useGlobalSearch';
@@ -75,16 +76,51 @@ export function cycleCategory(
   return current;
 }
 
-/** In-app route an item opens. */
+/** In-app route an item opens. A repository opens on the Repositories page, selected via {@link getItemState}. */
 export function getItemPath(item: SearchItem): string {
   switch (item.kind) {
     case 'repository':
-      return `/tasks?repository=${encodeURIComponent(item.repo.name)}`;
+      return '/repositories';
     case 'plan':
       return `/studio/${item.plan.draft_id}`;
     case 'task':
       return `/tasks/${item.task.id}`;
   }
+}
+
+/**
+ * Navigation state that selects a repository on the Repositories page. `selectBranch` is always
+ * present so the entry's branch identity survives: `null` means the entry has no explicit branch
+ * (it tracks the default), which must not match an entry of the same name pinned to a branch.
+ */
+export interface RepositorySelectionState {
+  selectRepo: string;
+  selectBranch: string | null;
+}
+
+/** Router state that accompanies {@link getItemPath}; only repositories need one. */
+export function getItemState(item: SearchItem): RepositorySelectionState | undefined {
+  if (item.kind !== 'repository') return undefined;
+  return { selectRepo: item.repo.name, selectBranch: item.repo.baseBranch || null };
+}
+
+/**
+ * The monitored entry a Repositories-page selection state names. With `selectBranch` (including
+ * `null` for "no explicit branch") the branch must match exactly; callers that send only a name,
+ * such as QuickAddTodo, get the first entry with that name.
+ */
+export function findSelectedRepository<R extends Pick<MonitoredRepo, 'name' | 'baseBranch'>>(
+  repos: R[],
+  state: { selectRepo: string; selectBranch?: string | null },
+): R | undefined {
+  const named = repos.filter(r => r.name === state.selectRepo);
+  if (state.selectBranch === undefined) return named[0];
+  return named.find(r => (r.baseBranch || null) === state.selectBranch) ?? named[0];
+}
+
+/** The repository's task list: a secondary action the user picks explicitly. */
+export function getRepositoryTasksPath(repo: MonitoredRepo): string {
+  return `/tasks?repository=${encodeURIComponent(repo.name)}`;
 }
 
 /**
@@ -135,31 +171,31 @@ export function getItemGithubUrl(item: SearchItem): string | null {
   }
 }
 
+/** The first non-empty line of a prompt, without a leading Markdown heading or list marker. */
+const firstPromptLine = (prompt: string | null | undefined): string => {
+  const line = (prompt ?? '').split(/\r?\n/).map(text => text.trim()).find(Boolean) ?? '';
+  return line.replace(/^#{1,6}\s+/, '').replace(/^(?:[-*+]|\d+\.)\s+/, '').trim();
+};
+
+/** A plan without a name reads as the first line of its prompt; its row shows that on one truncated line. */
+export const isPromptTitledPlan = (item: SearchItem): boolean => item.kind === 'plan' && !item.plan.name?.trim();
+
 export function getItemTitle(item: SearchItem): string {
   switch (item.kind) {
     case 'repository':
       return item.repo.name;
     case 'plan':
-      return item.plan.name || item.plan.initial_prompt;
+      return item.plan.name?.trim() || firstPromptLine(item.plan.initial_prompt);
     case 'task':
       return item.task.title || `Task ${item.task.id.slice(0, 8)}…`;
   }
 }
 
-export const formatTimeAgo = (dateString: string): string => {
-  const diffMins = Math.floor((Date.now() - new Date(dateString).getTime()) / 60000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h`;
-  return `${Math.floor(diffHours / 24)}d`;
-};
+/** A result's age in the shared format: `just now`, `5m ago`, `2d ago`, then `Nov 2, 2026`. */
+export const formatTimeAgo = (dateString: string): string => formatRelativeTime(dateString);
 
-/** The full relative-time phrase for prose: "5m ago", but never "just now ago". */
-export const formatTimeAgoPhrase = (dateString: string): string => {
-  const age = formatTimeAgo(dateString);
-  return age === 'just now' ? age : `${age} ago`;
-};
+/** The same age for prose rows ("Updated 5m ago"); kept as its own name for callers. */
+export const formatTimeAgoPhrase = formatTimeAgo;
 
 /**
  * The modifier label to advertise for Ctrl/Cmd shortcuts. Both keys work
@@ -228,7 +264,7 @@ const STATUS_TONES: Record<string, SearchStatusTone> = {
 /**
  * The standard status pill for a task or plan status: a dot plus a capitalised
  * label, coloured by the Studio logic (active work teal, a human bottleneck
- * amber, failure red, merged violet, finished work quiet gray).
+ * amber, failure red, merged and finished work quiet gray).
  */
 export function getSearchStatus(status: string): { label: string; tone: SearchStatusTone } {
   const words = status.replace(/_/g, ' ');

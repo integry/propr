@@ -160,6 +160,18 @@ function buildCodexCliArgs(params: CodexDockerArgsParams, streamConfig: CodexStr
     ];
 }
 
+/**
+ * Whether the run should trust /home/node/workspace so Codex loads the
+ * repository's `.codex/config.toml` and project MCP servers. Up to 0.168,
+ * `codex exec --dangerously-bypass-approvals-and-sandbox` saved that trust in
+ * CODEX_HOME by itself; 0.169 needs `--trust`, which the entrypoint adds when
+ * the installed CLI offers it. Repository inspection and exclusive-MCP runs
+ * pass `--ignore-user-config` and must not load project configuration.
+ */
+export function codexTrustsWorkspace(params: Pick<CodexDockerArgsParams, 'repositoryInspection' | 'toolPolicy'>): boolean {
+    return !params.repositoryInspection && !params.toolPolicy?.exclusiveMcp;
+}
+
 export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
     const {
         worktreePath, githubToken, modelName, issueNumber, environment,
@@ -176,6 +188,8 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const envVars = [
         ...buildEnvironmentVariableArgs([config.envVars, environment], true),
         ...(params.toolPolicy?.exclusiveMcp ? ['-e', 'PROPR_EXTENSION_EXCLUSIVE_MCP=1'] : []),
+        // Always set, after operator variables, so their envVars cannot change it.
+        '-e', `PROPR_CODEX_TRUST_WORKSPACE=${codexTrustsWorkspace(params) ? 1 : 0}`,
         // Name only: docker copies the value from its own environment.
         ...Object.keys(params.toolPolicy ? codexToolPolicyArgs(params.toolPolicy).env : {}).flatMap(name => ['-e', name]),
     ];

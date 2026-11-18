@@ -81,7 +81,7 @@ for reason codes and issue state labels.
 
 ## Automatic Follow-Up For Failed CI
 
-**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Check runs that GitHub delivers without a PR number are matched to open PRs by commit. For a fork pull request GitHub associates no pull request with the head commit at all, so the open pull requests are scanned for that head SHA instead; fork PRs are reported too. Enable it only where CI failures are trustworthy signals.
+**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Further failing checks of the same commit are added to that commit's comment instead of posting another one, so they start no second follow-up; editing the comment does not restart the running one. This is best effort: two failures delivered at almost the same moment can still produce two comments, or the later edit can drop the earlier check from the shared comment, and if the comments cannot be read or edited, ProPR posts a new comment rather than drop the report. Check runs that GitHub delivers without a PR number are matched to open PRs by commit. For a fork pull request GitHub associates no pull request with the head commit at all, so the open pull requests are scanned for that head SHA instead; fork PRs are reported too. Enable it only where CI failures are trustworthy signals.
 
 While Ultrafix is waiting for CI, its periodic check also recovers failed-CI follow-ups whose webhook was missed, such as during a restart. Recovery respects this setting and the repository's non-blocking checks, ignores replaced commits and closed PRs, and shares duplicate protection with webhook delivery.
 
@@ -174,7 +174,7 @@ you turn it on.
 
 | Level | Where | Values |
 |---|---|---|
-| Instance default | Settings → Workflow & PR Rules → Repository defaults → **Auto-Resolve Merge Conflicts (default for repositories)**, MCP `update_execution_settings` (`auto_resolve_merge_conflicts`), `propr setting update auto_resolve_merge_conflicts <true\|false>` | on / off (default off) |
+| Instance default | Settings → Workflow & PR rules → Repository defaults → **Auto-Resolve Merge Conflicts (default for repositories)**, MCP `update_execution_settings` (`auto_resolve_merge_conflicts`), `propr setting update auto_resolve_merge_conflicts <true\|false>` | on / off (default off) |
 | Repository override | Repositories → repository → Automation → **Auto-resolve merge conflicts**, MCP `update_repository_configuration` (`autoResolveMergeConflicts`), `propr repo add\|toggle owner/repo --auto-resolve-conflicts <on\|off\|inherit>` | Always / Never / Use instance default |
 
 The effective value is the repository override when one is set, otherwise the

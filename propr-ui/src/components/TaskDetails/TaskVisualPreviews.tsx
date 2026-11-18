@@ -1,3 +1,4 @@
+import { formatTimestampsInText } from '../../utils/dateFormat';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { ArrowUpRight, Film, Image as ImageIcon, Maximize2, Monitor, Smartphone, Tablet } from 'lucide-react';
 import { trustedApplicationPreviewMediaUrl, trustedPreviewMedia, type PublishedVisualPreview } from '@propr/shared';
@@ -122,7 +123,7 @@ function ContextStrip({ preview, dimensions }: { preview: PublishedVisualPreview
       <span className="font-semibold text-slate-900">{preview.title}</span>
       {preview.description && <>
         <span aria-hidden="true" className="text-slate-400"> — </span>
-        <span className="whitespace-pre-line text-slate-600">{preview.description}</span>
+        <span className="whitespace-pre-line text-slate-600">{formatTimestampsInText(preview.description)}</span>
       </>}
     </p>
     <span className="flex flex-none flex-wrap items-center gap-1.5 font-mono text-[11px] text-slate-500">

@@ -6,6 +6,7 @@ import type { PullRequestStatusSyncDeps } from '../src/services/pullRequestStatu
 process.env.PROPR_DEMO_MODE = 'true';
 
 const { closeConnection } = await import('../src/db/connection.js');
+const { resetPullRequestStatusEditPacingForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const { extractPullRequestStatusBlock } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
 const { disablePullRequestStatusSync, enablePullRequestStatusSync, syncPullRequestStatus } = await import('../src/services/pullRequestStatus/pullRequestStatusSync.js');
 const { requestPullRequestStatusSync } = await import('../src/services/pullRequestStatus/pullRequestStatusSignal.js');
@@ -131,8 +132,14 @@ before(async () => {
         table.string('draft_id').primary(); table.string('repository'); table.json('context_config'); table.string('name'); table.boolean('paused').defaultTo(false);
     });
     await database.schema.createTable('epic_execution_queues', table => {
-        table.string('draft_id').primary(); table.text('issues'); table.integer('cursor'); table.string('status'); table.boolean('ready'); table.boolean('parallel');
-        table.string('blocked_reason');
+        table.string('draft_id').primary(); table.string('execution_id'); table.string('repository'); table.text('issues'); table.integer('cursor');
+        table.string('status'); table.boolean('ready'); table.boolean('parallel'); table.string('mode'); table.integer('max_parallel');
+        table.string('advance_on').defaultTo('merged'); table.string('blocked_reason');
+    });
+    await database.schema.createTable('epic_execution_queue_issues', table => {
+        table.string('draft_id'); table.string('execution_id'); table.integer('issue_number'); table.integer('position'); table.string('state');
+        table.bigInteger('dispatched_at'); table.string('blocked_kind'); table.string('blocked_reason'); table.bigInteger('blocked_at');
+        table.bigInteger('updated_at').defaultTo(0); table.text('depends_on'); table.boolean('skip_satisfies_dependents').defaultTo(false);
     });
     await database.schema.createTable('goals', table => { table.string('goal_id'); table.string('repository'); table.integer('final_pr_number'); });
     await database.schema.createTable('review_scores', table => {
@@ -148,9 +155,10 @@ after(async () => {
 });
 
 beforeEach(async () => {
-    for (const name of ['tasks', 'task_history', 'plan_issues', 'task_drafts', 'epic_execution_queues', 'goals', 'review_scores']) await database(name).del();
+    for (const name of ['tasks', 'task_history', 'plan_issues', 'task_drafts', 'epic_execution_queues', 'epic_execution_queue_issues', 'goals', 'review_scores']) await database(name).del();
     resetPullRequestTitleStateForTests();
     resetEpicChildReadsForTests();
+    resetPullRequestStatusEditPacingForTests();
     setPullRequestTitleSettleMsForTests(0);
     titleSetting = true;
     github = new FakeGitHub();
@@ -167,10 +175,24 @@ beforeEach(async () => {
         { repository: REPOSITORY, issue_number: 801, draft_id: 'draft-1', status: 'under_review', pr_number: 911, created_at: '2' },
         { repository: REPOSITORY, issue_number: 802, draft_id: 'draft-1', status: 'pending', pr_number: null, created_at: '3' },
     ]);
-    await database('epic_execution_queues').insert({ draft_id: 'draft-1', issues: JSON.stringify([800, 801, 802]), cursor: 1, status: 'active', ready: true, parallel: false });
+    // As createEpicExecutionQueue writes it: progress lives in the per-issue rows, and the legacy cursor column stays 0.
+    await database('epic_execution_queues').insert({ draft_id: 'draft-1', execution_id: 'exec-1', repository: REPOSITORY, issues: JSON.stringify([800, 801, 802]), cursor: 0, status: 'active', ready: true, parallel: false, mode: 'sequential' });
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
     await database('tasks').insert({ task_id: 't-911', repository: REPOSITORY, issue_number: 801, task_type: 'issue', created_at: '2026-11-13T08:30:00Z', initial_job_data: '{}', pr_number: 911 });
     await database('task_history').insert({ task_id: 't-911', state: 'completed' });
 });
+
+type QueueIssueState = 'pending' | 'dispatched' | 'done' | 'blocked' | 'skipped';
+
+/** The execution's per-issue rows, in queue (issue number) order; a claimed issue has a dispatch time. */
+async function setQueueIssues(states: Record<number, QueueIssueState>, dependsOn: Record<number, number[]> = {}): Promise<void> {
+    await database('epic_execution_queue_issues').del();
+    const issues = Object.keys(states).map(Number).sort((left, right) => left - right);
+    await database('epic_execution_queue_issues').insert(issues.map((issueNumber, position) => ({
+        draft_id: 'draft-1', execution_id: 'exec-1', issue_number: issueNumber, position, state: states[issueNumber],
+        dispatched_at: states[issueNumber] === 'pending' ? null : 1, depends_on: JSON.stringify(dependsOn[issueNumber] ?? []),
+    })));
+}
 
 function deps(): Partial<PullRequestStatusSyncDeps> {
     return {
@@ -188,14 +210,60 @@ function statusLine(number = EPIC): string {
 async function mergeSubPr911(): Promise<void> {
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
-    await database('epic_execution_queues').update({ cursor: 2 });
+    await setQueueIssues({ 800: 'done', 801: 'done', 802: 'pending' });
     const comment = github.comments.find(candidate => candidate.body.includes(EPIC_PROGRESS_MARKER))!;
     comment.body = buildEpicProgressComment(PROGRESS_AFTER_911, 'Scheduler primitives', undefined, extractEpicProgressActivityLines(comment.body));
 }
 
+test('a second sub-PR for the same issue, and a human sub-PR, change neither count of the status line or title', async () => {
+    // As on #3563: a second PR for issue #801 (#3587/#3588) and a merged human CI PR (#3569) into the epic branch.
+    github.pulls.set(912, pull(912, { title: '[801 by Codex] Second issue', head: { sha: 'h912', ref: '801/codex-second', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    github.pulls.set(913, pull(913, { title: 'Fix CI cache', state: 'closed', merged: true, merged_at: '2026-11-13T08:10:00Z', head: { sha: 'h913', ref: 'fix-ci-cache', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* \S+ 1 of 3 issues merged · /);
+    assert.match(github.epic().title, / 1\/3 \[Epic\]/);
+    // The PR the issue does not link merges: the issue is merged, once.
+    Object.assign(github.pulls.get(912)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
+    Object.assign(github.pulls.get(911)!, { state: 'closed', merged: false, merged_at: null });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* \S+ 2 of 3 issues merged · /);
+    assert.match(github.epic().title, / 2\/3 \[Epic\]/);
+});
+
+test('a successor whose plan issues all shipped through its predecessor does not count a human PR as an issue', async () => {
+    // Every plan issue's PR merged before predecessor #899 merged the epic branch; a human PR (#913) merged after it.
+    Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T08:10:00Z' });
+    github.pulls.set(914, pull(914, { state: 'closed', merged: true, merged_at: '2026-11-13T08:20:00Z', head: { sha: 'h914', ref: '802/claude-third', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    github.pulls.set(899, pull(899, { state: 'closed', merged: true, merged_at: '2026-11-13T08:30:00Z', head: { sha: 'p899', ref: EPIC_BRANCH, repo: { full_name: REPOSITORY } } }));
+    github.pulls.set(913, pull(913, { title: 'Fix CI cache', state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z', head: { sha: 'h913', ref: 'fix-ci-cache', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    await database('plan_issues').update({ status: 'merged' });
+    await database('plan_issues').where({ issue_number: 802 }).update({ pr_number: 914 });
+    await database('epic_execution_queues').update({ cursor: 3, status: 'completed' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.doesNotMatch(statusLine(), /issues merged/);
+    assert.doesNotMatch(github.epic().title, / \d+\/\d+ \[Epic\]/);
+});
+
+test('a successor drops an issue whose alternate PR shipped through its predecessor while its linked PR is open', async () => {
+    // Issue #801 still links open #911, but alternate #912 from its branch merged before predecessor #899 merged the
+    // epic branch. #910 (issue #800) shipped too; only #802, merged through #914 after #899, is the successor's.
+    github.pulls.set(912, pull(912, { state: 'closed', merged: true, merged_at: '2026-11-13T08:10:00Z', head: { sha: 'h912', ref: '801/codex-second', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    github.pulls.set(899, pull(899, { state: 'closed', merged: true, merged_at: '2026-11-13T08:30:00Z', head: { sha: 'p899', ref: EPIC_BRANCH, repo: { full_name: REPOSITORY } } }));
+    github.pulls.set(914, pull(914, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z', head: { sha: 'h914', ref: '802/claude-third', repo: { full_name: REPOSITORY } }, base: { ref: EPIC_BRANCH, sha: 'e1' } }));
+    await database('plan_issues').where({ issue_number: 802 }).update({ status: 'merged', pr_number: 914 });
+    await database('epic_execution_queues').update({ cursor: 3, status: 'completed' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* ✅ 1 of 1 issues? merged · /);
+    assert.match(github.epic().title, / 1\/1 \[Epic\]/);
+});
+
 test('a ready sub-PR waiting to be merged shows ⚠️ with the count, and the block names it', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.equal(statusLine(), '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated 09:41 UTC');
+    assert.equal(statusLine(), '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated Nov 13 09:41 UTC');
     assert.equal(github.epic().title, '[Epic] Scheduler primitives', '⚠️ waits to settle before the title shows it');
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(github.epic().title, '⚠️ 1/3 [Epic] Scheduler primitives');
@@ -237,7 +305,7 @@ test('every issue merged with passing checks shows ✅ N/N', async () => {
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(github.epic().title, '✅ 3/3 [Epic] Scheduler primitives');
-    assert.equal(statusLine(), '**ProPR** ✅ 3 of 3 issues merged · checks: 1 passed · updated 09:41 UTC');
+    assert.equal(statusLine(), '**ProPR** ✅ 3 of 3 issues merged · checks: 1 passed · updated Nov 13 09:41 UTC');
 });
 
 test('with prTitleStatus off the title is left alone; the block and the comment are still written', async () => {
@@ -597,7 +665,7 @@ test('a queue head stopped on a reported blocker shows ⚠️, not in progress',
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
     await database('plan_issues').where({ issue_number: 802 }).update({ status: 'processing' });
-    await database('epic_execution_queues').update({ cursor: 2 });
+    await setQueueIssues({ 800: 'done', 801: 'done', 802: 'dispatched' });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 in progress · /, 'a running head is in progress');
     await database('epic_execution_queues').update({ blocked_reason: agentBlockedHeadReason(802) });
@@ -610,7 +678,8 @@ test('a pending queue head stopped on a reported blocker is named in the status,
     // #802's processing webhook was lost: it is the active head, still pending, when its run reports a blocker.
     await database('plan_issues').where({ issue_number: 801 }).update({ status: 'merged' });
     Object.assign(github.pulls.get(911)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:00:00Z' });
-    await database('epic_execution_queues').update({ cursor: 2, blocked_reason: agentBlockedHeadReason(802) });
+    await setQueueIssues({ 800: 'done', 801: 'done', 802: 'dispatched' });
+    await database('epic_execution_queues').update({ blocked_reason: agentBlockedHeadReason(802) });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · #802 stopped on a blocker · /);
     assert.match(github.progressComment(), /\nIn progress: #802 \(Third issue\) - stopped on a blocker\n/);
@@ -625,7 +694,8 @@ test('an active queue that is not ready starts nothing, so the epic is not shown
     await database('epic_execution_queues').update({ ready: false });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /, 'a pending head');
-    await database('epic_execution_queues').update({ cursor: 1 });
+    // #801 merged, but the queue has not advanced past it yet.
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /, 'a merged head with an issue still to start');
     await database('epic_execution_queues').update({ ready: true });
@@ -635,12 +705,92 @@ test('an active queue that is not ready starts nothing, so the epic is not shown
 
 test('an active parallel execution that is not ready is not shown working on its pending issues', async () => {
     await mergeSubPr911();
-    await database('epic_execution_queues').update({ parallel: true, cursor: 0 });
+    await database('epic_execution_queues').update({ parallel: true, mode: 'parallel', cursor: 0 });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /, 'a ready parallel execution has a pending issue to start');
     await database('epic_execution_queues').update({ ready: false });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 3 issues merged · nothing in progress · /);
+});
+
+// --- a sub-PR waiting on a person holds the queue (#3563) ---
+
+/** #911 (issue #801) conflicts with the epic branch: its status needs a person. */
+function subPr911NeedsAttention(): void {
+    Object.assign(github.pulls.get(911)!, { mergeable: false, title: '⚠️ [801 by Claude Opus 5.5] Second issue' });
+}
+
+async function useMode(mode: 'sequential' | 'parallel' | 'graph', maxParallel: number | null = null): Promise<void> {
+    await database('epic_execution_queues').update({ mode, parallel: mode === 'parallel', max_parallel: maxParallel });
+}
+
+async function settledTitle(): Promise<string> {
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    return github.epic().title;
+}
+
+const NEEDS_YOU_911 = /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) /;
+const WAITS_FOR_MERGE_911 = '**ProPR** ⚠️ 1 of 3 issues merged · #911 (issue #801) waits to be merged into the epic branch · updated Nov 13 09:41 UTC';
+
+for (const mode of ['sequential', 'graph'] as const) {
+    test(`${mode}: a sub-PR that needs a person, with an issue behind it, shows ⚠️ naming the sub-PR, not "starts next"`, async () => {
+        await useMode(mode);
+        await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' }, mode === 'graph' ? { 802: [801] } : {});
+        subPr911NeedsAttention();
+        assert.equal(await settledTitle(), '⚠️ 1/3 [Epic] Scheduler primitives');
+        assert.match(statusLine(), NEEDS_YOU_911);
+        assert.doesNotMatch(statusLine(), /starts next/);
+    });
+
+    test(`${mode}: a ready sub-PR waiting for a human merge, with an issue behind it, shows ⚠️ waits to be merged`, async () => {
+        await useMode(mode);
+        await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' }, mode === 'graph' ? { 802: [801] } : {});
+        assert.equal(await settledTitle(), '⚠️ 1/3 [Epic] Scheduler primitives');
+        assert.equal(statusLine(), WAITS_FOR_MERGE_911);
+    });
+}
+
+test('parallel: a sub-PR that needs a person shows ⚠️ while the pending issue cannot be dispatched', async () => {
+    await useMode('parallel');
+    // #802's dispatch failed: it holds no claim and the scheduler does not start a blocked issue.
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'blocked' });
+    subPr911NeedsAttention();
+    assert.equal(await settledTitle(), '⚠️ 1/3 [Epic] Scheduler primitives');
+    assert.match(statusLine(), NEEDS_YOU_911);
+    Object.assign(github.pulls.get(911)!, { mergeable: true });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.equal(statusLine(), WAITS_FOR_MERGE_911, 'and a ready sub-PR waits to be merged');
+});
+
+test('a graph issue whose prerequisites are merged and that has a free slot starts next, whatever its siblings wait on', async () => {
+    await useMode('graph');
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' }, { 802: [800] });
+    subPr911NeedsAttention();
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #802 starts next · /);
+    // With one slot, #801's sub-PR holds it: nothing starts until a person acts on #911.
+    await useMode('graph', 1);
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), NEEDS_YOU_911);
+});
+
+test('a parallel issue that is pending and unclaimed starts next; one the dispatcher claimed is starting', async () => {
+    await useMode('parallel');
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
+    subPr911NeedsAttention();
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 1 of 3 issues merged · #802 starts next · /);
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'dispatched' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 1 of 3 issues merged · #802 starts next · /);
+});
+
+test('a chain starts the issue after a head that merged before the queue advanced', async () => {
+    await mergeSubPr911();
+    await setQueueIssues({ 800: 'done', 801: 'dispatched', 802: 'pending' });
+    await syncPullRequestStatus(REPOSITORY, EPIC, deps());
+    assert.match(statusLine(), /🔨 2 of 3 issues merged · #802 starts next · /);
 });
 
 // --- lists longer than the pages read ---
@@ -697,15 +847,15 @@ test('an epic whose unread sub-PRs could be working keeps its published state, w
     await database('task_history').insert({ task_id: 't-911', state: 'completed' });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     // Listed without an update time, no read status is kept: no state is claimed from incomplete sub-PR statuses.
-    assert.equal(statusLine(), working.replace('1 of 3', '1 of 13'), 'the published state stays; only its merged count changes');
-    assert.equal(github.epic().title, '◔ 1/13 [Epic] Scheduler primitives');
+    assert.equal(statusLine(), working, 'the published state stays; pull requests without a plan issue change no count');
+    assert.equal(github.epic().title, '◔ 1/3 [Epic] Scheduler primitives');
     const writes = github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length;
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(github.writes.filter(write => write.route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}').length, writes, 'nothing new: neither the block nor the title is written');
     // Once the unread pull request is gone, the status is known again: #911 waits to be merged (the other PRs count, without ProPR status).
     github.pulls.delete(929);
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.match(statusLine(), /⚠️ 1 of 12 issues merged · #911 \(issue #801\) waits to be merged/);
+    assert.match(statusLine(), /⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
 });
 
 /** Open sub-PRs #920..#(920+count-1) into the epic branch, listed with an update time as GitHub lists them. */
@@ -733,24 +883,24 @@ test('more open sub-PRs than the read budget: later updates read the rest, keep 
     github.reads = [];
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.equal(subPrReads(), 10, 'one update reads at most ten sub-PRs');
-    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #801 in progress/, 'undetermined: the state stays, the count is updated');
-    assert.equal(github.epic().title, '◔ 1/14 [Epic] Scheduler primitives');
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #801 in progress/, 'undetermined: the state stays, and the sub-PRs outside the plan change no count');
+    assert.equal(github.epic().title, '◔ 1/3 [Epic] Scheduler primitives');
 
     // The next update reads the two left unread and keeps the ten read before: the state is established.
     github.reads = [];
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.ok(github.reads.includes(929) && github.reads.includes(930), 'the sub-PRs left unread are read first');
     assert.equal(subPrReads(), 10);
-    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.equal(github.epic().title, '⚠️ 1/14 [Epic] Scheduler primitives');
+    assert.equal(github.epic().title, '⚠️ 1/3 [Epic] Scheduler primitives');
 
-    // One sub-PR merges while more than ten stay open: the count follows, and the state stays established.
+    // A sub-PR without a plan issue merges while more than ten stay open: no count changes, and the state stays established.
     Object.assign(github.pulls.get(920)!, { state: 'closed', merged: true, merged_at: '2026-11-13T09:30:00Z' });
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 2 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
-    assert.equal(github.epic().title, '⚠️ 2/14 [Epic] Scheduler primitives');
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
+    assert.equal(github.epic().title, '⚠️ 1/3 [Epic] Scheduler primitives');
 });
 
 test('an epic with more open sub-PRs than its progress comment holds lists what fits and counts the rest', async () => {
@@ -760,7 +910,7 @@ test('an epic with more open sub-PRs than its progress comment holds lists what 
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     const comment = github.progressComment();
     assert.ok(comment.length <= EPIC_PROGRESS_COMMENT_MAX_LENGTH, `${comment.length} characters is more than GitHub accepts`);
-    assert.match(comment, /\*\*1 out of 3 PRs merged\*\* ⏳/, 'the counts stay as the merge progress update wrote them');
+    assert.match(comment, /\*\*1 of 3 issues merged\*\* ⏳/, 'the counts stay as the merge progress update wrote them');
     assert.match(comment, /Merged child PRs: #910\n\nIn progress: #911 \(issue #801, Second issue\) - ready to merge; #920 \(T+\); .*; and \d+ more\n\nUp next: #802 \(Third issue\)\n/,
         'the sub-PRs read come first, the listing stops where the comment is full, and the rest are counted');
     const inProgress = /^In progress: .*$/m.exec(comment)![0];
@@ -778,7 +928,7 @@ test('a kept sub-PR status is read again once the sub-PR changes', async () => {
     addListedSubPrs(11);
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.match(statusLine(), /⚠️ 1 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
+    assert.match(statusLine(), /⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
     // #930 (listed last) starts working; its own status sync rewrites it, which changes its update time.
     await database('tasks').insert({ task_id: 't-930', repository: REPOSITORY, issue_number: 4930, task_type: 'issue', created_at: '2026-11-13T09:40:00Z', initial_job_data: '{}', pr_number: 930 });
     await database('task_history').insert({ task_id: 't-930', state: 'processing' });
@@ -786,7 +936,7 @@ test('a kept sub-PR status is read again once the sub-PR changes', async () => {
     github.reads = [];
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.ok(github.reads.includes(930), 'the changed sub-PR is read, not taken from the kept status');
-    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #930/);
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #930/);
 });
 
 test('a kept sub-PR status is read again once the sub-PR\'s sync records a change it could not write', async () => {
@@ -798,7 +948,7 @@ test('a kept sub-PR status is read again once the sub-PR\'s sync records a chang
     github.pulls.get(930)!.body = FULL_BODY;
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
-    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #930 in progress/);
+    assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #930 in progress/);
     await syncPullRequestStatus(REPOSITORY, 930, deps());
 
     // #930's run completes: ready. Its sync writes nothing, so GitHub's update time of #930 stays as the epic kept it.
@@ -808,7 +958,7 @@ test('a kept sub-PR status is read again once the sub-PR\'s sync records a chang
     github.reads = [];
     await syncPullRequestStatus(REPOSITORY, EPIC, deps());
     assert.ok(github.reads.includes(930), 'the changed sub-PR is read, not taken from the kept status');
-    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
+    assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
 });
 
 test('an update leaving sub-PRs unread schedules the update that reads them', async () => {
@@ -819,8 +969,8 @@ test('an update leaving sub-PRs unread schedules the update that reads them', as
         requestPullRequestStatusSync(REPOSITORY, EPIC);
         const deadline = Date.now() + 8_000;
         // No further signal: the scheduled continuation alone establishes the state.
-        while (!/⚠️ 1 of 14 issues merged/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-        assert.match(statusLine(), /⚠️ 1 of 14 issues merged · #911 \(issue #801\) waits to be merged/);
+        while (!/⚠️ 1 of 3 issues merged/.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.match(statusLine(), /⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
     } finally {
         disablePullRequestStatusSync();
         setEpicChildReadContinueMsForTests(null);
@@ -844,7 +994,7 @@ test('a working epic that left sub-PRs unread schedules the update that reads th
         while (!readyLine.test(github.progressComment()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
         assert.ok(github.reads.includes(930), 'the sub-PR left unread is read by the continuation');
         assert.match(github.progressComment(), readyLine);
-        assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 14 issues merged · #801 in progress/, 'the epic stays working');
+        assert.match(statusLine(), /^\*\*ProPR\*\* 🔨 1 of 3 issues merged · #801 in progress/, 'the epic stays working');
     } finally {
         disablePullRequestStatusSync();
         setEpicChildReadContinueMsForTests(null);
@@ -863,12 +1013,12 @@ test('an epic with more stable sub-PRs than twenty-one updates read is read to t
     enablePullRequestStatusSync(deps());
     try {
         requestPullRequestStatusSync(REPOSITORY, EPIC);
-        const established = /⚠️ 1 of 213 issues merged/;
+        const established = /⚠️ 1 of 3 issues merged/;
         const deadline = Date.now() + 30_000;
         // No further signal: only the scheduled continuations read the sub-PRs.
         while (!established.test(statusLine()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
         assert.ok(github.reads.includes(1129), 'the sub-PR listed last is read');
-        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 213 issues merged · #911 \(issue #801\) waits to be merged/);
+        assert.match(statusLine(), /^\*\*ProPR\*\* ⚠️ 1 of 3 issues merged · #911 \(issue #801\) waits to be merged/);
     } finally {
         disablePullRequestStatusSync();
         setEpicChildReadContinueMsForTests(null);

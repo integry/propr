@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
-import { applyDatabaseMigrations } from './migrationGate.js';
+import { applyDatabaseMigrations, assertDatabaseNotNewerThanCode, DatabaseNewerThanCodeError } from './migrationGate.js';
 import { installSqliteRetry } from './sqliteRetry.js';
 import { assertRelativeDatabaseOnDataMount } from './dataMountGuard.js';
 
@@ -180,9 +180,16 @@ export async function runMigrations(): Promise<void> {
     try {
         logger.info('Running database migrations...');
 
+        await assertDatabaseNotNewerThanCode(db, path.join(__dirname, 'migrations'));
         await applyDatabaseMigrations(db);
         logger.info('Database migrations completed successfully');
     } catch (error) {
+        if (error instanceof DatabaseNewerThanCodeError) {
+            // A version mismatch, not a bug: one plain line (no stack trace) and stop, because
+            // retrying or continuing on a schema this build does not know cannot succeed.
+            console.error(error.message);
+            process.exit(1);
+        }
         const err = error as Error;
         logger.error({
             error: err.message,

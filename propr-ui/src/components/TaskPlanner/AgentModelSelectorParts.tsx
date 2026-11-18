@@ -189,6 +189,8 @@ interface SingleSelectModeProps {
   agentPlaceholder?: string;
   agentPlaceholderProvider?: string;
   agentLabel?: string;
+  /** Each select fills the row, one under the other, like the form's other fields. */
+  fullWidth?: boolean;
 }
 
 export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
@@ -205,15 +207,19 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
   formatAgentLabel = agent => agent.alias,
   agentPlaceholder = 'Select Agent',
   agentPlaceholderProvider,
-  agentLabel
+  agentLabel,
+  fullWidth = false,
 }) => {
   const selectClass = getSelectClass(compact);
+  // A full-width select is as wide as the field beside it; otherwise phones cap it at 120px.
+  const widthClass = fullWidth ? 'w-full' : 'max-w-[120px] sm:max-w-none';
+  const wrapperClass = fullWidth ? 'relative w-full' : 'relative';
   const logoProvider = selectedAgent || agentPlaceholderProvider;
   const agentPadding = logoProvider ? (compact ? 'pl-6' : 'pl-8') : '';
 
   return (
-    <div className={`flex min-w-0 flex-wrap items-center gap-1 sm:gap-2 ${className}`}>
-      <div className="relative">
+    <div className={`${fullWidth ? 'grid gap-2' : 'flex flex-wrap items-center gap-1 sm:gap-2'} min-w-0 ${className}`}>
+      <div className={wrapperClass}>
         <div className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none">
           {logoProvider && (
             <ProviderLogo
@@ -226,7 +232,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
           value={selectedAgent || ''}
           onChange={onAgentChange}
           disabled={disabled}
-          className={`${selectClass} ${agentPadding} max-w-[120px] sm:max-w-none`}
+          className={`${selectClass} ${agentPadding} ${widthClass}`}
           title="Select AI agent"
           aria-label={agentLabel}
         >
@@ -246,12 +252,12 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
       </div>
 
       {selectedAgent && availableModels.length > 0 && (
-        <div className="relative">
+        <div className={wrapperClass}>
           <select
             value={selectedModel || ''}
             onChange={onModelChange}
             disabled={disabled}
-            className={`${selectClass} max-w-[120px] sm:max-w-none`}
+            className={`${selectClass} ${widthClass}`}
             title="Select model"
           >
             <option value="">Select Model</option>

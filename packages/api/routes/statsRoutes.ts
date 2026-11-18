@@ -2,7 +2,8 @@ import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { analyticsTimeframeStart } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
-import { validateEnum, validateRepositoryFilter } from './validation.js';
+import { validateEnum } from './validation.js';
+import { repositoryScopeOrRespond, resolveRepositoryScope, type RepositoryScopeResolver } from '../repositoryScope.js';
 import { successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { executionTokenSums, loadModelUsage } from './analyticsModelUsage.js';
@@ -17,6 +18,7 @@ import {
 } from './analyticsAggregates.js';
 import { loadAutonomy, loadDeliveryMetrics } from './analyticsDelivery.js';
 import { createAnalyticsCache, type AnalyticsCache } from './analyticsCache.js';
+import { loadRepositoryTaskStats } from './analyticsRepositoryStats.js';
 
 /** Periods the dashboard's historical stats section can request. */
 export const DASHBOARD_STATS_PERIODS = ['7d', '30d'] as const;
@@ -36,6 +38,8 @@ interface StatsRoutesDeps {
    * short while; shared with the review score routes so both read one copy.
    */
   analyticsCache?: AnalyticsCache;
+  /** Resolves the `repository` filter to a configured, visible repository. */
+  repositoryScope?: RepositoryScopeResolver;
 }
 
 interface DailyCountRow {
@@ -78,14 +82,6 @@ interface PrIterationRow {
   task_count: number | string;
 }
 
-interface RepositoryStatsRow {
-  repository: string;
-  total: number;
-  completed: number;
-  failed: number;
-  in_progress: number;
-}
-
 /**
  * The days on which anything happened, in order: those with a task created
  * and those with only a run started, which the task grouping alone omits.
@@ -103,6 +99,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
   const now = deps.now ?? (() => new Date());
   const cachePrice: CachePriceLookup = deps.cachePrice ?? (() => null);
   const aggregationCache = deps.analyticsCache ?? createAnalyticsCache();
+  const repositoryScope = deps.repositoryScope ?? resolveRepositoryScope;
 
   async function getTaskStats(req: Request, res: Response): Promise<void> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
@@ -201,51 +198,9 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     if (analyticsWindow === false) return;
 
     try {
-      // Get task counts and success rates per repository
-      const repoStatsQuery = db('tasks as t')
-        .leftJoin(
-          db('task_history')
-            .select('task_id')
-            .max('timestamp as max_ts')
-            .groupBy('task_id')
-            .as('latest'),
-          't.task_id', 'latest.task_id'
-        )
-        .leftJoin('task_history as h', function(this: Knex.JoinClause) {
-          this.on('t.task_id', '=', 'h.task_id')
-              .andOn('h.timestamp', '=', 'latest.max_ts');
-        })
-        .select(
-          't.repository',
-          db.raw('count(*) as total'),
-          db.raw("sum(CASE WHEN h.state = 'completed' THEN 1 ELSE 0 END) as completed"),
-          db.raw("sum(CASE WHEN h.state = 'failed' THEN 1 ELSE 0 END) as failed"),
-          db.raw("sum(CASE WHEN h.state NOT IN ('completed', 'failed') THEN 1 ELSE 0 END) as in_progress")
-        )
-        .groupBy('t.repository')
-        .orderBy('total', 'desc')
-        .limit(20);
-      whereCreatedWithin(repoStatsQuery, 't.created_at', analyticsWindow);
-      const repoStats = await repoStatsQuery as unknown as RepositoryStatsRow[];
-
-      // Calculate success rates and format response
-      const repositories = repoStats.map((row) => {
-        const total = Number(row.total);
-        const completed = Number(row.completed || 0);
-        const failed = Number(row.failed || 0);
-        const inProgress = Number(row.in_progress || 0);
-        const successRate = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0';
-
-        return {
-          repository: row.repository,
-          total,
-          completed,
-          failed,
-          inProgress,
-          successRate: parseFloat(successRate)
-        };
-      });
-
+      // Tasks, outcomes and success rate per repository, counted as the
+      // totals band counts them; see `loadRepositoryTaskStats`.
+      const repositories = await loadRepositoryTaskStats(db, analyticsWindow);
       res.json({ repositories });
     } catch (error) {
       console.error('Error in /api/stats/repositories:', error);
@@ -425,19 +380,14 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
    * contribute to it.
    */
   async function getDashboardStats(req: Request, res: Response): Promise<void> {
-    const repository = typeof req.query.repository === 'string' ? req.query.repository : 'all';
-    const repoValidation = validateRepositoryFilter(repository);
-    if (!repoValidation.valid) {
-      res.status(400).json({ error: repoValidation.error });
-      return;
-    }
-
     const periodValidation = validateEnum(req.query.period, DASHBOARD_STATS_PERIODS, 'Period');
     if (!periodValidation.valid) {
       res.status(400).json({ error: periodValidation.error });
       return;
     }
     const period: DashboardStatsPeriod = periodValidation.value ?? '7d';
+    const repository = await repositoryScopeOrRespond(req, res, req.query.repository, { resolver: repositoryScope, context: '/api/stats/dashboard' });
+    if (repository === null) return;
 
     try {
       const to = now();

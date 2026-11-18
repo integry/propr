@@ -1,3 +1,4 @@
+import { formatDateTime, formatRelativeTime } from '../utils/dateFormat';
 import React from 'react';
 import { RepositoryIndexingStatus } from '../api/repoIndexingApi';
 
@@ -7,11 +8,8 @@ interface IndexingStatusIndicatorProps {
   onReindex?: () => void;
 }
 
-const formatTimestamp = (ts: string | null) => {
-  if (!ts) return 'Never';
-  const date = new Date(ts);
-  return date.toLocaleString();
-};
+/** The full local date and time for the tooltip, or `Never`. */
+const formatTimestamp = (ts: string | null) => (ts ? formatDateTime(ts) || 'Never' : 'Never');
 
 const formatTokens = (tokens: number): string => {
   if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
@@ -151,8 +149,8 @@ const CompletedStatus: React.FC<{ status: RepositoryIndexingStatus }> = ({ statu
         </span>
       )}
       {!shortHash && status.last_indexed_at && (
-        <span className="text-xs text-gray-500">
-          {formatTimestamp(status.last_indexed_at)}
+        <span className="text-xs text-gray-500" title={formatTimestamp(status.last_indexed_at)}>
+          {formatRelativeTime(status.last_indexed_at)}
         </span>
       )}
     </div>

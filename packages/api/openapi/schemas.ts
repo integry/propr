@@ -322,9 +322,9 @@ export function querySet<T extends z.ZodObject>(id: string, schema: T): T {
 
 export const ListTasksQuery = querySet('ListTasksQuery', z.object({
   status: z.string().optional().describe('`all` (default), `active`, `waiting`, `attention`, or a worker state.'),
-  repository: z.string().optional().describe('`owner/name`, or `all` (default).'),
+  repository: z.string().optional().describe('`owner/name` of a configured repository (any capitalization), or `all` (default).'),
   search: z.string().max(500).optional(),
-  limit: z.number().int().min(1).max(1000).optional().describe('Page size; defaults to 50.'),
+  limit: z.number().int().min(1).max(200).optional().describe('Page size; defaults to 50, at most 200.'),
   offset: z.number().int().min(0).max(1_000_000).optional(),
   forReview: z.enum(['true', 'false']).optional().describe('Only runs whose pull request awaits review.'),
   excludeMerged: z.enum(['true', 'false']).optional(),
@@ -435,7 +435,7 @@ export const FollowupHandoffRecoverySummary = component('FollowupHandoffRecovery
   errors: z.number().int().nonnegative().describe('Records whose recovery failed (for example unreachable remote evidence); retained for the next pass.'),
 }), 'Counts of one recovery pass. Keyed passes inspect at most the addressed pull request.');
 
-export const FollowupHandoffResumeRequest = component('FollowupHandoffResumeRequest', z.object({
+export const FollowupHandoffResumeRequest = component('FollowupHandoffResumeRequest', z.object({ taskId: z.string().min(1).max(200).optional().describe('Task id of the attempt the caller decided about. With `authorizeCancelled`, the authorization applies only while that attempt is the current handoff on the pull request; otherwise it is refused with code `superseded` and nothing is authorized.'),
   authorizeCancelled: z.boolean().optional().describe('Set `true` to explicitly authorize publishing work the user cancelled. Without it, resume re-arms the operator-held record and refuses cancelled work with code `requires_cancellation_authorization`.'),
 }));
 
@@ -444,7 +444,7 @@ export const FollowupHandoffResumeResult = component('FollowupHandoffResumeResul
   status: FollowupHandoffStatus.nullable().describe('State after the keyed recovery pass; `null` once the handoff retired completely.'),
 }));
 
-export const FollowupHandoffReleaseRequest = component('FollowupHandoffReleaseRequest', z.object({
+export const FollowupHandoffReleaseRequest = component('FollowupHandoffReleaseRequest', z.object({ taskId: z.string().min(1).max(200).optional().describe('Task id of the attempt the caller decided about. The release (and `force`) applies only while that attempt is the current handoff on the pull request; otherwise it is refused with reason `superseded` and nothing is released.'),
   force: z.boolean().optional().describe('Also release a branch whose retained worktree still holds unpublished work. Never deletes worktree files, and never overrides a live or unverifiable agent.'),
 }));
 

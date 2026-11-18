@@ -425,6 +425,30 @@ describe('structured review finding extraction', () => {
         assert.deepStrictEqual(state.unprocessedComments.map(comment => comment.id), [53, 54]);
     });
 
+    for (const order of ['lower review first', 'lower review last'] as const) {
+        test(`a complete multi-model result set scores as its lowest review (${order})`, async () => {
+            const now = Date.now();
+            const clean = (score: number) => STRUCTURED_REVIEW.replace(
+                /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+                'No actionable findings.',
+            ).replace('Score: 7/10', `Score: ${score}/10`);
+            const scores = order === 'lower review first' ? [6, 9] : [9, 6];
+            const state = await getStructuredPendingReviewState(scores.map((score, index) => ({
+                id: 60 + index,
+                body: `${clean(score)}\n<!-- propr:ai-review model="m${index}" -->`,
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now - 1_000 + index * 1_000).toISOString(),
+            })), {
+                repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+                redisClient: { smembers: async () => [] } as any,
+                correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+                currentReviewCommentIds: [60, 61],
+            });
+            assert.strictEqual(state.reviewStatus, 'valid_clean');
+            assert.strictEqual(state.latestScore, 6);
+        });
+    }
+
     test('record-level consumption preserves unselected blockers from the same review', async () => {
         const reviewWithTwoFindings = STRUCTURED_REVIEW.replace(
             '\n## Suggestions and Follow-ups',

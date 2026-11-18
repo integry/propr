@@ -24,13 +24,21 @@ import { prepareProviderReplacement } from './providerReplacement.js';
 import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
 import { retryPRCreationViaAPI } from './issueJobPRRetry.js';
 import { completeIssueLabelsBestEffort } from './issueJobCompletionLabels.js';
+import { taskPageUrl } from './taskPageUrl.js';
+import { describeFailureCause } from './failureCause.js';
+import { stripUpstreamPageTitles } from './upstreamPageTitle.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
 
 function formatErrorBlock(title: string, message: string): string {
-    const redacted = redactSecrets(message || 'Unknown error').slice(0, 4000);
+    const redacted = stripUpstreamPageTitles(redactSecrets(message || 'Unknown error')).slice(0, 4000);
     return `**${title}:**\n${redacted}\n\n`;
+}
+
+function formatFailureCause(message: string): string {
+    const cause = describeFailureCause(message);
+    return cause ? `${cause}\n\n` : '';
 }
 
 function getErrorMessage(error: unknown): string {
@@ -77,13 +85,13 @@ async function handleUnpublishableAgentFailure(options: {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
-    }, { publishedAs: 'issue_comment' });
+    }, { publishedAs: 'issue_comment', ...(taskId ? { taskUrl: taskPageUrl(taskId) } : {}) });
     const replacementSection = await prepareProviderReplacement({ taskId, error: claudeResult.error ?? errorMessage, fromAgentExecution: true, terminationReason: resolveAgentTerminationReason(claudeResult) ?? null, correlatedLogger });
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
         issue_number: issueRef.number,
-        body: `❌ **AI processing failed before producing publishable work.**\n\n${formatErrorBlock('System Error', errorMessage)}${completionComment}${replacementSection}`,
+        body: `❌ **AI processing failed before producing publishable work.**\n\n${formatFailureCause(errorMessage)}${formatErrorBlock('System Error', errorMessage)}${completionComment}${replacementSection}`,
     });
 
     return { success: false, pr: null, updatedLabels: [], error: errorMessage };
@@ -176,7 +184,7 @@ async function handlePostProcessingFailure(
         const completionComment = await generateCompletionComment(
             claudeResult,
             { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-            { publishedAs: 'issue_comment' },
+            { publishedAs: 'issue_comment', ...(options.taskId ? { taskUrl: taskPageUrl(options.taskId) } : {}) },
         );
         const fallbackHeading = canMarkDone
             ? '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**'

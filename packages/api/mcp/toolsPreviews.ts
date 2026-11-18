@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { z } from 'zod';
-import { McpError } from './config.js';
+import { McpError, requireExactlyOne } from './config.js';
 import { applyTaskVisibility } from './taskListing.js';
 import type { McpTool, ToolDeps } from './tools.js';
 import {
@@ -117,9 +117,7 @@ export function addVisualPreviewTools(tools: McpTool[], deps: ToolDeps): void {
     repository: repositorySchema,
     taskId: z.string().min(1).max(255).optional(),
     pullRequest: z.number().int().min(1).optional(),
-  }).strict().refine(args => Number(args.taskId !== undefined) + Number(args.pullRequest !== undefined) === 1, {
-    message: 'Provide exactly one of taskId or pullRequest.',
-  });
+  }).strict();
 
   tools.push({
     name: 'list_visual_previews',
@@ -127,6 +125,7 @@ export function addVisualPreviewTools(tools: McpTool[], deps: ToolDeps): void {
     scope: 'read',
     readOnly: true,
     schema: listSchema,
+    validate: args => requireExactlyOne(args, ['taskId', 'pullRequest']),
     target: { table: 'tasks', column: 'task_id', arg: 'taskId', optional: true },
     run: async ({ principal, args }) => {
       const repository = String(args.repository);
@@ -216,9 +215,11 @@ export function addVisualPreviewTools(tools: McpTool[], deps: ToolDeps): void {
       attachmentId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional().describe('Attachment id from the comment attachments list.'),
       maxDimension: maxDimensionSchema,
       format: formatSchema.default('webp'),
-    }).strict()
-      .refine(args => Number(args.pullRequest !== undefined) + Number(args.issue !== undefined) === 1, { message: 'Provide exactly one of pullRequest or issue.' })
-      .refine(args => args.attachmentIndex === undefined || args.attachmentId === undefined, { message: 'Provide at most one of attachmentIndex or attachmentId.' }),
+    }).strict(),
+    validate: args => {
+      requireExactlyOne(args, ['pullRequest', 'issue']);
+      requireExactlyOne(args, ['attachmentIndex', 'attachmentId'], { optional: true });
+    },
     run: async ({ principal, args }) => withPreviewErrors(async () => {
       if (!principal.user.accessToken) {
         throw new McpError('GITHUB_CREDENTIAL_REQUIRED', 'Sign in through the browser to authorize GitHub access.', 401, { stage: 'authorization' });

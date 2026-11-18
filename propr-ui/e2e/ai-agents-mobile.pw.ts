@@ -21,14 +21,14 @@ const agents = [{
   enabled: true,
   dockerImage: 'propr/agent:latest',
   configPath: '/home/node/.config/propr/agents/production-codex-account',
-  defaultModel: 'gpt-6-astra',
+  defaultModel: 'gpt-6.2-astra',
   supportedModels: [
-    'gpt-6-astra',
-    'gpt-6.1-sol',
+    'gpt-6.2-astra',
+    'gpt-6.2-sol',
     'gpt-6-sol',
     'gpt-6-luna',
-    'gpt-6-astra-high',
-    'gpt-6-astra-xhigh',
+    'gpt-6.2-astra-high',
+    'gpt-6.2-astra-xhigh',
     'gpt-5.6-sol',
     'gpt-5.6-sol-high',
     'gpt-5.5',
@@ -89,7 +89,7 @@ test('keeps the Playground usable at 320px', async ({ page, baseURL }) => {
   await stubAiAgentsApis(page);
   await page.goto('/ai-agents');
 
-  await expect(page.getByRole('heading', { name: 'AI Agents' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Coding agents', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Playground' })).toBeVisible();
   const search = page.getByRole('combobox', { name: 'Search and add models to compare' });
   await expect(search).toBeVisible();
@@ -115,7 +115,7 @@ test('keeps the Playground usable at 320px', async ({ page, baseURL }) => {
   const mobileConfiguration = page.getByTestId('ai-agents-mobile-configuration-scroll');
   await expect(page.getByText('Production Codex Agent').first()).toBeVisible();
   await expect(page.getByText('/home/node/.config/propr/agents/production-codex-account').first()).toBeVisible();
-  const latestModel = mobileConfiguration.getByRole('button', { name: 'Copy gpt61-sol', exact: true });
+  const latestModel = mobileConfiguration.getByRole('button', { name: 'Copy gpt62-sol', exact: true });
   await latestModel.scrollIntoViewIfNeeded();
   await expect(latestModel).toBeVisible();
   await expect(mobileConfiguration.getByRole('button', { name: 'Copy gpt6-sol', exact: true })).toBeVisible();
@@ -143,8 +143,8 @@ test('keeps the tabbed mobile layout through the app-shell breakpoint', async ({
   await stubAiAgentsApis(page);
   await page.goto('/ai-agents');
 
-  await expect(page.getByRole('heading', { name: 'AI Agents' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Coding agents', level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Playground' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Agent Configuration' })).toBeHidden();
+  await expect(page.locator('#ai-agents-configuration-heading')).toBeHidden();
   await expectNoPageOverflow(page);
 });

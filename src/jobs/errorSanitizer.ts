@@ -1,26 +1,30 @@
-function parseGitHubHtmlError(html: string): string {
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].replace(/&middot;/g, '-').replace(/&#\d+;/g, '').trim() : null;
+import { stripUpstreamPageTitles } from './upstreamPageTitle.js';
 
+/**
+ * Names an HTML error page by its status. The page title is the edge's branding
+ * ("Attention Required! | Cloudflare", "Unicorn! · GitHub"), not a cause, so it
+ * is never published.
+ */
+function parseGitHubHtmlError(html: string): string {
     if (html.includes('Unicorn')) {
-        return `GitHub API server error (5xx): ${title || 'Unicorn page'}`;
+        return 'GitHub API server error (5xx)';
     }
     if (html.includes('rate limit') || html.includes('Rate limit')) {
         return 'GitHub API rate limit exceeded (HTML response)';
     }
     if (html.includes('Not Found') || html.includes('404')) {
-        return `GitHub API resource not found: ${title || '404'}`;
+        return 'GitHub API resource not found (404)';
     }
     if (html.includes('Bad credentials') || html.includes('401')) {
         return 'GitHub API authentication failed (401)';
     }
     if (html.includes('Forbidden') || html.includes('403')) {
-        return `GitHub API forbidden: ${title || '403'}`;
+        return 'GitHub API forbidden (403)';
     }
-    if (title) {
-        return `GitHub API error: ${title}`;
-    }
-    return 'GitHub API returned an HTML error page instead of JSON';
+    const status = /\b([45]\d\d)\b/.exec(html.replace(/<[^>]*>/g, ' '))?.[1];
+    return status
+        ? `GitHub API returned an HTML error page (${status})`
+        : 'GitHub API returned an HTML error page instead of JSON';
 }
 
 export function sanitizeErrorMessage(message: string | undefined, maxLength = 500): string {
@@ -32,8 +36,9 @@ export function sanitizeErrorMessage(message: string | undefined, maxLength = 50
     if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
         return parseGitHubHtmlError(sanitized);
     }
-    if (sanitized.length > maxLength) {
-        return sanitized.slice(0, maxLength) + '... [truncated]';
+    const withoutPageTitles = stripUpstreamPageTitles(sanitized);
+    if (withoutPageTitles.length > maxLength) {
+        return withoutPageTitles.slice(0, maxLength) + '... [truncated]';
     }
-    return sanitized;
+    return withoutPageTitles;
 }

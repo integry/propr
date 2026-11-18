@@ -54,7 +54,7 @@ describe('AgentConfigModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
 
     expect(screen.getByLabelText('ID / Alias')).toHaveValue(AGENT_DEFAULTS.opencode.defaultAlias);
-    expect(screen.queryByLabelText('Config Path')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Config path')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Log in to a new account' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText(AGENT_DEFAULTS.opencode.defaultCliVersion)).toBeInTheDocument();
 
@@ -91,7 +91,7 @@ describe('AgentConfigModal', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Use existing config' }));
-    const configPath = screen.getByLabelText('Config Path');
+    const configPath = screen.getByLabelText('Config path');
     expect(configPath).toHaveValue(AGENT_DEFAULTS.claude.configPath);
     fireEvent.change(configPath, { target: { value: '/srv/credentials/claude-work' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }));
@@ -237,7 +237,7 @@ describe('AgentConfigModal', () => {
 
     expect(screen.getByRole('combobox', {
       name: `Reasoning level for ${model.name}`,
-    })).toHaveDisplayValue('Ultracode (unsupported for Codex) — GitHub: level-ultracode');
+    })).toHaveDisplayValue('Ultracode (unsupported for Codex)');
   });
 });
 
@@ -252,7 +252,7 @@ describe('AgentConfigModal', () => {
     // Gemini 4 Hydrogen alone also offers XHigh, labelled as supported.
     const hydrogen = screen.getByLabelText('Reasoning level for Antigravity Gemini 4 Hydrogen');
     expect(Array.from(hydrogen.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high', 'xhigh']);
-    expect(Array.from(hydrogen.querySelectorAll('option')).map(option => option.textContent)).toContain('XHigh — GitHub: level-xhigh');
+    expect(Array.from(hydrogen.querySelectorAll('option')).map(option => option.textContent)).toContain('XHigh');
     expect(screen.queryByLabelText('Reasoning level for Antigravity Gemini 3.1 Pro')).not.toBeInTheDocument();
     const oss = screen.getByLabelText('Reasoning level for Antigravity GPT-OSS 120B');
     expect(Array.from(oss.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'medium']);

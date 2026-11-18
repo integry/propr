@@ -50,6 +50,14 @@ export interface RequestOptions {
    * Defaults to retrying transient transport failures.
    */
   retry?: boolean;
+
+  /**
+   * Expected successful response body. `json` (the default) rejects any
+   * non-empty body that is not JSON; `csv` accepts only a `text/csv` body.
+   * Either way an HTML page, such as the web UI served from a mistaken
+   * remote URL, rejects with an `InvalidApiResponseError`.
+   */
+  responseType?: "json" | "csv";
 }
 
 /**
@@ -83,6 +91,7 @@ export type ApiErrorCode =
   | "INTERNAL_ERROR"
   | "NETWORK_ERROR"
   | "TIMEOUT"
+  | "INVALID_RESPONSE"
   | "UNKNOWN";
 
 /**

@@ -12,7 +12,7 @@ const PAST_DEBOUNCE_MS = 1_000;
 const goal = (id: string, title: string) => ({
   id, owner: 'operator', repository: 'integry/propr', title, objective: `${title} for the release.`,
   launchStrategy: 'orchestrate', initialPrompt: `/goal ${title}`, attachments: [],
-  baseBranch: null, branchName: `goal/${id}`, worktreePath: `/tmp/${id}`,
+  baseBranch: null, branchName: `goal/${id}`,
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' },
   requestedModel: 'gpt-6-astra', effectiveModel: 'gpt-6-astra',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,

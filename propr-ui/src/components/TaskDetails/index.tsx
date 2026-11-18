@@ -2,6 +2,8 @@ import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import type { RunRevealHistory } from './RunTimeline';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
+import { NOT_FOUND_TITLE } from '../NotFound';
+import { isTaskNotFound, renderTaskDetailsStatus } from './TaskDetailsStatus';
 import { renderMarkdown } from './renderMarkdown';
 import ThinkingLog from './ThinkingLog';
 import ExecutionEventLog from './ExecutionEventLog';
@@ -9,7 +11,7 @@ import ResultOverview from './ResultOverview';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
-import ContextStrip, { ConsumptionGroup, MobileGitContext, MobilePeopleRuntime } from './ContextStrip';
+import { ConsumptionGroup, MobileGitContext, MobilePeopleRuntime } from './ContextStrip';
 import ActionBar from './ActionBar';
 import TaskHeader, { ReturnToRunButton } from './TaskHeader';
 import ProgressBar from './ProgressBar';
@@ -30,22 +32,13 @@ import { useLiveRunStop } from './useLiveRunStop';
 import { useTaskAssignment } from './useTaskAssignment';
 import LatestRunCommands from './LatestRunCommands';
 import { useTaskPullRequestScores } from './pullRequestScores';
-import { followupTargetFor, hasFollowupTarget, taskLabelMode } from './taskKind';
+import { followupTargetFor, getEmptyTraceMessage, hasFollowupTarget, isAutomationReportTask, taskLabelMode } from './taskKind';
 import { useTaskFollowup } from './useTaskFollowup';
 import FollowupHandoffBanner from './FollowupHandoffBanner';
-import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_STATIC, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
+import { CompactHeaderLine, MOBILE_COMPACT_BAR_HEIGHT, ShortTaskHeader, type MobileHeaderProps } from './CompactTaskHeader';
+import { SHORT_DETAILS, SHORT_LOG_BAR, SHORT_OPEN_LOG, SHORT_MEASURE_ONLY, SHORT_UNBOUNDED, useShortWorkspace } from './useShortWorkspace';
 
-const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
-  <div className="h-full bg-white flex items-center justify-center">
-    <div className={className}>{children}</div>
-  </div>
-);
 
-type MobileHeaderProps = {
-  contextStripProps: React.ComponentProps<typeof ContextStrip>;
-  actionBarProps: React.ComponentProps<typeof ActionBar>;
-  todos: React.ComponentProps<typeof ProgressBar>['todos'];
-};
 
 /** The full mobile summary scrolls away with the title; the compact bar stands in for it once it's gone. */
 const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ contextStripProps, actionBarProps, todos }, ref) => (
@@ -67,13 +60,10 @@ const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ con
 ));
 MobileSummary.displayName = 'MobileSummary';
 
-/** Height of the compact bar; sections pin their own headers just below it. */
-const MOBILE_COMPACT_BAR_HEIGHT = 44;
+
 
 /**
- * One fixed-height line: the pull request and the task's title on the left,
- * the overflow (and Stop, while the task works) on the right; the overflow
- * opens as a bottom action sheet. The sticky
+ * The phone's compact line, shown once the full summary scrolls away. The sticky
  * wrapper takes no height, so showing the bar never reflows the page under it.
  */
 const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ contextStripProps, actionBarProps, todos, visible }) => (
@@ -86,17 +76,12 @@ const MobileCompactBar: React.FC<MobileHeaderProps & { visible: boolean }> = ({ 
       inert={!visible}
       className={`absolute inset-x-0 top-0 border-b border-slate-200 bg-white shadow-sm transition-opacity duration-150 ${visible ? 'opacity-100' : 'invisible opacity-0'}`}
     >
-      <div className="flex items-center justify-between gap-2 px-3" style={{ height: MOBILE_COMPACT_BAR_HEIGHT - 1 }}>
-        {/* Only the left side clips, so the 44px overflow button keeps its full touch target. */}
-        <div className="flex h-full min-w-0 flex-1 items-center overflow-hidden">
-          <ContextStrip {...contextStripProps} mobileCompact={true} />
-        </div>
-        <ActionBar {...actionBarProps} compact={true} />
-      </div>
+      <CompactHeaderLine contextStripProps={contextStripProps} actionBarProps={actionBarProps} />
       <ProgressBar todos={todos} />
     </div>
   </div>
 );
+
 
 /** Whether the full mobile summary has scrolled up under the compact bar. */
 const useMobileHeaderCollapsed = () => {
@@ -115,28 +100,13 @@ const useMobileHeaderCollapsed = () => {
   return { summaryRef: setSummary, collapsed };
 };
 
-const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId?: string) => {
+const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId: string | undefined, notFound: boolean) => {
+  if (notFound) return NOT_FOUND_TITLE;
   if (taskInfo?.title) return getCleanDocumentTitle(taskInfo.title, taskInfo.issueNumber);
 
   return taskId ? `Task #${taskId}` : undefined;
 };
 
-const renderTaskDetailsStatus = (
-  loading: boolean,
-  error: string | null | undefined,
-  history: ReturnType<typeof useTaskData>['history'],
-  taskId?: string,
-) => {
-  if (loading) return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
-
-  if (error) return <CenteredStatus className="text-red-600">Error loading task details: {error}</CenteredStatus>;
-
-  if (!history || history.length === 0) {
-    return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
-  }
-
-  return null;
-};
 
 interface TaskDetailsProps {
   /** Wins over the `:taskId` route param, so the task list can show a task beside itself. */
@@ -165,14 +135,6 @@ interface TaskDetailsProps {
 
 /** The timeline's and the trace's headers share a height, so their rules line up side by side. */
 const PANE_HEADER_HEIGHT = 'min-h-[2.75rem]';
-
-/** What the trace says when a run recorded no steps, rather than leaving the column blank. */
-const getEmptyTraceMessage = (isActive: boolean, status: string) => {
-  if (isActive) return 'Waiting for the agent’s first step…';
-  return status?.toUpperCase() === 'COMPLETED'
-    ? 'No execution logs recorded — task completed directly.'
-    : 'No execution logs recorded for this run.';
-};
 
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
 const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
@@ -239,8 +201,9 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     }
   }, [taskId, taskData, navigate, addToast, embedded, onDeleted]);
 
+  const notFound = isTaskNotFound(taskData.loading, taskData.error, taskData.history);
   // Set document title with task info
-  const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId);
+  const documentTitle = getTaskDocumentTitle(taskData.taskInfo, taskId, notFound);
   useDocumentTitle(documentTitle, !embedded);
 
   const [highlightedTodoId, setHighlightedTodoId] = useState<string | null>(null);
@@ -273,7 +236,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const derivedData = getHistoryDerivedData(taskData.history, taskData.taskInfo);
   const pullRequest = useTaskPullRequestScores(taskData.taskInfo, derivedData.prInfo, runs);
 
-  const statusView = renderTaskDetailsStatus(taskData.loading, taskData.error, taskData.history, taskId);
+  const statusView = renderTaskDetailsStatus(taskData.loading, taskData.error, notFound);
 
   if (statusView) {
     // The pane's controls live in the task's header; until there is one, they sit above the status.
@@ -340,8 +303,17 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
         </div>
       </header>
 
+      {/* A short window (a phone in landscape) opens on the one-line compact header, leaving the room to the timeline. */}
+      <ShortTaskHeader
+        visible={shortWorkspace.short}
+        contextStripProps={contextStripProps}
+        actionBarProps={actionBarProps}
+        todos={taskData.liveDetails.todos}
+        paneControls={paneControls}
+      />
+
       {/* Desktop sticky header shell; keep below global navigation overlays. */}
-      <header ref={shortWorkspace.headerRef} className={`hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white ${SHORT_STATIC}`}>
+      <header {...shortWorkspace.headerProps} className={`hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white ${SHORT_MEASURE_ONLY}`}>
         <DesktopTaskHeader
           headerProps={headerProps}
           contextStripProps={assignedStripProps}
@@ -425,7 +397,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
                   highlightedTodoId={highlightedTodoId}
                   streaming={derivedData.isTaskActive}
                   historyTruncated={taskData.liveDetails.historyTruncated}
-                  emptyMessage={getEmptyTraceMessage(derivedData.isTaskActive, derivedData.currentStatus)}
+                  emptyMessage={getEmptyTraceMessage(derivedData.isTaskActive, derivedData.currentStatus, isAutomationReportTask(taskData.taskInfo))}
                 />
               </div>
             </div>

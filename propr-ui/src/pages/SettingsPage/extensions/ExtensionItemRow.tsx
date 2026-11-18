@@ -70,8 +70,8 @@ export function ExtensionItemRow({ name, kind, capability, item, enabled, pendin
         {confirming ? (
           <>
             <span className="text-xs text-red-800">Remove {name} from the library? Its settings and stored secret are deleted.</span>
-            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => { setConfirming(false); onRemove(); }}>Confirm removal</button>
-            <button type="button" className={buttonClass} onClick={() => setConfirming(false)}>Keep</button>
+            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => { setConfirming(false); onRemove(); }}>Remove</button>
+            <button type="button" className={buttonClass} onClick={() => setConfirming(false)}>Cancel</button>
           </>
         ) : (
           <>

@@ -116,10 +116,10 @@ describe('MobileBottomNavigation', () => {
       const sheet = screen.getByRole('dialog', { name: 'Create' });
       const actions = within(sheet).getAllByRole('listitem').map(row => row.querySelector('a, button')!);
       expect(actions.map(action => [action.textContent, action.getAttribute('href')])).toEqual([
-        ['New Task', '/tasks/new'],
-        ['New Goal', '/goals?new=1'],
-        ['New Plan', '/studio/new'],
-        ['New Automation', '/automations/new'],
+        ['New task', '/tasks/new'],
+        ['New goal', '/goals?new=1'],
+        ['New plan', '/studio/new'],
+        ['New automation', '/automations/new'],
         ['New To-do', null],
       ]);
       expect(within(sheet).getByRole('button', { name: 'New To-do' })).toHaveAttribute('aria-expanded', 'false');
@@ -127,10 +127,10 @@ describe('MobileBottomNavigation', () => {
   );
 
   it.each([
-    ['New Task', '/tasks/new'],
-    ['New Goal', '/goals?new=1'],
-    ['New Plan', '/studio/new'],
-    ['New Automation', '/automations/new'],
+    ['New task', '/tasks/new'],
+    ['New goal', '/goals?new=1'],
+    ['New plan', '/studio/new'],
+    ['New automation', '/automations/new'],
   ])('navigates to %s from the Create sheet and marks Create active', (label, to) => {
     renderNavigation('/inbox');
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -208,7 +208,7 @@ describe('MobileBottomNavigation', () => {
     expect(within(dialog).getByRole('link', { name: 'Automations' })).toHaveAttribute('href', '/automations');
     expect(within(dialog).getByRole('link', { name: 'Analytics' })).toHaveAttribute('href', '/analytics');
     expect(screen.getByRole('link', { name: 'Plans' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Coding Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Coding agents' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'LLM Log' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Access' })).toBeInTheDocument();

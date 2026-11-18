@@ -17,6 +17,7 @@ import { SETTINGS_BLOCK, SETTINGS_CONTAINER } from './settingsStyles';
 import SettingsInspector from './SettingsInspector';
 import { MobileCategoryHeader, SettingsSearchField } from './SettingsNavigationParts';
 import { useDesktopLayout } from '../../hooks/useDesktopLayout';
+import { SettingsSectionVisibleContext } from './settingsSectionVisibility';
 
 export type SettingsCategoryId =
   | 'models'
@@ -45,31 +46,31 @@ interface SettingsCategory {
 export const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
     id: 'models',
-    label: 'AI Models & Reasoning',
+    label: 'AI models & reasoning',
     description: 'Choose models and configure the repository knowledge base.',
     icon: Bot
   },
   {
     id: 'workflow',
-    label: 'Workflow & PR Rules',
+    label: 'Workflow & PR rules',
     description: 'Processing rules, GitHub triggers, and assignment gates.',
     icon: GitPullRequest
   },
   {
     id: 'ultrafix',
-    label: 'Ultrafix & Escalation',
+    label: 'Ultrafix & escalation',
     description: 'Fix-and-review loops and model escalation.',
     icon: RefreshCcw
   },
   {
     id: 'sandbox',
-    label: 'Sandbox & Network',
+    label: 'Sandbox & network',
     description: 'Network access and run watchdogs for agent containers.',
     icon: ShieldCheck
   },
   {
     id: 'agent-extensions',
-    label: 'Agent Extensions & Packages',
+    label: 'Agent extensions & packages',
     description: 'MCP tools, skills and system packages available to agents in their containers.',
     icon: Puzzle
   },
@@ -222,7 +223,9 @@ const SettingsCategoryPanel: React.FC<SettingsCategoryPanelProps> = ({
           >
             {/* Override the fieldset default so tables cannot widen the reading pane. */}
             <fieldset disabled={isReadOnly} className={`min-w-0 ${isReadOnly ? 'opacity-70' : ''}`}>
-              {section.content}
+              <SettingsSectionVisibleContext.Provider value={categoryIsVisible && visibleSections.includes(section)}>
+                {section.content}
+              </SettingsSectionVisibleContext.Provider>
             </fieldset>
           </div>
         ))}

@@ -1,8 +1,18 @@
 import { EXTENSION_LIMITS, type ExtensionLibraryServer, type ExtensionLibrarySkill, type ExtensionLibraryUsage, type InstanceCatalogResponse } from '@propr/shared';
 import type { ExtensionItemRef } from '../../../api/extensionProfilesApi';
+import { SETTINGS_CONTROL } from '../settingsStyles';
 
-export const inputClass = 'mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm';
-const buttonBase = 'min-h-11 rounded-md border px-3 py-2 text-sm font-medium disabled:opacity-50 sm:min-h-0';
+/** The standard Settings control, below its label. */
+export const inputClass = `mt-1 ${SETTINGS_CONTROL}`;
+/** The standard Settings control without the gap under a label. */
+export const controlClass = SETTINGS_CONTROL;
+/** A field label holding its control, as in the rest of Settings. */
+export const labelClass = 'block text-sm text-slate-900';
+/** Helper text under a control. */
+export const hintClass = 'mt-1 block text-[12px] leading-5 text-slate-500';
+/** An inline field error under a control. */
+export const fieldErrorClass = 'mt-1 block text-[12px] leading-5 text-red-700';
+const buttonBase = 'min-h-10 rounded border px-2.5 py-1.5 text-sm font-medium shadow-sm disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0';
 export const buttonClass = `${buttonBase} border-slate-300 bg-white hover:bg-slate-50`;
 export const dangerButtonClass = `${buttonBase} border-red-300 bg-white text-red-700 hover:bg-red-50`;
 export const primaryButtonClass = `${buttonBase} border-teal-700 bg-teal-700 text-white hover:bg-teal-800`;

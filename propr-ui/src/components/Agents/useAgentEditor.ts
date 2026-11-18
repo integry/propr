@@ -15,8 +15,9 @@ import {
   type AutomationRunRecord,
 } from '../../api/automationDefinitionsApi';
 import {
-  EVENT_TRIGGER_FILTER_LOST_MESSAGE, emptyAgentForm, eventTriggerFilterLost, formFromDefinition, formFromTemplate, formToInput, type AgentEditorForm, type AgentEditorFormPatch,
+  emptyAgentForm, formFromDefinition, formFromTemplate, formToInput, templateFieldsDiffer, type AgentEditorForm, type AgentEditorFormPatch,
 } from './agentEditorForm';
+import { firstInvalidField, validateAgentForm, type AgentFormErrors, type AgentFormField } from './agentFormValidation';
 import type { ProprMcpSupport } from './AgentCapabilitiesSection';
 import { capacityWarning } from './agentRunPresentation';
 
@@ -70,7 +71,7 @@ export function formDiffersFrom(form: AgentEditorForm, definition: AutomationDef
 }
 
 /** Whether the chosen agent can be given ProPR's MCP tools, judged from the instance catalog. */
-/** Capabilities that only work through ProPR's MCP server: `merge` acts in the acting step, which needs it. */
+/** Capabilities that only work through ProPR's MCP server: `merge` acts in the action step, which needs it. */
 const MCP_CAPABILITIES: ReadonlySet<AutomationCapability> = new Set(['propr_mcp', 'merge']);
 
 export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alias: string | null): { support: ProprMcpSupport; agentType: string | null } {
@@ -95,6 +96,8 @@ export function useAgentEditor(
   /** The template the new automation's form was last filled from; nothing is created until it is saved. */
   const [template, setTemplate] = useState<AutomationTemplate | null>(() => (definitionId ? null : getAutomationTemplate(templateId) ?? null));
   const [form, setForm] = useState<AgentEditorForm>(() => (template ? formFromTemplate(template) : emptyAgentForm()));
+  /** What a new automation's form was last filled with (empty, or a template); typed input is measured against it. */
+  const [baseline, setBaseline] = useState<AgentEditorForm>(form);
   const [loading, setLoading] = useState(definitionId !== null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
@@ -108,6 +111,10 @@ export function useAgentEditor(
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [attachmentsPending, setAttachmentsPending] = useState(0);
+  /** Set by the first save attempt; from then on each field shows its error as the form changes. */
+  const [submitted, setSubmitted] = useState(false);
+  /** The field a refused save asks the form to scroll to and focus; `seq` repeats the request for the same field. */
+  const [invalidFocus, setInvalidFocus] = useState<{ field: AgentFormField; seq: number } | null>(null);
   /** Set synchronously while a save is in flight, so a run cannot start on the configuration being replaced. */
   const savingRef = useRef(false);
   /**
@@ -187,13 +194,31 @@ export function useAgentEditor(
     setForm(current => ({ ...current, ...patch }));
   }, []);
 
-  /** Fills an unsaved form from a template, keeping the repositories and coding agent already chosen. */
+  /**
+   * Fills an unsaved form from a template, keeping the repositories and coding
+   * agent already chosen. The baseline takes only the template's own fields,
+   * so what the template keeps from the user's input still counts as unsaved.
+   */
   const applyTemplate = useCallback((next: AutomationTemplate) => {
     if (definition) return;
     setTemplate(next);
     setError(null);
-    setForm(current => formFromTemplate(next, current));
-  }, [definition]);
+    setSubmitted(false);
+    setForm(formFromTemplate(next, form));
+    setBaseline(formFromTemplate(next, baseline));
+  }, [baseline, definition, form]);
+
+  /**
+   * Whether closing or replacing the form would lose something the user
+   * entered: changes not saved yet, or for a new automation anything typed
+   * since it was opened or filled from a template.
+   */
+  const hasUnsavedInput = useMemo(
+    () => (definition ? dirty : JSON.stringify(formToInput(form)) !== JSON.stringify(formToInput(baseline))),
+    [baseline, definition, dirty, form],
+  );
+  /** Whether applying a template would overwrite fields the user has typed into. */
+  const templateWouldOverwrite = useMemo(() => !definition && templateFieldsDiffer(form, baseline), [baseline, definition, form]);
 
   /** Picking an agent that cannot use ProPR tools drops the options that need them. */
   const changeAgent = useCallback((agentId: string | null) => {
@@ -204,8 +229,16 @@ export function useAgentEditor(
     });
   }, [agents]);
 
+  const fieldErrors = useMemo<AgentFormErrors>(() => (submitted ? validateAgentForm(form) : {}), [form, submitted]);
+
   const save = useCallback(async () => {
-    if (eventTriggerFilterLost(form)) { setError(EVENT_TRIGGER_FILTER_LOST_MESSAGE); return; }
+    setSubmitted(true);
+    const invalidField = firstInvalidField(validateAgentForm(form));
+    if (invalidField) {
+      setError(null);
+      setInvalidFocus(current => ({ field: invalidField, seq: (current?.seq ?? 0) + 1 }));
+      return;
+    }
     const input = formToInput(form);
     if (proprMcpSupport === 'unsupported') input.capabilities = input.capabilities?.filter(capability => !MCP_CAPABILITIES.has(capability));
     const invalid = validateAutomationDefinitionInput(input);
@@ -222,6 +255,7 @@ export function useAgentEditor(
       if (!openRef.current) { onSaved(saved, !definition, false); return; }
       setDefinition(saved);
       setForm(formFromDefinition(saved));
+      setSubmitted(false);
       notify?.(definition ? 'Automation saved' : 'Automation created', 'success');
       onSaved(saved, !definition, true);
     } catch (saveFailure) {
@@ -351,7 +385,7 @@ export function useAgentEditor(
   }, [definition, load]);
 
   return {
-    definition, form, template, applyTemplate, agents, defaultAgentAlias, loading, loadError, saving, deleting, running, error, conflict, dirty,
+    definition, form, template, applyTemplate, fieldErrors, invalidFocus, hasUnsavedInput, templateWouldOverwrite, agents, defaultAgentAlias, loading, loadError, saving, deleting, running, error, conflict, dirty,
     attachmentsPending: attachmentsPending > 0,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
     capacityQuestion, confirmRun, dismissRun,

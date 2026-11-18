@@ -65,6 +65,8 @@ test("stats review-scores accepts the analytics periods and a JSON flag", () => 
   const command = createStatsCommand().commands.find(sub => sub.name() === "review-scores");
   assert.ok(command);
   const flags = command.options.map(option => option.long);
-  assert.deepEqual(flags, ["--period", "--repository", "--json"]);
+  assert.deepEqual(flags, ["--period", "--repository", "--project", "--json"]);
+  assert.equal(command.options.find(option => option.long === "--project")?.short, "-p");
+  assert.equal(command.options.find(option => option.long === "--json")?.short, "-j");
   assert.deepEqual(command.options[0].argChoices, ["24h", "7d", "30d", "90d", "1y", "all"]);
 });

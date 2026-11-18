@@ -118,7 +118,7 @@ describe('Plugin detail', () => {
 
     vi.mocked(disconnectPluginOAuth).mockResolvedValue({ plugin: exampleAt('installed') });
     fireEvent.click(within(connected).getByRole('button', { name: 'Disconnect' }));
-    await act(async () => { fireEvent.click(within(connected).getByRole('button', { name: 'Confirm disconnect' })); });
+    await act(async () => { fireEvent.click(within(connected).getByRole('button', { name: 'Disconnect' })); });
     expect(disconnectPluginOAuth).toHaveBeenCalledWith('example-pack', 'example-account');
   });
 

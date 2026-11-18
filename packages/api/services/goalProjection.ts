@@ -5,6 +5,7 @@ import {
   goalTitleFallback,
   parseGoalArtifacts,
   redactVisualPreviewValue,
+  type GoalArtifact,
   type GoalArtifactStats,
   type GoalLaunchStrategy,
 } from '@propr/core';
@@ -16,6 +17,7 @@ import {
 } from './goalAttachmentService.js';
 import { goalAttention } from './goalAttention.js';
 import { creatorFrom, projectCreators } from './creatorProjection.js';
+import { markMergedPullRequests } from './pullRequestMergeState.js';
 
 export interface GoalProjectionRow {
   goal_id: string;
@@ -158,6 +160,35 @@ function parseStats(value: GoalProjectionRow['artifact_stats']): GoalArtifactSta
   return { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 };
 }
 
+/**
+ * Artifact states are a snapshot from the last GitHub validation. A pull request whose merge was
+ * observed since then is reported as merged (never draft), and the open count drops with it, so the
+ * artifact list, its stats and the goal's `pullRequests` detail agree.
+ */
+export async function currentGoalArtifacts(
+  db: Knex,
+  repository: string,
+  artifacts: GoalArtifact[],
+  stats: GoalArtifactStats,
+): Promise<{ artifacts: GoalArtifact[]; artifactStats: GoalArtifactStats }> {
+  const openPullRequests = artifacts.filter(artifact => artifact.type === 'pull_request' && artifact.state !== 'merged')
+    .map(artifact => ({ ...artifact }));
+  if (!openPullRequests.length) return { artifacts, artifactStats: stats };
+  await markMergedPullRequests(db, repository, openPullRequests as unknown as Record<string, unknown>[], { number: 'number', state: 'state' });
+  const merged = new Map(openPullRequests.filter(artifact => artifact.state === 'merged').map(artifact => [artifact.number, artifact]));
+  if (!merged.size) return { artifacts, artifactStats: stats };
+  let reopened = 0;
+  const current = artifacts.map(artifact => {
+    if (artifact.type !== 'pull_request' || !merged.has(artifact.number) || artifact.state === 'merged') return artifact;
+    if (artifact.state === 'open') reopened += 1;
+    return { ...artifact, state: 'merged', draft: false };
+  });
+  return {
+    artifacts: current,
+    artifactStats: { ...stats, openPullRequests: Math.max(0, Number(stats.openPullRequests || 0) - reopened) },
+  };
+}
+
 function parseCheckpointPaths(value: unknown): string[] | null {
   if (typeof value !== 'string') return null;
   try {
@@ -273,9 +304,12 @@ export async function serializeGoal(
       .whereIn('state', ['pending', 'processing']).first('checkpoint_id')
     : null;
   const timing = goalTiming(row);
+  const { artifacts, artifactStats } = await currentGoalArtifacts(
+    db, row.repository, parseGoalArtifacts(row.artifact_refs as string | null), parseStats(row.artifact_stats));
   const attention = await goalAttention(db, row.owner_id, row);
   const createdBy = goalCreator(row, options.creators ?? await loadGoalCreators([row]));
   const optionalInputs: { inputs?: GoalInputProjection[] } = includeInputs ? { inputs } : {};
+  // Host paths (the goal's worktree on the API host) are never part of this member-visible projection.
   const projection = {
     id: row.goal_id,
     owner: row.owner_login,
@@ -287,7 +321,6 @@ export async function serializeGoal(
     attachments: publicGoalAttachments(parseGoalAttachments(row.attachments)),
     baseBranch: row.base_branch,
     branchName: row.branch_name,
-    worktreePath: row.worktree_path,
     agent: { id: row.agent_id, alias: row.agent_alias, type: row.agent_type },
     requestedModel: row.requested_model,
     effectiveModel: row.effective_model,
@@ -307,8 +340,8 @@ export async function serializeGoal(
     conversationId: row.conversation_id,
     finalPr: row.final_pr_url ? { number: row.final_pr_number, url: row.final_pr_url } : null,
     checkpoint: checkpointProjection(row, latestCheckpoint, pendingCheckpoint),
-    artifacts: parseGoalArtifacts(row.artifact_refs as string | null),
-    artifactStats: parseStats(row.artifact_stats),
+    artifacts,
+    artifactStats,
     liveSummary: liveSummary(live),
     taskState: latestHistory?.state ?? 'pending',
     createdAt: row.created_at,

@@ -215,10 +215,17 @@ for (const { name, width, height, touch, short } of cases) {
     if (await log.getAttribute('aria-expanded') === 'true') await press(page, cdp, bar);
     await expect(log).toHaveAttribute('aria-expanded', 'false');
 
-    // Back up the page, the header's title, pull request and actions are all there to tap.
-    const scope = phone ? page.locator('header.sm\\:hidden') : page.locator('[data-testid="task-details"] > header.sm\\:block');
-    await expect(scope.getByText(/including labels removed by a reviewer/)).toBeVisible();
-    await reveal(page, cdp, scope.getByText(/Restrict issue-level withdrawal labels/).first());
+    // Back up the page, the header's title, pull request and actions are all there to tap. A short window
+    // opens on the one-line compact header instead: the title, with the subtitle left to the run it names.
+    if (short) {
+      const compact = page.getByTestId('task-short-header');
+      await reveal(page, cdp, compact.getByText(/Stop work when an issue or PR withdraws intent/));
+      expect((await compact.boundingBox())!.height).toBeLessThanOrEqual(48);
+    } else {
+      const scope = phone ? page.locator('header.sm\\:hidden') : page.locator('[data-testid="task-details"] > header.sm\\:block');
+      await expect(scope.getByText(/including labels removed by a reviewer/)).toBeVisible();
+      await reveal(page, cdp, scope.getByText(/Restrict issue-level withdrawal labels/).first());
+    }
     const actions = page.getByRole('button', { name: 'More task actions' }).filter({ visible: true }).first();
     await press(page, cdp, await reveal(page, cdp, actions));
     await expect(page.getByRole('menu', { name: 'More task actions' })).toBeVisible();

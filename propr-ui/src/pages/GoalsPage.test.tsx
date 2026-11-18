@@ -47,7 +47,7 @@ const goal: goalsApi.Goal = {
   id: 'goal-1', owner: 'owner', repository: 'acme/web', title: 'Launch Customer Analytics Dashboard', objective: 'Ship the dashboard',
   launchStrategy: 'orchestrate', initialPrompt: '/goal Ship the dashboard\n\nLaunch strategy — Agent orchestrates through ProPR',
   attachments: [],
-  baseBranch: null, branchName: 'goal/dashboard', worktreePath: '/tmp/worktree',
+  baseBranch: null, branchName: 'goal/dashboard',
   agent: { id: 'agent-1', alias: 'codex', type: 'codex' }, requestedModel: 'gpt-5.6-sol', effectiveModel: 'gpt-5.6-sol',
   maxParallelTasks: 3, ultrafix: true, desiredState: 'running', resultState: null,
   control: { requestGeneration: 0, acknowledgedGeneration: 0, pending: false },
@@ -591,21 +591,21 @@ describe('GoalsPage', () => {
     trigger.focus();
     fireEvent.click(trigger);
 
-    expect(await screen.findByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'New goal' })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Unsaved goal details' } });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'New goal' })).toBeInTheDocument();
     expect(screen.getByLabelText('Prompt')).toHaveValue('Unsaved goal details');
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog', { name: 'Start a goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'New goal' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
     expect(confirm).toHaveBeenCalledTimes(2);
 
     fireEvent.click(trigger);
-    expect(await screen.findByRole('dialog', { name: 'Start a goal' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'New goal' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Start a goal' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'New goal' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
     confirm.mockRestore();
   });
@@ -617,7 +617,7 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
     openGoalCreator();
 
-    const dialog = await screen.findByRole('dialog', { name: 'Start a goal' });
+    const dialog = await screen.findByRole('dialog', { name: 'New goal' });
     const selectedImage = new File(['image'], 'pending.png', { type: 'image/png' });
     fireEvent.change(within(dialog).getByLabelText('Attach files'), { target: { files: [selectedImage] } });
     expect(within(dialog).getByText('Preparing files…')).toBeInTheDocument();
@@ -647,7 +647,7 @@ describe('GoalsPage', () => {
     render(<MemoryRouter initialEntries={['/goals']}><Routes><Route path="/goals" element={<GoalsPage />} /></Routes></MemoryRouter>);
     openGoalCreator();
 
-    const dialog = await screen.findByRole('dialog', { name: 'Start a goal' });
+    const dialog = await screen.findByRole('dialog', { name: 'New goal' });
     fireEvent.change(within(dialog).getByLabelText('Prompt'), { target: { value: 'Keep this draft' } });
     fireEvent.click(within(dialog).getByRole('button', { name: /acme.*web/ }));
     const repositoryFilter = within(dialog).getByPlaceholderText('Filter repositories...');
@@ -678,7 +678,8 @@ describe('GoalsPage', () => {
     expect(screen.getByText('Implement API')).toBeInTheDocument();
     expect(screen.getByText(goal.title)).toHaveClass('truncate');
     expect(screen.getByText(goal.objective)).toHaveClass('truncate');
-    expect(screen.getByText('acme/web')).toHaveClass('font-mono');
+    expect(screen.getByTitle('acme/web')).toHaveTextContent(/^web$/);
+    expect(screen.getByText('web')).toHaveClass('font-mono');
     expect(screen.getByText('Codex')).toHaveClass('sr-only');
     expect(screen.getByText('GPT-5.6 Sol')).toBeInTheDocument();
   });
@@ -727,7 +728,9 @@ describe('GoalsPage', () => {
     const chip = await screen.findByTestId('repository-chip');
     expect(chip).toHaveClass('inline-flex', 'font-mono', 'bg-slate-100', 'border', 'border-slate-200', 'rounded-sm');
     expect(chip).not.toHaveClass('block', 'w-full');
-    expect(chip).toHaveTextContent('acme/web');
+    // The short name, with the owner kept in the tooltip.
+    expect(chip).toHaveTextContent(/^web$/);
+    expect(chip).toHaveAttribute('title', 'acme/web');
     // Repositories without their own icon leave the slug alone instead of repeating the GitHub logo.
     expect(within(chip).queryByTestId('repository-icon-fallback')).not.toBeInTheDocument();
   });

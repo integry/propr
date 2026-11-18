@@ -4,6 +4,7 @@
  * a series has one identity, one label and one color wherever it is drawn.
  */
 
+import { formatShortDate, formatShortDateTime, formatTimeOfDay, formatWeekdayHour } from '../../utils/dateFormat';
 import { agentTankCyclePeriodMs } from '@propr/shared';
 import type { AgentTankHistoryAgent, AgentTankHistoryPoint, AgentTankHistorySeries } from '../../api/revertApi';
 import { getProviderDisplayName, getProviderRank } from '../agentTankMetrics';
@@ -160,15 +161,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * bare date would repeat across neighbouring ticks), a date beyond that.
  */
 export function formatHistoryTick(t: number, spanMs: number): string {
-  const date = new Date(t);
-  if (spanMs <= 2 * DAY_MS) return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  if (spanMs <= 4 * DAY_MS) return date.toLocaleString(undefined, { weekday: 'short', hour: 'numeric' });
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  if (spanMs <= 2 * DAY_MS) return formatTimeOfDay(t);
+  if (spanMs <= 4 * DAY_MS) return formatWeekdayHour(t);
+  return formatShortDate(t);
 }
 
 /** Tooltip time, always with both date and clock time. */
 export function formatHistoryTime(t: number): string {
-  return new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return formatShortDateTime(t);
 }
 
 /** The last recorded value at or before `t`, or null before the series starts. */

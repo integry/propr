@@ -56,7 +56,7 @@ describe('AgentCard', () => {
   it('offers login only for authentication failures and keeps retries neutral', () => {
     const onRecheck = vi.fn();
     const callbacks = renderCard({ health: { agentId: agent.id, status: 'error', errorCode: 'auth_required', error: 'Session expired' }, onRecheck });
-    expect(screen.getByRole('alert')).toHaveTextContent('Authentication Expired');
+    expect(screen.getByRole('alert')).toHaveTextContent('Authentication expired');
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
     expect(callbacks.onLogin).toHaveBeenCalledOnce();
     const retry = screen.getByRole('button', { name: 'Check again' });
@@ -72,7 +72,7 @@ describe('AgentCard', () => {
       codex: { name: 'codex', usage: { session: { percent: 20 } } },
     } });
     const callbacks = renderCard({ agent: { ...agent, type: 'antigravity', alias: 'antigravity' }, health: { agentId: agent.id, status: 'error', errorCode: 'rate_limit', error: 'HTTP 429' }, onRecheck: vi.fn() });
-    expect(screen.getByRole('alert')).toHaveTextContent('Rate Limit Exceeded');
+    expect(screen.getByRole('alert')).toHaveTextContent('Rate limit exceeded');
     expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
     expect(getAgentTankUsage).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'View Quota / Usage' }));
