@@ -17,6 +17,7 @@ import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
 import { createPullRequest, ensureEpicBaseBranchExists, type PostProcessingResult } from './issueJobHelpers.js';
+import { addPullRequestProcessingLabels, issuePullRequestLabels } from './pullRequestProcessingLabels.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
@@ -352,6 +353,15 @@ export interface PRValidationOptions {
     taskId?: string;
     stateManager?: WorkerStateManager;
     currentIssueData?: CompletedPullRequestAssignmentContext['currentIssueData'];
+    /** The processing label normal creation adds; a recovered pull request gets it too. */
+    PR_LABEL?: string;
+    modelName?: string;
+}
+
+/** The labels normal creation adds, so follow-ups on a recovered pull request are accepted. */
+async function recoveredPullRequestLabels(options: Pick<PRValidationOptions, 'issueRef' | 'PR_LABEL' | 'modelName'>): Promise<string[]> {
+    // Labelling must never stop the pull request itself from being recovered.
+    return issuePullRequestLabels(options.issueRef, options.PR_LABEL, options.modelName).catch(() => options.PR_LABEL ? [options.PR_LABEL] : []);
 }
 
 export async function handlePRValidation(options: PRValidationOptions): Promise<PostProcessingResult | null> {
@@ -372,6 +382,7 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
 
         // Link PR to plan issue if found during validation
         if (finalPRValidation.pr?.number) {
+            await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: finalPRValidation.pr.number }, await recoveredPullRequestLabels(options), { correlatedLogger });
             const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
             await linkPRToPlanIssue(repository, issueRef.number, finalPRValidation.pr.number);
             correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: finalPRValidation.pr.number }, 'Linked PR to plan issue (found during validation)');
@@ -388,7 +399,7 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
     // 3. There were actual commits (commitResult !== null means changes were made and a PR is expected)
     const shouldPublishAgentWork = hasPublishableAgentWork(claudeResult);
     if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult !== null) {
-        const recoveredPr = await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger });
+        const recoveredPr = await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger, labels: await recoveredPullRequestLabels(options) });
         await autoAssignCompletedPullRequest(assignmentContext, { pr: recoveredPr });
     } else if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult === null) {
         correlatedLogger.info({ issueNumber: issueRef.number }, 'No PR validation needed - no code changes were made');
@@ -438,16 +449,18 @@ export interface FinalValidationOptions {
     taskId?: string;
     stateManager?: WorkerStateManager;
     currentIssueData?: CompletedPullRequestAssignmentContext['currentIssueData'];
+    PR_LABEL?: string;
+    modelName?: string;
 }
 
 export async function performFinalValidation(options: FinalValidationOptions): Promise<void> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData, PR_LABEL, modelName } = options;
     let resolvedPostProcessingResult = postProcessingResult;
 
     // A blocked run deliberately published nothing, so there is no pull request to find or recreate.
     if (claudeResult?.success && worktreeInfo?.branchName && !postProcessingResult?.blocked) {
         try {
-            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId, taskId, stateManager, currentIssueData });
+            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId, taskId, stateManager, currentIssueData, PR_LABEL, modelName });
         } catch (validationError) {
             correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (validationError as Error).message }, 'Final PR validation failed');
         }

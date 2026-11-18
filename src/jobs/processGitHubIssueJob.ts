@@ -374,7 +374,7 @@ async function processIssueWithAdmission(
         commitResult = worktreeResult.commitResult;
 
       } finally {
-        await performFinalValidation({ claudeResult: claudeResult || undefined, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath: localRepoPath || '', jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData });
+        await performFinalValidation({ claudeResult: claudeResult || undefined, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath: localRepoPath || '', jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData, PR_LABEL: context.PR_LABEL, modelName: context.modelName });
       }
 
       await job.updateProgress(100);

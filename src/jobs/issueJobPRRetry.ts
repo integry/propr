@@ -2,12 +2,19 @@ import type { Logger } from 'pino';
 import type { IssueJobData, RepoValidationResult, WorktreeInfo } from '@propr/core';
 import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { initialPullRequestStatusBlock, initialPullRequestTitle, withPullRequestStatusBlock } from '../github/pullRequestBodyWriter.js';
+import { addPullRequestProcessingLabels } from './pullRequestProcessingLabels.js';
 
 export interface RetryPRCreationOptions {
     worktreeInfo: WorktreeInfo;
     issueRef: IssueJobData;
     repoValidation: RepoValidationResult;
     correlatedLogger: Logger;
+    /**
+     * The processing label and model label normal creation adds. Without the
+     * processing label, follow-up comments on the recovered pull request are
+     * ignored by intake.
+     */
+    labels?: string[];
 }
 
 /**
@@ -16,7 +23,7 @@ export interface RetryPRCreationOptions {
  * Returns the created or already existing PR, or null.
  */
 export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Promise<{ number: number } | null> {
-    const { worktreeInfo, issueRef, repoValidation, correlatedLogger } = options;
+    const { worktreeInfo, issueRef, repoValidation, correlatedLogger, labels = [] } = options;
 
     const targetBaseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
@@ -46,6 +53,7 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
         const prNumber = prResponse.data.number;
         createdPrNumber = prNumber;
         correlatedLogger.info({ issueNumber: issueRef.number, prNumber }, 'PR creation retry successful');
+        await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber }, labels, { correlatedLogger });
 
         // Link PR to plan issue
         await linkPRToPlanIssue(repository, issueRef.number, prNumber);
@@ -74,6 +82,7 @@ export async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Pr
                 const existingPR = existingPRs.data[0];
                 correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number }, 'Found existing PR');
 
+                await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: existingPR.number }, labels, { correlatedLogger });
                 const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
                 await linkPRToPlanIssue(repository, issueRef.number, existingPR.number);
                 return { number: existingPR.number };
