@@ -84,7 +84,10 @@ export function buildSummarySelectionPrompt(candidates: string[]): string {
     const lastInFull = last.length > SUMMARY_CANDIDATE_MAX_CHARS
         ? `\n\nMessage ${candidates.length} was shortened above. Here it is in full; use it to judge whether the run looks unfinished:\n\n<last-message>\n${last.replaceAll('</last-message>', '<\\/last-message>')}\n</last-message>`
         : '';
-    return `A coding agent finished a task. Below are its last ${candidates.length} messages, oldest first, numbered 1 to ${candidates.length}.
+    const intro = candidates.length === 1
+        ? 'Below is its last message, numbered 1.'
+        : `Below are its last ${candidates.length} messages, oldest first, numbered 1 to ${candidates.length}.`;
+    return `A coding agent finished a task. ${intro}
 
 Which one is the agent's summary of the work it did (what changed and why)?
 Messages that only acknowledge a notification, report waiting, or point back to an earlier summary are not summaries.
@@ -145,9 +148,13 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** Asks the small model which candidate is the summary. Never throws. */
+/**
+ * Asks the small model which candidate is the summary and whether the run
+ * looks unfinished. A single candidate is asked too, because the unfinished
+ * verdict matters even when there is nothing to choose between. Never throws.
+ */
 export async function selectRunSummary(candidates: string[], deps: SelectRunSummaryDeps): Promise<RunSummarySelection> {
-    if (candidates.length <= 1) return { outcome: 'skipped', reason: 'single candidate' };
+    if (candidates.length === 0) return { outcome: 'skipped', reason: 'no candidates' };
     const timeoutMs = deps.timeoutMs ?? SUMMARY_SELECTION_TIMEOUT_MS;
     try {
         const reply = await withTimeout(deps.ask(buildSummarySelectionPrompt(candidates), timeoutMs), timeoutMs);
@@ -179,8 +186,9 @@ function commitMessageFrom(text: string): string | null {
 /**
  * Replaces a finished run's summary (and the commit message derived from it)
  * with the message the small model picked. Returns the result unchanged when
- * the run failed, has one candidate, no small model is configured, or the
- * call fails. `summarySelection: 'none'` tells publishers to fall back to the
+ * the run failed, has no summary, no small model is configured, or the call
+ * fails. A run with one candidate still makes the call, for the unfinished
+ * verdict only: its summary and commit message stay exactly as reported. `summarySelection: 'none'` tells publishers to fall back to the
  * issue or request title for the commit subject. `unfinishedReason` is set when
  * the same call judged that the agent's last message says it was still working
  * or waiting; completion comments then say the run ended before the agent
@@ -193,7 +201,6 @@ export async function applyRunSummarySelection(
 ): Promise<AgentExecutionResult> {
     if (!result.success || !result.summary?.trim()) return result;
     const candidates = buildSummaryCandidates(result.conversationLog, result.summary);
-    if (candidates.length <= 1) return result;
     const log = logger.withCorrelation(context.correlationId ?? context.taskId ?? 'run-summary-selection');
     let model: string;
     try {
@@ -225,6 +232,10 @@ export async function applyRunSummarySelection(
     const unfinished = selection.unfinished ? { unfinishedReason: selection.unfinished.reason } : {};
     if (selection.unfinished) {
         log.warn({ taskId: context.taskId, reason: selection.unfinished.reason }, 'Run summary selection: the agent\'s last message says work was still in progress');
+    }
+    if (candidates.length === 1) {
+        // Nothing to choose between: the one message stays the summary whatever index the model gave.
+        return selection.unfinished ? { ...result, ...unfinished } : result;
     }
     if (selection.outcome === 'none') {
         log.info({ taskId: context.taskId, candidateCount: candidates.length }, 'Run summary selection: no candidate describes the work');

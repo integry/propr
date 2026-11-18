@@ -104,11 +104,21 @@ test('a timeout falls back to the last message within the call budget', async ()
   assert.match((selection as { reason: string }).reason, /timed out/);
 });
 
-test('a single-candidate run makes no call', async () => {
-  const { deps: d, runAnalysis } = deps('{"index": 1}');
-  const result = await applyRunSummarySelection(run({ conversationLog: [claudeText(SUMMARY)], summary: SUMMARY }), context, d);
+test('a finished single-candidate run makes one call and keeps its summary unchanged', async () => {
+  const { deps: d, runAnalysis } = deps('{"index": 1, "unfinished": false}');
+  const original = run({ conversationLog: [claudeText(SUMMARY)], summary: SUMMARY, commitMessage: SUMMARY });
+  const result = await applyRunSummarySelection(original, context, d);
+  assert.equal(runAnalysis.mock.callCount(), 1);
+  assert.equal(result, original);
+  assert.equal(result.unfinishedReason, undefined);
+});
+
+test('a single-candidate run is never replaced by the fixed sentence', async () => {
+  const original = run({ conversationLog: [claudeText(SUMMARY)], summary: SUMMARY, commitMessage: SUMMARY });
+  const result = await applyRunSummarySelection(original, context, deps('{"index": null}').deps);
   assert.equal(result.summary, SUMMARY);
-  assert.equal(runAnalysis.mock.callCount(), 0);
+  assert.equal(result.commitMessage, SUMMARY);
+  assert.equal(result.summarySelection, undefined);
 });
 
 test('no configured small-call model skips the call', async () => {
@@ -266,6 +276,34 @@ test('a failed call leaves the run exactly as reported, with no unfinished flag'
   const result = await applyRunSummarySelection(original, context, deps(async () => { throw new Error('boom'); }).deps);
   assert.equal(result, original);
   assert.equal(result.unfinishedReason, undefined);
+});
+
+const singleWaitingRun = () => run({ conversationLog: [claudeText(WAITING)], summary: WAITING, commitMessage: WAITING });
+
+test('a single waiting message is judged in one call and flags the run unfinished', async () => {
+  const { deps: d, runAnalysis } = deps('{"index": 1, "unfinished": true, "reason": "Still waiting for the background test run."}');
+  const result = await applyRunSummarySelection(singleWaitingRun(), context, d);
+  assert.equal(runAnalysis.mock.callCount(), 1);
+  const prompt = (runAnalysis.mock.calls[0].arguments[0] as { prompt: string }).prompt;
+  assert.match(prompt, /Below is its last message, numbered 1\./);
+  assert.ok(prompt.includes(WAITING));
+  assert.equal(result.summary, WAITING);
+  assert.equal(result.commitMessage, WAITING);
+  assert.equal(result.summarySelection, undefined);
+  assert.equal(result.unfinishedReason, 'Still waiting for the background test run.');
+  assert.equal(agentResultToClaudeResponse(result).unfinishedReason, 'Still waiting for the background test run.');
+});
+
+test('a single waiting message with a failed call or no configured model is left unchanged', async () => {
+  const failed = singleWaitingRun();
+  assert.equal(await applyRunSummarySelection(failed, context, deps(async () => { throw new Error('boom'); }).deps), failed);
+  const { runAnalysis } = deps('{"index": 1, "unfinished": true}');
+  const unconfigured = singleWaitingRun();
+  const result = await applyRunSummarySelection(unconfigured, context, {
+    loadSettings: async () => ({ agent_alias: '' }) as never, runAnalysis: runAnalysis as never,
+  });
+  assert.equal(result, unconfigured);
+  assert.equal(runAnalysis.mock.callCount(), 0);
 });
 
 test('no configured model leaves an unfinished-looking run unchanged', async () => {
