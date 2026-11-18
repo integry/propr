@@ -134,7 +134,10 @@ source, trusted main and three references. Only that directory is uploaded as
 the artifact `propr-cli-preview-<source_revision>-<run_id>` (60-day retention,
 `if-no-files-found: error`); any earlier failure skips the upload. The job
 summary lists the version, source and trusted-main revisions, tarball name and
-hash, manifest and provenance hashes, and the three runtime references.
+hash, manifest and provenance hashes, and the three runtime references. When
+called, the workflow also outputs `cli_version`, `artifact_name`, `artifact_id`,
+`tarball` and `tarball_sha256`; Release Rollout puts them in the ProPR Hosted
+repin follow-up (`scripts/release-followups.mjs`).
 
 Tests use synthetic registry fixtures without live provider secrets:
 
@@ -146,7 +149,9 @@ node --test test/previewCliWorkflow.test.mjs
 
 ## Fleet handoff and separate work
 
-Give the fleet operator the immutable run-specific artifact URL (with retention
+For a release, the Release Rollout follow-ups job writes this handoff as the
+"Repin ProPR Hosted to ProPR `<version>`" issue (see `.github/CONTRIBUTING.md`).
+Otherwise, give the fleet operator the immutable run-specific artifact URL (with retention
 information) or local tarball, its SHA-256 through a trusted handoff channel,
 `sourceRevision`, **exact expected CLI version**, manifest and provenance.
 After downloading/copying the bundle, check `sha256sum --check SHA256SUMS` and

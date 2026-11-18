@@ -48,6 +48,22 @@ on:
         description: propr/agent:<source_revision>@sha256:<64 lowercase hex>
         required: true
         type: string
+    outputs:
+      cli_version:
+        description: Version of the prepared preview CLI
+        value: ${{ jobs.prepare.outputs.cli_version }}
+      artifact_name:
+        description: Name of the run-specific Actions artifact holding the bundle
+        value: ${{ jobs.prepare.outputs.artifact_name }}
+      artifact_id:
+        description: Id of that Actions artifact
+        value: ${{ jobs.prepare.outputs.artifact_id }}
+      tarball:
+        description: File name of the CLI tarball in the artifact
+        value: ${{ jobs.prepare.outputs.tarball }}
+      tarball_sha256:
+        description: SHA-256 of the CLI tarball
+        value: ${{ jobs.prepare.outputs.tarball_sha256 }}
 
 permissions:
   contents: read
@@ -59,6 +75,12 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    outputs:
+      cli_version: ${{ steps.verify.outputs.version }}
+      artifact_name: propr-cli-preview-${{ steps.trust.outputs.source_revision }}-${{ github.run_id }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      tarball: ${{ steps.verify.outputs.tarball }}
+      tarball_sha256: ${{ steps.verify.outputs.tarball_sha256 }}
     steps:
       - name: Refuse anything but a manual main dispatch or the main Release Rollout before checkout
         env:
@@ -176,6 +198,7 @@ jobs:
             --summary "$RUNNER_TEMP/propr-cli-preview-summary.md"
 
       - name: Retain the completed bundle as a run-specific artifact
+        id: upload
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-cli-preview-${{ steps.trust.outputs.source_revision }}-${{ github.run_id }}

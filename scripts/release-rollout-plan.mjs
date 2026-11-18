@@ -156,6 +156,10 @@ export function rolloutOutputs(plan) {
     release_tag: plan.releaseTag,
     source_revision: plan.sourceRevision,
     version: plan.version,
+    desktop_version: plan.desktopVersion,
+    // The desktop pre-release tags this tag commit publishes (or already has).
+    linux_release_tag: plan.releases.linux.tag,
+    macos_release_tag: plan.releases.macos.tag,
     runtime_app_image: app ?? '',
     runtime_ui_image: ui ?? '',
     runtime_agent_image: agent ?? '',

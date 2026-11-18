@@ -20,6 +20,15 @@ name: Release Rollout
 # are skipped and their existing digests passed along. To resume a run that
 # stopped part-way (for example a rejected approval), re-run its failed jobs:
 # a fresh run rebuilds, and staging refuses draft bytes that differ.
+#
+# Last, the follow-ups job writes the three release follow-ups outside this
+# repository (scripts/release-followups.mjs): the ProPR Hosted repin
+# (integry/propr-fleet), the site's release date and desktop tags
+# (integry/propr-site) and the demo move (integry/propr-deploy). With the
+# optional RELEASE_FOLLOWUP_ISSUES_TOKEN it opens them as issues; without it
+# the run summary carries their exact text to file by hand. When the optional
+# deploy-on-release secrets (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY) are set,
+# it runs the documented SSH deploy of the demo instead of asking for it.
 on:
   workflow_dispatch:
     inputs:
@@ -56,6 +65,9 @@ jobs:
       release_tag: ${{ steps.plan.outputs.release_tag }}
       source_revision: ${{ steps.plan.outputs.source_revision }}
       version: ${{ steps.plan.outputs.version }}
+      desktop_version: ${{ steps.plan.outputs.desktop_version }}
+      linux_release_tag: ${{ steps.plan.outputs.linux_release_tag }}
+      macos_release_tag: ${{ steps.plan.outputs.macos_release_tag }}
       runtime_app_image: ${{ steps.plan.outputs.runtime_app_image }}
       runtime_ui_image: ${{ steps.plan.outputs.runtime_ui_image }}
       runtime_agent_image: ${{ steps.plan.outputs.runtime_agent_image }}
@@ -288,3 +300,111 @@ jobs:
             fi
             echo 'Check where the release is live with `npm run release:rollout -- --version <x.y.z>`.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  followups:
+    name: Release follow-ups (ProPR Hosted repin, site, demo)
+    needs: [plan, runtime, linux-publication, macos, cli-bundle, summary]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the reviewed main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      # The deploy-on-release step from integry/propr-deploy DEPLOYMENT.md. A
+      # failed or absent deploy is not a failed rollout: the demo follow-up
+      # issue says what is left to do.
+      - name: Deploy the demo over SSH when the deploy-on-release secrets are set
+        id: demo
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo 'The deploy-on-release secrets are not set; the demo follow-up is an issue.'
+            echo 'result=skipped' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/deploy-on-release-key"
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printf '%s\n' "$DEPLOY_SSH_KEY" > "$key")
+          if ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" 'cd /root/propr-deploy && ./scripts/deploy.sh all'; then
+            echo 'result=success' >> "$GITHUB_OUTPUT"
+          else
+            echo '::warning::The deploy-on-release SSH step failed; the demo follow-up is an issue.'
+            echo 'result=failure' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write the follow-up texts and the summary
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+          SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
+          RUN_ID: ${{ github.run_id }}
+          DESKTOP_VERSION: ${{ needs.plan.outputs.desktop_version }}
+          APP_IMAGE: ${{ needs.runtime.outputs.runtime_app_image }}
+          UI_IMAGE: ${{ needs.runtime.outputs.runtime_ui_image }}
+          AGENT_IMAGE: ${{ needs.runtime.outputs.runtime_agent_image }}
+          CLI_BUNDLE: ${{ needs.cli-bundle.result }}
+          CLI_VERSION: ${{ needs.cli-bundle.outputs.cli_version }}
+          CLI_ARTIFACT_NAME: ${{ needs.cli-bundle.outputs.artifact_name }}
+          CLI_ARTIFACT_ID: ${{ needs.cli-bundle.outputs.artifact_id }}
+          CLI_TARBALL: ${{ needs.cli-bundle.outputs.tarball }}
+          CLI_TARBALL_SHA256: ${{ needs.cli-bundle.outputs.tarball_sha256 }}
+          LINUX_RELEASE_TAG: ${{ needs.plan.outputs.linux_release_tag }}
+          LINUX_PUBLICATION: ${{ needs.linux-publication.result }}
+          PLAN_LINUX: ${{ needs.plan.outputs.linux }}
+          MACOS_RELEASE_TAG: ${{ needs.plan.outputs.macos_release_tag }}
+          MACOS: ${{ needs.macos.result }}
+          PLAN_MACOS: ${{ needs.plan.outputs.macos }}
+          DEMO_DEPLOY: ${{ steps.demo.outputs.result }}
+          TOKEN_CONFIGURED: ${{ secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN != '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-followups.mjs prepare --out "$RUNNER_TEMP/release-followups"
+
+      # Optional: a fine-grained token limited to Issues (read and write) on
+      # integry/propr-fleet, integry/propr-site and integry/propr-deploy.
+      # An issue with the same title (open or closed) is not filed again.
+      - name: Open the follow-up issues when RELEASE_FOLLOWUP_ISSUES_TOKEN is set
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN }}
+          FOLLOWUPS: ${{ runner.temp }}/release-followups
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'RELEASE_FOLLOWUP_ISSUES_TOKEN is not set: file the follow-ups printed above (and in the run summary) by hand.'
+            exit 0
+          fi
+          failed=0
+          { echo '#### Follow-up issues'; echo; } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r repository title body; do
+            if ! found=$(ISSUE_TITLE="$title" gh issue list -R "$repository" --state all --search "\"$title\" in:title" \
+              --json title,url --jq 'map(select(.title == env.ISSUE_TITLE))[0].url // empty' </dev/null); then
+              echo "::error::Could not search $repository for \"$title\""
+              echo "- \`$repository\`: could not check or file \"$title\"; file it by hand" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+            elif [ -n "$found" ]; then
+              echo "- \`$repository\`: already filed: $found" >> "$GITHUB_STEP_SUMMARY"
+            elif url=$(gh issue create -R "$repository" --title "$title" --body-file "$body" </dev/null); then
+              echo "- \`$repository\`: opened $url" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Could not open \"$title\" in $repository"
+              echo "- \`$repository\`: could not file \"$title\"; file it by hand" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+            fi
+          done < "$FOLLOWUPS/issues.tsv"
+          exit "$failed"
