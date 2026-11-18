@@ -27,9 +27,21 @@ const stub = (root, name, body) => {
 
 // Runs the helper with every privileged or slow command stubbed. Each
 // `timeout` call (one per install attempt) consumes the next scripted status.
-function runInstall({ statuses = [0], uid = 1000, sudoStatus = 0, environment = 'github-hosted' } = {}) {
+// `sources` and `mirrors` seed the scratch /etc/apt: `mirrors` maps a list file
+// name to its content, and `{mirrors}` in `sources` names the scratch directory.
+function runInstall({
+    statuses = [0], uid = 1000, sudoStatus = 0, mirrorWriteStatus = 0, environment = 'github-hosted',
+    sources = {}, mirrors = {},
+} = {}) {
     // `null` leaves RUNNER_ENVIRONMENT unset.
     const root = freshDirectory('install');
+    const etc = join(root, 'etc-apt');
+    mkdirSync(join(etc, 'apt.conf.d'), { recursive: true });
+    mkdirSync(join(etc, 'sources.list.d'), { recursive: true });
+    for (const [name, content] of Object.entries(sources)) {
+        writeFileSync(join(etc, name), content.replaceAll('{mirrors}', etc));
+    }
+    for (const [name, content] of Object.entries(mirrors)) writeFileSync(join(etc, name), content);
     const log = join(root, 'calls');
     writeFileSync(join(root, 'statuses'), `${statuses.join('\n')}\n`);
     stub(root, 'id', `echo ${uid}`);
@@ -41,22 +53,38 @@ function runInstall({ statuses = [0], uid = 1000, sudoStatus = 0, environment = 
         `sed -i 1d '${join(root, 'statuses')}'`,
         'exit "$status"',
     ].join('\n'));
+    // sudo really runs `tee` (into the scratch /etc/apt) and logs the rest.
     stub(root, 'sudo', [
         `echo "sudo $*" >> '${log}'`,
-        `if [[ "$*" == *" tee "* ]]; then cat > '${join(root, 'apt.conf')}'; fi`,
-        `exit ${sudoStatus}`,
+        `if [[ ${sudoStatus} -ne 0 ]]; then exit ${sudoStatus}; fi`,
+        'if [[ "$3" == tee ]]; then',
+        `  if [[ "$4" != *apt.conf.d* && ${mirrorWriteStatus} -ne 0 ]]; then cat >/dev/null; exit ${mirrorWriteStatus}; fi`,
+        '  shift 2; PATH=/usr/bin:/bin exec "$@"',
+        'fi',
     ].join('\n'));
-    stub(root, 'tee', `echo "tee $*" >> '${log}'; cat > '${join(root, 'apt.conf')}'`);
+    // Already root: the helper runs `tee` itself.
+    stub(root, 'tee', [
+        `echo "tee $*" >> '${log}'`,
+        `if [[ "$1" != *apt.conf.d* && ${mirrorWriteStatus} -ne 0 ]]; then cat >/dev/null; exit ${mirrorWriteStatus}; fi`,
+        'PATH=/usr/bin:/bin exec tee "$@"',
+    ].join('\n'));
     stub(root, 'pkill', `echo "pkill $*" >> '${log}'`);
     // GitHub Actions runs Linux `run` steps as `bash -e {0}`.
     const result = spawnSync('bash', ['--noprofile', '--norc', '-e', INSTALL], {
         encoding: 'utf8',
-        env: { PATH: `${root}:${process.env.PATH}`, ...(environment === null ? {} : { RUNNER_ENVIRONMENT: environment }) },
+        env: {
+            PATH: `${root}:${process.env.PATH}`,
+            PROPR_CI_APT_ETC: etc,
+            ...(environment === null ? {} : { RUNNER_ENVIRONMENT: environment }),
+        },
     });
-    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
-    const aptConf = existsSync(join(root, 'apt.conf')) ? readFileSync(join(root, 'apt.conf'), 'utf8') : null;
+    const relative = (call) => call.replaceAll(etc, '/etc/apt');
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(relative) : [];
+    const confPath = join(etc, 'apt.conf.d', '99propr-ci-network-timeouts');
+    const aptConf = existsSync(confPath) ? readFileSync(confPath, 'utf8') : null;
+    const mirrorList = (name) => readFileSync(join(etc, name), 'utf8');
     const attempts = calls.filter(call => call.startsWith('timeout --kill-after'));
-    return { ...result, calls, aptConf, attempts };
+    return { ...result, stdout: relative(result.stdout), calls, aptConf, attempts, mirrorList };
 }
 
 const ATTEMPT = 'timeout --kill-after=15s 3m npx playwright install --with-deps chromium';
@@ -102,6 +130,138 @@ describe('hosted Chromium install', () => {
             assert.deepEqual(exhausted.attempts, [ATTEMPT, ATTEMPT]);
             assert.match(exhausted.stdout, /::error::Chromium install timed out on every attempt\./);
         }
+    });
+
+    // The hosted ubuntu-24.04 image: deb822 sources reading a mirror list, the
+    // regional mirror first.
+    const HOSTED_SOURCES = {
+        'sources.list.d/ubuntu.sources': [
+            'Types: deb',
+            'URIs: mirror+file:{mirrors}/apt-mirrors.txt',
+            'Suites: noble noble-updates noble-backports noble-security',
+            'Components: main universe restricted multiverse',
+            '',
+        ].join('\n'),
+    };
+    const HOSTED_MIRRORS = [
+        '# Mirrors for hosted runners',
+        'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1',
+        'https://archive.ubuntu.com/ubuntu/\tpriority:2',
+        'https://security.ubuntu.com/ubuntu/\tpriority:3',
+        '',
+    ].join('\n');
+    const MIRROR_WRITE = 'sudo -n -- tee /etc/apt/apt-mirrors.txt';
+
+    test('retries from a different apt mirror than the one that stalled', () => {
+        const recovered = runInstall({ statuses: [124, 0], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
+        assert.equal(recovered.status, 0, recovered.stderr);
+        assert.deepEqual(recovered.attempts, [ATTEMPT, ATTEMPT]);
+        assert.equal(recovered.mirrorList('apt-mirrors.txt'), [
+            '# Mirrors for hosted runners',
+            'https://archive.ubuntu.com/ubuntu/\tpriority:1',
+            'https://security.ubuntu.com/ubuntu/\tpriority:2',
+            'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:3',
+            '',
+        ].join('\n'));
+        // The list is rewritten after apt is stopped and before the retry.
+        const between = recovered.calls.slice(recovered.calls.indexOf(ATTEMPT) + 1, recovered.calls.lastIndexOf(ATTEMPT));
+        assert.deepEqual(between.slice(-2), ['sudo -n -- timeout 60s dpkg --configure -a', MIRROR_WRITE]);
+        assert.match(recovered.stdout, /::warning::The retry fetches from other apt mirrors before http:\/\/us-east-2\.ec2\.archive\.ubuntu\.com\/ubuntu\/ \(from \/etc\/apt\/apt-mirrors\.txt\)\./);
+
+        // A clean first attempt leaves the runner's mirror list alone.
+        const clean = runInstall({ sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
+        assert.equal(clean.status, 0, clean.stderr);
+        assert.equal(clean.mirrorList('apt-mirrors.txt'), HOSTED_MIRRORS);
+        assert.ok(!clean.calls.includes(MIRROR_WRITE));
+
+        // Still stalled on the second mirror: the step fails, bounded at two attempts.
+        const exhausted = runInstall({ statuses: [137, 124], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
+        assert.equal(exhausted.status, 1);
+        assert.deepEqual(exhausted.attempts, [ATTEMPT, ATTEMPT]);
+        assert.equal(exhausted.calls.filter(call => call === MIRROR_WRITE).length, 1);
+        assert.match(exhausted.stdout, /::error::Chromium install timed out on every attempt\./);
+
+        // Already root: the list is written without sudo.
+        // (As root, `timeout 60s dpkg --configure -a` takes a scripted status too.)
+        const asRoot = runInstall({ uid: 0, statuses: [124, 0, 0], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
+        assert.equal(asRoot.status, 0, asRoot.stderr);
+        assert.ok(asRoot.calls.includes('tee /etc/apt/apt-mirrors.txt'));
+        assert.match(asRoot.mirrorList('apt-mirrors.txt'), /^https:\/\/archive\.ubuntu\.com\/ubuntu\/\tpriority:1$/m);
+    });
+
+    test('demotes every mirror apt would try first, keeping the others in apt order', () => {
+        const mirrors = {
+            // Tied first entries, other tags, and an entry with no priority (apt's last).
+            'tied.txt': [
+                'http://slow-a.example/ubuntu/\tarch:amd64\tpriority:5',
+                'http://unranked.example/ubuntu/',
+                'http://slow-b.example/ubuntu/\tpriority:5',
+                'http://third.example/ubuntu/\tpriority:9',
+                'http://second.example/ubuntu/\tpriority:7\ttype:deb',
+                '',
+            ].join('\n'),
+            // One mirror only: archive.ubuntu.com goes ahead of it.
+            'single.txt': 'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n',
+            // No priorities, archive.ubuntu.com already listed: nothing is added.
+            'unranked.txt': 'http://azure.archive.ubuntu.com/ubuntu/\nhttps://archive.ubuntu.com/ubuntu\n',
+        };
+        const sources = {
+            'sources.list': 'deb mirror+file:{mirrors}/tied.txt noble main\n# deb http://ignored.example/ubuntu noble main\n',
+            'sources.list.d/single.list': 'deb [arch=amd64] mirror+file:{mirrors}/single.txt noble main\n'
+                + 'deb-src mirror+file:{mirrors}/single.txt noble main\n',
+            'sources.list.d/unranked.sources': 'Types: deb\nURIs: mirror+file:{mirrors}/unranked.txt\nSuites: noble\n',
+        };
+        const run = runInstall({ statuses: [124, 0], sources, mirrors });
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(run.mirrorList('tied.txt'), [
+            'http://second.example/ubuntu/\ttype:deb\tpriority:1',
+            'http://third.example/ubuntu/\tpriority:2',
+            'http://unranked.example/ubuntu/\tpriority:3',
+            'http://slow-a.example/ubuntu/\tarch:amd64\tpriority:4',
+            'http://slow-b.example/ubuntu/\tpriority:5',
+            '',
+        ].join('\n'));
+        assert.equal(run.mirrorList('single.txt'), [
+            'http://archive.ubuntu.com/ubuntu/\tpriority:1',
+            'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:2',
+            '',
+        ].join('\n'));
+        assert.equal(run.mirrorList('unranked.txt'), [
+            'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1',
+            'https://archive.ubuntu.com/ubuntu\tpriority:2',
+            '',
+        ].join('\n'));
+        // Each list is rewritten once, even when several sources share it.
+        for (const name of ['tied.txt', 'single.txt', 'unranked.txt']) {
+            assert.equal(run.calls.filter(call => call === `sudo -n -- tee /etc/apt/${name}`).length, 1, name);
+        }
+    });
+
+    test('still retries when the mirror list cannot be used, and says so', () => {
+        const noList = runInstall({ statuses: [124, 0] });
+        assert.equal(noList.status, 0, noList.stderr);
+        assert.deepEqual(noList.attempts, [ATTEMPT, ATTEMPT]);
+        assert.match(noList.stdout, /::warning::No apt mirror list is configured; the retry uses the same apt sources\./);
+
+        const missing = runInstall({ statuses: [124, 0], sources: HOSTED_SOURCES });
+        assert.equal(missing.status, 0, missing.stderr);
+        assert.deepEqual(missing.attempts, [ATTEMPT, ATTEMPT]);
+        assert.match(missing.stdout, /::warning::Could not read apt mirror list \/etc\/apt\/apt-mirrors\.txt; the retry uses it unchanged\./);
+        assert.ok(!missing.calls.includes(MIRROR_WRITE));
+
+        const empty = runInstall({ statuses: [124, 0], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': '# nothing\n' } });
+        assert.equal(empty.status, 0, empty.stderr);
+        assert.equal(empty.mirrorList('apt-mirrors.txt'), '# nothing\n');
+        assert.match(empty.stdout, /::warning::Could not read apt mirror list/);
+
+        const unwritable = runInstall({
+            statuses: [124, 0], mirrorWriteStatus: 1, sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS },
+        });
+        assert.equal(unwritable.status, 0, unwritable.stderr);
+        assert.deepEqual(unwritable.attempts, [ATTEMPT, ATTEMPT]);
+        assert.equal(unwritable.mirrorList('apt-mirrors.txt'), HOSTED_MIRRORS);
+        assert.match(unwritable.stdout, /::warning::Could not rewrite apt mirror list \/etc\/apt\/apt-mirrors\.txt; the retry uses it unchanged\./);
+        assert.doesNotMatch(unwritable.stdout, /::warning::The retry fetches from other apt mirrors/);
     });
 
     test('fails closed on any other failure', () => {
