@@ -20,30 +20,24 @@ import { createPullRequest, ensureEpicBaseBranchExists, type PostProcessingResul
 import { addPullRequestProcessingLabels, issuePullRequestLabels } from './pullRequestProcessingLabels.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
-import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
+import { pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
 import { prepareProviderReplacement } from './providerReplacement.js';
 import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
 import { retryPRCreationViaAPI } from './issueJobPRRetry.js';
 import { completeIssueLabelsBestEffort } from './issueJobCompletionLabels.js';
 import { taskPageUrl } from './taskPageUrl.js';
 import { describeFailureCause } from './failureCause.js';
-import { stripUpstreamPageTitles } from './upstreamPageTitle.js';
+import type { PostProcessingStep } from './postProcessingStep.js';
+import { formatErrorBlock, getErrorMessage, handlePostProcessingFailure } from './issueJobPostProcessingFailure.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
 
-function formatErrorBlock(title: string, message: string): string {
-    const redacted = stripUpstreamPageTitles(redactSecrets(message || 'Unknown error')).slice(0, 4000);
-    return `**${title}:**\n${redacted}\n\n`;
-}
+const EXECUTION_ABORTED_MESSAGE = 'Execution aborted by user request';
 
 function formatFailureCause(message: string): string {
     const cause = describeFailureCause(message);
     return cause ? `${cause}\n\n` : '';
-}
-
-function getErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
 }
 
 function buildImplementationCompletionNote(claudeResult: ClaudeCodeResponse): string {
@@ -112,22 +106,6 @@ async function settleUnpublishedOutcome(options: PostProcessOptions): Promise<Po
     return (await import('./issueJobBlocked.js')).settleReportedIssueBlocker(options);
 }
 
-function formatFallbackDiagnostics(claudeResult: ClaudeCodeResponse, postProcessingError: unknown): string {
-    const systemError = claudeResult?.success === false && claudeResult.error ? agentFailureLine(claudeResult.error) : '';
-    const postProcessingMessage = getErrorMessage(postProcessingError).trim();
-    let diagnostics = '';
-
-    if (systemError) {
-        diagnostics += formatErrorBlock('System Error', systemError);
-    }
-
-    if (postProcessingMessage && postProcessingMessage !== systemError) {
-        diagnostics += formatErrorBlock('Post-processing Error', postProcessingMessage);
-    }
-
-    return diagnostics;
-}
-
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
 };
@@ -163,44 +141,6 @@ export interface PostProcessResult {
     postProcessingResult: PostProcessingResult | null;
 }
 
-async function handlePostProcessingFailure(
-    options: PostProcessOptions,
-    postProcessingError: unknown,
-    canMarkDone = hasPublishableAgentWork(options.claudeResult),
-): Promise<PostProcessingResult> {
-    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger } = options;
-    // A rejected push already ran the salvage ladder; the comment says how to recover.
-    const { pushFailure, failureFields } = describePushFailure(postProcessingError);
-
-    correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (postProcessingError as Error).message }, 'Deterministic post-processing failed');
-
-    try {
-        const completedLabels = canMarkDone ? [AI_DONE_TAG] : [];
-        if (canMarkDone) {
-            // A failed label mutation must not suppress the failure comment below.
-            await completeIssueLabelsBestEffort({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
-        } else {
-            await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], []);
-        }
-        const completionComment = await generateCompletionComment(
-            claudeResult,
-            { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-            { publishedAs: 'issue_comment', ...(options.taskId ? { taskUrl: taskPageUrl(options.taskId) } : {}) },
-        );
-        const fallbackHeading = canMarkDone
-            ? '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**'
-            : '❌ **AI processing failed before producing publishable work.**';
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-            body: `${pushFailure ? formatIssuePushFailure(pushFailure) : `${fallbackHeading}\n\n${formatFallbackDiagnostics(claudeResult, postProcessingError)}`}${completionComment}`,
-        });
-        return { success: false, pr: null, updatedLabels: completedLabels, error: (postProcessingError as Error).message, ...failureFields };
-    } catch (fallbackError) {
-        correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (fallbackError as Error).message }, 'Fallback post-processing also failed');
-        return { success: false, pr: null, updatedLabels: [], error: (postProcessingError as Error).message, ...failureFields };
-    }
-}
-
 async function handleMissingCommit(options: PostProcessOptions): Promise<PostProcessingResult> {
     const { octokit, issueRef, claudeResult, currentIssueData, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger } = options;
     if (claudeResult.success) {
@@ -221,11 +161,63 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
     });
 }
 
+/** Opens the pull request for committed and pushed work; throws when none was opened. */
+async function openPullRequest(
+    options: PostProcessOptions,
+    commitResult: CommitResult,
+    evidence: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>>['evidence'],
+): Promise<PostProcessingResult & { pr: NonNullable<PostProcessingResult['pr']> }> {
+    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, PR_LABEL, correlatedLogger, taskId, stateManager } = options;
+    // Check for cancellation before creating PR
+    if (taskId && stateManager) {
+        const currentState = await stateManager.getTaskState(taskId);
+        if (currentState?.state === TaskStates.CANCELLED) {
+            correlatedLogger.info({ taskId }, 'Task was cancelled by user, skipping PR creation');
+            throw new Error(EXECUTION_ABORTED_MESSAGE);
+        }
+    }
+
+    // Self-heal a deleted epic base branch (e.g. after its Epic PR was
+    // closed) so the child PR isn't rejected with base "invalid" on rerun.
+    if (issueRef.baseBranch) {
+        await ensureEpicBaseBranchExists(octokit, {
+            owner: issueRef.repoOwner,
+            repo: issueRef.repoName,
+            baseBranch: issueRef.baseBranch,
+            defaultBranch: repoValidation.repoData?.defaultBranch,
+            correlatedLogger
+        });
+    }
+
+    const result = await createPullRequest(
+        octokit, issueRef, worktreeInfo,
+        {
+            commitResult,
+            claudeResult,
+            modelName,
+            repoValidation,
+            PR_LABEL,
+            correlatedLogger,
+            issueTitle: currentIssueData.data.title,
+            visualPreview: { evidence, worktreePath: worktreeInfo.worktreePath },
+            taskId,
+            stateManager,
+            diffBase: options.diffBase,
+            review: options.review,
+            issueBody: currentIssueData.data.body,
+        }
+    );
+    // Committed and pushed work without a pull request must never reach the success path.
+    if (!result.pr) throw new Error(result.error || 'GitHub did not return the created pull request');
+    return result as PostProcessingResult & { pr: NonNullable<PostProcessingResult['pr']> };
+}
+
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
-    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager, visualPreviewSettings } = options;
+    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, visualPreviewSettings } = options;
     let commitResult: CommitResult | null = null;
     let postProcessingResult: PostProcessingResult | null = null;
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
+    let step: PostProcessingStep | undefined;
 
     try {
         postProcessingResult = await settleUnpublishedOutcome(options);
@@ -238,6 +230,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             commitMessage = resolveAgentCommitMessage(claudeResult.commitMessage, commitMessage);
         }
 
+        step = 'commit';
         preparedVisualPreview = await prepareVisualPreviewEvidence({
             worktreePath: worktreeInfo.worktreePath,
             settings: visualPreviewSettings,
@@ -255,76 +248,34 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         // Successful no-change runs are complete; interrupted no-change runs have
         // no partial implementation to publish and must remain retryable.
         if (commitResult === null) {
+            step = undefined;
             postProcessingResult = await handleMissingCommit(options);
             return { commitResult, postProcessingResult };
         }
 
+        step = 'push';
         await pushImplementationBranch(options);
+        step = 'pull_request';
 
         correlatedLogger.debug('Waiting for branch propagation...');
         await setTimeout(3000);
 
-        // Check for cancellation before creating PR
-        if (taskId && stateManager) {
-            const currentState = await stateManager.getTaskState(taskId);
-            if (currentState?.state === TaskStates.CANCELLED) {
-                correlatedLogger.info({ taskId }, 'Task was cancelled by user, skipping PR creation');
-                throw new Error('Execution aborted by user request');
-            }
-        }
+        const openedPullRequest = await openPullRequest(options, commitResult, preparedVisualPreview.evidence);
+        postProcessingResult = openedPullRequest;
+        step = undefined;
 
-        // Self-heal a deleted epic base branch (e.g. after its Epic PR was
-        // closed) so the child PR isn't rejected with base "invalid" on rerun.
-        if (issueRef.baseBranch) {
-            await ensureEpicBaseBranchExists(octokit, {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                baseBranch: issueRef.baseBranch,
-                defaultBranch: repoValidation.repoData?.defaultBranch,
-                correlatedLogger
-            });
-        }
-
-        postProcessingResult = await createPullRequest(
-            octokit, issueRef, worktreeInfo,
-            {
-                commitResult,
-                claudeResult,
-                modelName,
-                repoValidation,
-                PR_LABEL,
-                correlatedLogger,
-                issueTitle: currentIssueData.data.title,
-                visualPreview: { evidence: preparedVisualPreview.evidence, worktreePath: worktreeInfo.worktreePath },
-                taskId,
-                stateManager,
-                diffBase: options.diffBase,
-                review: options.review,
-                issueBody: currentIssueData.data.body,
-            }
-        );
-
-        // Update plan issue status to 'under_review' if PR was created successfully
-        if (postProcessingResult?.pr?.number) {
-            await handleCreatedPlanIssuePR({
-                issueRef,
-                currentIssueData,
-                prNumber: postProcessingResult.pr.number,
-                correlatedLogger, taskId,
-            });
-        }
+        // Update plan issue status to 'under_review' now the PR exists
+        await handleCreatedPlanIssuePR({ issueRef, currentIssueData, prNumber: openedPullRequest.pr.number, correlatedLogger, taskId });
 
         // The pull request exists: a label failure is logged, never fatal to its follow-up steps.
         await completeIssueLabelsBestEffort({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
 
-        await autoAssignCompletedPullRequest(options, postProcessingResult);
+        await autoAssignCompletedPullRequest(options, openedPullRequest);
 
     } catch (postProcessingError) {
-        // A completed execution or an actual commit can be marked done during
-        // fallback. A failed/interrupted run with no commit must remain retryable.
-        // A run that reported a blocker is never marked done.
-        const canMarkDone = claudeResult.success || commitResult !== null;
-        postProcessingResult = await handlePostProcessingFailure(options, postProcessingError, canMarkDone);
+        // A user cancellation is not a failed step; the task is already cancelled.
+        const failedStep = getErrorMessage(postProcessingError) === EXECUTION_ABORTED_MESSAGE ? undefined : step;
+        postProcessingResult = await handlePostProcessingFailure(options, postProcessingError, { step: failedStep, commitResult });
     } finally {
         try {
             await cleanupPreparedVisualPreviewEvidence(preparedVisualPreview);
@@ -364,8 +315,26 @@ async function recoveredPullRequestLabels(options: Pick<PRValidationOptions, 'is
     return issuePullRequestLabels(options.issueRef, options.PR_LABEL, options.modelName).catch(() => options.PR_LABEL ? [options.PR_LABEL] : []);
 }
 
+/** Recreates the missing pull request; the recreated one, not the earlier failure, is the run's outcome. */
+async function recreatePullRequest(
+    options: PRValidationOptions,
+    worktreeInfo: WorktreeInfo,
+    assignmentContext: CompletedPullRequestAssignmentContext,
+): Promise<PostProcessingResult | null> {
+    const { issueRef, octokit, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, postProcessingResult } = options;
+    const recoveredPr = await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger, labels: await recoveredPullRequestLabels(options) });
+    await autoAssignCompletedPullRequest(assignmentContext, { pr: recoveredPr });
+    if (!recoveredPr) return null;
+    await completeIssueLabelsBestEffort({ octokit, issueRef, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger });
+    return {
+        success: true,
+        pr: { number: recoveredPr.number, url: `https://github.com/${issueRef.repoOwner}/${issueRef.repoName}/pull/${recoveredPr.number}`, title: `Fix issue #${issueRef.number}` },
+        updatedLabels: postProcessingResult?.updatedLabels || [],
+    };
+}
+
 export async function handlePRValidation(options: PRValidationOptions): Promise<PostProcessingResult | null> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
     const assignmentContext = { octokit, issueRef, correlatedLogger, taskId: options.taskId, stateManager: options.stateManager, currentIssueData: options.currentIssueData };
 
     // After a rejected push the salvage ladder already ran; another push would be refused too.
@@ -397,13 +366,9 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
     // 1. PR validation failed (no PR found)
     // 2. Agent execution completed, or stopped at a publishable timeout/turn limit
     // 3. There were actual commits (commitResult !== null means changes were made and a PR is expected)
-    const shouldPublishAgentWork = hasPublishableAgentWork(claudeResult);
-    if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult !== null) {
-        const recoveredPr = await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger, labels: await recoveredPullRequestLabels(options) });
-        await autoAssignCompletedPullRequest(assignmentContext, { pr: recoveredPr });
-    } else if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult === null) {
-        correlatedLogger.info({ issueNumber: issueRef.number }, 'No PR validation needed - no code changes were made');
-    }
+    if (finalPRValidation.isValid || !hasPublishableAgentWork(claudeResult)) return postProcessingResult;
+    if (commitResult !== null) return await recreatePullRequest(options, worktreeInfo, assignmentContext) ?? postProcessingResult;
+    correlatedLogger.info({ issueNumber: issueRef.number }, 'No PR validation needed - no code changes were made');
     return postProcessingResult;
 }
 
@@ -453,7 +418,8 @@ export interface FinalValidationOptions {
     modelName?: string;
 }
 
-export async function performFinalValidation(options: FinalValidationOptions): Promise<void> {
+/** Returns the run's post-processing outcome, including a pull request final validation found or recreated. */
+export async function performFinalValidation(options: FinalValidationOptions): Promise<PostProcessingResult | null> {
     const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData, PR_LABEL, modelName } = options;
     let resolvedPostProcessingResult = postProcessingResult;
 
@@ -467,4 +433,5 @@ export async function performFinalValidation(options: FinalValidationOptions): P
     }
 
     await cleanupWorktreeIfExists({ worktreeInfo, localRepoPath, claudeResult, postProcessingResult: resolvedPostProcessingResult, jobId, issueRef, correlatedLogger });
+    return resolvedPostProcessingResult;
 }
