@@ -20,6 +20,7 @@ import type { PostProcessingResult } from './issueJobHelpers.js';
 import { redisClient } from './issueJob/config.js';
 import { resolveImplementationPrUltrafixTrigger } from './implementationPrUltrafix.js';
 import { completeNoChangeIssue } from './noChangeCompletion.js';
+import { isUnfinishedRun, UNFINISHED_NO_CHANGE_HEADLINE } from '@propr/shared';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -252,12 +253,15 @@ export async function handleNoCodeChanges(options: {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
-    }, { publishedAs: 'issue_comment' });
+    }, { publishedAs: 'issue_comment', noCodeChanges: true });
+    const headline = claudeResult.success && isUnfinishedRun(claudeResult)
+        ? UNFINISHED_NO_CHANGE_HEADLINE
+        : '✅ **No code changes needed - the implementation was already complete.**';
     await completeNoChangeIssue({
         octokit,
         issueRef,
         labels: currentIssueData.data.labels.map((label) => label.name),
-        comment: `✅ **No code changes needed - the implementation was already complete.**\n\n${completionComment}`,
+        comment: `${headline}\n\n${completionComment}`,
         AI_PROCESSING_TAG,
         AI_DONE_TAG,
         correlatedLogger,

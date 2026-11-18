@@ -12,11 +12,21 @@ export function isUnfinishedRun(result: { unfinishedReason?: string | null } | n
     return Boolean(result?.unfinishedReason?.trim());
 }
 
-/** The warning callout shown above the agent's last update. */
-export function unfinishedRunWarning(reason: string): string {
+/**
+ * The warning callout shown above the agent's last update. Pass
+ * `committed: false` when the run committed nothing, so the callout does not
+ * point the reader at committed work that does not exist.
+ */
+export function unfinishedRunWarning(reason: string, options: { committed?: boolean } = {}): string {
     const line = reason.replace(/\s+/g, ' ').trim();
-    return `> [!WARNING]\n> **${UNFINISHED_RUN_HEADLINE}** ${line ? `${line} ` : ''}Review the committed changes before relying on them.\n\n`;
+    const next = options.committed === false
+        ? 'No changes were committed, so the requested work may still be outstanding.'
+        : 'Review the committed changes before relying on them.';
+    return `> [!WARNING]\n> **${UNFINISHED_RUN_HEADLINE}** ${line ? `${line} ` : ''}${next}\n\n`;
 }
+
+/** Headline of an issue run that ended unconfirmed without committing anything. */
+export const UNFINISHED_NO_CHANGE_HEADLINE = '⚠️ **No code changes were committed, and the agent did not confirm the work was complete.**';
 
 /** A markdown list of the committed files, at most 20, or empty when none are known. */
 export function committedFilesList(files: readonly string[] | null | undefined): string {

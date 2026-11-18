@@ -37,6 +37,8 @@ interface CompletionCommentOptions {
     taskUrl?: string;
     /** The run's diff; with changes, the parts include a review digest. */
     review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig; acceptanceCriteria?: readonly AcceptanceCriterion[] };
+    /** The run committed nothing; the report must not refer to committed work. */
+    noCodeChanges?: boolean;
 }
 
 interface ConversationMessage {
@@ -321,7 +323,7 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
     return { text: lines.join('\n') + '\n\n', stats: { executionTime: executionTimeStr, totalTokens, cost } };
 }
 
-function buildSummarySection(claudeResult: ClaudeResult): string {
+function buildSummarySection(claudeResult: ClaudeResult, noCodeChanges = false): string {
     const terminationReason = resolveAgentTerminationReason({
         success: claudeResult.success,
         terminationReason: claudeResult.terminationReason,
@@ -348,7 +350,7 @@ function buildSummarySection(claudeResult: ClaudeResult): string {
         return section;
     }
 
-    if (claudeResult.success && isUnfinishedRun(claudeResult)) return buildUnfinishedSummarySection(claudeResult);
+    if (claudeResult.success && isUnfinishedRun(claudeResult)) return buildUnfinishedSummarySection(claudeResult, noCodeChanges);
 
     let section = '';
     const publishableSummary = sanitizeAgentReport(claudeResult.summary);
@@ -360,10 +362,11 @@ function buildSummarySection(claudeResult: ClaudeResult): string {
 }
 
 /** A run whose agent exited while its last message said it was still working or waiting. */
-function buildUnfinishedSummarySection(claudeResult: ClaudeResult): string {
-    let section = unfinishedRunWarning(redactSecrets(claudeResult.unfinishedReason ?? ''));
+function buildUnfinishedSummarySection(claudeResult: ClaudeResult, noCodeChanges: boolean): string {
+    let section = unfinishedRunWarning(redactSecrets(claudeResult.unfinishedReason ?? ''), { committed: !noCodeChanges });
     const publishableSummary = sanitizeAgentReport(claudeResult.summary);
     if (publishableSummary) section += `**Last agent update:**\n${redactSecrets(publishableSummary).slice(0, 6000)}\n\n`;
+    if (noCodeChanges) return section;
     const files = committedFilesList(claudeResult.modifiedFiles);
     section += files ? `**Committed changes:**\n${files}\n\n` : '**Committed changes:** see the committed diff.\n\n';
     return section;
@@ -417,7 +420,7 @@ export async function generateCompletionCommentParts(
         : null;
     return {
         run: execution.text,
-        summary: buildSummarySection(result),
+        summary: buildSummarySection(result, options.noCodeChanges === true),
         digest: renderReviewDigest(reviewDigest),
         reviewDigest,
         validation: result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : '',

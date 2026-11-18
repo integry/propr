@@ -207,6 +207,8 @@ interface RunOutcome {
     /** Exited while its last message said it was still working or waiting. */
     unfinished: boolean;
     unfinishedWarning: string;
+    /** The same warning for a run that committed nothing. */
+    noChangeWarning: string;
     /** Partial or unfinished: the comment must not read as a clean success. */
     unconfirmed: boolean;
 }
@@ -215,8 +217,20 @@ function describeRunOutcome(claudeResult: ClaudeCodeResponse): RunOutcome {
     const terminationReason = resolveAgentTerminationReason(claudeResult);
     const partial = !claudeResult.success && terminationReason !== undefined;
     const unfinished = !partial && claudeResult.success && isUnfinishedRun(claudeResult);
-    const unfinishedWarning = unfinished ? unfinishedRunWarning(redactSecrets(claudeResult.unfinishedReason ?? '')) : '';
-    return { terminationReason, partial, unfinished, unfinishedWarning, unconfirmed: partial || unfinished };
+    const reason = redactSecrets(claudeResult.unfinishedReason ?? '');
+    const unfinishedWarning = unfinished ? unfinishedRunWarning(reason) : '';
+    const noChangeWarning = unfinished ? unfinishedRunWarning(reason, { committed: false }) : '';
+    return { terminationReason, partial, unfinished, unfinishedWarning, noChangeWarning, unconfirmed: partial || unfinished };
+}
+
+/** An unfinished run committed nothing; it does not establish that nothing was needed. */
+function buildNoChangeStatement(unfinished: boolean, visualPreviewSection: string | undefined): string {
+    const line = unfinished
+        ? 'No code changes were committed.'
+        : 'No code changes were necessary based on the current state of the branch.';
+    return visualPreviewSection
+        ? `${line} Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
+        : `${line}\n\n`;
 }
 
 function buildCommittedHeadline(shortHash: string, outcome: Pick<RunOutcome, 'terminationReason' | 'partial' | 'unfinishedWarning'>): string {
@@ -240,7 +254,7 @@ export async function buildCompletionComment(
 ): Promise<string> {
     const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, addressedFeedback, visualPreviewSection } = commentContext;
     const addressedLine = buildAddressedFeedbackLine(addressedFeedback);
-    const { terminationReason, partial, unfinished, unfinishedWarning, unconfirmed } = describeRunOutcome(claudeResult);
+    const { terminationReason, partial, unfinished, unfinishedWarning, noChangeWarning, unconfirmed } = describeRunOutcome(claudeResult);
 
     const cleanBody = cleanCompletionReport;
 
@@ -296,16 +310,14 @@ export async function buildCompletionComment(
     } else {
         let noChangesBody = `ℹ️ **Analyzed the follow-up request** by ${authorsText}\n\n`;
 
-        noChangesBody += unfinishedWarning;
+        noChangesBody += noChangeWarning;
         noChangesBody += addressedLine;
 
         if (changesSummary) {
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
         }
 
-        noChangesBody += visualPreviewSection
-            ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
-            : `No code changes were necessary based on the current state of the branch.\n\n`;
+        noChangesBody += buildNoChangeStatement(unfinished, visualPreviewSection);
         noChangesBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
