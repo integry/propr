@@ -38,6 +38,7 @@ import type { GitHubToken } from './githubTypes.js';
 import { deferOnCapacityRefusal as deferCapacityJob } from './capacityDeferral.js';
 import { runWithJobAgentCapacity } from './agentCapacityDeferral.js';
 import { checkMergeConflictAgentCapacity } from './mergeConflictCapacity.js';
+import { publishRepeatedNotice } from './repeatedNoticeComment.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
 type MergeTaskPrInfo = { prTitle: string; linkedIssueNumber: number | null };
@@ -90,14 +91,13 @@ async function resolveModelForTask(correlatedLogger: Logger): Promise<string> {
 async function handleMergeJobError(error: Error, options: {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
     startingCommentId: number | undefined;
-    stateManager: WorkerStateManager;
-    taskId: string;
+    stateManager: WorkerStateManager; taskId: string;
     repoOwner: string; repoName: string;
     baseBranch: string; headBranch: string;
-    pullRequestNumber: number;
+    pullRequestNumber: number; headSha: string; // Repeats of one failure on this head are one report.
     correlatedLogger: Logger;
 }): Promise<JobResult> {
-    const { octokit, startingCommentId, stateManager, taskId, repoOwner, repoName, baseBranch, headBranch, pullRequestNumber, correlatedLogger } = options;
+    const { octokit, startingCommentId, stateManager, taskId, repoOwner, repoName, baseBranch, headBranch, pullRequestNumber, headSha, correlatedLogger } = options;
     const errorMessage = error.message || 'Unknown error';
     correlatedLogger.error({ pullRequestNumber, error: errorMessage }, 'Merge conflict resolution job failed');
 
@@ -109,10 +109,11 @@ async function handleMergeJobError(error: Error, options: {
 
     if (octokit && startingCommentId) {
         try {
-            await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-                owner: repoOwner, repo: repoName, comment_id: startingCommentId,
+            // The same failure on the same head updates the earlier report; this attempt's comment is removed.
+            await publishRepeatedNotice(octokit, { owner: repoOwner, repo: repoName, issueNumber: pullRequestNumber }, {
+                kind: 'merge-conflict-failed', scope: headSha,
                 body: `❌ **Failed to resolve merge conflicts** from \`${baseBranch}\` into \`${headBranch}\`\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `\`\`\`\n${errorMessage}\n\`\`\``}\n\n---\n_System-triggered merge conflict resolution_`,
-            });
+            }, { ownCommentId: startingCommentId, log: correlatedLogger });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
         }
@@ -449,7 +450,7 @@ async function processAdmittedMergeConflictJob(job: Job<MergeConflictJobData>): 
             return await handleMergeJobError(error as Error, {
                 octokit, startingCommentId, stateManager, taskId,
                 repoOwner, repoName, baseBranch, headBranch: publication?.target.branchName ?? target?.branchName ?? headBranch,
-                pullRequestNumber, correlatedLogger,
+                pullRequestNumber, headSha, correlatedLogger,
             });
         } finally {
             // Released before the PR lock so the next job for this PR cannot cancel runs being restored.

@@ -58,6 +58,32 @@ describe('scheduling utilities', () => {
             assert.strictEqual(date.getUTCHours(), 5);
         });
 
+        const now = Date.UTC(2026, 10, 16, 16, 57);
+        const iso = (message: string) => {
+            const result = parseResetTimeFromMessage(message, now);
+            return result === null ? null : new Date(result * 1000).toISOString();
+        };
+
+        it('uses the reset day of a weekly limit instead of a time later today', () => {
+            assert.strictEqual(iso("You've hit your weekly limit · resets Nov 20, 1am (UTC)"), '2026-11-20T01:00:00.000Z');
+            assert.strictEqual(iso('Weekly limit reached ∙ resets Nov 20 at 10am'), '2026-11-20T10:00:00.000Z');
+        });
+
+        it('keeps a five-hour limit at its next time of day', () => {
+            assert.strictEqual(iso('5-hour limit reached ∙ resets 7pm (UTC)'), '2026-11-16T19:00:00.000Z');
+            assert.strictEqual(iso('Limit reached · resets 1am (UTC)'), '2026-11-17T01:00:00.000Z');
+        });
+
+        it('picks the reset of the limit that was hit when several are listed', () => {
+            assert.strictEqual(iso('Session 80% · resets 7pm (UTC) · You have reached your weekly limit · resets Nov 21, 3pm (UTC)'), '2026-11-21T15:00:00.000Z');
+            assert.strictEqual(iso("You've hit your session limit · resets 7pm (UTC) · Weekly 40% · resets Nov 21, 3pm (UTC)"), '2026-11-16T19:00:00.000Z');
+        });
+
+        it('converts a named time zone and rolls a past date into next year', () => {
+            assert.strictEqual(iso('resets 5pm (Europe/Riga)'), '2026-11-17T15:00:00.000Z');
+            assert.strictEqual(iso('resets Jan 2, 1am (UTC)'), '2027-01-02T01:00:00.000Z');
+        });
+
         it('should return future time (tomorrow if past)', () => {
             // This test verifies the reset time is always in the future
             const result = parseResetTimeFromMessage('resets 1am (UTC)');
@@ -93,6 +119,13 @@ describe('scheduling utilities', () => {
             assert.ok(result.includes('1:02'), `Expected "1:02" in "${result}"`);
             assert.ok(result.includes('AM'), `Expected "AM" in "${result}"`);
             assert.ok(result.includes('UTC'), `Expected "UTC" in "${result}"`);
+        });
+
+        it('adds the date for a reset more than a day away', () => {
+            const now = Date.UTC(2026, 10, 16, 16, 57);
+            const weekly = Math.floor(Date.UTC(2026, 10, 20, 1, 0) / 1000);
+            assert.strictEqual(formatRetryTime(weekly, now), 'Nov 20, 1:00 AM UTC');
+            assert.strictEqual(formatRetryTime(Math.floor(Date.UTC(2026, 10, 16, 19, 0) / 1000), now), '7:00 PM UTC');
         });
 
         it('should handle PM times', () => {

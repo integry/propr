@@ -756,6 +756,41 @@ describe('processMergeConflictJob', () => {
         assert.ok(body.includes('not a git repository'));
     });
 
+    test('repeated identical failure on the same head updates one report', async () => {
+        mockMergeResult = { outcome: 'failed', error: 'fatal: not a git repository' };
+        mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        const comments: Array<{ id: number; body: string; user: { type: string } }> = [];
+        mockOctokit.request.mock.mockImplementation(async (route: string, ...args: unknown[]) => {
+            const params = (args[0] ?? {}) as { body?: string; comment_id?: number };
+            if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') return { data: comments.map(comment => ({ ...comment })) };
+            if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') {
+                const comment = { id: 500 + comments.length, body: params.body!, user: { type: 'Bot' } };
+                comments.push(comment);
+                return { data: comment };
+            }
+            if (route === 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}') {
+                comments.find(comment => comment.id === params.comment_id)!.body = params.body!;
+                return { data: {} };
+            }
+            if (route === 'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}') {
+                comments.splice(comments.findIndex(comment => comment.id === params.comment_id), 1);
+                return { data: {} };
+            }
+            return defaultOctokitRequest(route);
+        });
+        try {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                await assert.rejects(processMergeConflictJob(createMockJob()), /Merge failed/);
+            }
+            assert.equal(comments.length, 1, 'one report remains; later attempts removed their starting comments');
+            assert.match(comments[0].body, /Failed to resolve merge conflicts/);
+            assert.match(comments[0].body, /Reported 3 times; last at/);
+            assert.match(comments[0].body, /<!-- propr:notice kind="merge-conflict-failed" key="[0-9a-f]{16}" count="3" -->/);
+        } finally {
+            mockOctokit.request.mock.mockImplementation(async (route: string) => defaultOctokitRequest(route));
+        }
+    });
+
     test('agent failure: keeps stderr/log details out of public errors', async () => {
         mockMergeResult = { outcome: 'conflicts', baseCommit: 'base-sha-456', conflictedFiles: ['.propr/setup.sh'] };
         mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);

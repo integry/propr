@@ -10,6 +10,7 @@ import { fetchIssueComments } from './github.js';
 import { executeAgentAndRecordMetrics } from './agent.js';
 import { performPostProcessing } from '../issueJobPostProcessing.js';
 import { workflowReportsBlockers } from '../blockedRunText.js';
+import { publishRepeatedNotice } from '../repeatedNoticeComment.js';
 
 export async function executeWorktreeOperations(params: ExecuteWorktreeParams): Promise<ExecuteWorktreeResult> {
   const { job, context, octokit, currentIssueData, repoValidation, githubToken, repoUrl, localRepoPath } = params;
@@ -35,10 +36,12 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
     ? `- Attempt: ${issueRef.attemptNumber ?? 2} (replaces [${issueRef.replacesTaskId}](${frontendUrl}/tasks/${encodeURIComponent(issueRef.replacesTaskId)}))\n`
     : '';
 
-  await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-    owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
+  // A retry of the same task (a rate-limit requeue) updates its start notice
+  // instead of announcing a new run; another task, a new run, posts its own.
+  await publishRepeatedNotice(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number }, {
+    kind: 'started', scope: taskId, fingerprint: 'started',
     body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n${attemptLine}\n🔍 [Track Task Execution](${taskUrl})`,
-  });
+  }, { log: correlatedLogger });
 
   await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
   try {
