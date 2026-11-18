@@ -95,6 +95,21 @@ describe('scheduling utilities', () => {
             assert.strictEqual(parseResetTimeFromMessage('resets 11pm (America/New_York)', Date.UTC(2026, 10, 17, 2, 0)), Date.UTC(2026, 10, 17, 4, 0) / 1000);
         });
 
+        it('reads a dated reset in the zone\'s calendar year when it differs from UTC\'s', () => {
+            // New Year in UTC is still Dec 31, 2026 evening in New York: the reset is 4 hours away.
+            const newYearUtc = Date.UTC(2027, 0, 1, 0, 0);
+            assert.strictEqual(
+                new Date(parseResetTimeFromMessage('resets Dec 31, 11pm (America/New_York)', newYearUtc)! * 1000).toISOString(),
+                '2027-01-01T04:00:00.000Z'
+            );
+            // Still Dec 31 in UTC but already New Year in Tokyo.
+            const newYearTokyo = Date.UTC(2026, 11, 31, 16, 0);
+            assert.strictEqual(
+                new Date(parseResetTimeFromMessage('resets Jan 1, 5am (Asia/Tokyo)', newYearTokyo)! * 1000).toISOString(),
+                '2026-12-31T20:00:00.000Z'
+            );
+        });
+
         it('should return future time (tomorrow if past)', () => {
             // This test verifies the reset time is always in the future
             const result = parseResetTimeFromMessage('resets 1am (UTC)');

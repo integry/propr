@@ -47,21 +47,22 @@ function resetClauseTimestamp(match: RegExpMatchArray, nowMs: number): number | 
     if (hours < 1 || hours > 12 || minutes > 59) return null;
     const hour24 = (hours % 12) + (meridiem.toLowerCase() === 'pm' ? 12 : 0);
     const timeZone = zone || 'UTC';
-    const now = new Date(nowMs);
+    // Calendar fields are read in the reset's zone: its date, and year, can differ from UTC's.
+    const local = new Date(nowMs + (zoneOffsetMs(nowMs, timeZone) ?? 0));
 
     if (monthName) {
         const month = MONTHS.indexOf(monthName.slice(0, 3).toLowerCase());
         const day = parseInt(dayText, 10);
         if (month === -1 || day < 1 || day > 31) return null;
-        let resetMs = wallClockToUtcMs([now.getUTCFullYear(), month, day, hour24, minutes], timeZone);
+        const year = local.getUTCFullYear();
+        let resetMs = wallClockToUtcMs([year, month, day, hour24, minutes], timeZone);
         // A reset date more than a day behind is next year's (a December limit resetting in January).
-        if (resetMs < nowMs - 24 * 60 * 60 * 1000) resetMs = wallClockToUtcMs([now.getUTCFullYear() + 1, month, day, hour24, minutes], timeZone);
+        if (resetMs < nowMs - 24 * 60 * 60 * 1000) resetMs = wallClockToUtcMs([year + 1, month, day, hour24, minutes], timeZone);
         return Math.floor(resetMs / 1000);
     }
 
     // A time of day without a date is its next occurrence. Candidate days are
-    // calendar days in the reset's zone, which can differ from the UTC date.
-    const local = new Date(nowMs + (zoneOffsetMs(nowMs, timeZone) ?? 0));
+    // calendar days in the reset's zone.
     for (let dayDelta = -1; dayDelta <= 2; dayDelta++) {
         const resetMs = wallClockToUtcMs([local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + dayDelta, hour24, minutes], timeZone);
         if (resetMs > nowMs) return Math.floor(resetMs / 1000);
