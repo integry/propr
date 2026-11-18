@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled Claude Code 2.1.327, Codex 0.170.0 and Antigravity CLI 1.5.11**:
+  the `propr/agent` image moves from Claude Code 2.1.326, Codex 0.169.0 and
+  Antigravity CLI 1.5.10. OpenCode CLI stays on 1.19.6, the latest release.
+  Mistral Vibe stays on 2.25.8: 3.x removes the private modules ProPR's
+  prompt-file runner imports, and 2.26.x changes `vibe -p` exit codes and
+  default thinking levels, so both need a live run first.
+  - Claude Code 2.1.327 asks about more paths outside the working directory
+    and denies Bash commands whose variables expand to very long text. ProPR
+    runs are unaffected: tasks and goals pass `--dangerously-skip-permissions`,
+    and analysis runs use `--tools ''` or the repository-scout MCP allow-list.
+    Its fix for `--disallowedTools` rules with parentheses does not change
+    ProPR's web-off rule, which names `WebFetch` and `WebSearch` without
+    parentheses. The bundled model catalog is unchanged.
+  - Codex 0.170.0 keeps the `codex exec` and `codex app-server` options
+    ProPR uses, including `--trust`. Its bundled model catalog now lists
+    GPT-6.2 Astra (272K) and GPT-6.2 Sol (500K) and raises GPT-6.1 Sol from
+    272K to 500K, so review input budgets for GPT-6.1 Sol use the 500K window.
+    GPT-6.2 Astra and Sol still require Codex 0.169.0 or later.
+  - Antigravity CLI 1.5.11 keeps the model IDs and options of 1.5.10. In
+    `-p` runs with a `GEMINI_API_KEY`, `/usage`, `/quota` and `/credits` now
+    exit with code 2.
+
 ## [0.9.2] - 2026-11-18
 
 ### Added

@@ -95,7 +95,7 @@ describe('review input capacity resolution', () => {
         assert.equal(opus55.tokenizerProfile, 'anthropic-calibrated');
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-sonnet-5-5' }).contextWindow, 1000000);
         assert.equal(resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-haiku-5-5' }).contextWindow, 1000000);
-        // Claude Code 2.1.326 marks Fable 5.2 native_1m
+        // Claude Code 2.1.327 marks Fable 5.2 native_1m
         const fable52 = resolveReviewInputCapacity({ agentType: 'claude', model: 'claude-fable-5-2' });
         assert.equal(fable52.source, 'runtime-verified');
         assert.equal(fable52.contextWindow, 1000000);
@@ -119,15 +119,16 @@ describe('review input capacity resolution', () => {
         assert.equal(astra.safeInputTokens, 200800);
         assert.equal(astra.tokenizerProfile, 'openai-o200k');
 
-        // Codex 0.169.0 bundles GPT-6.1 Terra with a 500K default window.
+        // Codex 0.170.0 bundles GPT-6.1 Terra with a 500K default window.
         const terra = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.1-terra' });
         assert.equal(terra.source, 'runtime-verified');
         assert.equal(terra.contextWindow, 500000);
         assert.equal(terra.runtimeOverheadReserve, 12000 + 50000);
         assert.equal(terra.safeInputTokens, 500000 - REVIEW_OUTPUT_TOKEN_RESERVE - 62000);
 
-        // GPT-6.2 Astra uses the GPT-6 Astra window; GPT-6.2 Sol the 500K
-        // window used for GPT-6.1 Terra. GPT-6.1 Sol keeps 272K.
+        // Codex 0.170.0 bundles GPT-6.2 Astra with the GPT-6 Astra window
+        // (272K) and GPT-6.2 Sol and GPT-6.1 Sol with the 500K window used
+        // for GPT-6.1 Terra.
         const astra62 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.2-astra' });
         assert.equal(astra62.source, 'runtime-verified');
         assert.equal(astra62.contextWindow, astra.contextWindow);
@@ -137,14 +138,16 @@ describe('review input capacity resolution', () => {
         assert.equal(sol62.contextWindow, 500000);
         assert.equal(sol62.safeInputTokens, terra.safeInputTokens);
         const sol61 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.1-sol' });
-        assert.equal(sol61.contextWindow, 272000);
+        assert.equal(sol61.source, 'runtime-verified');
+        assert.equal(sol61.contextWindow, 500000);
+        assert.equal(sol61.safeInputTokens, terra.safeInputTokens);
 
         // The explanation names the window actually used for the allowance.
         assert.match(terra.basis, /\(500K;/);
         assert.match(sol62.basis, /\(500K;/);
         assert.doesNotMatch(sol62.basis, /272K/);
         assert.match(astra62.basis, /\(272K;/);
-        assert.match(sol61.basis, /\(272K;/);
+        assert.match(sol61.basis, /\(500K;/);
     });
 
     test('keeps documented conservative fallbacks for unknown models and runtimes', () => {

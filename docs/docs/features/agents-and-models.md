@@ -131,7 +131,7 @@ Anthropic retires Claude Sonnet 4.5 on 2026-11-30. Until then it runs as selecte
 
 {/* GPT-6.1 Sol capability/cost wording verified 2026-10-01: https://developers.openai.com/api/docs/models/gpt-6.1-sol */}
 {/* GPT-6.1 Terra wording and pricing verified 2026-11-12: https://developers.openai.com/api/docs/models/gpt-6.1-terra */}
-{/* GPT-6.2 Astra/Sol run on Codex 0.169.0 with a ChatGPT sign-in (checked 2026-11-17); pricing from OpenRouter openai/gpt-6.2-astra and openai/gpt-6.2-sol, checked 2026-11-17. */}
+{/* GPT-6.2 Astra/Sol run on Codex 0.169.0 with a ChatGPT sign-in (checked 2026-11-17) and are in the Codex 0.170.0 bundled catalog (checked 2026-11-18); pricing from OpenRouter openai/gpt-6.2-astra and openai/gpt-6.2-sol, checked 2026-11-17. */}
 GPT-6.2 Astra is the recommended default for the most demanding implementation, research, and security work, and the target of the `astra` alias and the `llm-codex-astra` label. GPT-6.2 Sol is the recommended Sol: near-Astra capability at a lower cost. GPT-6.1 Terra is a fast, efficient option at half of Sol's price, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6 Astra and GPT-6.1 Sol are now legacy models: they stay available through `llm-codex-gpt6-astra` and `llm-codex-gpt61-sol` and their explicit aliases, and saved selections of them are kept. GPT-6 Sol remains available for existing workflows. GPT-6.2 Astra and GPT-6.2 Sol require Codex CLI >= 0.169.0, GPT-6.1 Sol requires >= 0.153.0, GPT-6 Sol and GPT-6 Luna require >= 0.155.0, and GPT-6.1 Terra requires >= 0.165.0. The bundled Codex CLI is pinned to 0.169.0.
 
 | Model | Label | Context |

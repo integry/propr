@@ -57,8 +57,9 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
 // Recommended: gpt-6.2-astra (default), gpt-6.2-sol (balanced), gpt-6.1-terra (lower cost), gpt-6-luna (fast/low-cost)
-// GPT-6.2 Astra and Sol are not in the Codex CLI 0.169.0 bundled catalog, but
-// signed-in accounts take the model list from the server and run them on 0.169.0.
+// GPT-6.2 Astra and Sol are in the Codex CLI 0.170.0 bundled catalog. On 0.169.0,
+// which lacks them, signed-in accounts take the model list from the server and
+// run them too, so minAgentVersion stays 0.169.0.
 export const CODEX_MODELS: ModelInfo[] = [
   { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', shortName: 'GPT-6.2 Astra', shortAlias: 'astra', githubLabel: 'llm-codex-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-astra', minAgentVersion: '0.169.0' },
   { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', shortName: 'GPT-6.2 Sol', shortAlias: 'gpt62-sol', githubLabel: 'llm-codex-gpt62-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-sol', minAgentVersion: '0.169.0' },
@@ -184,7 +185,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.326'
+    defaultCliVersion: '2.1.327'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -192,7 +193,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.169.0'
+    defaultCliVersion: '0.170.0'
   },
   antigravity: {
     dockerImage: 'propr/agent:latest',
@@ -200,7 +201,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.10'
+    defaultCliVersion: '1.5.11'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

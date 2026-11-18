@@ -92,7 +92,7 @@ export const REVIEW_OUTPUT_TOKEN_RESERVE = 32000;
 /** Conservative window for a model the routed runtime does not know. */
 export const REVIEW_FALLBACK_CONTEXT_WINDOW = 200000;
 
-// Claude Code 2.1.326 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
+// Claude Code 2.1.327 (AGENT_DEFAULTS.claude.defaultCliVersion) bundled model
 // catalog: models flagged `native_1m` run with a 1,000,000-token window; the
 // other models run with the runtime's 200,000-token default unless the model
 // name carries the `[1m]` suffix. ProPR does not add that suffix, and
@@ -112,29 +112,24 @@ const CLAUDE_CODE_DEFAULT_WINDOW = 200000;
 // window before auto-compacting a session.
 const CLAUDE_CODE_RUNTIME_RESERVE = 20000;
 
-// Codex CLI 0.169.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
-// models.json: every listed model except GPT-6.1 Terra (500,000) has a default
-// `context_window` of 272,000, even where the provider advertises a larger
-// model maximum (GPT-6 Astra lists `max_context_window` 872,000 and the ProPR
-// catalog 1,050,000). The larger window is opt-in through
-// `model_context_window`, which ProPR never sets, so the runtime default is
-// the verified capacity.
+// Codex CLI 0.170.0 (AGENT_DEFAULTS.codex.defaultCliVersion) bundled
+// models.json: GPT-6.1 Terra, GPT-6.1 Sol and GPT-6.2 Sol have a default
+// `context_window` of 500,000; every other listed model has 272,000, even
+// where the provider advertises a larger model maximum (GPT-6 Astra lists
+// `max_context_window` 872,000 and the ProPR catalog 1,050,000). The larger
+// window is opt-in through `model_context_window`, which ProPR never sets, so
+// the runtime default is the verified capacity.
 //
-// GPT-6.2 Astra and GPT-6.2 Sol are not in that bundled catalog: signed-in
-// accounts get them from the server. Their windows were NOT read from server
-// model metadata or observed at runtime. The only runtime evidence (issue
-// #3679, 2026-11-17, Codex 0.169.0 with a ChatGPT sign-in) is that
-// `codex exec --model gpt-6.2-astra|gpt-6.2-sol` answered with exit 0 and no
-// metadata warning. The values below come from the issue's acceptance
-// criteria: Astra 6.2 reuses the GPT-6 Astra window (272,000) and Sol 6.2 the
-// GPT-6.1 Terra window (500,000). To confirm them, read the server-provided
-// `context_window` for these slugs from a signed-in Codex session, or check
-// the bundled models.json of a Codex release that includes openai/codex#62106.
+// GPT-6.2 Astra (272,000) and GPT-6.2 Sol (500,000) are first listed in the
+// 0.170.0 bundled catalog. They already ran on 0.169.0 with a ChatGPT sign-in,
+// which took them from the server (issue #3679), so their minAgentVersion
+// stays 0.169.0. 0.170.0 also raised GPT-6.1 Sol from 272,000
+// to 500,000.
 const CODEX_RUNTIME_WINDOWS: Record<string, number> = {
   'gpt-6.2-astra': 272000,
   'gpt-6.2-sol': 500000,
   'gpt-6-astra': 272000,
-  'gpt-6.1-sol': 272000,
+  'gpt-6.1-sol': 500000,
   'gpt-6.1-terra': 500000,
   'gpt-6-sol': 272000,
   'gpt-6-luna': 272000,

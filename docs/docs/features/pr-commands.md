@@ -100,7 +100,7 @@ When the linked issue has an **Acceptance criteria** list, the review prompt lis
 | Runtime | Context window used | Source |
 |---|---|---|
 | Claude Code | 1M for models the runtime marks native-1M (Opus 4.7+, Opus 5.x, Sonnet 5.x, Haiku 5.5, Fable, Mythos); 200K otherwise, including Opus/Sonnet 4.6 without the `[1m]` suffix or with `CLAUDE_CODE_DISABLE_1M_CONTEXT` | Model catalog bundled with Claude Code 2.1.326 |
-| Codex | 272K for every listed model except GPT-6.1 Terra (500K), including the rest of the GPT-6 family | `context_window` in the models catalog bundled with Codex CLI 0.169.0; larger windows are opt-in through `model_context_window`, which ProPR does not set |
+| Codex | 500K for GPT-6.1 Terra, GPT-6.1 Sol and GPT-6.2 Sol; 272K for every other listed model, including GPT-6.2 Astra and the rest of the GPT-6 family | `context_window` in the models catalog bundled with Codex CLI 0.170.0; larger windows are opt-in through `model_context_window`, which ProPR does not set |
 | Other runtimes | ProPR model catalog window, with a runtime reserve of 10% of the window (minimum 16K) | Catalog only; the runtime limit is not verified |
 | Unknown model | 200K (Codex: its historical 272K) | Conservative fallback |
 
