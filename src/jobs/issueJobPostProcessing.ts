@@ -12,7 +12,7 @@ import { getAuthenticatedOctokit, linkPRToPlanIssue } from '@propr/core';
 import { safeUpdateLabels } from '@propr/core';
 import { generateCompletionComment } from '@propr/core';
 import { redactSecrets } from '@propr/core';
-import { agentFailureLine } from '@propr/shared';
+import { agentFailureLine, isUnfinishedRun, UNFINISHED_RUN_HEADLINE } from '@propr/shared';
 import { validatePRCreation } from '@propr/core';
 import type { RepoValidationResult, PRValidationResult } from '@propr/core';
 import type { IssueJobData } from '@propr/core';
@@ -43,6 +43,7 @@ function formatFailureCause(message: string): string {
 function buildImplementationCompletionNote(claudeResult: ClaudeCodeResponse): string {
     const terminationReason = resolveAgentTerminationReason(claudeResult);
     if (terminationReason) return `Partial implementation: ${describeAgentTermination(terminationReason)}`;
+    if (claudeResult.success && isUnfinishedRun(claudeResult)) return UNFINISHED_RUN_HEADLINE;
     return claudeResult.success
         ? 'Implementation completed successfully.'
         : 'Implementation attempted - see PR comments for details.';

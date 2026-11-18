@@ -10,6 +10,7 @@ import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCo
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { describeUncommittedFiles, quoteBlockerExplanation } from './blockedRunText.js';
 import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
+import { committedFilesList, isUnfinishedRun, unfinishedRunWarning } from '@propr/shared';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -199,6 +200,52 @@ export function noChangeAnalysisSummary(claudeResult: Pick<ClaudeCodeResponse, '
     return cleanCompletionReport(sanitizeAgentReport(claudeResult.summary || claudeResult.finalResult?.result || ''));
 }
 
+interface RunOutcome {
+    terminationReason: ReturnType<typeof resolveAgentTerminationReason>;
+    /** Stopped by a termination (timeout, max turns, …) with work to publish. */
+    partial: boolean;
+    /** Exited while its last message said it was still working or waiting. */
+    unfinished: boolean;
+    unfinishedWarning: string;
+    /** The same warning for a run that committed nothing. */
+    noChangeWarning: string;
+    /** Partial or unfinished: the comment must not read as a clean success. */
+    unconfirmed: boolean;
+}
+
+function describeRunOutcome(claudeResult: ClaudeCodeResponse): RunOutcome {
+    const terminationReason = resolveAgentTerminationReason(claudeResult);
+    const partial = !claudeResult.success && terminationReason !== undefined;
+    const unfinished = !partial && claudeResult.success && isUnfinishedRun(claudeResult);
+    const reason = redactSecrets(claudeResult.unfinishedReason ?? '');
+    const unfinishedWarning = unfinished ? unfinishedRunWarning(reason) : '';
+    const noChangeWarning = unfinished ? unfinishedRunWarning(reason, { committed: false }) : '';
+    return { terminationReason, partial, unfinished, unfinishedWarning, noChangeWarning, unconfirmed: partial || unfinished };
+}
+
+/** An unfinished run committed nothing; it does not establish that nothing was needed. */
+function buildNoChangeStatement(unfinished: boolean, visualPreviewSection: string | undefined): string {
+    const line = unfinished
+        ? 'No code changes were committed.'
+        : 'No code changes were necessary based on the current state of the branch.';
+    return visualPreviewSection
+        ? `${line} Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
+        : `${line}\n\n`;
+}
+
+function buildCommittedHeadline(shortHash: string, outcome: Pick<RunOutcome, 'terminationReason' | 'partial' | 'unfinishedWarning'>): string {
+    if (outcome.partial) {
+        return `⚠️ **Applied partial follow-up changes** in commit ${shortHash}\n\n> [!WARNING]\n> **This work may be incomplete.** ${describeAgentTermination(outcome.terminationReason!)} The available changes were committed instead of discarded.\n\n`;
+    }
+    if (outcome.unfinishedWarning) return `⚠️ **Committed follow-up changes** in commit ${shortHash}\n\n${outcome.unfinishedWarning}`;
+    return `✅ **Applied the requested follow-up changes** in commit ${shortHash}\n\n`;
+}
+
+function buildCommittedFilesSection(files: readonly string[]): string {
+    const list = committedFilesList(files);
+    return list ? `## Committed Changes\n\n${list}\n\n` : '';
+}
+
 export async function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
@@ -207,15 +254,12 @@ export async function buildCompletionComment(
 ): Promise<string> {
     const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, addressedFeedback, visualPreviewSection } = commentContext;
     const addressedLine = buildAddressedFeedbackLine(addressedFeedback);
-    const terminationReason = resolveAgentTerminationReason(claudeResult);
-    const partial = !claudeResult.success && terminationReason !== undefined;
+    const { terminationReason, partial, unfinished, unfinishedWarning, noChangeWarning, unconfirmed } = describeRunOutcome(claudeResult);
 
     const cleanBody = cleanCompletionReport;
 
     if (commitResult) {
-        let prCommentBody = partial
-            ? `⚠️ **Applied partial follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n> [!WARNING]\n> **This work may be incomplete.** ${describeAgentTermination(terminationReason!)} The available changes were committed instead of discarded.\n\n`
-            : `✅ **Applied the requested follow-up changes** in commit ${commitResult.commitHash.substring(0, 7)}\n\n`;
+        let prCommentBody = buildCommittedHeadline(commitResult.commitHash.substring(0, 7), { terminationReason, partial, unfinishedWarning });
 
         if (unprocessedComments.length > 1) {
             prCommentBody += `Processed ${unprocessedComments.length} comments:\n`;
@@ -232,10 +276,11 @@ export async function buildCompletionComment(
 
         const contentToShow = getCompletionSummary(claudeResult, commitMessage, changesSummary);
         if (contentToShow) {
-            prCommentBody += `${partial ? '## Last Agent Update' : '## Summary of Changes'}\n\n${cleanBody(contentToShow)}\n\n`;
+            prCommentBody += `${unconfirmed ? '## Last Agent Update' : '## Summary of Changes'}\n\n${cleanBody(contentToShow)}\n\n`;
         } else if (partial && claudeResult.modifiedFiles.length > 0) {
             prCommentBody += `## Work Completed Before Interruption\n\n${claudeResult.modifiedFiles.slice(0, 20).map(file => `- \`${file}\``).join('\n')}\n\n`;
         }
+        prCommentBody += unfinished ? buildCommittedFilesSection(claudeResult.modifiedFiles) : '';
 
         prCommentBody += buildDigestAndRemainingWork(commentContext.reviewDigestSection, partial);
 
@@ -259,21 +304,20 @@ export async function buildCompletionComment(
         prCommentBody += `\n\n---\n`;
         prCommentBody += buildSlashCommandsBlock();
         prCommentBody += `${buildAttributionLine()}\n`;
-        prCommentBody += buildCompletionFooter(unprocessedComments, { partial });
+        prCommentBody += buildCompletionFooter(unprocessedComments, { partial: unconfirmed });
 
         return prCommentBody;
     } else {
         let noChangesBody = `ℹ️ **Analyzed the follow-up request** by ${authorsText}\n\n`;
 
+        noChangesBody += noChangeWarning;
         noChangesBody += addressedLine;
 
         if (changesSummary) {
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
         }
 
-        noChangesBody += visualPreviewSection
-            ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
-            : `No code changes were necessary based on the current state of the branch.\n\n`;
+        noChangesBody += buildNoChangeStatement(unfinished, visualPreviewSection);
         noChangesBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
@@ -284,7 +328,7 @@ export async function buildCompletionComment(
         noChangesBody += `\n\n---\n`;
         noChangesBody += buildSlashCommandsBlock();
         noChangesBody += `${buildAttributionLine()}\n`;
-        noChangesBody += buildCompletionFooter(unprocessedComments, { partial });
+        noChangesBody += buildCompletionFooter(unprocessedComments, { partial: unconfirmed });
 
         return noChangesBody;
     }

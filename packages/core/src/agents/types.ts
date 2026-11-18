@@ -376,6 +376,8 @@ export interface AgentExecutionResult {
     commitMessage?: string | null;
     /** Set when the small summary-selection call decided the published summary. */
     summarySelection?: 'selected' | 'none';
+    /** Set when the summary-selection call judged the agent's last message to say work was still in progress. */
+    unfinishedReason?: string;
     prompt?: string;
 
     // Conversation log for execution analysis
