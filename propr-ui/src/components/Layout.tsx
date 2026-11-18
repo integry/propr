@@ -210,7 +210,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         {desktop && <DesktopInstanceSelector transportReady={isConnected && user !== null} />}
         <div ref={usageFit.columnRef} className="flex min-h-0 flex-1 flex-col">
           {/* Whitespace separates navigation from the workspace control. */}
-          <SidebarNavigation state={navigationState} permissions={navigationPermissions} navRef={usageFit.navRef} />
+          <SidebarNavigation state={navigationState} permissions={navigationPermissions} navRef={usageFit.navRef} dense={usageFit.compact} />
           {/* Usage and account information stay at the bottom, with metadata
               last. mt-auto absorbs the space below navigation. When the window
               is too short for every item, Usage folds to one line first. */}

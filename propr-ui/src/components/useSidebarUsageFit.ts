@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { SIDEBAR_DENSE_ROW_SAVING_PX, SIDEBAR_ROW_ATTRIBUTE } from './SidebarNavigation';
 
 /** Rounding slack, so a sub-pixel difference never flips the layout back and forth. */
 const SLACK_PX = 1;
@@ -16,8 +17,8 @@ export interface SidebarUsageFit {
 /**
  * Every sidebar item stays on screen: when the navigation does not fit above
  * the Usage block (a 720px or 768px tall window), Usage folds to one line
- * first. It opens again once the column has room for it, so a taller window
- * shows the full block. Whatever still does not fit scrolls, with a visible
+ * first and the navigation rows tighten. Both return once the column has
+ * room for them, so a taller window shows the full block. Whatever still does not fit scrolls, with a visible
  * scrollbar (see SidebarNavigation).
  */
 export function useSidebarUsageFit(): SidebarUsageFit {
@@ -45,9 +46,11 @@ export function useSidebarUsageFit(): SidebarUsageFit {
     }
     if (overflowing) return;
     const free = column.clientHeight - nav.offsetHeight - bottom.offsetHeight;
-    // Every compact-dependent height lives in the bottom block, so comparing it
-    // whole covers the margins as well as Usage; expanding cannot overflow again.
-    const growth = fullBottomHeight.current - bottom.offsetHeight;
+    // The bottom block is compared whole, so its margins count as well as Usage,
+    // and every navigation row grows back by the same fixed amount; with both
+    // budgeted, expanding cannot overflow again.
+    const rows = nav.querySelectorAll(`[${SIDEBAR_ROW_ATTRIBUTE}]`).length;
+    const growth = fullBottomHeight.current - bottom.offsetHeight + rows * SIDEBAR_DENSE_ROW_SAVING_PX;
     if (free >= growth + SLACK_PX) {
       compactRef.current = false;
       setCompact(false);
