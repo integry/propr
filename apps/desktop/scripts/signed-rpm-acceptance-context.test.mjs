@@ -96,7 +96,7 @@ test('sanitized context excludes host profiles, credentials, signing bundles and
     assert.ok(SIGNED_RPM_ACCEPTANCE_CONTEXT.some(allowed => path === allowed || path.startsWith(`${allowed}/`)), `${path} is not allowlisted`);
   }
   assert.deepEqual(sent.filter(path => path.startsWith('vendor/')).sort(), ['vendor/braces-3.0.4-depthguard.1.tgz',
-    'vendor/picomatch-4.0.8-extglobguard.1.tgz', 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz']);
+    'vendor/picomatch-4.0.8-extglobguard.2.tgz', 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz']);
   const tarball = await readFile(join(context, 'vendor/braces-3.0.4-depthguard.1.tgz'));
   const lock = JSON.parse(await readFile(join(context, 'package-lock.json'), 'utf8'));
   assert.equal(`sha512-${createHash('sha512').update(tarball).digest('base64')}`, lock.packages['node_modules/braces'].integrity);

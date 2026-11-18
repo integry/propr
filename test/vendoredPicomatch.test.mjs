@@ -17,8 +17,8 @@ import { gunzipSync } from 'node:zlib';
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const V4 = { source: 'vendor/picomatch', tarball: 'vendor/picomatch-4.0.8-extglobguard.1.tgz' };
-const V2 = { source: 'vendor/picomatch-v2', tarball: 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz' };
+const V4 = { source: 'vendor/picomatch', tarball: 'vendor/picomatch-4.0.8-extglobguard.2.tgz' };
+const V2 = { source: 'vendor/picomatch-v2', tarball: 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz' };
 // The 2.x consumers (chokidar's anymatch and readdirp, fast-glob's micromatch)
 // get nested copies of the 2.x build; everything else shares the root 4.x build.
 const V2_CONSUMERS = ['anymatch', 'micromatch', 'readdirp'];
