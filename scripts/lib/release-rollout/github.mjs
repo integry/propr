@@ -95,8 +95,14 @@ export async function checkDesktopPrerelease(ctx, target) {
     const names = new Set((release.assets ?? []).map(asset => asset.name));
     return expected.filter(name => !names.has(name));
   };
-  const complete = candidates.find(release => lacking(release).length === 0);
+  // Only a published pre-release counts, as in the rollout plan
+  // (release-rollout-plan.mjs publishedPreviewRelease): a full release that
+  // carries the files is not the preview the rollout published.
+  const complete = candidates.find(release => release.prerelease === true && lacking(release).length === 0);
   if (complete) return ok(`${complete.tag_name} with ${expected.length} expected files`);
   const newest = candidates[0];
-  return stale(`${newest.tag_name} lacks ${lacking(newest).join(', ')}`);
+  const problems = [];
+  if (newest.prerelease !== true) problems.push('is not marked as a pre-release');
+  if (lacking(newest).length > 0) problems.push(`lacks ${lacking(newest).join(', ')}`);
+  return stale(`${newest.tag_name} ${problems.join(' and ')}`);
 }

@@ -217,13 +217,13 @@ describe('Release Rollout follow-ups job contract', () => {
   const step = name => job.steps.find(candidate => candidate.name.startsWith(name));
   const cli = parse(readFileSync('.github/workflows/preview-cli-bundle.yml', 'utf8'));
 
-  test('runs last, after the desktop chain and the summary, for every planned run', () => {
+  test('runs after the desktop chain and the summary, for every planned run; only the live check follows it', () => {
     assert.deepEqual(job.needs, ['plan', 'runtime', 'linux-publication', 'macos', 'cli-bundle', 'summary']);
     assert.equal(job.if, "${{ always() && needs.plan.result == 'success' }}");
     assert.deepEqual(job.permissions, { contents: 'read' });
     assert.equal(job.environment, undefined);
     for (const name of Object.keys(workflow.jobs)) {
-      if (name !== 'followups') assert.ok(![workflow.jobs[name].needs ?? []].flat().includes('followups'), name);
+      if (name !== 'followups' && name !== 'live') assert.ok(![workflow.jobs[name].needs ?? []].flat().includes('followups'), name);
     }
   });
 

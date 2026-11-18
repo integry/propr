@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the site, and prints `ok`, `missing` or `stale` for each. It uses only
   public, unauthenticated reads, exits non-zero unless every target is `ok`,
   supports `--json`, and writes a table to the run summary in GitHub Actions.
+  Release Rollout runs it as its last job, so each run summary says where the
+  release is live. A desktop release counts only when it is a pre-release.
 - **Release Rollout workflow**: `.github/workflows/release-rollout.yml`
   builds the desktop previews and the preview CLI bundle from one release tag.
   It replaces seven manual dispatches with hand-copied digests and run ids.

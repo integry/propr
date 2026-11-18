@@ -38,6 +38,13 @@ name: Release Rollout
 # it: the demo database refresh takes about 30 minutes and must not be cut off
 # by the job timeout. Until demo.propr.dev reports the release, the demo
 # follow-up issue is still opened and says to check that deploy.
+#
+# Finally, the live job runs the read-only rollout check
+# (scripts/verify-release-rollout.mjs) for the planned version, also when an
+# earlier step failed, and its one-line-per-target table (Docker latest, npm,
+# hosted UI, demo, desktop pre-releases, site pages) ends the run summary.
+# Targets that are still `missing` or `stale` (the demo refresh and the site
+# follow-ups land later) give a warning, not a failed run.
 on:
   workflow_dispatch:
     inputs:
@@ -307,7 +314,7 @@ jobs:
               for image in "$AGENT_IMAGE" "$APP_IMAGE" "$UI_IMAGE"; do echo "- \`$image\`"; done
               echo
             fi
-            echo 'Check where the release is live with `npm run release:rollout -- --version <x.y.z>`.'
+            echo 'Where the release is live is in the rollout check below (`npm run release:rollout -- --version <x.y.z>` repeats it later).'
           } >> "$GITHUB_STEP_SUMMARY"
 
   followups:
@@ -438,3 +445,44 @@ jobs:
             fi
           done < "$FOLLOWUPS/issues.tsv"
           exit "$failed"
+
+  live:
+    name: Check where the release is live
+    needs: [plan, summary, followups]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the reviewed main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      # Read-only and without credentials: every read is a public request.
+      # Exit 1 means some target is not yet `ok`; the table says which. The
+      # check failing to write its table (a crash or a bad version) fails the job.
+      - name: Run the rollout check for the planned version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          touch "$GITHUB_STEP_SUMMARY"
+          before=$(wc -c < "$GITHUB_STEP_SUMMARY")
+          status=0
+          node scripts/verify-release-rollout.mjs --version "$VERSION" || status=$?
+          if [ "$(wc -c < "$GITHUB_STEP_SUMMARY")" -eq "$before" ]; then
+            echo "::error::The rollout check for $VERSION wrote no summary (exit $status)."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::ProPR $VERSION is not yet live on every target; see the rollout check table in the run summary."
+          fi

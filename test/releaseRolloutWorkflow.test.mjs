@@ -66,6 +66,7 @@ describe('Release Rollout workflow contract', () => {
       'cli-bundle': ['plan', 'runtime'],
       summary: ['plan', 'runtime-agent', 'runtime-app-ui', 'runtime', 'linux-draft', 'linux-signing', 'linux-publication', 'macos', 'cli-bundle'],
       followups: ['plan', 'runtime', 'linux-publication', 'macos', 'cli-bundle', 'summary'],
+      live: ['plan', 'summary', 'followups'],
     });
     // A skipped step (its artefact exists) must not skip the rest; a failure or cancellation must.
     for (const name of ['runtime-app-ui', 'runtime', 'linux-draft', 'linux-signing', 'linux-publication', 'macos', 'cli-bundle']) {
@@ -246,6 +247,7 @@ describe('Release Rollout workflow contract', () => {
       'cli-bundle': { contents: 'read' },
       summary: { contents: 'read' },
       followups: { contents: 'read' },
+      live: { contents: 'read' },
     });
     const rank = { none: 0, read: 1, write: 2 };
     const mapping = { linux: 'linux-draft', signed: 'linux-signing', macos: 'macos', cli: 'cli-bundle', runtime: 'runtime-app-ui' };
@@ -279,6 +281,64 @@ describe('Release Rollout workflow contract', () => {
     assert.match(text, /\| Desktop Linux signed publication \| already published \|/);
     assert.match(text, /\| Desktop macOS preview \| failure \|/);
     assert.match(text, new RegExp(`propr/app:${SHA}@${digest('b')}`));
+  });
+});
+
+describe('Release Rollout ends with the read-only rollout check', () => {
+  const step = jobs.live.steps.at(-1);
+  const runStep = (script, extraEnv = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'release-rollout-live-'));
+    fixtures.push(dir);
+    const bin = join(dir, 'bin');
+    execFileSync('mkdir', [bin]);
+    // A stand-in `node` that runs the given script instead of the real check.
+    writeFileSync(join(bin, 'node'), `#!/bin/bash\necho "$@" > "${dir}/argv"\n${script}\n`, { mode: 0o755 });
+    const summary = join(dir, 'summary.md');
+    const result = spawnSync('bash', ['-c', step.run], { encoding: 'utf8', env: {
+      PATH: `${bin}:${process.env.PATH}`, GITHUB_STEP_SUMMARY: summary, VERSION: '0.9.3', ...extraEnv,
+    } });
+    return { ...result, argv: readFileSync(join(dir, 'argv'), 'utf8').trim() };
+  };
+
+  test('runs after the follow-ups, even when a rollout step failed, with no secrets', () => {
+    assert.equal(jobs.live.if, "${{ always() && needs.plan.result == 'success' }}");
+    assert.deepEqual(step.env, { VERSION: '${{ needs.plan.outputs.version }}' });
+    assert.match(step.run, /node scripts\/verify-release-rollout\.mjs --version "\$VERSION"/);
+    assert.equal(secretReferences(rollout).live, undefined);
+    assert.doesNotMatch(JSON.stringify(jobs.live), /github\.token|GITHUB_TOKEN/);
+  });
+
+  test('a target that is not yet live warns; the table stays in the summary', () => {
+    const result = runStep('echo "| demo | missing |" >> "$GITHUB_STEP_SUMMARY"; exit 1');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.argv, 'scripts/verify-release-rollout.mjs --version 0.9.3');
+    assert.match(result.stdout, /::warning::ProPR 0\.9\.3 is not yet live on every target/);
+  });
+
+  test('every target live passes without a warning', () => {
+    const result = runStep('echo "| demo | ok |" >> "$GITHUB_STEP_SUMMARY"');
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /::warning::/);
+  });
+
+  test('a check that writes no table fails the job', () => {
+    const result = runStep('exit 2');
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /::error::The rollout check for 0\.9\.3 wrote no summary \(exit 2\)/);
+  });
+
+  test('the real check writes its per-target table to the summary', async () => {
+    const { main } = await import('../scripts/verify-release-rollout.mjs');
+    const written = [];
+    const code = await main({
+      argv: ['--version', '0.9.3'], env: { GITHUB_STEP_SUMMARY: 'summary.md' },
+      fetchImpl: async () => new Response('', { status: 404 }), stdout: () => {}, readFile: async () => { throw new Error('absent'); },
+      appendSummary: (file, text) => written.push([file, text]),
+    });
+    assert.equal(code, 1);
+    assert.equal(written.length, 1);
+    assert.match(written[0][1], /\| `docker:propr\/app` \| .*missing/);
+    assert.match(written[0][1], /\| `desktop:linux` \|/);
   });
 });
 

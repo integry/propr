@@ -178,7 +178,7 @@ It needs no credentials and changes nothing: every check is a public read. It pr
 | `site:whats-new` | `https://propr.dev/whats-new/<version>/` returns 200. |
 | `site:download` | The download page, `https://propr.dev/desktop/`, links to the Linux (signed) and macOS desktop pre-releases of `<version>`. |
 
-The command exits 0 only when every target is `ok`. In GitHub Actions it also adds the results as a table to the run summary. Unauthenticated GitHub API reads are limited to 60 an hour per IP address; a rate-limited read shows as `missing` with `HTTP 403 (GitHub API rate limit?)`. To check another destination, add one entry to `TARGETS` in `scripts/verify-release-rollout.mjs`, using one of the check kinds in `scripts/lib/release-rollout/run.mjs`.
+The command exits 0 only when every target is `ok`. In GitHub Actions it also adds the results as a table to the run summary. The last Release Rollout job, **Check where the release is live**, runs it for the planned version after the follow-ups, also when an earlier step failed, so every run summary ends with this table; a target that is not yet `ok` (the demo refresh and the site follow-ups usually land later) is a warning there, not a failed run. Run the command again once the follow-ups are done. Unauthenticated GitHub API reads are limited to 60 an hour per IP address; a rate-limited read shows as `missing` with `HTTP 403 (GitHub API rate limit?)`. To check another destination, add one entry to `TARGETS` in `scripts/verify-release-rollout.mjs`, using one of the check kinds in `scripts/lib/release-rollout/run.mjs`.
 
 ## License
 

@@ -251,6 +251,29 @@ describe('desktop pre-release targets', () => {
     assert.equal(result.status, 'missing');
   });
 
+  test('stale when a matching release with every file is not marked as a pre-release', async () => {
+    const { results } = await run(['desktop:linux', 'desktop:macos'], {
+      [RELEASES]: json([
+        release('desktop-linux-preview-v0.9.2-60792554ba3a-all-signed', linuxAssets('0.9.2'), { prerelease: false }),
+        release('desktop-macos-preview-v0.9.2-60792554ba3a', macosAssets('0.9.2'), { prerelease: false }),
+      ]),
+    });
+    assert.deepEqual(results.map(result => result.status), ['stale', 'stale']);
+    assert.match(results[0].found, /^desktop-linux-preview-v0\.9\.2-60792554ba3a-all-signed is not marked as a pre-release$/);
+    assert.match(results[1].found, /^desktop-macos-preview-v0\.9\.2-60792554ba3a is not marked as a pre-release$/);
+  });
+
+  test('a published pre-release with every file is ok even when a newer non-pre-release copy exists', async () => {
+    const { result } = await run(['desktop:macos'], {
+      [RELEASES]: json([
+        release('desktop-macos-preview-v0.9.2-0c6213a643f3', macosAssets('0.9.2'), { prerelease: false }),
+        release('desktop-macos-preview-v0.9.2-60792554ba3a', macosAssets('0.9.2')),
+      ]),
+    });
+    assert.equal(result.status, 'ok');
+    assert.match(result.found, /^desktop-macos-preview-v0\.9\.2-60792554ba3a with 6 expected files$/);
+  });
+
   test('stale when the pre-release lacks package files', async () => {
     const { result } = await run(['desktop:macos'], {
       [RELEASES]: json([release('desktop-macos-preview-v0.9.2-60792554ba3a', macosAssets('0.9.2').filter(entry => !entry.name.endsWith('.dmg')))]),
