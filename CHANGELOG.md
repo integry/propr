@@ -95,6 +95,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across restarts; events from while an automation was disabled are not run.
   Event runs are unattended `event` runs under the usual autonomy, capabilities,
   grants and cost gate, and at most 3 run for the same issue of a plan.
+- **Extension library replaces extension profiles**: instance administrators
+  now manage one instance-wide extension library of MCP servers and skill
+  bundles instead of separately scoped profiles. Each item has optional
+  limits (repositories, agents) and **Apply automatically** (on by default
+  for new items); every save creates a new library revision. Enabled items
+  with **Apply automatically** whose limits match apply on their own to
+  Claude and Codex issue tasks (however they were started, including retries
+  and replacement attempts), pull request follow-ups and automation runs,
+  resolved against the current library when the task's container is created;
+  running tasks keep the items they started with. A run carries at most 8 MCP
+  servers (counting ProPR's own) and 8 skill bundles. Write servers reach only
+  automation action phases and the initial task of a New Task submission that
+  ticks **Allow write servers for this task's first run**. A Codex run whose
+  operator `config.toml` sets a custom model provider or profile, or whose
+  workspace has `.codex/config.toml`, launches without its auto-applied items
+  instead of failing. The labels `disable-mcps`, `disable-skills` and
+  `disable-extensions` on the issue (issue tasks) or pull request (follow-ups)
+  remove auto-applied servers, skills or both from that run; they never add
+  items and do not affect automation runs. New Task's **Run without
+  extensions** switch adds `disable-extensions` to the issue it creates, and
+  New Task shows read-only which items will apply. Settings → Agent
+  extensions & packages → Skills & MCP servers is now two flat lists, **MCP
+  servers** and **Skills**, with an enable checkbox per row that saves at
+  once; a switched-off item keeps its settings and stored secret. Automations
+  can add further items, including ones without **Apply automatically**, under
+  **Additional extensions** in their editor. HTTPS MCP servers can use **OAuth
+  sign-in**: an administrator connects the server once from Settings in their
+  own browser, ProPR signs in as its own OAuth client (pre-registered client,
+  Client ID Metadata Document or Dynamic Client Registration, with PKCE), and
+  Core holds the tokens encrypted and refreshes them; agent containers never
+  see a token. A server that is not connected or needs sign-in is skipped, and
+  a refused refresh moves it to **Needs sign-in** with one Inbox notification.
+  Each run records the applied, added, omitted and skipped items in an
+  `extensions.resolved` task event. **Upgrading:** at the first API or worker
+  start, existing profile servers and skills are copied into the library as
+  items with the same repository and agent limits and `autoApply: false`, and
+  automations that selected a profile add those items explicitly, so no run
+  changes until you turn **Apply automatically** on for an item. Queued New
+  Task submissions keep their selection for their initial task, but extension
+  profiles can no longer be selected on New Task. See
+  [Instance agent extensions](docs/docs/features/agent-extensions.md).
 - **Local MCP servers from npm packages**: administrators can add a third kind
   of library MCP server, **Local package**, from Settings: an npm package at an
   exact version (ranges and tags are rejected), an optional executable, fixed
