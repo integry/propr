@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-18
+
 ### Added
 
 - **Epic progress in the epic PR's title, status line and progress comment**:
@@ -21,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `✅` (`✅ 5/5` once all are merged) are unchanged, and an older `🔨 N/M`
   epic title is rewritten to its circle on its next update. New epic PRs are
   created with `○ 0/N` and the line in their body. The epic is `working` while a sub-PR
-  or issue is being worked on or the next issue is about to start,
+  or issue is being worked on or the plan's queue starts an issue now (its
+  prerequisites are merged and a slot is free),
   `needs_attention` when nothing runs and a sub-PR needs you or is ready and
   waits to be merged into the epic branch, the queue is paused or the epic
   conflicts with its base, and `ready` once every issue is merged and its
@@ -36,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prTitleStatus` on (the default), each open pull request ProPR created
   starts its title with one status slot: `🔨` while it is being worked on,
   `⚠️` when it needs you and `✅` when it is ready, the last two followed by
-  the latest review score as a circled digit (`✅⑧`). New pull requests are
+  the latest review score as a solid circled digit ❶–❿ (`✅❽`). New pull requests are
   created with `🔨`, so creation costs no rename; after that the title changes
   only when the state or the shown score changes, ⚠️ and ✅ wait about 30
   seconds so a run that is about to start causes no extra rename, and no
@@ -53,7 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passed/failed/pending checks, the reason it needs you, and epic issue
   progress). A review score alone never makes a pull request `ready`: its
   checks on the current head must have completed and passed, and GitHub
-  must have confirmed that the PR does not conflict with its base. If the
+  must have confirmed that the PR does not conflict with its base. A freshly
+  pushed head that has no checks reported yet stays `working` (`Waiting for
+  CI`) for up to 10 minutes, or 2 minutes in a repository that has reported
+  no checks in the last 30 days, and is then treated as having no CI; a
+  review score from an older head does not make it `needs_attention` while
+  its checks are pending or absent. When several reviews scored the same
+  head (one per review model), the lowest score counts, and an open blocker
+  from any of them keeps the pull request at `needs_attention` ("review has
+  open blockers") even at the goal. If the
   review score, Ultrafix state or queued work can't be read, no status is
   reported. ProPR keeps
   that status as one live line at the top of the body of every open pull
@@ -71,8 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (on by default; Repositories → Automation,
   `update_repository_configuration`, `propr repo toggle owner/repo
   --pr-title-status <on|off>`) controls only whether the pull request title
-  shows the state as a leading emoji. Nothing uses it yet: the title emoji
-  arrives in a later release. See [PR Status](docs/docs/features/pr-status.md).
+  shows the state as a leading emoji (see **PR state in the pull request
+  title** above). See [PR Status](docs/docs/features/pr-status.md).
 - **Automations: run on a blocked epic issue**: an automation can subscribe to
   the new `plan.issue_blocked` event (`eventTriggers` on the definition, the
   **Event trigger** setting in the editor) and is then run once per blocked
@@ -84,6 +95,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across restarts; events from while an automation was disabled are not run.
   Event runs are unattended `event` runs under the usual autonomy, capabilities,
   grants and cost gate, and at most 3 run for the same issue of a plan.
+- **Extension library replaces extension profiles**: instance administrators
+  now manage one instance-wide extension library of MCP servers and skill
+  bundles instead of separately scoped profiles. Each item has optional
+  limits (repositories, agents) and **Apply automatically** (on by default
+  for new items); every save creates a new library revision. Enabled items
+  with **Apply automatically** whose limits match apply on their own to
+  Claude and Codex issue tasks (however they were started, including retries
+  and replacement attempts), pull request follow-ups and automation runs,
+  resolved against the current library when the task's container is created;
+  running tasks keep the items they started with. A run carries at most 8 MCP
+  servers (counting ProPR's own) and 8 skill bundles. Write servers reach only
+  automation action phases and the initial task of a New Task submission that
+  ticks **Allow write servers for this task's first run**. A Codex run whose
+  operator `config.toml` sets a custom model provider or profile, or whose
+  workspace has `.codex/config.toml`, launches without its auto-applied items
+  instead of failing. The labels `disable-mcps`, `disable-skills` and
+  `disable-extensions` on the issue (issue tasks) or pull request (follow-ups)
+  remove auto-applied servers, skills or both from that run; they never add
+  items and do not affect automation runs. New Task's **Run without
+  extensions** switch adds `disable-extensions` to the issue it creates, and
+  New Task shows read-only which items will apply. Settings → Agent
+  extensions & packages → Skills & MCP servers is now two flat lists, **MCP
+  servers** and **Skills**, with an enable checkbox per row that saves at
+  once; a switched-off item keeps its settings and stored secret. Automations
+  can add further items, including ones without **Apply automatically**, under
+  **Additional extensions** in their editor. HTTPS MCP servers can use **OAuth
+  sign-in**: an administrator connects the server once from Settings in their
+  own browser, ProPR signs in as its own OAuth client (pre-registered client,
+  Client ID Metadata Document or Dynamic Client Registration, with PKCE), and
+  Core holds the tokens encrypted and refreshes them; agent containers never
+  see a token. A server that is not connected or needs sign-in is skipped, and
+  a refused refresh moves it to **Needs sign-in** with one Inbox notification.
+  Each run records the applied, added, omitted and skipped items in an
+  `extensions.resolved` task event. **Upgrading:** at the first API or worker
+  start, existing profile servers and skills are copied into the library as
+  items with the same repository and agent limits and `autoApply: false`, and
+  automations that selected a profile add those items explicitly, so no run
+  changes until you turn **Apply automatically** on for an item. Queued New
+  Task submissions keep their selection for their initial task, but extension
+  profiles can no longer be selected on New Task. See
+  [Instance agent extensions](docs/docs/features/agent-extensions.md).
 - **Local MCP servers from npm packages**: administrators can add a third kind
   of library MCP server, **Local package**, from Settings: an npm package at an
   exact version (ranges and tags are rejected), an optional executable, fixed
@@ -101,7 +153,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run's `extensions.resolved` event lists package servers with their versions.
   PyPI packages are not supported yet. New route
   `POST /api/instance/extensions/v1/packages/resolve`.
-
 - **Per-agent ceilings: jobs wait off the worker**: with
   `PROPR_AGENT_RUN_ALIAS_LIMITS` set, issue runs, PR follow-ups and reviews,
   goal attempts, automation report and action runs, merge-conflict resolution
@@ -128,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (new `implementer_reasoning_level` column), `propr stats review-scores` prints
   model, effort, merged PRs, runs to merge and cost per merged PR, and the
   Analytics "Agent efficacy by model" pane shows effort under each model.
+  Levels are recorded from this release on; earlier runs show as `unknown`.
 - **LLM cost export**: `GET /api/stats/cost` (JSON) and `GET /api/stats/cost.csv`
   group recorded agent executions by any of day, repository, agent, model,
   reasoning level, execution type and outcome, with executions, tasks,
@@ -218,6 +270,184 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sweep. GitHub's native auto-merge is not armed under the option (ProPR withdraws
   its own earlier request). Every decision is recorded with the auto-merge
   timeline event.
+- **Review digest in agent pull requests**: agent pull request descriptions
+  (issue runs) and the completion comments of follow-up and `/fix` runs that
+  publish a commit now include a **Review digest** after the summary. It
+  lists the issue's acceptance criteria with the agent's statement for each,
+  the changed files grouped as high, normal and low risk with lines added and
+  removed (and why a file is high risk), dependencies the diff adds to a
+  dependency manifest, the result of each repository validation command
+  (`Passed`, `Failed (exit 1)`), and the diff size. CI and workflow files,
+  `.propr/**`, agent configuration such as `CLAUDE.md` and `.claude/**`,
+  lockfiles, dependency manifests, migrations and auth- or payment-looking
+  paths are high risk; docs and tests are low risk. The new
+  `.propr/workflow.yml` field `review.risk_paths` (at most 200 globs, matched
+  like `auto_merge.protected_paths`) marks more paths high risk without
+  affecting auto-merge. The digest lists at most 50 files, never contains
+  diff content, and is left out when the run has no diff. It is also
+  recorded on the task timeline as a **Review digest** entry. PR templates
+  can move or remove it with the new `digest` section and `{{digest}}`
+  placeholder. See [Pull request templates](docs/docs/features/pr-templates.md#review-digest).
+- **Acceptance criteria checklist**: when an issue body has an **Acceptance
+  criteria** heading (any level, any case), its top-level list items become
+  criteria `AC1`, `AC2` and so on (at most 20 criteria, up to 300 characters
+  each). The implementation prompt lists them and asks the agent to end its
+  summary with one line per criterion (`- AC1: met — src/feature.ts`). The
+  review digest shows each statement, and a criterion the agent did not
+  report on as **not addressed**. `/review` receives the same ids from the
+  linked issue and verifies each one against the diff. An unmet criterion is
+  a merge blocker with category `requirement` that names its id. Issues
+  without the heading are unchanged.
+- **Validation results on the task timeline**: each run with workflow
+  `validation` commands adds a `repository.validation` event to task
+  history, for example "Repository validation failed: 1 passed, 1 failed,
+  1 not run", with each command's status (`passed`, `failed`, `timed_out`,
+  `killed`, `not_run`, `not_observed`) and exit code. Gating and the
+  markdown report are unchanged.
+- **Agents can stop and report a blocker**: with `on_blocker: report` in
+  `.propr/workflow.yml` (default `continue`), an agent that cannot complete
+  the task as asked reverts partial work and ends its final message with a
+  top-level `PROPR_BLOCKED: <reason>` line. ProPR then commits nothing and
+  opens no PR. It comments the reason on the issue, or states it in the
+  `/fix` or follow-up comment. The done label is not added, an epic queue
+  holds on the issue with that reason, and Ultrafix stops with
+  `fix_step_blocked`. The task ends `completed` with terminal reason
+  `blocked`, is not retried or replaced, and raises an Inbox warning.
+  `propr init` scaffolds the key commented out.
+- **Pull request readiness verdict**: `GET
+  /api/pull-requests/:number/readiness?repository=owner/repo`, the MCP tool
+  `get_pull_request_readiness` and `propr pr readiness <number> [--json]`
+  return one verdict (`ready`, `waiting`, `blocked`, `unknown`, `merged` or
+  `closed`) with a coded reason for every gate: `open`, `not_draft`,
+  `checks`, `mergeable`, `human_review`, `ai_review`, `ultrafix`,
+  `active_work` and `policy`. `blockingReasons` and `waitingReasons` list
+  the codes that hold it. The read has no side effects: it never comments,
+  labels, updates the branch, merges, or arms or withdraws auto-merge. It is
+  served only for an enabled configured repository the caller can read on
+  GitHub, then evaluated as the ProPR GitHub App, so it sees what auto-merge
+  sees. See the
+  [API reference](docs/docs/operations/api-reference.md#pull-request-readiness).
+- **Repository change events**: ProPR now appends pull request changes
+  (`opened`, `head_changed`, `review_scored`, `ultrafix_started`,
+  `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`), epic queue
+  changes (`started`, `advanced`, `blocked`, `completed`) and plan issue
+  `status_changed` to a per-repository journal kept for 30 days.
+  Coordinators read it with `GET /api/repository-events`, MCP
+  `list_repository_events` or `propr events list`, and wait for the next
+  matching event (up to 30 seconds per call) with `GET
+  /api/repository-events/wait`, MCP `wait_repository_events` or `propr
+  events wait` (exit 2 on timeout, `--follow` to keep going). Filters are
+  `domains`, `types`, `pullRequest` and `planId`. Delivery is ordered and
+  at-least-once from an opaque per-repository cursor. A cursor that is too
+  old fails with `CURSOR_EXPIRED` and a recovery hint instead of returning
+  an empty result. Events carry identifiers only, never PR bodies, comments
+  or diffs.
+- **Retry lineage for tasks and submissions**: `get_task_submission`,
+  `list_task_submissions` and `GET /api/task-submissions/{key}` return
+  `firstTaskId` and `latestTaskId`, so a client can follow a submission
+  whose issue task was replaced after a lost worker or a transient provider
+  error. MCP `get_task` returns a `lineage` object (`attemptNumber`,
+  `replacesTaskId`, `replacedByTaskId`, `replacementCause`,
+  `replacementState`, and `attempts` when there was more than one), and
+  `GET /api/task/{taskId}/history` returns the same in `taskInfo`.
+  `docs/mcp.md` and the API reference gained an "Idempotency and retries"
+  section on the three idempotency key contracts.
+- **Release or resume held follow-ups from Settings and MCP**: a follow-up
+  handoff held for an operator blocks every later command on its pull
+  request. Administrators with `instance.manage_runtime` now settle it under
+  **Settings → Maintenance → Held follow-ups**, which lists held and
+  recovering follow-ups with reason, branch, task and next step and offers
+  **Resume** and **Release** (with confirmation). Released ones are under
+  **Show released (N)**. *Also release if it has unpublished work* forces a
+  release, and ticking *Publish the cancelled work* lets **Resume** publish
+  cancelled work. MCP gains `list_followup_handoffs`,
+  `get_followup_handoff`, `resume_followup_handoff` and
+  `release_followup_handoff`; the list shows only repositories the client
+  may read. After a release, post the command again.
+- **Automation acting steps can review, approve CI, label, close and merge**:
+  acting grants now carry the `review` scope, so the acting step can request
+  `review_pull_request`, `fix_review_findings`, `run_ultrafix` and
+  `start_ultrafix`. New execute-scope MCP tools:
+  `update_pull_request_labels` (plain labels only; never creates one, and
+  leaves `llm-*` and `ultrafix` alone), `close_pull_request` (posts the
+  reason first and needs `expectedHead`) and
+  `approve_pull_request_workflow_runs` (approves runs waiting on a fork or
+  first-time contributor at `expectedHead`; refuses PRs that change workflow
+  or action files under `.github`, with `CI_CONFIGURATION_CHANGED`). A new
+  `merge` capability, shown as **Merge pull requests** in the automation
+  editor and off by default, adds the `merge` scope to the acting step only.
+  It is not available for agents without ProPR tools.
+- **Automation runs that change nothing are flagged**: a completed run is
+  marked **No change** in the run history and run detail when its report was
+  empty, was the same as the previous run's report (compared by a hash of
+  the text with dates, times and this automation's run ids normalised), or
+  its acting step made no mutating MCP call. Runs from before this release
+  are not flagged. The REST run payload, MCP `get_automation_run` and
+  `list_automation_runs`, `propr automation runs` and `propr automation
+  report` carry `reportNovelty` (`new`, `unchanged` or `empty`),
+  `actingMutations` and `noChangeReason` (`empty_report`,
+  `unchanged_report` or `no_op_action`). After 3 consecutive unproductive
+  scheduled runs the owner gets one Inbox notification; the next productive
+  scheduled run resets the count, and manual runs do not count. The
+  instance setting `automation_unproductive_run_threshold` (1–50, default
+  3; `propr setting update` or MCP `update_execution_settings`, not in the
+  Settings UI) sets the number. The new per-automation option **Pause the
+  schedule after N runs in a row with nothing new** (`pauseWhenUnproductive`,
+  off by default) also turns the schedule off when the notification fires.
+- **Automations: Repeat schedule without writing cron**: the editor's
+  **Schedule** row is now **Off** or **Repeat**. Repeat reads `Every [N]
+  [minutes | hours | day | week]`, with an hour and minute picker in UTC for
+  days and weeks and Mon–Sun toggles for weeks. It offers only rhythms that
+  repeat exactly: every 15, 20 or 30 minutes; every 1, 2, 3, 4, 6, 8 or 12
+  hours; every day at a time; and chosen weekdays at a time (at least one
+  day stays ticked). Turning a schedule on starts from every day at 09:00
+  UTC. The controls write the same 5-field UTC cron as before (every 3
+  hours saves `0 */3 * * *`, Mon–Fri at 09:00 saves `0 9 * * 1-5`), so the
+  API, storage and scheduler are unchanged. **Use a cron expression** still
+  takes a typed expression, with the presets. An automation opens in the
+  plain controls only when they give back exactly its stored expression;
+  anything else (`@daily`, `15 9,17 * * 1-5`) opens as the expression and is
+  saved untouched. The next-run preview and validation show either way.
+- **Automations list: search and repository filter**: the Automations
+  screen uses the same header as Goals and Plans: same height and title,
+  a repository filter (**All Repos** or one repository) and **Search
+  automations**. Search matches automation names only, ignores case, waits
+  400 ms after typing and is capped at 500 characters. An automation shows
+  under a repository when it runs there; one with no repositories shows only
+  under All Repos. Both are kept in the URL (`?repository=`, `?search=`), so
+  Back, reload, opening an automation and its runs keep them. When nothing
+  matches, the list says `No automations match “…”` or `No automations in
+  owner/repo`, with **Clear filters**. The **New automation** header button
+  is gone; the button stays in the empty state.
+- **Spend on failed attempts**: a run that ends in an error, a usage limit,
+  a timeout or a cancellation now records one execution with
+  `success = false` and the tokens and cost it used, instead of recording
+  nothing or zero, and each execution is counted once even when it is
+  recorded twice. The Analytics page shows "$X on failed attempts" under
+  Total spend for the selected period. `/api/stats/overview` adds
+  `usage.successful_cost_usd` and `usage.failed_cost_usd`,
+  `/api/stats/dashboard` adds `recordedSpendSuccessful` and
+  `recordedSpendFailed`, and each model's usage adds `successful_cost_usd`,
+  `failed_cost_usd` and `failed_runs`. Existing fields keep their meaning.
+- **Token-outlier alerts**: after each agent execution is recorded, its
+  total tokens are compared with the median of the last successful
+  executions for the same repository, model and execution type. A run above
+  `token_outlier_multiplier` (default 4) times that median and above
+  `token_outlier_min_tokens` (default 500,000) sends every instance member
+  one `warning` Inbox notification per task with the observed and baseline
+  counts; no alert fires until `token_outlier_baseline_runs` (default 20,
+  minimum 8) baseline executions exist. With `token_outlier_pause_alerts`
+  set (off by default), a repository's scheduled automation runs are
+  skipped, with the reason in the run history, once it raised that many
+  alerts within `token_outlier_pause_window_hours` (default 24). Manual and
+  API, MCP or CLI triggers are never paused. Change the settings with MCP
+  `update_execution_settings` or `propr setting update`. See the
+  Token-outlier alerts section of the metrics docs.
+- **Software factory concept page**: a new Concepts page describes the
+  loops ProPR runs on its own (review and fix, CI repair, conflicts, epic
+  queues, goals, automations, outside drivers), what caps each one, how they
+  run in parallel and how much autonomy each gets, with links to the
+  feature pages.
 
 ### Changed
 
@@ -231,31 +461,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   above 200.
 - **Bundled Claude Code 2.1.326, Codex 0.169.0, Antigravity CLI 1.5.10 and
   OpenCode CLI 1.19.6**: the `propr/agent` image moves from Claude Code
-  2.1.325, Codex 0.168.0, Antigravity CLI 1.5.9 and OpenCode CLI 1.19.5.
+  2.1.316, Codex 0.166.0, Antigravity CLI 1.4.0 and OpenCode CLI 1.19.5.
   Mistral Vibe stays on 2.25.8.
-  - Claude Code 2.1.326 refuses more tool calls in bypass permissions mode
-    when no one can be asked, including file-tool writes to its sign-in files
-    such as `.credentials.json`. Ordinary repository work in ProPR's headless
-    `--dangerously-skip-permissions` runs (edits, git, npm) is unaffected. Its
-    new startup warning for incomplete `--tools`, `--allowedTools` and
-    `--disallowedTools` entries is not triggered by ProPR's values. The
-    bundled model catalog is unchanged.
-  - Antigravity 1.5.10 is release `5253791805734912`, SHA-512 checked against
-    Google's linux_amd64 install manifest, which has moved to
-    `antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`.
-    Its model list for `agy login` accounts is unchanged; the new Orchestrator
-    model is only for Gemini Enterprise and Application Default Credentials
-    and is not added. Rate-limit waits now retry for up to 4 minutes, a silent
-    high-effort response counts as stalled after 10 minutes instead of 5, and
-    the `--sandbox` used for repository inspection no longer reads
-    `~/.config` or `~/.git-credentials`.
-  - OpenCode 1.19.6 adds three free models to the catalog: Hy4 Flash Free
-    (`llm-opencode-hy4-flash-free`, 1M), Iceman Free
-    (`llm-opencode-iceman-free`, 262K) and LongCat 2.5 Free
-    (`llm-opencode-longcat25-free`, 1M). Each passed a live run that included a
-    tool call. Inkling 2 Small Free is also listed but is not added: it
-    refused every run with "This model is not available in your country". The
-    existing eight free models stay.
+  - Claude Code: 2.1.323 validates `--settings` at startup, which ProPR does
+    not pass. 2.1.325 asks for permission before sandboxed Bash commands and
+    before read-only git commands in other repositories, and 2.1.326 refuses
+    more tool calls in bypass permissions mode when no one can be asked,
+    including file-tool writes to its sign-in files such as
+    `.credentials.json`. ProPR runs are unaffected: tasks and goals pass
+    `--dangerously-skip-permissions`, analysis runs use `--tools ''` or the
+    repository-scout MCP allow-list, ProPR never turns on Claude Code's
+    sandbox, and ordinary repository work (edits, git, npm) still runs. The
+    new 2.1.326 startup warning for incomplete `--tools`, `--allowedTools`
+    and `--disallowedTools` entries is not triggered by ProPR's values.
   - Codex 0.169.0 stops `codex exec` from loading the repository's
     `.codex/config.toml` and project MCP servers in an untrusted workspace.
     Through 0.168.0, every bypass-mode run saved that trust in the mounted
@@ -266,23 +484,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Repository inspection and exclusive extension MCP runs stay untrusted.
     Goal runs need no flag: `codex app-server` saves the trust entry when it
     starts the goal's thread, as it did in 0.168.0, and also leaves a
-    workspace marked `untrusted` alone. The bundled model catalog and the
-    files Codex writes under its home directory are unchanged from 0.168.0.
-- **Bundled Claude Code 2.1.325 and Antigravity CLI 1.5.9**: the
-  `propr/agent` image moves from Claude Code 2.1.323 and Antigravity CLI
-  1.5.8. Codex stays on 0.168.0 and Mistral Vibe on 2.25.8.
-  - Antigravity 1.5.9 is release `4515810895593472`, SHA-512 checked against
-    Google's linux_amd64 install manifest. Its model list is unchanged. It
+    workspace marked `untrusted` alone. Codex 0.167 rewords the Daybreak
+    provider refusal that ProPR's `daybreak=false` override already avoids.
+  - Antigravity 1.5.10 is release `5253791805734912`, SHA-512 checked against
+    Google's linux_amd64 install manifest, which has moved to
+    `antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`.
+    The catalog keeps Gemini 3.8 Flash, Gemini 4 Argon, Claude Opus/Sonnet
+    5.5 and GPT-OSS 120B and adds Gemini 4 Hydrogen (see above). Gemini 4
+    Carbon (ADC sign-ins only) and the new Orchestrator model (Gemini
+    Enterprise and Application Default Credentials only) are not added.
+  - From Antigravity 1.5.0, a run cut short by `--print-timeout` exits with
+    code `3`, prints an `AGY_ERROR` line and writes `[agy] print timeout
+    after ...` to stderr. ProPR always passes `--print-timeout`, and now
+    records such a task as timed out with the CLI's explanation, instead of a
+    generic failure. Analysis runs no longer accept the partial answer, and
+    native goal attempts report the same message.
+  - From Antigravity 1.5.2, `-p --dangerously-skip-permissions` denies
+    actions outside the workspace when a Gemini Enterprise admin requires
+    review. The Agents and Models page documents this. 1.5.5 fixes `agy -p`
+    sometimes never exiting after printing its result. From 1.5.7, headless
+    sessions with no saved Agent Mode start in Auto instead of Default;
+    ProPR always passes `--dangerously-skip-permissions` (tasks and goals) or
+    `--sandbox` (repository inspection), so its runs are unaffected. 1.5.9
     gives every user the `run_workflow` tool, which lets the agent fan work
     out to subagents from a Python script, so large headless tasks may use
-    more tokens and run longer. `-p`, `--print-timeout` and exit codes are
-    unchanged.
-  - Claude Code 2.1.325 asks for permission before sandboxed Bash commands
-    and before read-only git commands in other repositories. ProPR runs are
-    unaffected: tasks and goals pass `--dangerously-skip-permissions`,
-    analysis runs use `--tools ''` or the repository-scout MCP allow-list,
-    and ProPR never turns on Claude Code's sandbox. The bundled model catalog
-    is unchanged.
+    more tokens and run longer; `-p`, `--print-timeout` and exit codes are
+    unchanged. 1.5.10 retries rate-limit waits for up to 4 minutes, counts a
+    silent high-effort response as stalled after 10 minutes instead of 5,
+    and its `--sandbox` used for repository inspection no longer reads
+    `~/.config` or `~/.git-credentials`.
+  - OpenCode 1.19.6 adds three free models to the catalog: Hy4 Flash Free
+    (`llm-opencode-hy4-flash-free`, 1M), Iceman Free
+    (`llm-opencode-iceman-free`, 262K) and LongCat 2.5 Free
+    (`llm-opencode-longcat25-free`, 1M). Each passed a live run that included a
+    tool call. Inkling 2 Small Free is also listed but is not added: it
+    refused every run with "This model is not available in your country". The
+    existing eight free models stay.
 - **Faster pull request checks**: `Validate Changes` runs its lint, typecheck
   and build gate before the browser smoke test and skips the browser run when
   the gate fails, so a lint error is reported in minutes instead of after an
@@ -295,20 +532,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   headroom for a 50-issue plan whose issues each name prerequisites, one tool
   call's arguments may now hold 15,000 array elements and object keys
   (previously 10,000).
-- **Bundled Claude Code 2.1.323, Codex 0.168.0 and Antigravity CLI 1.5.8**:
-  the `propr/agent` image moves from Claude Code 2.1.322, Codex 0.167.2 and
-  Antigravity CLI 1.5.6.
-  - Antigravity 1.5.8 is release `4602374149505024`, SHA-512 checked against
-    Google's linux_amd64 install manifest. From 1.5.7, headless sessions with
-    no saved Agent Mode start in Auto instead of Default. ProPR always passes
-    `--dangerously-skip-permissions` (tasks and goals) or `--sandbox`
-    (repository inspection), so its runs are unaffected.
-  - Codex stays on 0.168.0: 0.169.0 stops `codex exec` loading a
-    repository's `.codex/config.toml` and project MCP servers in untrusted
-    directories, which needs a separate decision. 0.168.0's bundled model
-    catalog is unchanged.
-  - Claude Code 2.1.323 needs no change: ProPR does not pass `--settings`,
-    which `claude -p` now validates at startup.
 - **Automation runs in the task list**: a run's row is labelled `Automation`
   instead of `#agent-ru` (the start of its task id), and its title is the
   automation's name without the `Agent:` prefix.
@@ -316,26 +539,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original is kept in ProPR Connect now shows a short `Full-size original`
   link under the image, instead of a sign-in and retention sentence followed
   by a separate link.
-- **Bundled Claude Code 2.1.322 and Codex 0.167.2**: the `propr/agent` image
-  moves from Claude Code 2.1.316 and Codex 0.166.0 (npm `latest`). The runtime
-  tool-policy checks pass against both binaries. Codex 0.167 rewords the
-  Daybreak provider refusal that ProPR's `daybreak=false` override already
-  avoids.
-- **Bundled Antigravity CLI 1.5.6**: the `propr/agent` image moves from
-  Antigravity CLI 1.4.0 to 1.5.6 (release `6212266538958848`, SHA-512 checked
-  against Google's install manifest). The model catalog is unchanged: Gemini 3.8
-  Flash, Gemini 4 Argon, Claude Opus/Sonnet 5.5 and GPT-OSS 120B. Gemini 4
-  Carbon is not added because the CLI offers it only to ADC sign-ins.
-  - From 1.5.0, a run cut short by `--print-timeout` exits with code `3`,
-    prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to
-    stderr. ProPR always passes `--print-timeout`, and now records such a
-    task as timed out with the CLI's explanation, instead of a generic
-    failure. Analysis runs no longer accept the partial answer, and native
-    goal attempts report the same message.
-  - From 1.5.2, `-p --dangerously-skip-permissions` denies actions outside the
-    workspace when a Gemini Enterprise admin requires review. The Agents and
-    Models page documents this.
-  - 1.5.5 fixes `agy -p` sometimes never exiting after printing its result.
+- **Review blockers carry a category; Ultrafix stops on style-only
+  findings**: every `F#` merge blocker now has a **Category**: `correctness`,
+  `requirement`, `security`, `tests`, `complexity` or `style`. Blockers in
+  review comments written before this release are read as `correctness`.
+  The default review guidance now asks reviewers to flag unrequested
+  complexity (abstractions, options or platform support the issue did not
+  ask for) as `complexity`, and a placeholder version reported as done
+  (stubbed code, skipped or deleted tests, a "for now" implementation) as
+  `requirement`. The review prompt also gets the diff size and the
+  effective objective's word count as context; size alone is never a
+  blocker. When every remaining blocker is `style`, Ultrafix schedules no
+  further fix and posts its "stopped before reaching its goal" comment,
+  which says that only stylistic findings remain. The MCP Ultrafix lifecycle
+  outcome for that case is `style_findings_only`.
+- **Removing a trigger after `-done` no longer cancels**: once an issue
+  carries `<trigger>-done`, removing `<trigger>` no longer stops the other
+  models of the same request. Use the Web UI stop action or
+  `propr task stop`.
+- **Docker Compose: existing env file, data directory and UI API origin**:
+  `PROPR_ENV_FILE` loads an existing backend env file under the local
+  `.env`; `PROPR_DATA_DIR` mounts an absolute data directory at the same
+  path, and backends refuse to start if a relative `DB_FILENAME` would put
+  the database outside it. `PROPR_UI_PUBLIC_API_URL` sets the web UI's API
+  origin at container start (empty keeps same-origin access behind a
+  reverse proxy). `REDIS_HOST`/`REDIS_PORT` defaults no longer override
+  imported values. The API's default `FRONTEND_URL` and
+  `GH_OAUTH_CALLBACK_URL` are now `localhost` instead of `gitfix.dev`.
+- **`propr init` and docs: fresh-worktree recipes**: the scaffolded
+  `.propr/setup.sh` and `.propr/workflow.yml` now include commented examples
+  for recreating a git-ignored `.env` from `.env.example` and running code
+  generation in `after_create`. A new Fresh worktrees section in the
+  repository workflow docs covers per-run databases and other shared
+  resources.
+- **Repository search opens the repository**: choosing a repository in
+  global search (Enter, click or **Open repository**) now opens the
+  Repositories page with that repository, and the highlighted branch,
+  selected. Its tasks are behind a separate **Tasks** button, or **Tasks for
+  <repo> →** on narrow screens.
+- **Settings: Maintenance and Experimental categories, shorter texts**: a
+  new Maintenance category, shown only to administrators, holds **Held
+  follow-ups** and Instance data. General moved to the bottom as
+  **Experimental**, its section is renamed **Opt-in features**, and
+  `?tab=general` still opens it. Settings now opens on AI models & reasoning
+  by default. Helper texts that explained mechanics are cut to a line, with
+  the details moved to the docs. Category names, headings, labels and
+  buttons use sentence case ("AI models & reasoning", "Workflow & PR
+  rules"); settings search and MCP `find_setting` still match the old
+  wording. **Skills & MCP servers → Add server** checks name and URL as you
+  leave each field: the URL must be `https://`, port 443, not localhost.
+  **Add server** stays disabled until both are valid, and leaving a
+  half-filled form asks "Discard changes?".
+- **Automations editor and run history are easier to read**: form errors
+  appear under the field in words ("Enter a name.", "Run at most every 15
+  minutes."), and a failed save scrolls to the first one. **Merge pull
+  requests** is disabled under **Report only**. Leaving with unsaved input
+  asks "Discard unsaved changes?" in the app's own dialog, and New task now
+  uses that dialog instead of the browser's. Schedules read in words in the
+  list, the editor and on runs ("Every 3 hours", "Every weekday at 07:00
+  UTC", "Every Mon, Wed, Fri at 09:00 UTC"), with the cron in a tooltip. The
+  run history shows each report's first line, as plain text of up to 160
+  characters, as soon as the list loads, with no hover needed. The same
+  `reportPreview` field is returned by MCP `list_automation_runs` and
+  `propr automation runs --json`. The API's 404 now says `Automation not
+  found` (REST and MCP).
+- **Navigation, page titles and not-found pages**: opening a task or Inbox
+  item from its list adds a history entry. Back returns to the list at its
+  scroll position, and moving between items with j/k does not add entries.
+  A selected repository has its own address, `/repositories/<owner>/<repo>`
+  (plus `?branch=` when several entries track it), so it survives reload,
+  Back and Forward. Unknown or malformed task, goal, plan and automation ids
+  show one not-found screen ("Task not found", with a link back to the
+  list). Every browser tab reads `<Page> · ProPR`. On short windows the
+  sidebar's Usage block folds to one line, so every item stays reachable.
+  The AI agents page is now **Coding agents**.
+- **Studio and Plans: queue states**: a skipped issue shows **Skipped** and a
+  held one **Blocked** instead of Queued. The footer counts each state
+  separately, the same way the Plans list does, and rows show their
+  prerequisites ("After #N"). Long issue titles wrap to two lines at every
+  width. **Release dependents** is now **Start #12, #13**, and a Skip that
+  leaves dependents waiting reads **Skip (keep #12 waiting)**. Blocked
+  reasons are shown in plain words.
+- **One format for times, counts and repositories; phone fixes**: times use
+  one style across the UI: `5m ago`, `2h ago` or `3d ago` for the last seven
+  days, then a date such as `Nov 2, 2026`, with the full local time in the
+  tooltip. Counts have thousands separators, and completed or merged items
+  are grey everywhere. Repositories show as one chip with the short name and
+  the owner in the tooltip. The LLM Log and MCP Log tables fit the pane, and
+  wide Analytics tables keep the first column pinned. On touch screens,
+  small controls get a 32 px tap area and global search drops its keyboard
+  hints. In a short window the task page uses a one-line header so more of
+  the timeline shows.
+- **Run summary picked when the last message is not one**: when a
+  successful issue run or PR implementation follow-up ends with more than
+  one assistant message and a **Summarization model** is set, one small call
+  to that model picks which of the last six messages is the summary. The
+  completion comment and the commit subject both use the pick. If the model
+  finds none, the comment says "The agent did not provide a summary." and
+  the commit subject falls back to the issue title (`fix(ai): Resolve issue
+  #N - <title>`) or "Apply follow-up changes from PR comment". A timeout
+  (30 seconds), error or invalid answer keeps the last message, as before.
+  The call is logged as execution type `summary-selection`. Without a
+  Summarization model, nothing changes.
+- **One CI-failure comment per commit**: with **Auto CI follow-up** on,
+  another check failing on the same head commit is added to that commit's
+  existing "CI failed" comment instead of posting a new comment, so it
+  starts no second follow-up, and editing that comment does not restart the
+  running one. This is best effort: two failures delivered at almost the
+  same moment can still post two comments, or the later edit can drop the
+  earlier check, and if the comments cannot be read or edited ProPR posts a
+  new comment rather than drop the report. The comment's `Commit:` now links
+  to the commit, and a separate `Run:` line links to the job run.
 
 ### Deprecated
 
@@ -348,12 +662,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Repository filters only reach repositories this instance configures**:
-  `GET /api/pull-requests/:number/readiness` is served only for an enabled
-  configured repository the caller can read on GitHub, so a member can no
-  longer spend the instance's GitHub quota on arbitrary public repositories,
-  and it echoes the configured repository name. The `repository` filter of
-  the stats, cost, review-score, dashboard, task, pull request score, to-do,
-  media, planner draft and goal list routes matches a configured repository
+  the `repository` filter of the stats, cost, review-score, dashboard, task,
+  pull request score, to-do, media, planner draft and goal list routes
+  matches a configured repository
   in any capitalization (`integry/PROPR` finds `integry/propr`) and answers
   404 `REPOSITORY_NOT_ACCESSIBLE` for one that is not configured or that the
   caller cannot read, instead of an empty 200. `all` keeps working.
@@ -381,10 +692,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running loop names itself once (`🔨 Ultrafix cycle 3 of 10`). A cancelled
   check run is no longer reported as failed: one that a newer run of the same
   check replaced (a re-run job, or a newer run of the same workflow; a
-  same-named job of another workflow does not count), or whose name was never
-  expanded (`${{ matrix.platform }}`), is left out,
-  and one nothing replaced shows as cancelled. Check names that still hold
-  `${{` are never listed. When only check counts change, the body is edited
+  same-named job of another workflow does not count) is left out, and one
+  nothing replaced shows as cancelled and keeps the pull request at
+  `needs_attention`. A check cancelled before its matrix expanded
+  (`${{ matrix.platform }}`) counts as replaced only by a newer run of the
+  same workflow, and names that still hold `${{` are never listed. When only check counts change, the body is edited
   at most once every 30 seconds; a change of state is still written at once.
   The review digest leaves out the Validation evidence section when no
   validation command is configured or ran, and acceptance-criterion evidence
@@ -437,6 +749,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the tag, confirms `package.json` has the tag's version, deploys with the
   pinned wrangler and verifies the served bundle. Re-running the failed job of
   a tag run reuses the tag's broken workflow, so it cannot fix that release.
+- **A PR command that could not start now says so**: a `/fix`, `/review`,
+  `/ultrafix`, `/switch` or `/use` comment that failed before any work began
+  (most often because the worker's worktree disk was below
+  `WORKTREE_ADMISSION_RESERVE_BYTES`) used to look ignored on GitHub. Once
+  its queue retries are spent, ProPR now comments `❌ ProPR could not start
+  on …` on the pull request with the cause: for disk pressure, free space on
+  the worker host; otherwise the sanitized error. The comment marks the
+  command as processed, so post it again once the cause is fixed.
+- **Automation agents can reach ProPR's MCP server**: agent containers
+  carrying a run-scoped MCP grant were started on Docker's default bridge,
+  where the default `http://api:4000/api/mcp` does not resolve, so the
+  `propr` tools were silently unavailable. In the bundled Compose stack such
+  containers now join a new API-only network, `<project>_propr-agent-mcp`,
+  which gives no access to Redis or the other services on `propr-net`;
+  recreate the API service when upgrading. Elsewhere, set
+  `PROPR_AGENT_DOCKER_NETWORK`. The worker logs a warning when a grant ends
+  without a single recorded MCP call.
+- **Fork pull requests get CI follow-ups, Ultrafix check handling and
+  auto-merge**: GitHub links no pull request to a fork's head commit, so
+  failed checks on fork PRs were never matched to their PR. ProPR now scans
+  the repository's open pull requests for the head SHA (up to 500).
+- **Epic queue releases the finished issue's labels**: when an epic queue
+  advances, it now removes the trigger and `-processing` labels it applied
+  to the finished issue. It waits only while that issue's worker task is
+  still running, so a stopped run or a PR merged by hand no longer blocks
+  the queue. A run that ends without changes and fails to remove its trigger
+  label is finished later (labels, comment, plan status) by a retry or a
+  daemon sweep every 5 minutes, so the next epic issue still starts.
+- **Releasing a held follow-up whose worktree folder is gone**: when the
+  folder had been deleted and its Git registration was already detached,
+  release was refused with `worktree_holds_unpublished_work` even though the
+  branch was free. Such a release now succeeds.
+- **Repository indexing status no longer sticks at "indexing"**: the status
+  was written after the job was queued, so a quick incremental index that
+  finished in the meantime was shown as still indexing. It is now written
+  first. A request the queue rejects restores the previous status, so the
+  next full reindex isn't turned into a resume.
+- **Web UI fixes**:
+  - Text you select in an automation run report, task detail, goal, Studio
+    or Inbox preview is no longer dropped by a background refresh: Markdown
+    is no longer rebuilt when nothing changed, and a finished run is loaded
+    once.
+  - Analytics → Repository performance counts only queued and running tasks
+    as "In progress". Cancelled, skipped and superseded tasks are under a
+    new **Other** column, and the per-repository success rate uses the same
+    rule as the page header.
+  - **Add skill** shows "Confirmed import commit" only for a full commit
+    that was checked against the repository.
+- **Bot comments say what failed**: "⚠️ Review output was invalid." now
+  says whether the output could not be parsed, was empty, or cited files the
+  pull request does not change, and no longer offers `/fix`; "❌ Review
+  failed." always gives a reason; the parent comment's "Posted N reviews"
+  leaves out failed reviews and marks their links "(failed)". Issue and
+  follow-up failure comments open with a plain cause ("Provider
+  authentication failed.", "The agent process stopped unexpectedly.", "The
+  run timed out.") and a task link, drop "Comment ID: 0" and "Please check
+  the logs", and show an upstream HTML error page as its status
+  (`HTTP 403`). Completion reports no longer show a `<synthetic>` model or
+  zero token and cost lines. New pull request bodies carry one **View task**
+  link instead of the Detailed Logs and Latest Conversation Messages blocks.
+- **Ultrafix no longer ends a running loop as failed**: the sweep that
+  recovers stranded Ultrafix loops could miss a review that was just
+  queued, waiting for agent capacity or in a queue state it did not scan,
+  re-arm the loop and supersede that review, so the loop ended as failed
+  right after CI passed. Each queued step is now recorded and looked up
+  before the sweep acts, and a step that is still live is left alone. The
+  "stopped before reaching its goal" comment for repeated step failures
+  names that cause instead of "Max cycles were exhausted", and the `ultrafix`
+  label is now removed on every failed finish, including "CI did not
+  settle". A step the worker refuses for lack of disk space no longer counts
+  as a failed step: Ultrafix posts one "⏳ Ultrafix is waiting for free disk
+  space on the worker" comment instead of a "could not start" comment per
+  attempt, and retries the same step after 2, 5, 10, 20 and 20 minutes. If
+  every retry is refused, the loop stops with a comment that says the worker
+  had no free disk space and gives the last score and the cycle it stopped
+  in. Other work that pushes a new commit in the meantime replaces the
+  waiting step.
+- **Ultrafix stop comments and multi-model goals**: the "stopped before
+  reaching its goal" comment, including the "CI did not settle" one, now
+  gives the score of the loop's last review (`Last score: 6/10`) instead of
+  `unknown` when the loop stopped after a fix, and says `Stopped in cycle 5
+  of 10.`, the same count the PR status line shows. A leftover `ultrafix`
+  label is removed when the pull request is merged or closed. When a cycle
+  is reviewed by several models, the cycle reaches the goal only if every
+  reviewer meets it without blockers, instead of whichever review was posted
+  last.
+- **Epic queue keeps order around skipped issues**: an issue behind a
+  skipped issue is no longer reported ready ahead of unfinished earlier
+  issues: the skip passes its dependents on to its own prerequisites, so the
+  issue is `waiting` on the unfinished one. In a sequential queue no issue is
+  ready while an earlier one is neither done nor skipped.
+  `GET /api/planner/drafts/{id}/issues` adds an `execution` object per issue
+  (queue `state` including `skipped`, `schedule`, `dependsOn`, `waitingOn`,
+  `waitingOnSkipped`, `skipSatisfiesDependents`; `null` outside the
+  execution), answers 400 for a negative or non-integer `page` or a `limit`
+  below 1, and is now in the OpenAPI spec.
+- **Older image on a newer database says so**: starting a ProPR version
+  older than the one that last migrated its database now stops with "This
+  database was migrated by a newer ProPR version (N newer migrations,
+  latest: <name>). Start that version or newer, or restore a backup taken
+  before the upgrade." and exit code 1, instead of knex's "migration
+  directory is corrupt" error and a stack trace.
+- **MCP results agree with ProPR's own records**: every tool result now
+  writes time fields (`*_at`, `*At`, `timestamp`, `*Time`, `since`, `until`)
+  as ISO 8601 UTC with `Z`, instead of a mix of SQLite text, zone-less ISO
+  strings and epoch milliseconds. `get_goal` and the goal REST routes report
+  a pull request ProPR saw merge as `merged` and no longer count it in
+  `artifactStats.openPullRequests`; `get_task_submission` and
+  `list_task_submissions` report the task's stage once it runs instead of
+  staying `queued`; `list_tasks` fills a missing agent, with the model it
+  ran, from the execution record; and `list_plans` rows carry
+  `pull_requests_truncated` when their short pull request list leaves some
+  out. A `cursor` that `get_pull_request_discussion` did not return fails
+  with `CURSOR_INVALID` (400) instead of `INTERNAL_ERROR`, an unknown pull
+  request number is `NOT_FOUND`, a missing or doubled exactly-one-of argument
+  (`list_visual_previews`, `get_comment_attachment`, `get_agent_activity`) is
+  `INVALID_INPUT`, and an absolute or `..` `path` for `get_task_changes` is
+  `INVALID_PATH`. Summaries count what the tool listed (`3 pull requests in
+  this page.`) rather than another array in the result. `links.ui` points at
+  a `FRONTEND_URL` page, GitHub or the artifact viewer; without
+  `FRONTEND_URL`, results that are not a task, plan, goal or submission omit
+  it instead of linking to the API origin.
+- **MCP activity covers every granted repository**: `get_current_activity`
+  and `get_recent_activity` read up to 100 repositories instead of silently
+  stopping at 20, report `repositoriesNotScanned`, and say in their summary
+  when some were not scanned. `list_pull_requests` still scans 20 per call,
+  but only repositories in the grant count towards them, and
+  `nextRepositoryOffset` (passed back as `repositoryOffset`) reaches the rest.
+- **MCP results keep numeric token fields**: result redaction no longer
+  drops a field whose name contains `token` when it holds only numbers,
+  booleans or null, so token counts and token settings come back as the
+  REST API returns them. String values under such keys are still removed.
+- **CLI help, responses and settings**: `propr --help` lists every command
+  and subcommand (including `stats`, `pr`, `events`, `setup`, `connect`,
+  `goal attention|continue|wait`, `plan generate|finalize|issues`), `propr
+  help task list` shows that subcommand's help, `-j` works wherever `--json`
+  does, `events` takes `-l` for `--limit` and both `stats` subcommands take
+  `-p, --project`. Help examples name current model ids. An HTML page,
+  non-JSON body or malformed JSON from the remote, including error pages,
+  now fails with "The remote did not return a ProPR API response" and exit
+  code 1 instead of being read as data. `propr task get` on an unknown id
+  prints "Task not found" and exits 1. `propr login` checks the token
+  against `/api/auth/user` when a remote is set, and does not save a token
+  the remote rejects. `plan list` takes `--limit` (up to 100) and
+  `--offset` and prints the next-page command; `repo list` gains a **PR
+  title status** column; `remote-status` shows indexing and no longer
+  crashes on a partial response. `propr setting get` and `propr setting
+  update` now handle `agent_run_usage_pause_percent` (50-100).
+  `find_setting` ignores accents, matches plurals, finds the token-outlier,
+  usage-pause, pause-when-unproductive, held follow-up and extension library
+  settings, and returns nothing for a query in a script no setting uses.
 
 ### Security
 
@@ -447,9 +910,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a guard that matches such extglobs as literal text: `vendor/picomatch`
   (4.0.7, for `vite`, `vitest`, `tinyglobby` and the other `picomatch@4`
   users) and `vendor/picomatch-v2` (2.3.2, for `micromatch`, `anymatch` and
-  `readdirp`, which `fast-glob`, Repomix and `chokidar` use). The runtime and
+  `readdirp`, which `fast-glob`, Repomix and `chokidar` use). Both builds also
+  remove backslashes in a single pass, so a pattern with many unclosed `[`
+  no longer takes time that grows with the square of its length. The runtime and
   desktop packaging audits pass again without an audit exception; see
   [dependency audit exceptions](docs/dependency-audit-exceptions.md).
+- **hono and `@hono/node-server` advisories**: `hono` moves from 4.13.12 to
+  4.13.18 and `@hono/node-server`, which the MCP SDK uses, from 2.1.5 to
+  2.1.8, past advisories published against the earlier versions.
 
 ## [0.9.1] - 2026-11-01
 
@@ -1593,7 +2061,8 @@ ProPR 0.8.15 is the first public release.
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
-[Unreleased]: https://github.com/integry/propr/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/integry/propr/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/integry/propr/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/integry/propr/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/integry/propr/compare/v0.8.15...v0.9.0
 [0.8.15]: https://github.com/integry/propr/compare/v0.8.14...v0.8.15
