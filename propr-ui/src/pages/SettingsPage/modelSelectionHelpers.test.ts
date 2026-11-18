@@ -31,6 +31,22 @@ describe('Claude model recommendations', () => {
     }
   });
 
+  it('recommends GPT-6.2 Astra instead of the legacy GPT-6 Astra for planning and review', () => {
+    const agents = [{
+      alias: 'codex',
+      enabled: true,
+      supportedModels: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.2-sol', 'gpt-6.2-astra'],
+    }];
+
+    for (const options of [buildPlanGenerationOptions(agents), buildPrReviewOptions(agents)]) {
+      expect(options.find(option => option.value === 'codex:gpt-6.2-astra')?.isRecommended).toBe(true);
+      expect(options.find(option => option.value === 'codex:gpt-6-astra')?.isRecommended).toBe(false);
+      expect(options.find(option => option.value === 'codex:gpt-6.2-sol')?.isRecommended).toBe(false);
+      expect(options.find(option => option.value === 'codex:gpt-6.1-sol')?.isRecommended).toBe(false);
+      expect(options[0]?.value).toBe('codex:gpt-6.2-astra');
+    }
+  });
+
   it('recommends Haiku 5.5 instead of Haiku 4.5 for lightweight work', () => {
     const agents = [{
       alias: 'claude',

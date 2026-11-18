@@ -159,6 +159,21 @@ describe('provider API pricing', () => {
     assert.ok(Math.abs(cost - 0.00072) < 1e-12);
   });
 
+  test('uses the OpenRouter list rates for GPT-6.2 Astra and GPT-6.2 Sol', () => {
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6.2-astra'), {
+      prompt: 8 / 1_000_000,
+      completion: 40 / 1_000_000,
+      cacheCreation: 10 / 1_000_000,
+      cacheRead: 0.4 / 1_000_000,
+    });
+    assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6.2-sol'), {
+      prompt: 2 / 1_000_000,
+      completion: 10 / 1_000_000,
+      cacheCreation: 2.5 / 1_000_000,
+      cacheRead: 0.1 / 1_000_000,
+    });
+  });
+
   test('uses the published GPT-6 Astra API and cache rates', () => {
     assert.deepStrictEqual(getOfficialModelPricing('openai/gpt-6-astra'), {
       prompt: 10 / 1_000_000,
@@ -211,6 +226,7 @@ describe('provider API pricing', () => {
   test('preserves Sol-specific cached-read costs through model resolution', async () => {
     // Standard short-context pricing: https://developers.openai.com/api/docs/pricing
     for (const [model, expectedCost] of [
+      ['gpt-6.2-sol', 0.023],
       ['gpt-6.1-sol', 0.023],
       ['gpt-6.1-terra', 0.0115],
       ['gpt-6-sol', 0.028],

@@ -56,13 +56,18 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 ];
 
 // Codex (OpenAI) models - availability depends on account type (ChatGPT login vs API key)
-// Recommended: gpt-6-astra (default), gpt-6.1-sol (balanced), gpt-6.1-terra (lower cost), gpt-6-luna (fast/low-cost)
+// Recommended: gpt-6.2-astra (default), gpt-6.2-sol (balanced), gpt-6.1-terra (lower cost), gpt-6-luna (fast/low-cost)
+// GPT-6.2 Astra and Sol are not in the Codex CLI 0.169.0 bundled catalog, but
+// signed-in accounts take the model list from the server and run them on 0.169.0.
 export const CODEX_MODELS: ModelInfo[] = [
-  { id: 'gpt-6-astra', name: 'GPT-6 Astra', shortName: 'GPT-6 Astra', shortAlias: 'astra', githubLabel: 'llm-codex-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-astra', minAgentVersion: '0.153.1' },
-  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', shortName: 'GPT-6.1 Sol', shortAlias: 'gpt61-sol', githubLabel: 'llm-codex-gpt61-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.1-sol', minAgentVersion: '0.153.0' },
+  { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', shortName: 'GPT-6.2 Astra', shortAlias: 'astra', githubLabel: 'llm-codex-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-astra', minAgentVersion: '0.169.0' },
+  { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', shortName: 'GPT-6.2 Sol', shortAlias: 'gpt62-sol', githubLabel: 'llm-codex-gpt62-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-sol', minAgentVersion: '0.169.0' },
   { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', shortName: 'GPT-6.1 Terra', shortAlias: 'gpt61-terra', githubLabel: 'llm-codex-gpt61-terra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.1-terra', minAgentVersion: '0.165.0' },
-  { id: 'gpt-6-sol', name: 'GPT-6 Sol', shortName: 'GPT-6 Sol', shortAlias: 'gpt6-sol', githubLabel: 'llm-codex-gpt6-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-sol', minAgentVersion: '0.155.0' },
   { id: 'gpt-6-luna', name: 'GPT-6 Luna', shortName: 'GPT-6 Luna', shortAlias: 'gpt6-luna', githubLabel: 'llm-codex-gpt6-luna', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-luna', minAgentVersion: '0.155.0' },
+  // Superseded by GPT-6.2 Astra and GPT-6.2 Sol; legacy entries that stay selectable
+  { id: 'gpt-6-astra', name: 'GPT-6 Astra', shortName: 'GPT-6 Astra', shortAlias: 'gpt6-astra', githubLabel: 'llm-codex-gpt6-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-astra', minAgentVersion: '0.153.1' },
+  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', shortName: 'GPT-6.1 Sol', shortAlias: 'gpt61-sol', githubLabel: 'llm-codex-gpt61-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.1-sol', minAgentVersion: '0.153.0' },
+  { id: 'gpt-6-sol', name: 'GPT-6 Sol', shortName: 'GPT-6 Sol', shortAlias: 'gpt6-sol', githubLabel: 'llm-codex-gpt6-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6-sol', minAgentVersion: '0.155.0' },
   { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', shortName: 'GPT-5.6 Sol', shortAlias: 'gpt56-sol', githubLabel: 'llm-codex-gpt56-sol', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-sol', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', shortName: 'GPT-5.6 Terra', shortAlias: 'gpt56-terra', githubLabel: 'llm-codex-gpt56-terra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-terra', minAgentVersion: '0.144.0' },
   { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', shortName: 'GPT-5.6 Luna', shortAlias: 'gpt56-luna', githubLabel: 'llm-codex-gpt56-luna', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-5.6-luna', minAgentVersion: '0.144.0' },
