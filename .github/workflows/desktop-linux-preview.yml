@@ -26,6 +26,32 @@ on:
         description: Stage only - propr/agent:<source SHA>@sha256:<digest> published linux/amd64 managed-agent image
         required: false
         type: string
+  # Release Rollout (release-rollout.yml) calls stage-draft for the release tag
+  # commit with the runtime images it just published or found. The jobs and
+  # their permissions are the same as for a manual dispatch; no secret is passed.
+  workflow_call:
+    inputs:
+      operation:
+        description: stage-draft (the only operation)
+        required: false
+        type: string
+        default: stage-draft
+      source_revision:
+        description: Full lowercase commit SHA already reachable from main
+        required: true
+        type: string
+      runtime_app_image:
+        description: propr/app:<source SHA>@sha256:<digest> published multi-arch image
+        required: true
+        type: string
+      runtime_ui_image:
+        description: propr/ui:<source SHA>@sha256:<digest> published multi-arch image
+        required: true
+        type: string
+      runtime_agent_image:
+        description: propr/agent:<source SHA>@sha256:<digest> published linux/amd64 managed-agent image
+        required: true
+        type: string
 
 env:
   PROPR_DESKTOP_GITHUB_CLIENT_ID: ${{ vars.PROPR_DESKTOP_GITHUB_CLIENT_ID }}

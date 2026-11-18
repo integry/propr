@@ -6,7 +6,8 @@
 // checks below run before and independently of any source-revision code.
 // Nothing here writes to a registry, npm, a release, or any remote.
 //
-//   trust         validate manual main dispatch, exact inputs and ancestry; write
+//   trust         validate manual main dispatch (or the main Release Rollout),
+//                 exact inputs and ancestry; write
 //                 the schema-v1 preview input JSON
 //   source-ready  validate the exact clean source checkout and pin its
 //                 origin/main to the trusted workflow commit
@@ -24,6 +25,9 @@ const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = 'integry/propr';
 const CANONICAL_ORIGINS = ['https://github.com/integry/propr', 'https://github.com/integry/propr.git'];
 const IMAGES = ['app', 'ui', 'agent'];
+// Release Rollout calls this workflow; its automatic runs are workflow_run
+// events and are trusted only from the reviewed main copy of that workflow.
+export const RELEASE_ROLLOUT_WORKFLOW_REF = `${REPOSITORY}/.github/workflows/release-rollout.yml@refs/heads/main`;
 
 const git = (root, args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const isAncestor = (root, ancestor, descendant) =>
@@ -41,9 +45,10 @@ const requireCanonicalCheckout = (root, head, label) => {
   if (git(root, ['rev-parse', 'HEAD']) !== head) throw new Error(`${label} checkout HEAD does not match ${head}`);
 };
 
-export function validateDispatch({ eventName, ref, repository, trustedMain }) {
-  if (eventName !== 'workflow_dispatch' || ref !== 'refs/heads/main') {
-    throw new Error('Preview CLI preparation must be a manual workflow_dispatch from refs/heads/main');
+export function validateDispatch({ eventName, ref, repository, trustedMain, workflowRef }) {
+  const rollout = eventName === 'workflow_run' && workflowRef === RELEASE_ROLLOUT_WORKFLOW_REF;
+  if ((eventName !== 'workflow_dispatch' && !rollout) || ref !== 'refs/heads/main') {
+    throw new Error('Preview CLI preparation must be a manual workflow_dispatch, or the main Release Rollout, from refs/heads/main');
   }
   if (repository !== REPOSITORY) throw new Error(`Preview CLI preparation must run in ${REPOSITORY}`);
   return requireSha(trustedMain, 'Trusted main (workflow run commit)');
@@ -55,8 +60,8 @@ export function buildPreviewInput({ sourceRevision, app, ui, agent }) {
   return validatePreviewInput({ schemaVersion: 1, repository: REPOSITORY, sourceRevision, images: { app, ui, agent } });
 }
 
-export function trust({ eventName, ref, repository, trustedMain, sourceRevision, app, ui, agent, root, output, githubOutput }) {
-  validateDispatch({ eventName, ref, repository, trustedMain });
+export function trust({ eventName, ref, repository, trustedMain, workflowRef, sourceRevision, app, ui, agent, root, output, githubOutput }) {
+  validateDispatch({ eventName, ref, repository, trustedMain, workflowRef });
   const input = buildPreviewInput({ sourceRevision, app, ui, agent });
   requireCanonicalCheckout(root, trustedMain, 'Trusted main');
   if (git(root, ['rev-parse', '--is-shallow-repository']) !== 'false') throw new Error('Trusted main checkout must have full history');
@@ -174,6 +179,7 @@ const main = () => {
   if (command === 'trust') {
     trust({
       eventName: args.event, ref: args.ref, repository: args.repository, trustedMain: args['trusted-main'],
+      workflowRef: args['workflow-ref'],
       sourceRevision: args['source-revision'], app: args['app-image'], ui: args['ui-image'], agent: args['agent-image'],
       root: resolve(args.root), output: args.output, githubOutput: args['github-output'],
     });

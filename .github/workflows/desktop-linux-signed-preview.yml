@@ -22,6 +22,39 @@ on:
         description: Publish only - successful signing run whose exact installed RPM acceptance evidence is required
         required: false
         type: string
+  # Release Rollout (release-rollout.yml) calls sign-draft and then
+  # publish-draft for the release tag commit, each with its own run id as
+  # unsigned_run_id / signing_run_id: the stage and signing jobs ran earlier in
+  # that same run. The identity job and publish-draft accept that only for the
+  # currently executing run of the reviewed main release-rollout.yml
+  # (apps/desktop/scripts/release-rollout-run.mjs). Jobs, permissions and both
+  # protected environments are unchanged; only the two signing credentials the
+  # protected sign job already reads are passed through.
+  workflow_call:
+    inputs:
+      operation:
+        description: sign-draft or publish-draft (verify-key stays a manual dispatch)
+        required: true
+        type: string
+      source_revision:
+        description: Frozen full source SHA of the unsigned preview
+        required: true
+        type: string
+      unsigned_run_id:
+        description: Sign only - the run that staged the unsigned bundle
+        required: false
+        type: string
+        default: ''
+      signing_run_id:
+        description: Publish only - the run that signed and accepted the bundle
+        required: false
+        type: string
+        default: ''
+    secrets:
+      PROPR_DESKTOP_RPM_PRIVATE_KEY:
+        required: false
+      PROPR_DESKTOP_RPM_PASSPHRASE:
+        required: false
 
 permissions:
   contents: read
@@ -55,6 +88,8 @@ jobs:
           UNSIGNED_RUN_ID: ${{ inputs.unsigned_run_id }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]
@@ -68,8 +103,15 @@ jobs:
             gh api "repos/$REPOSITORY/actions/runs/$UNSIGNED_RUN_ID" > "$RUNNER_TEMP/unsigned-run.json"
             node --input-type=module - <<'NODE'
           import { readFileSync } from 'node:fs';
+          import { isCurrentReleaseRolloutRun } from './apps/desktop/scripts/release-rollout-run.mjs';
           const run = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/unsigned-run.json`));
-          if (String(run.id) !== process.env.UNSIGNED_RUN_ID || run.event !== 'workflow_dispatch'
+          const { UNSIGNED_RUN_ID: runId, CURRENT_RUN_ID: currentRunId, WORKFLOW_REF: workflowRef, REPOSITORY: repository } = process.env;
+          if (runId === currentRunId) {
+            // Release Rollout staged the unsigned bundle earlier in this run.
+            if (!isCurrentReleaseRolloutRun(run, { runId, currentRunId, workflowRef, repository })) {
+              throw new Error('Only the reviewed main Release Rollout run may sign a bundle it staged itself');
+            }
+          } else if (String(run.id) !== process.env.UNSIGNED_RUN_ID || run.event !== 'workflow_dispatch'
             || run.path !== '.github/workflows/desktop-linux-preview.yml'
             || run.head_branch !== 'main' || run.conclusion !== 'success'
             || run.repository.full_name !== process.env.REPOSITORY) {

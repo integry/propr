@@ -115,6 +115,18 @@ only `contents: read` on linux/amd64 with Node 22 and the pinned `regctl`
 v0.11.5 installer; it has no environment, secret or publication step and keeps
 `GITHUB_REF`/`GITHUB_SHA` unchanged for the helper's own checks.
 
+For a release, the **Release Rollout** workflow (`.github/workflows/release-rollout.yml`)
+calls this workflow (`workflow_call`) with the release tag commit and the three
+references it published or found. The run then has the rollout's event:
+`workflow_dispatch` when started by hand, or `workflow_run` when it followed a
+successful Docker Images tag run. Both helpers accept `workflow_run` only when
+the run's own `workflow_ref` (`GITHUB_WORKFLOW_REF`) is
+`integry/propr/.github/workflows/release-rollout.yml@refs/heads/main`. Every other
+gate is the same. The source revision's own `preview-package.mjs` performs that
+check too, so an automatic run works only for tags that contain it. For older
+tags, start Release Rollout by hand. Nothing is published, so a re-run prepares
+another run-specific artifact.
+
 After the build, the helper requires exactly one completed
 `dist-publish/preview/<version>/` directory containing only the tarball,
 `manifest.json`, `provenance.json` and a matching `SHA256SUMS` that bind the

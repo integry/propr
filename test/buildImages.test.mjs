@@ -19,6 +19,8 @@ const FULL_SHA = '1234567890abcdef1234567890abcdef12345678';
 const DIGEST_A = `sha256:${'a'.repeat(64)}`;
 const DIGEST_B = `sha256:${'b'.repeat(64)}`;
 const IMAGE_REPOSITORY = 'registry.example/propr/app';
+// app and ui releases use release-<sha>; the bare SHA tag is the preview's.
+const RELEASE_COMMIT_TAG = `release-${FULL_SHA}`;
 const fixtures = [];
 
 const DOCKER_MOCK = String.raw`#!/usr/bin/env node
@@ -184,7 +186,7 @@ describe('build-images publication reconciliation', () => {
 
     assert.equal(result.status, 0, result.stderr);
     const state = readState(root);
-    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], DIGEST_A);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], DIGEST_A);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_A);
     assert.ok(readDockerLog(root).some(args =>
       args.includes('--format') && args.includes('{{json .Manifest.Digest}}')
@@ -192,7 +194,7 @@ describe('build-images publication reconciliation', () => {
   });
 
   test('uses an existing full commit artifact to complete a partial publication', () => {
-    const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
+    const shaRef = `${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`;
     const root = createFixture({ [shaRef]: DIGEST_B });
     const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
 
@@ -213,7 +215,7 @@ describe('build-images publication reconciliation', () => {
     assert.equal(result.status, 0, result.stderr);
     const state = readState(root);
     assert.equal(state.digests[candidateRef], DIGEST_B);
-    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], DIGEST_B);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], DIGEST_B);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_B);
     assert.equal(readDockerLog(root).some(args => args[0] === 'push'), false);
     assert.match(result.stdout, /keeping previously staged reconciliation artifact/);
@@ -227,11 +229,11 @@ describe('build-images publication reconciliation', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Existing immutable image tags disagree/);
     assert.equal(readState(root).digests[versionRef], DIGEST_B);
-    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
+    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], undefined);
   });
 
   test('refuses an immutable version conflict after confirming the commit artifact', () => {
-    const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
+    const shaRef = `${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`;
     const versionRef = `${IMAGE_REPOSITORY}:1.2.3`;
     const root = createFixture({ [shaRef]: DIGEST_A, [versionRef]: DIGEST_B });
     const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
@@ -244,7 +246,7 @@ describe('build-images publication reconciliation', () => {
   test('preflights every selected image before publishing any consumer tag', () => {
     const uiRepository = 'registry.example/propr/ui';
     const conflictingUiVersion = `${uiRepository}:1.2.3`;
-    const conflictingUiSha = `${uiRepository}:${FULL_SHA}`;
+    const conflictingUiSha = `${uiRepository}:${RELEASE_COMMIT_TAG}`;
     const root = createFixture({
       [conflictingUiVersion]: DIGEST_B,
       [conflictingUiSha]: DIGEST_A,
@@ -254,7 +256,7 @@ describe('build-images publication reconciliation', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Existing immutable image tags disagree/);
     const state = readState(root);
-    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], undefined);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
     assert.equal(state.digests[conflictingUiVersion], DIGEST_B);
     assert.deepEqual(
@@ -277,7 +279,7 @@ describe('build-images publication reconciliation', () => {
     assert.equal(result.status, 0, result.stderr);
     const state = readState(root);
     assert.equal(state.digests[candidateRef], DIGEST_B);
-    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], DIGEST_A);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], DIGEST_A);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_A);
     const publicationSources = readDockerLog(root)
       .filter(args => args[0] === 'buildx' && args[1] === 'imagetools' && args[2] === 'create')
@@ -289,7 +291,7 @@ describe('build-images publication reconciliation', () => {
   });
 
   test('does not treat registry authorization failures as missing manifests', () => {
-    const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
+    const shaRef = `${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`;
     const root = createFixture();
     const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app'], {
       AUTH_ERROR_REF: shaRef,
@@ -328,14 +330,14 @@ describe('build-images publication reconciliation', () => {
     assert.ok(build);
     const buildTags = build.flatMap((arg, index) => arg === '-t' ? [build[index + 1]] : []);
     assert.deepEqual(buildTags, [`${IMAGE_REPOSITORY}:reconcile-${FULL_SHA}`]);
-    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], DIGEST_A);
+    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], DIGEST_A);
     assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_A);
   });
 
   test('native push preflights every selected image before publishing any consumer tag', () => {
     const uiRepository = 'registry.example/propr/ui';
     const conflictingUiVersion = `${uiRepository}:1.2.3`;
-    const conflictingUiSha = `${uiRepository}:${FULL_SHA}`;
+    const conflictingUiSha = `${uiRepository}:${RELEASE_COMMIT_TAG}`;
     const root = createFixture({
       [conflictingUiVersion]: DIGEST_B,
       [conflictingUiSha]: DIGEST_A,
@@ -345,7 +347,7 @@ describe('build-images publication reconciliation', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Existing immutable image tags disagree/);
     const state = readState(root);
-    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], undefined);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
     assert.equal(state.digests[conflictingUiVersion], DIGEST_B);
     assert.deepEqual(
@@ -360,7 +362,7 @@ describe('build-images publication reconciliation', () => {
   test('multi-platform push stages every selected image before global preflight', () => {
     const uiRepository = 'registry.example/propr/ui';
     const conflictingUiVersion = `${uiRepository}:1.2.3`;
-    const conflictingUiSha = `${uiRepository}:${FULL_SHA}`;
+    const conflictingUiSha = `${uiRepository}:${RELEASE_COMMIT_TAG}`;
     const root = createFixture({
       [conflictingUiVersion]: DIGEST_B,
       [conflictingUiSha]: DIGEST_A,
@@ -377,7 +379,7 @@ describe('build-images publication reconciliation', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Existing immutable image tags disagree/);
     const state = readState(root);
-    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], undefined);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
     assert.equal(state.digests[conflictingUiVersion], DIGEST_B);
     const dockerLog = readDockerLog(root);
@@ -393,7 +395,7 @@ describe('build-images publication reconciliation', () => {
 
   test('promotes latest only from matching immutable version and full-SHA tags', () => {
     const versionRef = `${IMAGE_REPOSITORY}:1.2.3`;
-    const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
+    const shaRef = `${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`;
     const latestRef = `${IMAGE_REPOSITORY}:latest`;
     const root = createFixture({ [versionRef]: DIGEST_A, [shaRef]: DIGEST_A, [latestRef]: DIGEST_B });
     const result = runBuild(root, ['--promote-latest', '--dockerhub', '--only', 'app']);
@@ -407,7 +409,7 @@ describe('build-images publication reconciliation', () => {
 
   test('leaves latest unchanged when immutable version and commit tags disagree', () => {
     const versionRef = `${IMAGE_REPOSITORY}:1.2.3`;
-    const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
+    const shaRef = `${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`;
     const latestRef = `${IMAGE_REPOSITORY}:latest`;
     const root = createFixture({ [versionRef]: DIGEST_A, [shaRef]: DIGEST_B, [latestRef]: DIGEST_B });
     const result = runBuild(root, ['--promote-latest', '--dockerhub', '--only', 'app']);
@@ -421,7 +423,7 @@ describe('build-images publication reconciliation', () => {
     const dockerLatest = `${IMAGE_REPOSITORY}:latest`;
     const root = createFixture({
       [`${IMAGE_REPOSITORY}:1.2.3`]: DIGEST_A,
-      [`${IMAGE_REPOSITORY}:${FULL_SHA}`]: DIGEST_A,
+      [`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`]: DIGEST_A,
       [dockerLatest]: DIGEST_B,
     });
     const result = runBuild(root, ['--promote-latest', '--only', 'app']);
@@ -432,6 +434,55 @@ describe('build-images publication reconciliation', () => {
       readDockerLog(root).some(args => args.some(arg => String(arg).includes('ghcr'))),
       false,
     );
+  });
+
+  test('a release never writes the bare full-SHA tag of app or ui', () => {
+    const uiRepository = 'registry.example/propr/ui';
+    const root = createFixture();
+    const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app,ui']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = readState(root);
+    for (const repository of [IMAGE_REPOSITORY, uiRepository]) {
+      assert.equal(state.digests[`${repository}:${RELEASE_COMMIT_TAG}`], DIGEST_A);
+      assert.equal(state.digests[`${repository}:1.2.3`], DIGEST_A);
+      assert.equal(state.digests[`${repository}:${FULL_SHA}`], undefined);
+    }
+    assert.equal(readDockerLog(root).some(args => args.includes(`${IMAGE_REPOSITORY}:${FULL_SHA}`)
+      || args.includes(`${uiRepository}:${FULL_SHA}`)), false);
+  });
+
+  test('a two-architecture preview manifest under the bare SHA tag does not affect a release', () => {
+    const previewRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
+    const root = createFixture({ [previewRef]: DIGEST_B });
+    const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = readState(root);
+    assert.equal(state.digests[previewRef], DIGEST_B);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_A);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`], DIGEST_A);
+    assert.doesNotMatch(result.stdout, /reusing existing immutable artifact/);
+  });
+
+  test('a release keeps the bare full-SHA tag for the managed agent, docs, and launcher', () => {
+    const root = createFixture();
+    const result = runBuild(root, ['--only', 'docs']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const build = readDockerLog(root).find(args => args[0] === 'build');
+    const tags = build.flatMap((arg, index) => arg === '-t' ? [build[index + 1]] : []);
+    assert.deepEqual(tags, ['registry.example/propr/docs:1.2.3', `registry.example/propr/docs:${FULL_SHA}`]);
+  });
+
+  test('a release builds app with the version and release commit tags only', () => {
+    const root = createFixture();
+    const result = runBuild(root, ['--only', 'app']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const build = readDockerLog(root).find(args => args[0] === 'build');
+    const tags = build.flatMap((arg, index) => arg === '-t' ? [build[index + 1]] : []);
+    assert.deepEqual(tags, [`${IMAGE_REPOSITORY}:1.2.3`, `${IMAGE_REPOSITORY}:${RELEASE_COMMIT_TAG}`]);
   });
 
   test('rejects the removed GHCR selector before invoking Docker', () => {

@@ -90,7 +90,26 @@ Most pull requests in this repository are opened by ProPR itself, from branches 
 
 ## Releases
 
-Before a release is tagged, `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify` checks that the release metadata is consistent. Pushing the `v<version>` tag then runs the **Docker Images** workflow (`.github/workflows/docker-images.yml`), which publishes the images and the npm package, creates the GitHub release and [deploys the hosted UI](https://docs.propr.dev/docs/operations/hosted-ui-release). The desktop preview pre-releases, demo.propr.dev and the site are updated after it.
+Before a release is tagged, `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify` checks that the release metadata is consistent. Pushing the `v<version>` tag then runs the **Docker Images** workflow (`.github/workflows/docker-images.yml`), which publishes the images and the npm package, creates the GitHub release and [deploys the hosted UI](https://docs.propr.dev/docs/operations/hosted-ui-release). Release Rollout then builds the desktop preview pre-releases and the preview CLI bundle (below); demo.propr.dev and the site are updated after it.
+
+### Desktop previews and the preview CLI bundle
+
+When Docker Images succeeds for the tag push, the **Release Rollout** workflow (`.github/workflows/release-rollout.yml`) starts on its own. To start it by hand, for example after a manual Docker Images run or to re-run a tag:
+
+```bash
+gh workflow run release-rollout.yml --ref main -f release_tag=v<version>
+```
+
+It uses the tag commit as the source revision and runs the steps that used to be separate dispatches, in order, passing each output (image digests, run ids) to the next:
+
+1. Preview Runtime Images `publish-agent`, then `publish` (the `linux/amd64` managed agent, then the two-architecture app and UI images).
+2. In parallel: Desktop Linux Preview Release `stage-draft`, then Desktop Linux Authenticated Preview `sign-draft` and `publish-draft`; the Desktop macOS Preview Release; and the Preview CLI Bundle for ProPR Hosted.
+
+Each step calls the existing workflow, so it waits at the same protected environments for the same reviewers: `desktop-linux-preview-runtime-publication`, `desktop-linux-rpm-signing`, `desktop-linux-preview-publication` and `desktop-macos-preview-publication`. The run summary starts with the plan and ends with one line per step.
+
+Re-running for a tag is safe. The first job finds the runtime images and published preview pre-releases that already exist for the tag commit, skips those steps and passes their digests on. To resume a run that stopped part-way (a rejected approval, a flaky runner), re-run its failed jobs rather than starting a new run: a new run rebuilds the desktop packages, and staging refuses a draft whose bytes differ. The single-step manual dispatches described in [`apps/desktop/README.md`](../apps/desktop/README.md) and [`packages/cli/scripts/preview-package.md`](../packages/cli/scripts/preview-package.md) still work.
+
+A release tags its linux/amd64-only `propr/app` and `propr/ui` images `<version>` and `release-<commit SHA>`, not the bare commit SHA. `propr/app:<commit SHA>` and `propr/ui:<commit SHA>` are the two-architecture manifests that Preview Runtime Images publishes. Releases built before this change (v0.9.2 and earlier) pushed an amd64-only image under the bare SHA; Release Rollout stops for them with that reason, because the tag is immutable.
 
 ### Last step: check where the release is live
 

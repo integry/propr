@@ -18,7 +18,10 @@
 #
 # Tags produced per image:
 #   <registry>/<name>:<version>   — exact version from package.json
-#   <registry>/<name>:<sha>       — full git commit SHA
+#   <registry>/<name>:<sha>       — full git commit SHA (docs, agent, launcher)
+#   <registry>/<name>:release-<sha> — full git commit SHA for app and ui; their
+#                                   bare <sha> tag is reserved for the
+#                                   two-architecture preview runtime publication
 #   <registry>/<name>:latest      — latest, unless PUSH_LATEST=false
 
 set -euo pipefail
@@ -146,7 +149,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --platform) PLATFORM="$2"; shift 2 ;;
     --only) ONLY="$2"; shift 2 ;;
-    -h|--help) sed -n '3,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,25p' "$0"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -195,6 +198,24 @@ repositories_for() {
   printf '%s\n' "$DOCKERHUB_NS/$name"
 }
 
+# The commit-scoped immutable tag of one image. A release builds app and ui for
+# linux/amd64 only, while the desktop previews and the preview CLI bundle need
+# propr/app:<sha> and propr/ui:<sha> to be the two-architecture manifest that
+# Preview Runtime Images publishes (and that shipped runtimes pin as
+# propr/app:<sha>@sha256:...). So a release names its app/ui commit tag
+# release-<sha> and never writes the bare SHA tag of those two repositories.
+# The managed agent is linux/amd64-only in both flows, so it keeps the bare SHA,
+# as do docs and the launcher, which have no preview counterpart. --sha-only
+# (preview preparation) keeps the bare SHA: that is the tag being prepared.
+commit_tag_for() {
+  local name="$1"
+  if ! $SHA_ONLY && [[ "$name" == app || "$name" == ui ]]; then
+    printf 'release-%s\n' "$GIT_SHA"
+  else
+    printf '%s\n' "$GIT_SHA"
+  fi
+}
+
 tags_for() {
   local name="$1" repository
   local -a tags=()
@@ -202,7 +223,7 @@ tags_for() {
     if ! $SHA_ONLY; then
       tags+=("$repository:$VERSION")
     fi
-    tags+=("$repository:$GIT_SHA")
+    tags+=("$repository:$(commit_tag_for "$name")")
     if ! $SHA_ONLY && [[ "$PUSH_LATEST" == "true" ]]; then
       tags+=("$repository:latest")
     fi
@@ -219,7 +240,7 @@ candidate_ref_for() {
 
 immutable_suffixes_for() {
   local name="$1"
-  printf '%s\n' "$GIT_SHA"
+  commit_tag_for "$name"
   if ! $SHA_ONLY; then
     printf '%s\n' "$VERSION"
     [[ "$name" == "agent" ]] && printf '%s\n' "$AGENT_BUNDLE_TAG"
@@ -387,10 +408,11 @@ preflight_candidate_image() {
       echo "Unable to resolve staged artifact digest from $candidate_ref" >&2
       return 1
     fi
-    # The full-SHA tag is the only consumer tag that can safely identify an
-    # artifact for this exact source revision. A version tag on its own may be
-    # a collision from a different commit, so it must never override staging.
-    if authoritative_digest="$(inspect_remote_digest "$repository:$GIT_SHA")"; then
+    # The commit tag (full SHA, or release-<full SHA> for app/ui) is the only
+    # consumer tag that can safely identify an artifact for this exact source
+    # revision. A version tag on its own may be a collision from a different
+    # commit, so it must never override staging.
+    if authoritative_digest="$(inspect_remote_digest "$repository:$(commit_tag_for "$name")")"; then
       if [[ "$authoritative_digest" != "$staged_digest" ]]; then
         echo "  reusing existing immutable artifact for $repository ($authoritative_digest)"
         echo "  staged retry artifact differs ($staged_digest); immutable tags will not be overwritten"
@@ -446,7 +468,7 @@ prepare_latest_promotions() {
     should_build "$name" || continue
     while IFS= read -r repository; do
       version_ref="$repository:$VERSION"
-      sha_ref="$repository:$GIT_SHA"
+      sha_ref="$repository:$(commit_tag_for "$name")"
       target="$repository:latest"
       if ! version_digest="$(inspect_remote_digest "$version_ref")"; then
         echo "Cannot promote latest because immutable release image $version_ref is unavailable" >&2

@@ -193,6 +193,14 @@ Publication uses the existing `desktop-linux-preview-publication` environment an
 `PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED` gate. It never promotes latest
 or stable, and Linux self-update remains disabled.
 
+For a release, the Release Rollout workflow (`release-rollout.yml`) runs these
+steps for the release tag commit in one run. It calls `stage-draft`, then
+`sign-draft` with its own run id as `unsigned_run_id`, then `publish-draft` with
+its own run id as `signing_run_id`. Both steps accept that run id only while the
+reviewed main `release-rollout.yml` run is still in progress and its earlier jobs
+have succeeded. The `desktop-linux-rpm-signing` and
+`desktop-linux-preview-publication` approvals are still required in that run.
+
 Resume failed staging with the same `propr-desktop-linux-signed-<run-id>` artifact.
 Do not re-sign or overwrite an existing candidate: signatures can change bytes.
 Unavailable inputs require a new explicitly selected source/run, not a fallback.
