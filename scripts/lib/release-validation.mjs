@@ -22,6 +22,7 @@ export function validateRelease({
   externalInternalDependencies = [],
   launcherManifest,
   changelog,
+  releaseNotes,
 }) {
   const errors = [];
   const root = packages.find((pkg) => pkg.name === "propr");
@@ -93,6 +94,73 @@ export function validateRelease({
     const heading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m");
     if (!heading.test(changelog)) {
       errors.push(`CHANGELOG.md needs a dated ## [${version}] release section before release validation`);
+    }
+    errors.push(...validateReleaseNotes(version, releaseNotes));
+  }
+
+  return errors;
+}
+
+export const releaseNotesPath = (version) => `release-notes/v${version}.md`;
+
+const RELEASE_NOTES_SECTIONS = ["Highlights", "Upgrade notes"];
+
+// Template markers and unfinished-text conventions that must not reach a
+// published release: TODO/TBD/FIXME/XXX, HTML comments left from a template,
+// <angle-bracket> or {{mustache}} slots, and filler text.
+const RELEASE_NOTES_PLACEHOLDERS = [
+  /\b(?:TODO|TBD|FIXME|XXX)\b/,
+  /<!--/,
+  /<(?!https?:\/\/)[A-Za-z][\w .-]*>/,
+  /\{\{[^}]*\}\}/,
+  /\blorem ipsum\b/i,
+];
+
+export function validateReleaseNotes(version, releaseNotes) {
+  const path = releaseNotesPath(version);
+  if (typeof releaseNotes !== "string") {
+    return [`${path} is missing; write the release summary before release validation`];
+  }
+  if (releaseNotes.trim() === "") {
+    return [`${path} is empty`];
+  }
+
+  const errors = [];
+  const headings = [...releaseNotes.matchAll(/^## +(.+?)\s*$/gm)].map((match) => ({
+    title: match[1],
+    start: match.index,
+    bodyStart: match.index + match[0].length,
+  }));
+  let previousIndex = -1;
+  for (const section of RELEASE_NOTES_SECTIONS) {
+    const index = headings.findIndex((heading) => heading.title === section);
+    if (index === -1) {
+      errors.push(`${path} needs a ## ${section} section`);
+      continue;
+    }
+    if (index < previousIndex) {
+      errors.push(`${path} must put ## ${section} after ## ${RELEASE_NOTES_SECTIONS[0]}`);
+    }
+    previousIndex = index;
+    const end = headings[index + 1]?.start ?? releaseNotes.length;
+    if (releaseNotes.slice(headings[index].bodyStart, end).trim() === "") {
+      errors.push(`${path} has an empty ## ${section} section (write "None." when there is nothing to say)`);
+    }
+  }
+
+  const placeholder = RELEASE_NOTES_PLACEHOLDERS
+    .map((pattern) => releaseNotes.match(pattern))
+    .find(Boolean);
+  if (placeholder) {
+    errors.push(`${path} still contains a placeholder: ${placeholder[0]}`);
+  }
+
+  for (const link of [
+    `https://github.com/integry/propr/blob/v${version}/CHANGELOG.md`,
+    `https://propr.dev/whats-new/${version}/`,
+  ]) {
+    if (!releaseNotes.includes(link)) {
+      errors.push(`${path} must link to ${link}`);
     }
   }
 

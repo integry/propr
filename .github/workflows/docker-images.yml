@@ -401,6 +401,16 @@ jobs:
       contents: write
 
     steps:
+      # The release summary is read from the release tag that validate-release
+      # verified (release-notes/<tag>.md), never from main.
+      - name: Checkout release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.validate-release.outputs.release_tag }}
+          path: release-source
+          sparse-checkout: release-notes
+          persist-credentials: false
+
       - name: Download CLI artifact
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
@@ -415,9 +425,17 @@ jobs:
           if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-artifacts/* --clobber --repo "${{ github.repository }}"
           else
+            NOTES_FILE="release-source/release-notes/$RELEASE_TAG.md"
+            if [ ! -s "$NOTES_FILE" ]; then
+              echo "$NOTES_FILE is missing or empty in $RELEASE_TAG" >&2
+              exit 1
+            fi
+            # --notes-file puts the checked-in summary first; --generate-notes
+            # appends GitHub's "What's Changed" list after it.
             gh release create "$RELEASE_TAG" release-artifacts/* \
               --repo "${{ github.repository }}" \
               --verify-tag \
+              --notes-file "$NOTES_FILE" \
               --generate-notes \
               --title "ProPR $RELEASE_TAG"
           fi

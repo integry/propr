@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every GitHub release starts with a readable summary**: the release body is
+  now the checked-in `release-notes/v<version>.md`, with **Highlights** and
+  **Upgrade notes** sections, followed by GitHub's generated list of merged
+  pull requests. `npm run release:verify` fails when the current version's
+  summary is missing, empty, lacks a section or still has a placeholder. The
+  history starts with `release-notes/v0.9.2.md`.
 - **Bundled Codex CLI 0.170.0, Claude Code 2.1.327 and Antigravity CLI
   1.5.11**: the `propr/agent` image moves from Codex 0.169.0, Claude Code
   2.1.326 and Antigravity CLI 1.5.10. OpenCode stays on 1.19.6 and Mistral

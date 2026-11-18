@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateRelease } from "./lib/release-validation.mjs";
+import { releaseNotesPath, validateRelease } from "./lib/release-validation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const readJson = (path) => JSON.parse(readFileSync(join(root, path), "utf8"));
@@ -56,6 +56,8 @@ const packages = packagePaths.map((path) => {
   };
 });
 
+const notesPath = join(root, releaseNotesPath(rootPackage.version));
+
 const errors = validateRelease({
   tag: process.env.RELEASE_TAG?.trim(),
   expectedVersion: process.env.EXPECTED_VERSION?.trim(),
@@ -64,6 +66,7 @@ const errors = validateRelease({
   externalInternalDependencies: rootPackage.proprRelease?.externalInternalDependencies ?? [],
   launcherManifest: readJson("docker/launcher/manifest.json"),
   changelog: readFileSync(join(root, "CHANGELOG.md"), "utf8"),
+  releaseNotes: existsSync(notesPath) ? readFileSync(notesPath, "utf8") : undefined,
 });
 
 if (errors.length > 0) {

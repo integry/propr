@@ -185,6 +185,13 @@ const PATH_RULES = [
         rule: 'documentation site',
     },
     {
+        // Release summaries. Validate Changes always runs release:verify,
+        // which checks the current version's file.
+        pattern: /^release-notes\/[^/]+\.md$/,
+        surfaces: ['docs'],
+        rule: 'release summary',
+    },
+    {
         pattern: /^media\//,
         surfaces: ['docs'],
         rule: 'reference material',
