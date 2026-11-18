@@ -70,7 +70,7 @@ GitHub's pull request list shows only titles, labels and a check icon, so ProPR 
 | `needs_attention` | `⚠️❻ [3475 by Claude Opus 5.5] …`, with the latest review score (❶ to ❿) when there is one |
 | `ready` | `✅❽ [3510 by Claude Opus 5.5] Apply library extensions automatically…`, with the latest review score when there is one |
 
-The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. The score uses the solid circled digits ❶ to ❿, a white digit on a filled circle that stays readable at title size. A title still showing an older ① to ⑩ or ❶ to ❿ score is recognised and gets the new digit on its next rename, so it never shows two scores. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
+The slot is one emoji, the score beside ⚠️ and ✅, then a single space and the title exactly as it was. The score uses the solid circled digits ❶ to ❿, a white digit on a filled circle that stays readable at title size. A title still showing an older ① to ⑩ or ➀ to ➉ score is recognised and gets the new digit on its next rename, so it never shows two scores. An epic pull request follows the emoji with its progress, and shows a pie circle in place of 🔨 while it is working; see [Epic pull requests](#epic-pull-requests). A `none` pull request has no slot.
 
 Every title change adds a "changed the title" entry to the timeline, so the title changes far less often than the body line:
 

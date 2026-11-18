@@ -10,6 +10,19 @@ export interface PRInfo {
     url: string;
     title: string;
     state: string;
+    /**
+     * Labels already on the pull request when it was found, so a caller that
+     * labels it can skip the ones GitHub already has (#3691).
+     */
+    labels?: string[];
+}
+
+/** Label names from a GitHub pull request payload, whose entries may be strings or objects. */
+function pullRequestLabelNames(labels: ReadonlyArray<{ name?: string | null } | string | null> | null | undefined): string[] {
+    if (!Array.isArray(labels)) return [];
+    return labels
+        .map(label => typeof label === 'string' ? label : label?.name ?? '')
+        .filter(name => name.length > 0);
 }
 
 export interface PRValidationResult {
@@ -68,7 +81,8 @@ export async function validatePRCreation(options: ValidatePRCreationOptions): Pr
                             number: pr.number,
                             url: pr.html_url,
                             title: stripStatusSlot(pr.title),
-                            state: pr.state
+                            state: pr.state,
+                            labels: pullRequestLabelNames(pr.labels)
                         }
                     };
                 }
@@ -113,7 +127,8 @@ export async function validatePRCreation(options: ValidatePRCreationOptions): Pr
                         number: pr.number,
                         url: pr.html_url,
                         title: stripStatusSlot(pr.title),
-                        state: pr.state
+                        state: pr.state,
+                        labels: pullRequestLabelNames(pr.labels)
                     }
                 };
             }

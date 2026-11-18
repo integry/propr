@@ -280,8 +280,8 @@ async function attributedAgentDefinition(definition: StoredAgentDefinition) {
  * A run as clients see it. `reportHash`, `reportNovelty` and `actingMutations`
  * are stored flags; `noChangeReason` derives from them (null when the run
  * produced something or has no flags) so every client shows the same badge.
- * The list form drops the report and carries `reportPreview`, its first
- * meaningful line in plain text, when the run has one.
+ * The list form drops the report and carries `reportPreview`, the first
+ * sentence of its body after the heading in plain text, when the run has one.
  */
 export function publicAutomationRun(run: StoredAgentRun, { includeReport }: { includeReport: boolean }) {
   const snapshot = run.definitionSnapshot ? publicAutomationDefinition(run.definitionSnapshot) : null;

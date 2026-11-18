@@ -11,11 +11,11 @@ splitting and globstar handling that `micromatch` and `fast-glob` rely on.
 
 ## Wiring
 
-npm installs the packed tarball `vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz`
+npm installs the packed tarball `vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz`
 as the nested `node_modules/<consumer>/node_modules/picomatch` of `anymatch`,
 `micromatch` and `readdirp`, through scoped `overrides` in the root
 `package.json`, each
-`{ "picomatch": "file:vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz" }`. The
+`{ "picomatch": "file:vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz" }`. The
 package inside the tarball is still named `picomatch`, so `require('picomatch')`
 from those consumers loads it. `package-lock.json` pins all three nested
 entries by integrity, and the Dockerfiles `COPY vendor` so image installs can
@@ -40,7 +40,7 @@ every lockfile entry that resolves to the tarball:
 
 ```sh
 npm pack ./vendor/picomatch-v2 --pack-destination vendor
-node -e "const fs=require('fs'),c=require('crypto');const t='vendor/picomatch-4.0.8-v2.3.2-extglobguard.1.tgz';const l=JSON.parse(fs.readFileSync('package-lock.json'));const i='sha512-'+c.createHash('sha512').update(fs.readFileSync(t)).digest('base64');for(const e of Object.values(l.packages))if(e.resolved==='file:'+t)e.integrity=i;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2)+'\\n')"
+node -e "const fs=require('fs'),c=require('crypto');const t='vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz';const l=JSON.parse(fs.readFileSync('package-lock.json'));const i='sha512-'+c.createHash('sha512').update(fs.readFileSync(t)).digest('base64');for(const e of Object.values(l.packages))if(e.resolved==='file:'+t)e.integrity=i;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2)+'\\n')"
 npm install
 ```
 
@@ -124,12 +124,22 @@ part of the exported `constants`.
 
 ## Version
 
-`4.0.8-v2.3.2-extglobguard.1` contains the 2.3.2 code but must still sort above
+`4.0.8-v2.3.2-extglobguard.2` contains the 2.3.2 code but must still sort above
 `4.0.7`: npm audit and GitHub dependency review compare the installed
 `picomatch` version against the advisory range `<= 4.0.7` (including
 prereleases) regardless of the major line. The `v2.3.2` prerelease identifier
 records the actual base. The consumers' `^2` ranges are satisfied through the
 overrides, not by the version number.
+
+The `-extglobguard.N` suffix must change whenever the tarball's content changes
+(any edit to this directory, README included). npm only reinstalls a `file:`
+tarball dependency when its version differs from the one already in
+`node_modules`, so a repacked tarball under an unchanged version leaves existing
+checkouts on the old build. Bump `N` in `package.json`, rename the tarball to
+match, and update every reference to the old name (root `package.json`,
+`package-lock.json`, `THIRD_PARTY_LICENSES.md`,
+`test/vendoredPicomatch.test.mjs`, the signed-RPM acceptance files under
+`apps/desktop/scripts/` and `docs/dependency-audit-exceptions.md`).
 
 ## Maintenance
 

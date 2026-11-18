@@ -4,7 +4,7 @@ Third-Party Licenses
 This file lists every third-party package bundled in the Propr Docker images,
 its license, and (where required) the full license text.
 
-Generated: 2026-11-17
+Generated: 2026-11-18
 See NOTICE for a higher-level summary and end-user obligations.
 
 ---
@@ -31,7 +31,7 @@ https://pkgs.alpinelinux.org/packages
 
 ---
 
-## @anthropic-ai/claude-code@2.1.326
+## @anthropic-ai/claude-code@2.1.327
 
 ```
 © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.
@@ -306,9 +306,9 @@ below is bundled in the propr/app image under the stated license.
 
 ```
 "module name","license","repository"
-"@anthropic-ai/claude-code-linux-x64-musl@2.1.326","Custom: https://www.npmjs.com/package/",""
-"@anthropic-ai/claude-code-linux-x64@2.1.326","Custom: https://www.npmjs.com/package/",""
-"@anthropic-ai/claude-code@2.1.326","Custom: https://img.shields.io/badge/Node.js-22",""
+"@anthropic-ai/claude-code-linux-x64-musl@2.1.327","Custom: https://www.npmjs.com/package/",""
+"@anthropic-ai/claude-code-linux-x64@2.1.327","Custom: https://www.npmjs.com/package/",""
+"@anthropic-ai/claude-code@2.1.327","Custom: https://img.shields.io/badge/Node.js-22",""
 "@anthropic-ai/sdk@0.71.2","MIT","https://github.com/anthropics/anthropic-sdk-typescript"
 "@babel/runtime@7.28.4","MIT","https://github.com/babel/babel"
 "@dnd-kit/accessibility@3.1.1","MIT","https://github.com/clauderic/dnd-kit"
@@ -340,8 +340,8 @@ below is bundled in the propr/app image under the stated license.
 "@octokit/request@10.0.8","MIT","https://github.com/octokit/request.js"
 "@octokit/types@14.1.0","MIT","https://github.com/octokit/types.ts"
 "@octokit/types@16.0.0","MIT","https://github.com/octokit/types.ts"
-"@propr/core@0.9.1","Apache-2.0",""
-"@propr/local-setup@0.9.1","Apache-2.0",""
+"@propr/core@0.9.2","Apache-2.0",""
+"@propr/local-setup@0.9.2","Apache-2.0",""
 "@redis/bloom@5.12.1","MIT","https://github.com/redis/node-redis"
 "@redis/client@5.12.1","MIT","https://github.com/redis/node-redis"
 "@redis/json@5.12.1","MIT","https://github.com/redis/node-redis"
@@ -492,14 +492,14 @@ below is bundled in the propr/app image under the stated license.
 "path-to-regexp@8.4.2","MIT","https://github.com/pillarjs/path-to-regexp"
 "pause@0.0.1","MIT*",""
 "pg-connection-string@2.6.2","MIT","https://github.com/brianc/node-postgres"
-"picomatch@4.0.8-extglobguard.1","MIT","https://github.com/micromatch/picomatch"
+"picomatch@4.0.8-extglobguard.2","MIT","https://github.com/micromatch/picomatch"
 "pino-abstract-transport@2.0.0","MIT","https://github.com/pinojs/pino-abstract-transport"
 "pino-pretty@13.0.0","MIT","https://github.com/pinojs/pino-pretty"
 "pino-std-serializers@7.0.0","MIT","https://github.com/pinojs/pino-std-serializers"
 "pino@9.7.0","MIT","https://github.com/pinojs/pino"
 "pretty-ms@9.3.0","MIT","https://github.com/sindresorhus/pretty-ms"
 "process-warning@5.0.0","MIT","https://github.com/fastify/process-warning"
-"propr@0.9.1","UNLICENSED","https://github.com/integry/propr"
+"propr@0.9.2","UNLICENSED","https://github.com/integry/propr"
 "proxy-addr@2.0.8","MIT","https://github.com/jshttp/proxy-addr"
 "pump@3.0.2","MIT","https://github.com/mafintosh/pump"
 "qs@6.16.1","BSD-3-Clause","https://github.com/ljharb/qs"

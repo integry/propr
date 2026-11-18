@@ -27,6 +27,7 @@ import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFa
 import { commentAuthorMayFollowUp, commentSeatConsumed, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
 import { authorizeCommentPluginCommand, discardCommentPluginCommandWriteGrant, resolveCommentPluginCommand, type MatchedPluginCommand, type PluginCommandRun } from '../plugins/pluginCommands.js';
 import { enqueueCommentPluginCommand } from '../plugins/pluginCommandDeliveries.js';
+import { ensurePendingCommentDrain, pendingCommentsRetainedUntil } from './pendingCommentDrain.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -93,7 +94,7 @@ interface PRJobData extends CommentJobData {
 }
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
-interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; onSubmissionAttempt?: (jobId?: string) => void }
+interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; onSubmissionAttempt?: (jobId?: string) => void; correlationId?: string }
 interface EnqueueCommentOptions { onSubmissionAttempt?: (jobId?: string) => void; payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; jobId?: string; pluginCommand?: PluginCommandRun }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
@@ -327,7 +328,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<Com
     const requiresIndependentTakeover = shouldEnqueueIndependentManualTakeover(existingJobs, manualTakeover);
 
     if (existingJobs.length > 0 && !requiresIndependentTakeover) {
-        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, onSubmissionAttempt: config.onSubmissionAttempt });
+        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, onSubmissionAttempt: config.onSubmissionAttempt, correlationId });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return { state: 'batched' };
     }
@@ -447,7 +448,7 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<CommentD
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
     const existingSwitchJob = await checkExistingJob(prNumber, owner, repo);
     if (existingSwitchJob) {
-        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, onSubmissionAttempt: config.onSubmissionAttempt });
+        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, onSubmissionAttempt: config.onSubmissionAttempt, correlationId });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/switch command: existing job found for PR, stored follow-up instructions for batch processing');
         return { state: 'batched' };
     }
@@ -1035,7 +1036,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
-        await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, config as StoreCommentConfig);
+        await storeCommentForBatch(comment, commentAuthor, { eventType, prNumber, owner, repo }, { ...config, correlationId } as StoreCommentConfig);
         correlatedLogger.info({ pullRequestNumber: prNumber, repository: repoFullName, commentId: comment.id }, 'A job for this PR is already active or waiting, stored comment for batch processing');
         return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
     }
@@ -1109,6 +1110,10 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
     config.onSubmissionAttempt?.();
     await redisClient.rpush(pendingCommentsKey, JSON.stringify(pendingComment));
     await redisClient.expire(pendingCommentsKey, 3600);
+    // Stored is not yet accepted: make sure a job will claim the comment. A
+    // failure here fails the delivery, so it is redelivered rather than lost.
+    const pendingRetainedUntil = await pendingCommentsRetainedUntil(redisClient, pendingCommentsKey);
+    await ensurePendingCommentDrain({ owner, repo, prNumber, pendingRetainedUntil }, logger.withCorrelation(config.correlationId ?? generateCorrelationId()));
 }
 
 async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueCommentEvent | PullRequestReviewCommentEvent, repoContext: RepoContext): Promise<PRBranchAndLabels> {

@@ -19,6 +19,7 @@ import type { TaskCompletionParams } from './types.js';
 import { buildWorkNotificationRecap, fullNotificationSummary } from '../notificationRecap.js';
 import { completeProviderReplacement } from '../providerReplacement.js';
 import { blockedRunRecap } from '../blockedRunText.js';
+import { describePostProcessingStepFailure } from '../postProcessingStep.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
   // The agent reported a blocker (`on_blocker: report`): a terminal, non-retryable outcome with nothing published.
@@ -75,8 +76,26 @@ async function markPushFailure(params: TerminalStateParams): Promise<boolean> {
   return true;
 }
 
+/** A successful run whose committed work never became a pull request failed to publish.
+ * It is not "no changes": the comment and the task state name the step that failed. */
+async function markPublicationFailure(params: TerminalStateParams): Promise<boolean> {
+  const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
+  if (!claudeResult?.success || postProcessingResult?.pr || postProcessingResult?.blocked) return false;
+  const failedStep = postProcessingResult?.failedStep ?? (commitResult ? 'pull_request' : undefined);
+  if (!failedStep) return false;
+  const commitResultData = commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null;
+  const message = describePostProcessingStepFailure(failedStep, postProcessingResult?.error);
+  await stateManager.markTaskFailed(taskId, new Error(message), {
+    errorCategory: ErrorCategories.POST_PROCESSING,
+    prResult: { status: 'publication_failed', failedStep, claudeSuccess: true, prCreated: false, commitResult: commitResultData },
+    historyMetadata: { failedStep, commitResult: commitResultData },
+  });
+  return true;
+}
+
 export async function markTaskTerminalState(params: TerminalStateParams): Promise<void> {
   if (await markPushFailure(params)) return;
+  if (await markPublicationFailure(params)) return;
   await markAgentTerminalState(params);
 }
 
