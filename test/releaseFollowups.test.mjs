@@ -80,6 +80,7 @@ describe('release follow-up texts', () => {
 
   test('the site follow-up waits for the release date and both desktop pre-releases', () => {
     assert.match(siteFollowup(facts({}, { publishedAt: undefined })).reason, /no published_at/);
+    assert.match(siteFollowup(facts({}, { publishedAt: undefined, publishedAtUnavailable: 'it is still a draft' })).reason, /no published_at \(it is still a draft\)$/);
     assert.match(siteFollowup(facts({ LINUX_PUBLICATION: 'failure' })).reason, /signed Linux/);
     assert.match(siteFollowup(facts({ MACOS: 'skipped', PLAN_MACOS: 'true' })).reason, /macOS/);
     assert.equal(siteFollowup(facts({ LINUX_PUBLICATION: 'skipped', PLAN_LINUX: 'false' })).ready, true);
@@ -131,10 +132,45 @@ describe('release follow-up texts', () => {
 
   test('published_at comes from the published GitHub release only', async () => {
     const reply = (status, body) => async () => ({ status, ok: status === 200, json: async () => body });
-    assert.equal(await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: reply(200, { draft: false, published_at: 'T' }) }), 'T');
-    assert.equal(await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: reply(200, { draft: true, published_at: null }) }), undefined);
-    assert.equal(await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: reply(404, {}) }), undefined);
+    const url = 'https://api.github.com/repos/integry/propr/releases/tags/v0.9.3';
+    assert.deepEqual(await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: reply(200, { draft: false, published_at: 'T' }) }), { publishedAt: 'T' });
+    assert.deepEqual(await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: reply(200, { draft: true, published_at: null }) }), { unavailable: 'it is still a draft' });
+    assert.deepEqual(await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: reply(404, {}) }), { unavailable: `GET ${url} returned HTTP 404` });
   });
+
+  test('a failed request or an unparsable body is an unavailable published_at, not a rejection', async () => {
+    const refused = async () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }); };
+    const notJson = async () => ({ status: 200, ok: true, json: async () => { throw new SyntaxError('Unexpected token < in JSON'); } });
+    assert.match((await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: refused })).unavailable, /failed: fetch failed \(ECONNRESET\)$/);
+    assert.match((await releasePublishedAt({ releaseTag: 'v0.9.3', fetchImpl: notJson })).unavailable, /failed: Unexpected token < in JSON$/);
+  });
+
+  for (const [name, github] of [
+    ['a connection failure', async () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }); }],
+    ['a body that is not JSON', async () => ({ status: 200, ok: true, json: async () => { throw new SyntaxError('Unexpected token < in JSON'); } })],
+  ]) {
+    test(`prepare still writes the fleet and demo follow-ups and the summary after ${name} on the GitHub release`, async () => {
+      const dir = fixture();
+      const out = join(dir, 'out');
+      const summaryFile = join(dir, 'summary.md');
+      const fetchImpl = async url => (url.startsWith('https://api.github.com/') ? github()
+        : { status: 200, ok: true, text: async () => JSON.stringify({ version: '0.9.2' }) });
+      const printed = [];
+      const items = await prepare({ env: env({ GITHUB_STEP_SUMMARY: summaryFile }), out, fetchImpl, stdout: text => printed.push(text) });
+      assert.deepEqual(items.map(item => [item.key, item.ready]), [['fleet', true], ['site', false], ['demo', true]]);
+      assert.match(items[1].reason, /no published_at \(GET https:\/\/api\.github\.com\/\S+ failed: /);
+      assert.equal(readFileSync(join(out, 'fleet.md'), 'utf8'), `${items[0].body}\n`);
+      assert.equal(readFileSync(join(out, 'demo.md'), 'utf8'), `${items[2].body}\n`);
+      assert.equal(existsSync(join(out, 'site.md')), false);
+      assert.deepEqual(readFileSync(join(out, 'issues.tsv'), 'utf8').split('\n').filter(Boolean).map(line => line.split('\t')[0]),
+        [REPOSITORIES.fleet, REPOSITORIES.demo]);
+      const summary = readFileSync(summaryFile, 'utf8');
+      assert.equal(summary, printed.join(''));
+      assert.match(summary, /not ready: the GitHub release v0\.9\.3 has no published_at \(GET /);
+      assert.match(summary, /is not set, so nothing was filed\. Open each issue below by hand/);
+      assert.ok(summary.includes(items[0].body) && summary.includes(items[2].body));
+    });
+  }
 
   test('prepare writes the bodies, issues.tsv and the summary from the two public reads', async () => {
     const dir = fixture();

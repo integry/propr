@@ -20,6 +20,7 @@
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { describeError } from './lib/release-rollout/http.mjs';
 import { checkStatusJson } from './lib/release-rollout/web.mjs';
 import { TARGETS } from './verify-release-rollout.mjs';
 
@@ -91,9 +92,9 @@ export function fleetFollowup(facts) {
 
 /** The release date and the desktop pre-release tags on propr.dev (integry/propr-site). */
 export function siteFollowup(facts) {
-  const { version, releaseTag, runId, publishedAt, desktopVersion, desktop } = facts;
+  const { version, releaseTag, runId, publishedAt, publishedAtUnavailable, desktopVersion, desktop } = facts;
   const title = `Site: publication date and desktop downloads for ProPR ${version}`;
-  const reason = !publishedAt ? `the GitHub release ${releaseTag} has no published_at`
+  const reason = !publishedAt ? `the GitHub release ${releaseTag} has no published_at${publishedAtUnavailable ? ` (${publishedAtUnavailable})` : ''}`
     : !desktop?.linux?.done ? 'the signed Linux desktop pre-release is not published by this run'
       : !desktop?.macos?.done ? 'the macOS desktop pre-release is not published by this run'
         : undefined;
@@ -200,24 +201,35 @@ export function inputsFromEnv(env) {
   };
 }
 
-/** published_at of the GitHub release, or undefined when it is not a published release. */
+/**
+ * published_at of the GitHub release as `{ publishedAt }`, or `{ unavailable }` with the reason when it
+ * cannot be read (not a published release, an HTTP error, a failed request or a body that is not JSON).
+ * It never rejects, so one unreadable fact does not stop the other follow-ups from being written.
+ */
 export async function releasePublishedAt({ releaseTag, token, fetchImpl = fetch }) {
   const headers = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetchImpl(`https://api.github.com/repos/${SOURCE_REPOSITORY}/releases/tags/${encodeURIComponent(releaseTag)}`, { headers });
-  if (!response.ok) return undefined;
-  const release = await response.json();
-  return release?.draft === false && typeof release.published_at === 'string' ? release.published_at : undefined;
+  const url = `https://api.github.com/repos/${SOURCE_REPOSITORY}/releases/tags/${encodeURIComponent(releaseTag)}`;
+  let release;
+  try {
+    const response = await fetchImpl(url, { headers });
+    if (!response.ok) return { unavailable: `GET ${url} returned HTTP ${response.status}` };
+    release = await response.json();
+  } catch (error) {
+    return { unavailable: `GET ${url} failed: ${describeError(error)}` };
+  }
+  if (release?.draft === false && typeof release.published_at === 'string') return { publishedAt: release.published_at };
+  return { unavailable: release?.draft === true ? 'it is still a draft' : 'the response has no published_at' };
 }
 
 export async function prepare({ env, out, fetchImpl = fetch, stdout = text => process.stdout.write(text) }) {
   if (!out || existsSync(out)) throw new Error('--out must name a new directory');
   const input = inputsFromEnv(env);
-  const [publishedAt, demo] = await Promise.all([
+  const [{ publishedAt, unavailable: publishedAtUnavailable }, demo] = await Promise.all([
     releasePublishedAt({ releaseTag: input.releaseTag, token: env.GITHUB_TOKEN, fetchImpl }),
     checkStatusJson({ version: input.version, fetchImpl, cache: new Map() }, DEMO_TARGET),
   ]);
-  const items = followups({ ...input, publishedAt, demo: { ...demo, deployed: input.demoDeployed } });
+  const items = followups({ ...input, publishedAt, publishedAtUnavailable, demo: { ...demo, deployed: input.demoDeployed } });
   mkdirSync(out, { recursive: true });
   for (const item of items.filter(entry => entry.ready)) writeFileSync(join(out, `${item.key}.md`), `${item.body}\n`);
   writeFileSync(join(out, 'issues.tsv'), issuesTsv(items, out));
