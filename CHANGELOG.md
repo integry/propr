@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every GitHub release starts with a readable summary**: the release body is
+  now the checked-in `release-notes/v<version>.md`, with **Highlights** and
+  **Upgrade notes** sections, followed by GitHub's generated list of merged
+  pull requests. `npm run release:verify` fails when the current version's
+  summary is missing, empty, lacks a section or still has a placeholder. The
+  history starts with `release-notes/v0.9.2.md`.
+
 ## [0.9.2] - 2026-11-18
 
 ### Added

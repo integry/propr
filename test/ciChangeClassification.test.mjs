@@ -146,6 +146,7 @@ describe('path classification', () => {
         assert.deepEqual(selected(classifyPaths(['propr-ui/src/App.tsx'])), ['ui']);
         assert.deepEqual(selected(classifyPaths(['apps/desktop/src/main.ts'])), ['desktop']);
         assert.deepEqual(selected(classifyPaths(['docs/guide.md'])), ['docs']);
+        assert.deepEqual(selected(classifyPaths(['release-notes/v0.9.2.md'])), ['docs']);
         assert.deepEqual(selected(classifyPaths(['src/worker.ts'])), ['core']);
     });
 
