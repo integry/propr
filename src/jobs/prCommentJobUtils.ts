@@ -1,5 +1,6 @@
 import type { PullRequestReference } from './prContinuation.js';
 import { loadOriginalContributionDiscussion } from './prContributionDiscussion.js';
+import { hasQueuedPRCommentPickup } from './prCommentQueuedPickup.js';
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
@@ -410,16 +411,16 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         if (remainingPendingComments > 0) {
             // A user stop ends this attempt, not independent comments waiting behind it.
             // Read after the pending-list lookup so a closure during that await is observed.
+            // A PR job already queued (such as intake's drain job, #3686) claims the list itself,
+            // unless it runs only after the list expires (a distant usage-limit retry).
             const terminalState = await options.stateManager.getTaskState(options.taskId);
-            if (terminalState?.terminalReason === 'cancelled_pr_closed') return;
-
+            if (terminalState?.terminalReason === 'cancelled_pr_closed' || await hasQueuedPRCommentPickup(issueQueue, { repoOwner, repoName, pullRequestNumber }, { redisClient, pendingCommentsKey })) return;
             correlatedLogger.info({ pullRequestNumber, pendingCount: remainingPendingComments }, 'Found pending comments that arrived during processing, queuing follow-up job');
 
             const followUpJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${Date.now()}`;
             await issueQueue.add('processPullRequestComment', {
-                pullRequestNumber, comments: [], repoOwner, repoName,
-                branchName: jobBranchName, llm: jobLlm, correlationId: generateCorrelationId(),
-                reasoningLevel: jobReasoningLevel,
+                pullRequestNumber, comments: [], repoOwner, repoName, branchName: jobBranchName,
+                llm: jobLlm, correlationId: generateCorrelationId(), reasoningLevel: jobReasoningLevel,
             }, { jobId: followUpJobId, delay: 3000 });
 
             correlatedLogger.info({ jobId: followUpJobId, pullRequestNumber }, 'Queued follow-up job for pending comments');

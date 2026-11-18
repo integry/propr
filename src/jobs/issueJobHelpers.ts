@@ -6,8 +6,6 @@ import {
     describePullRequest,
     db,
     getModelShortName,
-    withRetry,
-    retryConfigs,
     MODEL_INFO_MAP,
     buildAgentModelLlmLabel,
     getAgentTypeFromModel,
@@ -28,6 +26,8 @@ import { PR_BODY_MAX_LENGTH, extractAcceptanceCriteria, stripStatusSlot, type Pr
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import { readReviewDigestChanges, recordReviewDigest } from './reviewDigestLazy.js';
 import { taskPageUrl } from './taskPageUrl.js';
+import { addPullRequestProcessingLabels, pullRequestLabelNames } from './pullRequestProcessingLabels.js';
+import type { PostProcessingStep } from './postProcessingStep.js';
 import { isVisualPreviewUploadAuthenticationError, publishPullRequestVisualPreviews } from '../github/visualPreviewAttachments.js';
 
 export type RepoValidation = RepoValidationResult;
@@ -51,6 +51,8 @@ export interface PostProcessingResult {
     pushFailure?: PushFailureRecord;
     /** Set when the agent stopped and reported a blocker (`on_blocker: report`); nothing was committed. */
     blocked?: { explanation: string; uncommittedFiles: string[] };
+    /** The publication step that failed after the agent finished; no pull request was opened. */
+    failedStep?: PostProcessingStep;
 }
 
 type Octokit = {
@@ -222,6 +224,14 @@ function templateBodyLengthBudget(visualPreviewSection: string): number {
     return PR_BODY_MAX_LENGTH - (visualPreviewSection ? visualPreviewSection.length + '\n\n---\n\n'.length : 0);
 }
 
+type CreatedPullRequestResponse = { data: { number: number; html_url: string; title: string; labels?: Array<{ name?: string | null } | string> } };
+
+/** The processing label and model label (for follow-up comments to use the same model) a new PR gets. */
+function pullRequestLabelsFor(issueRef: Pick<IssueJobData, 'agentAlias' | 'modelLabel'>, prLabel: string, modelName: string): string[] {
+    const modelLabel = getPullRequestModelLabel(issueRef, modelName);
+    return modelLabel ? [prLabel, modelLabel] : [prLabel];
+}
+
 export async function createPullRequest(
     octokit: Octokit,
     issueRef: IssueJobData,
@@ -265,8 +275,9 @@ export async function createPullRequest(
     const prBody = withPullRequestStatusBlock(appendVisualPreviewSection(basePrBody, visualPreviewSection), statusBlock);
     const createdTitle = await initialPullRequestTitle(`${issueRef.repoOwner}/${issueRef.repoName}`, prTitle);
 
+    let prResponse: CreatedPullRequestResponse;
     try {
-        const prResponse = await octokit.request<{ data: { number: number; html_url: string; title: string } }>('POST /repos/{owner}/{repo}/pulls', {
+        prResponse = await octokit.request<CreatedPullRequestResponse>('POST /repos/{owner}/{repo}/pulls', {
             owner: issueRef.repoOwner,
             repo: issueRef.repoName,
             title: createdTitle,
@@ -275,73 +286,6 @@ export async function createPullRequest(
             body: prBody,
             draft: false
         });
-
-        correlatedLogger.info({
-            jobId,
-            issueNumber: issueRef.number,
-            prNumber: prResponse.data.number,
-            prUrl: prResponse.data.html_url
-        }, 'PR created successfully');
-
-        // Add PR label and model label (for followup comments to use the same model)
-        const modelLabel = getPullRequestModelLabel(issueRef, modelName);
-        const labelsToAdd = modelLabel ? [PR_LABEL, modelLabel] : [PR_LABEL];
-        try {
-            await withRetry(
-                () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                    owner: issueRef.repoOwner,
-                    repo: issueRef.repoName,
-                    issue_number: prResponse.data.number,
-                    labels: labelsToAdd
-                }),
-                retryConfigs.githubApi,
-                `add_pr_label_${prResponse.data.number}`
-            );
-            correlatedLogger.info({ prNumber: prResponse.data.number, labels: labelsToAdd }, 'Added PR labels to new PR');
-        } catch (labelError) {
-            correlatedLogger.warn({ prNumber: prResponse.data.number, labels: labelsToAdd, error: (labelError as Error).message }, 'Failed to add PR labels to new PR after retries');
-        }
-
-        if (visualPreview && commitResult && visualPreview.evidence.assets.length > 0) {
-            try {
-                await publishPullRequestVisualPreviews({
-                    owner: issueRef.repoOwner,
-                    repo: issueRef.repoName,
-                    pullRequestNumber: prResponse.data.number,
-                    body: basePrBody,
-                    evidence: visualPreview.evidence,
-                    worktreePath: visualPreview.worktreePath,
-                    octokit
-                });
-                correlatedLogger.info({ prNumber: prResponse.data.number, previewCount: visualPreview.evidence.assets.length }, 'Uploaded visual previews to pull request');
-            } catch (previewError) {
-                correlatedLogger.warn({ prNumber: prResponse.data.number, error: (previewError as Error).message }, 'Could not upload visual previews; publishing a text-only explanation');
-                try {
-                    await writePullRequestBody(octokit, {
-                        owner: issueRef.repoOwner,
-                        repo: issueRef.repoName,
-                        pullNumber: prResponse.data.number,
-                        body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(
-                            visualPreview.evidence,
-                            { authenticationFailure: isVisualPreviewUploadAuthenticationError(previewError) }
-                        ))
-                    });
-                } catch (fallbackError) {
-                    correlatedLogger.warn({ prNumber: prResponse.data.number, error: (fallbackError as Error).message }, 'Could not publish the text-only visual preview upload explanation');
-                }
-            }
-        }
-
-        return {
-            success: true,
-            pr: {
-                number: prResponse.data.number,
-                url: prResponse.data.html_url,
-                title: stripStatusSlot(prResponse.data.title)
-            },
-            updatedLabels: []
-        };
-
     } catch (prError) {
         correlatedLogger.warn({
             jobId,
@@ -352,6 +296,59 @@ export async function createPullRequest(
 
         return await findExistingPR({ octokit, issueRef, worktreeInfo, prError: prError as Error, correlatedLogger, PR_LABEL, modelName });
     }
+
+    correlatedLogger.info({
+        jobId,
+        issueNumber: issueRef.number,
+        prNumber: prResponse.data.number,
+        prUrl: prResponse.data.html_url
+    }, 'PR created successfully');
+
+    // The one label call for a new PR: the processing label and the model label
+    // (for follow-up comments to use the same model). Labelling sits outside the
+    // creation try so nothing after it can fall back to findExistingPR and label again.
+    await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: prResponse.data.number },
+        pullRequestLabelsFor(issueRef, PR_LABEL, modelName), { correlatedLogger, presentLabels: pullRequestLabelNames(prResponse.data.labels) });
+
+    if (visualPreview && commitResult && visualPreview.evidence.assets.length > 0) {
+        try {
+            await publishPullRequestVisualPreviews({
+                owner: issueRef.repoOwner,
+                repo: issueRef.repoName,
+                pullRequestNumber: prResponse.data.number,
+                body: basePrBody,
+                evidence: visualPreview.evidence,
+                worktreePath: visualPreview.worktreePath,
+                octokit
+            });
+            correlatedLogger.info({ prNumber: prResponse.data.number, previewCount: visualPreview.evidence.assets.length }, 'Uploaded visual previews to pull request');
+        } catch (previewError) {
+            correlatedLogger.warn({ prNumber: prResponse.data.number, error: (previewError as Error).message }, 'Could not upload visual previews; publishing a text-only explanation');
+            try {
+                await writePullRequestBody(octokit, {
+                    owner: issueRef.repoOwner,
+                    repo: issueRef.repoName,
+                    pullNumber: prResponse.data.number,
+                    body: appendVisualPreviewSection(basePrBody, renderVisualPreviewUploadFailureSection(
+                        visualPreview.evidence,
+                        { authenticationFailure: isVisualPreviewUploadAuthenticationError(previewError) }
+                    ))
+                });
+            } catch (fallbackError) {
+                correlatedLogger.warn({ prNumber: prResponse.data.number, error: (fallbackError as Error).message }, 'Could not publish the text-only visual preview upload explanation');
+            }
+        }
+    }
+
+    return {
+        success: true,
+        pr: {
+            number: prResponse.data.number,
+            url: prResponse.data.html_url,
+            title: stripStatusSlot(prResponse.data.title)
+        },
+        updatedLabels: []
+    };
 }
 
 interface FindExistingPROptions {
@@ -367,7 +364,7 @@ interface FindExistingPROptions {
 async function findExistingPR(options: FindExistingPROptions): Promise<PostProcessingResult> {
     const { octokit, issueRef, worktreeInfo, prError, correlatedLogger, PR_LABEL, modelName } = options;
     try {
-        const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string; base: { ref: string } }> }>('GET /repos/{owner}/{repo}/pulls', { owner: issueRef.repoOwner, repo: issueRef.repoName, head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`, state: 'open' });
+        const existingPRs = await octokit.request<{ data: Array<{ number: number; html_url: string; title: string; base: { ref: string }; labels?: Array<{ name?: string | null } | string> }> }>('GET /repos/{owner}/{repo}/pulls', { owner: issueRef.repoOwner, repo: issueRef.repoName, head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`, state: 'open' });
         if (existingPRs.data.length > 0) {
             const existingPR = existingPRs.data[0];
             correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number, prUrl: existingPR.html_url, currentBase: existingPR.base.ref }, 'Found existing PR for branch');
@@ -388,24 +385,9 @@ async function findExistingPR(options: FindExistingPROptions): Promise<PostProce
                 }
             }
 
-            // Add PR label and model label (for followup comments to use the same model)
-            const modelLabel = getPullRequestModelLabel(issueRef, modelName);
-            const labelsToAdd = modelLabel ? [PR_LABEL, modelLabel] : [PR_LABEL];
-            try {
-                await withRetry(
-                    () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-                        owner: issueRef.repoOwner,
-                        repo: issueRef.repoName,
-                        issue_number: existingPR.number,
-                        labels: labelsToAdd
-                    }),
-                    retryConfigs.githubApi,
-                    `add_pr_label_existing_${existingPR.number}`
-                );
-                correlatedLogger.info({ prNumber: existingPR.number, labels: labelsToAdd }, 'Added PR labels to existing PR');
-            } catch (labelError) {
-                correlatedLogger.warn({ prNumber: existingPR.number, labels: labelsToAdd, error: (labelError as Error).message }, 'Failed to add PR labels to existing PR after retries');
-            }
+            // The one label call when creation found the PR already open; labels it already has are not re-sent.
+            await addPullRequestProcessingLabels(octokit, { repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, prNumber: existingPR.number },
+                pullRequestLabelsFor(issueRef, PR_LABEL, modelName), { correlatedLogger, presentLabels: pullRequestLabelNames(existingPR.labels) });
 
             return { success: true, pr: { number: existingPR.number, url: existingPR.html_url, title: stripStatusSlot(existingPR.title) }, updatedLabels: [] };
         }
@@ -420,10 +402,12 @@ interface FinalResultResults {
     commitResult: CommitResult | null;
 }
 
-function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null, commitResult: CommitResult | null): string {
     if (!claudeResult?.success) return 'claude_processing_failed';
     if (postProcessingResult?.pr) return 'complete_with_pr';
     if (postProcessingResult?.blocked) return 'blocked';
+    // Committed work, or a failed publication step, without a pull request is not "no changes".
+    if (commitResult || postProcessingResult?.failedStep) return 'publication_failed';
     return 'claude_success_no_changes';
 }
 
@@ -450,9 +434,9 @@ function buildPostProcessingSection(postProcessingResult: PostProcessingResult |
 }
 
 export function buildFinalResult(issueRef: IssueJobData, localRepoPath: string, results: FinalResultResults): JobResult {
-    const { worktreeInfo, claudeResult, postProcessingResult } = results;
+    const { worktreeInfo, claudeResult, postProcessingResult, commitResult } = results;
     return {
-        status: determineResultStatus(claudeResult, postProcessingResult),
+        status: determineResultStatus(claudeResult, postProcessingResult, commitResult),
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         gitSetup: { localRepoPath, worktreeCreated: !!worktreeInfo, branchName: worktreeInfo?.branchName },

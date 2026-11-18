@@ -14,6 +14,7 @@ import {
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { completeProviderReplacement, isAgentExecutionFailure, prepareProviderReplacement } from './providerReplacement.js';
+import { publishRepeatedNotice } from './repeatedNoticeComment.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -65,6 +66,13 @@ function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     };
 }
 
+/** A usage-limit retry due sooner than this runs straight away and posts no waiting notice. */
+export const IMMEDIATE_RETRY_MS = 2 * 60 * 1000;
+/** Rate-limit notices of one issue within this window are one waiting period. */
+const RATE_LIMIT_NOTICE_WINDOW_MS = 12 * 60 * 60 * 1000;
+/** Cancellation notices of one issue within this window report one stop. */
+const CANCELLATION_NOTICE_WINDOW_MS = 10 * 60 * 1000;
+
 export function calculateUsageLimitDelay(error: UsageLimitError): number {
     const resetTimeMs = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
     const jitter = Math.floor(Math.random() * 60 * 1000);
@@ -102,6 +110,40 @@ function formatRateLimitComment(error: UsageLimitError, retryTimestamp: number):
 
 ---
 *The task will automatically resume after the rate limit resets. No action needed.*`;
+}
+
+/** A "resets …" clause as `parseResetTimeFromMessage` reads it: optional date, time, optional zone. */
+const RESET_CLAUSE_TEXT = /\breset(?:s)?(?:\s+at)?\s+(?:[a-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?\d{1,2}(?::\d{2})?\s*(?:am|pm)(?:\s*\([^)]+\))?/gi;
+
+/**
+ * The limit a usage-limit message reports, without when it resets: a later
+ * report of the same limit with a new reset time ("1pm", "1:30pm", another
+ * day) is a repeat, while a different limit (weekly vs five-hour) is not.
+ */
+export function rateLimitNoticeFingerprint(message: string): string {
+    return message.replace(RESET_CLAUSE_TEXT, 'resets <reset>').replace(/\d+/g, '#');
+}
+
+async function postRateLimitNotice(octokit: Octokit, issueRef: IssueJobData, options: {
+    error: UsageLimitError; delay: number; retryTimestamp: number; correlatedLogger: Logger;
+}): Promise<void> {
+    const { error, delay, retryTimestamp, correlatedLogger } = options;
+    if (delay < IMMEDIATE_RETRY_MS) {
+        // The retry starts right away (the limit already reset, or the next
+        // attempt runs on another account): nothing is waiting to report.
+        correlatedLogger.info({ issueNumber: issueRef.number, delay }, 'Usage limit retry starts immediately; no rate-limit notice posted');
+        return;
+    }
+    try {
+        // Each retry of the task, and each sibling run that hits the same
+        // limit, updates one notice with the latest reset time and a count.
+        await publishRepeatedNotice(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number }, {
+            kind: 'rate-limit', scope: 'issue', body: formatRateLimitComment(error, retryTimestamp),
+            fingerprint: rateLimitNoticeFingerprint(error.rawErrorMessage || 'Usage limit reached'),
+        }, { log: correlatedLogger, withinMs: RATE_LIMIT_NOTICE_WINDOW_MS });
+    } catch (commentError) {
+        correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to issue.');
+    }
 }
 
 async function requireIssueRetry(jobId: string, correlationId: string): Promise<Job<IssueJobData> | null> {
@@ -159,19 +201,7 @@ export async function handleUsageLimitError(
         }
     }
 
-    if (octokit) {
-        try {
-            const commentBody = formatRateLimitComment(error, retryTimestamp);
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                issue_number: issueRef.number,
-                body: commentBody
-            });
-        } catch (commentError) {
-            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to issue.');
-        }
-    }
+    if (octokit) await postRateLimitNotice(octokit, issueRef, { error, delay, retryTimestamp, correlatedLogger });
 
     // Keep the task/correlation identity (including goal parent links). Only
     // the queue job identity changes, so each delayed handoff can be verified.
@@ -236,12 +266,11 @@ export async function postCancellationNotice(
 ): Promise<void> {
     const { octokit, correlatedLogger } = options;
     try {
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            issue_number: issueRef.number,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can remove and re-add the trigger label to restart processing.`
-        });
+        // Every handler and sibling run that observes one stop shares one notice.
+        await publishRepeatedNotice(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number }, {
+            kind: 'cancelled', scope: 'issue',
+            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can remove and re-add the trigger label to restart processing.`,
+        }, { log: correlatedLogger, withinMs: CANCELLATION_NOTICE_WINDOW_MS });
     } catch (commentError) {
         correlatedLogger.warn({ error: (commentError as Error).message }, 'Failed to post cancellation notice');
     }

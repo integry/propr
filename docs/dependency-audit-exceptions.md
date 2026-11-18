@@ -9,10 +9,10 @@ release, and made both `npm run audit:runtime` and
 `npm run desktop:audit:packaging` fail. Both lines in the tree now install from
 reviewed, vendored builds that add the same guard to `lib/parse.js`:
 
-- `vendor/picomatch` (4.0.7 base, version `4.0.8-extglobguard.1`) through the
+- `vendor/picomatch` (4.0.7 base, version `4.0.8-extglobguard.2`) through the
   root dependency and the `"picomatch": "$picomatch"` override, for `vite`,
   `vitest`, `tinyglobby`, `fdir` and the other `picomatch@^4` users;
-- `vendor/picomatch-v2` (2.3.2 base, version `4.0.8-v2.3.2-extglobguard.1`)
+- `vendor/picomatch-v2` (2.3.2 base, version `4.0.8-v2.3.2-extglobguard.2`)
   through scoped overrides for `anymatch`, `micromatch` and `readdirp`, which
   `chokidar@3`, `fast-glob` and Repomix's `globby` use.
 

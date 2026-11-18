@@ -595,6 +595,7 @@ export * from './extensionOAuth.js';
 
 export { sqliteTimestampMs } from './sqliteTimestamp.js';
 export { AGENT_FAILURE_LINE_MAX_CHARS, agentFailureLine } from './agentFailureLine.js';
+export { UNFINISHED_NO_CHANGE_HEADLINE, UNFINISHED_RUN_HEADLINE, committedFilesList, isUnfinishedRun, unfinishedRunWarning } from './unfinishedRun.js';
 export * from './planItemGraph.js';
 export {
   TOKEN_OUTLIER_MIN_HISTORY,

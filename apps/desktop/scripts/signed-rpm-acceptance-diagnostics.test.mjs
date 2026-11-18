@@ -15,12 +15,20 @@ const SECRET = 'sentinel-secret-7f3a9c';
 const node = process.execPath;
 const linuxX64 = process.platform === 'linux' && process.arch === 'x64';
 
+// A path that only appears in child or container output; it must never be echoed.
+const CHILD_PATH = join(tmpdir(), 'signed-rpm-child-output');
+// The temporary paths the runner and this harness create. Checked by prefix rather than
+// as any `/tmp/` substring, because the stack in inspect() names the checkout, which may
+// itself live under the temporary directory.
+const PRIVATE_PATHS = [join(tmpdir(), 'propr-signed-rpm-'), join(tmpdir(), 'signed-rpm-diagnostics-'), CHILD_PATH];
+
 // Public surfaces: the error message, its structured diagnostic and anything Node would print for it.
 const assertPrivate = error => {
   assert.ok(error instanceof SignedRpmAcceptanceFailure, inspect(error));
   for (const surface of [error.message, JSON.stringify(error.diagnostic), inspect(error)]) {
     assert.doesNotMatch(surface, new RegExp(SECRET));
-    assert.doesNotMatch(surface, /ghp_|BEGIN PGP|\/tmp\/|propr-signed-rpm-[0-9a-f]/);
+    assert.doesNotMatch(surface, /ghp_|BEGIN PGP/);
+    for (const path of PRIVATE_PATHS) assert.ok(!surface.includes(path), `surface names private path ${path}`);
   }
   assert.equal(error.cause, undefined);
   return error.diagnostic;
@@ -81,7 +89,7 @@ test('browser checkpoints are tracked only inside the browser stage and only as 
     await out('PROPR_RPM_BROWSER_FAILURE=ghp_${SECRET}\\n');
     await out('PROPR_RPM_BROWSER_FAILURE=socket-handshake\\n');
     await out('PROPR_RPM_BROWSER_FAILURE=unclassified\\n');
-    await out('Acceptance Socket.IO handshake failed: ${SECRET} /tmp/x\\n');
+    await out('Acceptance Socket.IO handshake failed: ${SECRET} ' + ${JSON.stringify(CHILD_PATH)} + '\\n');
     process.exit(Number(process.argv[1]));`;
   const run = (exit, extra = '') => runAcceptancePhase(node, ['--input-type=module', '-e', script.replace('process.exit', `${extra}process.exit`), String(exit)],
     { phase: 'installed-acceptance', trackStages: true });
@@ -107,7 +115,7 @@ test('diagnostics are rebuilt from allowlisted fields and keep the primary failu
   assert.deepEqual(assertPrivate(combined), { phase: 'installed-acceptance', outcome: 'exit', exitCode: 1,
     cleanup: [{ phase: 'container-cleanup', outcome: 'exit', exitCode: 125 }] });
   assert.match(combined.message, /^Signed installed RPM acceptance failed; no success evidence emitted \[phase=installed-acceptance outcome=exit exitCode=1\]; owned cleanup also failed \[phase=container-cleanup outcome=exit exitCode=125\]$/);
-  assert.deepEqual(withCleanupFailures(new Error(`${SECRET} /tmp/x`), [{ phase: 'image-cleanup', outcome: 'timeout' }]).diagnostic,
+  assert.deepEqual(withCleanupFailures(new Error(`${SECRET} ${CHILD_PATH}`), [{ phase: 'image-cleanup', outcome: 'timeout' }]).diagnostic,
     { phase: 'unknown', outcome: 'error', cleanup: [{ phase: 'image-cleanup', outcome: 'timeout' }] });
 });
 
@@ -241,7 +249,7 @@ for (const [label, scenario, expected, calls] of [
   ['installed browser checkpoint', { run: { exit: 1, stages: ['runtime-manifest', 'browser-acceptance'], lines: [
     'PROPR_RPM_BROWSER_CHECKPOINT=runner/started', 'PROPR_RPM_BROWSER_CHECKPOINT=csp-reload/completed',
     'PROPR_RPM_BROWSER_CHECKPOINT=installed-approved/paired', `PROPR_RPM_BROWSER_CHECKPOINT=installed-approved/${SECRET}`,
-    'PROPR_RPM_BROWSER_FAILURE=ui-wait-timeout', `locator.waitFor: Timeout 15000ms exceeded. ${SECRET} /tmp/x`,
+    'PROPR_RPM_BROWSER_FAILURE=ui-wait-timeout', `locator.waitFor: Timeout 15000ms exceeded. ${SECRET} ${CHILD_PATH}`,
   ] } },
     { phase: 'installed-acceptance', outcome: 'exit', exitCode: 1, stage: 'browser-acceptance',
       browserJourney: 'installed-approved', browserCheckpoint: 'paired', browserFailure: 'ui-wait-timeout' },

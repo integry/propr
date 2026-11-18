@@ -9,6 +9,7 @@ import type { DetailedUsageStats, ClaudeResult as TokenCalcClaudeResult } from '
 import { formatSubscriptionUsage } from './formatSubscriptionUsage.js';
 import type { SubscriptionUsageMetrics } from './formatSubscriptionUsage.js';
 import { describeAgentTermination, resolveAgentTerminationReason } from '../../agents/termination.js';
+import { committedFilesList, isUnfinishedRun, unfinishedRunWarning } from '@propr/shared';
 import { sanitizeAgentReport } from '../../agents/agentReportSanitizer.js';
 import { redactVisualPreviewPaths } from '../../services/visualPreviewPaths.js';
 import { redactSecrets } from '../secretRedaction.js';
@@ -36,6 +37,8 @@ interface CompletionCommentOptions {
     taskUrl?: string;
     /** The run's diff; with changes, the parts include a review digest. */
     review?: { changes: readonly ReviewDigestChange[]; config?: ReviewConfig; acceptanceCriteria?: readonly AcceptanceCriterion[] };
+    /** The run committed nothing; the report must not refer to committed work. */
+    noCodeChanges?: boolean;
 }
 
 interface ConversationMessage {
@@ -67,6 +70,8 @@ interface ClaudeResult {
     error?: string;
     terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
     modifiedFiles?: string[];
+    /** Set when the summary-selection call judged the agent's last message to say work was still in progress. */
+    unfinishedReason?: string;
     tokenUsage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
     usageMetrics?: SubscriptionUsageMetrics | null;
 }
@@ -231,6 +236,9 @@ function buildStatusText(claudeResult: ClaudeResult): { header: string; status: 
     if (!claudeResult.success && terminationReason) {
         return { header: 'Incomplete', status: 'Partial work published for review' };
     }
+    if (claudeResult.success && isUnfinishedRun(claudeResult)) {
+        return { header: 'Ended Unconfirmed', status: 'Ended before the agent confirmed completion' };
+    }
     const isSuccess = claudeResult?.success || false;
     return {
         header: isSuccess ? 'Completed' : 'Failed',
@@ -315,7 +323,7 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
     return { text: lines.join('\n') + '\n\n', stats: { executionTime: executionTimeStr, totalTokens, cost } };
 }
 
-function buildSummarySection(claudeResult: ClaudeResult): string {
+function buildSummarySection(claudeResult: ClaudeResult, noCodeChanges = false): string {
     const terminationReason = resolveAgentTerminationReason({
         success: claudeResult.success,
         terminationReason: claudeResult.terminationReason,
@@ -342,12 +350,25 @@ function buildSummarySection(claudeResult: ClaudeResult): string {
         return section;
     }
 
+    if (claudeResult.success && isUnfinishedRun(claudeResult)) return buildUnfinishedSummarySection(claudeResult, noCodeChanges);
+
     let section = '';
     const publishableSummary = sanitizeAgentReport(claudeResult.summary);
     if (publishableSummary) section += `**Summary:**\n${redactSecrets(publishableSummary)}\n\n`;
     if (claudeResult?.finalResult?.subtype === 'error_max_turns') {
         section += `**Max Turns Reached**: Claude reached the maximum number of conversation turns (${claudeResult.finalResult.num_turns}) before completing all tasks. Consider increasing the turn limit or breaking down the task into smaller parts.\n\n`;
     }
+    return section;
+}
+
+/** A run whose agent exited while its last message said it was still working or waiting. */
+function buildUnfinishedSummarySection(claudeResult: ClaudeResult, noCodeChanges: boolean): string {
+    let section = unfinishedRunWarning(redactSecrets(claudeResult.unfinishedReason ?? ''), { committed: !noCodeChanges });
+    const publishableSummary = sanitizeAgentReport(claudeResult.summary);
+    if (publishableSummary) section += `**Last agent update:**\n${redactSecrets(publishableSummary).slice(0, 6000)}\n\n`;
+    if (noCodeChanges) return section;
+    const files = committedFilesList(claudeResult.modifiedFiles);
+    section += files ? `**Committed changes:**\n${files}\n\n` : '**Committed changes:** see the committed diff.\n\n';
     return section;
 }
 
@@ -399,7 +420,7 @@ export async function generateCompletionCommentParts(
         : null;
     return {
         run: execution.text,
-        summary: buildSummarySection(result),
+        summary: buildSummarySection(result, options.noCodeChanges === true),
         digest: renderReviewDigest(reviewDigest),
         reviewDigest,
         validation: result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : '',

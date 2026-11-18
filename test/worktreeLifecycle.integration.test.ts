@@ -220,10 +220,18 @@ for (const entry of ['issue', 'existing'] as const) {
         await assert.rejects(run('occupied'));
         await assertPrivateWork(wt, saved);
         await cleanupWorktree(repo, worktree, 'task', { deleteBranch: true });
+        if (entry === 'existing') {
+            // A follow-up on the pull request branch refuses the unpushed commit, naming the branch (#3687).
+            await assert.rejects(run('retry'), /Local branch 'task' has 1 commit\(s\) that are not on origin\/task/);
+            assert.equal((await git.revparse(['refs/heads/task'])).trim(), saved.head.trim());
+            await assertPrivateWork(wt, saved);
+            await assert.rejects(run('first'), /Existing worktree retained/);
+            await assertPrivateWork(wt, saved);
+            return;
+        }
+        // A replacement resumes its lost attempt's local commits.
         const retry = await run('retry');
         assert.equal(await simpleGit(retry.worktreePath).revparse(['HEAD']), saved.head);
-        await assertPrivateWork(wt, saved);
-        if (entry === 'existing') await assert.rejects(run('first'), /Existing worktree retained/);
         await assertPrivateWork(wt, saved);
     });
 }
@@ -973,33 +981,27 @@ async function pushToRemote(parent: string, message: string, force = false): Pro
 }
 const headOf = async (dirName: string) => (await simpleGit((await createWorktreeFromExistingBranch(repo, 'pr', { worktreeDirName: dirName, owner: 'owner', repoName })).worktreePath).revparse(['HEAD'])).trim();
 
-test('a local branch left diverged by failed attempts restarts from the rebased PR head and keeps a backup', async () => {
+test('a local branch left diverged by failed attempts is refused with the branch named, not reset', async () => {
     await remoteBranch('pr');
     const stale = await failedAttempt('attempt-1', 'failed attempt');
-    const rebased = await pushToRemote(initial, 'dependabot rebase', true);
+    await pushToRemote(initial, 'dependabot rebase', true);
 
-    assert.equal(await headOf('attempt-2'), rebased, 'the next run starts from the pull request head');
-    const backups = (await git.raw(['for-each-ref', '--format=%(objectname)', 'refs/propr/superseded/pr/'])).trim();
-    assert.equal(backups, stale, 'the failed attempt\'s commit is kept under a backup ref');
-
-    // S19: a second realignment of the same branch within the same second keeps its own backup.
-    await git.raw(['worktree', 'remove', '--force', path.join(root, 'worktrees', 'owner', repoName, 'attempt-2')]);
-    const staleAgain = await failedAttempt('attempt-3', 'failed again');
-    const rebasedAgain = await pushToRemote(initial, 'dependabot rebase again', true);
-    assert.equal(await headOf('attempt-4'), rebasedAgain);
-    const named = (await git.raw(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/propr/superseded/pr/'])).trim().split('\n');
-    assert.deepEqual(named.map(line => line.split(' ')[1]).sort(), [stale, staleAgain].sort(), 'both superseded tips are kept');
-    for (const line of named) {
-        const [ref, tip] = line.split(' ');
-        assert.match(ref, new RegExp(`^refs/propr/superseded/pr/\\d{8}T\\d{6}Z-${tip.slice(0, 12)}$`), 'the backup name carries the tip it saves');
-    }
+    await assert.rejects(
+        createWorktreeFromExistingBranch(repo, 'pr', { worktreeDirName: 'attempt-2', owner: 'owner', repoName }),
+        /Local branch 'pr' has 1 commit\(s\) that are not on origin\/pr/,
+    );
+    assert.equal((await git.revparse(['refs/heads/pr'])).trim(), stale, 'the failed attempt\'s commit stays the branch tip');
+    assert.equal((await git.raw(['for-each-ref', 'refs/propr/superseded/'])).trim(), '', 'nothing was reset behind a backup');
 });
 
-test('a local branch behind the PR head is fast-forwarded, and one ahead keeps its unpushed commit', async () => {
+test('a local branch behind the PR head is fast-forwarded, and one ahead is refused with the branch named', async () => {
     await remoteBranch('pr');
     const unpushed = await failedAttempt('attempt-1', 'unpushed work');
-    assert.equal(await headOf('attempt-2'), unpushed, 'ahead: the unpushed commit is kept');
-    await git.raw(['worktree', 'remove', '--force', path.join(root, 'worktrees', 'owner', repoName, 'attempt-2')]);
+    await assert.rejects(
+        createWorktreeFromExistingBranch(repo, 'pr', { worktreeDirName: 'attempt-2', owner: 'owner', repoName }),
+        /Local branch 'pr' has 1 commit\(s\) that are not on origin\/pr/,
+    );
+    assert.equal((await git.revparse(['refs/heads/pr'])).trim(), unpushed, 'ahead: the unpushed commit is untouched');
 
     const advanced = await pushToRemote(unpushed, 'someone built on it');
     assert.equal(await headOf('attempt-3'), advanced, 'behind: fast-forwarded to the head');
