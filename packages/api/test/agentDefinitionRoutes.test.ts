@@ -678,7 +678,7 @@ describe('automation definition routes', () => {
     assert.equal(detail.body.run.report, 'All quiet.');
   });
 
-  test('run history carries a one-line plain-text report preview', async () => {
+  test('run history carries a one-line plain-text report preview from the report body', async () => {
     const definition = await createDefinition('alice');
     const reported = (await triggerRun(definition.id)).body.run.id as string;
     await transitionAgentRun(reported, ['queued'], 'running', {}, { database });
@@ -692,7 +692,7 @@ describe('automation definition routes', () => {
 
     const history = await call(routes.listRuns, request('alice', { params: { id: definition.id } }));
     const runs = new Map((history.body.runs as Array<Record<string, unknown>>).map(run => [run.id, run]));
-    assert.equal(runs.get(reported)?.reportPreview, 'Dependency audit');
+    assert.equal(runs.get(reported)?.reportPreview, 'lodash is two majors behind');
     assert.equal('report' in (runs.get(reported) ?? {}), false);
     const truncated = runs.get(long)?.reportPreview as string;
     assert.ok(truncated.length <= 160, truncated);

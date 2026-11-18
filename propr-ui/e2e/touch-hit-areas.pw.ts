@@ -14,13 +14,13 @@
  * Every route runs against stubbed HTTP and a closed socket.
  */
 import { expect, test, type Page } from '@playwright/test';
-import { fixture as dashboardFixture, user as dashboardUser } from './dashboard-sections.fixture';
+import { fixture as dashboardFixture, minutesAgo, outcomes, respond, user as dashboardUser } from './dashboard-sections.fixture';
 import { openSearchFromMenu, openPhone } from './mobile-menu-search.fixture';
 import { installSettingsFixture } from './settings-layout.fixture';
 import { fixture as studioFixture } from './planner-studio.fixture';
 import { fixture as taskFixture, selectedRun } from './task-list-desktop.fixture';
 import {
-  automation, capture, expectTappable, PHONE, stubApi, stubAutomations, stubGoal, stubLlmLogs, stubRepositories, touchContext,
+  automation, capture, expectNoSideScroll, expectTappable, PHONE, stubAutomations, stubGoal, stubInbox, stubLlmLogs, stubRepositories, touchContext,
 } from './touch-hit-areas.fixture';
 
 /** Opens `route` on a 390px phone after `stub` installs its API. */
@@ -119,22 +119,7 @@ test('Studio: issue links and the execution mode', async ({ browser }) => {
 
 test('Inbox: pull request reference links', async ({ browser }) => {
   const { context, page } = await touchContext(browser);
-  const occurredAt = new Date().toISOString();
-  await stubApi(page, {
-    '/api/auth/demo-mode': { demoMode: false }, '/api/auth/user': dashboardUser,
-    '/api/notifications': { unreadCount: 1, nextCursor: null, notifications: [{
-      id: 'review-77', deduplicationKey: 'review-77', kind: 'review', severity: 'success',
-      target: { type: 'review', repository: 'integry/propr', prNumber: 77, taskId: 'review-task-77' },
-      title: 'Guard Inbox recaps against empty metadata', body: 'Score 8/10 · 2 issues found',
-      actions: ['follow_up', 'open_pr', 'dismiss'],
-      action: { type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/77' },
-      occurredAt, createdAt: occurredAt, readAt: null, dismissedAt: null,
-    }] },
-    '/api/notifications/unread-count': { unreadCount: 1 },
-    '/api/notifications/config': { push: { configured: false, vapidPublicKey: null } },
-    '/api/notifications/preferences': { preferences: {}, quietHours: { start: null, end: null, timezone: 'UTC' }, badgeEnabled: false },
-    '/api/instance/catalog': { repositories: [], agents: [] },
-  }, 'Inbox');
+  await stubInbox(page);
   await page.goto('/inbox');
   await expectTappable(page.getByRole('link', { name: /PR #77 on GitHub/ }), 'Inbox PR link');
   await capture(page, 'touch-inbox-390');
@@ -249,4 +234,69 @@ test('a task in a landscape phone opens on a one-line header over 150px of timel
   expect(logBar.y - (heading.y + heading.height)).toBeGreaterThanOrEqual(150);
   await capture(page, 'touch-task-short-844x390');
   await context.close();
+});
+
+/** The widths #3693 checks for sideways scroll: a phone, the narrowest phone and a landscape phone. */
+const WIDTHS = [PHONE, { width: 320, height: 568 }, { width: 844, height: 390 }];
+
+test('the automation editor: the Schedule, Event trigger and Autonomy segments', async ({ browser }) => {
+  for (const viewport of WIDTHS) {
+    const { context, page } = await touchContext(browser, viewport);
+    await openOnPhone(page, stubAutomations, `/automations/${automation.id}`);
+    const form = page.getByTestId('agent-editor');
+    for (const group of ['Schedule', 'Event trigger']) {
+      await expectTappable(form.getByRole('radiogroup', { name: group }).getByRole('radio'), `${group} segment @${viewport.width}`);
+    }
+    await expectTappable(form.getByRole('radiogroup', { name: 'Autonomy' }).locator('label'), `Autonomy segment @${viewport.width}`);
+    await expectNoSideScroll(page);
+    if (viewport === PHONE) {
+      await form.getByRole('radiogroup', { name: 'Schedule' }).scrollIntoViewIfNeeded();
+      await capture(page, 'touch-automation-segments-390');
+    }
+    await context.close();
+  }
+});
+
+test('Repositories: the Select rows', async ({ browser }) => {
+  for (const viewport of WIDTHS) {
+    const { context, page } = await touchContext(browser, viewport);
+    await openOnPhone(page, stubRepositories, '/repositories');
+    await expectTappable(page.getByRole('button', { name: /^Select integry\// }), `Repository Select @${viewport.width}`);
+    await expectNoSideScroll(page);
+    await context.close();
+  }
+});
+
+test('Dashboard: the earlier updates toggle and its rows', async ({ browser }) => {
+  for (const viewport of WIDTHS) {
+    const { context, page } = await touchContext(browser, viewport);
+    await dashboardFixture(page, viewport, [], []);
+    const earlierUpdates = ['review', 'fix', 'review'].map((taskType, index) => ({ ...outcomes[index % 2], id: `update-${index}`,
+      taskId: `update-${index}`, taskType, title: 'Followup: Dashboard cleanup', detail: `${index + 1} issues found`, score: null,
+      occurredAt: minutesAgo(16 + index * 10) }));
+    await respond(page, 'dashboard/outcomes', { limit: 50, items: [{ ...outcomes[1], title: 'Followup: Dashboard cleanup',
+      detail: 'Preserved review history.', eventCount: 4, earlierUpdates }] });
+    await page.goto('/');
+    const section = page.getByTestId('completed-section');
+    const toggle = section.getByRole('button', { name: '3 earlier updates' });
+    await expectTappable(toggle, `Earlier updates toggle @${viewport.width}`);
+    await toggle.click();
+    await expectTappable(section.locator('li ul li a'), `Earlier update row @${viewport.width}`);
+    await expectTappable(section.getByRole('button', { name: 'Hide 3 earlier updates' }), `Hide earlier updates @${viewport.width}`);
+    await expectNoSideScroll(page);
+    if (viewport === PHONE) await capture(page, 'touch-dashboard-earlier-updates-390');
+    await context.close();
+  }
+});
+
+test('Inbox: the Dismiss buttons, including a landscape phone', async ({ browser }) => {
+  for (const viewport of WIDTHS) {
+    const { context, page } = await touchContext(browser, viewport);
+    await stubInbox(page);
+    await page.goto('/inbox');
+    await expectTappable(page.getByRole('button', { name: /^Dismiss / }), `Inbox Dismiss @${viewport.width}`);
+    await expectNoSideScroll(page);
+    if (viewport.width === 844) await capture(page, 'touch-inbox-844x390');
+    await context.close();
+  }
 });

@@ -87,18 +87,138 @@ const stripInline = (line: string): string => stripTags(stripLinks(stripLinks(li
   .replace(/\s+/gu, ' ')
   .trim();
 
+/** A heading line: one to six `#` followed by a space or the end of the line. */
+const HEADING = /^#{1,6}(?=\s|$)/u;
+/** A list item or quote: a line that starts a new body block. */
+const ITEM = /^(?:>|[-*+](?=\s)|\d+[.)](?=\s))/u;
+/** The `>` markers that open a (possibly nested) quote line. */
+const QUOTE_MARKERS = /^(?:>\s*)+/u;
+/** A Setext heading underline: a run of `=` (level 1) or `-` (level 2) alone on its line. */
+const SETEXT_UNDERLINE = /^(?:=+|-+)$/u;
+
 /**
- * A run report's one-line preview for the run history: the first line with
- * words in it, Markdown markers stripped, cut at a word boundary with `…` past
+ * The report's lines (trimmed) with each Setext heading — paragraph text
+ * followed by an `===` or `---` underline — rewritten as one ATX `#` heading
+ * line and its underline dropped, so the title of `Weekly audit\n---` is
+ * skipped like `# Weekly audit` rather than read as the body. Only a plain
+ * paragraph can become a heading: an underline after a blank line, a heading,
+ * a fence or a list item (whose plain next lines continue the item) stays a
+ * rule, and code inside a fence is left alone.
+ */
+const normalizeSetextHeadings = (report: string): string[] => {
+  const lines: string[] = [];
+  /** Index in `lines` where the current plain paragraph starts, or -1. */
+  let runStart = -1;
+  let inItem = false;
+  let inFence = false;
+  for (const raw of report.split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      runStart = -1;
+      inItem = false;
+    } else if (inFence) {
+      // Code is not Markdown structure.
+    } else if (runStart >= 0 && SETEXT_UNDERLINE.test(line)) {
+      const heading = lines.splice(runStart).join(' ');
+      lines.push(`# ${heading}`);
+      runStart = -1;
+      continue;
+    } else if (!line || HEADING.test(line) || STRUCTURE_ONLY.test(line)) {
+      runStart = -1;
+      inItem = false;
+    } else if (ITEM.test(line)) {
+      runStart = -1;
+      inItem = true;
+    } else if (runStart < 0 && !inItem) {
+      runStart = lines.length;
+    }
+    lines.push(line);
+  }
+  return lines;
+};
+
+const SENTENCE_PUNCTUATION = new Set(['.', '!', '?']);
+const SENTENCE_CLOSERS = new Set(['"', "'", ')', ']']);
+
+/**
+ * The end of the first sentence: `.`, `!` or `?` (and any closing quotes or
+ * brackets) followed by whitespace, as an index just past the closing
+ * punctuation, or -1 when there is none. A full stop inside a token, as in
+ * `v0.9.2` or `example.com`, has no space after it and does not end the
+ * sentence. One linear scan: a run of punctuation and closers not followed by
+ * whitespace is skipped whole, as no later start inside it can end differently.
+ */
+const sentenceEnd = (text: string): number => {
+  let i = 0;
+  while (i < text.length) {
+    if (!SENTENCE_PUNCTUATION.has(text[i])) {
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length && SENTENCE_PUNCTUATION.has(text[j])) j += 1;
+    while (j < text.length && SENTENCE_CLOSERS.has(text[j])) j += 1;
+    if (j < text.length && /\s/u.test(text[j])) return j;
+    i = j;
+  }
+  return -1;
+};
+
+/** The first sentence of `text`, its closing punctuation kept. */
+const firstSentence = (text: string): string => {
+  const end = sentenceEnd(text);
+  return end >= 0 ? text.slice(0, end) : text;
+};
+
+/**
+ * Whether `line` ends the block the preview is reading. A blank line, a fence,
+ * a rule or a heading ends any block, and a list item or quote line starts a
+ * new one. Inside a quote, a further `>` line continues the quote unless what
+ * follows its markers is blank or starts a block of its own, such as the next
+ * item of a quoted list. A plain line continues the block: the next line of a
+ * paragraph, or a list item or quote wrapped onto an indented or lazy line.
+ */
+const endsBlock = (line: string, quoted: boolean): boolean => {
+  if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line) || HEADING.test(line)) return true;
+  if (quoted && QUOTE_MARKERS.test(line)) {
+    const inner = line.replace(QUOTE_MARKERS, '');
+    return !inner || FENCE.test(inner) || STRUCTURE_ONLY.test(inner) || HEADING.test(inner) || ITEM.test(inner);
+  }
+  return ITEM.test(line);
+};
+
+/**
+ * A run report's one-line preview for the run history, which tells runs of
+ * the same automation apart: the first sentence of the report body after its
+ * heading, Markdown stripped. A body that starts with a list or a quote
+ * previews the first sentence of its first item, lines it wraps onto
+ * included. Headings, ATX (`#`) or Setext (underlined with
+ * `===` or `---`), are skipped: the title every run of an automation
+ * repeats, and section headings. A report that is only headings
+ * previews its first one. The result is cut at a word boundary with `…` past
  * `max` characters. Null for no report or a report with nothing to show.
  */
 export function automationReportPreview(report: string | null | undefined, max = AUTOMATION_REPORT_PREVIEW_MAX_CHARS): string | null {
   if (!report) return null;
-  for (const raw of report.split(/\r?\n/u)) {
-    const line = raw.trim();
+  let title: string | null = null;
+  const paragraph: string[] = [];
+  /** Whether the block being read is a quote, whose `>` lines continue it. */
+  let quoted = false;
+  for (const line of normalizeSetextHeadings(report)) {
+    if (paragraph.length > 0 && endsBlock(line, quoted)) break;
     if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line)) continue;
     const text = stripInline(line.replace(BLOCK_MARKERS, ''));
-    if (text) return truncateAtWord(text, max);
+    if (!text) continue;
+    if (HEADING.test(line)) {
+      title ??= text;
+      continue;
+    }
+    if (paragraph.length === 0) quoted = QUOTE_MARKERS.test(line);
+    paragraph.push(text);
+    // Earlier lines had no sentence end, so one on this line completes the first sentence.
+    if (sentenceEnd(`${text} `) >= 0) break;
   }
-  return null;
+  const body = paragraph.length > 0 ? firstSentence(paragraph.join(' ')) : title;
+  return body ? truncateAtWord(body, max) : null;
 }

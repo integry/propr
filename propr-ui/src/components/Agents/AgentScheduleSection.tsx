@@ -18,7 +18,7 @@ interface AgentScheduleSectionProps {
   error?: string | null;
 }
 
-const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
+const SEGMENT_CLASSES = 'touch-hit px-3 py-1 text-xs font-medium first:rounded-l-[5px] last:rounded-r-[5px] focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
 
 /** Keeps the "Next run" preview current while the editor stays open. */
 function useMinuteClock(): Date {
@@ -106,7 +106,7 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({
 
   return (
     <AgentFormRow label="Schedule" hint="Times are UTC. Off: it runs only when started.">
-      <div role="radiogroup" aria-label="Schedule" className="inline-flex overflow-hidden rounded-md border border-slate-300">
+      <div role="radiogroup" aria-label="Schedule" className="inline-flex rounded-md border border-slate-300">
         {MODES.map(({ mode: value, label }, index) => (
           <button
             key={value}

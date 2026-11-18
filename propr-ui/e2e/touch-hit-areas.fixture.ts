@@ -68,6 +68,12 @@ export async function expectTappable(target: Locator, name: string, limit = 3) {
   }
 }
 
+/** Fails when the page scrolls sideways at its current width. */
+export async function expectNoSideScroll(page: Page) {
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect.soft(overflow, `sideways scroll at ${page.viewportSize()?.width}px`).toBeLessThanOrEqual(0);
+}
+
 /** Screenshots go last in a test: one resets the touch emulation (`pointer: coarse`). */
 export async function capture(page: Page, name: string, fullPage = false) {
   if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
@@ -202,4 +208,23 @@ export const stubGoal = async (page: Page) => {
       todos: [], currentTask: null, tokenUsage: { input_tokens: 1200, output_tokens: 400 },
     },
   }, 'goal');
+};
+
+/** One unread review with a pull request: a reference link and a Dismiss button in the list. */
+export const stubInbox = (page: Page) => {
+  const occurredAt = new Date().toISOString();
+  return stubApi(page, {
+    ...shell,
+    '/api/notifications': { unreadCount: 1, nextCursor: null, notifications: [{
+      id: 'review-77', deduplicationKey: 'review-77', kind: 'review', severity: 'success',
+      target: { type: 'review', repository: 'integry/propr', prNumber: 77, taskId: 'review-task-77' },
+      title: 'Guard Inbox recaps against empty metadata', body: 'Score 8/10 · 2 issues found',
+      actions: ['follow_up', 'open_pr', 'dismiss'],
+      action: { type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/77' },
+      occurredAt, createdAt: occurredAt, readAt: null, dismissedAt: null,
+    }] },
+    '/api/notifications/unread-count': { unreadCount: 1 },
+    '/api/notifications/config': { push: { configured: false, vapidPublicKey: null } },
+    '/api/instance/catalog': { repositories: [], agents: [] },
+  }, 'Inbox');
 };
