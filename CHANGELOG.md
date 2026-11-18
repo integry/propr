@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release rollout check**: `npm run release:rollout -- --version <x.y.z>`
+  (`scripts/verify-release-rollout.mjs`) says where a release is live. It
+  checks the GitHub release and its checked-in summary, the four Docker Hub
+  images and their `latest` tags, the `propr-cli` npm `latest` tag,
+  app.propr.dev, demo.propr.dev, the Linux and macOS desktop pre-releases
+  and the site, and prints `ok`, `missing` or `stale` for each. It uses only
+  public, unauthenticated reads, exits non-zero unless every target is `ok`,
+  supports `--json`, and writes a table to the run summary in GitHub Actions.
+
 ## [0.9.2] - 2026-11-18
 
 ### Added

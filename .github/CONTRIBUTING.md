@@ -88,6 +88,35 @@ The [architecture docs](https://docs.propr.dev/docs/architecture/overview) expla
 
 Most pull requests in this repository are opened by ProPR itself, from branches named `<issue>/<model>-<title>-<timestamp>`. Human-authored branches and pull requests are just as welcome and go through the same review.
 
-## License
+## Releases
+
+Before a release is tagged, `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify` checks that the release metadata is consistent. Pushing the `v<version>` tag then runs the **Docker Images** workflow (`.github/workflows/docker-images.yml`), which publishes the images and the npm package, creates the GitHub release and [deploys the hosted UI](https://docs.propr.dev/docs/operations/hosted-ui-release). The desktop preview pre-releases, demo.propr.dev and the site are updated after it.
+
+### Last step: check where the release is live
+
+When everything else is done, run:
+
+```bash
+npm run release:rollout -- --version <version>          # or: node scripts/verify-release-rollout.mjs --version <version>
+npm run release:rollout -- --version <version> --json   # the same results as JSON
+```
+
+It needs no credentials and changes nothing: every check is a public read. It prints one line per target, `ok`, `missing` (not there) or `stale` (there, but not this release), followed by what it found:
+
+| Target | `ok` when |
+| --- | --- |
+| `github-release` | The GitHub release `v<version>` is published (not a draft) and its body starts with the checked-in summary `release-notes/v<version>.md`, read from the tag (or from this checkout when the tag has none). |
+| `docker:propr/app`, `docker:propr/ui`, `docker:propr/docs`, `docker:propr/agent` | Docker Hub has the `<version>` tag, and `latest` has the same digest. |
+| `npm:propr-cli` | The npm `latest` dist-tag of `propr-cli` is `<version>`. |
+| `hosted-ui` | The entry bundle of `https://app.propr.dev/` contains `"<version>"`, the same check the hosted UI deploy runs after deploying (`scripts/lib/hosted-ui-bundle.mjs`). |
+| `demo` | `https://demo.propr.dev/api/status` reports `version` `<version>`. |
+| `desktop:linux` | A published pre-release tagged `desktop-linux-preview-v<version>-…-all-signed` has the `.deb` and `.rpm` packages for x64 and arm64, `linux-preview.json`, `SHA256SUMS` and `SHA256SUMS.asc`. |
+| `desktop:macos` | A published pre-release tagged `desktop-macos-preview-v<version>-…` has the `.dmg` and `.zip` packages for arm64 and x64, `macos-preview.json` and `SHA256SUMS`. |
+| `site:whats-new` | `https://propr.dev/whats-new/<version>/` returns 200. |
+| `site:download` | The download page, `https://propr.dev/desktop/`, links to the Linux (signed) and macOS desktop pre-releases of `<version>`. |
+
+The command exits 0 only when every target is `ok`. In GitHub Actions it also adds the results as a table to the run summary. Unauthenticated GitHub API reads are limited to 60 an hour per IP address; a rate-limited read shows as `missing` with `HTTP 403 (GitHub API rate limit?)`. To check another destination, add one entry to `TARGETS` in `scripts/verify-release-rollout.mjs`, using one of the check kinds in `scripts/lib/release-rollout/run.mjs`.
+
+
 
 ProPR is licensed under the [Apache License 2.0](../LICENSE). Unless you state otherwise, contributions you submit are licensed under the same terms, as set out in section 5 of the license.
