@@ -23,6 +23,31 @@ test('automationReportPreview takes the first sentence of the body after the hea
   assert.equal(automationReportPreview('# Docs\nSee docs.example.com for e.g.details. Then rerun.'), 'See docs.example.com for e.g.details.');
 });
 
+test('automationReportPreview skips Setext headings underlined with = or -', () => {
+  // Heading + body, both underline forms.
+  assert.equal(
+    automationReportPreview('Weekly audit\n---\n\nThree packages are outdated. Upgrade soon.'),
+    'Three packages are outdated.',
+  );
+  assert.equal(
+    automationReportPreview('Weekly audit\n============\nThree packages are outdated. Upgrade soon.'),
+    'Three packages are outdated.',
+  );
+  // Heading only: the heading is the fallback, for both underline forms.
+  assert.equal(automationReportPreview('Weekly **audit**\n---\n'), 'Weekly audit');
+  assert.equal(automationReportPreview('Weekly audit\n==='), 'Weekly audit');
+  // A heading wrapped over two lines, then a Setext section heading before the body.
+  assert.equal(
+    automationReportPreview('Weekly dependency\naudit\n===\n\nSummary\n-------\n- lodash is outdated'),
+    'lodash is outdated',
+  );
+  assert.equal(automationReportPreview('Weekly. Audit\n===\nAll clear.'), 'All clear.');
+  // A rule after a blank line, a list item or inside a fence is not an underline.
+  assert.equal(automationReportPreview('# Audit\nAll clear today.\n\n---\nMore'), 'All clear today.');
+  assert.equal(automationReportPreview('- lodash is outdated\nsince Monday\n---'), 'lodash is outdated');
+  assert.equal(automationReportPreview('```\nconst a = 1\n---\n```'), 'const a = 1');
+});
+
 test('automationReportPreview previews the first item when the body starts with a list', () => {
   assert.equal(automationReportPreview('## Weekly **dependency** audit\n\n- lodash is outdated\n- react is current'), 'lodash is outdated');
   assert.equal(automationReportPreview('# Checks\n1. Lint passed. Tests failed.\n2. Build passed'), 'Lint passed.');

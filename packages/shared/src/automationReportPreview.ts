@@ -91,6 +91,51 @@ const stripInline = (line: string): string => stripTags(stripLinks(stripLinks(li
 const HEADING = /^#{1,6}(?=\s|$)/u;
 /** A list item or quote: a body block that does not continue onto the next line. */
 const ITEM = /^(?:>|[-*+](?=\s)|\d+[.)](?=\s))/u;
+/** A Setext heading underline: a run of `=` (level 1) or `-` (level 2) alone on its line. */
+const SETEXT_UNDERLINE = /^(?:=+|-+)$/u;
+
+/**
+ * The report's lines (trimmed) with each Setext heading — paragraph text
+ * followed by an `===` or `---` underline — rewritten as one ATX `#` heading
+ * line and its underline dropped, so the title of `Weekly audit\n---` is
+ * skipped like `# Weekly audit` rather than read as the body. Only a plain
+ * paragraph can become a heading: an underline after a blank line, a heading,
+ * a fence or a list item (whose plain next lines continue the item) stays a
+ * rule, and code inside a fence is left alone.
+ */
+const normalizeSetextHeadings = (report: string): string[] => {
+  const lines: string[] = [];
+  /** Index in `lines` where the current plain paragraph starts, or -1. */
+  let runStart = -1;
+  let inItem = false;
+  let inFence = false;
+  for (const raw of report.split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      runStart = -1;
+      inItem = false;
+    } else if (inFence) {
+      // Code is not Markdown structure.
+    } else if (runStart >= 0 && SETEXT_UNDERLINE.test(line)) {
+      const heading = lines.splice(runStart).join(' ');
+      lines.push(`# ${heading}`);
+      runStart = -1;
+      continue;
+    } else if (!line || HEADING.test(line) || STRUCTURE_ONLY.test(line)) {
+      runStart = -1;
+      inItem = false;
+    } else if (ITEM.test(line)) {
+      runStart = -1;
+      inItem = true;
+    } else if (runStart < 0 && !inItem) {
+      runStart = lines.length;
+    }
+    lines.push(line);
+  }
+  return lines;
+};
+
 const SENTENCE_PUNCTUATION = new Set(['.', '!', '?']);
 const SENTENCE_CLOSERS = new Set(['"', "'", ')', ']']);
 
@@ -128,8 +173,9 @@ const firstSentence = (text: string): string => {
  * A run report's one-line preview for the run history, which tells runs of
  * the same automation apart: the first sentence of the report body after its
  * heading, Markdown stripped. A body that starts with a list or a quote
- * previews its first item. Headings (the title every run of an automation
- * repeats, and section headings) are skipped; a report that is only headings
+ * previews its first item. Headings, ATX (`#`) or Setext (underlined with
+ * `===` or `---`), are skipped: the title every run of an automation
+ * repeats, and section headings. A report that is only headings
  * previews its first one. The result is cut at a word boundary with `…` past
  * `max` characters. Null for no report or a report with nothing to show.
  */
@@ -137,8 +183,7 @@ export function automationReportPreview(report: string | null | undefined, max =
   if (!report) return null;
   let title: string | null = null;
   const paragraph: string[] = [];
-  for (const raw of report.split(/\r?\n/u)) {
-    const line = raw.trim();
+  for (const line of normalizeSetextHeadings(report)) {
     const breaks = !line || FENCE.test(line) || STRUCTURE_ONLY.test(line) || HEADING.test(line);
     if (paragraph.length > 0 && (breaks || ITEM.test(line))) break;
     if (!line || FENCE.test(line) || STRUCTURE_ONLY.test(line)) continue;
