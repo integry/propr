@@ -424,8 +424,13 @@ jobs:
 
   deploy-hosted-ui:
     name: Deploy hosted UI (app.propr.dev)
-    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-    needs: [validate-release, publish-github-release]
+    # Runs after the GitHub release and latest promotion have finished, so a
+    # failed deploy (for example missing Cloudflare credentials) turns the run
+    # red without blocking or rolling back the release. latest promotion is
+    # skipped on manual releases without push_latest, and a failed promotion
+    # does not stop the UI deploy; only a published release is required.
+    if: ${{ !cancelled() && (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && needs.publish-github-release.result == 'success' }}
+    needs: [validate-release, publish-github-release, promote-latest]
     # The build, deploy and verification steps live in the reusable workflow
     # so this release job and a manual re-deploy from main cannot drift. Its
     # job runs in the protected hosted-ui-production environment, the only
