@@ -2,8 +2,35 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { AUTOMATION_REPORT_PREVIEW_MAX_CHARS, automationReportPreview } from '../src/automationReportPreview.js';
 
-test('automationReportPreview takes the first line with words and strips Markdown markers', () => {
-  assert.equal(automationReportPreview('## Weekly **dependency** audit\n\n- lodash is outdated'), 'Weekly dependency audit');
+test('automationReportPreview falls back to the title when the report is only a heading', () => {
+  assert.equal(automationReportPreview('## Weekly **dependency** audit'), 'Weekly dependency audit');
+  assert.equal(automationReportPreview('# Weekly audit\n\n## Findings\n\n---\n'), 'Weekly audit');
+});
+
+test('automationReportPreview takes the first sentence of the body after the heading', () => {
+  assert.equal(
+    automationReportPreview('# Weekly dependency audit\n\nThree packages are **outdated** since Monday. The rest are current.\n\n- lodash'),
+    'Three packages are outdated since Monday.',
+  );
+  // A paragraph wrapped over several lines runs on until its first sentence ends.
+  assert.equal(
+    automationReportPreview('## Nightly build\nAll targets built\nin 12 minutes! Cache hit rate was 80%.'),
+    'All targets built in 12 minutes!',
+  );
+  // Section headings between the title and the body are skipped too.
+  assert.equal(automationReportPreview('# Audit\n## Summary\nNo new advisories for v0.9.2 today'), 'No new advisories for v0.9.2 today');
+  // A full stop inside a token does not end the sentence.
+  assert.equal(automationReportPreview('# Docs\nSee docs.example.com for e.g.details. Then rerun.'), 'See docs.example.com for e.g.details.');
+});
+
+test('automationReportPreview previews the first item when the body starts with a list', () => {
+  assert.equal(automationReportPreview('## Weekly **dependency** audit\n\n- lodash is outdated\n- react is current'), 'lodash is outdated');
+  assert.equal(automationReportPreview('# Checks\n1. Lint passed. Tests failed.\n2. Build passed'), 'Lint passed.');
+  // A paragraph does not run on into a list that follows it.
+  assert.equal(automationReportPreview('# Checks\nResults\n- lint: passed'), 'Results');
+});
+
+test('automationReportPreview strips Markdown markers from the body', () => {
   assert.equal(automationReportPreview('\n---\n- [x] `npm audit` found [3 issues](https://example.com)\n'), 'npm audit found 3 issues');
   assert.equal(automationReportPreview('```\n> 1. Nothing new since _last_ run\n'), 'Nothing new since last run');
   assert.equal(automationReportPreview('#\n| --- | --- |\nPlain text'), 'Plain text');
@@ -23,11 +50,12 @@ test('automationReportPreview is null without a report or without words', () => 
   assert.equal(automationReportPreview(null), null);
   assert.equal(automationReportPreview(undefined), null);
   assert.equal(automationReportPreview(''), null);
+  assert.equal(automationReportPreview('\n\n   \n'), null);
   assert.equal(automationReportPreview('#\n\n---\n```'), null);
 });
 
-test('automationReportPreview truncates a long first line with an ellipsis', () => {
-  const preview = automationReportPreview(`# ${'word '.repeat(80)}\nsecond line`);
+test('automationReportPreview truncates a long first sentence with an ellipsis', () => {
+  const preview = automationReportPreview(`# Title\n${'word '.repeat(80)}\nsecond line`);
   assert.ok(preview);
   assert.ok(preview.length <= AUTOMATION_REPORT_PREVIEW_MAX_CHARS);
   assert.ok(preview.endsWith('…'));

@@ -28,8 +28,16 @@ interface AgentRunHistoryProps {
  * stacks each run on two lines (started, trigger and state; then duration and
  * report) so nothing needs horizontal panning, and a pane of 36rem or more
  * keeps the five columns. Tailwind needs the variant spelled out in full.
+ *
+ * The column tracks belong to the whole list (LIST_GRID); the header, the list
+ * and each row take them over as subgrids (ROW_GRID), so an `auto` column is
+ * as wide as its widest cell in any row and "Sep 28, 2026" and "5h ago" rows
+ * line up their Trigger, State, Duration and Report columns. A row's padding
+ * counts towards its edge tracks, hence 6.5rem for a 5.5rem Started cell.
  */
-const ROW_GRID = 'grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 [@container(min-width:36rem)]:grid-cols-[minmax(5.5rem,auto)_minmax(5rem,auto)_minmax(12.5rem,auto)_3.5rem_minmax(0,1fr)] [@container(min-width:36rem)]:gap-y-3';
+const LIST_GRID = 'grid grid-cols-[minmax(6.5rem,auto)_minmax(0,1fr)_auto] gap-x-3 [@container(min-width:36rem)]:grid-cols-[minmax(6.5rem,auto)_minmax(5rem,auto)_minmax(12.5rem,auto)_3.5rem_minmax(0,1fr)]';
+const ROW_GRID = 'col-span-full grid grid-cols-subgrid';
+const ROW_CELLS = `${ROW_GRID} items-center gap-y-1 [@container(min-width:36rem)]:gap-y-3`;
 
 const runPath = (definitionId: string, runId: string) =>
   `/automations/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}`;
@@ -38,11 +46,11 @@ const AgentRunRow: React.FC<{ definitionId: string; run: AutomationRunRecord; no
   const started = runStartedAt(run);
   const listQuery = useAutomationListQuery();
   return (
-    <li>
+    <li className={ROW_GRID}>
       <Link
         to={`${runPath(definitionId, run.id)}${listQuery}`}
         data-testid="agent-run-row"
-        className={`${ROW_GRID} border-b border-slate-100 px-4 py-2 text-sm hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500`}
+        className={`${ROW_CELLS} border-b border-slate-100 px-4 py-2 text-sm hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500`}
       >
         <time dateTime={new Date(started).toISOString()} title={formatTimestamp(started)} className="whitespace-nowrap text-slate-700">
           {formatRelativeTime(started, now)}
@@ -130,12 +138,14 @@ export const AgentRunHistory: React.FC<AgentRunHistoryProps> = ({ definitionId, 
 
   return (
     <div data-testid="agent-run-history" className="[container-type:inline-size]">
-      <div className={`${ROW_GRID} hidden border-b border-slate-200 bg-slate-50 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 [@container(min-width:36rem)]:grid`} aria-hidden="true">
-        <span>Started</span><span>Trigger</span><span>State</span><span>Duration</span><span>Report</span>
+      <div className={LIST_GRID} data-testid="agent-run-grid">
+        <div className={`${ROW_CELLS} hidden border-b border-slate-200 bg-slate-50 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 [@container(min-width:36rem)]:grid`} aria-hidden="true">
+          <span>Started</span><span>Trigger</span><span>State</span><span>Duration</span><span>Report</span>
+        </div>
+        <ul aria-label="Runs" className={ROW_GRID}>
+          {runs.map(run => <AgentRunRow key={run.id} definitionId={definitionId} run={run} now={now} />)}
+        </ul>
       </div>
-      <ul aria-label="Runs">
-        {runs.map(run => <AgentRunRow key={run.id} definitionId={definitionId} run={run} now={now} />)}
-      </ul>
       {error && <div className="px-4 pt-3"><SystemAlert>{error}</SystemAlert></div>}
       {nextOffset !== null && (
         <div className="flex justify-center px-4 py-3">
