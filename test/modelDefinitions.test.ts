@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { claudeModelRetirement, currentClaudeModel, isClaudeModelRetired } from '../packages/shared/src/claudeCompatibility.ts';
-import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, currentOpenCodeModel } from '../packages/shared/src/openCodeCompatibility.ts';
+import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, currentOpenCodeModel, retiredOpenCodeModelLabel } from '../packages/shared/src/openCodeCompatibility.ts';
 import { AGENT_DEFAULTS, AGENT_MODELS, ALL_MODELS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS, VIBE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
 import { ANTIGRAVITY_COMPATIBILITY_ALIASES, ANTIGRAVITY_COMPATIBILITY_ROUTES, agentSupportsSavedModel, currentAntigravityModel, getModelInfoWithAntigravityCompatibility } from '../packages/shared/src/antigravityCompatibility.ts';
 import { getReasoningLevelsForAgentType } from '../packages/shared/src/reasoningLevels.ts';
@@ -39,8 +39,8 @@ test('GPT-5.6 Codex models are in the catalog with labels and OpenRouter IDs', (
 
 test('current GPT-6 Codex models are in the catalog with runtime requirements', () => {
     const expectedModels = [
-        // GPT-6.2 Astra and Sol are absent from the Codex 0.169.0 bundled
-        // catalog but run on it for signed-in accounts (verified 2026-11-17)
+        // GPT-6.2 Astra and Sol are bundled from Codex 0.170.0 but also run on
+        // 0.169.0 for signed-in accounts (verified 2026-11-17)
         ['gpt-6.2-astra', 'llm-codex-astra', '0.169.0'],
         ['gpt-6.2-sol', 'llm-codex-gpt62-sol', '0.169.0'],
         ['gpt-6-astra', 'llm-codex-gpt6-astra', '0.153.1'],
@@ -71,7 +71,7 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.326');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.327');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, AGENT_DEFAULT_VERSIONS.claude);
 });
 
@@ -163,7 +163,6 @@ test('OpenCode catalog matches the current built-in free model set', () => {
         'opencode-beam-free',
         'opencode-deepseek-v4.1-flash-free',
         'opencode-flint-40b-free',
-        'opencode-glm-5.3-flash-free',
         'opencode-hy4-flash-free',
         'opencode-iceman-free',
         'opencode-longcat-2.5-free',
@@ -194,6 +193,18 @@ test('retired OpenCode free models route to a current catalog model', () => {
     assert.ok(agentSupportsSavedModel(agent, 'opencode-ling-3.0-flash-fin-free'));
     assert.ok(!agentSupportsSavedModel(agent, 'opencode-mimo-v2.5-free'));
     assert.ok(!agentSupportsSavedModel({ type: 'claude', supportedModels: agent.supportedModels }, 'opencode-ling-3.0-flash-fin-free'));
+});
+
+test('GLM 5.3 Flash Free, no longer served by OpenCode Zen, routes to DeepSeek V4.1 Flash Free', () => {
+    assert.ok(!MODEL_INFO_MAP['opencode-glm-5.3-flash-free'], 'the retired model must not stay in the catalog');
+    assert.strictEqual(MODEL_INFO_MAP['opencode-deepseek-v4.1-flash-free']?.githubLabel, 'llm-opencode-deepseek-v41-flash-free');
+    for (const id of ['opencode-glm-5.3-flash-free', 'opencode/glm-5.3-flash-free', 'opencode:opencode-glm-5.3-flash-free']) {
+        assert.strictEqual(currentOpenCodeModel(id), 'opencode-deepseek-v4.1-flash-free', id);
+    }
+    assert.strictEqual(OPENCODE_RETIRED_MODEL_ALIASES['opencode-glm53-flash-free'], 'opencode-deepseek-v4.1-flash-free');
+    assert.deepStrictEqual(retiredOpenCodeModelLabel('opencode-glm-5.3-flash-free'), {
+        id: 'opencode-glm-5.3-flash-free', githubLabel: 'llm-opencode-glm53-flash-free',
+    });
 });
 
 test('GPT-6.2 Astra is the preferred Codex default', () => {
@@ -229,7 +240,7 @@ test('Claude Code CLI default supports every catalog model', () => {
 });
 
 test('Codex CLI defaults agree and support every catalog model', () => {
-    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.169.0');
+    assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, '0.170.0');
     assert.strictEqual(AGENT_DEFAULTS.codex.defaultCliVersion, AGENT_DEFAULT_VERSIONS.codex);
     for (const { id, minAgentVersion } of CODEX_MODELS) {
         if (!minAgentVersion) continue;
@@ -264,7 +275,7 @@ test('Gemini 4 Argon is one namespaced Antigravity model with 1M limits', () => 
     assert.strictEqual(model?.shortAlias, 'argon');
     assert.strictEqual(model?.openRouterId, 'google/gemini-4-argon');
     assert.strictEqual(model?.minAgentVersion, '1.4.0');
-    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.10');
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.11');
     assert.strictEqual(model?.contextWindow, '1M');
     assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);

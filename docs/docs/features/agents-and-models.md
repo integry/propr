@@ -131,8 +131,8 @@ Anthropic retires Claude Sonnet 4.5 on 2026-11-30. Until then it runs as selecte
 
 {/* GPT-6.1 Sol capability/cost wording verified 2026-10-01: https://developers.openai.com/api/docs/models/gpt-6.1-sol */}
 {/* GPT-6.1 Terra wording and pricing verified 2026-11-12: https://developers.openai.com/api/docs/models/gpt-6.1-terra */}
-{/* GPT-6.2 Astra/Sol run on Codex 0.169.0 with a ChatGPT sign-in (checked 2026-11-17); pricing from OpenRouter openai/gpt-6.2-astra and openai/gpt-6.2-sol, checked 2026-11-17. */}
-GPT-6.2 Astra is the recommended default for the most demanding implementation, research, and security work, and the target of the `astra` alias and the `llm-codex-astra` label. GPT-6.2 Sol is the recommended Sol: near-Astra capability at a lower cost. GPT-6.1 Terra is a fast, efficient option at half of Sol's price, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6 Astra and GPT-6.1 Sol are now legacy models: they stay available through `llm-codex-gpt6-astra` and `llm-codex-gpt61-sol` and their explicit aliases, and saved selections of them are kept. GPT-6 Sol remains available for existing workflows. GPT-6.2 Astra and GPT-6.2 Sol require Codex CLI >= 0.169.0, GPT-6.1 Sol requires >= 0.153.0, GPT-6 Sol and GPT-6 Luna require >= 0.155.0, and GPT-6.1 Terra requires >= 0.165.0. The bundled Codex CLI is pinned to 0.169.0.
+{/* GPT-6.2 Astra/Sol run on Codex 0.169.0 with a ChatGPT sign-in (checked 2026-11-17) and are in the Codex 0.170.0 bundled catalog (checked 2026-11-18); pricing from OpenRouter openai/gpt-6.2-astra and openai/gpt-6.2-sol, checked 2026-11-17. */}
+GPT-6.2 Astra is the recommended default for the most demanding implementation, research, and security work, and the target of the `astra` alias and the `llm-codex-astra` label. GPT-6.2 Sol is the recommended Sol: near-Astra capability at a lower cost. GPT-6.1 Terra is a fast, efficient option at half of Sol's price, and GPT-6 Luna is the fastest and lowest-cost GPT-6 option. GPT-6 Astra and GPT-6.1 Sol are now legacy models: they stay available through `llm-codex-gpt6-astra` and `llm-codex-gpt61-sol` and their explicit aliases, and saved selections of them are kept. GPT-6 Sol remains available for existing workflows. GPT-6.2 Astra and GPT-6.2 Sol require Codex CLI >= 0.169.0, GPT-6.1 Sol requires >= 0.153.0, GPT-6 Sol and GPT-6 Luna require >= 0.155.0, and GPT-6.1 Terra requires >= 0.165.0. The bundled Codex CLI is pinned to 0.170.0.
 
 | Model | Label | Context |
 |-------|-------|---------|
@@ -184,6 +184,8 @@ From Antigravity CLI 1.5.9, the agent has a `run_workflow` tool that runs a Pyth
 
 Antigravity CLI 1.5.10 waits longer before it gives up. When the model API asks it to wait before retrying, it now waits up to 4 minutes instead of ending the turn. It also waits up to 10 minutes, instead of 5, before it treats a silent high-effort response as stalled. ProPR's stall watchdog (`AGENT_STALL_TIMEOUT_MS`, default 10 minutes of silence) is not shorter than either wait, and `--print-timeout` follows the task timeout (`ANTIGRAVITY_TIMEOUT_MS`), so neither cuts these waits short. If XHigh runs are stopped as stalled, raise `AGENT_STALL_TIMEOUT_MS`. In 1.5.10 the `--sandbox` terminal sandbox that ProPR uses for repository inspection also blocks reading `~/.config` and `~/.git-credentials`. Repository inspection runs without git credentials, so this changes nothing for ProPR.
 
+The bundled Antigravity CLI is 1.5.11; its model list is the same as in 1.5.10. With a Gemini API key (`GEMINI_API_KEY`), which has no account quota, `/usage`, `/quota` and `/credits` explain that and point to the key's usage in AI Studio, and in `-p` runs they exit with code 2. ProPR's own prompts do not use these commands.
+
 :::note[Gemini Enterprise review policy]
 ProPR runs Antigravity tasks with `--dangerously-skip-permissions` and repository inspection with `--sandbox`, so the Auto Agent Mode that Antigravity CLI 1.5.7 made the default for headless runs does not change how ProPR runs approve actions. From Antigravity CLI 1.5.2, when a Gemini Enterprise admin requires review of agent actions, that flag no longer approves actions outside the workspace in headless runs: the CLI denies them. Work inside the task's worktree is unaffected, but a step that needs a path outside it fails instead of running. Ask the admin to relax the review requirement for the account ProPR uses if tasks need such actions.
 :::
@@ -198,7 +200,6 @@ Built-in free models:
 | Beam Free | `llm-opencode-beam-free` | 1M |
 | DeepSeek V4.1 Flash Free | `llm-opencode-deepseek-v41-flash-free` | 200K |
 | Flint 40B Free | `llm-opencode-flint-40b-free` | 262K |
-| GLM 5.3 Flash Free | `llm-opencode-glm53-flash-free` | 200K |
 | Hy4 Flash Free | `llm-opencode-hy4-flash-free` | 1M |
 | Iceman Free | `llm-opencode-iceman-free` | 262K |
 | LongCat 2.5 Free | `llm-opencode-longcat25-free` | 1M |
@@ -206,7 +207,7 @@ Built-in free models:
 | Nemotron 3.5 Lightning Free | `llm-opencode-nemotron35-lightning-free` | 262K |
 | Nemotron 3.5 Super VL Free | `llm-opencode-nemotron35-super-vl-free` | 1M |
 
-OpenCode rotates its free models on its servers, and a retired one fails with "Model not found". When ProPR starts, it removes retired free models from OpenCode agents and moves a retired default to the model that replaced it. Saved selections, aliases and labels for a retired model also run on its replacement: Ling 3.0 Flash Fin Free on DeepSeek V4.1 Flash Free, MiMo V2.5 Free on MiMo V2.6 Flash Free, Nemotron 3 Ultra Free on Nemotron 3.5 Super VL Free, and Muse Spark 1.2/1.3 Contributor Free on Big Pickle.
+OpenCode rotates its free models on its servers, and a retired one fails with "Model not found". When ProPR starts, it removes retired free models from OpenCode agents and moves a retired default to the model that replaced it. Saved selections, aliases and labels for a retired model also run on its replacement: Ling 3.0 Flash Fin Free and GLM 5.3 Flash Free on DeepSeek V4.1 Flash Free, MiMo V2.5 Free on MiMo V2.6 Flash Free, Nemotron 3 Ultra Free on Nemotron 3.5 Super VL Free, and Muse Spark 1.2/1.3 Contributor Free on Big Pickle.
 
 OpenCode can also use any provider/model authenticated through its direct-login dialog or on the host. Run `opencode models` after a host `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 
