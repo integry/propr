@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled Codex CLI 0.170.0, Claude Code 2.1.327 and Antigravity CLI
+  1.5.11**: the `propr/agent` image moves from Codex 0.169.0, Claude Code
+  2.1.326 and Antigravity CLI 1.5.10. OpenCode stays on 1.19.6 and Mistral
+  Vibe on 2.25.8.
+  - Codex 0.170.0 bundles GPT-6.2 Astra (272K) and GPT-6.2 Sol (500K) in its
+    model catalog, matching the review context budget ProPR already used. The
+    catalog also raises GPT-6.1 Sol from 272K to 500K, so reviews on GPT-6.1
+    Sol now get the larger budget. GPT-6.2 Astra and Sol still need only Codex
+    0.169.0. The `codex exec` flags ProPR passes, including `--trust`, are
+    unchanged.
+  - Claude Code 2.1.327 fixes headless `claude -p` runs that hung when a
+    model-settings fetch stalled (now a 10-second timeout), and some
+    `--disallowedTools` rules with parentheses now apply as written. WebFetch
+    refuses URLs over 2,000 characters. The bundled model catalog is
+    unchanged.
+  - Antigravity 1.5.11 is release `6132547114106880`, SHA-512 checked against
+    Google's linux_amd64 install manifest. Its model list is unchanged. With a
+    `GEMINI_API_KEY`, `/usage`, `/quota` and `/credits` now exit with code 2
+    in `-p` runs; ProPR's own prompts do not use them.
+
+### Removed
+
+- **OpenCode GLM 5.3 Flash Free**: OpenCode Zen no longer serves
+  `glm-5.3-flash-free` (the paid `glm-5.3-flash` remains), and runs failed
+  with `Model not found: opencode/glm-5.3-flash-free`. It is removed from the
+  free-model catalog. Saved selections, the `glm53-flash-free` alias and the
+  `llm-opencode-glm53-flash-free` label now run on DeepSeek V4.1 Flash Free,
+  and a saved default moves there when ProPR starts.
+
 ## [0.9.2] - 2026-11-18
 
 ### Added
