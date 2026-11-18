@@ -45,6 +45,9 @@ const mockQueueAdd = mock.fn(async () => {});
 let mockActiveJobs: unknown[] = [];
 let mockWaitingJobs: unknown[] = [];
 let mockDelayedJobs: unknown[] = [];
+// Run timestamps of delayed jobs by id, served as BullMQ delayed-set scores.
+let mockDelayedRunAt: Record<string, number> = {};
+const mockDelayedKey = 'bull:github-issue-processor:delayed';
 await mock.module('bullmq', {
     namedExports: {
         ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
@@ -56,6 +59,10 @@ await mock.module('bullmq', {
                 getActive: mock.fn(async () => mockActiveJobs),
                 getWaiting: mock.fn(async () => mockWaitingJobs),
                 getDelayed: mock.fn(async () => mockDelayedJobs),
+                keys: { delayed: mockDelayedKey },
+                client: Promise.resolve({
+                    zscore: async (key: string, id: string) => key === mockDelayedKey && id in mockDelayedRunAt ? String(mockDelayedRunAt[id] * 0x1000) : null,
+                }),
             };
         },
         QueueEvents: function QueueEvents() {
@@ -259,6 +266,8 @@ function createMockRedis() {
         }),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),
+        // The pending list was just given its one-hour expiry.
+        pttl: mock.fn(async () => 3_600_000),
         _store: store,
     };
 }
@@ -1336,6 +1345,7 @@ describe('commentEventHandler — follow-up stored behind a running job', () => 
         mockActiveJobs = [];
         mockWaitingJobs = [];
         mockDelayedJobs = [];
+        mockDelayedRunAt = {};
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: { head: { ref: 'feature-branch' }, labels: [{ name: 'AI' }], assignees: [] },
         }));
@@ -1375,6 +1385,7 @@ describe('commentEventHandler — follow-up stored behind a running job', () => 
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo', comments: [] },
         }];
+        mockDelayedRunAt = { 'pr-comments-batch-testowner-testrepo-42-2': Date.now() + 3000 };
         const event = createPRCommentEvent('One more thing.', [createMockLabel('AI')]);
         const config = createTestConfig();
 
@@ -1382,6 +1393,48 @@ describe('commentEventHandler — follow-up stored behind a running job', () => 
 
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('a usage-limit retry that runs after the pending list expires does not count as a reader', async () => {
+        // The retry carries only the comments its attempt already claimed; a
+        // comment stored now expires with the list an hour before it runs.
+        const retryId = 'pr-comments-batch-testowner-testrepo-42-claude-opus-5-5-feature-branch-ratelimit-retry';
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo', branchName: 'feature-branch' },
+        }];
+        mockDelayedJobs = [{
+            id: retryId,
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo', comments: [{ id: 1, body: 'earlier request' }] },
+        }];
+        mockDelayedRunAt = { [retryId]: Date.now() + 60 * 60 * 1000 + 5 * 60 * 1000 };
+        const event = createPRCommentEvent('Arrived while the delay notice was posting.', [createMockLabel('AI')]);
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-stored-distant-retry', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assertOnlyDrainJobQueued();
+        const [, , options] = mockQueueAdd.mock.calls[0].arguments as [string, unknown, { delay: number }];
+        assert.ok(options.delay < 60_000, 'the drain runs well before the pending list expires');
+    });
+
+    test('a delayed job whose run time cannot be read does not count as a reader', async () => {
+        mockDelayedJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-unknown',
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo', comments: [] },
+        }];
+        mockActiveJobs = [{ name: 'processPullRequestComment', data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' } }];
+        const event = createPRCommentEvent('And the README.', [createMockLabel('AI')]);
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-stored-unknown-delay', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assertOnlyDrainJobQueued();
     });
 
     test('a queued job for another pull request does not count as a reader', async () => {

@@ -25,7 +25,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
 import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
-import { ensurePendingCommentDrain } from './pendingCommentDrain.js';
+import { ensurePendingCommentDrain, pendingCommentsRetainedUntil } from './pendingCommentDrain.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -1018,7 +1018,8 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
     await redisClient.expire(pendingCommentsKey, 3600);
     // Stored is not yet accepted: make sure a job will claim the comment. A
     // failure here fails the delivery, so it is redelivered rather than lost.
-    await ensurePendingCommentDrain({ owner, repo, prNumber }, logger.withCorrelation(config.correlationId ?? generateCorrelationId()));
+    const pendingRetainedUntil = await pendingCommentsRetainedUntil(redisClient, pendingCommentsKey);
+    await ensurePendingCommentDrain({ owner, repo, prNumber, pendingRetainedUntil }, logger.withCorrelation(config.correlationId ?? generateCorrelationId()));
 }
 
 async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueCommentEvent | PullRequestReviewCommentEvent, repoContext: RepoContext): Promise<PRBranchAndLabels> {
