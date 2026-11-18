@@ -237,3 +237,97 @@ test('cancellation notices reported by several handlers for one stop are one com
     assert.match(thread.comments[0].body, /🛑 \*\*Execution Cancelled\*\*/);
     assert.match(thread.comments[0].body, /Reported 3 times/);
 });
+
+/**
+ * The thread as `callers` concurrent callers see it: each caller's first read
+ * of the comments is held until every caller has read, so all of them see the
+ * thread without the notice and all of them post (#3689 review F2).
+ */
+function readBarrier(thread: ReturnType<typeof fakeThread>, callers: number) {
+    let arrived = 0;
+    let release!: () => void;
+    const allRead = new Promise<void>(resolve => { release = resolve; });
+    const heldReads = { count: 0 };
+    const octokitFor = () => {
+        let firstRead = true;
+        return { request: (async (route: string, params: Record<string, unknown>) => {
+            const response = await thread.octokit.request(route as never, params as never);
+            if (route.startsWith('GET') && firstRead) {
+                firstRead = false;
+                heldReads.count++;
+                if (++arrived === callers) release();
+                await allRead;
+            }
+            return response;
+        }) as never };
+    };
+    return { octokitFor, heldReads };
+}
+
+test('identical notices published concurrently, both reading before either posts, leave one notice', async () => {
+    const thread = fakeThread();
+    const barrier = readBarrier(thread, 3);
+    const notice = { kind: 'cancelled', scope: 'issue', body: '🛑 **Execution Cancelled**' };
+    const results = await Promise.all([1, 2, 3].map(() => publishRepeatedNotice(barrier.octokitFor(), target, notice, { log })));
+    assert.equal(barrier.heldReads.count, 3, 'every caller read the thread before any posted');
+    assert.equal(thread.routes.filter(route => route.startsWith('POST')).length, 3, 'all three posted');
+    assert.equal(thread.comments.length, 1, 'the later duplicates folded into the earliest');
+    assert.deepEqual(new Set(results.map(result => result.commentId)), new Set([thread.comments[0].id]));
+    assert.match(thread.comments[0].body, /Reported \d times/);
+});
+
+test('concurrent attempt comments turned into the same notice leave one comment', async () => {
+    const thread = fakeThread();
+    const barrier = readBarrier(thread, 2);
+    const notice = { kind: 'merge-conflict-failed', scope: 'sha-1', body: '❌ failed' };
+    const starts = await Promise.all([1, 2].map(() =>
+        thread.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { body: 'starting' }) as Promise<{ data: Comment }>));
+    await Promise.all(starts.map(start => publishRepeatedNotice(barrier.octokitFor(), target, notice, { ownCommentId: start.data.id, log })));
+    assert.deepEqual(thread.comments.map(comment => comment.id), [starts[0].data.id], 'the newer attempt comment was removed');
+    assert.match(thread.comments[0].body, /Reported 2 times/);
+    assert.doesNotMatch(thread.comments[0].body, /starting/);
+});
+
+test('a concurrent duplicate is kept when the earlier notice cannot be updated, so no notice is dropped', async () => {
+    const thread = fakeThread();
+    const barrier = readBarrier(thread, 2);
+    const notice = { kind: 'cancelled', scope: 'issue', body: 'stopped' };
+    const refusingEdits = barrier.octokitFor();
+    const failing = { request: (async (route: string, params: Record<string, unknown>) => {
+        if (route.startsWith('PATCH')) throw new Error('edit refused');
+        return (refusingEdits as { request: (r: string, p: Record<string, unknown>) => Promise<unknown> }).request(route, params);
+    }) as never };
+    // The caller whose edits are refused posts second, so its comment is the newer one that would fold.
+    await Promise.all([publishRepeatedNotice(barrier.octokitFor(), target, notice, { log }), publishRepeatedNotice(failing, target, notice, { log })]);
+    assert.equal(thread.comments.length, 2, 'the refused fold keeps its own notice rather than deleting it');
+    assert.ok(thread.comments.every(comment => comment.body.includes('stopped')));
+    assert.ok(!thread.routes.includes('DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}'));
+});
+
+test('sibling runs reporting one cancellation at the same time leave one notice', async () => {
+    const thread = fakeThread();
+    const barrier = readBarrier(thread, 2);
+    const options = { correlatedLogger: log, stateManager, claudeResult: null, worktreeInfo: undefined, AI_PROCESSING_TAG: 'AI-processing' } as any;
+    await Promise.all([
+        postCancellationNotice(issue as any, { ...options, octokit: barrier.octokitFor(), taskId: 'issue-task' }),
+        postCancellationNotice(issue as any, { ...options, octokit: barrier.octokitFor(), taskId: 'sibling-task' }),
+    ]);
+    assert.equal(barrier.heldReads.count, 2);
+    assert.equal(thread.comments.length, 1);
+    assert.match(thread.comments[0].body, /🛑 \*\*Execution Cancelled\*\*/);
+    assert.match(thread.comments[0].body, /Reported 2 times/);
+});
+
+test('sibling runs hitting one usage limit at the same time leave one rate-limit notice', async () => {
+    const thread = fakeThread();
+    const barrier = readBarrier(thread, 2);
+    const reset = Math.floor(Date.now() / 1000) + 3 * 60 * 60;
+    const limit = () => Object.assign(new Error('usage limit'), { resetTimestamp: reset, rawErrorMessage: `You've hit your limit · resets ${reset % 12}pm (UTC)` });
+    await Promise.all(['issue-task', 'sibling-task'].map((taskId, index) => handleUsageLimitError(limit(),
+        { id: `job-${index}`, name: 'processGitHubIssue', data: issue } as any, issue as any,
+        { octokit: barrier.octokitFor(), correlatedLogger: log, stateManager, taskId } as any)));
+    assert.equal(barrier.heldReads.count, 2);
+    assert.equal(thread.comments.length, 1);
+    assert.match(thread.comments[0].body, /⌛ \*\*Rate Limit Reached\*\*/);
+    assert.match(thread.comments[0].body, /Reported 2 times/);
+});

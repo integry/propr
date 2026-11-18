@@ -89,7 +89,16 @@ test('a stale local branch behind the remote is fast-forwarded to the fetched re
     assert.equal((await git.raw(['for-each-ref', 'refs/propr/superseded/'])).trim(), '', 'nothing to back up');
 });
 
-test('unpushed commits on the stale local branch are kept, never deleted', async () => {
+/** The refusal #3687 requires: it names the branch and the run stops before Git creates anything. */
+function refusesNamingBranch(error: Error): boolean {
+    assert.ok(error.message.includes(`Local branch '${BRANCH}'`), error.message);
+    assert.match(error.message, /not on origin\//);
+    assert.doesNotMatch(error.message, /already exists/);
+    return true;
+}
+const supersededBackups = async () => (await git.raw(['for-each-ref', 'refs/propr/superseded/'])).trim();
+
+test('a stale local branch with unpushed commits fails the run with a message naming the branch and changes nothing', async () => {
     // An earlier run committed locally and never pushed.
     const first = await followup('first');
     const unpushed = await commitIn(simpleGit(first.worktreePath), first.worktreePath, 'tracked', 'unpushed');
@@ -97,25 +106,26 @@ test('unpushed commits on the stale local branch are kept, never deleted', async
     await fs.remove(first.worktreePath);
     await git.raw(['worktree', 'prune']);
 
-    const retry = await followup('ahead');
-    assert.equal(await head(retry.worktreePath), unpushed, 'the follow-up continues on the unpushed commit');
-    assert.equal(await branchTip(), unpushed);
+    await assert.rejects(followup('ahead'), refusesNamingBranch);
+    assert.equal(await branchTip(), unpushed, 'the unpushed commit is still the branch tip');
+    assert.equal(await supersededBackups(), '', 'nothing was reset behind a backup');
+    assert.equal(await fs.pathExists(path.join(root, 'worktrees', 'owner', repoName, 'ahead')), false);
+    assert.doesNotMatch(await git.raw(['worktree', 'list', '--porcelain']), new RegExp(`branch refs/heads/${BRANCH}`));
 });
 
-test('a stale branch diverged from a force-pushed remote restarts there and keeps its commits under a backup ref', async () => {
+test('a stale branch diverged from a force-pushed remote fails the run naming the branch instead of being reset', async () => {
     await staleLocalBranch();
     const scratch = path.join(root, `scratch-${serial}`);
     await git.raw(['worktree', 'add', scratch, BRANCH]);
     const local = await commitIn(simpleGit(scratch), scratch, 'tracked', 'local only');
     await simpleGit(scratch).raw(['checkout', '--detach']);
     await author.raw(['commit', '--amend', '-m', 'rewritten']);
-    const rewritten = (await author.revparse(['HEAD'])).trim();
     await author.push(['--force', 'origin', `HEAD:refs/heads/${BRANCH}`]);
 
-    const result = await followup('diverged');
-    assert.equal(await head(result.worktreePath), rewritten);
-    const backups = (await git.raw(['for-each-ref', '--format=%(objectname)', `refs/propr/superseded/${BRANCH}/`])).trim().split('\n');
-    assert.deepEqual(backups, [local], 'the local-only commit stays reachable');
+    await assert.rejects(followup('diverged'), refusesNamingBranch);
+    assert.equal(await branchTip(), local, 'the local-only commit is still the branch tip');
+    assert.equal(await supersededBackups(), '');
+    assert.equal(await fs.pathExists(path.join(root, 'worktrees', 'owner', repoName, 'diverged')), false);
 });
 
 test('a branch held by a worktree registration whose directory is gone is released and reused', async () => {
@@ -192,4 +202,34 @@ test('a branch Git refuses to create as already existing is reused instead of fa
         addWorktreeWithoutTracking(git, path.join(root, `fresh-${serial}`), 'main', { startPoint: 'main' }),
         /already exists/,
     );
+});
+
+test('a branch Git refuses as already existing is refused, not reused, when it carries unpushed commits', async () => {
+    await staleLocalBranch();
+    const scratch = path.join(root, `scratch-${serial}`);
+    await git.raw(['worktree', 'add', scratch, BRANCH]);
+    const unpushed = await commitIn(simpleGit(scratch), scratch, 'tracked', 'unpushed');
+    await simpleGit(scratch).raw(['checkout', '--detach']);
+    let missed = false;
+    const fooled = new Proxy(git, {
+        get(target, property, receiver) {
+            if (property !== 'raw') return Reflect.get(target, property, receiver);
+            return (args: string[]) => {
+                if (!missed && args[0] === 'rev-parse' && args.at(-1) === `refs/heads/${BRANCH}`) {
+                    missed = true;
+                    return Promise.resolve('');
+                }
+                return target.raw(args);
+            };
+        },
+    });
+    const worktreePath = path.join(root, `fallback-ahead-${serial}`);
+    await assert.rejects(
+        addWorktreeWithoutTracking(fooled, worktreePath, BRANCH, { startPoint: `origin/${BRANCH}`, resetBranch: true, refuseLocalOnlyCommits: true }),
+        refusesNamingBranch,
+    );
+    assert.ok(missed, 'only the fallback on Git\'s refusal saw the branch');
+    assert.equal(await branchTip(), unpushed);
+    assert.equal(await supersededBackups(), '');
+    assert.equal(await fs.pathExists(worktreePath), false);
 });

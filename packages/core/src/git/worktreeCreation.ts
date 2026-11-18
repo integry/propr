@@ -57,11 +57,19 @@ export async function addWorktreeWithoutTracking(
     options: {
         startPoint: string;
         resetBranch?: boolean;
+        /**
+         * Refuse, naming the branch, an existing branch with commits the start
+         * point lacks instead of continuing on or resetting past them: a
+         * follow-up on a pull request branch (#3687). Without it a branch ahead
+         * is continued (a replacement resuming its lost attempt) and a diverged
+         * one restarts with a backup ref.
+         */
+        refuseLocalOnlyCommits?: boolean;
     },
 ): Promise<string> {
-    const { startPoint, resetBranch = false } = options;
+    const { startPoint, resetBranch = false, refuseLocalOnlyCommits = false } = options;
     const reuseExisting = async () => {
-        await realignDivergedLocalBranch(git, branchName, startPoint);
+        await realignDivergedLocalBranch(git, branchName, startPoint, refuseLocalOnlyCommits);
         return git.raw(['worktree', 'add', worktreePath, branchName]);
     };
     if (resetBranch && await localBranchExists(git, branchName)) return reuseExisting();
@@ -82,17 +90,22 @@ export async function addWorktreeWithoutTracking(
 
 /**
  * Brings a reused local branch onto its start point (the pull request head)
- * without losing commits. A branch behind is fast-forwarded. A branch ahead
- * keeps its unpushed commits. A diverged branch (the remote was rebased or
- * force-pushed) is treated as failed-attempt history rather than rebased here.
+ * without losing commits. A branch behind is fast-forwarded. With `refuse`
+ * (a follow-up on a pull request branch), a branch carrying commits the start
+ * point lacks, unpushed or diverged, is refused with an error naming it and
+ * nothing changes: continuing would publish them with the next push and
+ * resetting past them would discard them without anyone deciding (#3687).
+ * Paths that know an attempt is over restart the branch explicitly first
+ * (restartBranchFromRemoteHead). Otherwise a branch ahead keeps its unpushed
+ * commits, and a diverged branch (the remote was rebased or force-pushed) is
+ * treated as failed-attempt history rather than rebased here.
  * Push salvage may already have saved it remotely at refs/propr/rescue/<taskId>;
  * refs/propr/superseded/<branch>/<time>-<sha> additionally keeps the old tip
  * locally (compare commit SHAs to reconcile the backups), and the
- * branch restarts from the start point. Otherwise every later run would build
- * on the stale history and every push would be rejected. A branch checked out
- * in any worktree is never moved.
+ * branch restarts from the start point. A branch checked out in any worktree
+ * is never moved.
  */
-async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, startPoint: string): Promise<void> {
+async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, startPoint: string, refuse: boolean): Promise<void> {
     let target: string;
     try {
         target = (await git.raw(['rev-parse', '--verify', `${startPoint}^{commit}`])).trim();
@@ -101,6 +114,13 @@ async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, st
     }
     const local = (await git.raw(['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`])).trim();
     if (local === target) return;
+    if (refuse) {
+        const localOnly = Number((await git.raw(['rev-list', '--count', local, '--not', target])).trim());
+        if (localOnly !== 0) {
+            throw new Error(`Local branch '${branchName}' has ${localOnly} commit(s) that are not on ${startPoint} (local tip ${local}); `
+                + `refusing to reuse or reset it so that work is not discarded or published. Nothing was changed: push, back up or delete refs/heads/${branchName} in the clone, then retry`);
+        }
+    }
     const behind = (await git.raw(['rev-list', '--count', target, '--not', local])).trim();
     if (behind === '0') return; // Equal content or ahead: unpushed work stays on the branch.
     await restartLocalBranch(git, branchName, { from: local, to: target, reason: `align with ${startPoint}` });
@@ -383,7 +403,7 @@ async function addWorktreeFromRemoteWithRecovery(git: SimpleGit, worktreePath: s
         git,
         worktreePath,
         branchName,
-        { startPoint: `origin/${branchName}`, resetBranch: true },
+        { startPoint: `origin/${branchName}`, resetBranch: true, refuseLocalOnlyCommits: true },
     );
     let clearedMissing = false;
     let releasedHolder = false;
