@@ -28,6 +28,7 @@ import { PR_BODY_MAX_LENGTH, extractAcceptanceCriteria, stripStatusSlot, type Pr
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import { readReviewDigestChanges, recordReviewDigest } from './reviewDigestLazy.js';
 import { taskPageUrl } from './taskPageUrl.js';
+import type { PostProcessingStep } from './postProcessingStep.js';
 import { isVisualPreviewUploadAuthenticationError, publishPullRequestVisualPreviews } from '../github/visualPreviewAttachments.js';
 
 export type RepoValidation = RepoValidationResult;
@@ -51,6 +52,8 @@ export interface PostProcessingResult {
     pushFailure?: PushFailureRecord;
     /** Set when the agent stopped and reported a blocker (`on_blocker: report`); nothing was committed. */
     blocked?: { explanation: string; uncommittedFiles: string[] };
+    /** The publication step that failed after the agent finished; no pull request was opened. */
+    failedStep?: PostProcessingStep;
 }
 
 type Octokit = {
@@ -420,10 +423,12 @@ interface FinalResultResults {
     commitResult: CommitResult | null;
 }
 
-function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
+function determineResultStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null, commitResult: CommitResult | null): string {
     if (!claudeResult?.success) return 'claude_processing_failed';
     if (postProcessingResult?.pr) return 'complete_with_pr';
     if (postProcessingResult?.blocked) return 'blocked';
+    // Committed work, or a failed publication step, without a pull request is not "no changes".
+    if (commitResult || postProcessingResult?.failedStep) return 'publication_failed';
     return 'claude_success_no_changes';
 }
 
@@ -450,9 +455,9 @@ function buildPostProcessingSection(postProcessingResult: PostProcessingResult |
 }
 
 export function buildFinalResult(issueRef: IssueJobData, localRepoPath: string, results: FinalResultResults): JobResult {
-    const { worktreeInfo, claudeResult, postProcessingResult } = results;
+    const { worktreeInfo, claudeResult, postProcessingResult, commitResult } = results;
     return {
-        status: determineResultStatus(claudeResult, postProcessingResult),
+        status: determineResultStatus(claudeResult, postProcessingResult, commitResult),
         issueNumber: issueRef.number,
         repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
         gitSetup: { localRepoPath, worktreeCreated: !!worktreeInfo, branchName: worktreeInfo?.branchName },
