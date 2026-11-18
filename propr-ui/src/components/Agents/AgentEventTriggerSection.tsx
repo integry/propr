@@ -18,7 +18,7 @@ interface AgentEventTriggerSectionProps {
   error?: string | null;
 }
 
-const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
+const SEGMENT_CLASSES = 'touch-hit px-3 py-1 text-xs font-medium first:rounded-l-[5px] last:rounded-r-[5px] focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
 const CHECKBOX_CLASSES = 'mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-50';
 
 const CHECKBOX_ROW_CLASSES = 'grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-x-3 text-sm text-slate-800';
@@ -50,7 +50,7 @@ export const AgentEventTriggerSection: React.FC<AgentEventTriggerSectionProps> =
         aria-label="Event trigger"
         aria-invalid={Boolean(error) || undefined}
         aria-describedby={error ? agentFieldErrorId('eventTrigger') : undefined}
-        className={`inline-flex overflow-hidden rounded-md border ${error ? 'border-red-400' : 'border-slate-300'}`}
+        className={`inline-flex rounded-md border ${error ? 'border-red-400' : 'border-slate-300'}`}
       >
         {([false, true] as const).map(value => (
           <button

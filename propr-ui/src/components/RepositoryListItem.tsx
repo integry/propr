@@ -122,12 +122,13 @@ export const RepositoryListItem: React.FC<RepositoryListItemProps> = ({
           />
           <button
             type="button"
-            className="min-w-0 flex-1 truncate text-left font-semibold text-slate-800 rounded focus-visible:outline-teal-500"
+            className="touch-hit min-w-0 flex-1 text-left font-semibold text-slate-800 rounded focus-visible:outline-teal-500"
             title={repo.alias ? `${repo.alias} (${repo.name})` : repo.name}
             aria-label={`Select ${repo.name}`}
             aria-pressed={isSelected}
           >
-            {repo.alias || repo.name}
+            {/* The label truncates, not the button: overflow on the button would clip its touch hit box. */}
+            <span className="block truncate">{repo.alias || repo.name}</span>
           </button>
           <a
             href={`https://github.com/${repo.name}`}
