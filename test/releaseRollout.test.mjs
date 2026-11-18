@@ -234,6 +234,16 @@ describe('desktop pre-release targets', () => {
     assert.match(results[0].found, /newest is desktop-linux-preview-v0\.9\.1-dcd3bb97dd3c-all-signed/);
   });
 
+  test('a release candidate of the version does not count as the stable release', async () => {
+    const { results } = await run(['desktop:linux', 'desktop:macos'], {
+      [RELEASES]: json([
+        release('desktop-linux-preview-v0.9.2-rc.1-60792554ba3a-all-signed', linuxAssets('0.9.2')),
+        release('desktop-macos-preview-v0.9.2-rc.1-60792554ba3a', macosAssets('0.9.2')),
+      ]),
+    });
+    assert.deepEqual(results.map(result => result.status), ['missing', 'missing']);
+  });
+
   test('a draft does not count', async () => {
     const { result } = await run(['desktop:macos'], {
       [RELEASES]: json([release('desktop-macos-preview-v0.9.2-60792554ba3a', macosAssets('0.9.2'), { draft: true })]),
@@ -276,6 +286,16 @@ describe('site targets', () => {
   test('download page: ok when it links both desktop pre-releases of the version', async () => {
     const { result } = await run(['site:download'], { [DOWNLOAD]: text(downloadPage('0.9.2')) });
     assert.equal(result.status, 'ok');
+  });
+
+  test('download page: stale while it links release-candidate builds of the version', async () => {
+    const page = `
+  <a href="https://github.com/integry/propr/releases/download/desktop-linux-preview-v0.9.2-rc.1-60792554ba3a-all-signed/ProPR-Desktop-0.9.2-rc.1-linux-x64.deb">deb</a>
+  <a href="https://github.com/integry/propr/releases/download/desktop-macos-preview-v0.9.2-rc.1-60792554ba3a/ProPR-Desktop-0.9.2-rc.1-macos-arm64.dmg">dmg</a>`;
+    const { result } = await run(['site:download'], { [DOWNLOAD]: text(page) });
+    assert.equal(result.status, 'stale');
+    assert.match(result.found, /links desktop-linux-preview-v0\.9\.2-rc\.1-60792554ba3a-all-signed, not desktop-linux-preview-v0\.9\.2-\*-all-signed/);
+    assert.match(result.found, /links desktop-macos-preview-v0\.9\.2-rc\.1-60792554ba3a, not desktop-macos-preview-v0\.9\.2-\*/);
   });
 
   test('download page: stale while it links the previous release, missing when down', async () => {

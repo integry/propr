@@ -3,7 +3,7 @@
 
 import { readHostedUiBundle } from '../hosted-ui-bundle.mjs';
 import { describeError, get, getJson, missing, ok, stale } from './http.mjs';
-import { fill } from './github.mjs';
+import { fill, isVersionTag } from './github.mjs';
 
 /** Same check as the hosted UI deploy: the entry bundle embeds "<version>". */
 export async function checkHostedUiBundle(ctx, target) {
@@ -69,7 +69,7 @@ export async function checkPageLinks(ctx, target) {
   for (const family of target.tagFamilies) {
     const suffix = family.suffix ?? '';
     const prefix = fill(family.prefix, ctx.version);
-    const current = tags.find(tag => tag.startsWith(prefix) && tag.endsWith(suffix));
+    const current = tags.find(tag => isVersionTag(tag, family.prefix, suffix, ctx.version));
     if (current) {
       linked.push(current);
       continue;

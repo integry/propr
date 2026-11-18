@@ -12,6 +12,19 @@ const PER_PAGE = 100;
 
 export const fill = (template, version) => template.replaceAll('{version}', version);
 
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Whether `tag` is a desktop preview tag of exactly `version`: the producers
+ * (apps/desktop/scripts/desktop-preview-identity.mjs, linux-preview-release.mjs)
+ * emit `<prefix with version><12-hex source revision><suffix>`. Matching the
+ * revision keeps `v0.9.2-rc.1-<rev>` from passing as `v0.9.2-<rev>`.
+ */
+export function isVersionTag(tag, prefixTemplate, suffix, version) {
+  const pattern = new RegExp(`^${escapeRegExp(fill(prefixTemplate, version))}[0-9a-f]{12}${escapeRegExp(suffix)}$`);
+  return pattern.test(tag);
+}
+
 const unreadable = (what, response) => missing(`${what} returned HTTP ${response.status}${response.status === 403 || response.status === 429 ? ' (GitHub API rate limit?)' : ''}`);
 
 const normalise = text => text.replace(/\r\n/g, '\n').trim();
@@ -70,7 +83,7 @@ export async function checkDesktopPrerelease(ctx, target) {
   if (listed.error) return listed.error;
   const prefix = fill(target.tagPrefix, ctx.version);
   const suffix = target.tagSuffix ?? '';
-  const matches = tag => tag.startsWith(prefix) && tag.endsWith(suffix);
+  const matches = tag => isVersionTag(tag, target.tagPrefix, suffix, ctx.version);
   const candidates = listed.releases.filter(release => !release.draft && matches(release.tag_name));
   if (candidates.length === 0) {
     const family = target.tagPrefix.split('{version}')[0];
