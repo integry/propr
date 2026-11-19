@@ -392,27 +392,41 @@ test('Codex entrypoint adds --trust to codex exec only when asked and the instal
     const block = script.slice(script.indexOf('codex_exec_offers_trust() {'), script.indexOf('# If arguments are provided'));
     assert.ok(block.includes('set -- codex exec --trust "$@"'));
     const root = mkdtempSync(join(tmpdir(), 'codex-entrypoint-trust-'));
+    // The block reads help as node through su-exec when `id -u` is 0. The user is
+    // stubbed, not inherited, so the result does not depend on whether the runner
+    // runs as root or has su-exec and a node user. `--trust` reaching the stub
+    // codex as root shows su-exec was called with node first.
+    const realId = spawnSync('sh', ['-c', 'command -v id'], { encoding: 'utf8' }).stdout.trim();
+    assert.ok(realId, 'id must be available to pass through non -u arguments');
     // Help text shapes of Codex 0.168.0 (no --trust) and 0.169.0.
     const stub = (name: string, helpOptions: string) => {
         const bin = join(root, name); mkdirSync(bin);
         writeFileSync(join(bin, 'codex'), `#!/bin/sh\nprintf '%s\\n' 'Options:' ${helpOptions} '      --ephemeral'\n`, { mode: 0o755 });
+        writeFileSync(join(bin, 'id'), `#!/bin/sh\n[ "$*" = "-u" ] && { printf '%s\\n' "$PROPR_TEST_UID"; exit 0; }\nexec '${realId}' "$@"\n`, { mode: 0o755 });
+        writeFileSync(join(bin, 'su-exec'), '#!/bin/sh\n[ "$PROPR_TEST_SU_EXEC" = fail ] && exit 1\n[ "$1" = node ] || exit 1\nshift\nexec "$@"\n', { mode: 0o755 });
         return bin;
     };
     const legacy = stub('legacy', "'      --trusted-hosts <HOSTS>'");
     const current = stub('current', "'      --trust'");
-    const run = (bin: string, env: Record<string, string>, ...args: string[]) => spawnSync('bash', ['-c', `set -e\n${block}\nprintf '%s\\n' "$@"`, 'entrypoint', ...args], {
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROPR_EXTENSION_EXCLUSIVE_MCP: '0', ...env }, encoding: 'utf8',
-    }).stdout.trim().split('\n');
     const task = ['codex', 'exec', '--ephemeral', '--json', '-'];
     try {
-        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), ['codex', 'exec', '--trust', '--ephemeral', '--json', '-']);
-        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'exec', 'resume', '--json', 'thread', '-'),
-            ['codex', 'exec', '--trust', 'resume', '--json', 'thread', '-']);
-        assert.deepEqual(run(legacy, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), task);
-        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '0' }, ...task), task);
-        assert.deepEqual(run(current, {}, ...task), task);
-        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1', PROPR_EXTENSION_EXCLUSIVE_MCP: '1' }, ...task), task);
-        assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'app-server'), ['codex', 'app-server']);
+        for (const uid of ['1000', '0']) {
+            const run = (bin: string, env: Record<string, string>, ...args: string[]) => spawnSync('bash', ['-c', `set -e\n${block}\nprintf '%s\\n' "$@"`, 'entrypoint', ...args], {
+                env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROPR_EXTENSION_EXCLUSIVE_MCP: '0', PROPR_TEST_UID: uid, PROPR_TEST_SU_EXEC: 'ok', ...env }, encoding: 'utf8',
+            }).stdout.trim().split('\n');
+            assert.equal(spawnSync('bash', ['-c', 'id -u'], { env: { ...process.env, PATH: `${current}:${process.env.PATH}`, PROPR_TEST_UID: uid }, encoding: 'utf8' }).stdout.trim(), uid);
+            assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), ['codex', 'exec', '--trust', '--ephemeral', '--json', '-'], `uid ${uid}`);
+            assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'exec', 'resume', '--json', 'thread', '-'),
+                ['codex', 'exec', '--trust', 'resume', '--json', 'thread', '-'], `uid ${uid}`);
+            assert.deepEqual(run(legacy, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, ...task), task, `uid ${uid}`);
+            assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '0' }, ...task), task, `uid ${uid}`);
+            assert.deepEqual(run(current, {}, ...task), task, `uid ${uid}`);
+            assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1', PROPR_EXTENSION_EXCLUSIVE_MCP: '1' }, ...task), task, `uid ${uid}`);
+            assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1' }, 'codex', 'app-server'), ['codex', 'app-server'], `uid ${uid}`);
+            // As root the help is read only through su-exec: if that fails, no flag.
+            assert.deepEqual(run(current, { PROPR_CODEX_TRUST_WORKSPACE: '1', PROPR_TEST_SU_EXEC: 'fail' }, ...task),
+                uid === '0' ? task : ['codex', 'exec', '--trust', '--ephemeral', '--json', '-'], `uid ${uid}`);
+        }
     } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
