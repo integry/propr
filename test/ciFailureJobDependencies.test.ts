@@ -29,7 +29,7 @@ const AGGREGATE_ID = 900;
 const AGGREGATE = 'Run Full Test Suite';
 const SHARD = 'Full Test Suite Shard 3/4';
 const dependencyLine = (names: string[]) =>
-    `Depends on the failed job(s) above: ${names.map(name => `\`${name}\``).join(', ')}. It may have failed only because they did; check them first.`;
+    `Depends on the failed job(s): ${names.map(name => `\`${name}\``).join(', ')}. It may have failed only because they did; check them first.`;
 
 function workflow(): ParsedWorkflow {
     const parsed = parseWorkflowJobs(WORKFLOW_TEXT);
@@ -215,9 +215,16 @@ function failure(name: string, jobId: number): CiFailureFollowupRequest {
 
 const keyMarker = (request: CiFailureFollowupRequest) => buildCiFailureFollowupMarker(buildCiFailureDedupeKey(request));
 const sectionAt = (body: string, name: string) => body.indexOf(`- Check: \`${name}\``);
+/** The text of one check's section, from its `- Check:` line to the next section or the hidden markers. */
+function sectionOf(body: string, name: string): string {
+    const start = sectionAt(body, name);
+    assert.ok(start !== -1, `${name} is listed`);
+    const ends = [body.indexOf('\n---\n', start), body.indexOf('\n<!--', start)].filter(at => at !== -1);
+    return body.slice(start, Math.min(...ends, body.length));
+}
 
 describe('CI-failure comment relates the aggregate to its failed shard', () => {
-    test('shard, then aggregate: both listed with evidence, the aggregate after the shard with the dependency line', async () => {
+    test('shard, then aggregate: both listed with evidence, the aggregate with the dependency line', async () => {
         const github = fakeGitHub();
         const deps = dependencies(github.octokit);
         assert.strictEqual((await postCiFailureFollowup(failure(SHARD, 13), 'shard', deps)).reason, 'posted');
@@ -233,8 +240,8 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
         assert.strictEqual(body.split('**Failure evidence**').length, 3, 'each check keeps its own evidence');
         assert.ok(body.includes(`> ${SHARD} output`));
         assert.ok(body.includes(`> ${AGGREGATE} output`));
-        assert.ok(sectionAt(body, SHARD) < sectionAt(body, AGGREGATE));
-        assert.ok(body.indexOf(dependencyLine([SHARD])) > sectionAt(body, AGGREGATE), 'the line is in the aggregate\'s section');
+        assert.ok(sectionOf(body, AGGREGATE).includes(dependencyLine([SHARD])), 'the line is in the aggregate\'s section');
+        assert.ok(!sectionOf(body, SHARD).includes('Depends on'));
         assert.strictEqual(body.split('Depends on').length, 2, 'one line');
         assert.ok(body.includes(keyMarker(failure(SHARD, 13))));
         assert.ok(body.includes(keyMarker(failure(AGGREGATE, AGGREGATE_ID))));
@@ -244,7 +251,7 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
         assert.strictEqual((await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'again', dependencies(github.octokit))).reason, 'duplicate');
     });
 
-    test('aggregate first: the follow-up prompt has the line; the shard is then listed before the aggregate', async () => {
+    test('aggregate first: the follow-up prompt has the line; the shard reported later leaves the aggregate\'s section as it was', async () => {
         const github = fakeGitHub();
         const deps = dependencies(github.octokit);
         assert.strictEqual((await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps)).reason, 'posted');
@@ -252,22 +259,22 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
         assert.ok(prompt.startsWith(`CI failed: **${AGGREGATE}**\n`));
         assert.ok(prompt.includes(`> ${AGGREGATE} output`), 'the aggregate keeps its evidence');
         assert.ok(prompt.includes(dependencyLine([SHARD])));
+        assert.ok(!prompt.includes('above'), 'the line does not point at a position in the comment');
         assert.ok(!prompt.includes('<!--'), 'no hidden markers reach the prompt');
+        const aggregateSection = sectionOf(github.posts[0], AGGREGATE);
 
         assert.strictEqual((await postCiFailureFollowup(failure(SHARD, 13), 'shard', deps)).reason, 'updated');
         const body = github.comments[0].body;
-        assert.ok(body.startsWith(`CI failed: **${SHARD}**, **${AGGREGATE}**\n`), 'the shard comes first in the title');
-        assert.ok(sectionAt(body, SHARD) < sectionAt(body, AGGREGATE), 'and in the sections');
-        const lines = body.split('\n');
-        const shardAt = lines.indexOf(`- Check: \`${SHARD}\``);
-        assert.ok(lines[shardAt + 2].startsWith('- Commit: '), 'the commit line moves to the first check');
+        assert.ok(body.includes(aggregateSection), 'the aggregate\'s section is not edited');
+        assert.ok(!sectionOf(body, SHARD).includes('Depends on'));
         assert.strictEqual(body.split('- Commit: ').length, 2);
         assert.strictEqual(body.split('**Failure evidence**').length, 3);
+        assert.ok(body.includes(`> ${SHARD} output`));
         assert.ok(body.includes(keyMarker(failure(SHARD, 13))));
         assert.ok(body.includes(keyMarker(failure(AGGREGATE, AGGREGATE_ID))));
     });
 
-    test('a shard joining a comment started by another failure goes before its dependent aggregate only', async () => {
+    test('an aggregate joining a comment started by another failure names every failed shard it needs', async () => {
         const github = fakeGitHub({ failedShards: [1, 3] });
         const deps = dependencies(github.octokit);
         await postCiFailureFollowup(failure('Lint', 30), 'lint', deps);
@@ -276,14 +283,15 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
         await postCiFailureFollowup(failure('Full Test Suite Shard 1/4', 11), 'shard-1', deps);
 
         const body = github.comments[0].body;
-        assert.ok(body.startsWith(`CI failed: **Lint**, **${SHARD}**, **Full Test Suite Shard 1/4**, **${AGGREGATE}**\n`));
-        assert.ok(sectionAt(body, 'Lint') < sectionAt(body, SHARD));
-        assert.ok(sectionAt(body, 'Full Test Suite Shard 1/4') < sectionAt(body, AGGREGATE));
-        assert.ok(body.includes(dependencyLine(['Full Test Suite Shard 1/4', SHARD])));
+        assert.ok(sectionOf(body, AGGREGATE).includes(dependencyLine(['Full Test Suite Shard 1/4', SHARD])));
+        assert.strictEqual(body.split('Depends on').length, 2, 'only the aggregate has a line');
         assert.strictEqual(body.split('**Failure evidence**').length, 5);
+        for (const name of ['Lint', AGGREGATE, SHARD, 'Full Test Suite Shard 1/4']) {
+            assert.ok(sectionOf(body, name).includes(`> ${name} output`), `${name} keeps its evidence`);
+        }
     });
 
-    test('a chain arriving aggregate, runner selection, shard is listed runner selection, shard, aggregate', async () => {
+    test('a chain arriving aggregate, runner selection, shard: each job names only the failed jobs it needs directly', async () => {
         const ROUTE = 'Select PR check runners';
         const github = fakeGitHub({ failedShards: [3], routeFailed: true });
         const deps = dependencies(github.octokit);
@@ -294,19 +302,13 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
 
         assert.strictEqual(github.posts.length, 1);
         const body = github.comments[0].body;
-        assert.ok(body.startsWith(`CI failed: **${ROUTE}**, **${SHARD}**, **${AGGREGATE}**\n`), body.split('\n')[0]);
-        assert.ok(sectionAt(body, ROUTE) < sectionAt(body, SHARD));
-        assert.ok(sectionAt(body, SHARD) < sectionAt(body, AGGREGATE));
-        const lines = body.split('\n');
-        assert.ok(lines[lines.indexOf(`- Check: \`${ROUTE}\``) + 2].startsWith('- Commit: '), 'the commit line follows the first check');
         assert.strictEqual(body.split('- Commit: ').length, 2);
-        const shardLine = body.indexOf(dependencyLine([ROUTE]));
-        assert.ok(shardLine > sectionAt(body, SHARD) && shardLine < sectionAt(body, AGGREGATE), 'the shard keeps its line');
-        const aggregateLine = body.indexOf(dependencyLine([SHARD]));
-        assert.ok(aggregateLine > sectionAt(body, AGGREGATE), 'the aggregate keeps its line');
+        assert.ok(sectionOf(body, AGGREGATE).includes(dependencyLine([SHARD])), 'the aggregate keeps its line');
+        assert.ok(sectionOf(body, SHARD).includes(dependencyLine([ROUTE])), 'the shard has its line');
+        assert.ok(!sectionOf(body, ROUTE).includes('Depends on'));
         assert.strictEqual(body.split('Depends on').length, 3);
         assert.strictEqual(body.split('**Failure evidence**').length, 4);
-        for (const name of [ROUTE, SHARD, AGGREGATE]) assert.ok(body.includes(`> ${name} output`), `${name} keeps its evidence`);
+        for (const name of [ROUTE, SHARD, AGGREGATE]) assert.ok(sectionOf(body, name).includes(`> ${name} output`), `${name} keeps its evidence`);
         assert.ok(body.includes(keyMarker(failure(AGGREGATE, AGGREGATE_ID))));
         assert.ok(body.includes(keyMarker(failure(ROUTE, 2))));
         assert.ok(body.includes(keyMarker(failure(SHARD, 13))));
@@ -326,7 +328,7 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
     });
 
     for (const workflowFile of ['missing', 'garbage'] as const) {
-        test(`a ${workflowFile === 'missing' ? 'unreadable' : 'unparsable'} workflow file adds no line and keeps the arrival order`, async () => {
+        test(`a ${workflowFile === 'missing' ? 'unreadable' : 'unparsable'} workflow file adds no line`, async () => {
             const github = fakeGitHub({ workflowFile });
             const deps = dependencies(github.octokit);
             await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps);
@@ -334,8 +336,6 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
 
             const body = github.comments[0].body;
             assert.strictEqual(github.contentsReads.length > 0, true);
-            assert.ok(body.startsWith(`CI failed: **${AGGREGATE}**, **${SHARD}**\n`));
-            assert.ok(sectionAt(body, AGGREGATE) < sectionAt(body, SHARD));
             assert.ok(!body.includes('Depends on'));
             assert.strictEqual(body.split('**Failure evidence**').length, 3);
         });

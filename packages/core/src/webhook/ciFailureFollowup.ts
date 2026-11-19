@@ -273,7 +273,6 @@ async function reportClaimedFailure(
 
     if (scan.sameHead) {
         const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
-            name: request.evidence.name,
             title: checkTitle(request.evidence),
             section: buildCheckSection({ evidence: request.evidence, excerpt: annotationExcerpt, dependsOn }),
             marker: buildCiFailureFollowupMarker(dedupeKey),
