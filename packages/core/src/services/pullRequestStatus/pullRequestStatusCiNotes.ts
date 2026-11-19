@@ -84,10 +84,25 @@ export function failedStatusCheckRuns(blockingRuns: readonly ListedCheckRunDetai
 }
 
 /**
- * Failed checks classified per status read; more is a broadly broken head,
- * not a runner problem worth reading every job for.
+ * Failed checks classified at once per status read. Every failed check is
+ * classified (a registry outage fails many install steps at once, and each
+ * of them gets no code follow-up); this only bounds the reads in flight.
  */
-const MAX_CLASSIFIED_FAILED_RUNS = 5;
+const CLASSIFY_CONCURRENCY = 4;
+
+/** `classify` for every item, at most `limit` at a time, results in item order. */
+async function mapBounded<T, R>(items: readonly T[], limit: number, classify: (item: T) => Promise<R>): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < items.length) {
+            const index = next++;
+            results[index] = await classify(items[index]);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+}
 
 /** Whether one failed check of the head is infrastructure-only; any read failure says no. */
 async function isRunnerProblem(github: InfrastructureGitHub, owner: string, repo: string, run: FailedStatusCheckRun): Promise<boolean> {
@@ -109,17 +124,16 @@ async function isRunnerProblem(github: InfrastructureGitHub, owner: string, repo
  * The failed checks of the current head that look like a runner or network
  * problem (ciFailureInfrastructure), derived when the status is read: nothing
  * is stored, so the note goes away as soon as those checks no longer fail on
- * the head (a re-run passed, or a new push). Null when none, or when there
- * are too many failed checks to read. Never throws.
+ * the head (a re-run passed, or a new push). Null when none. Never throws.
  */
 export async function loadCiRunnerProblemFact(
     github: InfrastructureGitHub, owner: string, repo: string, failedRuns: readonly FailedStatusCheckRun[],
 ): Promise<PullRequestCiRunnerProblem | null> {
     const candidates = failedRuns.filter(run => (run.appSlug === null || run.appSlug === 'github-actions')
         && (run.conclusion === 'failure' || run.conclusion === 'timed_out'));
-    if (candidates.length === 0 || candidates.length > MAX_CLASSIFIED_FAILED_RUNS) return null;
+    if (candidates.length === 0) return null;
     try {
-        const verdicts = await Promise.all(candidates.map(run => isRunnerProblem(github, owner, repo, run)));
+        const verdicts = await mapBounded(candidates, CLASSIFY_CONCURRENCY, run => isRunnerProblem(github, owner, repo, run));
         const jobs = candidates.filter((_, index) => verdicts[index]).map(run => run.name);
         return jobs.length > 0 ? { jobs } : null;
     } catch (error) {

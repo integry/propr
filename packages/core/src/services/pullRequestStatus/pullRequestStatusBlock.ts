@@ -218,11 +218,13 @@ function epicStatusLine(status: PullRequestStatus, maxNames: number): string[] {
     if (epic.merged >= epic.total) {
         if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
         else if (status.state === 'working') parts.push(ultrafixHeadline(status) ? ultrafixCycleText(detail.ultrafix!) : ACTIVITY_TEXT[detail.activity ?? 'queued']);
+        parts.push(...ciNoteParts(detail));
         const checks = checksText(detail.checks);
         if (checks) parts.push(checks);
         return parts;
     }
-    return [...parts, ...epicParts(status, maxNames)];
+    // The epic branch's own CI notes, after what its sub-PRs and issues are doing.
+    return [...parts, ...epicParts(status, maxNames), ...ciNoteParts(detail)];
 }
 
 function statusLine(status: PullRequestStatus, now: Date, maxNames: number): string {

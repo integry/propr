@@ -448,6 +448,13 @@ function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts)
     const own: PullRequestStatusFacts = { ...facts, latestReviewScore: null, latestReviewBlockers: null };
     const base: PullRequestStatusDetail = { ...emptyDetail(own), epic: { merged: epic.merged, total: epic.total, focus: null } };
     if (epic.merged >= epic.total) return computeSinglePullRequestStatus(own, base);
+    // The epic branch's own CI notes hold while its issues are still merging, too.
+    return withCiNotes(computeUnfinishedEpicStatus(facts, own, epic, base), facts);
+}
+
+function computeUnfinishedEpicStatus(
+    facts: PullRequestStatusFacts, own: PullRequestStatusFacts, epic: EpicStatusFacts, base: PullRequestStatusDetail,
+): PullRequestStatus {
 
     const detail: PullRequestStatusDetail = { ...base, checks: checkCounts(facts.checks), failedChecks: [...facts.checks.failedNames], ...cancelledChecks(facts.checks) };
     const children = (epic.children ?? []).filter(child => child.status !== null && child.status.state !== 'none');

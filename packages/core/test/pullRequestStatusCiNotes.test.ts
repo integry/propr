@@ -177,12 +177,64 @@ test('a code failure, an unreadable check or no failed check leaves the runner-p
     const quiet = fakeGitHub({ 101: { annotations: [EXIT], steps: INSTALL_FAILED } });
     assert.equal(await loadCiRunnerProblemFact(quiet, OWNER, REPO, [failedRun(101, 'Validate Changes')]), null);
     assert.equal(quiet.routes.includes('GET /repos/{owner}/{repo}/actions/jobs/{job_id}'), false);
-    // Checks of other apps have no Actions job; a broadly failing head is not read check by check.
+    // Checks of other apps have no Actions job.
     const other = fakeGitHub({ 101: { annotations: [MIRROR_STALL], steps: INSTALL_FAILED } });
     assert.equal(await loadCiRunnerProblemFact(other, OWNER, REPO, [failedRun(101, 'ci/external', { appSlug: 'circleci-checks' })]), null);
     assert.deepEqual(other.routes, []);
-    const many = Array.from({ length: 6 }, (_, index) => failedRun(200 + index, `job-${index}`));
-    const broad = fakeGitHub({});
-    assert.equal(await loadCiRunnerProblemFact(broad, OWNER, REPO, many), null);
-    assert.deepEqual(broad.routes, []);
+});
+
+test('six jobs failing on a registry outage during install still get the runner note, read a few at a time', async () => {
+    const REGISTRY_DOWN = { annotation_level: 'failure', path: '.github', message: 'npm ERR! 503 Service Unavailable - GET https://registry.npmjs.org/vitest' };
+    const ids = Array.from({ length: 6 }, (_, index) => 300 + index);
+    const steps = [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run npm ci', conclusion: 'failure' }];
+    const github = fakeGitHub(Object.fromEntries(ids.map(id => [id, { annotations: [REGISTRY_DOWN, EXIT], steps }])));
+    let inFlight = 0;
+    let peak = 0;
+    const request = github.request;
+    const counted = {
+        request: async (route: string, params: Record<string, unknown>) => {
+            inFlight++;
+            peak = Math.max(peak, inFlight);
+            try {
+                await new Promise(resolve => setTimeout(resolve, 2));
+                return await request(route, params);
+            } finally {
+                inFlight--;
+            }
+        },
+    };
+    const runs = ids.map((id, index) => failedRun(id, `shard-${index + 1}`));
+    const fact = await loadCiRunnerProblemFact(counted, OWNER, REPO, runs);
+    assert.deepEqual(fact, { jobs: ['shard-1', 'shard-2', 'shard-3', 'shard-4', 'shard-5', 'shard-6'] });
+    assert.ok(peak <= 4, `at most four checks read at once, saw ${peak}`);
+    assert.equal(github.routes.some(route => !route.startsWith('GET ')), false, 'read-only: no re-run request');
+    const rendered = line({ tasks: [], checks: { complete: true, passed: 1, failed: 6, pending: 0, failedNames: runs.map(run => run.name) }, ciRunnerProblem: fact });
+    assert.ok(rendered.includes('shard-1, shard-2 +4 failed on what looks like a runner or network problem, re-run the failed jobs'), rendered);
+});
+
+const RUNNER_NOTE = 'Validate Changes failed on what looks like a runner or network problem, re-run the failed jobs';
+const FAILED_ON_EPIC = { complete: true, passed: 20, failed: 1, pending: 0, failedNames: ['Validate Changes'] };
+
+test('an epic with every issue merged shows its own suspension and runner-problem notes', () => {
+    const done = { merged: 3, total: 3 };
+    const suspended = line({ epic: done, ciSuspension: { cancelledRuns: 2 } });
+    assert.equal(suspended,
+        '**ProPR** 🔨 3 of 3 issues merged · Follow-up in progress · CI suspended until the follow-up finishes, re-running checks before then has no effect'
+        + ' · runs cancelled by ProPR: 2 · checks: 20 passed, 3 cancelled · updated Nov 19 03:40 UTC');
+    const runner = line({ epic: done, tasks: [], checks: FAILED_ON_EPIC, ciRunnerProblem: { jobs: ['Validate Changes'] } });
+    assert.equal(runner,
+        `**ProPR** ⚠️ 3 of 3 issues merged · failed: Validate Changes · ${RUNNER_NOTE} · checks: 20 passed, 1 failed · updated Nov 19 03:40 UTC`);
+});
+
+test('an unfinished epic shows its own suspension and runner-problem notes after what its issues are doing', () => {
+    const unfinished = { merged: 1, total: 3 };
+    const status = computePullRequestStatus(facts({ epic: unfinished, ciSuspension: { cancelledRuns: 1 } }));
+    assert.deepEqual(status.detail.ciSuspension, { cancelledRuns: 1 });
+    assert.equal(renderPullRequestStatusLine(status, NOW),
+        `**ProPR** 🔨 1 of 3 issues merged · Follow-up in progress · ${CI_SUSPENDED_TEXT} · runs cancelled by ProPR: 1 · updated Nov 19 03:40 UTC`);
+    const idle = computePullRequestStatus(facts({ epic: unfinished, tasks: [], checks: FAILED_ON_EPIC, ciRunnerProblem: { jobs: ['Validate Changes'] } }));
+    assert.deepEqual(idle.detail.ciRunnerProblem, { jobs: ['Validate Changes'] });
+    assert.equal(renderPullRequestStatusLine(idle, NOW), `**ProPR** ⚠️ 1 of 3 issues merged · nothing in progress · ${RUNNER_NOTE} · updated Nov 19 03:40 UTC`);
+    // Without either fact the epic line is unchanged.
+    assert.equal(line({ epic: unfinished, tasks: [], checks: FAILED_ON_EPIC }), '**ProPR** ⚠️ 1 of 3 issues merged · nothing in progress · updated Nov 19 03:40 UTC');
 });
