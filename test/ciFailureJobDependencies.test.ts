@@ -283,6 +283,35 @@ describe('CI-failure comment relates the aggregate to its failed shard', () => {
         assert.strictEqual(body.split('**Failure evidence**').length, 5);
     });
 
+    test('a chain arriving aggregate, runner selection, shard is listed runner selection, shard, aggregate', async () => {
+        const ROUTE = 'Select PR check runners';
+        const github = fakeGitHub({ failedShards: [3], routeFailed: true });
+        const deps = dependencies(github.octokit);
+        assert.strictEqual((await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps)).reason, 'posted');
+        assert.ok(github.posts[0].includes(dependencyLine([SHARD])), 'the aggregate names only the job it needs directly');
+        assert.strictEqual((await postCiFailureFollowup(failure(ROUTE, 2), 'route', deps)).reason, 'updated');
+        assert.strictEqual((await postCiFailureFollowup(failure(SHARD, 13), 'shard', deps)).reason, 'updated');
+
+        assert.strictEqual(github.posts.length, 1);
+        const body = github.comments[0].body;
+        assert.ok(body.startsWith(`CI failed: **${ROUTE}**, **${SHARD}**, **${AGGREGATE}**\n`), body.split('\n')[0]);
+        assert.ok(sectionAt(body, ROUTE) < sectionAt(body, SHARD));
+        assert.ok(sectionAt(body, SHARD) < sectionAt(body, AGGREGATE));
+        const lines = body.split('\n');
+        assert.ok(lines[lines.indexOf(`- Check: \`${ROUTE}\``) + 2].startsWith('- Commit: '), 'the commit line follows the first check');
+        assert.strictEqual(body.split('- Commit: ').length, 2);
+        const shardLine = body.indexOf(dependencyLine([ROUTE]));
+        assert.ok(shardLine > sectionAt(body, SHARD) && shardLine < sectionAt(body, AGGREGATE), 'the shard keeps its line');
+        const aggregateLine = body.indexOf(dependencyLine([SHARD]));
+        assert.ok(aggregateLine > sectionAt(body, AGGREGATE), 'the aggregate keeps its line');
+        assert.strictEqual(body.split('Depends on').length, 3);
+        assert.strictEqual(body.split('**Failure evidence**').length, 4);
+        for (const name of [ROUTE, SHARD, AGGREGATE]) assert.ok(body.includes(`> ${name} output`), `${name} keeps its evidence`);
+        assert.ok(body.includes(keyMarker(failure(AGGREGATE, AGGREGATE_ID))));
+        assert.ok(body.includes(keyMarker(failure(ROUTE, 2))));
+        assert.ok(body.includes(keyMarker(failure(SHARD, 13))));
+    });
+
     test('an aggregate failing with no failed needed job gets no line', async () => {
         const github = fakeGitHub({ failedShards: [], routeFailed: true });
         await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', dependencies(github.octokit));

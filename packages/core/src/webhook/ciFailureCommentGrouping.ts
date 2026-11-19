@@ -61,11 +61,12 @@ export function scanCiFailureComments(
 
 /**
  * Adds one check to an existing same-head comment: its name joins the title,
- * its details and evidence go after the listed ones, and its key marker joins
- * the hidden markers at the end, so redeliveries of it stay deduplicated. When
- * a listed check's dependency line names this check (a job that needs it was
- * reported first), it is inserted before that check instead, in the title and
- * in the sections, so dependent jobs stay listed after the jobs they need.
+ * its details and evidence join the listed ones, and its key marker joins the
+ * hidden markers at the end, so redeliveries of it stay deduplicated. The
+ * checks are then ordered so that every check whose dependency line names
+ * another listed check comes after it, whatever order they arrived in; checks
+ * with no such relation keep their arrival order. The title follows the same
+ * order and the shared commit line moves to the first check's section.
  */
 export function appendCheckToCiFailureComment(
     body: string,
@@ -77,51 +78,68 @@ export function appendCheckToCiFailureComment(
     const [title, ...rest] = content.split('\n');
     const instructionAt = rest.indexOf(SINGLE_FAILURE_INSTRUCTION);
     if (instructionAt !== -1) rest[instructionAt] = MULTIPLE_FAILURES_INSTRUCTION;
-    const inserted = insertBeforeDependent(title, rest, check);
-    if (inserted) return [...inserted, '', markers].join('\n');
+    const ordered = orderByDependencies(title, rest, check);
+    if (ordered) return [...ordered, '', markers].join('\n');
     return [`${title}, ${check.title}`, ...rest, '', '---', '', ...check.section, '', markers].join('\n');
 }
 
+interface ListedSection {
+    name: string;
+    lines: string[];
+}
+
 /**
- * The comment content with `check` placed before the first listed check that
- * depends on it; null when none does or the comment's layout is not the one
- * `buildCommentContent` writes (the check is then appended).
+ * The comment content with `check` added and every listed check placed after
+ * the listed checks its dependency line names; null when the comment's layout
+ * is not the one `buildCommentContent` writes (the check is then appended).
  */
-function insertBeforeDependent(
+function orderByDependencies(
     title: string,
     rest: string[],
     check: { name: string; title: string; section: string[] },
 ): string[] | null {
     const [blank, instruction, separator, ...sectionLines] = rest;
     if (blank !== '' || separator !== '' || ![SINGLE_FAILURE_INSTRUCTION, MULTIPLE_FAILURES_INSTRUCTION].includes(instruction)) return null;
-    const sections = sectionLines.join('\n').split(SECTION_SEPARATOR).map(section => section.split('\n'));
-    const dependentAt = sections.findIndex(lines => lines.some(line => dependencyLineNames(line, check.name)));
-    if (dependentAt === -1) return null;
-    const dependentName = sectionCheckName(sections[dependentAt]);
-    if (dependentName === null) return null;
-
-    const section = [...check.section];
-    if (dependentAt === 0) {
-        // The commit line follows the first check's result.
-        if (!sections[0][2]?.startsWith(COMMIT_LINE_PREFIX)) return null;
-        section.splice(2, 0, ...sections[0].splice(2, 1));
+    const listed: ListedSection[] = [];
+    for (const lines of sectionLines.join('\n').split(SECTION_SEPARATOR).map(section => section.split('\n'))) {
+        const name = sectionCheckName(lines);
+        if (name === null) return null;
+        listed.push({ name, lines });
     }
-    sections.splice(dependentAt, 0, section);
+    // The title must be the one written for the listed checks, so it can be rebuilt.
+    if (title !== `${TITLE_PREFIX}${listed.map(section => checkTitle(section)).join(', ')}`) return null;
+    // The commit line follows the first check's result.
+    if (!listed[0].lines[2]?.startsWith(COMMIT_LINE_PREFIX)) return null;
+    const [commitLine] = listed[0].lines.splice(2, 1);
+
+    const ordered = dependencyOrder([...listed, { name: check.name, lines: [...check.section] }]);
+    ordered[0].lines.splice(2, 0, commitLine);
     return [
-        insertTitle(title, checkTitle({ name: dependentName }), check.title),
+        `${TITLE_PREFIX}${ordered.map(section => checkTitle(section)).join(', ')}`,
         blank, instruction, separator,
-        ...sections.map(lines => lines.join('\n')).join(SECTION_SEPARATOR).split('\n'),
+        ...ordered.map(section => section.lines.join('\n')).join(SECTION_SEPARATOR).split('\n'),
     ];
 }
 
-/** The title with `added` before `before`, or after the listed ones when `before` cannot be found. */
-function insertTitle(title: string, before: string, added: string): string {
-    if (!title.startsWith(TITLE_PREFIX)) return `${title}, ${added}`;
-    const listed = `, ${title.slice(TITLE_PREFIX.length)}, `;
-    const at = listed.indexOf(`, ${before}, `);
-    if (at === -1) return `${title}, ${added}`;
-    const updated = `${listed.slice(0, at)}, ${added}${listed.slice(at)}`;
-    return `${TITLE_PREFIX}${updated.slice(2, -2)}`;
+/**
+ * The sections with each one after every other section its dependency line
+ * names, keeping the given order otherwise: each step takes the first section
+ * whose named sections are all placed. A dependency cycle (not possible in a
+ * valid workflow) is broken by taking the first remaining section.
+ */
+function dependencyOrder(sections: ListedSection[]): ListedSection[] {
+    const needs = sections.map(section => sections.filter(other =>
+        other !== section && section.lines.some(line => dependencyLineNames(line, other.name))));
+    const remaining = sections.map((section, index) => ({ section, needs: needs[index] }));
+    const placed = new Set<ListedSection>();
+    const ordered: ListedSection[] = [];
+    while (remaining.length > 0) {
+        const readyAt = remaining.findIndex(entry => entry.needs.every(other => placed.has(other)));
+        const [{ section }] = remaining.splice(readyAt === -1 ? 0 : readyAt, 1);
+        placed.add(section);
+        ordered.push(section);
+    }
+    return ordered;
 }
 
 /** The check name of a section, read back from its `- Check:` line. */
