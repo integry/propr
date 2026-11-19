@@ -15,7 +15,7 @@ The **Docker Images** workflow (`.github/workflows/docker-images.yml`) deploys t
 2. Runs in the `hosted-ui-production` GitHub environment, which holds the only copy of the Cloudflare credentials. Only one deploy to that environment runs at a time. The `deploy-hosted-ui` job calls the reusable workflow with `secrets: inherit`. A called workflow sees only the secrets its caller passes or inherits, even the secrets of its own job's environment, and any other secret reads as empty. The v0.9.2 release deploy had no `secrets:` key, so it found both secrets empty and skipped the deploy, although they were set. `inherit` passes them without the release workflow naming the Cloudflare credentials.
 3. Checks out the release tag: the pushed tag, or `v<expected_version>` for a manual release. It confirms that `package.json` has the tag's version, then runs `npm ci`, `npm run build -w @propr/shared` and `npm run build -w propr-ui`. The UI imports `@propr/shared` through its built `dist/` entry, which a clean install does not contain; the v0.9.1 release deploy failed for that reason.
 4. Runs `wrangler deploy --config wrangler.hosted-ui.toml`, with wrangler pinned to an exact version in the workflow.
-5. Verifies the deploy. It fetches `https://app.propr.dev/`, finds the `/assets/index-*.js` entry module that `index.html` loads, and checks that the bundle contains the released version string, for example `"0.9.2"`. The check makes up to six attempts, 20 seconds apart, to allow for edge propagation. The script is `scripts/verify-hosted-ui-release.mjs`; the bundle check itself is in `scripts/lib/hosted-ui-bundle.mjs`, which the release rollout check (`npm run release:rollout -- --version 0.9.2`, see the Releases section of `.github/CONTRIBUTING.md`) also uses. To check a deployment yourself, run `RELEASE_VERSION=0.9.2 node scripts/verify-hosted-ui-release.mjs`.
+5. Verifies the deploy. It fetches `https://app.propr.dev/`, finds the `/assets/index-*.js` entry module that `index.html` loads, and checks that the bundle contains the released version string, for example `"0.9.3"`. The check makes up to six attempts, 20 seconds apart, to allow for edge propagation. The script is `scripts/verify-hosted-ui-release.mjs`; the bundle check itself is in `scripts/lib/hosted-ui-bundle.mjs`, which the release rollout check (`npm run release:rollout -- --version 0.9.3`, see the Releases section of `.github/CONTRIBUTING.md`) also uses. To check a deployment yourself, run `RELEASE_VERSION=0.9.3 node scripts/verify-hosted-ui-release.mjs`.
 
 ### When the Cloudflare credentials are missing
 
@@ -83,7 +83,7 @@ To deploy a release whose deploy failed because the secrets were missing, add th
 Run the **Hosted UI Deploy** workflow from `main`:
 
 ```bash
-gh workflow run hosted-ui-deploy.yml --repo integry/propr --ref main -f release_tag=v0.9.2
+gh workflow run hosted-ui-deploy.yml --repo integry/propr --ref main -f release_tag=v0.9.3
 ```
 
 Or open **Actions > Hosted UI Deploy > Run workflow**, keep **Use workflow from** on `main`, and enter the tag. The workflow:

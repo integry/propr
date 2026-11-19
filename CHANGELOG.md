@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-20
+
 ### Added
 
+- **Gemini 4 Neon (Antigravity)**: Google's new Gemini 4 model is in the
+  Antigravity catalog as `antigravity-gemini-4-neon` (label
+  `llm-antigravity-neon`, alias `neon`, 1M context). Like Gemini 4 Hydrogen it
+  offers `xhigh` effort, launched as `gemini-4-neon-xhigh`; low, medium and
+  high run as `gemini-4-neon-<effort>`. Usage is priced at $3/M input and
+  $15/M output. It needs Antigravity CLI 1.5.12 and supersedes no model. The
+  1.5.12 release notes list it only for `GEMINI_API_KEY` accounts, but
+  `agy login` accounts on Google AI Pro also have it.
+- **Gemini 4 Carbon (Antigravity)**: Gemini 4 Carbon is in the Antigravity
+  catalog as `antigravity-gemini-4-carbon` (label `llm-antigravity-carbon`,
+  alias `carbon`, 1M context). It offers low, medium and high effort, run as
+  `gemini-4-carbon-<effort>`; XHigh runs at high. Usage is priced at $2/M
+  input and $10/M output. It needs Antigravity CLI 1.5.8 and supersedes no
+  model. With `agy login` it is available only to Google AI Ultra
+  subscribers; Google AI Pro accounts should remove it from the agent's
+  models.
 - **Release rollout check**: `npm run release:rollout -- --version <x.y.z>`
   (`scripts/verify-release-rollout.mjs`) says where a release is live. It
   checks the GitHub release and its checked-in summary, the four Docker Hub
@@ -43,45 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Bundled Claude Code 2.1.328 and Antigravity CLI 1.5.12**: the
-  `propr/agent` image moves from Claude Code 2.1.327 and Antigravity CLI
-  1.5.11. Codex stays on 0.170.0, OpenCode on 1.19.6 and Mistral Vibe on
-  2.25.8.
-  - Claude Code 2.1.328 rebuilds the system prompt on automatic compaction,
-    as `/compact` already did. Its new
-    `CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME` setting only matters for hooks
-    that defer tool calls, which ProPR does not install, and its subagent-wait
-    changes apply only with `CLAUDE_CODE_FORK_SUBAGENT=0`, which ProPR does
-    not set. The bundled model catalog is unchanged.
-  - Antigravity 1.5.12 is release `5281398513336320`, SHA-512 checked against
-    Google's linux_amd64 install manifest. It retries requests automatically
-    after a brief connection problem instead of ending the turn. The `-p`,
-    `--print-timeout` and exit-code behaviour ProPR relies on is unchanged.
-    It adds Gemini 4 Neon (see below).
-- **Gemini 4 Neon (Antigravity)**: Google's new Gemini 4 model is in the
-  Antigravity catalog as `antigravity-gemini-4-neon` (label
-  `llm-antigravity-neon`, alias `neon`, 1M context). Like Gemini 4 Hydrogen it
-  offers `xhigh` effort, launched as `gemini-4-neon-xhigh`; low, medium and
-  high run as `gemini-4-neon-<effort>`. Usage is priced at $3/M input and
-  $15/M output. It needs Antigravity CLI 1.5.12 and supersedes no model. The
-  1.5.12 release notes list it only for `GEMINI_API_KEY` accounts, but
-  `agy login` accounts on Google AI Pro also have it.
-- **Gemini 4 Carbon (Antigravity)**: Gemini 4 Carbon is in the Antigravity
-  catalog as `antigravity-gemini-4-carbon` (label `llm-antigravity-carbon`,
-  alias `carbon`, 1M context). It offers low, medium and high effort, run as
-  `gemini-4-carbon-<effort>`; XHigh runs at high. Usage is priced at $2/M
-  input and $10/M output. It needs Antigravity CLI 1.5.8 and supersedes no
-  model. With `agy login` it is available only to Google AI Ultra
-  subscribers; Google AI Pro accounts should remove it from the agent's
-  models.
-- **Every GitHub release starts with a readable summary**: the release body is
-  now the checked-in `release-notes/v<version>.md`, with **Highlights** and
-  **Upgrade notes** sections, followed by GitHub's generated list of merged
-  pull requests. `npm run release:verify` fails when the current version's
-  summary is missing, empty, lacks a section or still has a placeholder. The
-  history starts with `release-notes/v0.9.2.md`.
-- **Bundled Codex CLI 0.170.0, Claude Code 2.1.327 and Antigravity CLI
-  1.5.11**: the `propr/agent` image moves from Codex 0.169.0, Claude Code
+- **Bundled Codex CLI 0.170.0, Claude Code 2.1.328 and Antigravity CLI
+  1.5.12**: the `propr/agent` image moves from Codex 0.169.0, Claude Code
   2.1.326 and Antigravity CLI 1.5.10. OpenCode stays on 1.19.6 and Mistral
   Vibe on 2.25.8.
   - Codex 0.170.0 bundles GPT-6.2 Astra (272K) and GPT-6.2 Sol (500K) in its
@@ -90,21 +71,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Sol now get the larger budget. GPT-6.2 Astra and Sol still need only Codex
     0.169.0. The `codex exec` flags ProPR passes, including `--trust`, are
     unchanged.
-  - Claude Code 2.1.327 fixes headless `claude -p` runs that hung when a
+  - Claude Code 2.1.328 fixes headless `claude -p` runs that hung when a
     model-settings fetch stalled (now a 10-second timeout), and some
     `--disallowedTools` rules with parentheses now apply as written. WebFetch
-    refuses URLs over 2,000 characters. The bundled model catalog is
-    unchanged.
-  - Antigravity 1.5.11 is release `6132547114106880`, SHA-512 checked against
-    Google's linux_amd64 install manifest. Its model list is unchanged. With a
-    `GEMINI_API_KEY`, `/usage`, `/quota` and `/credits` now exit with code 2
-    in `-p` runs; ProPR's own prompts do not use them.
+    refuses URLs over 2,000 characters. Automatic compaction rebuilds the
+    system prompt, as `/compact` already did. Its new
+    `CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME` setting only matters for hooks
+    that defer tool calls, which ProPR does not install, and its subagent-wait
+    changes apply only with `CLAUDE_CODE_FORK_SUBAGENT=0`, which ProPR does
+    not set. The bundled model catalog is unchanged.
+  - Antigravity 1.5.12 is release `5281398513336320`, SHA-512 checked against
+    Google's linux_amd64 install manifest. It retries requests automatically
+    after a brief connection problem instead of ending the turn, and adds
+    Gemini 4 Neon (see Added). With a `GEMINI_API_KEY`, `/usage`, `/quota` and
+    `/credits` exit with code 2 in `-p` runs; ProPR's own prompts do not use
+    them. The `-p`, `--print-timeout` and exit-code behaviour ProPR relies on
+    is unchanged.
+- **PR status line saves the App's rate limit**: when the GitHub App
+  installation has fewer than 500 API requests left in its current rate limit
+  window, ProPR skips status-line edits that would only change the check
+  counts, and reads the checks again when the limit resets, or after 10
+  minutes if that comes first. Each skip is logged with the requests left;
+  nothing is posted on the pull request. Changes you wait on (a run starting
+  or finishing, a review score, ready to merge, a suspension), title renames,
+  the pull request itself, summaries, review comments and labels are still
+  written. The status text is unchanged.
+- **Automation run list: a preview that tells runs apart**: a run's preview
+  (`reportPreview` in the API, the MCP `list_automation_runs` tool and the
+  CLI) now skips headings, including the title every run repeats, and shows
+  the first sentence of the report body, or its first item when the body
+  starts with a list or quote. A report that is only headings still previews
+  as its title. The columns of the run list now line up across rows, whether
+  a row shows "5h ago" or "Sep 28, 2026".
+- **Every GitHub release starts with a readable summary**: the release body is
+  now the checked-in `release-notes/v<version>.md`, with **Highlights** and
+  **Upgrade notes** sections, followed by GitHub's generated list of merged
+  pull requests. `npm run release:verify` fails when the current version's
+  summary is missing, empty, lacks a section or still has a placeholder. The
+  history starts with `release-notes/v0.9.2.md`.
 - **Release app/UI commit tag**: a release now tags its linux/amd64-only
   `propr/app` and `propr/ui` images `release-<commit SHA>` instead of the bare
   commit SHA. The bare `propr/app:<SHA>` and `propr/ui:<SHA>` tags are left to
   the two-architecture preview runtime manifests that the desktop previews and
   the preview CLI bundle pin. The `<version>` and `latest` tags are unchanged,
   and docs, agent and launcher images keep the bare SHA tag.
+- **Hosted UI deploy fails when it did not deploy**: the release's
+  **Deploy hosted UI (app.propr.dev)** job now receives the Cloudflare
+  secrets of its environment (`secrets: inherit`), and when either secret is
+  missing it fails with a "Hosted UI not deployed" error and a run-summary
+  line saying how to recover, instead of skipping and ending green. It runs
+  after `latest` promotion, so it is the last release step. The images, npm
+  package and GitHub release are not affected.
 
 ### Removed
 
@@ -134,8 +151,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step, with no test, type or lint failure) no longer starts a follow-up;
   instead the status block names the failed job, says it looks like a runner
   or network problem and that re-running the failed jobs fixes it. ProPR does
-  not re-run the jobs itself.
-
+  not re-run the jobs itself. A failure still counts as a code failure, with
+  the normal CI-failure comment and follow-up, when two or more steps of the
+  job failed, when a step ran after the failed one (for example an
+  `always()` cleanup step that lost the runner after tests failed), or when
+  the job's steps cannot be read.
 - **CI-failure comment names the failed jobs an aggregate job depends on**:
   with **Auto CI follow-up** on, a failed GitHub Actions job that directly
   `needs` jobs that also failed in the same workflow run (for example a
@@ -148,18 +168,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `needs` of the workflow file at the failing commit, never what the steps
   run. When the workflow file cannot be read or parsed, or a job name does not
   map to exactly one job, no line is added.
-
-- **CI: a slow hosted apt mirror no longer fails the Chromium install**: when
-  the runner's default mirror keeps the connection open but sends slowly, apt's
-  30-second timeouts never fire, and the retry stalled on the same fetch.
-  Before the retry, `scripts/ci-install-chromium.sh` now moves the mirrors apt
-  prefers in the runner's `mirror+file:` list (for example
-  `us-east-2.ec2.archive.ubuntu.com`) behind the others. If every listed
-  mirror is tied, or only one is listed, it puts `archive.ubuntu.com` first, or
-  `security.ubuntu.com` when `archive.ubuntu.com` is already listed. The retry
-  therefore downloads from a different source. If the list is missing or cannot be rewritten, the
-  step warns and retries as before. Two timed-out attempts still fail the
-  step, and the self-hosted path is unchanged.
+- **Follow-up comments are always picked up**: a pull request that ProPR
+  opened through its retry path, or found during final validation, now gets
+  the `AI` and model labels, so plain follow-up comments on it are accepted
+  instead of being dropped. A pull request that already lacks the `AI` label
+  needs it added by hand. A follow-up comment stored while another job for
+  the pull request was running is now picked up by a queued job instead of
+  expiring unread after an hour.
+- **Follow-up runs no longer fail with "a branch named … already exists"**:
+  the worker checks for an existing local branch the same way
+  `git worktree add -b` does, and when git still reports the branch as
+  existing it reuses it safely: a branch behind the remote moves forward, a
+  diverged one restarts from the remote head with its local commits kept under
+  `refs/propr/superseded/…`, and a branch held by a worktree whose folder is
+  gone is released. A branch whose tip commit is missing fails with a message
+  naming it.
+- **A run that did not open its pull request is reported as failed**: when
+  the agent succeeded and its changes were committed but opening the pull
+  request (or an earlier publication step) failed, the task now ends as
+  failed with status `publication_failed` instead of completing as "no
+  changes". The issue comment names the failed step, for example "❌ Opening
+  the pull request failed. The changes were committed (`c1e1862`) and pushed
+  to `<branch>`, so no pull request was opened.", and the issue keeps its
+  `AI` label without getting `AI-done`. A pull request that final validation
+  opens counts as the run's outcome.
+- **Runs that end while the agent is still waiting are flagged**: when the
+  agent's last message says it is still working, waiting or about to do more,
+  the issue comment reads "AI Processing Ended Unconfirmed" and a follow-up
+  reply reads "⚠️ Committed follow-up changes" instead of a clean success,
+  with a warning that the run ended before the agent confirmed completion and
+  the reason. The check is part of the existing summary-selection request, so
+  it costs no extra call, and it applies only when a summarization model is
+  configured.
+- **Repeated bot comments post once**: the rate-limit, "Execution
+  Cancelled", "AI processing has started" and "Failed to resolve merge
+  conflicts" notices now post one comment and update it on a repeat, with
+  "_Reported N times; last at <time> UTC._". No rate-limit notice is posted
+  when the retry is due within 2 minutes. The reset time in the rate-limit
+  notice now reads dated resets such as `resets Nov 20, 1am (UTC)` and named
+  time zones, and shows the date when the reset is more than 20 hours away,
+  instead of falling back to the next hour.
+- **`AI` and `llm-*` labels are applied once**: creating a pull request makes
+  a single label call, and the retry, existing-pull-request and final
+  validation paths send only the labels the pull request does not have yet.
+- **Touch tap targets**: on touch layouts, the dashboard's "N earlier
+  updates" toggle, the repository **Select** rows, the automation editor's
+  Schedule, Event trigger and Autonomy segmented controls, and the Inbox
+  Dismiss button take taps across at least 32×32 px, and the expanded
+  earlier-update rows are 32 px tall. Desktop layouts are unchanged.
+- **Maintenance shows running follow-ups as Running**: in **Settings →
+  Maintenance → Held follow-ups**, a follow-up whose agent is working right
+  now is listed as Running, with a link to its task, instead of In recovery.
+- **LLM Log**: type chips and the type filter show readable labels for every
+  execution type ("PR review", "PR review context scout", "Title
+  generation"), the usage badge wraps without stray `|` separators, and the
+  Type and Model columns widen on wide screens so long model names are no
+  longer cut off.
 
 ## [0.9.2] - 2026-11-18
 
@@ -2215,7 +2279,8 @@ ProPR 0.8.15 is the first public release.
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
-[Unreleased]: https://github.com/integry/propr/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/integry/propr/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/integry/propr/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/integry/propr/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/integry/propr/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/integry/propr/compare/v0.8.15...v0.9.0
