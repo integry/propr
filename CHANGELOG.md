@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.328 and Antigravity CLI 1.5.12**: the
+  `propr/agent` image moves from Claude Code 2.1.327 and Antigravity CLI
+  1.5.11. Codex stays on 0.170.0, OpenCode on 1.19.6 and Mistral Vibe on
+  2.25.8.
+  - Claude Code 2.1.328 rebuilds the system prompt on automatic compaction,
+    as `/compact` already did. Its new
+    `CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME` setting only matters for hooks
+    that defer tool calls, which ProPR does not install, and its subagent-wait
+    changes apply only with `CLAUDE_CODE_FORK_SUBAGENT=0`, which ProPR does
+    not set. The bundled model catalog is unchanged.
+  - Antigravity 1.5.12 is release `5281398513336320`, SHA-512 checked against
+    Google's linux_amd64 install manifest. It retries requests automatically
+    after a brief connection problem instead of ending the turn. The `-p`,
+    `--print-timeout` and exit-code behaviour ProPR relies on is unchanged.
+    It adds Gemini 4 Neon (Low, Medium, High and XHigh) only for accounts
+    that connect with a `GEMINI_API_KEY`; like Gemini 4 Carbon, it is not
+    added to the catalog because ProPR signs in with `agy login`.
 - **Every GitHub release starts with a readable summary**: the release body is
   now the checked-in `release-notes/v<version>.md`, with **Highlights** and
   **Upgrade notes** sections, followed by GitHub's generated list of merged

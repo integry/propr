@@ -41,7 +41,7 @@ test('version-matched layouts distinguish disposable diagnostics from protected 
         // that these providers support rotating an active file.
         const layouts = [
             ['codex', '0.170.0', 'log/codex-tui.log', 'sessions/2026/10/12/rollout-session.jsonl', 'logs_2.sqlite-wal', 'auth.json'],
-            ['claude', '2.1.327', 'debug/session.txt', 'projects/-workspace/session.jsonl', null, '.credentials.json'],
+            ['claude', '2.1.328', 'debug/session.txt', 'projects/-workspace/session.jsonl', null, '.credentials.json'],
             ['antigravity', '1.2.4', 'antigravity-cli/log/runtime.log', 'antigravity-cli/brain/session/.system_generated/logs/transcript.jsonl', null, 'antigravity-cli/antigravity-oauth-token'],
             ['opencode', '1.19.6', 'log/opencode.log', null, 'opencode.db-shm', 'auth.json'],
             ['vibe', '2.25.8', null, 'logs/session/session/messages.jsonl', null, 'credentials.json'],

@@ -71,7 +71,7 @@ test('Claude Opus 5.5 leads the Claude catalog as the default Claude model', () 
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.maxTokens, 1000000);
     // Opus 5.5 shipped in Claude Code 2.1.280, so the pinned CLI must support it
     assert.strictEqual(MODEL_INFO_MAP['claude-opus-5-5']?.minAgentVersion, '2.1.280');
-    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.327');
+    assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, '2.1.328');
     assert.strictEqual(AGENT_DEFAULTS.claude.defaultCliVersion, AGENT_DEFAULT_VERSIONS.claude);
 });
 
@@ -275,7 +275,7 @@ test('Gemini 4 Argon is one namespaced Antigravity model with 1M limits', () => 
     assert.strictEqual(model?.shortAlias, 'argon');
     assert.strictEqual(model?.openRouterId, 'google/gemini-4-argon');
     assert.strictEqual(model?.minAgentVersion, '1.4.0');
-    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.11');
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, '1.5.12');
     assert.strictEqual(model?.contextWindow, '1M');
     assert.strictEqual(model?.maxTokens, 1_000_000);
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high']);
