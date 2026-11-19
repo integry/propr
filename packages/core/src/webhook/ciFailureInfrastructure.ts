@@ -9,8 +9,11 @@
  *    running the only step that failed, or with no step failed: a step that
  *    failed before another step started failed on its own, so the runner going
  *    away later (say in an `always()` cleanup) does not excuse it, or
- *  - every failed step is a setup/install step and the evidence shows a
- *    network, mirror or registry error.
+ *  - exactly one step failed, it is a setup/install step and the evidence
+ *    shows a network, mirror or registry error. The evidence is not tied to a
+ *    step, so with two failed steps a network error in one says nothing about
+ *    the other (a lockfile mismatch in `npm ci`, then an `always()` browser
+ *    install hitting ECONNRESET): more than one failed step is a code failure.
  * Unknown steps, a failure in a test or build step, or any doubt keep the
  * failure a code failure, which starts the code follow-up as before.
  *
@@ -86,7 +89,7 @@ const RUNNER_LOST_PATTERNS: readonly RegExp[] = [
     /\bThe job was not acquired by Runner\b/i,
 ];
 
-/** Network, mirror and registry errors; infrastructure only when a setup/install step failed with them. */
+/** Network, mirror and registry errors; infrastructure only when the one failed step is a setup/install step. */
 const NETWORK_PATTERNS: readonly RegExp[] = [
     /\b(?:ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|ERR_SOCKET_TIMEOUT|ESOCKETTIMEDOUT)\b/,
     /\bsocket hang up\b/i,
@@ -219,8 +222,9 @@ export function classifyCiInfrastructureFailure(evidence: CiInfrastructureEviden
         return runnerLossExplainsFailedSteps(evidence.steps) ? { infrastructure: true, cause: 'runner_lost' } : notInfrastructure;
     }
 
+    // Only one failed step: the network evidence cannot be attributed to each of several failed steps.
     const steps = evidence.failedSteps ?? (evidence.steps ? failedStepNames(evidence.steps) : null);
-    if (!steps || steps.length === 0 || !steps.every(isSetupStep)) return notInfrastructure;
+    if (!steps || steps.length !== 1 || !isSetupStep(steps[0])) return notInfrastructure;
     if (!NETWORK_PATTERNS.some(pattern => pattern.test(text))) return notInfrastructure;
     return { infrastructure: true, cause: 'network', step: steps[0] };
 }

@@ -86,6 +86,26 @@ describe('infrastructure-only CI failure classifier', () => {
         }
     });
 
+    test('two failed setup steps with different causes stay a code failure', () => {
+        // `npm ci` fails on a lockfile mismatch (no source path, no code-failure wording); an `always()` browser install then hits ECONNRESET.
+        const lockfile = { annotation_level: 'failure', path: '.github', message: 'npm ci can only install packages when your package.json and package-lock.json are in sync. Missing: left-pad@1.3.0 from lock file' };
+        const reset = { annotation_level: 'failure', path: '.github', message: 'Error: read ECONNRESET while downloading Chromium' };
+        const annotations = [lockfile, EXIT, reset, EXIT];
+        assert.equal(classifyCiInfrastructureFailure(evidence({ annotations, failedSteps: ['Install dependencies', 'Install browsers'] })).infrastructure, false);
+        const steps = [
+            { name: 'Set up job', status: 'completed', conclusion: 'success' },
+            { name: 'Install dependencies', status: 'completed', conclusion: 'failure' },
+            { name: 'Install browsers', status: 'completed', conclusion: 'failure' },
+            { name: 'Run npm test', status: 'completed', conclusion: 'skipped' },
+        ];
+        assert.equal(classifyCiInfrastructureFailure(evidence({ annotations, failedSteps: undefined, steps })).infrastructure, false);
+        // Even with the network error as the only evidence, two failed steps cannot both be attributed to it.
+        assert.equal(classifyCiInfrastructureFailure(evidence({ annotations: [reset, EXIT], failedSteps: ['Install dependencies', 'Install browsers'] })).infrastructure, false);
+        // The single network-failed install step alone is still infrastructure.
+        assert.deepEqual(classifyCiInfrastructureFailure(evidence({ annotations: [reset, EXIT], failedSteps: ['Install browsers'] })),
+            { infrastructure: true, cause: 'network', step: 'Install browsers' });
+    });
+
     test('a failing test is not infrastructure', () => {
         assert.equal(classifyCiInfrastructureFailure(evidence({
             annotations: [{ annotation_level: 'failure', path: 'test/worker.test.ts', start_line: 12, message: 'AssertionError: expected 2 jobs but received 1' }, EXIT],
@@ -271,6 +291,27 @@ describe('infrastructure-only failure handling', () => {
             ],
         });
         const result = await postCiFailureFollowup(request(), 'test-then-runner-lost', { isEnabled: async () => true, getOctokit: async () => octokit, redisClient: redis as never });
+        assert.equal(result.reason, 'posted');
+        assert.equal(octokit.comments.length, 1);
+        assert.equal(octokit.routes.some(isRerunRoute), false);
+    });
+
+    test('a lockfile failure in one install step next to a network error in another posts the follow-up', async () => {
+        const redis = createRedis();
+        const octokit = createOctokit({
+            annotations: [
+                { annotation_level: 'failure', path: '.github', message: 'npm ci can only install packages when your package.json and package-lock.json are in sync. Missing: left-pad@1.3.0 from lock file' },
+                { annotation_level: 'failure', path: '.github', message: 'Process completed with exit code 1.' },
+                { annotation_level: 'failure', path: '.github', message: 'Error: read ECONNRESET while downloading Chromium' },
+            ],
+            steps: [
+                { name: 'Set up job', status: 'completed', conclusion: 'success' },
+                { name: 'Install dependencies', status: 'completed', conclusion: 'failure' },
+                { name: 'Install browsers', status: 'completed', conclusion: 'failure' },
+                { name: 'Run npm test', status: 'completed', conclusion: 'skipped' },
+            ],
+        });
+        const result = await postCiFailureFollowup(request(), 'lockfile-then-network', { isEnabled: async () => true, getOctokit: async () => octokit, redisClient: redis as never });
         assert.equal(result.reason, 'posted');
         assert.equal(octokit.comments.length, 1);
         assert.equal(octokit.routes.some(isRerunRoute), false);

@@ -170,6 +170,17 @@ test('a code failure, an unreadable check or no failed check leaves the runner-p
     // A network error in a test step is the code's.
     assert.equal(await loadCiRunnerProblemFact(fakeGitHub({ 101: { annotations: [MIRROR_STALL], steps: [{ name: 'Run Playwright tests', conclusion: 'failure' }] } }),
         OWNER, REPO, [failedRun(101, 'e2e')]), null);
+    // Two failed install steps: the network error in one says nothing about the lockfile mismatch in the other.
+    const twoInstalls = fakeGitHub({ 101: {
+        annotations: [
+            { annotation_level: 'failure', path: '.github', message: 'npm ci can only install packages when your package.json and package-lock.json are in sync.' },
+            EXIT,
+            { annotation_level: 'failure', path: '.github', message: 'Error: read ECONNRESET while downloading Chromium' },
+        ],
+        steps: [{ name: 'Set up job', conclusion: 'success' }, { name: 'Install dependencies', conclusion: 'failure' }, { name: 'Install browsers', conclusion: 'failure' }],
+    } });
+    assert.equal(await loadCiRunnerProblemFact(twoInstalls, OWNER, REPO, [failedRun(101, 'e2e', { output: { title: null, summary: null, text: null, annotations_count: 3 } })]), null);
+    assert.ok(twoInstalls.routes.includes('GET /repos/{owner}/{repo}/actions/jobs/{job_id}'), 'the job was read and declined, not skipped');
     // Unreadable annotations are no evidence.
     assert.equal(await loadCiRunnerProblemFact(fakeGitHub({ 101: { annotations: new Error('Service Unavailable'), steps: INSTALL_FAILED } }),
         OWNER, REPO, [failedRun(101, 'Validate Changes')]), null);
