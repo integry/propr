@@ -11,21 +11,24 @@
  *    that failed in this run attempt (a failed job counts only when its name
  *    maps to exactly one job id; matrix jobs map through their expanded name);
  *  - every step of the failed job that did not pass is a gate step: a named
- *    step of that job whose definition reads `needs.<id>.result` of one of the
- *    failed needed jobs, and whose name no other step of the job shares.
+ *    step of that job, whose name no other step of the job shares, that reads
+ *    `needs.<id>.result` of one of the failed needed jobs and is proven to do
+ *    nothing else (see ciFailureGateStep). A step that also runs tests or
+ *    enforces one of the job's own steps is the job's own failure.
  * A job with no failed step, an unreadable or unparsable workflow file, an
  * incomplete job listing or any ambiguous mapping is not folded: it is listed
  * as a failure of its own.
  */
 import { parse as parseYaml } from 'yaml';
 import type logger from '../utils/logger.js';
+import { isGateStep } from './ciFailureGateStep.js';
 
 type Log = ReturnType<typeof logger.withCorrelation>;
 
 export interface WorkflowStep {
     name?: string;
-    /** The step's definition other than its name (`run`, `env`, `if`, `with`, …), as text. */
-    definition: string;
+    /** The step's definition as written (`name`, `run`, `env`, `if`, `uses`, …). */
+    fields: Record<string, unknown>;
 }
 
 export interface WorkflowJob {
@@ -105,8 +108,7 @@ function parseJob(id: string, value: unknown): WorkflowJob | null {
     for (const rawStep of rawSteps) {
         const step = asRecord(rawStep);
         if (!step) return null;
-        const { name, ...definition } = step;
-        steps.push({ name: typeof name === 'string' ? name : undefined, definition: JSON.stringify(definition) });
+        steps.push({ name: typeof step.name === 'string' ? step.name : undefined, fields: step });
     }
     return {
         id,
@@ -165,18 +167,13 @@ export function decideAggregateFold(
 
 function onlyGateStepsFailed(job: WorkflowJob, steps: JobStep[], causeIds: Set<string>): boolean {
     const gateNames = new Set(job.steps
-        .filter(step => step.name !== undefined && !EXPRESSION_RE.test(step.name) && readsNeededResult(step.definition, causeIds))
+        .filter(step => step.name !== undefined && !EXPRESSION_RE.test(step.name) && isGateStep(step.fields, job.needs, causeIds))
         .map(step => step.name as string));
     for (const name of gateNames) {
         if (job.steps.filter(step => step.name === name).length !== 1) gateNames.delete(name);
     }
     const failed = steps.filter(step => !PASSING_STEP_CONCLUSIONS.has((step.conclusion ?? '').toLowerCase()));
     return failed.length > 0 && failed.every(step => gateNames.has(step.name));
-}
-
-function readsNeededResult(definition: string, causeIds: Set<string>): boolean {
-    const references = definition.matchAll(/needs\.([A-Za-z0-9_-]+)\.result\b/gu);
-    return [...references].some(match => causeIds.has(match[1].toLowerCase()));
 }
 
 /**

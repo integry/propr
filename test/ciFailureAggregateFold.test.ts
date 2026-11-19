@@ -11,6 +11,8 @@ import {
     type RunJob,
 } from '../packages/core/src/webhook/ciFailureAggregateFold.js';
 import {
+    buildCiFailureDedupeKey,
+    buildCiFailureFollowupMarker,
     postCiFailureFollowup,
     stripCiFailureFollowupMarker,
     type CiFailureFollowupRequest,
@@ -22,7 +24,19 @@ after(async () => {
 
 const WORKFLOW_PATH = '.github/workflows/pr-test-on-label.yml';
 /** This repository's own Full Test Suite workflow: four matrix shards and the `Run Full Test Suite` aggregate. */
-const WORKFLOW_TEXT = readFileSync(new URL(`../${WORKFLOW_PATH}`, import.meta.url), 'utf8');
+const REPOSITORY_WORKFLOW_TEXT = readFileSync(new URL(`../${WORKFLOW_PATH}`, import.meta.url), 'utf8');
+const COVERAGE_ENV = "          COVERAGE_RESULT: ${{ steps.coverage.outcome }}\n";
+const COVERAGE_CHECK = /\n {10}if \[ "\$COVERAGE_RESULT" != success \]; then\n[\s\S]*?\n {10}fi\n/u;
+/**
+ * The same workflow with the aggregate's gate step enforcing only the needed
+ * jobs' results. In the repository's own file it also enforces the outcome of
+ * the aggregate's `continue-on-error` coverage step, which GitHub reports as
+ * succeeded even when it failed, so that gate is the aggregate's own failure.
+ */
+const WORKFLOW_TEXT = (() => {
+    assert.ok(REPOSITORY_WORKFLOW_TEXT.includes(COVERAGE_ENV) && COVERAGE_CHECK.test(REPOSITORY_WORKFLOW_TEXT), 'the gate step enforces the coverage outcome');
+    return REPOSITORY_WORKFLOW_TEXT.replace(COVERAGE_ENV, '').replace(COVERAGE_CHECK, '\n');
+})();
 const HEAD = '91f89c3b9e1d2c3b4a5f60718293a4b5c6d7e8f9';
 const RUN_ID = 777;
 const AGGREGATE_ID = 900;
@@ -148,6 +162,73 @@ describe('decideAggregateFold with the Full Test Suite layout', () => {
         assert.deepStrictEqual(fold?.causes.map(cause => cause.name), ['build (linux)']);
     });
 
+    test("the repository's own gate also enforces its coverage step, so the aggregate is not folded", () => {
+        // GitHub reports a failed `continue-on-error` step as succeeded: only the gate step shows as failed.
+        const fold = decideAggregateFold({
+            aggregate: { id: AGGREGATE_ID, name: AGGREGATE },
+            steps: aggregateSteps(),
+            runJobs: runJobs([3]),
+            workflow: parseWorkflowJobs(REPOSITORY_WORKFLOW_TEXT) as ParsedWorkflow,
+        });
+        assert.strictEqual(fold, null);
+    });
+
+    const gateWorkflow = (step: string[]) => parseWorkflowJobs([
+        'jobs:',
+        '  build:',
+        '    steps: [{ run: make }]',
+        '  gate:',
+        '    needs: [build]',
+        '    if: always()',
+        '    steps:',
+        '      - name: Check build results',
+        ...step.map(line => `        ${line}`),
+    ].join('\n')) as ParsedWorkflow;
+    const decideGate = (step: string[]) => decideAggregateFold({
+        aggregate: { id: 2, name: 'gate' },
+        steps: [{ name: 'Set up job', conclusion: 'success' }, { name: 'Check build results', conclusion: 'failure' }],
+        runJobs: [{ id: 1, name: 'build', conclusion: 'failure' }, { id: 2, name: 'gate', conclusion: 'failure' }],
+        workflow: gateWorkflow(step),
+    });
+
+    test('a gate step that only enforces needed results, through builtins and its own functions, folds', () => {
+        const fold = decideGate([
+            'env:',
+            '  BUILD_RESULT: ${{ needs.build.result }}',
+            '  EVENT: ${{ github.event_name }}',
+            'run: |',
+            '  # Fails unless the build passed.',
+            '  require() {',
+            '    if [ "$2" != success ]; then',
+            '      echo "::error::$1 finished with result \'$2\'." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"',
+            '      exit 1',
+            '    fi',
+            '  }',
+            '  require Build "$BUILD_RESULT"',
+        ]);
+        assert.deepStrictEqual(fold?.causes.map(cause => cause.name), ['build']);
+    });
+
+    test('a step that reads the needed result but runs its own tests is the aggregate\'s own failure', () => {
+        assert.strictEqual(decideGate([
+            'env:',
+            '  BUILD_RESULT: ${{ needs.build.result }}',
+            'run: |',
+            '  echo "build: $BUILD_RESULT"',
+            '  npm test',
+        ]), null);
+        assert.strictEqual(decideGate(['run: test "${{ needs.build.result }}" = success && npm test']), null);
+        assert.strictEqual(decideGate(['run: test "$(cat result)" = "${{ needs.build.result }}"']), null);
+        assert.strictEqual(decideGate(['run: ./check.sh "${{ needs.build.result }}"']), null);
+    });
+
+    test('a step that reads the needed result but is not a plain shell step, or reads its own job, is not a gate', () => {
+        assert.strictEqual(decideGate(['uses: ./.github/actions/check', 'with:', '  result: ${{ needs.build.result }}']), null);
+        assert.strictEqual(decideGate(['shell: python', 'run: print("${{ needs.build.result }}")']), null);
+        assert.strictEqual(decideGate(['env:', '  BUILD: ${{ needs.build.result }}', '  OWN: ${{ steps.tests.outcome }}', 'run: test "$BUILD$OWN" = successsuccess']), null);
+        assert.strictEqual(decideGate(['run: test "${{ needs.build.result }}" = success', 'continue-on-error: false']), null);
+    });
+
     test('unparsable or unexpected workflow text yields no workflow', () => {
         assert.strictEqual(parseWorkflowJobs('jobs: [\n'), null);
         assert.strictEqual(parseWorkflowJobs('name: no jobs here'), null);
@@ -156,7 +237,12 @@ describe('decideAggregateFold with the Full Test Suite layout', () => {
 });
 
 /** GitHub for one Full Test Suite run whose shard 3 failed. */
-function fakeGitHub(options: { workflowReadable?: boolean; aggregateFailedSteps?: string[] } = {}) {
+function fakeGitHub(options: {
+    workflowReadable?: boolean;
+    aggregateFailedSteps?: string[];
+    /** The shard's check-run output; a failed test by default. */
+    shardOutput?: { title: string; summary: string };
+} = {}) {
     const comments: Array<{ id: number; body: string; user: { login: string } }> = [];
     const posts: string[] = [];
     const jobs = runJobs([3]);
@@ -192,7 +278,8 @@ function fakeGitHub(options: { workflowReadable?: boolean; aggregateFailedSteps?
             return { data: { encoding: 'base64', content: Buffer.from(WORKFLOW_TEXT).toString('base64') } };
         }
         if (route === 'GET /repos/{owner}/{repo}/check-runs/{check_run_id}') {
-            return { data: { details_url: `https://github.com/integry/propr/actions/runs/${RUN_ID}/job/13`, output: { title: 'Shard 3 failed', summary: 'test/foo.test.ts failed', annotations_count: 0 } } };
+            const output = options.shardOutput ?? { title: 'Shard 3 failed', summary: 'test/foo.test.ts failed' };
+            return { data: { details_url: `https://github.com/integry/propr/actions/runs/${RUN_ID}/job/13`, output: { ...output, annotations_count: 0 } } };
         }
         if (route.includes('/actions/runs/')) return { data: { status: 'completed', conclusion: 'failure' } };
         throw new Error(`unexpected route ${route}`);
@@ -318,5 +405,75 @@ describe('CI-failure comment folds the aggregate under its failed shard', () => 
         assert.ok(await loadAggregateFold(github.octokit, target, cache, log));
         assert.ok(await loadAggregateFold(github.octokit, target, cache, log));
         assert.strictEqual(github.contentsReads.length, 1);
+    });
+});
+
+const shardMarker = (request: CiFailureFollowupRequest) => buildCiFailureFollowupMarker(buildCiFailureDedupeKey(request));
+
+describe('folding into a comment started by another failure', () => {
+    test('an aggregate arriving after an unrelated failure adds its shard as a failure with evidence', async () => {
+        const github = fakeGitHub();
+        const deps = dependencies(github.octokit);
+        await postCiFailureFollowup(failure('Lint', 30), 'lint', deps);
+        const result = await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps);
+
+        assert.strictEqual(result.reason, 'updated');
+        assert.strictEqual(github.posts.length, 1);
+        const body = github.comments[0].body;
+        assert.ok(body.startsWith(`CI failed: **Lint**, **${SHARD}**\n`), 'the shard joins the title');
+        assert.ok(body.includes('Please investigate and fix these CI failures.'));
+        assert.ok(body.includes(`- Check: \`${SHARD}\``));
+        assert.ok(body.includes('> Shard 3 failed'), "the shard's own output is the evidence");
+        assert.ok(body.includes(`- Run: [View CI failure](https://github.com/integry/propr/actions/runs/${RUN_ID}/job/13)`));
+        assert.strictEqual(body.split('**Failure evidence**').length, 3, 'Lint and the shard have evidence; the aggregate has none');
+        assert.ok(body.includes(`Also failed: **${AGGREGATE}**`));
+        assert.ok(!body.includes(`- Check: \`${AGGREGATE}\``));
+        assert.ok(body.includes(shardMarker(failure(SHARD, 13))));
+
+        // The shard's own delivery finds itself already reported.
+        assert.strictEqual((await postCiFailureFollowup(failure(SHARD, 13), 'shard', deps)).reason, 'duplicate');
+        assert.strictEqual(github.comments[0].body, body);
+    });
+
+    test('a shard already on the comment is not added twice', async () => {
+        const github = fakeGitHub();
+        const deps = dependencies(github.octokit);
+        await postCiFailureFollowup(failure('Lint', 30), 'lint', deps);
+        await postCiFailureFollowup(failure(SHARD, 13), 'shard', deps);
+        await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps);
+
+        const body = github.comments[0].body;
+        assert.ok(body.startsWith(`CI failed: **Lint**, **${SHARD}**\n`));
+        assert.strictEqual(body.split(`- Check: \`${SHARD}\``).length, 2);
+        assert.strictEqual(body.split(shardMarker(failure(SHARD, 13))).length, 2);
+        assert.ok(body.includes(`Also failed: **${AGGREGATE}**`));
+    });
+});
+
+describe('a shard lost to a runner problem is not claimed by its aggregate', () => {
+    const RUNNER_LOST = 'The runner has received a shutdown signal. This can happen when the runner service is stopped.';
+
+    test('infrastructure shard, then its aggregate, then a genuine failure of the shard on a re-run', async () => {
+        const github = fakeGitHub({ shardOutput: { title: 'Runner lost', summary: RUNNER_LOST } });
+        const deps = dependencies(github.octokit);
+        const lost = failure(SHARD, 13);
+        lost.evidence.fallbackExcerpt = RUNNER_LOST;
+        assert.strictEqual((await postCiFailureFollowup(lost, 'shard', deps)).reason, 'infrastructure');
+
+        const aggregate = await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps);
+        assert.strictEqual(aggregate.reason, 'posted');
+        const posted = github.posts[0];
+        assert.ok(!posted.includes(shardMarker(lost)), 'no code-failure marker for the runner-problem shard');
+        assert.ok(!posted.includes(`- Check: \`${SHARD}\``));
+        assert.ok(!posted.includes('Also failed:'), 'the aggregate is not folded under a runner problem');
+        assert.ok(posted.startsWith(`CI failed: **${AGGREGATE}**\n`), 'the aggregate is listed on its own, as before folding');
+
+        // A manual re-run of the shard on the same commit now fails a real test.
+        const rerun = failure(SHARD, 113);
+        rerun.evidence.fallbackExcerpt = 'not ok 3 - test/foo.test.ts';
+        const result = await postCiFailureFollowup(rerun, 'shard-rerun', deps);
+        assert.strictEqual(result.reason, 'updated');
+        assert.ok(github.comments[0].body.includes(`- Check: \`${SHARD}\``));
+        assert.ok(github.comments[0].body.includes('> not ok 3 - test/foo.test.ts'));
     });
 });
