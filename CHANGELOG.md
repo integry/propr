@@ -65,6 +65,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or network problem and that re-running the failed jobs fixes it. ProPR does
   not re-run the jobs itself.
 
+- **CI-failure comment names the failed jobs an aggregate job depends on**:
+  with **Auto CI follow-up** on, a failed GitHub Actions job that directly
+  `needs` jobs that also failed in the same workflow run (for example a
+  `Run Full Test Suite` gate over a failed `Full Test Suite Shard 3/4`) now
+  gets the line "Depends on the failed job(s): <names>. It may have failed
+  only because they did; check them first." in its section, so the follow-up
+  agent looks at those jobs first. Every failed job still keeps its own
+  evidence section; nothing is folded, dropped or reordered, and sections stay
+  in the order the checks were reported. ProPR reads only the job names and
+  `needs` of the workflow file at the failing commit, never what the steps
+  run. When the workflow file cannot be read or parsed, or a job name does not
+  map to exactly one job, no line is added.
+
 - **CI: a slow hosted apt mirror no longer fails the Chromium install**: when
   the runner's default mirror keeps the connection open but sends slowly, apt's
   30-second timeouts never fire, and the retry stalled on the same fetch.
