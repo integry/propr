@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   free-model catalog. Saved selections, the `glm53-flash-free` alias and the
   `llm-opencode-glm53-flash-free` label now run on DeepSeek V4.1 Flash Free,
   and a saved default moves there when ProPR starts.
+- **Vendored picomatch builds**: GitHub withdrew advisory GHSA-fc5q-39xc-vjpf
+  on 2026-11-18, and the picomatch maintainers do not treat it as a security
+  issue. The patched builds that 0.9.2 added under `vendor/` because the
+  advisory had no fixed release are removed, along with their package
+  overrides and checks. ProPR installs upstream picomatch from the npm registry
+  again (4.0.7, and 2.3.2 for `anymatch`, `micromatch` and `readdirp`). The
+  vendored `braces` build is unchanged.
 
 ### Fixed
 
