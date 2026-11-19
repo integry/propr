@@ -86,7 +86,15 @@ class FakeGitHub {
     listFailures = 0;
     /** Failures the next check reads (check runs, legacy statuses) throw. */
     checkFailures = 0;
+    /** The installation's remaining rate limit each response reports (x-ratelimit-remaining); none when null. */
+    rateLimitRemaining: number | null = null;
     async request(route: string, params: Record<string, unknown>) {
+        const response = await this.respond(route, params);
+        if (this.rateLimitRemaining === null) return response;
+        const reset = String(Math.floor(Date.now() / 1000) + 1_800);
+        return { ...response, headers: { 'x-ratelimit-remaining': String(this.rateLimitRemaining), 'x-ratelimit-reset': reset } };
+    }
+    private async respond(route: string, params: Record<string, unknown>): Promise<{ data: any }> {
         this.calls.push({ route, params });
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: structuredClone(this.pull) };
         if (route === 'GET /repos/{owner}/{repo}/pulls') {
@@ -1811,6 +1819,91 @@ test('a deferred count update is written by the scheduled re-read once the windo
     } finally {
         disablePullRequestStatusSync();
         setPullRequestStatusEditCoalesceMsForTests(null);
+    }
+});
+
+test('a status that would render the same sends no request beyond its reads', async () => {
+    await addTask('issue', 'completed');
+    assert.equal(await sync(), 'updated');
+    const writes = github.writes().length;
+    for (let run = 0; run < 5; run++) assert.equal(await sync(), 'unchanged');
+    assert.equal(github.writes().length, writes, 'no PATCH for an identical status, whatever the update time');
+});
+
+test('twenty check completions within the window cost at most two edits, the last showing the final counts', async () => {
+    await addTask('issue', 'completed');
+    const names = Array.from({ length: 20 }, (_, index) => `check-${index + 1}`);
+    github.checkRuns = names.map(name => ({ name, status: 'in_progress', conclusion: null }));
+    // One more check stays pending, so completing the twenty moves check progress only.
+    github.checkRuns.push({ name: 'slow', status: 'in_progress', conclusion: null });
+    const start = Date.parse('2026-11-13T09:10:00Z');
+    clock = new Date(start);
+    assert.equal(await syncPullRequestStatus(REPOSITORY, PR, deps()), 'updated');
+    const before = github.patches.length;
+    for (const [index, name] of names.entries()) {
+        github.checkRuns = github.checkRuns.map(run => run.name === name ? { ...run, status: 'completed', conclusion: 'success' } : run);
+        clock = new Date(start + (index + 1) * 1_000);
+        await syncPullRequestStatus(REPOSITORY, PR, deps());
+    }
+    // The scheduled re-read once the window has passed.
+    clock = new Date(start + 31_000);
+    await syncPullRequestStatus(REPOSITORY, PR, deps());
+    const edits = github.patches.length - before;
+    assert.ok(edits >= 1 && edits <= 2, `${edits} edits for twenty completions`);
+    assert.match(statusLine(), /checks: 20 passed, 1 pending/, 'the last edit reflects the final state');
+});
+
+test('with a low rate limit budget check-progress edits are skipped and logged, while other writes still go out', async () => {
+    const { setPullRequestStatusLowBudgetThresholdForTests } = await import('../src/services/pullRequestStatus/pullRequestStatusRateBudget.js');
+    const { default: logger } = await import('../src/utils/logger.js');
+    const warned: Array<{ fields: Record<string, unknown>; message: string }> = [];
+    const warn = logger.warn.bind(logger);
+    (logger as { warn: unknown }).warn = (fields: Record<string, unknown>, message: string) => { warned.push({ fields, message }); };
+    setPullRequestStatusLowBudgetThresholdForTests(100);
+    try {
+        await addTask('issue', 'completed');
+        github.checkRuns = ['unit', 'lint', 'e2e'].map(name => ({ name, status: 'in_progress', conclusion: null }));
+        const complete = (name: string, conclusion: string) => {
+            github.checkRuns = github.checkRuns.map(run => run.name === name ? { ...run, status: 'completed', conclusion } : run);
+        };
+        assert.equal(await sync(), 'updated');
+        const before = github.patches.length;
+
+        github.rateLimitRemaining = 40;
+        complete('unit', 'success');
+        assert.equal(await sync(), 'unchanged', 'past the window, but the budget is low');
+        complete('lint', 'success');
+        assert.equal(await sync(), 'unchanged');
+        assert.equal(github.patches.length, before);
+        assert.match(statusLine(), /checks: 3 pending/);
+        const skips = warned.filter(entry => /rate limit is low/.test(entry.message));
+        assert.equal(skips.length, 2, 'one log line per skipped edit');
+        assert.equal(skips[0].fields.remaining, 40);
+        assert.equal(skips[0].fields.threshold, 100);
+
+        // The run finishes: the state a person waits on is written although the budget is still low.
+        complete('e2e', 'success');
+        assert.equal(await sync(), 'updated');
+        assert.match(statusLine(), /✅ Ready/);
+        assert.match(statusLine(), /checks: 3 passed/);
+
+        // A completion summary written through the body writer is never held back by the budget.
+        await updatePullRequestBody(github as never, { owner: 'integry', repo: 'propr', pullNumber: PR, body: `${HUMAN_BODY}\n\nCompletion summary.` }, { preserveStatusBlock: true, redis: redis as never });
+        assert.match(github.pull.body, /Completion summary\./);
+        assert.match(statusLine(), /✅ Ready/);
+
+        // The budget recovers: check progress is written again.
+        github.checkRuns.push({ name: 'late', status: 'in_progress', conclusion: null });
+        github.rateLimitRemaining = 4_000;
+        await sync();
+        github.checkRuns = github.checkRuns.map(run => run.name === 'late' ? { ...run, status: 'completed', conclusion: 'success' } : run);
+        github.checkRuns.push({ name: 'later', status: 'in_progress', conclusion: null });
+        await sync();
+        assert.match(statusLine(), /checks: 4 passed, 1 pending/);
+        assert.equal(warned.filter(entry => /rate limit is low/.test(entry.message)).length, 2, 'no skip once the budget recovered');
+    } finally {
+        (logger as { warn: unknown }).warn = warn;
+        setPullRequestStatusLowBudgetThresholdForTests(null);
     }
 });
 
