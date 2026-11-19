@@ -43,6 +43,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.328 and Antigravity CLI 1.5.12**: the
+  `propr/agent` image moves from Claude Code 2.1.327 and Antigravity CLI
+  1.5.11. Codex stays on 0.170.0, OpenCode on 1.19.6 and Mistral Vibe on
+  2.25.8.
+  - Claude Code 2.1.328 rebuilds the system prompt on automatic compaction,
+    as `/compact` already did. Its new
+    `CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME` setting only matters for hooks
+    that defer tool calls, which ProPR does not install, and its subagent-wait
+    changes apply only with `CLAUDE_CODE_FORK_SUBAGENT=0`, which ProPR does
+    not set. The bundled model catalog is unchanged.
+  - Antigravity 1.5.12 is release `5281398513336320`, SHA-512 checked against
+    Google's linux_amd64 install manifest. It retries requests automatically
+    after a brief connection problem instead of ending the turn. The `-p`,
+    `--print-timeout` and exit-code behaviour ProPR relies on is unchanged.
+    It adds Gemini 4 Neon (see below).
+- **Gemini 4 Neon (Antigravity)**: Google's new Gemini 4 model is in the
+  Antigravity catalog as `antigravity-gemini-4-neon` (label
+  `llm-antigravity-neon`, alias `neon`, 1M context). Like Gemini 4 Hydrogen it
+  offers `xhigh` effort, launched as `gemini-4-neon-xhigh`; low, medium and
+  high run as `gemini-4-neon-<effort>`. Usage is priced at $3/M input and
+  $15/M output. It needs Antigravity CLI 1.5.12 and supersedes no model. The
+  1.5.12 release notes list it only for `GEMINI_API_KEY` accounts, but
+  `agy login` accounts on Google AI Pro also have it.
+- **Gemini 4 Carbon (Antigravity)**: Gemini 4 Carbon is in the Antigravity
+  catalog as `antigravity-gemini-4-carbon` (label `llm-antigravity-carbon`,
+  alias `carbon`, 1M context). It offers low, medium and high effort, run as
+  `gemini-4-carbon-<effort>`; XHigh runs at high. Usage is priced at $2/M
+  input and $10/M output. It needs Antigravity CLI 1.5.8 and supersedes no
+  model. With `agy login` it is available only to Google AI Ultra
+  subscribers; Google AI Pro accounts should remove it from the agent's
+  models.
 - **Every GitHub release starts with a readable summary**: the release body is
   now the checked-in `release-notes/v<version>.md`, with **Highlights** and
   **Upgrade notes** sections, followed by GitHub's generated list of merged
