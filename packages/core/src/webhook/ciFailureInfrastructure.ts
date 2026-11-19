@@ -101,6 +101,29 @@ const EXECUTION_STEP_PATTERN = /\b(?:tests?|testing|specs?|e2e|smoke|acceptance|
  * operation; a bare tool or browser name does not.
  */
 const SETUP_STEP_PATTERN = /\b(?:set ?up|setup|install(?:ing|s)?|npm ci|(?:yarn|pnpm) install|apt(?:-get)? (?:update|install)|pip install|download(?:ing)?|(?:restore |save )?cache|checkout|docker (?:pull|login)|pull image|initialize containers)\b/i;
+
+/**
+ * Joiners between two operations ("Install dependencies and run migrations",
+ * "Setup && seed database", "Install Chromium / launch app"): a step that
+ * names more than one operation is never a setup step. A leading "Run" is
+ * GitHub's prefix for an unnamed command step, not a joiner, so `run` only
+ * counts after another word. A `/` counts when spaced or between two bare
+ * words, not inside a path such as `./scripts/ci-install.sh`.
+ */
+const COMPOUND_STEP_PATTERNS: readonly RegExp[] = [
+    /\b(?:and|then|plus)\b/i,
+    /\S\s+(?:run|runs|running)\s+\S/i,
+    /&&|;|\|/,
+    /\w\s*[+,]\s*\w/,
+    /\s\/|\/\s/,
+    /(?<![\w./@-])[a-z]+\/[a-z]+(?![\w./@-])/i,
+];
+
+/** GitHub's generated name for an action step: `Run <owner>/<action>[/<path>]@<ref>`, or its `Post Run` cleanup. */
+const ACTION_STEP_PATTERN = /^(?:Post )?Run [\w.-]+\/([\w.-]+)(?:\/[\w.-]+)*@[\w./-]+$/;
+
+/** Actions that only prepare the job (checkout, setup-*, cache, login, download-artifact). */
+const SETUP_ACTION_PATTERN = /^(?:checkout|setup-[\w.-]+|cache|login(?:-action)?|download-artifact)$/i;
 /** Runner notices and annotations the runner attaches to the workflow file say nothing about the code. */
 function pointsAtSource(annotation: CiFailureAnnotation): boolean {
     const path = annotation.path?.trim();
@@ -117,9 +140,18 @@ export function hasInfrastructureSignature(texts: ReadonlyArray<string | null | 
     return [...RUNNER_LOST_PATTERNS, ...NETWORK_PATTERNS].some(pattern => pattern.test(joined));
 }
 
-/** A step that only prepares the job; anything that also runs tests, builds or lint is not. */
+/**
+ * A step that only prepares the job: one setup operation and nothing else.
+ * Anything that also runs tests, builds or lint, or names a second operation,
+ * is not. A generated action step is setup only when the action is one.
+ */
 export function isSetupStep(name: string): boolean {
-    return !EXECUTION_STEP_PATTERN.test(name) && SETUP_STEP_PATTERN.test(name);
+    const trimmed = name.trim();
+    const action = ACTION_STEP_PATTERN.exec(trimmed);
+    if (action) return SETUP_ACTION_PATTERN.test(action[1]);
+    if (EXECUTION_STEP_PATTERN.test(trimmed)) return false;
+    if (COMPOUND_STEP_PATTERNS.some(pattern => pattern.test(trimmed))) return false;
+    return SETUP_STEP_PATTERN.test(trimmed);
 }
 
 /** Classifies a failure as infrastructure-only, or not (the default whenever the evidence is not conclusive). */

@@ -1,7 +1,7 @@
 import { after, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { closeConnection } from '../packages/core/src/db/connection.js';
-import { classifyCiInfrastructureFailure, type CiInfrastructureEvidence } from '../packages/core/src/webhook/ciFailureInfrastructure.js';
+import { classifyCiInfrastructureFailure, isSetupStep, type CiInfrastructureEvidence } from '../packages/core/src/webhook/ciFailureInfrastructure.js';
 import { postCiFailureFollowup, type CiFailureFollowupRequest } from '../packages/core/src/webhook/ciFailureFollowup.js';
 import { setPullRequestStatusSyncRunner } from '../packages/core/src/services/pullRequestStatus/pullRequestStatusSignal.js';
 
@@ -251,6 +251,36 @@ describe('test, build and lint steps are never setup steps', () => {
         ]) {
             assert.equal(classifyCiInfrastructureFailure(evidence({ texts: network, failedSteps: [step] })).infrastructure, true, step);
         }
+    });
+});
+
+describe('a compound or ambiguous step is never a setup step', () => {
+    test('a step naming a second operation is not setup', () => {
+        for (const step of ['Install dependencies and run migrations', 'Setup && seed database', 'Install, then start the server', 'Install Chromium / launch app']) {
+            assert.equal(isSetupStep(step), false, step);
+        }
+    });
+
+    test('a single setup operation and GitHub\'s generated setup action steps are setup', () => {
+        for (const step of [
+            'Install Chromium', 'npm ci', 'Set up job', 'Run actions/checkout@v4', 'Run actions/setup-node@v4',
+            'Run actions/cache@v4', 'Run docker/login-action@v3', 'Post Run actions/checkout@v4',
+        ]) {
+            assert.equal(isSetupStep(step), true, step);
+        }
+    });
+
+    test('an action or script that is not a setup operation is not setup', () => {
+        for (const step of ['Run actions/github-script@v7', 'Run ./scripts/deploy.sh']) {
+            assert.equal(isSetupStep(step), false, step);
+        }
+    });
+
+    test('a network error in a compound install-and-migrate step is a code failure', () => {
+        assert.equal(classifyCiInfrastructureFailure(evidence({
+            texts: ['Error: read ECONNRESET'],
+            failedSteps: ['Install dependencies and run migrations'],
+        })).infrastructure, false);
     });
 });
 
