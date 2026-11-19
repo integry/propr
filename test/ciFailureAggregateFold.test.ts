@@ -229,6 +229,55 @@ describe('decideAggregateFold with the Full Test Suite layout', () => {
         assert.strictEqual(decideGate(['run: test "${{ needs.build.result }}" = success', 'continue-on-error: false']), null);
     });
 
+    test('a builtin-only step whose failure does not come from the needed results is the aggregate\'s own failure', () => {
+        const env = ['env:', '  BUILD: ${{ needs.build.result }}'];
+        // It prints the dependency's result, then fails its own artifact check.
+        assert.strictEqual(decideGate(['run: |', '  echo "${{ needs.build.result }}"', '  test -f dist/bundle.js']), null);
+        const independent: string[][] = [
+            // File, permission and option tests.
+            ['run: |', '  [ "$BUILD" = success ] || exit 1', '  [ -d dist ]'],
+            ['run: |', '  if [[ -s out.log ]]; then exit 1; fi', '  test "$BUILD" = success'],
+            ['run: if [ ! -e "dist/$BUILD" ]; then exit 1; fi'],
+            // Values that do not come from the step's env: the runner's environment or the file system.
+            ['run: |', '  [ "$BUILD" = success ] && [ "$HOME" = /root ]'],
+            ['run: test "$GITHUB_WORKSPACE/$BUILD" = /work/success'],
+            ['run: test "$BUILD" = *.js'],
+            ['run: test ~ = "$BUILD"'],
+            // Unconditional failures.
+            ['run: |', '  echo "$BUILD"', '  exit 1'],
+            ['run: |', '  echo "$BUILD"', '  false'],
+            ['run: |', '  status=1', '  [ "$BUILD" = success ] || echo "::error::build failed"', '  exit "$status"'],
+            ['run: |', '  fail() { echo "$1"; exit 1; }', '  [ "$BUILD" = success ]', '  fail "build"'],
+            ['run: |', '  [ "$BUILD" = success ] || echo failed && exit 1'],
+            ['run: |', '  if echo "$BUILD"; then exit 1; fi'],
+            // Reading input or writing a file of the job's own.
+            ['run: echo "$BUILD" > dist/result.txt'],
+            ['run: test "$BUILD" = success < expected.txt'],
+            // Constructs this reader does not follow.
+            ['run: echo "$BUILD" | grep -q success'],
+            ['run: |', '  set -u', '  test "$BUILD" = success'],
+            ['run: ( test "$BUILD" = success )'],
+            ['working-directory: dist', 'run: test "$BUILD" = success'],
+        ];
+        for (const step of independent) {
+            assert.strictEqual(decideGate([...env, ...step]), null, step.join('\n'));
+        }
+    });
+
+    test('result checks guarded by tests of the needed results fold', () => {
+        const env = ['env:', '  BUILD: ${{ needs.build.result }}', '  EVENT: ${{ github.event_name }}'];
+        const gates: string[][] = [
+            ['run: \'[ "${{ needs.build.result }}" = success ] || exit 1\''],
+            ['run: |', '  test "$BUILD" = success || { echo "::error::Build finished with result $BUILD" >&2; exit 1; }'],
+            ['run: |', '  set -eo pipefail', '  if [ "$BUILD" != success ] && [ "$EVENT" = pull_request ]; then', '    exit 1', '  fi'],
+            ['run: |', '  fail() { echo "::error::$1 failed" >> "$GITHUB_STEP_SUMMARY"; exit 1; }', '  [ "$BUILD" = success ] || fail Build'],
+            ['run: |', '  status=0', '  result="${BUILD:-missing}"', '  if [ -z "$result" ] || [ "$result" != success ]; then status=1; fi', '  exit "$status"'],
+        ];
+        for (const step of gates) {
+            assert.deepStrictEqual(decideGate([...env, ...step])?.causes.map(cause => cause.name), ['build'], step.join('\n'));
+        }
+    });
+
     test('unparsable or unexpected workflow text yields no workflow', () => {
         assert.strictEqual(parseWorkflowJobs('jobs: [\n'), null);
         assert.strictEqual(parseWorkflowJobs('name: no jobs here'), null);
@@ -291,10 +340,11 @@ function fakeGitHub(options: {
     return { octokit, comments, posts, contentsReads };
 }
 
-function dependencies(octokit: ReturnType<typeof fakeGitHub>['octokit']) {
+function dependencies(octokit: ReturnType<typeof fakeGitHub>['octokit'], nonBlockingChecks: string[] = []) {
     const values = new Map<string, string>();
     return {
         isEnabled: async () => true,
+        loadNonBlockingChecks: async () => nonBlockingChecks,
         getOctokit: async () => octokit,
         redisClient: {
             get: async (key: string) => values.get(key) ?? null,
@@ -447,6 +497,40 @@ describe('folding into a comment started by another failure', () => {
         assert.strictEqual(body.split(`- Check: \`${SHARD}\``).length, 2);
         assert.strictEqual(body.split(shardMarker(failure(SHARD, 13))).length, 2);
         assert.ok(body.includes(`Also failed: **${AGGREGATE}**`));
+    });
+});
+
+describe('a non-blocking shard is not listed as the failure of its blocking aggregate', () => {
+    // The repository marks the shards non-blocking but keeps the aggregate blocking.
+    const NON_BLOCKING = ['Full Test Suite Shard *'];
+
+    test('an aggregate starting the comment is listed on its own, without the shard', async () => {
+        const github = fakeGitHub();
+        const result = await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', dependencies(github.octokit, NON_BLOCKING));
+
+        assert.strictEqual(result.reason, 'posted');
+        const posted = github.posts[0];
+        assert.ok(posted.startsWith(`CI failed: **${AGGREGATE}**\n`), 'the aggregate is listed on its own, as before folding');
+        assert.ok(posted.includes(`- Check: \`${AGGREGATE}\``));
+        assert.ok(!posted.includes(SHARD), 'the non-blocking shard is neither a failure nor named');
+        assert.ok(!posted.includes(shardMarker(failure(SHARD, 13))));
+        assert.ok(!posted.includes('Also failed:'));
+    });
+
+    test('an aggregate joining a comment started by another failure is added on its own, without the shard', async () => {
+        const github = fakeGitHub();
+        const deps = dependencies(github.octokit, NON_BLOCKING);
+        await postCiFailureFollowup(failure('Lint', 30), 'lint', deps);
+        const result = await postCiFailureFollowup(failure(AGGREGATE, AGGREGATE_ID), 'aggregate', deps);
+
+        assert.strictEqual(result.reason, 'updated');
+        assert.strictEqual(github.posts.length, 1);
+        const body = github.comments[0].body;
+        assert.ok(body.startsWith(`CI failed: **Lint**, **${AGGREGATE}**\n`));
+        assert.ok(body.includes(`- Check: \`${AGGREGATE}\``));
+        assert.ok(!body.includes(SHARD));
+        assert.ok(!body.includes(shardMarker(failure(SHARD, 13))));
+        assert.ok(!body.includes('Also failed:'));
     });
 });
 

@@ -9,7 +9,9 @@
  * mirror outage) is not claimed, so a genuine failure of the same check on a
  * later attempt of this head still gets reported. When any such job is
  * infrastructure-only, the aggregate is not folded under it and is listed as
- * a failure of its own, as before folding existed.
+ * a failure of its own, as before folding existed. The same holds when any
+ * such job is a check the repository marked non-blocking: its own delivery
+ * starts no follow-up, so folding must not list it as the failure to fix.
  */
 import type logger from '../utils/logger.js';
 import type { RunJob, AggregateFold } from './ciFailureAggregateFold.js';
@@ -17,6 +19,7 @@ import type { ReportedCheck } from './ciFailureCommentText.js';
 import { buildAnnotationExcerpt, joinUsefulText } from './ciFailureCommentText.js';
 import type { CiFailureAnnotation, CiFailureEvidence, CiFailureFollowupRequest } from './ciFailureFollowup.js';
 import { classifyFailedCheckRun } from './ciFailureInfrastructureCheck.js';
+import { isNonBlockingCheck } from './nonBlockingChecks.js';
 
 type Log = ReturnType<typeof logger.withCorrelation>;
 
@@ -42,15 +45,23 @@ export function causeSource(cause: RunJob): string {
 
 /**
  * Every failed needed job of `fold`, with its evidence when `existingBody`
- * does not report it yet. Null when one of those is infrastructure-only: the
- * aggregate is then not folded.
+ * does not report it yet. Null when one of those is non-blocking (matches
+ * `nonBlocking`) or infrastructure-only: the aggregate is then not folded.
  */
 export async function resolveFoldCauses(
     octokit: CheckEvidenceOctokit,
     request: CiFailureFollowupRequest,
-    { fold, existingBody, markerFor }: { fold: AggregateFold; existingBody: string; markerFor: (source: string) => string },
+    { fold, existingBody, markerFor, nonBlocking }: {
+        fold: AggregateFold; existingBody: string; markerFor: (source: string) => string; nonBlocking: readonly string[];
+    },
     log: Log,
 ): Promise<FoldCause[] | null> {
+    const excluded = fold.causes.find(cause => isNonBlockingCheck(cause.name, nonBlocking));
+    if (excluded) {
+        log.info({ aggregate: fold.aggregate, cause: excluded.name },
+            'A failed needed job is non-blocking for this repository; listing the aggregate on its own');
+        return null;
+    }
     const causes = await Promise.all(fold.causes.map(async (cause): Promise<FoldCause | null> => {
         const marker = markerFor(causeSource(cause));
         if (existingBody.includes(marker)) return { cause, marker, reported: true };

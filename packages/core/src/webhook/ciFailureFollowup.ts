@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { getBotUsername, isAutoCiFollowupEnabledForRepository } from '../daemon/configLoader.js';
+import { getBotUsername, getNonBlockingChecksForRepository, isAutoCiFollowupEnabledForRepository } from '../daemon/configLoader.js';
 import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
@@ -83,6 +83,8 @@ export interface CiFailureFollowupDependencies {
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
+    /** The repository's nonBlockingChecks patterns; a fold never lists a matching job as the failure. */
+    loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>;
 }
 
 export interface CiFailureFollowupResult {
@@ -253,6 +255,7 @@ export async function postCiFailureFollowup(
     const fold = request.evidence.kind === 'check_run'
         ? await loadAggregateFold(octokit, { ...request, url: request.evidence.url, state: request.evidence.state }, new Map(), log)
         : null;
+    const nonBlocking = fold ? await (dependencies.loadNonBlockingChecks ?? getNonBlockingChecksForRepository)(request.owner, request.repo) : [];
     let claimed = false;
 
     try {
@@ -263,7 +266,7 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold });
+        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold, nonBlocking });
     } catch (error) {
         if (claimed) {
             try {
@@ -278,7 +281,7 @@ export async function postCiFailureFollowup(
 
 /** Lists a claimed failure on the same head's comment, or posts a new one. */
 async function reportClaimedFailure(
-    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold }: {
+    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold, nonBlocking }: {
         octokit: CiFailureOctokit;
         request: CiFailureFollowupRequest;
         dedupeKey: string;
@@ -287,6 +290,7 @@ async function reportClaimedFailure(
         annotationExcerpt: string | undefined;
         /** The needed jobs this failed aggregate only reports; it is then mentioned as their consequence. */
         fold: AggregateFold | null;
+        nonBlocking: readonly string[];
     },
 ): Promise<CiFailureFollowupResult> {
     let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
@@ -306,7 +310,9 @@ async function reportClaimedFailure(
     // A same-head comment proves only that something failed on this commit,
     // not that the fold's causes were reported: each one is checked.
     const causes = fold
-        ? await resolveFoldCauses(octokit, request, { fold, existingBody: scan.sameHead?.body ?? '', markerFor: causeMarker(request) }, log)
+        ? await resolveFoldCauses(octokit, request, {
+            fold, existingBody: scan.sameHead?.body ?? '', markerFor: causeMarker(request), nonBlocking,
+        }, log)
         : null;
     if (scan.sameHead) {
         const marker = buildCiFailureFollowupMarker(dedupeKey);
