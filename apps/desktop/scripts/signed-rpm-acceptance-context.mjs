@@ -9,8 +9,7 @@ export const SIGNED_RPM_ACCEPTANCE_CONTEXT = Object.freeze(['package.json', 'pac
   'apps/desktop/package.json', 'propr-ui/package.json',
   ...['api', 'cli', 'client', 'core', 'local-setup', 'shared'].map(name => `packages/${name}/package.json`),
   'packages/shared/tsconfig.json', 'packages/shared/src', 'apps/desktop/scripts',
-  'vendor/braces-3.0.4-depthguard.1.tgz', 'vendor/picomatch-4.0.8-extglobguard.3.tgz',
-  'vendor/picomatch-4.0.8-v2.3.2-extglobguard.3.tgz']);
+  'vendor/braces-3.0.4-depthguard.1.tgz']);
 
 // Lockfile packages npm ci installs from a local tarball rather than a registry.
 export const lockfileFileDependencies = lock => Object.entries(lock?.packages ?? {})
