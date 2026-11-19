@@ -11,7 +11,7 @@
 import logger from '../utils/logger.js';
 import { requestPullRequestStatusSync } from '../services/pullRequestStatus/pullRequestStatusSignal.js';
 import type { CiFailureAnnotation, CiFailureFollowupRequest } from './ciFailureFollowup.js';
-import { classifyCiInfrastructureFailure, hasInfrastructureSignature, type CiInfrastructureVerdict } from './ciFailureInfrastructure.js';
+import { classifyCiInfrastructureFailure, hasInfrastructureSignature, type CiInfrastructureVerdict, type CiJobStep } from './ciFailureInfrastructure.js';
 
 export interface InfrastructureGitHub {
     request: (route: string, parameters: Record<string, unknown>) => Promise<{ data: unknown }>;
@@ -32,21 +32,22 @@ export interface FailedCheckRun {
 }
 
 const ACTIONS_JOB_URL_RE = /\/actions\/runs\/\d+\/job\/(\d+)/u;
-const FAILED_STEP_CONCLUSIONS = new Set(['failure', 'timed_out']);
 const NOT_INFRASTRUCTURE: CiInfrastructureVerdict = { infrastructure: false };
 
 type Log = ReturnType<typeof logger.withCorrelation>;
 
-/** Names of the job's failed steps; null when they could not be read. */
-async function loadFailedSteps(github: InfrastructureGitHub, run: FailedCheckRun): Promise<string[] | null> {
+/** The job's steps in run order; null when they could not be read. */
+async function loadJobSteps(github: InfrastructureGitHub, run: FailedCheckRun): Promise<CiJobStep[] | null> {
     const match = run.url ? ACTIONS_JOB_URL_RE.exec(run.url) : null;
     const jobId = match ? Number(match[1]) : run.checkRunId;
     const { data } = await github.request('GET /repos/{owner}/{repo}/actions/jobs/{job_id}', { owner: run.owner, repo: run.repo, job_id: jobId });
-    const steps = (data as { steps?: Array<{ name?: unknown; conclusion?: unknown }> } | null)?.steps;
+    const steps = (data as { steps?: Array<{ name?: unknown; status?: unknown; conclusion?: unknown } | null> } | null)?.steps;
     if (!Array.isArray(steps)) return null;
-    return steps
-        .filter(step => typeof step.conclusion === 'string' && FAILED_STEP_CONCLUSIONS.has(step.conclusion))
-        .map(step => (typeof step.name === 'string' ? step.name : ''));
+    return steps.map(step => ({
+        name: typeof step?.name === 'string' ? step.name : '',
+        status: typeof step?.status === 'string' ? step.status : null,
+        conclusion: typeof step?.conclusion === 'string' ? step.conclusion : null,
+    }));
 }
 
 /**
@@ -59,15 +60,15 @@ export async function classifyFailedCheckRun(github: InfrastructureGitHub, run: 
     if (!annotations) return NOT_INFRASTRUCTURE;
     const texts = [run.outputText, ...annotations.flatMap(item => [item.title, item.message, item.raw_details])];
     if (!hasInfrastructureSignature(texts)) return NOT_INFRASTRUCTURE;
-    let failedSteps: string[] | null;
+    let steps: CiJobStep[] | null;
     try {
-        failedSteps = await loadFailedSteps(github, run);
+        steps = await loadJobSteps(github, run);
     } catch (error) {
         logger.debug({ owner: run.owner, repo: run.repo, checkRunId: run.checkRunId, error: (error as Error).message },
             'Could not read the failed job; treating the CI failure as a code failure');
         return NOT_INFRASTRUCTURE;
     }
-    return classifyCiInfrastructureFailure({ kind: 'check_run', state: run.state, texts: [run.outputText], annotations, failedSteps });
+    return classifyCiInfrastructureFailure({ kind: 'check_run', state: run.state, texts: [run.outputText], annotations, steps });
 }
 
 /**

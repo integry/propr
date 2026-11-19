@@ -32,14 +32,48 @@ describe('infrastructure-only CI failure classifier', () => {
         assert.equal(verdict.infrastructure, true);
     });
 
-    test('a runner shutdown or lost communication is infrastructure whatever step was running', () => {
+    test('a runner shutdown or lost communication is infrastructure whatever step it interrupted', () => {
         for (const message of [
             'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.',
             "The self-hosted runner: ci-runner-3 lost communication with the server. Verify the machine is running and has a healthy network connection.",
         ]) {
-            const verdict = classifyCiInfrastructureFailure(evidence({ annotations: [{ annotation_level: 'failure', message }], failedSteps: ['Run npm test'] }));
-            assert.deepEqual(verdict, { infrastructure: true, cause: 'runner_lost' }, message);
+            for (const steps of [
+                // The interrupted test step is the last that ran: later steps never started.
+                [{ name: 'Set up job', status: 'completed', conclusion: 'success' }, { name: 'Run npm test', status: 'completed', conclusion: 'failure' },
+                    { name: 'Post Run actions/checkout@v4', status: 'queued', conclusion: null }],
+                // The interrupted step was cancelled rather than failed: no step failed.
+                [{ name: 'Set up job', status: 'completed', conclusion: 'success' }, { name: 'Run npm test', status: 'completed', conclusion: 'cancelled' }],
+                [{ name: 'Set up job', status: 'completed', conclusion: 'success' }, { name: 'Run npm test', status: 'in_progress', conclusion: null }],
+            ]) {
+                const verdict = classifyCiInfrastructureFailure(evidence({ annotations: [{ annotation_level: 'failure', message }], steps }));
+                assert.deepEqual(verdict, { infrastructure: true, cause: 'runner_lost' }, message);
+            }
         }
+    });
+
+    test('a test step that failed before the runner was lost in a later step stays a code failure', () => {
+        const lost = { annotation_level: 'failure', message: 'The self-hosted runner: ci-runner-3 lost communication with the server.' };
+        const testFailed = [{ name: 'Set up job', status: 'completed', conclusion: 'success' }, { name: 'Run npm test', status: 'completed', conclusion: 'failure' }];
+        for (const cleanup of [
+            { name: 'Upload test logs', status: 'completed', conclusion: 'failure' },
+            { name: 'Upload test logs', status: 'completed', conclusion: 'cancelled' },
+            { name: 'Upload test logs', status: 'in_progress', conclusion: null },
+            { name: 'Upload test logs', status: 'completed', conclusion: 'success' },
+            { name: 'Upload test logs' },
+        ]) {
+            const verdict = classifyCiInfrastructureFailure(evidence({ annotations: [EXIT, lost], steps: [...testFailed, cleanup] }));
+            assert.equal(verdict.infrastructure, false, JSON.stringify(cleanup));
+        }
+        // Steps skipped after the failure do not separate the failed step from the runner loss.
+        assert.equal(classifyCiInfrastructureFailure(evidence({ annotations: [EXIT, lost], steps: [
+            ...testFailed, { name: 'Run npm run build', status: 'completed', conclusion: 'skipped' },
+        ] })).infrastructure, true);
+    });
+
+    test('a runner loss with unread job steps stays a code failure', () => {
+        const lost = { annotation_level: 'failure', message: 'The runner has received a shutdown signal.' };
+        assert.equal(classifyCiInfrastructureFailure(evidence({ annotations: [lost], steps: null, failedSteps: ['Run npm test'] })).infrastructure, false);
+        assert.equal(classifyCiInfrastructureFailure(evidence({ annotations: [lost] })).infrastructure, false);
     });
 
     test('a registry 5xx during install is infrastructure', () => {
@@ -122,7 +156,7 @@ function createRedis(faults: { set?: () => void } = {}) {
 }
 
 /** GitHub for the #3703 failure: the job's install step failed with the Chromium timeout. */
-function createOctokit(options: { annotations?: unknown[]; annotationsError?: Error; jobError?: Error } = {}) {
+function createOctokit(options: { annotations?: unknown[]; annotationsError?: Error; jobError?: Error; steps?: unknown[] } = {}) {
     const routes: string[] = [];
     const comments: string[] = [];
     const octokit = {
@@ -145,7 +179,7 @@ function createOctokit(options: { annotations?: unknown[]; annotationsError?: Er
                 if (options.jobError) throw options.jobError;
                 return { data: {
                     id: parameters.job_id, run_id: 44288180457, run_attempt: 1, conclusion: 'failure', status: 'completed',
-                    steps: [
+                    steps: options.steps ?? [
                         { name: 'Set up job', conclusion: 'success' },
                         { name: 'Run ./scripts/ci-install-chromium.sh', conclusion: 'failure' },
                         { name: 'Run npm test', conclusion: 'skipped' },
@@ -223,6 +257,25 @@ describe('infrastructure-only failure handling', () => {
         assert.equal(octokit.routes.some(isRerunRoute), false);
     });
 
+    test('a test failure followed by a runner loss in an always() cleanup step posts the follow-up', async () => {
+        const redis = createRedis();
+        const octokit = createOctokit({
+            annotations: [
+                { annotation_level: 'failure', path: '.github', message: 'Process completed with exit code 1.' },
+                { annotation_level: 'failure', path: '.github', message: 'The self-hosted runner: ci-runner-3 lost communication with the server.' },
+            ],
+            steps: [
+                { name: 'Set up job', status: 'completed', conclusion: 'success' },
+                { name: 'Run npm test', status: 'completed', conclusion: 'failure' },
+                { name: 'Upload test logs', status: 'in_progress', conclusion: null },
+            ],
+        });
+        const result = await postCiFailureFollowup(request(), 'test-then-runner-lost', { isEnabled: async () => true, getOctokit: async () => octokit, redisClient: redis as never });
+        assert.equal(result.reason, 'posted');
+        assert.equal(octokit.comments.length, 1);
+        assert.equal(octokit.routes.some(isRerunRoute), false);
+    });
+
     test('an unreadable job keeps runner-problem output a code failure', async () => {
         const redis = createRedis();
         const octokit = createOctokit({ jobError: Object.assign(new Error('Not Found'), { status: 404 }) });
@@ -288,8 +341,9 @@ describe('unreadable annotations never make a failure infrastructure', () => {
     const shutdown = 'The runner has received a shutdown signal. This can happen when the runner service is stopped.';
 
     test('the classifier declines when the annotations could not be read', () => {
-        assert.equal(classifyCiInfrastructureFailure(evidence({ texts: [shutdown], annotations: undefined, failedSteps: ['Install dependencies'] })).infrastructure, false);
-        assert.equal(classifyCiInfrastructureFailure(evidence({ texts: [shutdown], annotations: [], failedSteps: ['Install dependencies'] })).infrastructure, true);
+        const steps = [{ name: 'Install dependencies', status: 'completed', conclusion: 'failure' }];
+        assert.equal(classifyCiInfrastructureFailure(evidence({ texts: [shutdown], annotations: undefined, steps })).infrastructure, false);
+        assert.equal(classifyCiInfrastructureFailure(evidence({ texts: [shutdown], annotations: [], steps })).infrastructure, true);
     });
 
     test('an annotation read failure posts the ordinary follow-up despite runner-problem output', async () => {

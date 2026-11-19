@@ -5,7 +5,10 @@
  *
  * The decision is deliberately conservative. A failure is only infrastructure
  * when nothing in the evidence looks like a test, compile or lint failure and
- *  - the runner itself went away (shutdown signal, lost communication), or
+ *  - the runner itself went away (shutdown signal, lost communication) while
+ *    running the only step that failed, or with no step failed: a step that
+ *    failed before another step started failed on its own, so the runner going
+ *    away later (say in an `always()` cleanup) does not excuse it, or
  *  - every failed step is a setup/install step and the evidence shows a
  *    network, mirror or registry error.
  * Unknown steps, a failure in a test or build step, or any doubt keep the
@@ -23,8 +26,23 @@ export interface CiInfrastructureEvidence {
     texts: Array<string | null | undefined>;
     /** The check's annotations; absent when they could not be read, which keeps the failure a code failure. */
     annotations?: CiFailureAnnotation[];
-    /** Names of the job's failed steps; null or absent when they could not be read. */
+    /** Names of the job's failed steps; null or absent when they could not be read. Derived from `steps` when absent. */
     failedSteps?: string[] | null;
+    /**
+     * The job's steps in run order; null or absent when they could not be
+     * read, which keeps a runner loss a code failure, since nothing then
+     * shows which step the runner loss interrupted.
+     */
+    steps?: CiJobStep[] | null;
+}
+
+/** One step of a GitHub Actions job, as the jobs API reports it. */
+export interface CiJobStep {
+    name: string;
+    /** `queued`, `in_progress`, `completed`, …; absent when not reported. */
+    status?: string | null;
+    /** `success`, `failure`, `skipped`, …; null while the step has not finished. */
+    conclusion?: string | null;
 }
 
 export type CiInfrastructureCause = 'runner_lost' | 'network';
@@ -124,6 +142,38 @@ const ACTION_STEP_PATTERN = /^(?:Post )?Run [\w.-]+\/([\w.-]+)(?:\/[\w.-]+)*@[\w
 
 /** Actions that only prepare the job (checkout, setup-*, cache, login, download-artifact). */
 const SETUP_ACTION_PATTERN = /^(?:checkout|setup-[\w.-]+|cache|login(?:-action)?|download-artifact)$/i;
+/** Step conclusions that count as the step having failed. */
+export const FAILED_STEP_CONCLUSIONS: ReadonlySet<string> = new Set(['failure', 'timed_out']);
+/** Step statuses of a step that never started. */
+const NOT_STARTED_STEP_STATUSES = new Set(['queued', 'pending', 'waiting', 'requested']);
+
+/** Names of the failed steps, in run order. */
+export function failedStepNames(steps: readonly CiJobStep[]): string[] {
+    return steps.filter(step => typeof step.conclusion === 'string' && FAILED_STEP_CONCLUSIONS.has(step.conclusion)).map(step => step.name);
+}
+
+/** Whether a step ran (or started to): skipped and not-yet-started steps did not; unknown state counts as started. */
+function stepStarted(step: CiJobStep): boolean {
+    if (step.conclusion === 'skipped') return false;
+    if (step.conclusion == null && typeof step.status === 'string' && NOT_STARTED_STEP_STATUSES.has(step.status)) return false;
+    return true;
+}
+
+/**
+ * Whether the runner loss can account for every failed step: none failed, or
+ * exactly one did and no step started after it, so it is the step the runner
+ * loss interrupted. A step that failed before another started (a test step
+ * followed by an `always()` cleanup the runner was lost in) failed on its
+ * own; unread steps cannot show either.
+ */
+function runnerLossExplainsFailedSteps(steps: readonly CiJobStep[] | null | undefined): boolean {
+    if (!steps) return false;
+    const failed = steps.flatMap((step, index) => (typeof step.conclusion === 'string' && FAILED_STEP_CONCLUSIONS.has(step.conclusion) ? [index] : []));
+    if (failed.length === 0) return true;
+    if (failed.length > 1) return false;
+    return !steps.slice(failed[0] + 1).some(stepStarted);
+}
+
 /** Runner notices and annotations the runner attaches to the workflow file say nothing about the code. */
 function pointsAtSource(annotation: CiFailureAnnotation): boolean {
     const path = annotation.path?.trim();
@@ -165,9 +215,11 @@ export function classifyCiInfrastructureFailure(evidence: CiInfrastructureEviden
     const text = [...evidence.texts, ...annotations.flatMap(annotationText)].filter(Boolean).join('\n');
     if (!text || CODE_FAILURE_PATTERNS.some(pattern => pattern.test(text))) return notInfrastructure;
 
-    if (RUNNER_LOST_PATTERNS.some(pattern => pattern.test(text))) return { infrastructure: true, cause: 'runner_lost' };
+    if (RUNNER_LOST_PATTERNS.some(pattern => pattern.test(text))) {
+        return runnerLossExplainsFailedSteps(evidence.steps) ? { infrastructure: true, cause: 'runner_lost' } : notInfrastructure;
+    }
 
-    const steps = evidence.failedSteps ?? null;
+    const steps = evidence.failedSteps ?? (evidence.steps ? failedStepNames(evidence.steps) : null);
     if (!steps || steps.length === 0 || !steps.every(isSetupStep)) return notInfrastructure;
     if (!NETWORK_PATTERNS.some(pattern => pattern.test(text))) return notInfrastructure;
     return { infrastructure: true, cause: 'network', step: steps[0] };
