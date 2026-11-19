@@ -4,7 +4,8 @@
  * pull request's validation. Instead the failed jobs of the workflow run are
  * re-run once, and the pull request's status block says what happened. When
  * the run is still running (GitHub only re-runs jobs of a finished run), the
- * re-run is kept per workflow run (ciInfrastructureRerunPending) and sent by
+ * re-run stays recorded per workflow run (ciInfrastructureRerunPending, written
+ * together with the run's claim) and is sent by
  * the next completed check of the head, ordinary failure recovery, or the
  * daemon's sweep once the run has finished; when re-running
  * is refused or the one re-run was already spent, the status block says the
@@ -20,11 +21,11 @@ import type { CiFailureAnnotation, CiFailureFollowupRequest } from './ciFailureF
 import { classifyCiInfrastructureFailure, hasInfrastructureSignature, type CiInfrastructureVerdict } from './ciFailureInfrastructure.js';
 import {
     CI_INFRASTRUCTURE_NOTICE_TTL_SECONDS, ciInfrastructureNoticeKey,
-    type CiInfrastructureNotice, type CiInfrastructureNoticeAction,
+    parseCiInfrastructureNotice, type CiInfrastructureNotice, type CiInfrastructureNoticeAction,
 } from './ciInfrastructureNotice.js';
 import {
-    CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS, listPendingReruns, readPendingRerun, recordPendingRerun, releasePendingRerun,
-    withPendingRerunLock, type PendingRerunRedis, type PendingRerunSnapshot,
+    CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS, claimRerunWithIntent, listPendingReruns, readPendingRerun, releasePendingRerun,
+    withPendingRerunLock, type PendingInfrastructureRerun, type PendingRerunRedis, type PendingRerunSnapshot,
 } from './ciInfrastructureRerunPending.js';
 
 type Log = ReturnType<typeof logger.withCorrelation>;
@@ -84,18 +85,30 @@ async function writeNotice(
     requestPullRequestStatusSync(repository, target.prNumber);
 }
 
-/** Re-runs the failed jobs of a finished run; 'rerun_deferred' while it still runs, 'rerun_unavailable' when GitHub refuses. */
+/** What GitHub says about a pending re-run's workflow run; 'already_rerun' once its attempt has advanced. */
+type RerunOutcome = CiInfrastructureNoticeAction | 'already_rerun';
+
+/**
+ * Re-runs the failed jobs of a finished run; 'rerun_deferred' while it still
+ * runs, 'rerun_unavailable' when GitHub refuses or `giveUp` is set. The live
+ * attempt is compared with the recorded one first: a later attempt means a
+ * re-run was already accepted (its pending entry outlived the request), so
+ * it is never sent again.
+ */
 async function rerunFailedJobs(
-    octokit: InfrastructureOctokit, target: { owner: string; repo: string; runId: number }, log: Log,
-): Promise<CiInfrastructureNoticeAction> {
+    octokit: InfrastructureOctokit, target: { owner: string; repo: string; runId: number; runAttempt: number; giveUp: boolean }, log: Log,
+): Promise<RerunOutcome> {
+    const { owner, repo, runId } = target;
     try {
-        const { data } = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}', {
-            owner: target.owner, repo: target.repo, run_id: target.runId,
-        });
-        if ((data as { status?: unknown } | null)?.status !== 'completed') return 'rerun_deferred';
-        await octokit.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs', {
-            owner: target.owner, repo: target.repo, run_id: target.runId,
-        });
+        const { data } = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}', { owner, repo, run_id: runId });
+        const run = data as { status?: unknown; run_attempt?: unknown } | null;
+        if (typeof run?.run_attempt === 'number' && run.run_attempt > target.runAttempt) {
+            log.info({ ...target, liveAttempt: run.run_attempt }, 'The workflow run was already re-run; settling the pending runner-problem re-run');
+            return 'already_rerun';
+        }
+        if (target.giveUp) return 'rerun_unavailable';
+        if (run?.status !== 'completed') return 'rerun_deferred';
+        await octokit.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs', { owner, repo, run_id: runId });
         log.info({ ...target }, 'Re-ran the failed jobs of a workflow run that failed on a runner problem');
         return 'rerun_requested';
     } catch (error) {
@@ -104,17 +117,24 @@ async function rerunFailedJobs(
     }
 }
 
+/** True when the pull request's notice already describes a later attempt of the same run. */
+async function noticeIsNewer(redis: InfrastructureRedis, entry: PendingInfrastructureRerun): Promise<boolean> {
+    const notice = parseCiInfrastructureNotice(await redis.get(ciInfrastructureNoticeKey(`${entry.owner}/${entry.repo}`, entry.prNumber)));
+    return notice?.runId === entry.runId && (notice.runAttempt ?? 1) > entry.runAttempt;
+}
 
 /**
  * Sends a pending re-run once its workflow run has finished, under the run's
  * lock and only while the exact pending entry is still recorded, so the hook,
- * ordinary recovery and the sweep never send it twice. An entry older than
+ * ordinary recovery and the sweep never send it twice; a run whose attempt
+ * already advanced is settled without sending. An entry older than
  * {@link CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS} is given up on with an
- * actionable notice instead. Returns null when another caller holds the run
- * or the entry was already released.
+ * actionable notice instead. A still-running run keeps the entry and writes a
+ * notice only with `noticeDeferred` (a failure event, not a retry). Returns
+ * null when another caller holds the run or the entry was already released.
  */
 async function resumePendingRerun(
-    params: { octokit: InfrastructureOctokit; redis: InfrastructureRedis; snapshot: PendingRerunSnapshot; now?: number },
+    params: { octokit: InfrastructureOctokit; redis: InfrastructureRedis; snapshot: PendingRerunSnapshot; now?: number; noticeDeferred?: boolean },
     log: Log,
 ): Promise<CiInfrastructureNoticeAction | null> {
     const { octokit, redis, snapshot } = params;
@@ -123,21 +143,54 @@ async function resumePendingRerun(
         const current = await readPendingRerun(redis, `${entry.owner}/${entry.repo}`, entry.runId);
         if (!current || current.raw !== snapshot.raw) return null;
         const now = params.now ?? Date.now();
-        let action: CiInfrastructureNoticeAction;
-        if (now - entry.deferredAt > CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS) {
-            log.warn({ ...entry }, 'A deferred runner-problem re-run waited too long for its workflow run; asking for a manual re-run');
-            action = 'rerun_unavailable';
-        } else {
-            action = await rerunFailedJobs(octokit, { owner: entry.owner, repo: entry.repo, runId: entry.runId }, log);
-            if (action === 'rerun_deferred') return action;
+        const giveUp = now - entry.deferredAt > CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS;
+        if (giveUp) log.warn({ ...entry }, 'A deferred runner-problem re-run waited too long for its workflow run; asking for a manual re-run');
+        const outcome = await rerunFailedJobs(octokit, {
+            owner: entry.owner, repo: entry.repo, runId: entry.runId, runAttempt: entry.runAttempt, giveUp,
+        }, log);
+        const notice = { headSha: entry.headSha, job: entry.job, runId: entry.runId, runAttempt: entry.runAttempt, at: now };
+        if (outcome === 'rerun_deferred') {
+            if (params.noticeDeferred) await writeNotice(redis, entry, { ...notice, action: outcome });
+            return outcome;
         }
         // Released before the notice: a failed notice write must not send the re-run again.
         await releasePendingRerun(redis, current);
-        await writeNotice(redis, entry, {
-            headSha: entry.headSha, job: entry.job, runId: entry.runId, runAttempt: entry.runAttempt, action, at: now,
-        });
+        const action: CiInfrastructureNoticeAction = outcome === 'already_rerun' ? 'rerun_requested' : outcome;
+        // A settled re-run whose later attempt already reported keeps that newer notice.
+        if (outcome !== 'already_rerun' || !await noticeIsNewer(redis, entry)) await writeNotice(redis, entry, { ...notice, action });
         return action;
     });
+}
+
+/**
+ * Takes the run's one re-run and acts on it. The claim and the owed re-run are
+ * recorded together, so an existing claim of the same attempt whose entry is
+ * still recorded is unfinished and resumed; one without an entry was already
+ * sent, refused or given up on.
+ */
+async function settleInfrastructureRerun(
+    params: { octokit: InfrastructureOctokit; redis: InfrastructureRedis; entry: PendingInfrastructureRerun },
+    log: Log,
+): Promise<CiInfrastructureNoticeAction | 'already_requested'> {
+    const { octokit, redis, entry } = params;
+    const repository = `${entry.owner}/${entry.repo}`;
+    const claimKey = rerunClaimKey(repository, entry.runId);
+    const claimed = await claimRerunWithIntent(redis, { key: claimKey, ttlSeconds: RERUN_CLAIM_TTL_SECONDS }, entry);
+    if (claimed) {
+        return await resumePendingRerun({ octokit, redis, snapshot: claimed, noticeDeferred: true }, log) ?? 'already_requested';
+    }
+    if (await redis.get(claimKey) === String(entry.runAttempt)) {
+        // Another failed job of the same attempt already took the one re-run, or it is still owed
+        // (deferred, or interrupted before GitHub was asked): an owed one is sent now if its run has finished.
+        const pending = await readPendingRerun(redis, repository, entry.runId);
+        const resumed = pending ? await resumePendingRerun({ octokit, redis, snapshot: pending, noticeDeferred: true }, log) : null;
+        return resumed ?? 'already_requested';
+    }
+    // A later attempt failed on the runner again: the one re-run is spent.
+    await writeNotice(redis, entry, {
+        headSha: entry.headSha, job: entry.job, runId: entry.runId, runAttempt: entry.runAttempt, action: 'rerun_unavailable', at: Date.now(),
+    });
+    return 'rerun_unavailable';
 }
 
 /**
@@ -145,7 +198,10 @@ async function resumePendingRerun(
  * instead of starting a code follow-up. Any failure to read the evidence keeps
  * the failure a code failure (handled: false), as before. `annotations` is
  * undefined when they could not be read: without them a source-file
- * annotation that marks a code failure cannot be ruled out.
+ * annotation that marks a code failure cannot be ruled out. Once the failure
+ * is classified as infrastructure, a failure of the re-run bookkeeping or the
+ * notice keeps it handled: the owed re-run stays recorded for recovery and
+ * the daemon sweep, and no code follow-up is started.
  */
 export async function handleInfrastructureFailure(
     params: { octokit: InfrastructureOctokit; redis: InfrastructureRedis; request: CiFailureFollowupRequest; annotations: CiFailureAnnotation[] | undefined },
@@ -174,32 +230,19 @@ export async function handleInfrastructureFailure(
     const { runId, job } = loaded;
     const runAttempt = typeof job.run_attempt === 'number' ? job.run_attempt : 1;
     const repository = `${request.owner}/${request.repo}`;
-    const claimKey = rerunClaimKey(repository, runId);
-    const claimed = await redis.set(claimKey, String(runAttempt), 'EX', RERUN_CLAIM_TTL_SECONDS, 'NX') === 'OK';
-    let action: CiInfrastructureNoticeAction;
-    if (claimed) {
-        action = await rerunFailedJobs(octokit, { owner: request.owner, repo: request.repo, runId }, log);
-        if (action === 'rerun_deferred') {
-            // Kept per run, before the notice: the notice is only the latest summary and a later run may replace it.
-            await recordPendingRerun(redis, {
-                owner: request.owner, repo: request.repo, prNumber: request.prNumber, headSha: evidence.sha,
-                job: evidence.name, runId, runAttempt, deferredAt: Date.now(),
-            });
-        }
-    } else if (await redis.get(claimKey) === String(runAttempt)) {
-        // Another failed job of the same attempt already took the one re-run, or deferred it:
-        // a deferred one is sent now if its run has finished (recovery may be the only wakeup left).
-        const pending = await readPendingRerun(redis, repository, runId);
-        const resumed = pending ? await resumePendingRerun({ octokit, redis, snapshot: pending }, log) : null;
-        return { handled: true, verdict, action: resumed ?? 'already_requested' };
-    } else {
-        // A later attempt failed on the runner again: the one re-run is spent.
-        action = 'rerun_unavailable';
+    const context = { repository, prNumber: request.prNumber, job: evidence.name, runId, runAttempt, cause: verdict.cause, step: verdict.step };
+    try {
+        const action = await settleInfrastructureRerun({ octokit, redis, entry: {
+            owner: request.owner, repo: request.repo, prNumber: request.prNumber, headSha: evidence.sha,
+            job: evidence.name, runId, runAttempt, deferredAt: Date.now(),
+        } }, log);
+        log.info({ ...context, action }, 'CI failure looks like a runner problem; no code follow-up is started');
+        return { handled: true, verdict, action };
+    } catch (error) {
+        log.warn({ ...context, error: (error as Error).message },
+            'Could not record or report the re-run of a runner-problem CI failure; no code follow-up is started');
+        return { handled: true, verdict };
     }
-    log.info({ repository, prNumber: request.prNumber, job: evidence.name, runId, runAttempt, cause: verdict.cause, step: verdict.step, action },
-        'CI failure looks like a runner problem; no code follow-up is started');
-    await writeNotice(redis, request, { headSha: evidence.sha, job: evidence.name, runId, runAttempt, action, at: Date.now() });
-    return { handled: true, verdict, action };
 }
 
 /**

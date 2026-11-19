@@ -3,8 +3,9 @@
  * finish (ciFailureInfrastructureRerun). Each is kept per workflow run in one
  * Redis hash, so a second deferred run never replaces the first one's
  * obligation; the pull request's notice (ciInfrastructureNotice) is only the
- * latest event's summary. An entry is released only after its re-run was
- * sent, refused, or given up on, and a per-run lock keeps the check-run hook,
+ * latest event's summary. An entry is recorded together with the run's
+ * claim and released only after its re-run was sent (or found already
+ * accepted by GitHub), refused, or given up on, and a per-run lock keeps the check-run hook,
  * ordinary failure recovery and the daemon sweep from sending it twice.
  */
 import { randomUUID } from 'node:crypto';
@@ -35,10 +36,19 @@ end
 return 0
 `;
 
+const CLAIM_WITH_INTENT = `
+if redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2], 'NX') then
+    redis.call('HSET', KEYS[2], ARGV[3], ARGV[4])
+    return 1
+end
+return 0
+`;
+
 /** The Lua scripts this module evaluates, exported so fakes can match them by identity. */
 export const CI_INFRASTRUCTURE_PENDING_SCRIPTS = {
     compareAndDeleteKey: COMPARE_AND_DELETE_KEY,
     compareAndDeleteField: COMPARE_AND_DELETE_FIELD,
+    claimWithIntent: CLAIM_WITH_INTENT,
 } as const;
 
 export type PendingRerunRedis = Pick<Redis, 'set' | 'hset' | 'hget' | 'hgetall' | 'eval'>;
@@ -51,6 +61,7 @@ export interface PendingInfrastructureRerun {
     job: string;
     runId: number;
     runAttempt: number;
+    /** When the re-run became owed: first recorded with the run's claim, before GitHub is asked. */
     deferredAt: number;
 }
 
@@ -82,6 +93,24 @@ function parseEntry(raw: string | null | undefined): PendingInfrastructureRerun 
 
 export async function recordPendingRerun(redis: PendingRerunRedis, entry: PendingInfrastructureRerun): Promise<void> {
     await redis.hset(CI_INFRASTRUCTURE_PENDING_RERUNS_KEY, pendingRerunField(`${entry.owner}/${entry.repo}`, entry.runId), JSON.stringify(entry));
+}
+
+/**
+ * Takes the run's one re-run (an NX claim holding the attempt) and records the
+ * re-run as owed in the same atomic step, so a claim never exists without a
+ * recoverable obligation: a process stopping before GitHub was asked leaves
+ * an entry that recovery and the daemon sweep still send. Returns the
+ * recorded snapshot, or null when the run was already claimed.
+ */
+export async function claimRerunWithIntent(
+    redis: PendingRerunRedis, claim: { key: string; ttlSeconds: number }, entry: PendingInfrastructureRerun,
+): Promise<PendingRerunSnapshot | null> {
+    const raw = JSON.stringify(entry);
+    const claimed = await redis.eval(
+        CLAIM_WITH_INTENT, 2, claim.key, CI_INFRASTRUCTURE_PENDING_RERUNS_KEY,
+        String(entry.runAttempt), String(claim.ttlSeconds), pendingRerunField(`${entry.owner}/${entry.repo}`, entry.runId), raw,
+    );
+    return Number(claimed) === 1 ? { entry, raw } : null;
 }
 
 export async function readPendingRerun(redis: PendingRerunRedis, repository: string, runId: number): Promise<PendingRerunSnapshot | null> {

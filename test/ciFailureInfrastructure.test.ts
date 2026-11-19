@@ -113,10 +113,14 @@ function request(): CiFailureFollowupRequest {
 function createRedis() {
     const values = new Map<string, string>();
     const hashes = new Map<string, Map<string, string>>();
+    /** Injected Redis failures: throw from these to fail a write. */
+    const faults: { set?: (key: string) => void; eval?: (script: string) => void } = {};
     return {
         values,
+        faults,
         get: mock.fn(async (key: string) => values.get(key) ?? null),
         set: mock.fn(async (key: string, value: string, ...args: Array<string | number>) => {
+            faults.set?.(key);
             if (args.includes('NX') && values.has(key)) return null;
             values.set(key, value);
             return 'OK';
@@ -130,6 +134,15 @@ function createRedis() {
         hget: mock.fn(async (key: string, field: string) => hashes.get(key)?.get(field) ?? null),
         hgetall: mock.fn(async (key: string) => Object.fromEntries(hashes.get(key) ?? [])),
         eval: mock.fn(async (script: string, _keys: number, key: string, ...args: string[]) => {
+            faults.eval?.(script);
+            if (script === CI_INFRASTRUCTURE_PENDING_SCRIPTS.claimWithIntent) {
+                const [hashKey, attempt, , field, raw] = args;
+                if (values.has(key)) return 0;
+                values.set(key, attempt);
+                const hash = hashes.get(hashKey) ?? new Map<string, string>();
+                hashes.set(hashKey, hash.set(field, raw));
+                return 1;
+            }
             if (script === CI_INFRASTRUCTURE_PENDING_SCRIPTS.compareAndDeleteKey) {
                 return values.get(key) === args[0] ? (values.delete(key) ? 1 : 0) : 0;
             }
@@ -144,7 +157,7 @@ function createRedis() {
 
 /** GitHub for the #3703 failure: the job's install step failed with the Chromium timeout. */
 function createOctokit(options: {
-    runStatus?: string; runAttempt?: number; rerun?: () => unknown; annotations?: unknown[]; annotationsError?: Error;
+    runStatus?: string; runAttempt?: number; liveAttempt?: number; rerun?: () => unknown; annotations?: unknown[]; annotationsError?: Error;
     /** Workflow run of a job id; the #3703 run by default. */
     runOfJob?: Record<number, number>;
     pr?: { state: string; head: { sha: string } };
@@ -179,7 +192,9 @@ function createOctokit(options: {
                     ],
                 } };
             }
-            if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}') return { data: { id: parameters.run_id, status: options.runStatus ?? 'completed' } };
+            if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}') return { data: {
+                id: parameters.run_id, status: options.runStatus ?? 'completed', ...(options.liveAttempt ? { run_attempt: options.liveAttempt } : {}),
+            } };
             if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs') {
                 if (options.rerun) return { data: options.rerun() };
                 reran.push(Number(parameters.run_id));
@@ -419,5 +434,117 @@ describe('deferred re-runs are never stranded', () => {
         assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, finished)), 0);
         assert.deepEqual(finished.reran, []);
         assert.equal(redis.pending().length, 1, 'kept for the lock holder or the next sweep');
+    });
+});
+
+describe('rerun bookkeeping is reconciled and never changes the verdict', () => {
+    const deps = (redis: ReturnType<typeof createRedis>, octokit: ReturnType<typeof createOctokit>) => ({
+        isEnabled: async () => true, getOctokit: async () => octokit, redisClient: redis as never,
+    });
+    const target = { owner: 'integry', repo: 'propr', prNumber: 3699, headSha: SHA };
+    /** The next compare-and-delete of a pending entry fails, as if Redis dropped or the process stopped. */
+    const failNextRelease = (redis: ReturnType<typeof createRedis>) => {
+        redis.faults.eval = script => {
+            if (script !== CI_INFRASTRUCTURE_PENDING_SCRIPTS.compareAndDeleteField) return;
+            delete redis.faults.eval;
+            throw new Error('Connection is closed.');
+        };
+    };
+
+    test('an accepted re-run whose pending entry could not be released is not sent again by a later sweep', async () => {
+        const redis = createRedis();
+        await postCiFailureFollowup(request(), 'infra', deps(redis, createOctokit({ runStatus: 'in_progress' })));
+        failNextRelease(redis);
+        const finished = createOctokit();
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, finished)), 0, 'the release failed: kept');
+        assert.deepEqual(finished.reran, [44288180457]);
+        assert.equal(redis.pending().length, 1, 'the accepted re-run outlived its request');
+
+        // Attempt 2 is running or failed again: neither the sweep, the hook nor recovery re-runs it.
+        const advanced = createOctokit({ liveAttempt: 2 });
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, advanced)), 1);
+        await resumeDeferredCiInfrastructureRerun(target, 'resume', deps(redis, advanced));
+        await postCiFailureFollowup(request(), 'ci-recovery-3699', deps(redis, advanced));
+        assert.equal(advanced.routes.includes(RERUN), false);
+        assert.deepEqual(redis.pending(), []);
+        assert.equal(noticeOf(redis)?.action, 'rerun_requested');
+    });
+
+    test('recovery of the same attempt settles a re-run already accepted by GitHub without sending it again', async () => {
+        const redis = createRedis();
+        failNextRelease(redis);
+        const first = createOctokit();
+        assert.deepEqual(await postCiFailureFollowup(request(), 'infra', deps(redis, first)), { posted: false, reason: 'infrastructure' });
+        assert.deepEqual(first.reran, [44288180457]);
+        assert.deepEqual(first.comments, []);
+        assert.equal(redis.pending().length, 1);
+
+        const recovery = createOctokit({ liveAttempt: 2, runStatus: 'in_progress' });
+        assert.deepEqual(await postCiFailureFollowup(request(), 'ci-recovery-3699', deps(redis, recovery)), { posted: false, reason: 'infrastructure' });
+        assert.equal(recovery.routes.includes(RERUN), false);
+        assert.deepEqual(redis.pending(), []);
+        assert.equal(noticeOf(redis)?.action, 'rerun_requested');
+    });
+
+    test('a settled stale entry keeps the notice of the later attempt', async () => {
+        const redis = createRedis();
+        failNextRelease(redis);
+        await postCiFailureFollowup(request(), 'infra', deps(redis, createOctokit()));
+        // Attempt 2 fails on the runner again: the one re-run is spent.
+        await postCiFailureFollowup(request(), 'infra-again', deps(redis, createOctokit({ runAttempt: 2, liveAttempt: 2 })));
+        assert.equal(noticeOf(redis)?.action, 'rerun_unavailable');
+
+        const sweep = createOctokit({ liveAttempt: 2 });
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, sweep)), 1);
+        assert.equal(sweep.routes.includes(RERUN), false);
+        assert.deepEqual(redis.pending(), []);
+        assert.equal(noticeOf(redis)?.action, 'rerun_unavailable');
+        assert.equal(noticeOf(redis)?.runAttempt, 2);
+    });
+
+    test('a claim interrupted before GitHub was asked stays recoverable by recovery and the sweep', async () => {
+        for (const resume of ['recovery', 'sweep'] as const) {
+            const redis = createRedis();
+            // The process stops right after the claim: the lock is never taken, GitHub never asked.
+            redis.faults.set = key => {
+                if (!key.startsWith('propr:ci-infra-rerun-lock:')) return;
+                delete redis.faults.set;
+                throw new Error('Connection is closed.');
+            };
+            const interrupted = createOctokit();
+            assert.deepEqual(await postCiFailureFollowup(request(), 'infra', deps(redis, interrupted)), { posted: false, reason: 'infrastructure' });
+            assert.deepEqual(interrupted.reran, []);
+            assert.deepEqual(interrupted.comments, []);
+            assert.equal(redis.pending().length, 1, `${resume}: the claim is recorded with its owed re-run`);
+
+            const later = createOctokit();
+            if (resume === 'recovery') {
+                assert.deepEqual(await postCiFailureFollowup(request(), 'ci-recovery-3699', deps(redis, later)), { posted: false, reason: 'infrastructure' });
+            } else {
+                assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, later)), 1);
+            }
+            assert.deepEqual(later.reran, [44288180457], resume);
+            assert.deepEqual(later.comments, [], resume);
+            assert.equal(noticeOf(redis)?.action, 'rerun_requested', resume);
+            assert.deepEqual(redis.pending(), [], resume);
+        }
+    });
+
+    test('a failed notice or bookkeeping write after the infrastructure verdict posts no code follow-up', async () => {
+        const noticeKey = ciInfrastructureNoticeKey('integry/propr', 3699);
+        for (const failing of ['notice', 'claim'] as const) {
+            const redis = createRedis();
+            if (failing === 'notice') {
+                redis.faults.set = key => { if (key === noticeKey) throw new Error('OOM command not allowed'); };
+            } else {
+                redis.faults.eval = script => { if (script === CI_INFRASTRUCTURE_PENDING_SCRIPTS.claimWithIntent) throw new Error('OOM command not allowed'); };
+            }
+            const octokit = createOctokit();
+            const result = await postCiFailureFollowup(request(), 'infra', deps(redis, octokit));
+            assert.deepEqual(result, { posted: false, reason: 'infrastructure' }, failing);
+            assert.deepEqual(octokit.comments, [], failing);
+            assert.equal([...redis.values.keys()].some(key => key.startsWith('ci-failure-followup:')), false, failing);
+            assert.equal(octokit.reran.length, failing === 'notice' ? 1 : 0, failing);
+        }
     });
 });
