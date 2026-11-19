@@ -7,29 +7,20 @@ import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
-import { loadAggregateFold, type AggregateFold } from './ciFailureAggregateFold.js';
 import {
-    appendAggregateToCiFailureComment,
     appendCheckToCiFailureComment,
     buildCiFailureHeadMarker,
     editCiFailureComment,
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
-import {
-    buildAnnotationExcerpt,
-    buildAggregateConsequenceLine,
-    buildCheckSection,
-    buildCommentContent,
-    checkTitle,
-    joinUsefulText,
-    type ReportedCheck,
-} from './ciFailureCommentText.js';
-import { foldCauseCheck, loadAnnotations, resolveFoldCauses, type FoldCause } from './ciFailureFoldCauses.js';
+import { buildAnnotationExcerpt, buildCheckSection, buildCommentContent, checkTitle, joinUsefulText } from './ciFailureCommentText.js';
 import { isInfrastructureOnlyFailure } from './ciFailureInfrastructureCheck.js';
-
-export { buildAnnotationExcerpt, buildAggregateConsequenceLine } from './ciFailureCommentText.js';
+import { loadFailedJobDependencies } from './ciFailureJobDependencies.js';
+import { isNonBlockingCheck } from './nonBlockingChecks.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
+
+export { buildAnnotationExcerpt } from './ciFailureCommentText.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
 const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-(?:followup key="[a-f0-9]{64}"|head sha="[^"]*") -->/gu;
@@ -83,7 +74,7 @@ export interface CiFailureFollowupDependencies {
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
-    /** The repository's nonBlockingChecks patterns; a fold never lists a matching job as the failure. */
+    /** The repository's nonBlockingChecks patterns; a matching failed job is never named in a dependency line. */
     loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>;
 }
 
@@ -178,35 +169,12 @@ export function buildCiFailureFollowupComment(
     request: CiFailureFollowupRequest,
     failureExcerpt: string | undefined,
     dedupeKey = buildCiFailureDedupeKey(request),
+    dependsOn: readonly string[] = [],
 ): string {
     return [
-        ...buildCommentContent(request, [{ evidence: request.evidence, excerpt: failureExcerpt }]),
+        ...buildCommentContent(request, [{ evidence: request.evidence, excerpt: failureExcerpt, dependsOn }]),
         '',
         buildCiFailureFollowupMarker(dedupeKey),
-        buildCiFailureHeadMarker(request.evidence.sha),
-    ].join('\n');
-}
-
-/**
- * The comment for a failed aggregate job whose same-head comment does not
- * exist yet: the needed jobs that made it fail are listed as the failures, and
- * the aggregate once, as their consequence. Their key markers are included, so
- * their own deliveries find themselves already reported; the caller lists only
- * causes the infrastructure classifier kept as code failures.
- */
-export function buildFoldedCiFailureComment(
-    request: CiFailureFollowupRequest,
-    fold: AggregateFold,
-    causes: ReportedCheck[],
-    dedupeKey = buildCiFailureDedupeKey(request),
-): string {
-    return [
-        ...buildCommentContent(request, causes),
-        '',
-        buildAggregateConsequenceLine(fold),
-        '',
-        buildCiFailureFollowupMarker(dedupeKey),
-        ...causes.map(cause => buildCiFailureFollowupMarker(buildCiFailureDedupeKey({ ...request, evidence: cause.evidence }))),
         buildCiFailureHeadMarker(request.evidence.sha),
     ].join('\n');
 }
@@ -252,10 +220,7 @@ export async function postCiFailureFollowup(
         return { posted: false, reason: 'infrastructure' };
     }
     const annotationExcerpt = annotations ? buildAnnotationExcerpt(annotations) : undefined;
-    const fold = request.evidence.kind === 'check_run'
-        ? await loadAggregateFold(octokit, { ...request, url: request.evidence.url, state: request.evidence.state }, new Map(), log)
-        : null;
-    const nonBlocking = fold ? await (dependencies.loadNonBlockingChecks ?? getNonBlockingChecksForRepository)(request.owner, request.repo) : [];
+    const dependsOn = await loadReportedDependencies(octokit, request, dependencies, log);
     let claimed = false;
 
     try {
@@ -266,7 +231,7 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold, nonBlocking });
+        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt, dependsOn });
     } catch (error) {
         if (claimed) {
             try {
@@ -281,16 +246,15 @@ export async function postCiFailureFollowup(
 
 /** Lists a claimed failure on the same head's comment, or posts a new one. */
 async function reportClaimedFailure(
-    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold, nonBlocking }: {
+    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt, dependsOn }: {
         octokit: CiFailureOctokit;
         request: CiFailureFollowupRequest;
         dedupeKey: string;
         correlationId: string;
         log: ReturnType<typeof logger.withCorrelation>;
         annotationExcerpt: string | undefined;
-        /** The needed jobs this failed aggregate only reports; it is then mentioned as their consequence. */
-        fold: AggregateFold | null;
-        nonBlocking: readonly string[];
+        /** The failed jobs of the same run this job needs; named in its section's dependency line. */
+        dependsOn: readonly string[];
     },
 ): Promise<CiFailureFollowupResult> {
     let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
@@ -307,29 +271,18 @@ async function reportClaimedFailure(
         return { posted: false, reason: 'duplicate' };
     }
 
-    // A same-head comment proves only that something failed on this commit,
-    // not that the fold's causes were reported: each one is checked.
-    const causes = fold
-        ? await resolveFoldCauses(octokit, request, {
-            fold, existingBody: scan.sameHead?.body ?? '', markerFor: causeMarker(request), nonBlocking,
-        }, log)
-        : null;
     if (scan.sameHead) {
-        const marker = buildCiFailureFollowupMarker(dedupeKey);
-        const updated = fold && causes
-            ? appendFoldToCiFailureComment(scan.sameHead.body, fold, causes, marker)
-            : appendCheckToCiFailureComment(scan.sameHead.body, {
-                title: checkTitle(request.evidence),
-                section: buildCheckSection(request.evidence, annotationExcerpt),
-                marker,
-            });
+        const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
+            name: request.evidence.name,
+            title: checkTitle(request.evidence),
+            section: buildCheckSection({ evidence: request.evidence, excerpt: annotationExcerpt, dependsOn }),
+            marker: buildCiFailureFollowupMarker(dedupeKey),
+        });
         if (await editCiFailureComment(octokit, { ...request, commentId: scan.sameHead.id, body: updated }, log)) {
             return { posted: false, reason: 'updated', body: updated };
         }
     }
-    const body = fold && causes
-        ? buildFoldedCiFailureComment(request, fold, await Promise.all(causes.map(cause => foldCauseCheck(octokit, request, cause, log))), dedupeKey)
-        : buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
+    const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey, dependsOn);
 
     await withRetry(
         () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -346,27 +299,65 @@ async function reportClaimedFailure(
     return { posted: true, reason: 'posted', body };
 }
 
-/** The key marker a needed job's own delivery on this pull request and head deduplicates on. */
-function causeMarker(request: CiFailureFollowupRequest): (source: string) => string {
-    return source => buildCiFailureFollowupMarker(buildCiFailureDedupeKey({ ...request, evidence: { ...request.evidence, source } }));
+/**
+ * The failed jobs of the same workflow run that this failed job directly
+ * needs, for its dependency line. A job the repository marked non-blocking is
+ * left out: its own failure is not reported. Empty whenever this is not
+ * certain (see ciFailureJobDependencies), so no line is added.
+ */
+async function loadReportedDependencies(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    dependencies: CiFailureFollowupDependencies,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<string[]> {
+    if (request.evidence.kind !== 'check_run') return [];
+    const related = await loadFailedJobDependencies(octokit, { owner: request.owner, repo: request.repo, url: request.evidence.url }, log);
+    if (!related) return [];
+    try {
+        const nonBlocking = await (dependencies.loadNonBlockingChecks ?? getNonBlockingChecksForRepository)(request.owner, request.repo);
+        return related.dependsOn.filter(name => !isNonBlockingCheck(name, nonBlocking));
+    } catch (error) {
+        log.debug({ error: (error as Error).message }, 'Could not read the non-blocking checks; adding no dependency line');
+        return [];
+    }
 }
 
-/**
- * Folds the aggregate into the head's existing comment: each cause the
- * comment does not report yet is added as a failure with its evidence and
- * key marker, then the aggregate's consequence line and marker.
- */
-function appendFoldToCiFailureComment(body: string, fold: AggregateFold, causes: FoldCause[], marker: string): string {
-    let updated = body;
-    for (const cause of causes) {
-        if (cause.reported || !cause.check) continue;
-        updated = appendCheckToCiFailureComment(updated, {
-            title: checkTitle(cause.check.evidence),
-            section: buildCheckSection(cause.check.evidence, cause.check.excerpt),
-            marker: cause.marker,
-        });
+async function loadAnnotations(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<CiFailureAnnotation[] | undefined> {
+    if (request.evidence.kind !== 'check_run' || request.evidence.checkRunId == null) return undefined;
+    try {
+        return await loadCheckRunAnnotations(octokit, request);
+    } catch (error) {
+        // Output summaries are carried in the webhook and remain useful
+        // when the annotations endpoint is temporarily unavailable.
+        log.warn({ error: (error as Error).message }, 'Could not load check-run annotations; using webhook output instead');
+        return undefined;
     }
-    return appendAggregateToCiFailureComment(updated, { line: buildAggregateConsequenceLine(fold), marker });
+}
+
+async function loadCheckRunAnnotations(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+): Promise<CiFailureAnnotation[]> {
+    if ((request.evidence.annotationsCount ?? 0) <= 0) return [];
+    const parameters = {
+        owner: request.owner,
+        repo: request.repo,
+        check_run_id: request.evidence.checkRunId as number,
+        per_page: 100,
+    };
+    const data = octokit.paginate
+        ? await octokit.paginate('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)
+        : (await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)).data;
+    return Array.isArray(data) ? data.filter(isRecord) as CiFailureAnnotation[] : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
 }
 
 /**

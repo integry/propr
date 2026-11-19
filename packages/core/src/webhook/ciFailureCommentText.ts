@@ -1,23 +1,37 @@
 /**
  * The text of a CI-failure comment: its title, instruction and each check's
- * details and evidence, and the one-line mention of a failed aggregate job
- * folded under the needed jobs that made it fail.
+ * details and evidence, with a dependency line in the section of a failed job
+ * that needs other failed jobs of the same workflow run.
  */
-import type { AggregateFold } from './ciFailureAggregateFold.js';
 import type { CiFailureAnnotation, CiFailureEvidence, CiFailureFollowupRequest } from './ciFailureFollowup.js';
 
 const MAX_EXCERPT_LENGTH = 1800;
 
+export const DEPENDENCY_LINE_PREFIX = 'Depends on the failed job(s) above: ';
+const DEPENDENCY_LINE_SUFFIX = '. It may have failed only because they did; check them first.';
+
 export interface ReportedCheck {
     evidence: CiFailureEvidence;
     excerpt: string | undefined;
+    /** The failed jobs of the same run this job needs, as reported; no line when empty. */
+    dependsOn?: readonly string[];
 }
 
-/** The aggregate's one mention: a consequence of the failed jobs it needs, with no evidence of its own. */
-export function buildAggregateConsequenceLine(fold: AggregateFold): string {
-    const causes = fold.causes.map(cause => `\`${escapeInlineCode(cause.name)}\``).join(', ');
-    const subject = fold.causes.length === 1 ? 'job' : 'jobs';
-    return `Also failed: **${escapeInlineMarkdown(fold.aggregate)}**, which only reports the result of the failed ${subject} it needs (${causes}); it has no failure of its own.`;
+/** The line a failed job's section carries when it needs jobs that failed in the same run. */
+export function buildDependencyLine(dependsOn: readonly string[]): string {
+    return `${DEPENDENCY_LINE_PREFIX}${dependsOn.map(formatJobName).join(', ')}${DEPENDENCY_LINE_SUFFIX}`;
+}
+
+/** Whether a section line written by `buildDependencyLine` names the job `name`. */
+export function dependencyLineNames(line: string, name: string): boolean {
+    if (!line.startsWith(DEPENDENCY_LINE_PREFIX) || !line.endsWith(DEPENDENCY_LINE_SUFFIX)) return false;
+    const names = line.slice(DEPENDENCY_LINE_PREFIX.length, line.length - DEPENDENCY_LINE_SUFFIX.length);
+    const token = formatJobName(name);
+    return `, ${names}, `.includes(`, ${token}, `);
+}
+
+function formatJobName(name: string): string {
+    return `\`${escapeInlineCode(name)}\``;
 }
 
 /** Title, instruction and each check's section; the commit follows the first check's result. */
@@ -26,7 +40,7 @@ export function buildCommentContent(request: CiFailureFollowupRequest, checks: R
     const commitUrl = `https://github.com/${encodeURIComponent(request.owner)}/${encodeURIComponent(request.repo)}/commit/${encodeURIComponent(sha)}`;
     const commitLine = `- Commit: [\`${sha.slice(0, 12)}\`](${commitUrl}) (\`${escapeInlineCode(sha)}\`)`;
     const [first, ...others] = checks;
-    const [checkLine, resultLine, ...evidenceLines] = buildCheckSection(first.evidence, first.excerpt);
+    const [checkLine, resultLine, ...evidenceLines] = buildCheckSection(first);
     return [
         `CI failed: ${checks.map(check => checkTitle(check.evidence)).join(', ')}`,
         '',
@@ -36,22 +50,26 @@ export function buildCommentContent(request: CiFailureFollowupRequest, checks: R
         resultLine,
         commitLine,
         ...evidenceLines,
-        ...others.flatMap(check => ['', '---', '', ...buildCheckSection(check.evidence, check.excerpt)]),
+        ...others.flatMap(check => ['', '---', '', ...buildCheckSection(check)]),
     ];
 }
 
-export function checkTitle(evidence: CiFailureEvidence): string {
+export function checkTitle(evidence: Pick<CiFailureEvidence, 'name'>): string {
     return `**${escapeInlineMarkdown(evidence.name)}**`;
 }
 
-/** One check's details and evidence; the commit is shared by every check of a comment. */
-export function buildCheckSection(evidence: CiFailureEvidence, failureExcerpt: string | undefined): string[] {
+/**
+ * One check's details, dependency line and evidence; the commit is shared by
+ * every check of a comment and follows the first check's result.
+ */
+export function buildCheckSection({ evidence, excerpt: failureExcerpt, dependsOn = [] }: ReportedCheck): string[] {
     const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
     return [
         `- Check: \`${escapeInlineCode(evidence.name)}\``,
         `- Result: \`${escapeInlineCode(evidence.state)}\``,
         `- Run: [View CI failure](${evidence.url})`,
         '',
+        ...(dependsOn.length > 0 ? [buildDependencyLine(dependsOn), ''] : []),
         '**Failure evidence**',
         ...excerpt.split('\n').map(line => `> ${line || ' '}`),
     ];

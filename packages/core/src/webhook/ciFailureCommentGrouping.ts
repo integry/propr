@@ -12,6 +12,7 @@
  */
 import type logger from '../utils/logger.js';
 import type { CancellationProvenanceOctokit } from './ciCancellationProvenance.js';
+import { checkTitle, dependencyLineNames } from './ciFailureCommentText.js';
 
 type Log = ReturnType<typeof logger.withCorrelation>;
 
@@ -19,6 +20,10 @@ const HEAD_MARKER_PREFIX = '<!-- propr:ci-failure-head';
 const MARKER_BLOCK_START = '\n<!-- propr:ci-failure-';
 const SINGLE_FAILURE_INSTRUCTION = 'Please investigate and fix this CI failure.';
 const MULTIPLE_FAILURES_INSTRUCTION = 'Please investigate and fix these CI failures.';
+const SECTION_SEPARATOR = '\n\n---\n\n';
+const TITLE_PREFIX = 'CI failed: ';
+const CHECK_LINE_PREFIX = '- Check: `';
+const COMMIT_LINE_PREFIX = '- Commit: ';
 
 export interface ExistingCiFailureComment {
     id: number;
@@ -57,38 +62,73 @@ export function scanCiFailureComments(
 /**
  * Adds one check to an existing same-head comment: its name joins the title,
  * its details and evidence go after the listed ones, and its key marker joins
- * the hidden markers at the end, so redeliveries of it stay deduplicated.
+ * the hidden markers at the end, so redeliveries of it stay deduplicated. When
+ * a listed check's dependency line names this check (a job that needs it was
+ * reported first), it is inserted before that check instead, in the title and
+ * in the sections, so dependent jobs stay listed after the jobs they need.
  */
-export function appendCheckToCiFailureComment(body: string, check: { title: string; section: string[]; marker: string }): string {
+export function appendCheckToCiFailureComment(
+    body: string,
+    check: { name: string; title: string; section: string[]; marker: string },
+): string {
     const markerAt = body.indexOf(MARKER_BLOCK_START);
     const content = markerAt === -1 ? body.trimEnd() : body.slice(0, markerAt).trimEnd();
-    const markers = markerAt === -1 ? '' : body.slice(markerAt + 1).trimEnd();
+    const markers = [markerAt === -1 ? '' : body.slice(markerAt + 1).trimEnd(), check.marker].filter(Boolean).join('\n');
     const [title, ...rest] = content.split('\n');
     const instructionAt = rest.indexOf(SINGLE_FAILURE_INSTRUCTION);
     if (instructionAt !== -1) rest[instructionAt] = MULTIPLE_FAILURES_INSTRUCTION;
-    return [
-        `${title}, ${check.title}`,
-        ...rest,
-        '',
-        '---',
-        '',
-        ...check.section,
-        '',
-        [markers, check.marker].filter(Boolean).join('\n'),
-    ].join('\n');
+    const inserted = insertBeforeDependent(title, rest, check);
+    if (inserted) return [...inserted, '', markers].join('\n');
+    return [`${title}, ${check.title}`, ...rest, '', '---', '', ...check.section, '', markers].join('\n');
 }
 
 /**
- * Mentions a failed aggregate job on an existing same-head comment, as a
- * consequence of the needed jobs it reports, without an evidence block of its
- * own. The title is unchanged; its key marker joins the hidden markers, so
- * redeliveries of it stay deduplicated.
+ * The comment content with `check` placed before the first listed check that
+ * depends on it; null when none does or the comment's layout is not the one
+ * `buildCommentContent` writes (the check is then appended).
  */
-export function appendAggregateToCiFailureComment(body: string, aggregate: { line: string; marker: string }): string {
-    const markerAt = body.indexOf(MARKER_BLOCK_START);
-    const content = markerAt === -1 ? body.trimEnd() : body.slice(0, markerAt).trimEnd();
-    const markers = markerAt === -1 ? '' : body.slice(markerAt + 1).trimEnd();
-    return [content, '', aggregate.line, '', [markers, aggregate.marker].filter(Boolean).join('\n')].join('\n');
+function insertBeforeDependent(
+    title: string,
+    rest: string[],
+    check: { name: string; title: string; section: string[] },
+): string[] | null {
+    const [blank, instruction, separator, ...sectionLines] = rest;
+    if (blank !== '' || separator !== '' || ![SINGLE_FAILURE_INSTRUCTION, MULTIPLE_FAILURES_INSTRUCTION].includes(instruction)) return null;
+    const sections = sectionLines.join('\n').split(SECTION_SEPARATOR).map(section => section.split('\n'));
+    const dependentAt = sections.findIndex(lines => lines.some(line => dependencyLineNames(line, check.name)));
+    if (dependentAt === -1) return null;
+    const dependentName = sectionCheckName(sections[dependentAt]);
+    if (dependentName === null) return null;
+
+    const section = [...check.section];
+    if (dependentAt === 0) {
+        // The commit line follows the first check's result.
+        if (!sections[0][2]?.startsWith(COMMIT_LINE_PREFIX)) return null;
+        section.splice(2, 0, ...sections[0].splice(2, 1));
+    }
+    sections.splice(dependentAt, 0, section);
+    return [
+        insertTitle(title, checkTitle({ name: dependentName }), check.title),
+        blank, instruction, separator,
+        ...sections.map(lines => lines.join('\n')).join(SECTION_SEPARATOR).split('\n'),
+    ];
+}
+
+/** The title with `added` before `before`, or after the listed ones when `before` cannot be found. */
+function insertTitle(title: string, before: string, added: string): string {
+    if (!title.startsWith(TITLE_PREFIX)) return `${title}, ${added}`;
+    const listed = `, ${title.slice(TITLE_PREFIX.length)}, `;
+    const at = listed.indexOf(`, ${before}, `);
+    if (at === -1) return `${title}, ${added}`;
+    const updated = `${listed.slice(0, at)}, ${added}${listed.slice(at)}`;
+    return `${TITLE_PREFIX}${updated.slice(2, -2)}`;
+}
+
+/** The check name of a section, read back from its `- Check:` line. */
+function sectionCheckName(section: string[]): string | null {
+    const line = section[0];
+    if (!line?.startsWith(CHECK_LINE_PREFIX) || !line.endsWith('`')) return null;
+    return line.slice(CHECK_LINE_PREFIX.length, -1).replace(/\\([\\`])/gu, '$1');
 }
 
 /**
