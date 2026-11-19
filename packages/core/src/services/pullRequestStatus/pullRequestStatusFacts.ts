@@ -6,6 +6,7 @@ import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { latestReviewRound, loadPullRequestScoreHistory } from '../reviewScoreStore.js';
 import { headChecksWaitMs } from './pullRequestStatusCheckWait.js';
+import { loadCiRunnerProblemFact, loadCiSuspensionFact } from './pullRequestStatusCiNotes.js';
 import { loadEpicStatusFacts } from './pullRequestStatusEpicFacts.js';
 import {
     computePullRequestStatus,
@@ -508,13 +509,16 @@ export async function loadPullRequestStatusFacts(
     // Queued work, the Ultrafix loop, the review score and an epic's sub-PRs each
     // decide whether the PR is ready, so a failed read is not the same as "none":
     // it rejects, and callers keep the previous block (body) or report null (MCP).
-    const [queuedJobs, ultrafix, checks, score, ratingGoal, epic] = await Promise.all([
+    const [queuedJobs, ultrafix, checks, score, ratingGoal, epic, ciSuspension, ciRunnerProblem] = await Promise.all([
         sources.countQueuedJobs ? sources.countQueuedJobs(repository, prNumber) : 0,
         loadUltrafix(sources.redis, owner, repo, prNumber),
         loadPullRequestStatusChecks(sources, owner, repo, pullRequest.headSha),
         latestReviewScore(sources.db, repository, prNumber),
         sources.loadRatingGoal(),
         loadEpicFacts(repository, prNumber, sources, { epicRef, pull: pr }),
+        // Notes only: an unreadable record leaves them out (pullRequestStatusCiNotes).
+        loadCiSuspensionFact(sources.db, repository, prNumber, pullRequest.headSha),
+        loadCiRunnerProblemFact(sources.redis, repository, prNumber, pullRequest.headSha),
     ]);
     // A head GitHub lists no check for yet may only be one whose checks have not started (pullRequestStatusCheckWait).
     // A listed check is evidence even from an incomplete read (page budget, one endpoint rejected); only a complete read shows none.
@@ -526,6 +530,7 @@ export async function loadPullRequestStatusFacts(
         pullRequest, isProprPullRequest: isPropr, tasks, queuedJobs, ultrafix, checks, checksAwaitedForMs,
         latestReviewScore: score?.score ?? null, latestReviewBlockers: score?.blockers ?? null,
         latestReviewHeadSha: score?.headSha ?? null, ratingGoal, epic,
+        ...(ciSuspension ? { ciSuspension } : {}), ...(ciRunnerProblem ? { ciRunnerProblem } : {}),
     };
 }
 

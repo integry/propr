@@ -11,6 +11,7 @@
 
 import { ultrafixActiveCycle } from '@propr/shared';
 import type { EpicMergeProgress } from '../../webhook/epicMergeProgress.js';
+import type { CiInfrastructureNoticeAction } from '../../webhook/ciInfrastructureNotice.js';
 
 export type PullRequestStatusState = 'working' | 'needs_attention' | 'ready' | 'none';
 
@@ -219,7 +220,20 @@ export interface PullRequestStatusFacts {
     ratingGoal: number;
     /** Present for an epic pull request ProPR recorded for its plan. */
     epic: EpicStatusFacts | null;
+    /**
+     * ProPR suspended the validation of the current head for a follow-up
+     * implementation (the worker's pr_ci_suspensions record): every CI run on
+     * it, a manual re-run included, is cancelled until the follow-up finishes.
+     * `cancelledRuns`: runs the suspension cancelled and has not brought back.
+     * Null or absent: not suspended.
+     */
+    ciSuspension?: PullRequestCiSuspension | null;
+    /** A check of the current head failed on a runner problem and what ProPR did instead of a code follow-up; null or absent: none. */
+    ciRunnerProblem?: PullRequestCiRunnerProblem | null;
 }
+
+export interface PullRequestCiSuspension { cancelledRuns: number }
+export interface PullRequestCiRunnerProblem { job: string; action: CiInfrastructureNoticeAction }
 
 /** The counts the status line shows; skipped and cancelled checks are counted apart from passed ones, and only when there are any. */
 export interface PullRequestStatusCheckCounts { passed: number; failed: number; pending: number; skipped?: number; cancelled?: number }
@@ -248,6 +262,10 @@ export interface PullRequestStatusDetail {
     /** Cancelled blocking check names, for `check_failed` (PullRequestStatusChecks.cancelled); absent: none. */
     cancelledChecks?: string[];
     epic: EpicStatusDetail | null;
+    /** The head's validation is suspended for a follow-up (PullRequestStatusFacts.ciSuspension); absent: not suspended. */
+    ciSuspension?: PullRequestCiSuspension;
+    /** A runner-problem failure of the head, until the pull request is ready (PullRequestStatusFacts.ciRunnerProblem); absent: none. */
+    ciRunnerProblem?: PullRequestCiRunnerProblem;
 }
 
 export interface PullRequestStatus {
@@ -357,7 +375,30 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
     return computeSinglePullRequestStatus(facts, base);
 }
 
+/**
+ * What CI cannot say for itself: a suspension that cancels every run on the
+ * head, and a runner problem ProPR re-ran instead of starting a code follow-up.
+ * A runner problem says nothing more once the pull request is ready.
+ */
+function withCiNotes(status: PullRequestStatus, facts: PullRequestStatusFacts): PullRequestStatus {
+    const suspension = facts.ciSuspension ?? null;
+    const runner = status.state === 'ready' ? null : facts.ciRunnerProblem ?? null;
+    if (!suspension && !runner) return status;
+    return {
+        ...status,
+        detail: {
+            ...status.detail,
+            ...(suspension ? { ciSuspension: { ...suspension } } : {}),
+            ...(runner ? { ciRunnerProblem: { ...runner } } : {}),
+        },
+    };
+}
+
 function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: PullRequestStatusDetail): PullRequestStatus {
+    return withCiNotes(computeSingleStatusState(facts, base), facts);
+}
+
+function computeSingleStatusState(facts: PullRequestStatusFacts, base: PullRequestStatusDetail): PullRequestStatus {
     const detail: PullRequestStatusDetail = { ...base, checks: checkCounts(facts.checks), failedChecks: [...facts.checks.failedNames], ...cancelledChecks(facts.checks) };
     const loop = facts.ultrafix;
     if (loop?.active) detail.ultrafix = { cycle: ultrafixActiveCycle(loop.cycleCount, loop.maxCycles), maxCycles: loop.maxCycles };

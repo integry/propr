@@ -7,7 +7,7 @@ import { extractPullRequestStatusBlock, sameRenderedStatus, STATUS_TIMESTAMP_PAT
  * Pacing of status block edits. Every completed check changes the counts the
  * block shows, so a CI run of forty checks would edit the body forty times
  * within minutes. An edit that only moves check progress (counts, failed or
- * cancelled check names) waits until COALESCE_MS have passed since the last
+ * cancelled check names, runs a CI suspension cancelled) waits until COALESCE_MS have passed since the last
  * status edit of the pull request, and then writes the counts of that moment;
  * any other change (a new state, activity, reason, score or cycle) is written
  * at once. The last edit time is kept in this process and, when Redis is
@@ -34,7 +34,7 @@ function redisKey(key: string): string {
 }
 
 /** The parts of a status line that only report check progress, which a burst of check completions changes edit by edit. */
-const CHECK_PROGRESS_PARTS = / · (?:checks: [^·]*|failed: [^·]*|cancelled: [^·]*)(?= · |$)/g;
+const CHECK_PROGRESS_PARTS = / · (?:checks: [^·]*|failed: [^·]*|cancelled: [^·]*|runs cancelled by ProPR: [^·]*)(?= · |$)/g;
 
 function withoutCheckProgress(block: string): string {
     return block.replace(STATUS_TIMESTAMP_PATTERN, '').replace(/\r\n/g, '\n').split('\n').map(line => line.replace(CHECK_PROGRESS_PARTS, '')).join('\n');

@@ -1,5 +1,7 @@
 import { PR_STATUS_BLOCK_MAX_LENGTH } from '@propr/shared';
-import type { EpicStatusFocus, PullRequestActivity, PullRequestAttentionReason, PullRequestStatus } from './pullRequestStatus.js';
+import type {
+    EpicStatusFocus, PullRequestActivity, PullRequestAttentionReason, PullRequestCiRunnerProblem, PullRequestStatus, PullRequestStatusDetail,
+} from './pullRequestStatus.js';
 
 /**
  * The live status block ProPR keeps as the first thing in a pull request body.
@@ -94,6 +96,33 @@ function reasonText(status: PullRequestStatus, maxNames: number): string {
         return detail.reviewScore !== null ? `review ${detail.reviewScore}/10, goal ${detail.ratingGoal}` : `review below goal ${detail.ratingGoal}`;
     }
     return detail.reason ? REASON_TEXT[detail.reason] : '';
+}
+
+const RUNNER_PROBLEM_TEXT: Record<PullRequestCiRunnerProblem['action'], (job: string) => string> = {
+    rerun_requested: job => `runner problem in ${job}, re-run requested`,
+    rerun_deferred: job => `runner problem in ${job}, re-run when its workflow finishes`,
+    rerun_unavailable: job => `${job} failed on what looks like a runner problem, re-run it`,
+};
+
+/** The text for a suspension of the head's validation (PullRequestStatusDetail.ciSuspension). */
+export const CI_SUSPENDED_TEXT = 'CI suspended until the follow-up finishes, re-running checks before then has no effect';
+
+/**
+ * A suspension, and the runs it cancelled; a runner problem and what ProPR did
+ * about it. The cancelled count is check progress (pullRequestStatusEditPacing).
+ */
+function ciNoteParts(detail: PullRequestStatusDetail): string[] {
+    const parts: string[] = [];
+    if (detail.ciSuspension) {
+        parts.push(CI_SUSPENDED_TEXT);
+        const runs = detail.ciSuspension.cancelledRuns;
+        if (runs > 0) parts.push(`runs cancelled by ProPR: ${runs}`);
+    }
+    if (detail.ciRunnerProblem) {
+        const job = inlineName(detail.ciRunnerProblem.job) || 'a check';
+        parts.push(RUNNER_PROBLEM_TEXT[detail.ciRunnerProblem.action](job));
+    }
+    return parts;
 }
 
 const STATE_EMOJI = { working: '🔨', needs_attention: '⚠️', ready: '✅' } as const;
@@ -199,6 +228,7 @@ function statusLine(status: PullRequestStatus, now: Date, maxNames: number): str
     if (detail.epic && detail.epic.total > 0) return [...epicStatusLine(status, maxNames), `updated ${statusTimestamp(now)}`].filter(Boolean).join(' · ');
     const parts = [`**ProPR** ${headline(status)}`];
     if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
+    parts.push(...ciNoteParts(detail));
     if (detail.ultrafix && !ultrafixHeadline(status)) parts.push(ultrafixCycleText(detail.ultrafix));
     parts.push(reviewScoreText(status, status.state === 'working' ? 'last review' : 'review') ?? '');
     const checks = status.state === 'needs_attention' && detail.reason === 'ultrafix_stopped' ? null : checksText(detail.checks);

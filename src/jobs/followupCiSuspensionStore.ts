@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
 import { sameSha, type SuspensionTarget } from './followupCiSuspensionRuns.js';
+import { signalPullRequestStatus } from './pullRequestStatusSignal.js';
 
 /**
  * Durable ownership of the pull request validation ProPR cancelled for a
@@ -143,7 +144,14 @@ export async function deleteSuspension(
             incarnation: record.incarnation,
         })
         .delete();
+    // The suspension's note leaves the pull request's status block with the row.
+    if (deleted > 0) signalStatus(record);
     return deleted > 0;
+}
+
+/** The status block says while a suspension is active; every start and end of one updates it. */
+function signalStatus(record: Pick<CiSuspensionRecord, 'repository' | 'pull_request'>): void {
+    signalPullRequestStatus(record.repository, record.pull_request);
 }
 
 /**
@@ -179,6 +187,7 @@ export async function saveCancelledRuns(
             state: next.state,
             attempts: next.attempts,
         });
+    if (updated > 0 && next.state !== record.state) signalStatus(next);
     return updated > 0 ? next : null;
 }
 
@@ -241,6 +250,7 @@ export async function reserveSuspension(
     const reserved = existing
         ? await takeOverSuspension(deps, existing, record)
         : await insertSuspension(deps, record);
+    if (reserved) signalStatus(record);
     return reserved ? { record, runs } : null;
 }
 
