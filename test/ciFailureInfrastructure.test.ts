@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import { classifyCiInfrastructureFailure, type CiInfrastructureEvidence } from '../packages/core/src/webhook/ciFailureInfrastructure.js';
 import { postCiFailureFollowup, type CiFailureFollowupRequest } from '../packages/core/src/webhook/ciFailureFollowup.js';
-import { resumeDeferredCiInfrastructureRerun } from '../packages/core/src/webhook/ciFailureInfrastructureRerun.js';
+import { resumeDeferredCiInfrastructureRerun, retryPendingCiInfrastructureReruns } from '../packages/core/src/webhook/ciFailureInfrastructureRerun.js';
 import { ciInfrastructureNoticeKey, parseCiInfrastructureNotice } from '../packages/core/src/webhook/ciInfrastructureNotice.js';
+import {
+    CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS, CI_INFRASTRUCTURE_PENDING_RERUNS_KEY, CI_INFRASTRUCTURE_PENDING_SCRIPTS,
+} from '../packages/core/src/webhook/ciInfrastructureRerunPending.js';
 
 after(async () => {
     await closeConnection();
@@ -109,6 +112,7 @@ function request(): CiFailureFollowupRequest {
 
 function createRedis() {
     const values = new Map<string, string>();
+    const hashes = new Map<string, Map<string, string>>();
     return {
         values,
         get: mock.fn(async (key: string) => values.get(key) ?? null),
@@ -118,19 +122,44 @@ function createRedis() {
             return 'OK';
         }),
         del: mock.fn(async (key: string) => values.delete(key) ? 1 : 0),
+        hset: mock.fn(async (key: string, field: string, value: string) => {
+            const hash = hashes.get(key) ?? new Map<string, string>();
+            hashes.set(key, hash.set(field, value));
+            return 1;
+        }),
+        hget: mock.fn(async (key: string, field: string) => hashes.get(key)?.get(field) ?? null),
+        hgetall: mock.fn(async (key: string) => Object.fromEntries(hashes.get(key) ?? [])),
+        eval: mock.fn(async (script: string, _keys: number, key: string, ...args: string[]) => {
+            if (script === CI_INFRASTRUCTURE_PENDING_SCRIPTS.compareAndDeleteKey) {
+                return values.get(key) === args[0] ? (values.delete(key) ? 1 : 0) : 0;
+            }
+            if (script === CI_INFRASTRUCTURE_PENDING_SCRIPTS.compareAndDeleteField) {
+                return hashes.get(key)?.get(args[0]) === args[1] ? (hashes.get(key)!.delete(args[0]) ? 1 : 0) : 0;
+            }
+            throw new Error('unexpected script');
+        }),
+        pending: () => [...(hashes.get(CI_INFRASTRUCTURE_PENDING_RERUNS_KEY)?.keys() ?? [])],
     };
 }
 
 /** GitHub for the #3703 failure: the job's install step failed with the Chromium timeout. */
-function createOctokit(options: { runStatus?: string; runAttempt?: number; rerun?: () => unknown; annotations?: unknown[] } = {}) {
+function createOctokit(options: {
+    runStatus?: string; runAttempt?: number; rerun?: () => unknown; annotations?: unknown[]; annotationsError?: Error;
+    /** Workflow run of a job id; the #3703 run by default. */
+    runOfJob?: Record<number, number>;
+    pr?: { state: string; head: { sha: string } };
+} = {}) {
+    const reran: number[] = [];
     const routes: string[] = [];
     const comments: string[] = [];
     const octokit = {
         routes,
         comments,
+        reran,
         paginate: mock.fn(async (route: string) => {
             routes.push(route);
             if (route.includes('annotations')) {
+                if (options.annotationsError) throw options.annotationsError;
                 return options.annotations ?? [
                     { annotation_level: 'failure', path: '.github', message: 'Chromium install timed out on every attempt.' },
                     { annotation_level: 'failure', path: '.github', message: 'Process completed with exit code 1.' },
@@ -142,7 +171,7 @@ function createOctokit(options: { runStatus?: string; runAttempt?: number; rerun
             routes.push(route);
             if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
                 return { data: {
-                    id: parameters.job_id, run_id: 44288180457, run_attempt: options.runAttempt ?? 1, conclusion: 'failure', status: 'completed',
+                    id: parameters.job_id, run_id: options.runOfJob?.[Number(parameters.job_id)] ?? 44288180457, run_attempt: options.runAttempt ?? 1, conclusion: 'failure', status: 'completed',
                     steps: [
                         { name: 'Set up job', conclusion: 'success' },
                         { name: 'Run ./scripts/ci-install-chromium.sh', conclusion: 'failure' },
@@ -150,8 +179,13 @@ function createOctokit(options: { runStatus?: string; runAttempt?: number; rerun
                     ],
                 } };
             }
-            if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}') return { data: { id: 44288180457, status: options.runStatus ?? 'completed' } };
-            if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs') return { data: options.rerun ? options.rerun() : {} };
+            if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}') return { data: { id: parameters.run_id, status: options.runStatus ?? 'completed' } };
+            if (route === 'POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs') {
+                if (options.rerun) return { data: options.rerun() };
+                reran.push(Number(parameters.run_id));
+                return { data: {} };
+            }
+            if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') return { data: options.pr ?? { state: 'open', head: { sha: SHA } } };
             if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') comments.push(String(parameters.body));
             return { data: {} };
         }),
@@ -247,5 +281,143 @@ describe('infrastructure-only failure handling', () => {
         assert.equal(octokit.comments.length, 1);
         assert.equal(octokit.routes.includes(RERUN), false);
         assert.equal(noticeOf(redis), null);
+    });
+});
+
+describe('test, build and lint steps are never setup steps', () => {
+    const network = ['Error: connect ECONNREFUSED 127.0.0.1:8787'];
+
+    test('a network error in a Playwright, browser or mixed install-and-test step stays a code failure', () => {
+        for (const step of [
+            'Run Playwright tests', 'Run browser tests', 'Install dependencies and run tests', 'Run npx playwright test',
+            'Build and install', 'Run chromium smoke', 'Run playwright', 'Typecheck', 'Run npm run check',
+        ]) {
+            assert.equal(classifyCiInfrastructureFailure(evidence({ texts: network, failedSteps: [step] })).infrastructure, false, step);
+        }
+    });
+
+    test('a network error in a clear preparation step is still infrastructure', () => {
+        for (const step of [
+            'Install dependencies', 'Install Playwright browsers', 'Run npx playwright install --with-deps chromium', 'Run npm ci',
+            'Set up Node.js', 'Run actions/checkout@v4', 'Restore cache', 'Run apt-get install -y fonts-unifont',
+        ]) {
+            assert.equal(classifyCiInfrastructureFailure(evidence({ texts: network, failedSteps: [step] })).infrastructure, true, step);
+        }
+    });
+});
+
+describe('unreadable annotations never make a failure infrastructure', () => {
+    const shutdown = 'The runner has received a shutdown signal. This can happen when the runner service is stopped.';
+
+    test('the classifier declines when the annotations could not be read', () => {
+        assert.equal(classifyCiInfrastructureFailure(evidence({ texts: [shutdown], annotations: undefined, failedSteps: ['Install dependencies'] })).infrastructure, false);
+        assert.equal(classifyCiInfrastructureFailure(evidence({ texts: [shutdown], annotations: [], failedSteps: ['Install dependencies'] })).infrastructure, true);
+    });
+
+    test('an annotation read failure posts the ordinary follow-up despite runner-problem output', async () => {
+        const redis = createRedis();
+        const octokit = createOctokit({ annotationsError: Object.assign(new Error('Service Unavailable'), { status: 503 }) });
+        const failing = { ...request(), evidence: { ...request().evidence, fallbackExcerpt: shutdown } };
+        const result = await postCiFailureFollowup(failing, 'unreadable', { isEnabled: async () => true, getOctokit: async () => octokit, redisClient: redis as never });
+
+        assert.equal(result.reason, 'posted');
+        assert.equal(octokit.comments.length, 1);
+        assert.equal(octokit.routes.includes(RERUN), false);
+        assert.equal(noticeOf(redis), null);
+    });
+});
+
+describe('deferred re-runs are never stranded', () => {
+    const deps = (redis: ReturnType<typeof createRedis>, octokit: ReturnType<typeof createOctokit>, now?: () => number) => ({
+        isEnabled: async () => true, getOctokit: async () => octokit, redisClient: redis as never, ...(now ? { now } : {}),
+    });
+
+    test('a singleton workflow finishing after its last check event is re-run by the sweep, without another check event', async () => {
+        const redis = createRedis();
+        const running = createOctokit({ runStatus: 'in_progress' });
+        await postCiFailureFollowup(request(), 'infra', deps(redis, running));
+        assert.equal(noticeOf(redis)?.action, 'rerun_deferred');
+
+        // Still running at the first sweep: kept.
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, running)), 0);
+        assert.equal(redis.pending().length, 1);
+
+        const finished = createOctokit();
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, finished)), 1);
+        assert.deepEqual(finished.reran, [44288180457]);
+        assert.equal(noticeOf(redis)?.action, 'rerun_requested');
+        assert.deepEqual(redis.pending(), []);
+
+        // Released: a later sweep sends nothing again.
+        const idle = createOctokit();
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, idle)), 0);
+        assert.deepEqual(idle.routes, []);
+    });
+
+    test('ordinary failure recovery of the same attempt resumes the deferred re-run instead of reporting it already requested', async () => {
+        const redis = createRedis();
+        await postCiFailureFollowup(request(), 'infra', deps(redis, createOctokit({ runStatus: 'in_progress' })));
+        const finished = createOctokit();
+        const recovered = await postCiFailureFollowup(request(), 'ci-recovery-3699', deps(redis, finished));
+
+        assert.deepEqual(recovered, { posted: false, reason: 'infrastructure' });
+        assert.deepEqual(finished.reran, [44288180457]);
+        assert.deepEqual(finished.comments, []);
+        assert.equal(noticeOf(redis)?.action, 'rerun_requested');
+        assert.deepEqual(redis.pending(), []);
+    });
+
+    test('a run that never finishes is given up on with an actionable notice', async () => {
+        const redis = createRedis();
+        const running = createOctokit({ runStatus: 'in_progress' });
+        await postCiFailureFollowup(request(), 'infra', deps(redis, running));
+        const later = Date.now() + CI_INFRASTRUCTURE_PENDING_RERUN_MAX_AGE_MS + 1;
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, running, () => later)), 1);
+        assert.deepEqual(running.reran, []);
+        assert.equal(noticeOf(redis)?.action, 'rerun_unavailable');
+        assert.deepEqual(redis.pending(), []);
+    });
+
+    test('a pending re-run of an obsolete head is dropped without re-running', async () => {
+        const redis = createRedis();
+        await postCiFailureFollowup(request(), 'infra', deps(redis, createOctokit({ runStatus: 'in_progress' })));
+        const pushed = createOctokit({ pr: { state: 'open', head: { sha: 'f'.repeat(40) } } });
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, pushed)), 0);
+        assert.deepEqual(pushed.reran, []);
+        assert.deepEqual(redis.pending(), []);
+    });
+
+    test('two workflow runs deferred on one head each get their single re-run', async () => {
+        const redis = createRedis();
+        const runOfJob = { 134748686933: 44288180457, 134748699999: 44288189999 };
+        const workflowB: CiFailureFollowupRequest = { ...request(), evidence: {
+            ...request().evidence, name: 'Desktop acceptance', source: 'check-run:Desktop acceptance', checkRunId: 134748699999,
+            url: 'https://github.com/integry/propr/actions/runs/44288189999/job/134748699999',
+        } };
+        const running = createOctokit({ runStatus: 'in_progress', runOfJob });
+        await postCiFailureFollowup(request(), 'infra-a', deps(redis, running));
+        await postCiFailureFollowup(workflowB, 'infra-b', deps(redis, running));
+        assert.equal(redis.pending().length, 2);
+        assert.equal(noticeOf(redis)?.runId, 44288189999, 'the notice is only the latest summary');
+
+        const finished = createOctokit({ runOfJob });
+        const target = { owner: 'integry', repo: 'propr', prNumber: 3699, headSha: SHA };
+        await resumeDeferredCiInfrastructureRerun(target, 'resume', deps(redis, finished));
+        assert.deepEqual([...finished.reran].sort(), [44288180457, 44288189999]);
+        assert.deepEqual(redis.pending(), []);
+
+        await resumeDeferredCiInfrastructureRerun(target, 'resume-again', deps(redis, finished));
+        await retryPendingCiInfrastructureReruns(deps(redis, finished));
+        assert.equal(finished.reran.length, 2, 'each run is re-run exactly once');
+    });
+
+    test('a run locked by another resumer is not re-run twice', async () => {
+        const redis = createRedis();
+        await postCiFailureFollowup(request(), 'infra', deps(redis, createOctokit({ runStatus: 'in_progress' })));
+        redis.values.set('propr:ci-infra-rerun-lock:integry/propr:44288180457', 'someone-else');
+        const finished = createOctokit();
+        assert.equal(await retryPendingCiInfrastructureReruns(deps(redis, finished)), 0);
+        assert.deepEqual(finished.reran, []);
+        assert.equal(redis.pending().length, 1, 'kept for the lock holder or the next sweep');
     });
 });

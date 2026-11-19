@@ -14,7 +14,7 @@ import {
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
-import { handleInfrastructureFailure } from './ciFailureInfrastructureRerun.js';
+import { handleInfrastructureFailure, type InfrastructureRedis } from './ciFailureInfrastructureRerun.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
@@ -63,7 +63,8 @@ interface CiFailureOctokit {
     paginate?: (route: string, parameters: Record<string, unknown>) => Promise<unknown[]>;
 }
 
-type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'>;
+/** Also carries the hash and script operations of deferred runner-problem re-runs (ciInfrastructureRerunPending). */
+type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'> & InfrastructureRedis;
 
 export interface CiFailureFollowupDependencies {
     isEnabled?: (owner: string, repo: string) => Promise<boolean>;
@@ -370,8 +371,9 @@ async function scanExistingComments(
  * An infrastructure-only failure (a runner or network problem in a setup step)
  * starts no code follow-up, so it suspends no validation either: its jobs are
  * re-run instead. Nothing is claimed for it, so a genuine failure of the same
- * check on the re-run still gets its follow-up. Any doubt or read failure
- * keeps it a code failure.
+ * check on the re-run still gets its follow-up. Any doubt or read failure,
+ * including annotations that could not be read (undefined), keeps it a code
+ * failure.
  */
 async function isInfrastructureOnly(
     params: { octokit: CiFailureOctokit; redis: DedupeRedis; request: CiFailureFollowupRequest; annotations: CiFailureAnnotation[] | undefined },

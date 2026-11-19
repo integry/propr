@@ -21,6 +21,7 @@ export interface CiInfrastructureEvidence {
     state: string;
     /** Annotation and output text of the failure; any order. */
     texts: Array<string | null | undefined>;
+    /** The check's annotations; absent when they could not be read, which keeps the failure a code failure. */
     annotations?: CiFailureAnnotation[];
     /** Names of the job's failed steps; null or absent when they could not be read. */
     failedSteps?: string[] | null;
@@ -86,9 +87,20 @@ const NETWORK_PATTERNS: readonly RegExp[] = [
     /\btoomanyrequests\b/i,
 ];
 
-/** Steps that only prepare the job: checkout, toolchains, dependencies, browsers, images. */
-const SETUP_STEP_PATTERN = /\b(?:set ?up|setup|install(?:ing)?|apt(?:-get)?|npm ci|pip|download|cache|checkout|playwright|chromium|browsers?|dependencies|deps|toolchain|docker (?:pull|login)|pull image|initialize containers)\b/i;
+/**
+ * Steps that run the code (tests, builds, lint, type checks): a step named
+ * like this is never a setup step, even when it also installs something
+ * ("Install dependencies and run tests") or names a browser ("Run Playwright
+ * tests"), so a network error in it stays a code failure.
+ */
+const EXECUTION_STEP_PATTERN = /\b(?:tests?|testing|specs?|e2e|smoke|acceptance|integration|unit|coverage|build(?:ing|s)?|compil(?:e|ing|ation)|bundle|lint(?:ing)?|eslint|prettier|format|type-?check(?:ing)?|tsc|check|verify|validate|vitest|jest|mocha|pytest|cargo|benchmarks?)\b/i;
 
+/**
+ * Steps that only prepare the job: checkout, toolchains, dependency and
+ * browser installs, caches, images. Each alternative names a preparation
+ * operation; a bare tool or browser name does not.
+ */
+const SETUP_STEP_PATTERN = /\b(?:set ?up|setup|install(?:ing|s)?|npm ci|(?:yarn|pnpm) install|apt(?:-get)? (?:update|install)|pip install|download(?:ing)?|(?:restore |save )?cache|checkout|docker (?:pull|login)|pull image|initialize containers)\b/i;
 /** Runner notices and annotations the runner attaches to the workflow file say nothing about the code. */
 function pointsAtSource(annotation: CiFailureAnnotation): boolean {
     const path = annotation.path?.trim();
@@ -105,15 +117,18 @@ export function hasInfrastructureSignature(texts: ReadonlyArray<string | null | 
     return [...RUNNER_LOST_PATTERNS, ...NETWORK_PATTERNS].some(pattern => pattern.test(joined));
 }
 
+/** A step that only prepares the job; anything that also runs tests, builds or lint is not. */
 export function isSetupStep(name: string): boolean {
-    return SETUP_STEP_PATTERN.test(name);
+    return !EXECUTION_STEP_PATTERN.test(name) && SETUP_STEP_PATTERN.test(name);
 }
 
 /** Classifies a failure as infrastructure-only, or not (the default whenever the evidence is not conclusive). */
 export function classifyCiInfrastructureFailure(evidence: CiInfrastructureEvidence): CiInfrastructureVerdict {
     const notInfrastructure: CiInfrastructureVerdict = { infrastructure: false };
     if (evidence.kind !== 'check_run' || !INFRASTRUCTURE_CONCLUSIONS.has(evidence.state.toLowerCase())) return notInfrastructure;
-    const annotations = evidence.annotations ?? [];
+    // Unread annotations cannot rule out one pointing at a source file: doubt keeps it a code failure.
+    const annotations = evidence.annotations;
+    if (!annotations) return notInfrastructure;
     if (annotations.some(pointsAtSource)) return notInfrastructure;
     const text = [...evidence.texts, ...annotations.flatMap(annotationText)].filter(Boolean).join('\n');
     if (!text || CODE_FAILURE_PATTERNS.some(pattern => pattern.test(text))) return notInfrastructure;
