@@ -14,6 +14,7 @@ import {
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
+import { isInfrastructureOnlyFailure } from './ciFailureInfrastructureCheck.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
@@ -73,8 +74,12 @@ export interface CiFailureFollowupDependencies {
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    /** `updated`: listed on the same head's comment. */
-    reason: 'posted' | 'updated' | 'disabled' | 'duplicate' | 'cancellation_induced';
+    /**
+     * `updated`: listed on the same head's comment. `infrastructure`: a runner
+     * or network problem the code cannot fix; no code follow-up is started,
+     * and the pull request's status block says to re-run the failed jobs.
+     */
+    reason: 'posted' | 'updated' | 'disabled' | 'duplicate' | 'cancellation_induced' | 'infrastructure';
     body?: string;
 }
 
@@ -232,6 +237,11 @@ export async function postCiFailureFollowup(
     if (await isCancellationInduced(octokit, request, dependencies, log)) {
         return { posted: false, reason: 'cancellation_induced' };
     }
+    const annotations = await loadAnnotations(octokit, request, log);
+    if (await isInfrastructureOnlyFailure(octokit, request, annotations, log)) {
+        return { posted: false, reason: 'infrastructure' };
+    }
+    const annotationExcerpt = annotations ? buildAnnotationExcerpt(annotations) : undefined;
     let claimed = false;
 
     try {
@@ -242,7 +252,7 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log });
+        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt });
     } catch (error) {
         if (claimed) {
             try {
@@ -257,12 +267,13 @@ export async function postCiFailureFollowup(
 
 /** Lists a claimed failure on the same head's comment, or posts a new one. */
 async function reportClaimedFailure(
-    { octokit, request, dedupeKey, correlationId, log }: {
+    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt }: {
         octokit: CiFailureOctokit;
         request: CiFailureFollowupRequest;
         dedupeKey: string;
         correlationId: string;
         log: ReturnType<typeof logger.withCorrelation>;
+        annotationExcerpt: string | undefined;
     },
 ): Promise<CiFailureFollowupResult> {
     let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
@@ -279,7 +290,6 @@ async function reportClaimedFailure(
         return { posted: false, reason: 'duplicate' };
     }
 
-    const annotationExcerpt = await loadAnnotationExcerpt(octokit, request, log);
     if (scan.sameHead) {
         const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
             title: checkTitle(request.evidence),
@@ -356,14 +366,14 @@ async function scanExistingComments(
     return scanCiFailureComments(comments, { dedupeKey, sha: request.evidence.sha, botUsernames });
 }
 
-async function loadAnnotationExcerpt(
+async function loadAnnotations(
     octokit: CiFailureOctokit,
     request: CiFailureFollowupRequest,
     log: ReturnType<typeof logger.withCorrelation>,
-): Promise<string | undefined> {
+): Promise<CiFailureAnnotation[] | undefined> {
     if (request.evidence.kind !== 'check_run' || request.evidence.checkRunId == null) return undefined;
     try {
-        return buildAnnotationExcerpt(await loadCheckRunAnnotations(octokit, request));
+        return await loadCheckRunAnnotations(octokit, request);
     } catch (error) {
         // Output summaries are carried in the webhook and remain useful
         // when the annotations endpoint is temporarily unavailable.

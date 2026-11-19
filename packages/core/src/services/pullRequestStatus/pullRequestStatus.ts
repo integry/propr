@@ -219,7 +219,26 @@ export interface PullRequestStatusFacts {
     ratingGoal: number;
     /** Present for an epic pull request ProPR recorded for its plan. */
     epic: EpicStatusFacts | null;
+    /**
+     * ProPR suspended the validation of the current head for a follow-up
+     * implementation (the worker's pr_ci_suspensions record): every CI run on
+     * it, a manual re-run included, is cancelled until the follow-up finishes.
+     * `cancelledRuns`: runs the suspension cancelled and has not brought back.
+     * Null or absent: not suspended.
+     */
+    ciSuspension?: PullRequestCiSuspension | null;
+    /**
+     * Failed checks of the current head that look like a runner or network
+     * problem, for which ProPR starts no code follow-up and a person re-runs
+     * the failed jobs; derived from the head's checks on each read. Null or
+     * absent: none.
+     */
+    ciRunnerProblem?: PullRequestCiRunnerProblem | null;
 }
+
+export interface PullRequestCiSuspension { cancelledRuns: number }
+/** `jobs`: the failed check (job) names, in check order; never empty. */
+export interface PullRequestCiRunnerProblem { jobs: string[] }
 
 /** The counts the status line shows; skipped and cancelled checks are counted apart from passed ones, and only when there are any. */
 export interface PullRequestStatusCheckCounts { passed: number; failed: number; pending: number; skipped?: number; cancelled?: number }
@@ -248,6 +267,10 @@ export interface PullRequestStatusDetail {
     /** Cancelled blocking check names, for `check_failed` (PullRequestStatusChecks.cancelled); absent: none. */
     cancelledChecks?: string[];
     epic: EpicStatusDetail | null;
+    /** The head's validation is suspended for a follow-up (PullRequestStatusFacts.ciSuspension); absent: not suspended. */
+    ciSuspension?: PullRequestCiSuspension;
+    /** Runner-problem failures of the head, until the pull request is ready (PullRequestStatusFacts.ciRunnerProblem); absent: none. */
+    ciRunnerProblem?: PullRequestCiRunnerProblem;
 }
 
 export interface PullRequestStatus {
@@ -357,7 +380,30 @@ export function computePullRequestStatus(facts: PullRequestStatusFacts): PullReq
     return computeSinglePullRequestStatus(facts, base);
 }
 
+/**
+ * What CI cannot say for itself: a suspension that cancels every run on the
+ * head, and failed checks that look like a runner problem, which a person re-runs.
+ * A runner problem says nothing more once the pull request is ready.
+ */
+function withCiNotes(status: PullRequestStatus, facts: PullRequestStatusFacts): PullRequestStatus {
+    const suspension = facts.ciSuspension ?? null;
+    const runner = status.state === 'ready' ? null : facts.ciRunnerProblem ?? null;
+    if (!suspension && !runner) return status;
+    return {
+        ...status,
+        detail: {
+            ...status.detail,
+            ...(suspension ? { ciSuspension: { ...suspension } } : {}),
+            ...(runner ? { ciRunnerProblem: { jobs: [...runner.jobs] } } : {}),
+        },
+    };
+}
+
 function computeSinglePullRequestStatus(facts: PullRequestStatusFacts, base: PullRequestStatusDetail): PullRequestStatus {
+    return withCiNotes(computeSingleStatusState(facts, base), facts);
+}
+
+function computeSingleStatusState(facts: PullRequestStatusFacts, base: PullRequestStatusDetail): PullRequestStatus {
     const detail: PullRequestStatusDetail = { ...base, checks: checkCounts(facts.checks), failedChecks: [...facts.checks.failedNames], ...cancelledChecks(facts.checks) };
     const loop = facts.ultrafix;
     if (loop?.active) detail.ultrafix = { cycle: ultrafixActiveCycle(loop.cycleCount, loop.maxCycles), maxCycles: loop.maxCycles };
@@ -402,6 +448,13 @@ function computeEpicStatus(facts: PullRequestStatusFacts, epic: EpicStatusFacts)
     const own: PullRequestStatusFacts = { ...facts, latestReviewScore: null, latestReviewBlockers: null };
     const base: PullRequestStatusDetail = { ...emptyDetail(own), epic: { merged: epic.merged, total: epic.total, focus: null } };
     if (epic.merged >= epic.total) return computeSinglePullRequestStatus(own, base);
+    // The epic branch's own CI notes hold while its issues are still merging, too.
+    return withCiNotes(computeUnfinishedEpicStatus(facts, own, epic, base), facts);
+}
+
+function computeUnfinishedEpicStatus(
+    facts: PullRequestStatusFacts, own: PullRequestStatusFacts, epic: EpicStatusFacts, base: PullRequestStatusDetail,
+): PullRequestStatus {
 
     const detail: PullRequestStatusDetail = { ...base, checks: checkCounts(facts.checks), failedChecks: [...facts.checks.failedNames], ...cancelledChecks(facts.checks) };
     const children = (epic.children ?? []).filter(child => child.status !== null && child.status.state !== 'none');

@@ -1,5 +1,7 @@
 import { PR_STATUS_BLOCK_MAX_LENGTH } from '@propr/shared';
-import type { EpicStatusFocus, PullRequestActivity, PullRequestAttentionReason, PullRequestStatus } from './pullRequestStatus.js';
+import type {
+    EpicStatusFocus, PullRequestActivity, PullRequestAttentionReason, PullRequestCiRunnerProblem, PullRequestStatus, PullRequestStatusDetail,
+} from './pullRequestStatus.js';
 
 /**
  * The live status block ProPR keeps as the first thing in a pull request body.
@@ -96,6 +98,35 @@ function reasonText(status: PullRequestStatus, maxNames: number): string {
     return detail.reason ? REASON_TEXT[detail.reason] : '';
 }
 
+/** Job names the runner-problem note lists; the rest are counted. */
+const MAX_RUNNER_PROBLEM_JOBS = 2;
+
+/** "unit failed on what looks like a runner or network problem, re-run the failed jobs"; ProPR does not re-run them itself. */
+export function runnerProblemText(problem: PullRequestCiRunnerProblem): string {
+    const names = problem.jobs.map(job => inlineName(job) || 'a check');
+    const listed = names.slice(0, MAX_RUNNER_PROBLEM_JOBS).join(', ');
+    const more = names.length > MAX_RUNNER_PROBLEM_JOBS ? ` +${names.length - MAX_RUNNER_PROBLEM_JOBS}` : '';
+    return `${listed}${more} failed on what looks like a runner or network problem, re-run the failed jobs`;
+}
+
+/** The text for a suspension of the head's validation (PullRequestStatusDetail.ciSuspension). */
+export const CI_SUSPENDED_TEXT = 'CI suspended until the follow-up finishes, re-running checks before then has no effect';
+
+/**
+ * A suspension, and the runs it cancelled; failed checks that look like a
+ * runner problem. The cancelled count is check progress (pullRequestStatusEditPacing).
+ */
+function ciNoteParts(detail: PullRequestStatusDetail): string[] {
+    const parts: string[] = [];
+    if (detail.ciSuspension) {
+        parts.push(CI_SUSPENDED_TEXT);
+        const runs = detail.ciSuspension.cancelledRuns;
+        if (runs > 0) parts.push(`runs cancelled by ProPR: ${runs}`);
+    }
+    if (detail.ciRunnerProblem && detail.ciRunnerProblem.jobs.length > 0) parts.push(runnerProblemText(detail.ciRunnerProblem));
+    return parts;
+}
+
 const STATE_EMOJI = { working: '🔨', needs_attention: '⚠️', ready: '✅' } as const;
 
 function headline(status: PullRequestStatus): string {
@@ -187,11 +218,13 @@ function epicStatusLine(status: PullRequestStatus, maxNames: number): string[] {
     if (epic.merged >= epic.total) {
         if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
         else if (status.state === 'working') parts.push(ultrafixHeadline(status) ? ultrafixCycleText(detail.ultrafix!) : ACTIVITY_TEXT[detail.activity ?? 'queued']);
+        parts.push(...ciNoteParts(detail));
         const checks = checksText(detail.checks);
         if (checks) parts.push(checks);
         return parts;
     }
-    return [...parts, ...epicParts(status, maxNames)];
+    // The epic branch's own CI notes, after what its sub-PRs and issues are doing.
+    return [...parts, ...epicParts(status, maxNames), ...ciNoteParts(detail)];
 }
 
 function statusLine(status: PullRequestStatus, now: Date, maxNames: number): string {
@@ -199,6 +232,7 @@ function statusLine(status: PullRequestStatus, now: Date, maxNames: number): str
     if (detail.epic && detail.epic.total > 0) return [...epicStatusLine(status, maxNames), `updated ${statusTimestamp(now)}`].filter(Boolean).join(' · ');
     const parts = [`**ProPR** ${headline(status)}`];
     if (status.state === 'needs_attention') parts.push(reasonText(status, maxNames));
+    parts.push(...ciNoteParts(detail));
     if (detail.ultrafix && !ultrafixHeadline(status)) parts.push(ultrafixCycleText(detail.ultrafix));
     parts.push(reviewScoreText(status, status.state === 'working' ? 'last review' : 'review') ?? '');
     const checks = status.state === 'needs_attention' && detail.reason === 'ultrafix_stopped' ? null : checksText(detail.checks);

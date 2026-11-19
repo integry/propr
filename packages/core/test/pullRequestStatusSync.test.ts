@@ -1813,3 +1813,38 @@ test('a deferred count update is written by the scheduled re-read once the windo
         setPullRequestStatusEditCoalesceMsForTests(null);
     }
 });
+
+// --- runner-problem note: derived from the head's failed checks on every sync, nothing stored ---
+
+test('a check that failed on a runner problem is named in the block until it no longer fails on the head', async () => {
+    await addTask('issue', 'completed');
+    const infra = {
+        id: 134748686933, name: 'Validate Changes', status: 'completed', conclusion: 'failure', app: { slug: 'github-actions' },
+        details_url: 'https://github.com/integry/propr/actions/runs/44288180457/job/134748686933',
+        output: { title: 'Chromium install', summary: null, text: null, annotations_count: 1 },
+    };
+    github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }, infra as never];
+    const request = github.request.bind(github);
+    github.request = async (route: string, params: Record<string, unknown>) => {
+        if (route === 'GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations') {
+            github.calls.push({ route, params });
+            return { data: [{ annotation_level: 'failure', path: '.github', message: 'Chromium install timed out on every attempt.' }] };
+        }
+        if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
+            github.calls.push({ route, params });
+            return { data: { steps: [{ name: 'Run ./scripts/ci-install-chromium.sh', conclusion: 'failure' }] } };
+        }
+        return await request(route, params);
+    };
+
+    await sync();
+    assert.match(statusLine(), /Validate Changes failed on what looks like a runner or network problem, re-run the failed jobs/);
+    assert.deepEqual(github.writes().map(call => call.route), ['PATCH /repos/{owner}/{repo}/pulls/{pull_number}'], 'only the body is written; no re-run request');
+    assert.equal([...redis.values.keys()].some(key => /infra|runner/i.test(key)), false, 'nothing about it is stored');
+
+    // A manual re-run passed: the check no longer fails on the head and the note is gone.
+    github.checkRuns = [{ name: 'unit', status: 'completed', conclusion: 'success' }, { ...infra, conclusion: 'success' } as never];
+    await sync();
+    assert.doesNotMatch(statusLine(), /runner or network problem/);
+    assert.match(statusLine(), /✅ Ready/);
+});
