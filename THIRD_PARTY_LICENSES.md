@@ -492,7 +492,7 @@ below is bundled in the propr/app image under the stated license.
 "path-to-regexp@8.4.2","MIT","https://github.com/pillarjs/path-to-regexp"
 "pause@0.0.1","MIT*",""
 "pg-connection-string@2.6.2","MIT","https://github.com/brianc/node-postgres"
-"picomatch@4.0.8-extglobguard.2","MIT","https://github.com/micromatch/picomatch"
+"picomatch@4.0.8-extglobguard.3","MIT","https://github.com/micromatch/picomatch"
 "pino-abstract-transport@2.0.0","MIT","https://github.com/pinojs/pino-abstract-transport"
 "pino-pretty@13.0.0","MIT","https://github.com/pinojs/pino-pretty"
 "pino-std-serializers@7.0.0","MIT","https://github.com/pinojs/pino-std-serializers"

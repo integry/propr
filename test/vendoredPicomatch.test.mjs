@@ -17,8 +17,8 @@ import { gunzipSync } from 'node:zlib';
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const V4 = { source: 'vendor/picomatch', tarball: 'vendor/picomatch-4.0.8-extglobguard.2.tgz' };
-const V2 = { source: 'vendor/picomatch-v2', tarball: 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz' };
+const V4 = { source: 'vendor/picomatch', tarball: 'vendor/picomatch-4.0.8-extglobguard.3.tgz' };
+const V2 = { source: 'vendor/picomatch-v2', tarball: 'vendor/picomatch-4.0.8-v2.3.2-extglobguard.3.tgz' };
 // The 2.x consumers (chokidar's anymatch and readdirp, fast-glob's micromatch)
 // get nested copies of the 2.x build; everything else shares the root 4.x build.
 const V2_CONSUMERS = ['anymatch', 'micromatch', 'readdirp'];
@@ -140,6 +140,50 @@ for (const [label, load] of builds) {
         assert.equal(picomatch.isMatch('***', '+("*")'), true);
     });
 
+    test(`the ${label} build matches ambiguous repeated groups literally instead of backtracking`, () => {
+        const picomatch = load();
+        // Unguarded, `(*a)+` took 3.4 s and `(*)+x` 20 s on a 27-character
+        // subject, doubling per character. Each now compiles to its literal text.
+        const globs = ['(*a)+', '(*)+x', '(*)+', '@(*)+', '(a*)+', '(a*)+b', '(**)+x', '((*)+)+', '((*a)+)+',
+            '{*a,}+', '{*,a}+', '{a*,b}+b', '@(*a)+', '@(@(*a))+', '(*(a))+b', '(+(a))+b', '!(a)+', '!(*a)+x',
+            '(a+|b)+', '(a|aa)+', '(a|a)+b', '(ab|a|ba)+x', '(a|)+b', '{a,aa}+', '((a|aa))+', '(@(a|aa))+',
+            'x/(*a)+/y'];
+        for (const glob of globs) {
+            const regex = picomatch.makeRe(glob);
+            for (const subject of [`${'a'.repeat(4999)}b`, `${'a'.repeat(4999)}/`]) {
+                const { matched, ms } = timedTest(regex, subject);
+                assert.equal(matched, false, glob);
+                assert.ok(ms < 50, `${glob} took ${ms.toFixed(0)} ms on ${subject.length} characters`);
+            }
+            assert.equal(picomatch.isMatch(glob, glob), true, `${glob} still matches its literal text`);
+        }
+        assert.equal(picomatch.isMatch('(A|a)+', '(A|a)+', { nocase: true }), true, 'nocase folds branches together');
+        assert.equal(picomatch.isMatch('aaa', '(A|a)+', { nocase: true }), false);
+        // `maxExtglobRecursion: false` disables this check with the extglob guard.
+        assert.equal(picomatch.isMatch('xaya', '(*a)+', { maxExtglobRecursion: false }), true);
+    });
+
+    test(`the ${label} build keeps unambiguous repeated groups and unquantified groups`, () => {
+        const picomatch = load();
+        assert.equal(picomatch.isMatch('abab', '(ab)+'), true);
+        assert.equal(picomatch.isMatch('aaa', '(a)+'), true);
+        assert.equal(picomatch.isMatch('aaa', '@(a)+'), true);
+        assert.equal(picomatch.isMatch('jsts', '(js|ts)+'), true);
+        assert.equal(picomatch.isMatch('abba', '{a,b}+'), true);
+        assert.equal(picomatch.isMatch('a1b2', '([a-z][0-9])+'), true);
+        assert.equal(picomatch.isMatch('axay', '(a?)+'), true);
+        assert.equal(picomatch.isMatch('ab', '(a|b)+', { nocase: true }), true);
+        assert.equal(picomatch.isMatch('abx', '(*)*x'), true);
+        assert.equal(picomatch.isMatch('a/b.js', '(a)/*.js'), true);
+        assert.equal(picomatch.isMatch('b.ts', '*.{js,ts}'), true);
+        assert.equal(picomatch.isMatch('x.js', '!(*.md)+'), false, '!(...)+ is literal');
+        // `(*)*x` has no quantified group (the second star is a wildcard), so it
+        // stays polynomial; take the fastest of three runs to absorb host load.
+        const regex = picomatch.makeRe('(*)*x');
+        const ms = Math.min(...[0, 1, 2].map(() => timedTest(regex, 'a'.repeat(5000)).ms));
+        assert.ok(ms < 50, `(*)*x took ${ms.toFixed(0)} ms`);
+    });
+
     test(`the ${label} build keeps ordinary glob and extglob matching`, () => {
         const picomatch = load();
         assert.equal(picomatch.isMatch('src/jobs/a.ts', 'src/**/*.ts'), true);
@@ -194,4 +238,5 @@ test('the real 2.x consumers match through the vendored build', () => {
     const anymatch = requireFrom('anymatch')('anymatch');
     assert.equal(anymatch(['**/node_modules/**'], 'a/node_modules/b.js'), true);
     assert.equal(anymatch(['+(*a)'], `${'a'.repeat(32)}!`), false);
+    assert.equal(anymatch(['(*a)+'], `${'a'.repeat(32)}!`), false);
 });

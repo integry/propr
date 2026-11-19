@@ -8,9 +8,9 @@ consumers load, with a guard against
 
 ## Wiring
 
-npm installs the packed tarball `vendor/picomatch-4.0.8-extglobguard.2.tgz`, not
+npm installs the packed tarball `vendor/picomatch-4.0.8-extglobguard.3.tgz`, not
 this directory. The root `package.json` declares it as a direct dependency,
-`"picomatch": "file:vendor/picomatch-4.0.8-extglobguard.2.tgz"`, and its
+`"picomatch": "file:vendor/picomatch-4.0.8-extglobguard.3.tgz"`, and its
 `overrides` entry `"picomatch": "$picomatch"` points every transitive
 `picomatch` at it (npm 10.9 silently prunes a top-level `file:` override with no
 matching direct dependency, hence the `$picomatch` form). The three 2.x
@@ -29,7 +29,7 @@ every lockfile entry that resolves to the tarball:
 
 ```sh
 npm pack ./vendor/picomatch --pack-destination vendor
-node -e "const fs=require('fs'),c=require('crypto');const t='vendor/picomatch-4.0.8-extglobguard.2.tgz';const l=JSON.parse(fs.readFileSync('package-lock.json'));const i='sha512-'+c.createHash('sha512').update(fs.readFileSync(t)).digest('base64');for(const e of Object.values(l.packages))if(e.resolved==='file:'+t)e.integrity=i;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2)+'\\n')"
+node -e "const fs=require('fs'),c=require('crypto');const t='vendor/picomatch-4.0.8-extglobguard.3.tgz';const l=JSON.parse(fs.readFileSync('package-lock.json'));const i='sha512-'+c.createHash('sha512').update(fs.readFileSync(t)).digest('base64');for(const e of Object.values(l.packages))if(e.resolved==='file:'+t)e.integrity=i;fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2)+'\\n')"
 npm install
 ```
 
@@ -57,7 +57,8 @@ already literalizes some risky repeated extglobs in `analyzeRepeatedExtglob`
 quantifier inside another. A 29-character subject takes about 35 s against
 `+(*)` and 11 s against `+(*a)` on unpatched 2.3.2 and 4.0.7.
 
-The only code change for the advisory is in `lib/parse.js`:
+The code changes for the advisory are all in `lib/parse.js`. The first guards
+repeated extglobs:
 
 - a new helper, `hasUnboundedWildcard(branch)`, true when a branch holds a
   bare `*` wildcard or `+` quantifier (one not opening a nested `*(...)` or
@@ -81,13 +82,50 @@ under 2 ms. `@(...)`, `?(...)`, `!(...)`, repeats of fixed-length bodies such
 as `+([0-9])` or `+(abc|def)`, nested repeats such as `*(f*(o))` and
 upstream's existing safe rewrites (`+(*(a)|*(b))` → `[ab]*`) are unchanged.
 
+### Repeated groups (`extglobguard.3`)
+
+A plain group, an `@(...)` group, a `!(...)` negation or a comma brace followed
+by `+` compiles to a regex group under a `+` quantifier, which the extglob
+guard above never sees: `(*a)+` → `([^/]*?a)+`, `(*)+x` → `([^/]*?)+x`,
+`{*a,}+` → `([^/]*?a|)+`, `!(a)+` → `(?:(?!(?:a))[^/]*?)+`. On unpatched
+builds, matching the 27-character `aaaaaaaaaaaaaaaaaaaaaaaaaab` took 3.4 s
+against `(*a)+` and 20 s against `(*)+x`, and `(a+|b)+` took 13 s on 29
+characters. The second change in `lib/parse.js` gives these groups the
+extglob guard's treatment:
+
+- `(` records where its group starts (including an `@` prefix), and the
+  closing `)` of a plain group, a `!(...)` and a comma brace carries that
+  record;
+- when the `+` handler would emit a regex quantifier right after such a close,
+  `repeatGroupLiterally` asks `isRiskyRepeatedGroup` whether the body can
+  match the same text in more than one way, and if so rewrites the group and
+  its `+` into one literal text token, the same way `extglobClose` rewrites a
+  risky extglob.
+
+A body is risky when its tokens hold a live `*`/`**` wildcard, a regex `+`
+quantifier or an unliteralized `*(...)`, `+(...)`, `?(...)` or `!(...)`; when
+it holds an alternation (`|` or a brace comma) below its top level; or when its
+top-level branches are not all plain literals that concatenate in only one way
+(checked with the Sardinas–Patterson test, after lower-casing for `nocase`), so
+`(a|aa)+`, `(a|a)+`, `(ab|a|ba)+` and `(a|)+` are risky while `(js|ts)+` and
+`{a,b}+` are not. A `!(...)` followed by `+` is always risky, because the
+negation's output ends in a star. Nested forms such as `((*)+)+` literalize the
+inner group first and then repeat a fixed literal. Fixed-length bodies (`(a)+`,
+`(abc)+`, `([0-9])+`, `(a?)+`) and everything not followed by `+`, including
+`(*)*x`, compile as before. `maxExtglobRecursion: false` turns this check off
+together with the extglob guard. Every probe above runs in under 1 ms on a
+5,000-character subject.
+
 ### Behaviour change and residual risk
 
 Running upstream's own mocha suite (from the git tag of the same version) against the
-patched `lib/` passes every test except four assertions that pin the vulnerable
-shape itself: `isMatch('abc', '+(*)c')` (twice), `isMatch('ax', '*(a*|b)')` and
-`isMatch('my/folder (Work, Accts)', '*/*(W*, *)*')`. Those patterns now match
-only their literal text. No glob in this repository uses a repeated extglob.
+patched `lib/` passes every test except nine assertions that pin the vulnerable
+shape itself: `isMatch('abc', '+(*)c')` (twice), `isMatch('ax', '*(a*|b)')`,
+`isMatch('my/folder (Work, Accts)', '*/*(W*, *)*')` and, since the
+repeated-group check, `isMatch('ab', '(a+|b)+')` and `isMatch('abab', '(a+|b)+')`
+(five assertions across the bash, minimatch and extglobs specs). Those
+patterns now match only their literal text. No glob in this repository uses a
+repeated extglob or a repeated group.
 
 Nested repeats such as `+(a*(a))`, where the inner repeat can match the same
 character that starts the outer iteration, are still exponential. Upstream
@@ -113,7 +151,7 @@ part of the exported `constants`.
 
 ## Version
 
-`4.0.8-extglobguard.2` is intentionally above `4.0.7` and is not a published
+`4.0.8-extglobguard.3` is intentionally above `4.0.7` and is not a published
 upstream release. npm audit and GitHub dependency review match the advisory
 range `<= 4.0.7` including prereleases, so the vendored package must sort above
 `4.0.7`.

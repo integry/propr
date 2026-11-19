@@ -417,6 +417,181 @@ const analyzeRepeatedExtglob = (body, options, tokens = []) => {
 };
 
 /**
+ * [extglobguard] Repeated groups: a plain group, an `@(...)` group or a comma
+ * brace followed by `+` compiles to a regex group under a `+` quantifier
+ * (`(*a)+` -> `([^/]*?a)+`, `{*a,}+` -> `([^/]*?a|)+`). When the group's body
+ * can match the same text in more than one way, a non-matching subject
+ * backtracks exponentially, exactly like a risky `+(...)` extglob. Such a
+ * group, together with its `+`, is matched as literal text, the treatment
+ * `analyzeRepeatedExtglob` gives risky extglobs.
+ *
+ * The body is ambiguous when its tokens hold a live `*`/`**` wildcard, a regex
+ * `+` quantifier or an unliteralized `*(...)`, `+(...)`, `?(...)` or `!(...)`
+ * extglob, when it holds an alternation (`|` or a brace comma) below its top
+ * level, or when its top-level branches are not all plain literals that
+ * concatenate in only one way (`(a|aa)+`, `(ab|a|ba)+`).
+ */
+
+const MAX_GROUP_BRANCH_CHARS = 4096;
+
+const REPEAT_OPENERS = new Set(['star', 'plus', 'qmark', 'negate']);
+
+const hasUnescapedPipe = value => {
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '\\') {
+      i++;
+      continue;
+    }
+
+    if (value[i] === '|') {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const isAlternationToken = tok => {
+  if (tok.type === 'comma') return tok.output === '|';
+  if (tok.type === 'text') return hasUnescapedPipe(tok.value) || hasUnescapedPipe(tok.output || '');
+  return false;
+};
+
+const isUniquelyDecodable = words => {
+  // Sardinas-Patterson: the words concatenate in only one way unless a
+  // dangling suffix is itself a word.
+  const code = new Set(words);
+  if (code.size !== words.length) {
+    return false;
+  }
+
+  const seen = new Set();
+  let current = new Set();
+
+  for (const a of code) {
+    for (const b of code) {
+      if (a !== b && b.startsWith(a)) current.add(b.slice(a.length));
+    }
+  }
+
+  while (current.size > 0) {
+    const next = new Set();
+
+    for (const suffix of current) {
+      if (code.has(suffix)) {
+        return false;
+      }
+
+      if (seen.has(suffix)) {
+        continue;
+      }
+
+      seen.add(suffix);
+
+      for (const word of code) {
+        if (word.length > suffix.length && word.startsWith(suffix)) next.add(word.slice(suffix.length));
+        if (suffix.length > word.length && suffix.startsWith(word)) next.add(suffix.slice(word.length));
+      }
+    }
+
+    current = next;
+  }
+
+  return true;
+};
+
+const splitPlainBranches = (body, separators) => {
+  const parts = [];
+  let value = '';
+
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+
+    if (ch === '\\') {
+      value += ch + (body[i + 1] || '');
+      i++;
+      continue;
+    }
+
+    if (separators.includes(ch)) {
+      parts.push(value);
+      value = '';
+      continue;
+    }
+
+    value += ch;
+  }
+
+  parts.push(value);
+  return parts;
+};
+
+const isRiskyRepeatedGroup = (group, body, tokens, options) => {
+  let depth = 0;
+  let alternation = false;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const next = tokens[i + 1];
+
+    if ((tok.type === 'star' || tok.type === 'globstar') && tok.value !== '') {
+      return true;
+    }
+
+    if (tok.type === 'plus' && tok.value === '+' && tok.output === undefined) {
+      return true;
+    }
+
+    if (REPEAT_OPENERS.has(tok.type) && next && next.type === 'paren' && next.extglob === true && next.value === '(') {
+      return true;
+    }
+
+    if ((tok.type === 'paren' && tok.value === '(') || (tok.type === 'brace' && (tok.value === '{' || tok.value === '\\{'))) {
+      depth++;
+      continue;
+    }
+
+    if ((tok.type === 'paren' && tok.value === ')') || (tok.type === 'brace' && tok.dots !== true && (tok.value === '}' || tok.value === '\\}'))) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+
+    if (isAlternationToken(tok)) {
+      if (depth > 0) {
+        return true;
+      }
+
+      alternation = true;
+    }
+  }
+
+  if (alternation === false) {
+    return false;
+  }
+
+  if (body.length > MAX_GROUP_BRANCH_CHARS || body.includes('"')) {
+    return true;
+  }
+
+  const words = [];
+
+  for (const branch of splitPlainBranches(body, group.brace === true ? ',|' : '|')) {
+    if (!isPlainBranch(branch)) {
+      return true;
+    }
+
+    const word = branch.replace(/\\(.)/g, '$1');
+    if (word === '') {
+      return true;
+    }
+
+    words.push(options.nocase === true ? word.toLowerCase() : word);
+  }
+
+  return !isUniquelyDecodable(words);
+};
+
+/**
  * Parse the given input string.
  * @param {String} input
  * @param {Object} options
@@ -503,6 +678,7 @@ const parse = (input, options) => {
 
   const extglobs = [];
   const braces = [];
+  const groups = [];
   const stack = [];
   let prev = bos;
   let value;
@@ -666,8 +842,62 @@ const parse = (input, options) => {
       }
     }
 
-    push({ type: 'paren', extglob: true, value, output });
+    // [extglobguard] `!(...)` compiles to a group ending in a star, so a `+`
+    // after it always nests an unbounded quantifier (see repeatGroupLiterally).
+    const group = token.type === 'negate'
+      ? {
+        negate: true,
+        startIndex: token.startIndex,
+        outputIndex: token.output.length,
+        tokensIndex: token.tokensIndex,
+        negatedExtglob: token.prev.type === 'bos'
+      }
+      : undefined;
+
+    push({ type: 'paren', extglob: true, value, output, group, closeIndex: state.index });
     decrement('parens');
+  };
+
+  /**
+   * [extglobguard] Match a risky repeated group (see `isRiskyRepeatedGroup`)
+   * and its `+` as literal text. `close` is the group's closing token; the
+   * caller is at the `+`.
+   */
+
+  const repeatGroupLiterally = close => {
+    const group = close.group;
+    const end = tokens.indexOf(close);
+
+    if (end === -1 || opts.maxExtglobRecursion === false) {
+      return false;
+    }
+
+    if (group.negate !== true) {
+      const body = input.slice(group.bodyIndex, close.closeIndex);
+      if (!isRiskyRepeatedGroup(group, body, tokens.slice(group.bodyTokensIndex, end), opts)) {
+        return false;
+      }
+    } else if (group.negatedExtglob === true) {
+      state.negatedExtglob = false;
+    }
+
+    const literal = input.slice(group.startIndex, state.index + 1);
+    const open = tokens[group.tokensIndex];
+
+    open.type = 'text';
+    open.value = literal;
+    open.output = utils.escapeRegex(literal);
+
+    for (let i = group.tokensIndex + 1; i < tokens.length; i++) {
+      tokens[i].value = '';
+      tokens[i].output = '';
+      delete tokens[i].suffix;
+    }
+
+    state.output = state.output.slice(0, group.outputIndex) + open.output;
+    state.backtrack = true;
+    consume('+');
+    return true;
   };
 
   /**
@@ -858,6 +1088,16 @@ const parse = (input, options) => {
 
     if (value === '(') {
       increment('parens');
+      // [extglobguard] remember where the group starts (including an `@`
+      // prefix) so a following `+` can check it.
+      const at = prev.type === 'at' && prev.extglob === true;
+      groups.push({
+        startIndex: at ? state.index - 1 : state.index,
+        bodyIndex: state.index + 1,
+        outputIndex: state.output.length,
+        tokensIndex: at ? tokens.length - 1 : tokens.length,
+        bodyTokensIndex: tokens.length + 1
+      });
       push({ type: 'paren', value });
       continue;
     }
@@ -873,7 +1113,8 @@ const parse = (input, options) => {
         continue;
       }
 
-      push({ type: 'paren', value, output: state.parens ? ')' : '\\)' });
+      const group = state.parens ? groups.pop() : undefined;
+      push({ type: 'paren', value, output: state.parens ? ')' : '\\)', group, closeIndex: state.index });
       decrement('parens');
       continue;
     }
@@ -957,7 +1198,12 @@ const parse = (input, options) => {
         value,
         output: '(',
         outputIndex: state.output.length,
-        tokensIndex: state.tokens.length
+        tokensIndex: state.tokens.length,
+        // [extglobguard] for the repeated-group check
+        brace: true,
+        startIndex: state.index,
+        bodyIndex: state.index + 1,
+        bodyTokensIndex: state.tokens.length + 1
       };
 
       braces.push(open);
@@ -1004,7 +1250,9 @@ const parse = (input, options) => {
         }
       }
 
-      push({ type: 'brace', value, output });
+      // [extglobguard] only a comma brace compiles to a regex group
+      const group = brace.comma === true && brace.dots !== true ? brace : undefined;
+      push({ type: 'brace', value, output, dots: brace.dots === true, group, closeIndex: state.index });
       decrement('braces');
       braces.pop();
       continue;
@@ -1155,6 +1403,10 @@ const parse = (input, options) => {
       }
 
       if ((prev && (prev.type === 'bracket' || prev.type === 'paren' || prev.type === 'brace')) || state.parens > 0) {
+        if (prev && prev.group && repeatGroupLiterally(prev)) {
+          continue;
+        }
+
         push({ type: 'plus', value });
         continue;
       }
