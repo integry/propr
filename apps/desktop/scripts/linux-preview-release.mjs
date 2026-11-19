@@ -1,4 +1,5 @@
 import { validateSignedRpmAcceptanceEvidence, verifySignedRpmEvidenceArtifact } from './signed-rpm-acceptance-evidence.mjs';
+import { isCurrentReleaseRolloutRun } from './release-rollout-run.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -593,8 +594,20 @@ export const stageLinuxPreviewDraft = async ({
   return { releaseId: release.id, tag, manifest };
 };
 
+// The signing run is either a separate successful main dispatch of the signing
+// workflow, or (Release Rollout) the run executing this publication, whose
+// signing jobs this publication job needs (release-rollout-run.mjs).
+export const trustedSigningRun = (signingRun, { signingRunId, repository, currentRunId, workflowRef }) => (
+  (String(signingRun?.id) === signingRunId && signingRun.event === 'workflow_dispatch'
+    && signingRun.path === '.github/workflows/desktop-linux-signed-preview.yml'
+    && signingRun.head_branch === 'main' && signingRun.conclusion === 'success'
+    && signingRun.repository?.full_name === repository)
+  || isCurrentReleaseRolloutRun(signingRun, { runId: signingRunId, currentRunId, workflowRef, repository })
+);
+
 export const publishLinuxPreviewDraft = async ({
   version, sourceRevision, repository, token, rpmIdentity, sourceDirectory, acceptanceEvidence, signingRunId,
+  currentRunId, workflowRef,
   apiUrl = 'https://api.github.com', fetchImpl = fetch,
 }) => {
   if (!rpmIdentity) throw new Error('Public Linux publication requires authenticated DEB and RPM mode');
@@ -641,10 +654,7 @@ export const publishLinuxPreviewDraft = async ({
   validateSignedRpmAcceptanceEvidence(acceptanceEvidence, { sourceRevision, rpmSha256: acceptedRpm.sha256,
     signingRunId, fingerprint: rpmIdentity.fingerprint });
   const signingRun = await json(`/actions/runs/${signingRunId}`);
-  if (String(signingRun?.id) !== signingRunId || signingRun.event !== 'workflow_dispatch'
-    || signingRun.path !== '.github/workflows/desktop-linux-signed-preview.yml'
-    || signingRun.head_branch !== 'main' || signingRun.conclusion !== 'success'
-    || signingRun.repository?.full_name !== repository) {
+  if (!trustedSigningRun(signingRun, { signingRunId, repository, currentRunId, workflowRef })) {
     throw new Error('Installed signed RPM acceptance requires a successful trusted signing workflow run');
   }
   await verifySignedRpmEvidenceArtifact({ json, request, signingRunId, evidence: acceptanceEvidence });
@@ -763,6 +773,8 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       const acceptanceEvidence = JSON.parse(await readFile(evidencePath, 'utf8'));
       await publishLinuxPreviewDraft({
         acceptanceEvidence, signingRunId: argument('--signing-run-id'),
+        currentRunId: process.env.GITHUB_RUN_ID,
+        workflowRef: process.env.GITHUB_WORKFLOW_REF,
         version,
         sourceRevision,
         repository,

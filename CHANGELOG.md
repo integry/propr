@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release rollout check**: `npm run release:rollout -- --version <x.y.z>`
+  (`scripts/verify-release-rollout.mjs`) says where a release is live. It
+  checks the GitHub release and its checked-in summary, the four Docker Hub
+  images and their `latest` tags, the `propr-cli` npm `latest` tag,
+  app.propr.dev, demo.propr.dev, the Linux and macOS desktop pre-releases
+  and the site, and prints `ok`, `missing` or `stale` for each. It uses only
+  public, unauthenticated reads, exits non-zero unless every target is `ok`,
+  supports `--json`, and writes a table to the run summary in GitHub Actions.
+  Release Rollout runs it as its last job, so each run summary says where the
+  release is live. A desktop release counts only when it is a pre-release.
+- **Release Rollout workflow**: `.github/workflows/release-rollout.yml`
+  builds the desktop previews and the preview CLI bundle from one release tag.
+  It replaces seven manual dispatches with hand-copied digests and run ids.
+  It starts by itself when Docker Images succeeds for a tag push, or by hand
+  with `release_tag`. It uses the tag commit as the source revision and calls
+  the existing workflows in order: the runtime images (agent, then app/UI),
+  then in parallel the Linux draft, signing and signed publication, the macOS
+  preview, and the preview CLI bundle. Every protected environment and its
+  approval is unchanged and no new secret is introduced. A re-run skips the
+  runtime images and preview pre-releases that already exist.
+- **Release follow-ups**: Release Rollout ends by writing the follow-ups
+  outside this repository (`scripts/release-followups.mjs`): the ProPR Hosted
+  repin in `integry/propr-fleet` with the preview CLI bundle run, artifact,
+  tarball sha256 and the three image references; the release `published_at`
+  and desktop pre-release tags for `integry/propr-site`; and the demo move in
+  `integry/propr-deploy` when demo.propr.dev does not report the release yet.
+  With the optional `RELEASE_FOLLOWUP_ISSUES_TOKEN` secret it opens them as
+  issues; without it the run summary carries their exact text to file by
+  hand. With the optional deploy-on-release secrets it runs the documented
+  SSH deploy of the demo. The Preview CLI Bundle workflow now outputs its
+  artifact name and id, tarball and sha256.
+
 ### Changed
 
 - **Every GitHub release starts with a readable summary**: the release body is
@@ -34,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Google's linux_amd64 install manifest. Its model list is unchanged. With a
     `GEMINI_API_KEY`, `/usage`, `/quota` and `/credits` now exit with code 2
     in `-p` runs; ProPR's own prompts do not use them.
+- **Release app/UI commit tag**: a release now tags its linux/amd64-only
+  `propr/app` and `propr/ui` images `release-<commit SHA>` instead of the bare
+  commit SHA. The bare `propr/app:<SHA>` and `propr/ui:<SHA>` tags are left to
+  the two-architecture preview runtime manifests that the desktop previews and
+  the preview CLI bundle pin. The `<version>` and `latest` tags are unchanged,
+  and docs, agent and launcher images keep the bare SHA tag.
 
 ### Removed
 

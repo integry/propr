@@ -1,0 +1,488 @@
+name: Release Rollout
+
+# Starts the desktop previews and the preview CLI bundle from one release tag.
+# The source revision of every step is the tag commit. The chain runs in order
+# and passes each output along:
+#
+#   plan -> runtime images: managed agent (publish-agent), then app/UI (publish)
+#        -> in parallel: Linux unsigned draft -> signing -> signed publication,
+#                        the macOS preview, and the preview CLI bundle
+#
+# Each step calls the existing workflow (workflow_call), so the jobs, their
+# permissions and every protected environment and approval are the ones a
+# manual dispatch uses; the chain waits at each environment. Only the two Docker
+# Hub and the two RPM signing credentials are passed, to the workflows whose
+# protected jobs already read them. They must be passed: a called workflow sees
+# only the secrets its caller passes, even those of its own job's environment,
+# and any other reads as empty. Passing them by name works for secrets that
+# exist only in that environment, and keeps every other secret out of the
+# called workflows; the other called workflows read no secrets. The
+# single-step manual dispatches keep working unchanged.
+#
+# Re-running for a tag is safe: the plan finds runtime images and published
+# preview prereleases that already exist for the tag commit, and those steps
+# are skipped and their existing digests passed along. To resume a run that
+# stopped part-way (for example a rejected approval), re-run its failed jobs:
+# a fresh run rebuilds, and staging refuses draft bytes that differ.
+#
+# Last, the follow-ups job writes the three release follow-ups outside this
+# repository (scripts/release-followups.mjs): the ProPR Hosted repin
+# (integry/propr-fleet), the site's release date and desktop tags
+# (integry/propr-site) and the demo move (integry/propr-deploy). With the
+# optional RELEASE_FOLLOWUP_ISSUES_TOKEN it opens them as issues; without it
+# the run summary carries their exact text to file by hand. When the optional
+# deploy-on-release secrets (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY) are set,
+# it starts the documented demo deploy (./scripts/deploy.sh all) on the host as
+# a detached systemd unit, propr-release-deploy-<version>, logging to
+# /root/propr-deploy/logs/release-deploy-<version>.log, and does not wait for
+# it: the demo database refresh takes about 30 minutes and must not be cut off
+# by the job timeout. Until demo.propr.dev reports the release, the demo
+# follow-up issue is still opened and says to check that deploy.
+#
+# Finally, the live job runs the read-only rollout check
+# (scripts/verify-release-rollout.mjs) for the planned version, also when an
+# earlier step failed, and its one-line-per-target table (Docker latest, npm,
+# hosted UI, demo, desktop pre-releases, site pages) ends the run summary.
+# Targets that are still `missing` or `stale` (the demo refresh and the site
+# follow-ups land later) give a warning, not a failed run.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to roll out, for example v0.9.3 (its tag commit is the source revision)
+        required: true
+        type: string
+  workflow_run:
+    workflows: [Docker Images]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-rollout-${{ inputs.release_tag || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Resolve the tag commit and the artefacts that already exist
+    # Automatic runs follow only a successful Docker Images run for a release
+    # tag push; a manual Docker Images dispatch is followed by a manual run.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.plan.outputs.release_tag }}
+      source_revision: ${{ steps.plan.outputs.source_revision }}
+      version: ${{ steps.plan.outputs.version }}
+      desktop_version: ${{ steps.plan.outputs.desktop_version }}
+      linux_release_tag: ${{ steps.plan.outputs.linux_release_tag }}
+      macos_release_tag: ${{ steps.plan.outputs.macos_release_tag }}
+      runtime_app_image: ${{ steps.plan.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.plan.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.plan.outputs.runtime_agent_image }}
+      publish_agent: ${{ steps.plan.outputs.publish_agent }}
+      publish_app_ui: ${{ steps.plan.outputs.publish_app_ui }}
+      linux: ${{ steps.plan.outputs.linux }}
+      macos: ${{ steps.plan.outputs.macos }}
+    steps:
+      - name: Checkout the reviewed main revision with full history and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Install pinned OCI inspection client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Bind the tag commit to main and find existing runtime images and preview releases
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-rollout-plan.mjs plan
+
+  runtime-agent:
+    name: Managed agent image
+    needs: plan
+    if: needs.plan.outputs.publish_agent == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/preview-runtime-images.yml
+    with:
+      operation: publish-agent
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  runtime-app-ui:
+    name: App and UI images
+    needs: [plan, runtime-agent]
+    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' && needs.plan.outputs.publish_app_ui == 'true' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/preview-runtime-images.yml
+    with:
+      operation: publish
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  runtime:
+    name: Pass the three runtime image digests along
+    needs: [plan, runtime-agent, runtime-app-ui]
+    if: ${{ !cancelled() && !failure() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      runtime_app_image: ${{ steps.runtime.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ steps.runtime.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.runtime.outputs.runtime_agent_image }}
+    steps:
+      - name: Checkout the reviewed main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Use this run's publication, else the existing image, for each digest
+        id: runtime
+        env:
+          SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
+          PUBLISHED_APP_IMAGE: ${{ needs.runtime-app-ui.outputs.runtime_app_image }}
+          PUBLISHED_UI_IMAGE: ${{ needs.runtime-app-ui.outputs.runtime_ui_image }}
+          PUBLISHED_AGENT_IMAGE: ${{ needs.runtime-agent.outputs.runtime_agent_image }}
+          EXISTING_APP_IMAGE: ${{ needs.plan.outputs.runtime_app_image }}
+          EXISTING_UI_IMAGE: ${{ needs.plan.outputs.runtime_ui_image }}
+          EXISTING_AGENT_IMAGE: ${{ needs.plan.outputs.runtime_agent_image }}
+        run: node scripts/release-rollout-plan.mjs runtime
+
+  linux-draft:
+    name: Desktop Linux unsigned draft
+    needs: [plan, runtime]
+    if: ${{ !cancelled() && !failure() && needs.runtime.result == 'success' && needs.plan.outputs.linux == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/desktop-linux-preview.yml
+    with:
+      operation: stage-draft
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      runtime_app_image: ${{ needs.runtime.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ needs.runtime.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ needs.runtime.outputs.runtime_agent_image }}
+
+  linux-signing:
+    name: Desktop Linux signing
+    needs: [plan, linux-draft]
+    if: ${{ !cancelled() && !failure() && needs.linux-draft.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/desktop-linux-signed-preview.yml
+    with:
+      operation: sign-draft
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      # The unsigned bundle was staged earlier in this run.
+      unsigned_run_id: ${{ github.run_id }}
+    secrets:
+      PROPR_DESKTOP_RPM_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_RPM_PRIVATE_KEY }}
+      PROPR_DESKTOP_RPM_PASSPHRASE: ${{ secrets.PROPR_DESKTOP_RPM_PASSPHRASE }}
+
+  linux-publication:
+    name: Desktop Linux signed publication
+    needs: [plan, linux-signing]
+    if: ${{ !cancelled() && !failure() && needs.linux-signing.result == 'success' }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/desktop-linux-signed-preview.yml
+    with:
+      operation: publish-draft
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      # The signing and installed-RPM acceptance jobs ran earlier in this run.
+      signing_run_id: ${{ github.run_id }}
+
+  macos:
+    name: Desktop macOS preview
+    needs: [plan, runtime]
+    if: ${{ !cancelled() && !failure() && needs.runtime.result == 'success' && needs.plan.outputs.macos == 'true' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/desktop-macos-preview.yml
+    with:
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      runtime_app_image: ${{ needs.runtime.outputs.runtime_app_image }}
+      runtime_ui_image: ${{ needs.runtime.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ needs.runtime.outputs.runtime_agent_image }}
+
+  cli-bundle:
+    name: Preview CLI bundle
+    needs: [plan, runtime]
+    if: ${{ !cancelled() && !failure() && needs.runtime.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/preview-cli-bundle.yml
+    with:
+      source_revision: ${{ needs.plan.outputs.source_revision }}
+      app_image: ${{ needs.runtime.outputs.runtime_app_image }}
+      ui_image: ${{ needs.runtime.outputs.runtime_ui_image }}
+      agent_image: ${{ needs.runtime.outputs.runtime_agent_image }}
+
+  summary:
+    name: Summarize the rollout
+    needs: [plan, runtime-agent, runtime-app-ui, runtime, linux-draft, linux-signing, linux-publication, macos, cli-bundle]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Write one line per step
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+          SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
+          AGENT_IMAGE: ${{ needs.runtime.outputs.runtime_agent_image }}
+          APP_IMAGE: ${{ needs.runtime.outputs.runtime_app_image }}
+          UI_IMAGE: ${{ needs.runtime.outputs.runtime_ui_image }}
+          RUNTIME_AGENT: ${{ needs.runtime-agent.result }}
+          RUNTIME_APP_UI: ${{ needs.runtime-app-ui.result }}
+          LINUX_DRAFT: ${{ needs.linux-draft.result }}
+          LINUX_SIGNING: ${{ needs.linux-signing.result }}
+          LINUX_PUBLICATION: ${{ needs.linux-publication.result }}
+          MACOS: ${{ needs.macos.result }}
+          CLI_BUNDLE: ${{ needs.cli-bundle.result }}
+          PLAN_LINUX: ${{ needs.plan.outputs.linux }}
+          PLAN_MACOS: ${{ needs.plan.outputs.macos }}
+          PLAN_AGENT: ${{ needs.plan.outputs.publish_agent }}
+          PLAN_APP_UI: ${{ needs.plan.outputs.publish_app_ui }}
+        run: |
+          set -euo pipefail
+          # A step the plan skipped because its artefact exists says so.
+          state() { if [ "$2" = false ] && [ "$1" = skipped ]; then echo 'already published'; else echo "$1"; fi; }
+          {
+            echo "### Release rollout for $RELEASE_TAG"
+            echo
+            echo "Source revision (tag commit): \`$SOURCE_REVISION\`"
+            echo
+            echo '| Step | Result |'
+            echo '| --- | --- |'
+            echo "| Managed agent image | $(state "$RUNTIME_AGENT" "$PLAN_AGENT") |"
+            echo "| App and UI images | $(state "$RUNTIME_APP_UI" "$PLAN_APP_UI") |"
+            echo "| Desktop Linux unsigned draft | $(state "$LINUX_DRAFT" "$PLAN_LINUX") |"
+            echo "| Desktop Linux signing | $(state "$LINUX_SIGNING" "$PLAN_LINUX") |"
+            echo "| Desktop Linux signed publication | $(state "$LINUX_PUBLICATION" "$PLAN_LINUX") |"
+            echo "| Desktop macOS preview | $(state "$MACOS" "$PLAN_MACOS") |"
+            echo "| Preview CLI bundle | $CLI_BUNDLE |"
+            echo
+            if [ -n "$AGENT_IMAGE$APP_IMAGE$UI_IMAGE" ]; then
+              echo 'Runtime images:'
+              echo
+              for image in "$AGENT_IMAGE" "$APP_IMAGE" "$UI_IMAGE"; do echo "- \`$image\`"; done
+              echo
+            fi
+            echo 'Where the release is live is in the rollout check below (`npm run release:rollout -- --version <x.y.z>` repeats it later).'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  followups:
+    name: Release follow-ups (ProPR Hosted repin, site, demo)
+    needs: [plan, runtime, linux-publication, macos, cli-bundle, summary]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the reviewed main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      # The deploy-on-release step from integry/propr-deploy DEPLOYMENT.md,
+      # started detached: `deploy.sh all` rebuilds the demo database from
+      # production (about 30 minutes), and an SSH session cut by the job
+      # timeout would interrupt the refresh part-way. systemd-run returns once
+      # the unit has started; the unit keeps running after the session ends,
+      # and a second start for the same version fails while one still runs.
+      # A failed or absent start is not a failed rollout: the demo follow-up
+      # issue says what is left to do.
+      - name: Start the demo deploy over SSH when the deploy-on-release secrets are set
+        id: demo
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo 'The deploy-on-release secrets are not set; the demo follow-up is an issue.'
+            echo 'result=skipped' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::The plan's version \"$VERSION\" is not a release version; the demo deploy was not started."
+            echo 'result=failure' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          unit="propr-release-deploy-$VERSION"
+          log="/root/propr-deploy/logs/release-deploy-$VERSION.log"
+          key="$RUNNER_TEMP/deploy-on-release-key"
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printf '%s\n' "$DEPLOY_SSH_KEY" > "$key")
+          if ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=4 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mkdir -p /root/propr-deploy/logs && systemd-run --unit=$unit --collect --setenv=HOME=/root --working-directory=/root/propr-deploy --property=StandardOutput=append:$log --property=StandardError=append:$log /root/propr-deploy/scripts/deploy.sh all" </dev/null; then
+            echo 'result=started' >> "$GITHUB_OUTPUT"
+            {
+              echo '#### Demo deploy'
+              echo
+              echo "Started \`./scripts/deploy.sh all\` on the deploy host as systemd unit \`$unit\`; this run does not wait for it (the demo database refresh takes about 30 minutes)."
+              echo "Its log is \`$log\` on the host; check it with \`systemctl status $unit\` and \`tail -f $log\`."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::The deploy-on-release SSH step could not start $unit (it may already be running); the demo follow-up is an issue."
+            echo 'result=failure' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write the follow-up texts and the summary
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+          SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
+          RUN_ID: ${{ github.run_id }}
+          DESKTOP_VERSION: ${{ needs.plan.outputs.desktop_version }}
+          APP_IMAGE: ${{ needs.runtime.outputs.runtime_app_image }}
+          UI_IMAGE: ${{ needs.runtime.outputs.runtime_ui_image }}
+          AGENT_IMAGE: ${{ needs.runtime.outputs.runtime_agent_image }}
+          CLI_BUNDLE: ${{ needs.cli-bundle.result }}
+          CLI_VERSION: ${{ needs.cli-bundle.outputs.cli_version }}
+          CLI_ARTIFACT_NAME: ${{ needs.cli-bundle.outputs.artifact_name }}
+          CLI_ARTIFACT_ID: ${{ needs.cli-bundle.outputs.artifact_id }}
+          CLI_TARBALL: ${{ needs.cli-bundle.outputs.tarball }}
+          CLI_TARBALL_SHA256: ${{ needs.cli-bundle.outputs.tarball_sha256 }}
+          LINUX_RELEASE_TAG: ${{ needs.plan.outputs.linux_release_tag }}
+          LINUX_PUBLICATION: ${{ needs.linux-publication.result }}
+          PLAN_LINUX: ${{ needs.plan.outputs.linux }}
+          MACOS_RELEASE_TAG: ${{ needs.plan.outputs.macos_release_tag }}
+          MACOS: ${{ needs.macos.result }}
+          PLAN_MACOS: ${{ needs.plan.outputs.macos }}
+          DEMO_DEPLOY: ${{ steps.demo.outputs.result }}
+          TOKEN_CONFIGURED: ${{ secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN != '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-followups.mjs prepare --out "$RUNNER_TEMP/release-followups"
+
+      # Optional: a fine-grained token limited to Issues (read and write) on
+      # integry/propr-fleet, integry/propr-site and integry/propr-deploy.
+      # An issue with the same title (open or closed) is not filed again.
+      - name: Open the follow-up issues when RELEASE_FOLLOWUP_ISSUES_TOKEN is set
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_FOLLOWUP_ISSUES_TOKEN }}
+          FOLLOWUPS: ${{ runner.temp }}/release-followups
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'RELEASE_FOLLOWUP_ISSUES_TOKEN is not set: file the follow-ups printed above (and in the run summary) by hand.'
+            exit 0
+          fi
+          failed=0
+          { echo '#### Follow-up issues'; echo; } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r repository title body; do
+            if ! found=$(ISSUE_TITLE="$title" gh issue list -R "$repository" --state all --search "\"$title\" in:title" \
+              --json title,url --jq 'map(select(.title == env.ISSUE_TITLE))[0].url // empty' </dev/null); then
+              echo "::error::Could not search $repository for \"$title\""
+              echo "- \`$repository\`: could not check or file \"$title\"; file it by hand" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+            elif [ -n "$found" ]; then
+              echo "- \`$repository\`: already filed: $found" >> "$GITHUB_STEP_SUMMARY"
+            elif url=$(gh issue create -R "$repository" --title "$title" --body-file "$body" </dev/null); then
+              echo "- \`$repository\`: opened $url" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Could not open \"$title\" in $repository"
+              echo "- \`$repository\`: could not file \"$title\"; file it by hand" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+            fi
+          done < "$FOLLOWUPS/issues.tsv"
+          exit "$failed"
+
+  live:
+    name: Check where the release is live
+    needs: [plan, summary, followups]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the reviewed main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      # Read-only and without credentials: every read is a public request.
+      # Exit 1 means some target is not yet `ok`; the table says which. The
+      # check failing to write its table (a crash or a bad version) fails the job.
+      - name: Run the rollout check for the planned version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          touch "$GITHUB_STEP_SUMMARY"
+          before=$(wc -c < "$GITHUB_STEP_SUMMARY")
+          status=0
+          node scripts/verify-release-rollout.mjs --version "$VERSION" || status=$?
+          if [ "$(wc -c < "$GITHUB_STEP_SUMMARY")" -eq "$before" ]; then
+            echo "::error::The rollout check for $VERSION wrote no summary (exit $status)."
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::ProPR $VERSION is not yet live on every target; see the rollout check table in the run summary."
+          fi

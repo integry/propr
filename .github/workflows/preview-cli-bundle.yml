@@ -5,6 +5,11 @@ name: Preview CLI Bundle
 # preview bundle (packages/cli/scripts/preview-package.md) and retains it as a
 # run-specific Actions artifact. Nothing is published: no npm package, release,
 # tag, image, site or deployment, and no credential or environment is used.
+#
+# Release Rollout (release-rollout.yml) calls this with the release tag commit
+# and the three runtime images it published or found. The trust gates are the
+# same; an automatic run (event workflow_run) is accepted only from the reviewed
+# main copy of release-rollout.yml, named by the run's own workflow_ref.
 
 on:
   workflow_dispatch:
@@ -25,6 +30,40 @@ on:
         description: propr/agent:<source_revision>@sha256:<64 lowercase hex> from Preview Runtime Images publish-agent
         required: true
         type: string
+  workflow_call:
+    inputs:
+      source_revision:
+        description: Full lowercase 40-character source commit SHA reachable from this main commit
+        required: true
+        type: string
+      app_image:
+        description: propr/app:<source_revision>@sha256:<64 lowercase hex>
+        required: true
+        type: string
+      ui_image:
+        description: propr/ui:<source_revision>@sha256:<64 lowercase hex>
+        required: true
+        type: string
+      agent_image:
+        description: propr/agent:<source_revision>@sha256:<64 lowercase hex>
+        required: true
+        type: string
+    outputs:
+      cli_version:
+        description: Version of the prepared preview CLI
+        value: ${{ jobs.prepare.outputs.cli_version }}
+      artifact_name:
+        description: Name of the run-specific Actions artifact holding the bundle
+        value: ${{ jobs.prepare.outputs.artifact_name }}
+      artifact_id:
+        description: Id of that Actions artifact
+        value: ${{ jobs.prepare.outputs.artifact_id }}
+      tarball:
+        description: File name of the CLI tarball in the artifact
+        value: ${{ jobs.prepare.outputs.tarball }}
+      tarball_sha256:
+        description: SHA-256 of the CLI tarball
+        value: ${{ jobs.prepare.outputs.tarball_sha256 }}
 
 permissions:
   contents: read
@@ -36,16 +75,25 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    outputs:
+      cli_version: ${{ steps.verify.outputs.version }}
+      artifact_name: propr-cli-preview-${{ steps.trust.outputs.source_revision }}-${{ github.run_id }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      tarball: ${{ steps.verify.outputs.tarball }}
+      tarball_sha256: ${{ steps.verify.outputs.tarball_sha256 }}
     steps:
-      - name: Refuse anything but a manual main dispatch before checkout
+      - name: Refuse anything but a manual main dispatch or the main Release Rollout before checkout
         env:
           DISPATCH_EVENT: ${{ github.event_name }}
           DISPATCH_REF: ${{ github.ref }}
           TRUSTED_MAIN: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
-          if [ "$DISPATCH_EVENT" != workflow_dispatch ] || [ "$DISPATCH_REF" != refs/heads/main ]; then
-            echo 'Preview CLI preparation must be a manual workflow_dispatch from refs/heads/main.' >&2
+          rollout=integry/propr/.github/workflows/release-rollout.yml@refs/heads/main
+          if [ "$DISPATCH_REF" != refs/heads/main ] || { [ "$DISPATCH_EVENT" != workflow_dispatch ] \
+            && { [ "$DISPATCH_EVENT" != workflow_run ] || [ "$WORKFLOW_REF" != "$rollout" ]; }; }; then
+            echo 'Preview CLI preparation must be a manual workflow_dispatch, or the main Release Rollout, from refs/heads/main.' >&2
             exit 1
           fi
           if ! [[ "$TRUSTED_MAIN" =~ ^[0-9a-f]{40}$ ]]; then
@@ -78,6 +126,7 @@ jobs:
           DISPATCH_EVENT: ${{ github.event_name }}
           DISPATCH_REF: ${{ github.ref }}
           DISPATCH_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
           TRUSTED_MAIN: ${{ github.sha }}
           SOURCE_REVISION: ${{ inputs.source_revision }}
           APP_IMAGE: ${{ inputs.app_image }}
@@ -89,6 +138,7 @@ jobs:
             --event "$DISPATCH_EVENT" \
             --ref "$DISPATCH_REF" \
             --repository "$DISPATCH_REPOSITORY" \
+            --workflow-ref "$WORKFLOW_REF" \
             --trusted-main "$TRUSTED_MAIN" \
             --source-revision "$SOURCE_REVISION" \
             --app-image "$APP_IMAGE" \
@@ -148,6 +198,7 @@ jobs:
             --summary "$RUNNER_TEMP/propr-cli-preview-summary.md"
 
       - name: Retain the completed bundle as a run-specific artifact
+        id: upload
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: propr-cli-preview-${{ steps.trust.outputs.source_revision }}-${{ github.run_id }}

@@ -18,7 +18,6 @@ const step = name => {
   assert.ok(found, `missing step ${name}`);
   return found;
 };
-const CONFIGURED = "steps.credentials.outputs.configured == 'true'";
 const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
 
 const runStep = (run, env, dir, label) => {
@@ -32,20 +31,28 @@ const runStep = (run, env, dir, label) => {
 };
 
 describe('hosted UI release deploy workflow contract', () => {
-  test('runs only after the GitHub release is published, on tag and manual release paths', () => {
+  test('runs only after the GitHub release is published and latest promotion has finished', () => {
     assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
-    assert.equal(job.if, workflow.jobs['publish-github-release'].if);
-    assert.equal(job.if, "github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'");
-    // Default success() gating: a failed or skipped release skips the deploy.
-    assert.deepEqual(job.needs, ['validate-release', 'publish-github-release']);
-    assert.doesNotMatch(job.if, /always\(\)|failure\(\)|cancelled\(\)/);
+    assert.equal(workflow.jobs['publish-github-release'].if, "github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'");
+    // Waits for promote-latest so a failed deploy turns the run red only after
+    // every release surface is done, but deploys whether promotion succeeded,
+    // failed or was skipped (manual release without push_latest). A failed or
+    // skipped GitHub release, or a cancelled run, skips the deploy.
+    assert.deepEqual(job.needs, ['validate-release', 'publish-github-release', 'promote-latest']);
+    assert.deepEqual(workflow.jobs['promote-latest'].needs, ['validate-release', 'publish-github-release']);
+    assert.equal(job.if, "${{ !cancelled() && (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && needs.publish-github-release.result == 'success' }}");
+    assert.doesNotMatch(job.if, /always\(\)|failure\(\)|promote-latest/);
+    assert.equal(job['continue-on-error'], undefined, 'a failed deploy must not look green');
   });
 
   test('the release job and the manual re-deploy share one reusable workflow', () => {
     assert.equal(job.name, 'Deploy hosted UI (app.propr.dev)');
     assert.equal(job.uses, './.github/workflows/hosted-ui-deploy.yml');
     assert.deepEqual(job.with, { release_tag: '${{ needs.validate-release.outputs.release_tag }}' });
-    assert.equal(job.secrets, undefined, 'no caller secrets: the environment-scoped job reads its own');
+    // A called workflow sees only the secrets its caller passes or inherits,
+    // even those of its own job's environment; without this the Cloudflare
+    // secrets read as empty on the release path (v0.9.2).
+    assert.equal(job.secrets, 'inherit', 'the called deploy job must receive its environment secrets');
     assert.equal(job.steps, undefined);
     assert.deepEqual(Object.keys(deployWorkflow.on).sort(), ['workflow_call', 'workflow_dispatch']);
     for (const trigger of ['workflow_call', 'workflow_dispatch']) {
@@ -70,7 +77,9 @@ describe('hosted UI release deploy workflow contract', () => {
       if (name === 'deploy-hosted-ui') continue;
       assert.doesNotMatch(JSON.stringify(other), /CLOUDFLARE|hosted-ui-production|wrangler|hosted-ui-deploy/i, `${name} must not see the Cloudflare deploy`);
     }
-    assert.doesNotMatch(JSON.stringify(job), /CLOUDFLARE|secrets/);
+    // The release job inherits the secrets without naming the credentials.
+    assert.doesNotMatch(JSON.stringify(job), /CLOUDFLARE|secrets\./);
+    assert.equal(deployWorkflow.on.workflow_call.secrets, undefined, 'inherited secrets need no declaration');
     assert.equal(deployJob.env, undefined, 'no job-level env exposes secrets to every step');
     assert.equal(deployWorkflow.env, undefined);
     const secretSteps = steps.filter(candidate => JSON.stringify(candidate).includes('secrets.')).map(candidate => candidate.name);
@@ -109,8 +118,8 @@ describe('hosted UI release deploy workflow contract', () => {
     assert.equal(step('Build shared workspace').run, 'npm run build -w @propr/shared');
     assert.equal(step('Build hosted UI').run, 'npm run build -w propr-ui');
     assert.equal(step('Deploy to Cloudflare Workers').run, 'npx --yes wrangler@4.156.0 deploy --config wrangler.hosted-ui.toml');
-    assert.equal(step('Validate release tag').if, undefined, 'a bad release_tag fails even without credentials');
-    for (const name of order.slice(2)) assert.equal(step(name).if, CONFIGURED, `${name} must skip without credentials`);
+    // Missing credentials fail the job instead of skipping steps behind a flag.
+    for (const name of order) assert.equal(step(name).if, undefined, `${name} runs unconditionally`);
     for (const candidate of steps) assert.equal(candidate['continue-on-error'], undefined);
   });
 
@@ -198,23 +207,24 @@ describe('hosted UI release deploy workflow contract', () => {
     }
   });
 
-  test('skips with a notice instead of failing when the environment secrets are missing', () => {
-    const { run } = step('Check Cloudflare credentials');
+  test('fails with an error annotation and a summary line when the environment secrets are missing', () => {
+    const credentials = step('Check Cloudflare credentials');
+    assert.equal(credentials.env.RELEASE_TAG, '${{ inputs.release_tag }}');
     const dir = mkdtempSync(join(tmpdir(), 'hosted-ui-credentials-'));
     try {
       let runs = 0;
-      const execute = env => runStep(run, env, dir, String(runs += 1));
+      const execute = env => runStep(credentials.run, { RELEASE_TAG: 'v0.9.2', ...env }, dir, String(runs += 1));
       const configured = execute({ CLOUDFLARE_API_TOKEN: 'token', CLOUDFLARE_ACCOUNT_ID: 'account' });
       assert.equal(configured.status, 0);
-      assert.equal(configured.output, 'configured=true\n');
       assert.equal(configured.stdout, '');
+      assert.equal(configured.summary, '');
       for (const env of [{}, { CLOUDFLARE_API_TOKEN: 'cf-secret-sentinel' }, { CLOUDFLARE_ACCOUNT_ID: 'cf-secret-sentinel', CLOUDFLARE_API_TOKEN: '' }]) {
-        const skipped = execute(env);
-        assert.equal(skipped.status, 0, JSON.stringify(env));
-        assert.equal(skipped.output, 'configured=false\n');
-        assert.match(skipped.stdout, /^::notice title=Hosted UI deploy skipped::.*hosted-ui-production.*Hosted UI Deploy workflow from main/);
-        assert.match(skipped.summary, /Hosted UI deploy skipped/);
-        assert.doesNotMatch(skipped.stdout + skipped.summary, /cf-secret-sentinel/, 'secret values are never echoed');
+        const missing = execute(env);
+        assert.equal(missing.status, 1, JSON.stringify(env));
+        assert.equal(missing.output, '');
+        assert.match(missing.stdout, /^::error title=Hosted UI not deployed::CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set in the hosted-ui-production environment; app\.propr\.dev was not deployed\..*re-run this job or run the Hosted UI Deploy workflow from main with release_tag v0\.9\.2/);
+        assert.match(missing.summary, /^### Hosted UI not deployed\n.*app\.propr\.dev was not deployed/);
+        assert.doesNotMatch(missing.stdout + missing.summary, /cf-secret-sentinel|::notice|skipped/, 'secret values are never echoed; no success-shaped notice');
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
