@@ -6,7 +6,7 @@ import { isNonBlockingCheck } from '../../webhook/nonBlockingChecks.js';
 import { EPIC_BRANCH_PATTERN } from '../epicPRService.js';
 import { latestReviewRound, loadPullRequestScoreHistory } from '../reviewScoreStore.js';
 import { headChecksWaitMs } from './pullRequestStatusCheckWait.js';
-import { loadCiRunnerProblemFact, loadCiSuspensionFact } from './pullRequestStatusCiNotes.js';
+import { failedStatusCheckRuns, loadCiRunnerProblemFact, loadCiSuspensionFact, type FailedStatusCheckRun, type ListedCheckRunDetails } from './pullRequestStatusCiNotes.js';
 import { loadEpicStatusFacts } from './pullRequestStatusEpicFacts.js';
 import {
     computePullRequestStatus,
@@ -228,11 +228,7 @@ async function readCheckPages<T>(read: (page: number) => Promise<{ items: T[]; t
     return { items, complete: false, total: listed };
 }
 
-interface CheckRun {
-    id?: number;
-    name?: string;
-    status: string;
-    conclusion: string | null;
+interface CheckRun extends ListedCheckRunDetails {
     started_at?: string | null;
     /** The suite the run belongs to: for GitHub Actions, one workflow run (all its attempts). */
     check_suite?: { id?: number } | null;
@@ -424,9 +420,14 @@ async function cancelledCheckRuns(
  * `readFailed`, unlike checks left unread by the page budget: the former is a
  * transient gap a caller may retry, the latter a limit it must not retry.
  */
-export async function loadPullRequestStatusChecks(
+export async function loadPullRequestStatusChecks(...args: Parameters<typeof readPullRequestStatusChecks>): Promise<PullRequestStatusChecks> {
+    return (await readPullRequestStatusChecks(...args)).checks;
+}
+
+/** loadPullRequestStatusChecks, with the blocking check runs that failed (for the runner-problem note, pullRequestStatusCiNotes). */
+async function readPullRequestStatusChecks(
     sources: Pick<PullRequestStatusSources, 'github' | 'loadNonBlockingChecks'>, owner: string, repo: string, ref: string,
-): Promise<PullRequestStatusChecks> {
+): Promise<{ checks: PullRequestStatusChecks; failedRuns: FailedStatusCheckRun[] }> {
     const [runs, statuses, patterns] = await Promise.allSettled([
         loadCheckRuns(sources.github, owner, repo, ref),
         loadLegacyStatuses(sources.github, owner, repo, ref),
@@ -444,7 +445,7 @@ export async function loadPullRequestStatusChecks(
     const skipped = checkRuns.filter(run => run.status === 'completed' && run.conclusion === 'skipped' && !isNonBlockingCheck(run.name, patternList)).length;
     const failedNames = [...runFailed, ...legacy.failed];
     const complete = runs.status === 'fulfilled' && runs.value.complete && statuses.status === 'fulfilled' && statuses.value.complete;
-    return {
+    const checks: PullRequestStatusChecks = {
         complete,
         reported: (runs.status === 'fulfilled' && runs.value.total > 0) || (statuses.status === 'fulfilled' && statuses.value.total > 0),
         readFailed: runs.status === 'rejected' || statuses.status === 'rejected',
@@ -455,6 +456,7 @@ export async function loadPullRequestStatusChecks(
         ...(skipped > 0 ? { skipped } : {}),
         ...(cancelledNames.length > 0 ? { cancelled: cancelledNames.length, cancelledNames } : {}),
     };
+    return { checks, failedRuns: failedStatusCheckRuns(checkRuns.filter(run => !isNonBlockingCheck(run.name, patternList))) };
 }
 
 /** BullMQ jobs for the pull request that have not started yet (running ones are tasks already). */
@@ -509,16 +511,17 @@ export async function loadPullRequestStatusFacts(
     // Queued work, the Ultrafix loop, the review score and an epic's sub-PRs each
     // decide whether the PR is ready, so a failed read is not the same as "none":
     // it rejects, and callers keep the previous block (body) or report null (MCP).
+    const checksRead = readPullRequestStatusChecks(sources, owner, repo, pullRequest.headSha);
     const [queuedJobs, ultrafix, checks, score, ratingGoal, epic, ciSuspension, ciRunnerProblem] = await Promise.all([
         sources.countQueuedJobs ? sources.countQueuedJobs(repository, prNumber) : 0,
         loadUltrafix(sources.redis, owner, repo, prNumber),
-        loadPullRequestStatusChecks(sources, owner, repo, pullRequest.headSha),
+        checksRead.then(read => read.checks),
         latestReviewScore(sources.db, repository, prNumber),
         sources.loadRatingGoal(),
         loadEpicFacts(repository, prNumber, sources, { epicRef, pull: pr }),
-        // Notes only: an unreadable record leaves them out (pullRequestStatusCiNotes).
+        // Notes only, an unreadable record leaves them out; the runner problem is derived from the head's failed checks, nothing stored.
         loadCiSuspensionFact(sources.db, repository, prNumber, pullRequest.headSha),
-        loadCiRunnerProblemFact(sources.redis, repository, prNumber, pullRequest.headSha),
+        checksRead.then(read => loadCiRunnerProblemFact(sources.github, owner, repo, read.failedRuns), () => null),
     ]);
     // A head GitHub lists no check for yet may only be one whose checks have not started (pullRequestStatusCheckWait).
     // A listed check is evidence even from an incomplete read (page budget, one endpoint rejected); only a complete read shows none.

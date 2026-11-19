@@ -50,7 +50,6 @@ import { scheduleWorktreeSweep } from './daemon/worktreeSweep.js';
 import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
 import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
 import { scheduleEpicMergeProgressRetrySweep } from './daemon/epicMergeProgressRetrySweep.js';
-import { scheduleCiInfrastructureRerunSweep } from './daemon/ciInfrastructureRerunSweep.js';
 import { scheduleNoChangeCompletionRecoverySweep } from './daemon/noChangeCompletionRecoverySweep.js';
 import { scheduleAutoMergeSweep } from './daemon/autoMergeSweep.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
@@ -228,7 +227,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // without the API server and with polling off does not wait for a webhook.
     const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep(redisClient);
     const epicMergeProgressRetryInterval = scheduleEpicMergeProgressRetrySweep();
-    const ciInfrastructureRerunInterval = scheduleCiInfrastructureRerunSweep();
     const noChangeCompletionRecoveryInterval = scheduleNoChangeCompletionRecoverySweep(redisClient);
     const autoMergeSweepInterval = scheduleAutoMergeSweep();
 
@@ -455,7 +453,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(ultrafixResumeSweepInterval);
         for (const interval of [heartbeatInterval, draftContextSweepInterval, pushRescueSweepInterval, worktreeSweepInterval, epicMergeProgressRetryInterval,
-            ciInfrastructureRerunInterval, noChangeCompletionRecoveryInterval, autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
+            noChangeCompletionRecoveryInterval, autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
         stopManagedDiagnostics();
         await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and

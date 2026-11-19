@@ -14,7 +14,7 @@ import {
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
-import { handleInfrastructureFailure, type InfrastructureRedis } from './ciFailureInfrastructureRerun.js';
+import { isInfrastructureOnlyFailure } from './ciFailureInfrastructureCheck.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
@@ -63,8 +63,7 @@ interface CiFailureOctokit {
     paginate?: (route: string, parameters: Record<string, unknown>) => Promise<unknown[]>;
 }
 
-/** Also carries the hash and script operations of deferred runner-problem re-runs (ciInfrastructureRerunPending). */
-type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'> & InfrastructureRedis;
+type DedupeRedis = Pick<Redis, 'get' | 'set' | 'del'>;
 
 export interface CiFailureFollowupDependencies {
     isEnabled?: (owner: string, repo: string) => Promise<boolean>;
@@ -77,8 +76,8 @@ export interface CiFailureFollowupResult {
     posted: boolean;
     /**
      * `updated`: listed on the same head's comment. `infrastructure`: a runner
-     * problem the code cannot fix; its jobs are re-run instead of starting a
-     * code follow-up (ciFailureInfrastructureRerun).
+     * or network problem the code cannot fix; no code follow-up is started,
+     * and the pull request's status block says to re-run the failed jobs.
      */
     reason: 'posted' | 'updated' | 'disabled' | 'duplicate' | 'cancellation_induced' | 'infrastructure';
     body?: string;
@@ -239,7 +238,7 @@ export async function postCiFailureFollowup(
         return { posted: false, reason: 'cancellation_induced' };
     }
     const annotations = await loadAnnotations(octokit, request, log);
-    if (await isInfrastructureOnly({ octokit, redis, request, annotations }, log)) {
+    if (await isInfrastructureOnlyFailure(octokit, request, annotations, log)) {
         return { posted: false, reason: 'infrastructure' };
     }
     const annotationExcerpt = annotations ? buildAnnotationExcerpt(annotations) : undefined;
@@ -365,26 +364,6 @@ async function scanExistingComments(
         [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]'].filter((name): name is string => Boolean(name)),
     );
     return scanCiFailureComments(comments, { dedupeKey, sha: request.evidence.sha, botUsernames });
-}
-
-/**
- * An infrastructure-only failure (a runner or network problem in a setup step)
- * starts no code follow-up, so it suspends no validation either: its jobs are
- * re-run instead. Nothing is claimed for it, so a genuine failure of the same
- * check on the re-run still gets its follow-up. Any doubt or read failure,
- * including annotations that could not be read (undefined), keeps it a code
- * failure.
- */
-async function isInfrastructureOnly(
-    params: { octokit: CiFailureOctokit; redis: DedupeRedis; request: CiFailureFollowupRequest; annotations: CiFailureAnnotation[] | undefined },
-    log: ReturnType<typeof logger.withCorrelation>,
-): Promise<boolean> {
-    try {
-        return (await handleInfrastructureFailure(params, log)).handled;
-    } catch (error) {
-        log.warn({ error: (error as Error).message }, 'Could not handle a runner-problem CI failure; posting follow-up');
-        return false;
-    }
 }
 
 async function loadAnnotations(

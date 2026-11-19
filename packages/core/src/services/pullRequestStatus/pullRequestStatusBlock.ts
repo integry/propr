@@ -98,18 +98,23 @@ function reasonText(status: PullRequestStatus, maxNames: number): string {
     return detail.reason ? REASON_TEXT[detail.reason] : '';
 }
 
-const RUNNER_PROBLEM_TEXT: Record<PullRequestCiRunnerProblem['action'], (job: string) => string> = {
-    rerun_requested: job => `runner problem in ${job}, re-run requested`,
-    rerun_deferred: job => `runner problem in ${job}, re-run when its workflow finishes`,
-    rerun_unavailable: job => `${job} failed on what looks like a runner problem, re-run it`,
-};
+/** Job names the runner-problem note lists; the rest are counted. */
+const MAX_RUNNER_PROBLEM_JOBS = 2;
+
+/** "unit failed on what looks like a runner or network problem, re-run the failed jobs"; ProPR does not re-run them itself. */
+export function runnerProblemText(problem: PullRequestCiRunnerProblem): string {
+    const names = problem.jobs.map(job => inlineName(job) || 'a check');
+    const listed = names.slice(0, MAX_RUNNER_PROBLEM_JOBS).join(', ');
+    const more = names.length > MAX_RUNNER_PROBLEM_JOBS ? ` +${names.length - MAX_RUNNER_PROBLEM_JOBS}` : '';
+    return `${listed}${more} failed on what looks like a runner or network problem, re-run the failed jobs`;
+}
 
 /** The text for a suspension of the head's validation (PullRequestStatusDetail.ciSuspension). */
 export const CI_SUSPENDED_TEXT = 'CI suspended until the follow-up finishes, re-running checks before then has no effect';
 
 /**
- * A suspension, and the runs it cancelled; a runner problem and what ProPR did
- * about it. The cancelled count is check progress (pullRequestStatusEditPacing).
+ * A suspension, and the runs it cancelled; failed checks that look like a
+ * runner problem. The cancelled count is check progress (pullRequestStatusEditPacing).
  */
 function ciNoteParts(detail: PullRequestStatusDetail): string[] {
     const parts: string[] = [];
@@ -118,10 +123,7 @@ function ciNoteParts(detail: PullRequestStatusDetail): string[] {
         const runs = detail.ciSuspension.cancelledRuns;
         if (runs > 0) parts.push(`runs cancelled by ProPR: ${runs}`);
     }
-    if (detail.ciRunnerProblem) {
-        const job = inlineName(detail.ciRunnerProblem.job) || 'a check';
-        parts.push(RUNNER_PROBLEM_TEXT[detail.ciRunnerProblem.action](job));
-    }
+    if (detail.ciRunnerProblem && detail.ciRunnerProblem.jobs.length > 0) parts.push(runnerProblemText(detail.ciRunnerProblem));
     return parts;
 }
 

@@ -166,7 +166,6 @@ export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevalua
 export { evaluateAutoMergeEligibilityWithReason, type AutoMergeEvaluationOutcome, type AutoMergeEligibility, type AutoMergeEligibilityReason, type AutoMergeEligibilityResult } from './webhook/autoMergeEvaluation.js';
 export * from './webhook/pullRequestReadiness.js';
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
-export { retryPendingCiInfrastructureReruns } from './webhook/ciFailureInfrastructureRerun.js';
 export { loadDeferredUpToDateCandidates, settleDeferredUpToDateCandidate, type DeferredUpToDateCandidate } from './webhook/autoMergeUpToDateRetry.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';

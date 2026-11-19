@@ -22,7 +22,6 @@ import {
     postCiFailureFollowup,
     type CiFailureEvidence,
 } from './ciFailureFollowup.js';
-import { resumeDeferredCiInfrastructureRerun } from './ciFailureInfrastructureRerun.js';
 import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 import { isActedCheckRunAction, isActedCheckSuiteAction, isPassingCheckSuiteConclusion, STATUS_SUCCESS_STATE } from './webhookEventGates.js';
 import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
@@ -358,11 +357,6 @@ export async function handleCheckRunEvent(
     if (targetPRs.length === 0) {
         log.debug({ owner, repoName, sha: payload.check_run.head_sha }, 'check_run skipped: no associated PRs');
         return;
-    }
-
-    // A runner-problem re-run waits for its workflow run to finish; a completed check of the head may be that moment.
-    for (const pr of targetPRs) {
-        await resumeDeferredCiInfrastructureRerun({ owner, repo: repoName, prNumber: pr.number, headSha: payload.check_run.head_sha }, correlationId);
     }
 
     const conclusion = payload.check_run.conclusion;

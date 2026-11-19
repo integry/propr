@@ -7,10 +7,9 @@ process.env.PROPR_DEMO_MODE = 'true';
 
 const { closeConnection } = await import('../src/db/connection.js');
 const { computePullRequestStatus } = await import('../src/services/pullRequestStatus/pullRequestStatus.js');
-const { CI_SUSPENDED_TEXT, renderPullRequestStatusBlock, renderPullRequestStatusLine } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
+const { CI_SUSPENDED_TEXT, renderPullRequestStatusBlock, renderPullRequestStatusLine, runnerProblemText } = await import('../src/services/pullRequestStatus/pullRequestStatusBlock.js');
 const { onlyCheckProgressChanged } = await import('../src/services/pullRequestStatus/pullRequestStatusEditPacing.js');
 const { loadCiRunnerProblemFact, loadCiSuspensionFact } = await import('../src/services/pullRequestStatus/pullRequestStatusCiNotes.js');
-const { ciInfrastructureNoticeKey } = await import('../src/webhook/ciInfrastructureNotice.js');
 
 const NOW = new Date('2026-11-19T03:40:00Z');
 const HEAD = 'abc123';
@@ -80,18 +79,15 @@ test('a change of the suspension cancel count alone is paced like check progress
     assert.equal(onlyCheckProgressChanged(body({ ciSuspension: { cancelledRuns: 2 } }), body({})), false);
 });
 
-test('a runner-problem failure names the job and what ProPR did instead of a code follow-up', () => {
+test('a runner-problem failure names the job and says re-running the failed jobs is the fix', () => {
     const failed = { complete: true, passed: 20, failed: 1, pending: 0, failedNames: ['Validate Changes'] };
     const idle = { tasks: [] as PullRequestStatusFacts['tasks'], checks: failed };
-    assert.equal(line({ ...idle, ciRunnerProblem: { job: 'Validate Changes', action: 'rerun_unavailable' } }),
-        '**ProPR** ⚠️ Needs you · failed: Validate Changes · Validate Changes failed on what looks like a runner problem, re-run it'
+    assert.equal(line({ ...idle, ciRunnerProblem: { jobs: ['Validate Changes'] } }),
+        '**ProPR** ⚠️ Needs you · failed: Validate Changes · Validate Changes failed on what looks like a runner or network problem, re-run the failed jobs'
         + ' · checks: 20 passed, 1 failed · updated Nov 19 03:40 UTC');
-    assert.ok(line({ ...idle, ciRunnerProblem: { job: 'Validate Changes', action: 'rerun_deferred' } })
-        .includes('runner problem in Validate Changes, re-run when its workflow finishes'));
-    const rerunning = line({ tasks: [], checks: { complete: true, passed: 20, failed: 0, pending: 1, failedNames: [] }, ciRunnerProblem: { job: 'Validate Changes', action: 'rerun_requested' } });
-    assert.equal(rerunning, '**ProPR** 🔨 Waiting for CI · runner problem in Validate Changes, re-run requested · checks: 20 passed, 1 pending · updated Nov 19 03:40 UTC');
-    // Once the re-run passed, the pull request is ready and the note says nothing more.
-    assert.equal(line({ tasks: [], checks: { complete: true, passed: 21, failed: 0, pending: 0, failedNames: [] }, ciRunnerProblem: { job: 'Validate Changes', action: 'rerun_requested' } }),
+    assert.equal(runnerProblemText({ jobs: ['unit', 'e2e', 'lint'] }), 'unit, e2e +1 failed on what looks like a runner or network problem, re-run the failed jobs');
+    // Once the checks no longer fail (a re-run passed), the pull request is ready and the note says nothing more.
+    assert.equal(line({ tasks: [], checks: { complete: true, passed: 21, failed: 0, pending: 0, failedNames: [] }, ciRunnerProblem: { jobs: ['Validate Changes'] } }),
         '**ProPR** ✅ Ready · checks: 21 passed · updated Nov 19 03:40 UTC');
 });
 
@@ -111,22 +107,82 @@ test('the suspension fact is read from the active suspension of the current head
     assert.equal(await loadCiSuspensionFact(database, 'integry/propr', 3648, HEAD), null, 'ended: the row is gone');
 });
 
-test('an unreadable suspension or notice record leaves the note out instead of failing the status', async () => {
+test('an unreadable suspension record leaves the note out instead of failing the status', async () => {
     const broken = knexFactory({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
     try {
         assert.equal(await loadCiSuspensionFact(broken, 'integry/propr', 1, HEAD), null);
     } finally {
         await broken.destroy();
     }
-    assert.equal(await loadCiRunnerProblemFact({ get: async () => { throw new Error('down'); } }, 'integry/propr', 1, HEAD), null);
 });
 
-test('the runner-problem fact is read for the current head only', async () => {
-    const values = new Map([[ciInfrastructureNoticeKey('integry/propr', 3699), JSON.stringify({
-        headSha: HEAD, job: 'Validate Changes', runId: 7, runAttempt: 1, action: 'rerun_requested', at: 1,
-    })]]);
-    const redis = { get: async (key: string) => values.get(key) ?? null };
-    assert.deepEqual(await loadCiRunnerProblemFact(redis, 'integry/propr', 3699, HEAD), { job: 'Validate Changes', action: 'rerun_requested' });
-    assert.equal(await loadCiRunnerProblemFact(redis, 'integry/propr', 3699, 'pushed-since'), null);
-    assert.equal(await loadCiRunnerProblemFact(null, 'integry/propr', 3699, HEAD), null);
+const OWNER = 'integry';
+const REPO = 'propr';
+const MIRROR_STALL = { annotation_level: 'failure', path: '.github', message: 'Chromium install timed out on every attempt.' };
+const EXIT = { annotation_level: 'failure', path: '.github', message: 'Process completed with exit code 1.' };
+
+function failedRun(id: number, name: string, overrides: Record<string, unknown> = {}) {
+    return {
+        id, name, conclusion: 'failure', appSlug: 'github-actions',
+        detailsUrl: `https://github.com/integry/propr/actions/runs/44288180457/job/${id}`,
+        output: { title: null, summary: null, text: null, annotations_count: 2 },
+        ...overrides,
+    };
+}
+
+/** GitHub with per-check annotations and failed steps; records every route asked. */
+function fakeGitHub(byJob: Record<number, { annotations?: unknown[] | Error; steps?: Array<{ name: string; conclusion: string }> }>) {
+    const routes: string[] = [];
+    return {
+        routes,
+        request: async (route: string, params: Record<string, unknown>) => {
+            routes.push(route);
+            if (route === 'GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations') {
+                const annotations = byJob[Number(params.check_run_id)]?.annotations ?? [];
+                if (annotations instanceof Error) throw annotations;
+                return { data: annotations };
+            }
+            if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
+                return { data: { id: params.job_id, steps: byJob[Number(params.job_id)]?.steps ?? [] } };
+            }
+            throw new Error(`unexpected ${route}`);
+        },
+    };
+}
+
+const INSTALL_FAILED = [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run ./scripts/ci-install-chromium.sh', conclusion: 'failure' }];
+
+test('the runner-problem fact names the failed checks of the head that look like a runner problem, and asks GitHub for no re-run', async () => {
+    const github = fakeGitHub({
+        101: { annotations: [MIRROR_STALL, EXIT], steps: INSTALL_FAILED },
+        102: { annotations: [{ annotation_level: 'failure', path: 'test/a.test.ts', message: 'AssertionError: expected 1 to equal 2' }, EXIT], steps: [{ name: 'Run npm test', conclusion: 'failure' }] },
+    });
+    const fact = await loadCiRunnerProblemFact(github, OWNER, REPO, [failedRun(101, 'Validate Changes'), failedRun(102, 'unit')]);
+    assert.deepEqual(fact, { jobs: ['Validate Changes'] });
+    assert.equal(github.routes.some(route => !route.startsWith('GET ')), false, 'read-only: no re-run request');
+    // The text the status block renders from it names the job.
+    assert.ok(line({ tasks: [], checks: { complete: true, passed: 1, failed: 2, pending: 0, failedNames: ['Validate Changes', 'unit'] }, ciRunnerProblem: fact })
+        .includes('Validate Changes failed on what looks like a runner or network problem, re-run the failed jobs'));
+});
+
+test('a code failure, an unreadable check or no failed check leaves the runner-problem note out', async () => {
+    assert.equal(await loadCiRunnerProblemFact(fakeGitHub({}), OWNER, REPO, []), null);
+    // A network error in a test step is the code's.
+    assert.equal(await loadCiRunnerProblemFact(fakeGitHub({ 101: { annotations: [MIRROR_STALL], steps: [{ name: 'Run Playwright tests', conclusion: 'failure' }] } }),
+        OWNER, REPO, [failedRun(101, 'e2e')]), null);
+    // Unreadable annotations are no evidence.
+    assert.equal(await loadCiRunnerProblemFact(fakeGitHub({ 101: { annotations: new Error('Service Unavailable'), steps: INSTALL_FAILED } }),
+        OWNER, REPO, [failedRun(101, 'Validate Changes')]), null);
+    // No infrastructure signature: the job is not even read.
+    const quiet = fakeGitHub({ 101: { annotations: [EXIT], steps: INSTALL_FAILED } });
+    assert.equal(await loadCiRunnerProblemFact(quiet, OWNER, REPO, [failedRun(101, 'Validate Changes')]), null);
+    assert.equal(quiet.routes.includes('GET /repos/{owner}/{repo}/actions/jobs/{job_id}'), false);
+    // Checks of other apps have no Actions job; a broadly failing head is not read check by check.
+    const other = fakeGitHub({ 101: { annotations: [MIRROR_STALL], steps: INSTALL_FAILED } });
+    assert.equal(await loadCiRunnerProblemFact(other, OWNER, REPO, [failedRun(101, 'ci/external', { appSlug: 'circleci-checks' })]), null);
+    assert.deepEqual(other.routes, []);
+    const many = Array.from({ length: 6 }, (_, index) => failedRun(200 + index, `job-${index}`));
+    const broad = fakeGitHub({});
+    assert.equal(await loadCiRunnerProblemFact(broad, OWNER, REPO, many), null);
+    assert.deepEqual(broad.routes, []);
 });

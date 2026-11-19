@@ -1,13 +1,13 @@
 /**
  * Facts for what CI cannot say for itself: a follow-up's suspension of the
- * head's validation, and a runner-problem failure ProPR re-ran instead of
- * starting a code follow-up. Both are notes, not verdicts: an unreadable
- * record leaves the note out rather than failing the status read.
+ * head's validation, and failed checks of the head that look like a runner or
+ * network problem, for which ProPR starts no code follow-up. Both are notes,
+ * not verdicts: an unreadable record or check leaves the note out rather than
+ * failing the status read.
  */
 import type { Knex } from 'knex';
-import type { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
-import { ciInfrastructureNoticeKey, parseCiInfrastructureNotice } from '../../webhook/ciInfrastructureNotice.js';
+import { classifyFailedCheckRun, loadCheckRunAnnotationPage, type InfrastructureGitHub } from '../../webhook/ciFailureInfrastructureCheck.js';
 import type { PullRequestCiRunnerProblem, PullRequestCiSuspension } from './pullRequestStatus.js';
 
 /** Mirrors `PR_CI_SUSPENSIONS_TABLE` and `SUSPENSION_ACTIVE` in the worker's src/jobs/followupCiSuspensionStore.ts. */
@@ -50,17 +50,80 @@ export async function loadCiSuspensionFact(
     }
 }
 
-/** The runner-problem notice of the head (ciFailureInfrastructureRerun), if any. */
-export async function loadCiRunnerProblemFact(
-    redis: Pick<Redis, 'get'> | null | undefined, repository: string, prNumber: number, headSha: string,
-): Promise<PullRequestCiRunnerProblem | null> {
-    if (!redis) return null;
+/** A blocking check run of the head that failed, as the status read lists it (pullRequestStatusFacts). */
+export interface FailedStatusCheckRun {
+    id: number;
+    name: string;
+    conclusion: string;
+    detailsUrl: string | null;
+    /** The app that reported the check; only GitHub Actions jobs have steps to read. */
+    appSlug: string | null;
+    output: { title?: string | null; summary?: string | null; text?: string | null; annotations_count?: number | null } | null;
+}
+
+/** What the head's check run listing carries beyond the counts, for the runner-problem note. */
+export interface ListedCheckRunDetails {
+    id?: number;
+    name?: string;
+    status: string;
+    conclusion: string | null;
+    details_url?: string | null;
+    app?: { slug?: string | null } | null;
+    output?: FailedStatusCheckRun['output'];
+}
+
+/** The blocking check runs that failed, from the listed ones; runs without an id cannot be read further. */
+export function failedStatusCheckRuns(blockingRuns: readonly ListedCheckRunDetails[]): FailedStatusCheckRun[] {
+    return blockingRuns
+        .filter(run => run.status === 'completed' && typeof run.id === 'number'
+            && run.conclusion !== null && run.conclusion !== 'success' && run.conclusion !== 'skipped')
+        .map(run => ({
+            id: run.id as number, name: run.name || 'check run', conclusion: run.conclusion as string,
+            detailsUrl: run.details_url ?? null, appSlug: run.app?.slug ?? null, output: run.output ?? null,
+        }));
+}
+
+/**
+ * Failed checks classified per status read; more is a broadly broken head,
+ * not a runner problem worth reading every job for.
+ */
+const MAX_CLASSIFIED_FAILED_RUNS = 5;
+
+/** Whether one failed check of the head is infrastructure-only; any read failure says no. */
+async function isRunnerProblem(github: InfrastructureGitHub, owner: string, repo: string, run: FailedStatusCheckRun): Promise<boolean> {
+    let annotations;
     try {
-        const notice = parseCiInfrastructureNotice(await redis.get(ciInfrastructureNoticeKey(repository, prNumber)));
-        if (!notice || !sameSha(notice.headSha, headSha)) return null;
-        return { job: notice.job, action: notice.action };
+        annotations = await loadCheckRunAnnotationPage(github, { owner, repo, checkRunId: run.id, annotationsCount: run.output?.annotations_count });
     } catch (error) {
-        logger.debug({ repository, prNumber, error: (error as Error).message }, 'Could not read the runner-problem notice of a pull request');
+        logger.debug({ owner, repo, checkRunId: run.id, error: (error as Error).message }, 'Could not read check-run annotations for the runner-problem note');
+        return false;
+    }
+    const outputText = [run.output?.title, run.output?.summary, run.output?.text].filter(Boolean).join('\n');
+    const verdict = await classifyFailedCheckRun(github, {
+        owner, repo, checkRunId: run.id, state: run.conclusion, url: run.detailsUrl, outputText, annotations,
+    });
+    return verdict.infrastructure;
+}
+
+/**
+ * The failed checks of the current head that look like a runner or network
+ * problem (ciFailureInfrastructure), derived when the status is read: nothing
+ * is stored, so the note goes away as soon as those checks no longer fail on
+ * the head (a re-run passed, or a new push). Null when none, or when there
+ * are too many failed checks to read. Never throws.
+ */
+export async function loadCiRunnerProblemFact(
+    github: InfrastructureGitHub, owner: string, repo: string, failedRuns: readonly FailedStatusCheckRun[],
+): Promise<PullRequestCiRunnerProblem | null> {
+    const candidates = failedRuns.filter(run => (run.appSlug === null || run.appSlug === 'github-actions')
+        && (run.conclusion === 'failure' || run.conclusion === 'timed_out'));
+    if (candidates.length === 0 || candidates.length > MAX_CLASSIFIED_FAILED_RUNS) return null;
+    try {
+        const verdicts = await Promise.all(candidates.map(run => isRunnerProblem(github, owner, repo, run)));
+        const jobs = candidates.filter((_, index) => verdicts[index]).map(run => run.name);
+        return jobs.length > 0 ? { jobs } : null;
+    } catch (error) {
+        logger.debug({ owner, repo, error: (error as Error).message }, 'Could not classify the failed checks of a pull request');
         return null;
     }
 }

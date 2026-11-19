@@ -53,8 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the text goes away when the suspension ends. A CI failure whose evidence shows
   only a runner or infrastructure problem (runner shutdown or lost
   communication, or a network, mirror or registry error in a setup/install
-  step, with no test, type or lint failure) re-runs its failed jobs once
-  instead of starting a follow-up, and the status block names the job.
+  step, with no test, type or lint failure) no longer starts a follow-up;
+  instead the status block names the failed job, says it looks like a runner
+  or network problem and that re-running the failed jobs fixes it. ProPR does
+  not re-run the jobs itself.
 
 - **CI: a slow hosted apt mirror no longer fails the Chromium install**: when
   the runner's default mirror keeps the connection open but sends slowly, apt's
