@@ -298,7 +298,7 @@ test('Gemini 4 Hydrogen is a new Antigravity model with 1M limits and XHigh effo
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high', 'xhigh']);
     assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', `antigravity:${modelId}`), ['low', 'medium', 'high', 'xhigh']);
     // Hydrogen supersedes nothing: the other Antigravity models keep their levels.
-    for (const other of ANTIGRAVITY_MODELS.filter(candidate => candidate.id !== modelId && !candidate.id.includes('gpt-oss'))) {
+    for (const other of ANTIGRAVITY_MODELS.filter(candidate => candidate.id !== modelId && !candidate.id.includes('gpt-oss') && !candidate.id.includes('gemini-4-neon'))) {
         assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', other.id), ['low', 'medium', 'high'], other.id);
     }
     // Labels and aliases stay unique across the whole catalog.
@@ -306,7 +306,7 @@ test('Gemini 4 Hydrogen is a new Antigravity model with 1M limits and XHigh effo
     assert.strictEqual(ALL_MODELS.filter(candidate => candidate.shortAlias === model?.shortAlias).length, 1);
 });
 
-test('Antigravity compatibility routes give Gemini 4 Hydrogen, and only Hydrogen, an XHigh route', () => {
+test('Antigravity compatibility routes give Gemini 4 Hydrogen and Neon, and only those, an XHigh route', () => {
     const hydrogen = 'antigravity-gemini-4-hydrogen';
     for (const effort of ['low', 'medium', 'high', 'xhigh'] as const) {
         assert.deepStrictEqual(ANTIGRAVITY_COMPATIBILITY_ROUTES[`${hydrogen}-${effort}`], { model: hydrogen, effort });
@@ -315,12 +315,42 @@ test('Antigravity compatibility routes give Gemini 4 Hydrogen, and only Hydrogen
     }
     assert.strictEqual(currentAntigravityModel(`${hydrogen}-xhigh`), `${hydrogen}-xhigh`);
     assert.strictEqual(currentAntigravityModel(hydrogen), hydrogen);
-    for (const model of ANTIGRAVITY_MODELS.filter(candidate => candidate.id !== hydrogen)) {
+    const neon = 'antigravity-gemini-4-neon';
+    assert.deepStrictEqual(ANTIGRAVITY_COMPATIBILITY_ROUTES[`${neon}-xhigh`], { model: neon, effort: 'xhigh' });
+    for (const model of ANTIGRAVITY_MODELS.filter(candidate => candidate.id !== hydrogen && candidate.id !== neon)) {
         assert.strictEqual(ANTIGRAVITY_COMPATIBILITY_ROUTES[`${model.id}-xhigh`], undefined, model.id);
     }
     // A new model: no saved selection of another model is routed to Hydrogen.
     assert.ok(!Object.entries(ANTIGRAVITY_COMPATIBILITY_ROUTES).some(([id, route]) =>
         route.model === hydrogen && !id.startsWith(`${hydrogen}-`)));
+});
+
+test('Gemini 4 Neon is a new Antigravity model with 1M limits and XHigh effort', () => {
+    const modelId = 'antigravity-gemini-4-neon';
+    const model = MODEL_INFO_MAP[modelId];
+    assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
+    assert.ok(AGENT_DEFAULTS.antigravity.defaultModels.includes(modelId));
+    assert.strictEqual(model?.name, 'Antigravity Gemini 4 Neon');
+    assert.strictEqual(model?.shortName, 'Gemini 4 Neon');
+    assert.strictEqual(model?.githubLabel, 'llm-antigravity-neon');
+    assert.strictEqual(model?.shortAlias, 'neon');
+    assert.strictEqual(model?.openRouterId, 'google/gemini-4-neon');
+    // agy 1.5.12 is the first pinned CLI whose binary knows gemini-4-neon-*.
+    assert.strictEqual(model?.minAgentVersion, '1.5.12');
+    assert.strictEqual(model?.contextWindow, '1M');
+    assert.strictEqual(model?.maxTokens, 1_000_000);
+    assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', modelId), ['low', 'medium', 'high', 'xhigh']);
+    assert.deepStrictEqual(getReasoningLevelsForAgentType('antigravity', `antigravity:${modelId}`), ['low', 'medium', 'high', 'xhigh']);
+    for (const effort of ['low', 'medium', 'high', 'xhigh'] as const) {
+        assert.deepStrictEqual(ANTIGRAVITY_COMPATIBILITY_ROUTES[`${modelId}-${effort}`], { model: modelId, effort });
+        assert.strictEqual(ANTIGRAVITY_COMPATIBILITY_ALIASES[`antigravity-neon-${effort}`], `${modelId}-${effort}`);
+        assert.strictEqual(getModelInfoWithAntigravityCompatibility(`${modelId}-${effort}`), model);
+    }
+    // A new model: no saved selection of another model is routed to Neon.
+    assert.ok(!Object.entries(ANTIGRAVITY_COMPATIBILITY_ROUTES).some(([id, route]) =>
+        route.model === modelId && !id.startsWith(`${modelId}-`)));
+    assert.strictEqual(ALL_MODELS.filter(candidate => candidate.githubLabel === model?.githubLabel).length, 1);
+    assert.strictEqual(ALL_MODELS.filter(candidate => candidate.shortAlias === model?.shortAlias).length, 1);
 });
 
 test('long model labels use the configured agent alias', () => {
@@ -377,6 +407,7 @@ test('Antigravity offers one model entry with separate supported reasoning choic
         ['antigravity-gemini-3.8-flash', 'flash38'],
         ['antigravity-gemini-4-argon', 'argon'],
         ['antigravity-gemini-4-hydrogen', 'hydrogen'],
+        ['antigravity-gemini-4-neon', 'neon'],
         ['antigravity-claude-sonnet-5.5', 'sonnet55'],
         ['antigravity-claude-opus-5.5', 'opus55'],
         ['antigravity-gpt-oss-120b', 'gpt-oss-120b'],

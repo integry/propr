@@ -23,9 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Google's linux_amd64 install manifest. It retries requests automatically
     after a brief connection problem instead of ending the turn. The `-p`,
     `--print-timeout` and exit-code behaviour ProPR relies on is unchanged.
-    It adds Gemini 4 Neon (Low, Medium, High and XHigh) only for accounts
-    that connect with a `GEMINI_API_KEY`; like Gemini 4 Carbon, it is not
-    added to the catalog because ProPR signs in with `agy login`.
+    It adds Gemini 4 Neon (see below).
+- **Gemini 4 Neon (Antigravity)**: Google's new Gemini 4 model is in the
+  Antigravity catalog as `antigravity-gemini-4-neon` (label
+  `llm-antigravity-neon`, alias `neon`, 1M context). Like Gemini 4 Hydrogen it
+  offers `xhigh` effort, launched as `gemini-4-neon-xhigh`; low, medium and
+  high run as `gemini-4-neon-<effort>`. Usage is priced at $3/M input and
+  $15/M output. It needs Antigravity CLI 1.5.12 and supersedes no model. The
+  1.5.12 release notes list it only for `GEMINI_API_KEY` accounts, but
+  `agy login` accounts on Google AI Pro also have it.
 - **Every GitHub release starts with a readable summary**: the release body is
   now the checked-in `release-notes/v<version>.md`, with **Highlights** and
   **Upgrade notes** sections, followed by GitHub's generated list of merged
