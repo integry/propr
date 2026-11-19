@@ -7,20 +7,32 @@ import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCancellationProvenance.js';
+import { loadAggregateFold, type AggregateFold } from './ciFailureAggregateFold.js';
 import {
+    appendAggregateToCiFailureComment,
     appendCheckToCiFailureComment,
     buildCiFailureHeadMarker,
     editCiFailureComment,
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
+import {
+    buildAnnotationExcerpt,
+    buildAggregateConsequenceLine,
+    buildCheckSection,
+    buildCommentContent,
+    checkTitle,
+    joinUsefulText,
+    type ReportedCheck,
+} from './ciFailureCommentText.js';
 import { isInfrastructureOnlyFailure } from './ciFailureInfrastructureCheck.js';
+
+export { buildAnnotationExcerpt, buildAggregateConsequenceLine } from './ciFailureCommentText.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
 const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-(?:followup key="[a-f0-9]{64}"|head sha="[^"]*") -->/gu;
 const DEDUPE_TTL_SECONDS = 30 * 24 * 60 * 60;
-const MAX_EXCERPT_LENGTH = 1800;
 
 const FAILING_CHECK_RUN_CONCLUSIONS = new Set([
     'action_required',
@@ -164,41 +176,35 @@ export function buildCiFailureFollowupComment(
     failureExcerpt: string | undefined,
     dedupeKey = buildCiFailureDedupeKey(request),
 ): string {
-    const { evidence } = request;
-    const shortSha = evidence.sha.slice(0, 12);
-    const commitUrl = `https://github.com/${encodeURIComponent(request.owner)}/${encodeURIComponent(request.repo)}/commit/${encodeURIComponent(evidence.sha)}`;
-    const [checkLine, resultLine, ...evidenceLines] = buildCheckSection(evidence, failureExcerpt);
-
     return [
-        `CI failed: ${checkTitle(evidence)}`,
-        '',
-        'Please investigate and fix this CI failure.',
-        '',
-        checkLine,
-        resultLine,
-        `- Commit: [\`${shortSha}\`](${commitUrl}) (\`${escapeInlineCode(evidence.sha)}\`)`,
-        ...evidenceLines,
+        ...buildCommentContent(request, [{ evidence: request.evidence, excerpt: failureExcerpt }]),
         '',
         buildCiFailureFollowupMarker(dedupeKey),
-        buildCiFailureHeadMarker(evidence.sha),
+        buildCiFailureHeadMarker(request.evidence.sha),
     ].join('\n');
 }
 
-function checkTitle(evidence: CiFailureEvidence): string {
-    return `**${escapeInlineMarkdown(evidence.name)}**`;
-}
-
-/** One check's details and evidence; the commit is shared by every check of a comment. */
-function buildCheckSection(evidence: CiFailureEvidence, failureExcerpt: string | undefined): string[] {
-    const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
+/**
+ * The comment for a failed aggregate job whose same-head comment does not
+ * exist yet: the needed jobs that made it fail are listed as the failures, and
+ * the aggregate once, as their consequence. Their key markers are included, so
+ * their own deliveries find themselves already reported.
+ */
+export function buildFoldedCiFailureComment(
+    request: CiFailureFollowupRequest,
+    fold: AggregateFold,
+    causes: ReportedCheck[],
+    dedupeKey = buildCiFailureDedupeKey(request),
+): string {
     return [
-        `- Check: \`${escapeInlineCode(evidence.name)}\``,
-        `- Result: \`${escapeInlineCode(evidence.state)}\``,
-        `- Run: [View CI failure](${evidence.url})`,
+        ...buildCommentContent(request, causes),
         '',
-        '**Failure evidence**',
-        ...excerpt.split('\n').map(line => `> ${line || ' '}`),
-    ];
+        buildAggregateConsequenceLine(fold),
+        '',
+        buildCiFailureFollowupMarker(dedupeKey),
+        ...causes.map(cause => buildCiFailureFollowupMarker(buildCiFailureDedupeKey({ ...request, evidence: cause.evidence }))),
+        buildCiFailureHeadMarker(request.evidence.sha),
+    ].join('\n');
 }
 
 /**
@@ -242,6 +248,9 @@ export async function postCiFailureFollowup(
         return { posted: false, reason: 'infrastructure' };
     }
     const annotationExcerpt = annotations ? buildAnnotationExcerpt(annotations) : undefined;
+    const fold = request.evidence.kind === 'check_run'
+        ? await loadAggregateFold(octokit, { ...request, url: request.evidence.url, state: request.evidence.state }, new Map(), log)
+        : null;
     let claimed = false;
 
     try {
@@ -252,7 +261,7 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt });
+        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold });
     } catch (error) {
         if (claimed) {
             try {
@@ -267,13 +276,15 @@ export async function postCiFailureFollowup(
 
 /** Lists a claimed failure on the same head's comment, or posts a new one. */
 async function reportClaimedFailure(
-    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt }: {
+    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt, fold }: {
         octokit: CiFailureOctokit;
         request: CiFailureFollowupRequest;
         dedupeKey: string;
         correlationId: string;
         log: ReturnType<typeof logger.withCorrelation>;
         annotationExcerpt: string | undefined;
+        /** The needed jobs this failed aggregate only reports; it is then mentioned as their consequence. */
+        fold: AggregateFold | null;
     },
 ): Promise<CiFailureFollowupResult> {
     let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
@@ -291,16 +302,21 @@ async function reportClaimedFailure(
     }
 
     if (scan.sameHead) {
-        const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
-            title: checkTitle(request.evidence),
-            section: buildCheckSection(request.evidence, annotationExcerpt),
-            marker: buildCiFailureFollowupMarker(dedupeKey),
-        });
+        const marker = buildCiFailureFollowupMarker(dedupeKey);
+        const updated = fold
+            ? appendAggregateToCiFailureComment(scan.sameHead.body, { line: buildAggregateConsequenceLine(fold), marker })
+            : appendCheckToCiFailureComment(scan.sameHead.body, {
+                title: checkTitle(request.evidence),
+                section: buildCheckSection(request.evidence, annotationExcerpt),
+                marker,
+            });
         if (await editCiFailureComment(octokit, { ...request, commentId: scan.sameHead.id, body: updated }, log)) {
             return { posted: false, reason: 'updated', body: updated };
         }
     }
-    const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
+    const body = fold
+        ? buildFoldedCiFailureComment(request, fold, await loadCauseChecks(octokit, request, fold, log), dedupeKey)
+        : buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
 
     await withRetry(
         () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -346,6 +362,47 @@ async function isCancellationInduced(
         log.warn({ error: (error as Error).message }, 'Could not determine whether a failed check run was cancellation-induced; posting follow-up');
         return false;
     }
+}
+
+/**
+ * Each needed job's check run and annotations, as its own delivery would
+ * report them; a check run that cannot be read keeps the job's listing.
+ */
+async function loadCauseChecks(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    fold: AggregateFold,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<ReportedCheck[]> {
+    return await Promise.all(fold.causes.map(async (cause): Promise<ReportedCheck> => {
+        let evidence: CiFailureEvidence = {
+            kind: 'check_run', name: cause.name, state: cause.conclusion ?? 'failure', sha: request.evidence.sha,
+            url: cause.url || request.evidence.url, source: `check-run:${cause.name}`, checkRunId: cause.id,
+        };
+        try {
+            // An Actions job's check run id is its job id.
+            const { data } = await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}', {
+                owner: request.owner, repo: request.repo, check_run_id: cause.id,
+            });
+            evidence = checkRunEvidence(data, evidence);
+        } catch (error) {
+            log.warn({ checkRunId: cause.id, error: (error as Error).message }, 'Could not read a failed needed job; listing it without its output');
+        }
+        const annotations = await loadAnnotations(octokit, { ...request, evidence }, log);
+        return { evidence, excerpt: annotations ? buildAnnotationExcerpt(annotations) : undefined };
+    }));
+}
+
+function checkRunEvidence(data: unknown, listed: CiFailureEvidence): CiFailureEvidence {
+    if (!isRecord(data)) return listed;
+    const output = isRecord(data.output) ? data.output : {};
+    const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+    return {
+        ...listed,
+        url: text(data.details_url) || text(data.html_url) || listed.url,
+        fallbackExcerpt: joinUsefulText([text(output.title), text(output.summary), text(output.text)]) || undefined,
+        annotationsCount: typeof output.annotations_count === 'number' ? output.annotations_count : undefined,
+    };
 }
 
 async function scanExistingComments(
@@ -397,53 +454,6 @@ async function loadCheckRunAnnotations(
         ? await octokit.paginate('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)
         : (await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)).data;
     return Array.isArray(data) ? data.filter(isRecord) as CiFailureAnnotation[] : [];
-}
-
-export function buildAnnotationExcerpt(annotations: CiFailureAnnotation[]): string | undefined {
-    const usefulAnnotations = [...annotations]
-        .sort((left, right) => annotationPriority(left) - annotationPriority(right))
-        .filter(annotation => annotation.message || annotation.title || annotation.raw_details)
-        .slice(0, 3);
-    if (usefulAnnotations.length === 0) return undefined;
-
-    return truncate(usefulAnnotations.map(annotation => {
-        const location = annotation.path
-            ? `${annotation.path}${formatAnnotationLines(annotation.start_line, annotation.end_line)}`
-            : '';
-        return joinUsefulText([
-            joinUsefulText([location, annotation.title], ' — '),
-            annotation.message,
-            annotation.raw_details,
-        ]);
-    }).filter(Boolean).join('\n\n'));
-}
-
-function annotationPriority(annotation: CiFailureAnnotation): number {
-    if (annotation.annotation_level === 'failure') return 0;
-    if (annotation.annotation_level === 'warning') return 1;
-    return 2;
-}
-
-function formatAnnotationLines(startLine?: number | null, endLine?: number | null): string {
-    if (startLine == null) return '';
-    return endLine != null && endLine !== startLine ? `:${startLine}-${endLine}` : `:${startLine}`;
-}
-
-function joinUsefulText(values: Array<string | null | undefined>, separator = '\n'): string {
-    return values.map(value => value?.trim()).filter((value): value is string => Boolean(value)).join(separator);
-}
-
-function truncate(value: string): string {
-    if (value.length <= MAX_EXCERPT_LENGTH) return value;
-    return `${value.slice(0, MAX_EXCERPT_LENGTH - 1).trimEnd()}…`;
-}
-
-function escapeInlineCode(value: string): string {
-    return value.replace(/([\\`])/gu, '\\$1');
-}
-
-function escapeInlineMarkdown(value: string): string {
-    return value.replace(/([\\*_`[\]])/gu, '\\$1');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

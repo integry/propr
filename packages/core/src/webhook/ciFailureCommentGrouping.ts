@@ -79,6 +79,19 @@ export function appendCheckToCiFailureComment(body: string, check: { title: stri
 }
 
 /**
+ * Mentions a failed aggregate job on an existing same-head comment, as a
+ * consequence of the needed jobs it reports, without an evidence block of its
+ * own. The title is unchanged; its key marker joins the hidden markers, so
+ * redeliveries of it stay deduplicated.
+ */
+export function appendAggregateToCiFailureComment(body: string, aggregate: { line: string; marker: string }): string {
+    const markerAt = body.indexOf(MARKER_BLOCK_START);
+    const content = markerAt === -1 ? body.trimEnd() : body.slice(0, markerAt).trimEnd();
+    const markers = markerAt === -1 ? '' : body.slice(markerAt + 1).trimEnd();
+    return [content, '', aggregate.line, '', [markers, aggregate.marker].filter(Boolean).join('\n')].join('\n');
+}
+
+/**
  * Edits the head's existing comment. Editing a ProPR CI-failure comment starts
  * no follow-up of its own (one was already requested for this commit). False
  * when the edit failed; the caller then posts a new comment instead.
