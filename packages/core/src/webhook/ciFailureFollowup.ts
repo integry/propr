@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { CheckRunEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { getBotUsername, isAutoCiFollowupEnabledForRepository } from '../daemon/configLoader.js';
+import { getBotUsername, getNonBlockingChecksForRepository, isAutoCiFollowupEnabledForRepository } from '../daemon/configLoader.js';
 import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
@@ -14,12 +14,17 @@ import {
     scanCiFailureComments,
     type CiFailureCommentScan,
 } from './ciFailureCommentGrouping.js';
+import { buildAnnotationExcerpt, buildCheckSection, buildCommentContent, checkTitle, joinUsefulText } from './ciFailureCommentText.js';
+import { isInfrastructureOnlyFailure } from './ciFailureInfrastructureCheck.js';
+import { loadFailedJobDependencies } from './ciFailureJobDependencies.js';
+import { isNonBlockingCheck } from './nonBlockingChecks.js';
 import { isActedCheckRunAction, isFailureStatusState } from './webhookEventGates.js';
+
+export { buildAnnotationExcerpt } from './ciFailureCommentText.js';
 
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
 const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-(?:followup key="[a-f0-9]{64}"|head sha="[^"]*") -->/gu;
 const DEDUPE_TTL_SECONDS = 30 * 24 * 60 * 60;
-const MAX_EXCERPT_LENGTH = 1800;
 
 const FAILING_CHECK_RUN_CONCLUSIONS = new Set([
     'action_required',
@@ -69,12 +74,18 @@ export interface CiFailureFollowupDependencies {
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
+    /** The repository's nonBlockingChecks patterns; a matching failed job is never named in a dependency line. */
+    loadNonBlockingChecks?: (owner: string, repo: string) => Promise<string[]>;
 }
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    /** `updated`: listed on the same head's comment. */
-    reason: 'posted' | 'updated' | 'disabled' | 'duplicate' | 'cancellation_induced';
+    /**
+     * `updated`: listed on the same head's comment. `infrastructure`: a runner
+     * or network problem the code cannot fix; no code follow-up is started,
+     * and the pull request's status block says to re-run the failed jobs.
+     */
+    reason: 'posted' | 'updated' | 'disabled' | 'duplicate' | 'cancellation_induced' | 'infrastructure';
     body?: string;
 }
 
@@ -158,42 +169,14 @@ export function buildCiFailureFollowupComment(
     request: CiFailureFollowupRequest,
     failureExcerpt: string | undefined,
     dedupeKey = buildCiFailureDedupeKey(request),
+    dependsOn: readonly string[] = [],
 ): string {
-    const { evidence } = request;
-    const shortSha = evidence.sha.slice(0, 12);
-    const commitUrl = `https://github.com/${encodeURIComponent(request.owner)}/${encodeURIComponent(request.repo)}/commit/${encodeURIComponent(evidence.sha)}`;
-    const [checkLine, resultLine, ...evidenceLines] = buildCheckSection(evidence, failureExcerpt);
-
     return [
-        `CI failed: ${checkTitle(evidence)}`,
-        '',
-        'Please investigate and fix this CI failure.',
-        '',
-        checkLine,
-        resultLine,
-        `- Commit: [\`${shortSha}\`](${commitUrl}) (\`${escapeInlineCode(evidence.sha)}\`)`,
-        ...evidenceLines,
+        ...buildCommentContent(request, [{ evidence: request.evidence, excerpt: failureExcerpt, dependsOn }]),
         '',
         buildCiFailureFollowupMarker(dedupeKey),
-        buildCiFailureHeadMarker(evidence.sha),
+        buildCiFailureHeadMarker(request.evidence.sha),
     ].join('\n');
-}
-
-function checkTitle(evidence: CiFailureEvidence): string {
-    return `**${escapeInlineMarkdown(evidence.name)}**`;
-}
-
-/** One check's details and evidence; the commit is shared by every check of a comment. */
-function buildCheckSection(evidence: CiFailureEvidence, failureExcerpt: string | undefined): string[] {
-    const excerpt = truncate(failureExcerpt?.trim() || evidence.fallbackExcerpt?.trim() || 'No failure output was provided by the CI service.');
-    return [
-        `- Check: \`${escapeInlineCode(evidence.name)}\``,
-        `- Result: \`${escapeInlineCode(evidence.state)}\``,
-        `- Run: [View CI failure](${evidence.url})`,
-        '',
-        '**Failure evidence**',
-        ...excerpt.split('\n').map(line => `> ${line || ' '}`),
-    ];
 }
 
 /**
@@ -232,6 +215,12 @@ export async function postCiFailureFollowup(
     if (await isCancellationInduced(octokit, request, dependencies, log)) {
         return { posted: false, reason: 'cancellation_induced' };
     }
+    const annotations = await loadAnnotations(octokit, request, log);
+    if (await isInfrastructureOnlyFailure(octokit, request, annotations, log)) {
+        return { posted: false, reason: 'infrastructure' };
+    }
+    const annotationExcerpt = annotations ? buildAnnotationExcerpt(annotations) : undefined;
+    const dependsOn = await loadReportedDependencies(octokit, request, dependencies, log);
     let claimed = false;
 
     try {
@@ -242,7 +231,7 @@ export async function postCiFailureFollowup(
         }
         claimed = true;
 
-        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log });
+        return await reportClaimedFailure({ octokit, request, dedupeKey, correlationId, log, annotationExcerpt, dependsOn });
     } catch (error) {
         if (claimed) {
             try {
@@ -257,12 +246,15 @@ export async function postCiFailureFollowup(
 
 /** Lists a claimed failure on the same head's comment, or posts a new one. */
 async function reportClaimedFailure(
-    { octokit, request, dedupeKey, correlationId, log }: {
+    { octokit, request, dedupeKey, correlationId, log, annotationExcerpt, dependsOn }: {
         octokit: CiFailureOctokit;
         request: CiFailureFollowupRequest;
         dedupeKey: string;
         correlationId: string;
         log: ReturnType<typeof logger.withCorrelation>;
+        annotationExcerpt: string | undefined;
+        /** The failed jobs of the same run this job needs; named in its section's dependency line. */
+        dependsOn: readonly string[];
     },
 ): Promise<CiFailureFollowupResult> {
     let scan: CiFailureCommentScan = { duplicate: false, sameHead: null };
@@ -279,18 +271,17 @@ async function reportClaimedFailure(
         return { posted: false, reason: 'duplicate' };
     }
 
-    const annotationExcerpt = await loadAnnotationExcerpt(octokit, request, log);
     if (scan.sameHead) {
         const updated = appendCheckToCiFailureComment(scan.sameHead.body, {
             title: checkTitle(request.evidence),
-            section: buildCheckSection(request.evidence, annotationExcerpt),
+            section: buildCheckSection({ evidence: request.evidence, excerpt: annotationExcerpt, dependsOn }),
             marker: buildCiFailureFollowupMarker(dedupeKey),
         });
         if (await editCiFailureComment(octokit, { ...request, commentId: scan.sameHead.id, body: updated }, log)) {
             return { posted: false, reason: 'updated', body: updated };
         }
     }
-    const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey);
+    const body = buildCiFailureFollowupComment(request, annotationExcerpt, dedupeKey, dependsOn);
 
     await withRetry(
         () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -305,6 +296,67 @@ async function reportClaimedFailure(
 
     log.info({ ...failureLogContext(request), dedupeKey }, 'Posted automatic failed-CI follow-up comment');
     return { posted: true, reason: 'posted', body };
+}
+
+/**
+ * The failed jobs of the same workflow run that this failed job directly
+ * needs, for its dependency line. A job the repository marked non-blocking is
+ * left out: its own failure is not reported. Empty whenever this is not
+ * certain (see ciFailureJobDependencies), so no line is added.
+ */
+async function loadReportedDependencies(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    dependencies: CiFailureFollowupDependencies,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<string[]> {
+    if (request.evidence.kind !== 'check_run') return [];
+    const related = await loadFailedJobDependencies(octokit, { owner: request.owner, repo: request.repo, url: request.evidence.url }, log);
+    if (!related) return [];
+    try {
+        const nonBlocking = await (dependencies.loadNonBlockingChecks ?? getNonBlockingChecksForRepository)(request.owner, request.repo);
+        return related.dependsOn.filter(name => !isNonBlockingCheck(name, nonBlocking));
+    } catch (error) {
+        log.debug({ error: (error as Error).message }, 'Could not read the non-blocking checks; adding no dependency line');
+        return [];
+    }
+}
+
+async function loadAnnotations(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<CiFailureAnnotation[] | undefined> {
+    if (request.evidence.kind !== 'check_run' || request.evidence.checkRunId == null) return undefined;
+    try {
+        return await loadCheckRunAnnotations(octokit, request);
+    } catch (error) {
+        // Output summaries are carried in the webhook and remain useful
+        // when the annotations endpoint is temporarily unavailable.
+        log.warn({ error: (error as Error).message }, 'Could not load check-run annotations; using webhook output instead');
+        return undefined;
+    }
+}
+
+async function loadCheckRunAnnotations(
+    octokit: CiFailureOctokit,
+    request: CiFailureFollowupRequest,
+): Promise<CiFailureAnnotation[]> {
+    if ((request.evidence.annotationsCount ?? 0) <= 0) return [];
+    const parameters = {
+        owner: request.owner,
+        repo: request.repo,
+        check_run_id: request.evidence.checkRunId as number,
+        per_page: 100,
+    };
+    const data = octokit.paginate
+        ? await octokit.paginate('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)
+        : (await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)).data;
+    return Array.isArray(data) ? data.filter(isRecord) as CiFailureAnnotation[] : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
 }
 
 /**
@@ -354,90 +406,6 @@ async function scanExistingComments(
         [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]'].filter((name): name is string => Boolean(name)),
     );
     return scanCiFailureComments(comments, { dedupeKey, sha: request.evidence.sha, botUsernames });
-}
-
-async function loadAnnotationExcerpt(
-    octokit: CiFailureOctokit,
-    request: CiFailureFollowupRequest,
-    log: ReturnType<typeof logger.withCorrelation>,
-): Promise<string | undefined> {
-    if (request.evidence.kind !== 'check_run' || request.evidence.checkRunId == null) return undefined;
-    try {
-        return buildAnnotationExcerpt(await loadCheckRunAnnotations(octokit, request));
-    } catch (error) {
-        // Output summaries are carried in the webhook and remain useful
-        // when the annotations endpoint is temporarily unavailable.
-        log.warn({ error: (error as Error).message }, 'Could not load check-run annotations; using webhook output instead');
-        return undefined;
-    }
-}
-
-async function loadCheckRunAnnotations(
-    octokit: CiFailureOctokit,
-    request: CiFailureFollowupRequest,
-): Promise<CiFailureAnnotation[]> {
-    if ((request.evidence.annotationsCount ?? 0) <= 0) return [];
-    const parameters = {
-        owner: request.owner,
-        repo: request.repo,
-        check_run_id: request.evidence.checkRunId as number,
-        per_page: 100,
-    };
-    const data = octokit.paginate
-        ? await octokit.paginate('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)
-        : (await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', parameters)).data;
-    return Array.isArray(data) ? data.filter(isRecord) as CiFailureAnnotation[] : [];
-}
-
-export function buildAnnotationExcerpt(annotations: CiFailureAnnotation[]): string | undefined {
-    const usefulAnnotations = [...annotations]
-        .sort((left, right) => annotationPriority(left) - annotationPriority(right))
-        .filter(annotation => annotation.message || annotation.title || annotation.raw_details)
-        .slice(0, 3);
-    if (usefulAnnotations.length === 0) return undefined;
-
-    return truncate(usefulAnnotations.map(annotation => {
-        const location = annotation.path
-            ? `${annotation.path}${formatAnnotationLines(annotation.start_line, annotation.end_line)}`
-            : '';
-        return joinUsefulText([
-            joinUsefulText([location, annotation.title], ' — '),
-            annotation.message,
-            annotation.raw_details,
-        ]);
-    }).filter(Boolean).join('\n\n'));
-}
-
-function annotationPriority(annotation: CiFailureAnnotation): number {
-    if (annotation.annotation_level === 'failure') return 0;
-    if (annotation.annotation_level === 'warning') return 1;
-    return 2;
-}
-
-function formatAnnotationLines(startLine?: number | null, endLine?: number | null): string {
-    if (startLine == null) return '';
-    return endLine != null && endLine !== startLine ? `:${startLine}-${endLine}` : `:${startLine}`;
-}
-
-function joinUsefulText(values: Array<string | null | undefined>, separator = '\n'): string {
-    return values.map(value => value?.trim()).filter((value): value is string => Boolean(value)).join(separator);
-}
-
-function truncate(value: string): string {
-    if (value.length <= MAX_EXCERPT_LENGTH) return value;
-    return `${value.slice(0, MAX_EXCERPT_LENGTH - 1).trimEnd()}…`;
-}
-
-function escapeInlineCode(value: string): string {
-    return value.replace(/([\\`])/gu, '\\$1');
-}
-
-function escapeInlineMarkdown(value: string): string {
-    return value.replace(/([\\*_`[\]])/gu, '\\$1');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null;
 }
 
 function failureLogContext(request: CiFailureFollowupRequest): Record<string, unknown> {

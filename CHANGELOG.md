@@ -114,8 +114,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   free-model catalog. Saved selections, the `glm53-flash-free` alias and the
   `llm-opencode-glm53-flash-free` label now run on DeepSeek V4.1 Flash Free,
   and a saved default moves there when ProPR starts.
+- **Vendored picomatch builds**: GitHub withdrew advisory GHSA-fc5q-39xc-vjpf
+  on 2026-11-18, and the picomatch maintainers do not treat it as a security
+  issue. The patched builds that 0.9.2 added under `vendor/` because the
+  advisory had no fixed release are removed, along with their package
+  overrides and checks. ProPR installs upstream picomatch from the npm registry
+  again (4.0.7, and 2.3.2 for `anymatch`, `micromatch` and `readdirp`). The
+  vendored `braces` build is unchanged.
 
 ### Fixed
+
+- **Follow-up CI suspension is visible on the pull request, and runner problems
+  no longer start a code follow-up**: while a follow-up suspends validation, the
+  PR's status block says CI is suspended until the follow-up finishes, that
+  re-running checks before then has no effect, and how many runs it cancelled;
+  the text goes away when the suspension ends. A CI failure whose evidence shows
+  only a runner or infrastructure problem (runner shutdown or lost
+  communication, or a network, mirror or registry error in a setup/install
+  step, with no test, type or lint failure) no longer starts a follow-up;
+  instead the status block names the failed job, says it looks like a runner
+  or network problem and that re-running the failed jobs fixes it. ProPR does
+  not re-run the jobs itself.
+
+- **CI-failure comment names the failed jobs an aggregate job depends on**:
+  with **Auto CI follow-up** on, a failed GitHub Actions job that directly
+  `needs` jobs that also failed in the same workflow run (for example a
+  `Run Full Test Suite` gate over a failed `Full Test Suite Shard 3/4`) now
+  gets the line "Depends on the failed job(s): <names>. It may have failed
+  only because they did; check them first." in its section, so the follow-up
+  agent looks at those jobs first. Every failed job still keeps its own
+  evidence section; nothing is folded, dropped or reordered, and sections stay
+  in the order the checks were reported. ProPR reads only the job names and
+  `needs` of the workflow file at the failing commit, never what the steps
+  run. When the workflow file cannot be read or parsed, or a job name does not
+  map to exactly one job, no line is added.
 
 - **CI: a slow hosted apt mirror no longer fails the Chromium install**: when
   the runner's default mirror keeps the connection open but sends slowly, apt's
