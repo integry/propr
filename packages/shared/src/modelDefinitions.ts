@@ -96,6 +96,9 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   // Gemini 4 Neon ships in Antigravity CLI 1.5.12 as gemini-4-neon-{low,medium,high,xhigh};
   // `agy login` Google AI Pro accounts list it in /model.
   { id: 'antigravity-gemini-4-neon', name: 'Antigravity Gemini 4 Neon', shortName: 'Gemini 4 Neon', shortAlias: 'neon', githubLabel: 'llm-antigravity-neon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-neon', minAgentVersion: '1.5.12' },
+  // Gemini 4 Carbon ships in Antigravity CLI 1.5.8 as gemini-4-carbon-{low,medium,high};
+  // `agy login` lists it for Google AI Ultra subscribers only.
+  { id: 'antigravity-gemini-4-carbon', name: 'Antigravity Gemini 4 Carbon', shortName: 'Gemini 4 Carbon', shortAlias: 'carbon', githubLabel: 'llm-antigravity-carbon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-carbon', minAgentVersion: '1.5.8' },
   { id: 'antigravity-claude-sonnet-5.5', name: 'Antigravity Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-antigravity-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5' },
   { id: 'antigravity-claude-opus-5.5', name: 'Antigravity Claude Opus 5.5', shortName: 'Claude Opus 5.5', shortAlias: 'opus55', githubLabel: 'llm-antigravity-opus55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5.5' },
   { id: 'antigravity-gpt-oss-120b', name: 'Antigravity GPT-OSS 120B', shortName: 'GPT-OSS 120B', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },

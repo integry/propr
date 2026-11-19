@@ -168,13 +168,14 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 | Gemini 4 Argon | `llm-antigravity-argon` |
 | Gemini 4 Hydrogen | `llm-antigravity-hydrogen` |
 | Gemini 4 Neon | `llm-antigravity-neon` |
+| Gemini 4 Carbon | `llm-antigravity-carbon` |
 | Claude Sonnet 5.5 | `llm-antigravity-sonnet55` |
 | Claude Opus 5.5 | `llm-antigravity-opus55` |
 | GPT-OSS 120B | `llm-antigravity-gpt-oss-120b` |
 
-Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5, Gemini 4 Argon, and Gemini Flash support low, medium, and high; Gemini 4 Hydrogen and Gemini 4 Neon also support xhigh (`level-xhigh`); GPT-OSS always uses medium. A higher level than a model supports runs at the closest supported level below it.
+Each model has one catalog entry and base label. Select reasoning effort separately using a per-model override in AI Agents, an issue label such as `level-low`, `level-medium`, or `level-high`, or the system reasoning preference. Explicit run / label selections take precedence over per-model overrides; otherwise the closest supported effort to the system preference is used. Claude 5.5, Gemini 4 Argon, Gemini 4 Carbon, and Gemini Flash support low, medium, and high; Gemini 4 Hydrogen and Gemini 4 Neon also support xhigh (`level-xhigh`); GPT-OSS always uses medium. A higher level than a model supports runs at the closest supported level below it.
 
-Antigravity CLI 1.4.0 no longer offers Gemini 3.1 Pro and runs Gemini 4 Argon in its place. ProPR does the same: agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, and the old Pro label and `pro` alias select Gemini 4 Argon.
+Antigravity CLI 1.4.0 no longer offers Gemini 3.1 Pro and runs Gemini 4 Argon in its place. ProPR does the same: agents that list Gemini 3.1 Pro switch to Gemini 4 Argon on startup, and the old Pro label and `pro` alias select Gemini 4 Argon. Gemini 4 Argon is available to `agy login` accounts on a Google AI Pro subscription.
 
 {/* Gemini 4 Hydrogen IDs from the agy 1.5.8 binary; pricing from OpenRouter google/gemini-4-hydrogen, checked 2026-11-13. */}
 Gemini 4 Hydrogen, the fast member of the Gemini 4 family, needs Antigravity CLI 1.5.8 or later. It is a new model and replaces none of the others; ProPR prices it at $1.50 per million input tokens and $7.50 per million output tokens. The 1.5.8 release notes list it for Gemini API key (`GEMINI_API_KEY`), Application Default Credentials and enterprise gateway sign-ins; Google AI Pro and Ultra subscriptions are reported to include it, but this hasn't been confirmed for an `agy login` account. If `agy models` on your account does not list `gemini-4-hydrogen-*`, remove Gemini 4 Hydrogen from the agent's models.
@@ -182,7 +183,8 @@ Gemini 4 Hydrogen, the fast member of the Gemini 4 family, needs Antigravity CLI
 {/* Gemini 4 Neon IDs from the agy 1.5.12 binary; pricing from OpenRouter google/gemini-4-neon, checked 2026-11-19. */}
 Gemini 4 Neon (`gemini-4-neon-low`, `-medium`, `-high` and `-xhigh`) needs Antigravity CLI 1.5.12 or later. It is a new model and replaces none of the others; ProPR prices it at $3 per million input tokens and $15 per million output tokens. The 1.5.12 release notes list it only for Gemini API key (`GEMINI_API_KEY`) accounts, but `agy login` accounts on a Google AI Pro subscription also have it in the `/model` list, so it works with the sign-in set up above.
 
-Gemini 4 Carbon is not in the catalog. Antigravity CLI 1.5.8 offers it only to accounts that connect with a Gemini API key (`GEMINI_API_KEY`) or sign in with Application Default Credentials (`AGY_ADC_AUTH`), and the setup above signs in with `agy login`.
+{/* Gemini 4 Carbon IDs from the agy 1.5.8 and 1.5.12 binaries; pricing from OpenRouter google/gemini-4-carbon, checked 2026-11-19. */}
+Gemini 4 Carbon (`gemini-4-carbon-low`, `-medium` and `-high`) needs Antigravity CLI 1.5.8 or later. It is a new model and replaces none of the others; ProPR prices it at $2 per million input tokens and $10 per million output tokens. With `agy login` it is available only on a Google AI Ultra subscription: a Google AI Pro account lists it in `/model` as unavailable. The 1.5.8 release notes also offer it to Gemini API key (`GEMINI_API_KEY`) and Application Default Credentials (`AGY_ADC_AUTH`) sign-ins. If your account is not on Ultra, remove Gemini 4 Carbon from the agent's models.
 
 From Antigravity CLI 1.5.9, the agent has a `run_workflow` tool that runs a Python script to hand parts of a task to several subagents and combine their results. On large tasks this can use more tokens and take longer than a single agent working alone.
 

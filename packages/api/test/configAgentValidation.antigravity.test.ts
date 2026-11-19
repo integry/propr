@@ -51,6 +51,7 @@ test('Antigravity reasoning validation respects each model effort range', async 
     ['antigravity-gemini-4-argon', 'high'],
     ['antigravity-gemini-4-hydrogen', 'xhigh'],
     ['antigravity-gemini-4-neon', 'xhigh'],
+    ['antigravity-gemini-4-carbon', 'high'],
     ['antigravity-gpt-oss-120b', 'medium'],
   ] as const) {
     assert.equal(validateAgentsConfig([createAgentConfig({ modelReasoningLevels: { [model]: level } })]), null);
@@ -58,6 +59,9 @@ test('Antigravity reasoning validation respects each model effort range', async 
   // XHigh is specific to Gemini 4 Hydrogen and Neon.
   assert.match(validateAgentsConfig([createAgentConfig({
     modelReasoningLevels: { 'antigravity-gemini-4-argon': 'xhigh' }
+  })]) ?? '', /Supported levels: low, medium, high$/);
+  assert.match(validateAgentsConfig([createAgentConfig({
+    modelReasoningLevels: { 'antigravity-gemini-4-carbon': 'xhigh' }
   })]) ?? '', /Supported levels: low, medium, high$/);
   assert.match(validateAgentsConfig([createAgentConfig({
     modelReasoningLevels: { 'antigravity-gpt-oss-120b': 'high' }

@@ -236,6 +236,19 @@ describe('provider API pricing', () => {
     assert.strictEqual(pricing, getOfficialModelPricing(modelId));
   });
 
+  test('prices Gemini 4 Carbon at the published OpenRouter rates through model resolution', async () => {
+    const modelId = getOpenRouterId('antigravity-gemini-4-carbon');
+    assert.strictEqual(modelId, 'google/gemini-4-carbon');
+    assert.strictEqual(getOpenRouterId('antigravity-gemini-4-carbon-high'), modelId);
+    const pricing = await getModelPricing(modelId);
+    assert.deepStrictEqual(pricing, {
+      prompt: 2 / 1_000_000,
+      completion: 10 / 1_000_000,
+      cacheRead: 0.1 / 1_000_000,
+    });
+    assert.strictEqual(pricing, getOfficialModelPricing(modelId));
+  });
+
   test('preserves Sol-specific cached-read costs through model resolution', async () => {
     // Standard short-context pricing: https://developers.openai.com/api/docs/pricing
     for (const [model, expectedCost] of [

@@ -54,7 +54,8 @@ const perMillion = (price: number): number => price / 1_000_000;
  * Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
  * OpenAI: https://developers.openai.com/api/docs/models/compare
  * Google: https://openrouter.ai/google/gemini-4-hydrogen,
- *         https://openrouter.ai/google/gemini-4-neon
+ *         https://openrouter.ai/google/gemini-4-neon,
+ *         https://openrouter.ai/google/gemini-4-carbon
  */
 const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     // Fable 5.2 cached reads cost 2.5% of input, like Fable 5.1.
@@ -216,6 +217,13 @@ const OFFICIAL_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     'google/gemini-4-neon': {
         prompt: perMillion(3), completion: perMillion(15),
         cacheRead: perMillion(0.15)
+    },
+    // Gemini 4 Carbon, OpenRouter `google/gemini-4-carbon` checked 2026-11-19:
+    // $2/M input, $10/M output, cached reads $0.10/M (5% of input). Cache
+    // writes are billed as input (Gemini caches implicitly).
+    'google/gemini-4-carbon': {
+        prompt: perMillion(2), completion: perMillion(10),
+        cacheRead: perMillion(0.1)
     }
 };
 

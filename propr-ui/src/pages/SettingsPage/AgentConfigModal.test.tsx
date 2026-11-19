@@ -247,8 +247,10 @@ describe('AgentConfigModal', () => {
     const flash = screen.getByLabelText('Reasoning level for Antigravity Gemini 3.8 Flash');
     expect(flash).toHaveValue('');
     expect(Array.from(flash.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
-    const argon = screen.getByLabelText('Reasoning level for Antigravity Gemini 4 Argon');
-    expect(Array.from(argon.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    for (const name of ['Argon', 'Carbon']) {
+      const select = screen.getByLabelText(`Reasoning level for Antigravity Gemini 4 ${name}`);
+      expect(Array.from(select.querySelectorAll('option')).map(option => option.value)).toEqual(['', 'low', 'medium', 'high']);
+    }
     // Gemini 4 Hydrogen and Neon also offer XHigh, labelled as supported.
     for (const name of ['Hydrogen', 'Neon']) {
       const select = screen.getByLabelText(`Reasoning level for Antigravity Gemini 4 ${name}`);

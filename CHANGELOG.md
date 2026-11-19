@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   $15/M output. It needs Antigravity CLI 1.5.12 and supersedes no model. The
   1.5.12 release notes list it only for `GEMINI_API_KEY` accounts, but
   `agy login` accounts on Google AI Pro also have it.
+- **Gemini 4 Carbon (Antigravity)**: Gemini 4 Carbon is in the Antigravity
+  catalog as `antigravity-gemini-4-carbon` (label `llm-antigravity-carbon`,
+  alias `carbon`, 1M context). It offers low, medium and high effort, run as
+  `gemini-4-carbon-<effort>`; XHigh runs at high. Usage is priced at $2/M
+  input and $10/M output. It needs Antigravity CLI 1.5.8 and supersedes no
+  model. With `agy login` it is available only to Google AI Ultra
+  subscribers; Google AI Pro accounts should remove it from the agent's
+  models.
 - **Every GitHub release starts with a readable summary**: the release body is
   now the checked-in `release-notes/v<version>.md`, with **Highlights** and
   **Upgrade notes** sections, followed by GitHub's generated list of merged
