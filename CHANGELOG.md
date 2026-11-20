@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled Claude Code 2.1.329, Codex CLI 0.171.0 and Antigravity CLI
+  1.5.13**: the `propr/agent` image moves from Claude Code 2.1.328, Codex
+  0.170.0 and Antigravity CLI 1.5.12. OpenCode stays on 1.19.6 and Mistral
+  Vibe on 2.25.8. No model, label target or review context budget changes.
+  - Antigravity 1.5.13 is release `5999302598852608`, SHA-512 checked against
+    Google's linux_amd64 install manifest. A `--output-format stream-json`
+    run that succeeded after the CLI retried a model request reported result
+    status `ERROR` in 1.5.12, so ProPR could count a recovered goal step as
+    failed; 1.5.13 reports `SUCCESS`. Tasks also take fewer turns (independent
+    searches, reads and edits run together), and agents no longer start a
+    swarm unless `/swarm` is typed. Its model IDs are the same as in 1.5.12;
+    Gemini 4 Neon is now also offered with Application Default Credentials
+    and enterprise model gateways.
+  - Codex 0.171.0 rebuilds `codex exec` on the shared app-server client. Its
+    bundled model catalog is unchanged, and the `exec` flags ProPR passes,
+    including `--trust`, are still accepted.
+  - Claude Code 2.1.329 no longer resets `~/.claude.json` when a stalled save
+    leaves it unreadable, disconnects the MCP servers of removed plugins, and
+    makes headless rewind and fork wait for a pending model change. Its
+    bundled model catalog is unchanged.
+- **Gemini 4 Hydrogen with `agy login`**: the docs no longer call Hydrogen
+  unconfirmed for `agy login` accounts. A Google AI Pro account lists it in
+  `/model` beside Gemini 4 Neon and Argon.
+
 ### Fixed
 
 - **Release Rollout runtime images**: a Release Rollout run that publishes the
