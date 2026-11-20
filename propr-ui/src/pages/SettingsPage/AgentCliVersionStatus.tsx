@@ -33,7 +33,7 @@ const AgentCliVersionStatus: React.FC<AgentCliVersionStatusProps> = ({ state, be
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span>
           Preparing the image for {configured} failed{state.error ? `: ${state.error}` : '.'}{' '}
-          {state.nextRetryAt ? 'It will be retried automatically. ' : ''}{current}
+          {state.automaticRetry || state.nextRetryAt ? 'It will be retried automatically. ' : ''}{current}
         </span>
       </p>
     );

@@ -1,6 +1,7 @@
 import type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 import type { Agent, AgentConfig } from './types.js';
 import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
+import { remainingUnifiedAgentImageCircuitCooldown } from './unifiedAgentImageRecovery.js';
 import type { AgentType } from './types.js';
 
 /**
@@ -23,8 +24,17 @@ export interface AgentCliVersionState {
     status: AgentCliVersionStatus;
     /** Why preparation failed, when it did. */
     error?: string;
-    /** When the next automatic preparation attempt is due after a failure. */
+    /**
+     * When the next automatic preparation attempt is due after a failure:
+     * the backoff retry, or the end of a recovery circuit's cooldown.
+     */
     nextRetryAt?: string;
+    /**
+     * Whether a failed preparation recovers without an operator: backoff
+     * retries and circuits opened by transient failures do; disk pressure
+     * does not. Only set on failed states.
+     */
+    automaticRetry?: boolean;
 }
 
 type RegistryView = {
@@ -46,6 +56,17 @@ function preparationFailed(status: AgentRegistryOperationalStatus['unifiedAgentI
     return !!status.operatorActionRequired || !!status.circuitBreakerOpen || (status.retryCount ?? 0) > 0;
 }
 
+type UnifiedImageStatus = AgentRegistryOperationalStatus['unifiedAgentImage'];
+
+/** The next automatic attempt; an open transient circuit half-opens once its cooldown ends. */
+function nextAutomaticRetryAt(status: UnifiedImageStatus, now = Date.now()): string | undefined {
+    if (status.operatorActionRequired) return undefined;
+    if (!status.circuitBreakerOpen) return status.nextRetryAt;
+    if (!status.circuitOpenedAt) return undefined;
+    const remaining = remainingUnifiedAgentImageCircuitCooldown({ ...status, error: status.error ?? '', recordedAt: status.recordedAt ?? '' }, now);
+    return new Date(now + remaining).toISOString();
+}
+
 /**
  * Compares each enabled agent's configured CLI version with the version of the
  * agent the live registry runs. Disabled agents have no image to prepare.
@@ -61,11 +82,13 @@ export function describeAgentCliVersionStates(configs: AgentConfig[], registry: 
         // change is still being prepared.
         if (effective && effective === configuredVersion) return { ...base, status: 'ready' as const };
         if (preparationFailed(image)) {
+            const nextRetryAt = nextAutomaticRetryAt(image);
             return {
                 ...base,
                 status: 'failed' as const,
                 ...(image.error ? { error: image.error } : {}),
-                ...(image.nextRetryAt && !image.circuitBreakerOpen ? { nextRetryAt: image.nextRetryAt } : {}),
+                ...(nextRetryAt ? { nextRetryAt } : {}),
+                automaticRetry: !image.operatorActionRequired,
             };
         }
         return { ...base, status: 'preparing' as const };

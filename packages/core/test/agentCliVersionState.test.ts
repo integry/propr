@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
+import knex from 'knex';
 import { closeConnection } from '../src/db/connection.js';
 import {
     agentCliVersionWarnings,
     describeAgentCliVersionStates,
     isAwaitingWorkerImagePreparation,
 } from '../src/agents/agentCliVersionState.js';
-import { agentRuntimeEvent, instrumentAgentRuntimeEvents } from '../src/agents/agentRuntimeEvent.js';
+import { agentRuntimeEvent, instrumentAgentRuntimeEvents, recordAgentRuntimeEvent } from '../src/agents/agentRuntimeEvent.js';
+import { UNIFIED_AGENT_IMAGE_CIRCUIT_COOLDOWN_MS } from '../src/agents/unifiedAgentImageRecovery.js';
 import type { AgentRegistryOperationalStatus } from '../src/agents/agentRegistryTypes.js';
 import type { Agent, AgentConfig } from '../src/agents/types.js';
 
@@ -53,7 +55,29 @@ describe('agent CLI version state', () => {
         assert.equal(states[0].status, 'failed');
         assert.equal(states[0].error, 'npm install failed');
         assert.equal(states[0].nextRetryAt, nextRetryAt);
+        assert.equal(states[0].automaticRetry, true);
         assert.match(agentCliVersionWarnings(states)[0], /failed \(npm install failed\)/);
+    });
+
+    test('a transient open circuit stays automatically recoverable and reports when its cooldown ends', () => {
+        const circuitOpenedAt = new Date(Date.now() - 60_000).toISOString();
+        const states = describeAgentCliVersionStates([codex('0.170.0')], registry([codex('0.171.0')], {
+            status: 'unavailable', error: 'npm install failed', recordedAt: new Date().toISOString(),
+            retryCount: 5, circuitBreakerOpen: true, circuitOpenedAt,
+        }));
+        assert.equal(states[0].status, 'failed');
+        assert.equal(states[0].automaticRetry, true);
+        assert.equal(states[0].nextRetryAt, new Date(Date.parse(circuitOpenedAt) + UNIFIED_AGENT_IMAGE_CIRCUIT_COOLDOWN_MS).toISOString());
+    });
+
+    test('a circuit held open by disk pressure needs an operator and has no retry time', () => {
+        const states = describeAgentCliVersionStates([codex('0.170.0')], registry([codex('0.171.0')], {
+            status: 'unavailable', error: 'no space left on device', recordedAt: new Date().toISOString(),
+            retryCount: 1, circuitBreakerOpen: true, circuitOpenedAt: new Date().toISOString(), operatorActionRequired: true,
+        }));
+        assert.equal(states[0].status, 'failed');
+        assert.equal(states[0].automaticRetry, false);
+        assert.equal(states[0].nextRetryAt, undefined);
     });
 
     test('skips disabled agents and reports no live agent as not in use', () => {
@@ -88,5 +112,43 @@ describe('agent runtime timeline event', () => {
         assert.equal(instrumentAgentRuntimeEvents(instrumentAgentRuntimeEvents(agent)), agent);
         await agent.executeTask({ prompt: 'p' } as never);
         assert.deepEqual(calls, [{ prompt: 'p' }]);
+    });
+
+    test('records an event for every run of a task, including repeats with the same runtime', async () => {
+        const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+        try {
+            await database.schema.createTable('tasks', table => table.string('task_id').primary());
+            await database.schema.createTable('task_history', table => {
+                table.increments('history_id');
+                table.string('task_id');
+                table.string('state');
+                table.string('timestamp');
+                table.text('reason');
+                table.text('metadata');
+            });
+            await database('tasks').insert({ task_id: 'task-1' });
+            const config = codex('0.171.0');
+            const store = { database, loadAgents: async () => [codex('0.170.0')] };
+            const lifecycle = (state: string) => database('task_history').insert({ task_id: 'task-1', state, timestamp: new Date().toISOString(), reason: state, metadata: null });
+
+            await lifecycle('processing');
+            await recordAgentRuntimeEvent('task-1', config, store);
+            await lifecycle('completed');
+            // A later execution of the same task with an identical runtime.
+            await lifecycle('processing');
+            await recordAgentRuntimeEvent('task-1', config, store);
+
+            const rows = await database('task_history').where({ task_id: 'task-1' }).orderBy('history_id').select('state', 'metadata');
+            const runtimeRows = rows.filter(row => row.metadata && JSON.parse(row.metadata).event === 'agent.runtime');
+            assert.equal(runtimeRows.length, 2);
+            assert.deepEqual(rows.map(row => row.state), ['processing', 'processing', 'completed', 'processing', 'processing']);
+            for (const row of runtimeRows) {
+                assert.deepEqual(JSON.parse(row.metadata).agentRuntime, {
+                    agentAlias: 'codex', agentType: 'codex', cliVersion: '0.171.0', image: 'propr/runtime-agent:old', configuredCliVersion: '0.170.0',
+                });
+            }
+        } finally {
+            await database.destroy();
+        }
     });
 });

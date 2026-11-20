@@ -1,3 +1,4 @@
+import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
 import * as configManager from '../config/configManager.js';
 import logger from '../utils/logger.js';
@@ -15,7 +16,6 @@ export interface AgentRuntimeEvent {
     configuredCliVersion?: string;
 }
 
-const RECENT_HISTORY_LIMIT = 50;
 const instrumented = new WeakSet<Agent>();
 
 const cliVersionOf = (config: Pick<AgentConfig, 'type' | 'cliVersionResolved'>): string | null =>
@@ -29,22 +29,16 @@ export function agentRuntimeEvent(runtime: AgentRuntimeEvent): { reason: string;
     return { reason, metadata: { event: 'agent.runtime', agentRuntime: runtime } };
 }
 
-function parseMetadata(value: unknown): Record<string, unknown> {
-    if (typeof value === 'string') {
-        try { return parseMetadata(JSON.parse(value)); } catch { return {}; }
-    }
-    return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+interface RuntimeEventStore {
+    database: Knex;
+    loadAgents: () => Promise<AgentConfig[]>;
 }
 
-const sameRuntime = (left: unknown, right: AgentRuntimeEvent): boolean => {
-    const previous = left as Partial<AgentRuntimeEvent> | undefined;
-    return !!previous && previous.agentAlias === right.agentAlias && previous.cliVersion === right.cliVersion
-        && previous.image === right.image && previous.configuredCliVersion === right.configuredCliVersion;
-};
+const defaultStore = (): RuntimeEventStore => ({ database: db, loadAgents: () => configManager.loadAgents() });
 
-async function configuredVersionFor(config: AgentConfig): Promise<string | null> {
+async function configuredVersionFor(config: AgentConfig, loadAgents: RuntimeEventStore['loadAgents']): Promise<string | null> {
     try {
-        const configured = (await configManager.loadAgents()).find(agent => agent.alias === config.alias && agent.type === config.type);
+        const configured = (await loadAgents()).find(agent => agent.alias === config.alias && agent.type === config.type);
         return configured?.enabled ? cliVersionOf(configured) : null;
     } catch {
         return null;
@@ -52,14 +46,21 @@ async function configuredVersionFor(config: AgentConfig): Promise<string | null>
 }
 
 /**
- * Records which CLI version and image a task's run used, once per distinct
- * runtime. A run started while a newly configured version is still being
- * prepared keeps the previous image and says so here.
+ * Records which CLI version and image a task's run used. Every run gets its
+ * own event, even when an earlier run of the task used the same runtime, so
+ * each run step on the timeline shows its own CLI version. A run started while
+ * a newly configured version is still being prepared keeps the previous image
+ * and says so here.
  */
-export async function recordAgentRuntimeEvent(taskId: string, config: AgentConfig): Promise<void> {
+export async function recordAgentRuntimeEvent(
+    taskId: string,
+    config: AgentConfig,
+    store: RuntimeEventStore = defaultStore(),
+): Promise<void> {
+    const { database } = store;
     try {
         const cliVersion = cliVersionOf(config);
-        const configured = await configuredVersionFor(config);
+        const configured = await configuredVersionFor(config, store.loadAgents);
         const runtime: AgentRuntimeEvent = {
             agentAlias: config.alias,
             agentType: config.type,
@@ -67,17 +68,15 @@ export async function recordAgentRuntimeEvent(taskId: string, config: AgentConfi
             image: config.dockerImage,
             ...(configured && configured !== cliVersion ? { configuredCliVersion: configured } : {}),
         };
-        if (!await db('tasks').where({ task_id: taskId }).first('task_id')) return;
-        const recent: Array<{ state?: string; metadata?: unknown }> = await db('task_history')
+        if (!await database('tasks').where({ task_id: taskId }).first('task_id')) return;
+        const latest: { state?: string } | undefined = await database('task_history')
             .where({ task_id: taskId }).orderBy('timestamp', 'desc').orderBy('history_id', 'desc')
-            .limit(RECENT_HISTORY_LIMIT).select('state', 'metadata');
-        const lastRuntime = recent.map(row => parseMetadata(row.metadata)).find(metadata => metadata.event === 'agent.runtime');
-        if (lastRuntime && sameRuntime(lastRuntime.agentRuntime, runtime)) return;
+            .first('state');
         const event = agentRuntimeEvent(runtime);
-        await db('task_history').insert({
+        await database('task_history').insert({
             task_id: taskId,
             // Written as the run starts; it must not read as a lifecycle change.
-            state: recent[0]?.state ?? 'processing',
+            state: latest?.state ?? 'processing',
             timestamp: new Date().toISOString(),
             reason: event.reason,
             metadata: JSON.stringify(event.metadata),

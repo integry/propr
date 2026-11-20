@@ -20,6 +20,11 @@ describe('AgentCliVersionStatus', () => {
     expect(screen.getByRole('status')).toHaveTextContent('It will be retried automatically.');
   });
 
+  it('says a failure needing an operator is not retried automatically', () => {
+    render(<AgentCliVersionStatus state={state({ status: 'failed', error: 'no space left on device', automaticRetry: false })} />);
+    expect(screen.getByRole('status')).not.toHaveTextContent('retried automatically');
+  });
+
   it('confirms a version that became ready, and stays quiet otherwise', () => {
     const ready = state({ status: 'ready', effectiveVersion: '0.170.0' });
     const { rerender } = render(<AgentCliVersionStatus state={ready} />);

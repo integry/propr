@@ -112,7 +112,10 @@ export interface AgentCliVersionState {
   effectiveVersion: string | null;
   status: 'ready' | 'preparing' | 'failed';
   error?: string;
+  /** The next automatic attempt: a backoff retry or the end of a circuit cooldown. */
   nextRetryAt?: string;
+  /** A failed preparation recovers without an operator (false only for disk pressure). */
+  automaticRetry?: boolean;
 }
 
 export interface SaveAgentsResponse {

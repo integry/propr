@@ -3,12 +3,17 @@ import { getAgents, type AgentCliVersionState } from '../../api/proprApi';
 
 export const CLI_VERSION_POLL_INTERVAL_MS = 10_000;
 
+/** A failed preparation that retries on its own (backoff or circuit cooldown) can still become ready. */
+const recoversAutomatically = (state: AgentCliVersionState): boolean =>
+  state.status === 'failed' && (!!state.automaticRetry || !!state.nextRetryAt);
+
 const needsPolling = (states: AgentCliVersionState[]): boolean =>
-  states.some(state => state.status === 'preparing' || (state.status === 'failed' && !!state.nextRetryAt));
+  states.some(state => state.status === 'preparing' || recoversAutomatically(state));
 
 /**
  * Tracks which configured agent CLI versions are in effect. While the worker
- * is preparing a new image the states are re-read periodically, and an agent
+ * is preparing a new image, or a failed preparation will be retried
+ * automatically, the states are re-read periodically, and an agent
  * whose pending version became ready is reported in `becameReady`.
  */
 export function useCliVersionStates() {
