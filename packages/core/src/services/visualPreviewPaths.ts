@@ -1,5 +1,6 @@
-export const VISUAL_PREVIEW_DIRECTORY = '.propr/previews';
-export const VISUAL_PREVIEW_SOURCE_DIRECTORY = '.propr/preview-src';
+import { VISUAL_PREVIEW_DIRECTORY, VISUAL_PREVIEW_SOURCE_DIRECTORY } from '@propr/shared';
+
+export { VISUAL_PREVIEW_DIRECTORY, VISUAL_PREVIEW_SOURCE_DIRECTORY };
 export const VISUAL_PREVIEW_MANIFEST = `${VISUAL_PREVIEW_DIRECTORY}/manifest.json`;
 
 /**

@@ -20,6 +20,7 @@ import { createPullRequest, ensureEpicBaseBranchExists, type PostProcessingResul
 import { addPullRequestProcessingLabels, issuePullRequestLabels } from './pullRequestProcessingLabels.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
+import { buildAgentCommitMessage, pendingChangePaths } from './agentCommitMessage.js';
 import { pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
 import { prepareProviderReplacement } from './providerReplacement.js';
 import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
@@ -49,7 +50,7 @@ function buildImplementationCompletionNote(claudeResult: ClaudeCodeResponse): st
         : 'Implementation attempted - see PR comments for details.';
 }
 
-function resolveAgentCommitMessage(candidate: string, fallback: string): string { return sanitizeAgentReport(candidate) || fallback; }
+function resolveAgentCommitBody(candidate: string | null | undefined, fallback: string): string { return (candidate && sanitizeAgentReport(candidate)) || fallback; }
 
 function hasPublishableAgentWork(claudeResult: ClaudeCodeResponse | null): boolean {
     if (!claudeResult) return false;
@@ -225,11 +226,16 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         if (postProcessingResult) return { commitResult, postProcessingResult };
 
         const completionNote = buildImplementationCompletionNote(claudeResult);
-        let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${completionNote}`;
-
-        if (claudeResult?.commitMessage) {
-            commitMessage = resolveAgentCommitMessage(claudeResult.commitMessage, commitMessage);
-        }
+        // The subject says what changed (its own small call, else the issue title); the run summary is the body.
+        const commitMessage = buildAgentCommitMessage({
+            generatedSubject: claudeResult?.commitSubject,
+            title: currentIssueData.data.title,
+            fallbackSubject: `resolve issue #${issueRef.number}`,
+            paths: await pendingChangePaths(worktreeInfo.worktreePath),
+            body: resolveAgentCommitBody(claudeResult?.commitMessage, `Implemented by ProPR AI using ${modelName} model.\n\n${completionNote}`),
+            agentAlias: claudeResult?.agentAlias ?? issueRef.agentAlias,
+            model: claudeResult?.model || modelName,
+        });
 
         step = 'commit';
         preparedVisualPreview = await prepareVisualPreviewEvidence({

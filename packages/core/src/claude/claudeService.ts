@@ -89,6 +89,10 @@ export interface ClaudeCodeResponse {
     summarySelection?: 'selected' | 'none';
     /** Set when the summary-selection call judged the agent's last message to say work was still in progress. */
     unfinishedReason?: string;
+    /** Imperative commit subject description from its own small call (no type prefix); absent when generation failed. */
+    commitSubject?: string;
+    /** Alias of the agent that ran, for the commit's `ProPR-Agent` trailer. */
+    agentAlias?: string;
     prompt?: string;
     error?: string;
     terminationReason?: AgentTerminationReason;
