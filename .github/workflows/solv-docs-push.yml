@@ -1,0 +1,115 @@
+name: Push Docs to solv.chat
+
+# Pushes the public end-user documentation (the Docusaurus pages served under
+# https://docs.propr.dev/docs, plus README.md and CHANGELOG.md) to the
+# solv.chat assistant embedded on propr.dev, so its answers follow the docs.
+#
+# Configuration lives only in the repository settings (Settings → Secrets and
+# variables → Actions):
+#   - variable SOLV_ENDPOINT      the solv.chat Worker's base URL
+#   - variable SOLV_ASSISTANT_ID  the assistant id (ast_...)
+#   - secret   SOLV_INGEST_KEY    the assistant's ingest key
+# Until all three are set the job succeeds with a notice and pushes nothing.
+# See docs/README.md ("Assistant knowledge (solv.chat)") for details.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - '.github/workflows/solv-docs-push.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: solv-docs-push
+  cancel-in-progress: false
+
+jobs:
+  push-docs:
+    name: Push public docs to solv.chat
+    # Only the default branch of this repository: never forks, and a manual
+    # dispatch from another branch would replace the assistant's documents with
+    # that branch's (prune removes whatever the push does not contain).
+    if: >-
+      !github.event.repository.fork &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check solv.chat settings
+        id: settings
+        env:
+          SOLV_ENDPOINT: ${{ vars.SOLV_ENDPOINT }}
+          SOLV_ASSISTANT_ID: ${{ vars.SOLV_ASSISTANT_ID }}
+          SOLV_INGEST_KEY: ${{ secrets.SOLV_INGEST_KEY }}
+        run: |
+          missing=()
+          [ -n "$SOLV_ENDPOINT" ] || missing+=("variable SOLV_ENDPOINT")
+          [ -n "$SOLV_ASSISTANT_ID" ] || missing+=("variable SOLV_ASSISTANT_ID")
+          [ -n "$SOLV_INGEST_KEY" ] || missing+=("secret SOLV_INGEST_KEY")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            joined="$(printf '%s, ' "${missing[@]}")"
+            echo "::notice title=solv.chat docs push skipped::Not set: ${joined%, }. Nothing was pushed."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.settings.outputs.configured == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # README.md and CHANGELOG.md are pushed as their own documents, linked to
+      # their pages on the default branch. CHANGELOG.md is optional.
+      - name: List extra files
+        id: files
+        if: steps.settings.outputs.configured == 'true'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$DEFAULT_BRANCH"
+          {
+            echo 'list<<SOLV_FILES_EOF'
+            for f in README.md CHANGELOG.md; do
+              if [ -f "$f" ]; then echo "$f=$base/$f"; fi
+            done
+            echo 'SOLV_FILES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # docs/docs is the Docusaurus docs folder (served under /docs, see
+      # docs/docusaurus.config.ts). The CLI detects Docusaurus from the files
+      # and maps them to the site's URLs, leaving out `_` partials, drafts and
+      # unlisted pages. Everything else under docs/ (library, operations,
+      # contracts, benchmarks and the loose engineering notes) is outside the
+      # content folder and never pushed. The excluded pages below are
+      # engineering investigations and contracts that are not in the site's
+      # sidebar; keep this list in step with docs/README.md.
+      - name: Push docs to solv.chat
+        if: steps.settings.outputs.configured == 'true'
+        uses: integry/solv.chat/packages/cli/action@6af3d692fd3500c684490a48e3b9b3f0a73424f6 # v0.1.6
+        env:
+          SOLV_INGEST_KEY: ${{ secrets.SOLV_INGEST_KEY }}
+        with:
+          endpoint: ${{ vars.SOLV_ENDPOINT }}
+          assistant: ${{ vars.SOLV_ASSISTANT_ID }}
+          content: docs/docs
+          base-url: https://docs.propr.dev/docs
+          exclude: |
+            **/_*
+            architecture/instance-storage-v1.md
+            operations/desktop-live-github-smoke.md
+            operations/desktop-native-shutdown-investigation.md
+            operations/linux-validation-candidate.md
+            operations/macos-local-setup-acceptance.md
+          files: ${{ steps.files.outputs.list }}
+          source: propr-docs
+          prune: 'true'
