@@ -4,6 +4,7 @@ import {
     COMMIT_SUBJECT_MAX_CHARS,
     assembleCommitMessage,
     buildCommitSubject,
+    cleanCommitTitle,
     epicSquashCommitFields,
     inferCommitType,
     isAcceptableCommitDescription,
@@ -113,4 +114,15 @@ test('the epic squash subject comes from the sub-PR title, not the first commit'
     assert.equal(newStyle.commit_message, 'Kept it open.\n\nProPR-Agent: claude/opus');
 
     assert.equal(epicSquashCommitFields({ number: 9, title: '' }, null).commit_title, 'chore: merge pull request #9 (#9)');
+});
+
+test('cleanCommitTitle strips the run prefix and issue ref, and stays linear on long whitespace runs', () => {
+    assert.equal(cleanCommitTitle('  [3726 by Claude Opus 5.5]  Fold the CI job  (#3731)  '), 'Fold the CI job');
+    assert.equal(cleanCommitTitle('[WIP] Keep the [draft] label (#12) here'), '[WIP] Keep the [draft] label (#12) here');
+    assert.equal(cleanCommitTitle('[1 by X] (#4)'), null);
+    const tabs = '\t'.repeat(200_000);
+    const started = Date.now();
+    assert.equal(cleanCommitTitle(`[${tabs}x${tabs}`), `[${tabs}x`);
+    assert.equal(cleanCommitTitle(`a${tabs}(#${tabs}`), `a${tabs}(#`);
+    assert.ok(Date.now() - started < 1000, `took ${Date.now() - started}ms`);
 });

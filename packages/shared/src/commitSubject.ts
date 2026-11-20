@@ -148,8 +148,14 @@ export function normalizeCommitDescription(raw: string | null | undefined): stri
  * status slot, no trailing `(#N)`, no conventional prefix. Null when empty.
  */
 export function cleanCommitTitle(title: string | null | undefined): string | null {
-    let text = stripStatusSlot(title ?? '') ?? '';
-    text = text.replace(/^\s*\[[^\]]*\bby\b[^\]]*\]\s*/i, '').replace(/\s*\(#\d+\)\s*$/, '').trim();
+    let text = (stripStatusSlot(title ?? '') ?? '').trim();
+    // Plain index scans, not `\s*…\s*$` regexes: those backtrack polynomially on long whitespace runs.
+    if (text.startsWith('[')) {
+        const close = text.indexOf(']');
+        if (close > 0 && /\bby\b/i.test(text.slice(1, close))) text = text.slice(close + 1).trim();
+    }
+    const issueRef = /\(#\d+\)$/.exec(text);
+    if (issueRef) text = text.slice(0, issueRef.index).trim();
     return text || null;
 }
 
