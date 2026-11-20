@@ -2,6 +2,7 @@ import { redactSecrets, getDetailedUsageStats, getModelPricing, getOpenRouterId,
 import type { DetailedUsageStats, SubscriptionUsageMetrics, ResolvedPrTemplate } from '@propr/core';
 import type { PrBodyPiece } from '@propr/shared';
 import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
+import { enabledPluginCommandHelp } from '../shared/pluginCommandHelp.js';
 import { loadPullRequestTemplate } from '../jobs/pullRequestTemplate.js';
 
 type PullRequestTemplateOctokit = Parameters<typeof loadPullRequestTemplate>[0]['octokit'];
@@ -152,6 +153,9 @@ async function buildPRBodyPieces(issueNumber: number, issueTitle: string, commit
 export async function describeIssuePullRequest(options: GeneratePRDescriptionOptions): Promise<{ title: string; body: string }> {
     const { issueNumber, issueTitle, commitMessage, claudeResult } = options;
     const { pieces, stats } = await buildPRBodyPieces(issueNumber, issueTitle, commitMessage, claudeResult);
+    // Commands enabled plugins offer in the repository follow the built-in ones; none leaves the block unchanged.
+    const pluginCommands = options.repository ? await enabledPluginCommandHelp(options.repository, 'pull_request') : [];
+    if (pluginCommands.length) for (const piece of pieces) if (piece.section === 'commands') piece.text = buildSlashCommandsBlock(pluginCommands);
     const values = buildPrTemplateValues({
         issueNumber, issueTitle, model: options.modelName || claudeResult?.model, summary: claudeResult?.summary,
         sessionId: claudeResult?.sessionId, cost: stats.cost, totalTokens: stats.totalTokens, executionTime: `${stats.executionTime}s`,

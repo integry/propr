@@ -245,6 +245,8 @@ function fromRow(row: RepositoryEventRow): RepositoryEvent {
 
 export interface ListRepositoryEventsInput {
     repository: string;
+    /** Match every spelling of the repository (`COLLATE NOCASE`) as one stream; exact by default. */
+    anyCase?: boolean;
     /** Exclusive cursor; 0 reads from the start of the retained journal. */
     afterSeq?: number;
     domains?: readonly RepositoryEventDomain[];
@@ -257,7 +259,8 @@ const MAX_LIST_LIMIT = 500;
 /** Events of one repository after a cursor, in `seq` order. */
 export async function listRepositoryEvents(database: Knex, input: ListRepositoryEventsInput): Promise<RepositoryEvent[]> {
     const limit = Math.min(Math.max(Math.trunc(input.limit ?? 100), 1), MAX_LIST_LIMIT);
-    const query = database('repository_events').where('repository', input.repository)
+    const query = (input.anyCase ? database('repository_events').whereRaw('repository = ? COLLATE NOCASE', [input.repository])
+        : database('repository_events').where('repository', input.repository))
         .where('seq', '>', Math.max(0, Math.trunc(input.afterSeq ?? 0)));
     const domains = (input.domains ?? []).filter(domain => REPOSITORY_EVENT_DOMAINS.includes(domain));
     if (domains.length) query.whereIn('domain', domains);

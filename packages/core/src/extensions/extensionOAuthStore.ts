@@ -148,11 +148,14 @@ export class ExtensionOAuthStore {
       try { discovery = await discoverOAuth(this.transport, server.url, server.scopes); }
       catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed'); }
       if (!discovery) throw new ExtensionError(409, 'The server answered without requiring authorization');
-      const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl });
+      // A plugin-managed server signs in only through the registration methods its plugin connection permits.
+      const allowed = server.managedBy?.registrations;
+      const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl, ...(allowed ? { allowed } : {}) });
       let client: OAuthClient;
       if (registration === 'preregistered') client = preregisteredClient(discovery.metadata, server.clientId!, secret);
       else if (registration === 'metadata_document') client = { registration, clientId: urls.clientMetadataUrl!, authMethod: 'none' };
       else if (registration === 'dynamic') client = await this.dynamicClient(instanceId, server, discovery.metadata, urls.redirectUri);
+      else if (allowed) throw new ExtensionError(409, `The authorization server supports none of the client registration methods the plugin permits (${allowed.join(', ')})`);
       else throw new ExtensionError(409, 'The authorization server supports no client registration ProPR can use. Enter a pre-registered client id, or use a Bearer token.');
       const pkce = createPkce();
       const { clientSecret, ...publicClient } = client;
@@ -198,15 +201,18 @@ export class ExtensionOAuthStore {
    * unused, unexpired and started by this administrator in this session for
    * the same item and endpoint; `iss` must name the issuer when supplied (and
    * when the server promises it). Nothing is stored unless the code exchange succeeds.
+   * With `servers`, only a sign-in pending for one of those items is claimed; any
+   * other state is refused without consuming it.
    */
-  async completeSignIn(actor: string, sessionId: string, query: { state?: unknown; code?: unknown; error?: unknown; iss?: unknown }): Promise<{ name: string }> {
+  async completeSignIn(actor: string, sessionId: string, query: { state?: unknown; code?: unknown; error?: unknown; iss?: unknown }, servers?: readonly string[]): Promise<{ name: string }> {
     await this.tables();
     if (typeof query.state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(query.state)) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
     const stateHash = sha256(query.state);
     // Single use: the first callback claims the state, and it is deleted whatever the outcome. The claimed
     // row is this attempt: Disconnect and binding changes delete it, which cancels the attempt.
     const claim = randomUUID();
-    if (await this.database(OAUTH_PENDING).where({ state_hash: stateHash }).whereNull('claim').update({ claim }) !== 1) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
+    const pending = this.database(OAUTH_PENDING).where({ state_hash: stateHash }).whereNull('claim');
+    if (await (servers ? pending.whereIn('server_name', [...servers]) : pending).update({ claim }) !== 1) throw new ExtensionError(400, 'Unknown, used or expired sign-in request');
     try { return await this.completeClaimed(actor, sessionId, query, { state_hash: stateHash, claim }); }
     finally { await this.database(OAUTH_PENDING).where({ state_hash: stateHash, claim }).delete(); }
   }

@@ -1,0 +1,15 @@
+{
+  "id": "fixture-report",
+  "name": "Fixture report",
+  "description": "A fixture automation template.",
+  "category": "reporting",
+  "capabilities": ["repository_read"],
+  "schedule": "0 9 * * 1",
+  "autonomy": "dry_run",
+  "previousReportCount": 1,
+  "reviewBeforeSaving": [
+    { "field": "repositories", "note": "Choose repositories." },
+    { "field": "schedule", "note": "Weekly." },
+    { "field": "autonomy", "note": "Dry run." }
+  ]
+}

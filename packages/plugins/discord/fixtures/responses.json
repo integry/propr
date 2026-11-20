@@ -1,0 +1,18 @@
+{
+  "accepted": { "status": 204, "headers": {}, "body": "" },
+  "rateLimited": {
+    "status": 429,
+    "headers": { "retry-after": "2", "x-ratelimit-scope": "user", "content-type": "application/json" },
+    "body": "{\"message\": \"You are being rate limited.\", \"retry_after\": 1.5, \"global\": false}"
+  },
+  "rateLimitedBodyOnly": {
+    "status": 429,
+    "headers": { "content-type": "application/json" },
+    "body": "{\"message\": \"You are being rate limited.\", \"retry_after\": 4.25, \"global\": false}"
+  },
+  "permanent": [
+    { "status": 404, "body": "{\"message\": \"Unknown Webhook\", \"code\": 10015}", "detail": "Unknown Webhook, code 10015" },
+    { "status": 401, "body": "{\"message\": \"Invalid Webhook Token\", \"code\": 50027}", "detail": "Invalid Webhook Token, code 50027" },
+    { "status": 400, "body": "{\"message\": \"Cannot send an empty message\", \"code\": 50006}", "detail": "Cannot send an empty message, code 50006" }
+  ]
+}

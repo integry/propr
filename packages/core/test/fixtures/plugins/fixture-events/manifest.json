@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture-events",
+  "name": "Fixture events",
+  "description": "Test fixture for plugin event subscriptions: handlers that record deliveries, fail on demand and hang, subscribed to journal events with and without filters.",
+  "version": "1.0.0",
+  "category": "other",
+  "homepage": "https://example.com/fixture-events",
+  "icon": "icon.svg",
+  "permissions": ["events.read"],
+  "contributes": {
+    "subscriptions": [
+      { "on": "pull_request.opened", "handler": "record" },
+      { "on": "pull_request.merged", "handler": "onMerged" },
+      { "on": "task.completed", "handler": "record", "filter": { "payload.kind": ["implementation", "review"] } },
+      { "on": "task.failed", "handler": "flaky" },
+      { "on": "pull_request.closed", "handler": "record" },
+      { "on": "pull_request.closed", "handler": "flaky" }
+    ]
+  }
+}

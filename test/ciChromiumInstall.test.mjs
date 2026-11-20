@@ -110,7 +110,7 @@ describe('hosted Chromium install', () => {
         assert.match(asRoot.aptConf, /Acquire::http::Timeout "30";/);
     });
 
-    test('retries a timed-out install once after clearing leftover apt processes', () => {
+    test('retries a timed-out install up to three times after clearing leftover apt processes', () => {
         for (const timedOut of [124, 137]) {
             const recovered = runInstall({ statuses: [timedOut, 0] });
             assert.equal(recovered.status, 0, `retry recovers after exit ${timedOut}`);
@@ -125,9 +125,18 @@ describe('hosted Chromium install', () => {
                 'sudo -n -- timeout 60s dpkg --configure -a',
             ]);
 
-            const exhausted = runInstall({ statuses: [timedOut, timedOut] });
+            // A slow mirror: the third attempt finishes what two could not.
+            const third = runInstall({ statuses: [timedOut, timedOut, 0] });
+            assert.equal(third.status, 0, `third attempt recovers after exit ${timedOut}`);
+            assert.deepEqual(third.attempts, [ATTEMPT, ATTEMPT, ATTEMPT]);
+            assert.match(third.stdout, /::warning::Chromium install attempt 2 timed out/);
+            assert.equal(third.calls.filter(call => call.endsWith('dpkg --configure -a')).length, 2);
+
+            const exhausted = runInstall({ statuses: [timedOut, timedOut, timedOut, 0] });
             assert.equal(exhausted.status, 1);
-            assert.deepEqual(exhausted.attempts, [ATTEMPT, ATTEMPT]);
+            assert.deepEqual(exhausted.attempts, [ATTEMPT, ATTEMPT, ATTEMPT]);
+            // No cleanup after the last attempt: the step ends.
+            assert.equal(exhausted.calls.at(-1), ATTEMPT);
             assert.match(exhausted.stdout, /::error::Chromium install timed out on every attempt\./);
         }
     });
@@ -196,11 +205,20 @@ describe('hosted Chromium install', () => {
         assert.equal(clean.mirrorList('apt-mirrors.txt'), HOSTED_MIRRORS);
         assert.ok(!clean.calls.includes(MIRROR_WRITE));
 
-        // Still stalled on the second mirror: the step fails, bounded at two attempts.
-        const exhausted = runInstall({ statuses: [137, 124], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
+        // Still stalled on every mirror: the step fails, bounded at three
+        // attempts, with the list rewritten before each retry.
+        const exhausted = runInstall({ statuses: [137, 124, 124], sources: HOSTED_SOURCES, mirrors: { 'apt-mirrors.txt': HOSTED_MIRRORS } });
         assert.equal(exhausted.status, 1);
-        assert.deepEqual(exhausted.attempts, [ATTEMPT, ATTEMPT]);
-        assert.equal(exhausted.calls.filter(call => call === MIRROR_WRITE).length, 1);
+        assert.deepEqual(exhausted.attempts, [ATTEMPT, ATTEMPT, ATTEMPT]);
+        assert.equal(exhausted.calls.filter(call => call === MIRROR_WRITE).length, 2);
+        // The third attempt starts from neither mirror the first two used.
+        assert.equal(exhausted.mirrorList('apt-mirrors.txt'), [
+            '# Mirrors for hosted runners',
+            'https://security.ubuntu.com/ubuntu/\tpriority:1',
+            'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:2',
+            'https://archive.ubuntu.com/ubuntu/\tpriority:3',
+            '',
+        ].join('\n'));
         assert.match(exhausted.stdout, /::error::Chromium install timed out on every attempt\./);
 
         // Already root: the list is written without sudo.
@@ -385,8 +403,9 @@ describe('Chromium install steps in workflows', () => {
         const step = workflowSteps(readFileSync(join(WORKFLOWS, 'pr-build-check.yml'), 'utf8'))
             .find(candidate => candidate.includes('- name: Install Chromium for PWA Smoke Test'));
         const minutes = Number(step.match(/timeout-minutes: (\d+)/)[1]);
-        // Two 3m attempts with a 15s kill grace, plus at most 5s + 60s cleanup.
-        assert.ok(2 * (3 * 60 + 15) + 65 < minutes * 60, 'both attempts fit in the step timeout');
+        // Three 3m attempts with a 15s kill grace, plus at most 5s + 60s
+        // cleanup between consecutive attempts.
+        assert.ok(3 * (3 * 60 + 15) + 2 * 65 < minutes * 60, 'every attempt fits in the step timeout');
     });
 
     test('the docs-validation setup bounds its Chromium download', () => {

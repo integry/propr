@@ -50,6 +50,7 @@ import {
   createRelayCommand,
   createRuntimeCommand,
   createHandoffsCommand,
+  createPluginCommand,
   runChecks,
   printChecks,
   STACK_CONFIG_CHECK_NAME,
@@ -452,6 +453,7 @@ program.addCommand(createStatsCommand());
 program.addCommand(createAdmissionCommand());
 program.addCommand(createPrCommand());
 program.addCommand(createEventsCommand());
+program.addCommand(createPluginCommand());
 installNestedHelpCommand(program);
 
 /** The fully registered command tree (for help and completion tests). */

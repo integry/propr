@@ -27,6 +27,7 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/local-setup/package*.json ./packages/local-setup/
 COPY packages/core/package*.json ./packages/core/
 COPY packages/api/package*.json ./packages/api/
+COPY packages/plugins/package*.json ./packages/plugins/
 # Vendored braces tarball referenced by the root package.json overrides
 COPY vendor ./vendor
 
@@ -38,6 +39,10 @@ COPY . .
 
 # Build shared package first (required for @propr/core imports)
 RUN cd packages/shared && npm run build
+
+# Build the official plugin registry (@propr/plugins: registry module and
+# compiled handlers). Core imports it by name; without it no plugins are offered.
+RUN cd packages/plugins && npm run build
 
 # Build Node-local shared storage helpers used by the API and CLI.
 RUN cd packages/local-setup && npm run build

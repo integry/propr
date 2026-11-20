@@ -353,8 +353,28 @@ describe('preview runtime artifact and immutable publication scope', () => {
     assert.doesNotMatch(contextCheck, /--privileged|_API_KEY|_TOKEN|\.config|\.codex|\.claude/);
   });
 
+  test('checks the exact app image offers every official plugin before any service starts', () => {
+    const pluginCheck = readFileSync('scripts/smoke-check-app-plugins.sh', 'utf8');
+    const generalSmoke = readFileSync('scripts/smoke-test-images.sh', 'utf8');
+    const check = smoke.indexOf('"$REPO_ROOT/scripts/smoke-check-app-plugins.sh" "$APP_IMAGE"');
+    assert.ok(check !== -1, 'the preview smoke must call the shared plugin registry check');
+    assert.ok(smoke.indexOf('docker image inspect "$APP_IMAGE"') < check);
+    assert.ok(check < smoke.indexOf('docker network create'), 'the plugin check must precede service startup');
+    assert.match(generalSmoke, /"\$REPO_ROOT\/scripts\/smoke-check-app-plugins\.sh" "\$APP_TAG"/);
+    // Core's own loader, from both shipped builds of Core, against the image's registry.json.
+    for (const loader of ['/usr/src/app/packages/core/dist/plugins/pluginCatalog.js', '/usr/src/app/dist/packages/core/src/plugins/pluginCatalog.js']) {
+      assert.ok(pluginCheck.includes(`"${loader}"`), loader);
+    }
+    assert.match(pluginCheck, /officialPluginCatalog\(\)/);
+    assert.match(pluginCheck, /registry\.json/);
+    assert.match(pluginCheck, /loadPluginHandlers/);
+    assert.match(pluginCheck, /docker run --rm --network none --entrypoint node/);
+    assert.doesNotMatch(pluginCheck, /npm (?:install|i |ci)|--privileged|docker\.sock/);
+    assert.ok(readFileSync('.github/workflows/pr-build-check.yml', 'utf8').includes('scripts/smoke-check-app-plugins.sh'), 'the release shellcheck covers the plugin check');
+  });
+
   test('shell entry points are syntactically executable', () => {
-    for (const path of ['scripts/build-images.sh', 'scripts/smoke-check-app-sharp.sh', 'scripts/smoke-check-app-agent-build-context.sh', 'scripts/smoke-test-preview-runtime-images.sh']) {
+    for (const path of ['scripts/build-images.sh', 'scripts/smoke-check-app-sharp.sh', 'scripts/smoke-check-app-plugins.sh', 'scripts/smoke-check-app-agent-build-context.sh', 'scripts/smoke-test-preview-runtime-images.sh']) {
       const result = spawnSync('bash', ['-n', path], { encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
     }

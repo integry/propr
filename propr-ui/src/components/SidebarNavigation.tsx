@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, ChevronDown, ChevronRight,
-  Cpu, Logs, Plug, Settings, ShieldCheck, Inbox, Target, TriangleAlert, Workflow,
+  Cpu, Logs, Plug, Puzzle, Settings, ShieldCheck, Inbox, Target, TriangleAlert, Workflow,
 } from 'lucide-react';
 import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/sidebarIconStroke';
 
@@ -59,6 +59,7 @@ function getResourceNavigation(
   canManageAgents: boolean,
   canManageMembers: boolean,
   canReadMcpLog: boolean,
+  canManagePlugins = false,
 ): NavEntry[] {
   const navigation: NavEntry[] = [{ name: 'Repositories', href: '/repositories', icon: BookMarked }];
   if (canManageAgents) navigation.push({ name: 'Coding agents', href: '/ai-agents', icon: Bot });
@@ -71,6 +72,8 @@ function getResourceNavigation(
     { name: 'Logs', icon: Logs, items: logs },
     { name: 'Settings', href: '/settings', icon: Settings },
   );
+  // Plugins need a durable administrator who may change instance settings, as their API does.
+  if (canManagePlugins) navigation.push({ name: 'Plugins', href: '/plugins', icon: Puzzle });
   if (canManageMembers) navigation.push({ name: 'Access', href: '/admin/members', icon: ShieldCheck });
   return navigation;
 }
@@ -144,10 +147,22 @@ function PlansBadge({ name, count }: { name: string; count: number }) {
   return <NavBadge>{count}</NavBadge>;
 }
 
-function getNavigationItemClassName(desktop: boolean, active: boolean): string {
+/**
+ * How much shorter each row is while Usage is folded, in rem: 0.125rem less
+ * padding above and below (2px each at the default 16px root size). Folding must
+ * free room for every item in a 720px window, and expanding again budgets for
+ * the rows growing back (see useSidebarUsageFit). The padding is rem-based, so
+ * enlarged text grows the saving with it.
+ */
+export const SIDEBAR_DENSE_ROW_SAVING_REM = 0.25;
+/** Marks each navigation row, so the fit measurement can count them. */
+export const SIDEBAR_ROW_ATTRIBUTE = 'data-sidebar-row';
+const rowAttribute = { [SIDEBAR_ROW_ATTRIBUTE]: '' };
+
+function getNavigationItemClassName(desktop: boolean, active: boolean, dense: boolean): string {
   const dimensions = desktop
-    ? 'mx-2 rounded-[6px] border-0 px-2 py-1.5 tracking-tight'
-    : 'border-l-4 px-4 py-2';
+    ? `mx-2 rounded-[6px] border-0 px-2 ${dense ? 'py-1' : 'py-1.5'} tracking-tight`
+    : `border-l-4 px-4 ${dense ? 'py-1.5' : 'py-2'}`;
   if (active) {
     return `${dimensions} ${desktop
       ? 'bg-black/5 font-normal text-slate-900'
@@ -158,13 +173,14 @@ function getNavigationItemClassName(desktop: boolean, active: boolean): string {
     : 'font-normal text-gray-600 hover:bg-gray-50 hover:text-gray-900 border-transparent'}`;
 }
 
-function NavigationItem({ item, state, nested = false }: { item: NavItem; state: NavigationState; nested?: boolean }) {
+function NavigationItem({ item, state, dense, nested = false }: { item: NavItem; state: NavigationState; dense: boolean; nested?: boolean }) {
   const readinessMessage = getReadinessMessage(item.name, state);
   const active = isNavigationItemActive(state.currentPath, item.href);
   return (
     <Link
       to={item.href}
-      className={`flex items-center justify-between text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, active)}`}
+      {...rowAttribute}
+      className={`flex items-center justify-between text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, active, dense)}`}
     >
       {/* A group's children indent their label, not their row: the active and
           hover ink keeps the same full-width shape as every other nav item. */}
@@ -209,7 +225,7 @@ function navGroupPanelId(name: string): string {
   return `sidebar-nav-group-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 }
 
-function NavigationGroup({ group, state }: { group: NavGroup; state: NavigationState }) {
+function NavigationGroup({ group, state, dense }: { group: NavGroup; state: NavigationState; dense: boolean }) {
   const childActive = group.items.some(item => isNavigationItemActive(state.currentPath, item.href));
   const [expanded, setExpanded] = useState(() => {
     const stored = readNavGroupState()[group.name];
@@ -240,12 +256,13 @@ function NavigationGroup({ group, state }: { group: NavGroup; state: NavigationS
         onClick={toggle}
         aria-expanded={expanded}
         aria-controls={panelId}
+        {...rowAttribute}
         // The header carries the active treatment of its children, so a
         // collapsed group still shows that the current page is inside it.
         // Like the links, it takes its width from the column's stretch: a
         // w-full here would add the desktop mx-2 inset to the full scrollport
         // width and overflow the navigation horizontally.
-        className={`flex items-center justify-between text-left text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, childActive)}`}
+        className={`flex items-center justify-between text-left text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, childActive, dense)}`}
       >
         <span className="flex min-w-0 items-center">
           <group.icon className={`${SIDEBAR_ICON_STROKE_CLASS} mr-2.5 h-4 w-4 flex-none`} strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} aria-hidden="true" />
@@ -261,16 +278,16 @@ function NavigationGroup({ group, state }: { group: NavGroup; state: NavigationS
           are dropped rather than only marked hidden: a Tailwind display utility
           on the container would otherwise win over the [hidden] UA rule. */}
       <div id={panelId} hidden={!expanded} className="flex flex-col gap-0.5">
-        {expanded && group.items.map(item => <NavigationItem key={item.name} item={item} state={state} nested />)}
+        {expanded && group.items.map(item => <NavigationItem key={item.name} item={item} state={state} dense={dense} nested />)}
       </div>
     </div>
   );
 }
 
-function NavigationEntry({ entry, state }: { entry: NavEntry; state: NavigationState }) {
+function NavigationEntry({ entry, state, dense }: { entry: NavEntry; state: NavigationState; dense: boolean }) {
   return isNavGroup(entry)
-    ? <NavigationGroup group={entry} state={state} />
-    : <NavigationItem item={entry} state={state} />;
+    ? <NavigationGroup group={entry} state={state} dense={dense} />
+    : <NavigationItem item={entry} state={state} dense={dense} />;
 }
 
 /** Whether a scroller has content below its visible part, kept current on scroll and resize. */
@@ -301,16 +318,19 @@ function useScrollableBelow() {
  * The sidebar's two navigation zones: the core workflow, then the technical
  * resources. They are separated by whitespace — never a divider line.
  */
-export function SidebarNavigation({ state, permissions, navRef }: {
+export function SidebarNavigation({ state, permissions, navRef, dense = false }: {
   state: NavigationState;
-  permissions: { canManageAgents: boolean; canManageMembers: boolean; canReadMcpLog: boolean };
+  permissions: { canManageAgents: boolean; canManageMembers: boolean; canReadMcpLog: boolean; canManagePlugins?: boolean };
   /** The scroller, for the sidebar to measure whether every item fits. */
   navRef?: (element: HTMLElement | null) => void;
+  /** Tighter rows, while Usage is folded to make room in a short window. */
+  dense?: boolean;
 }) {
   const resources = getResourceNavigation(
     permissions.canManageAgents,
     permissions.canManageMembers,
     permissions.canReadMcpLog,
+    permissions.canManagePlugins,
   );
   const { below: scrollableBelow, ref: scrollRef, update: updateScroll } = useScrollableBelow();
   const setNav = useCallback((element: HTMLElement | null) => {
@@ -324,12 +344,12 @@ export function SidebarNavigation({ state, permissions, navRef }: {
     <nav ref={setNav} onScroll={updateScroll} data-scrollable-below={scrollableBelow || undefined}
       className="scrollbar-thin relative flex min-h-0 flex-col overflow-y-auto pt-2 pb-1">
       <div className="flex flex-col gap-0.5">
-        {CORE_NAVIGATION.map(item => <NavigationItem key={item.name} item={item} state={state} />)}
+        {CORE_NAVIGATION.map(item => <NavigationItem key={item.name} item={item} state={state} dense={dense} />)}
       </div>
       {/* Whitespace spacer (no divider) between the core-workflow and
           technical-resources zones. */}
       <div className="mt-6 flex flex-col gap-0.5">
-        {resources.map(entry => <NavigationEntry key={entry.name} entry={entry} state={state} />)}
+        {resources.map(entry => <NavigationEntry key={entry.name} entry={entry} state={state} dense={dense} />)}
       </div>
       {scrollableBelow && !state.desktop && (
         <div aria-hidden="true" data-testid="sidebar-nav-fade"

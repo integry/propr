@@ -1,0 +1,10 @@
+{
+  "accepted": { "status": 200, "headers": { "content-type": "text/html" }, "body": "ok" },
+  "rateLimited": { "status": 429, "headers": { "retry-after": "30" }, "body": "rate_limited" },
+  "permanent": [
+    { "status": 404, "body": "no_service", "detail": "no_service" },
+    { "status": 403, "body": "action_prohibited", "detail": "action_prohibited" },
+    { "status": 400, "body": "invalid_payload", "detail": "invalid_payload" },
+    { "status": 410, "body": "channel_is_archived", "detail": "channel_is_archived" }
+  ]
+}

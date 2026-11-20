@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 327
-    documented: 89
+    total: 349
+    documented: 111
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -4853,6 +4853,1001 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_settings
       x-legacy-error: true
+  /api/instance/plugins/v1:
+    get:
+      operationId: listPlugins
+      summary: List the plugins of this ProPR's registry, and installed plugins an upgrade removed from it, with their installation state.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Plugins in catalog order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginList"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}:
+    get:
+      operationId: getPlugin
+      summary: "Read one plugin: manifest, settings, connection states, pending approvals and acknowledgements, and its newest audit events."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The plugin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginDetailResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/activity:
+    get:
+      operationId: getPluginActivity
+      summary: "Read the plugin's event delivery health (healthy, degraded or paused, with the last error) and its newest delivery records (events, webhooks and handler commands): time, event id and type, handler, outcome, duration, attempt, redacted error and log lines. Records are kept for 14 days."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Health and delivery records, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginActivityResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/activity/{deliveryId}/retry:
+    post:
+      operationId: retryPluginDelivery
+      summary: "Retry a failed event delivery: it gets one more attempt, with the same delivery id, the next time the dispatcher runs (after Resume while deliveries are paused). Refused (409) for a delivery that has not failed."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: deliveryId
+          in: path
+          required: true
+          description: The activity record id (`id` of a delivery).
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The delivery, pending again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginDeliveryResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/approve:
+    post:
+      operationId: approvePlugin
+      summary: Approve the permission set of the current manifest after an upgrade, with the secret acknowledgements it needs again.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginAcknowledgementRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/commands/{commandName}/owner:
+    put:
+      operationId: setPluginSharedCommandOwner
+      summary: "Choose which plugin a shared command name (for example `/deploy`) runs when several enabled plugins offer it for a repository, or clear the choice (null): the only enabled one then runs it, and with several the command replies naming their specific commands. The owner must be installed and offer the name. Recorded on this plugin and on the previous and new owners. Refused (409) for a command that is not shared."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: commandName
+          in: path
+          required: true
+          description: A shared command name from the manifest, without the slash.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginSharedCommandOwnerRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/commands/{commandName}/write:
+    put:
+      operationId: setPluginCommandWrite
+      summary: Switch "Allow this command to use write access" of a `needsWrite` command on or off (off by default). With it on, a commenter with write permission on the repository can run the command, and its run alone may use the plugin's write servers the command names; otherwise the command is refused with a reply. Refused (409) for a command that does not use write access.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: commandName
+          in: path
+          required: true
+          description: A command name from the manifest, without the slash.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginCommandWriteRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}:
+    put:
+      operationId: setPluginConnection
+      summary: Set or clear a `token` or `signing_secret` connection. The secret is sealed and write-only.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: Connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginConnectionRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/client:
+    put:
+      operationId: setPluginOAuthClient
+      summary: Configure or clear the pre-registered OAuth client of an `oauth` connection whose `registrations` permit `preregistered` (409 otherwise). The client id becomes the managed MCP servers' client id and the secret is sealed and write-only; changing the client discards their OAuth connections.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginOAuthClientRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/complete:
+    post:
+      operationId: completePluginOAuth
+      summary: Complete a sign-in of this connection with the state and code the provider returned, in the session that started it. The extension OAuth callback completes it too.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginOAuthCompleteRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/disconnect:
+    post:
+      operationId: disconnectPluginOAuth
+      summary: "Disconnect an `oauth` connection: its managed servers' tokens are revoked where possible and deleted, and later runs leave the servers out."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/connections/{connectionName}/oauth/start:
+    post:
+      operationId: startPluginOAuth
+      summary: Start the extension OAuth sign-in of an `oauth` connection for its managed MCP server, bound to this browser session. ProPR identifies itself as it does for library servers.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: connectionName
+          in: path
+          required: true
+          description: An `oauth` connection name from the manifest.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The authorization URL to open.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginOAuthStartResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/enabled:
+    put:
+      operationId: setPluginEnabled
+      summary: Enable or disable. Enabling is refused (409, with the reasons) while a required setting, a required token connection or a secret acknowledgement is missing. Enabling activates the plugin's managed extension library items and lists its automation templates; disabling deactivates and hides them and keeps settings and connections.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEnabledRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/install:
+    post:
+      operationId: installPlugin
+      summary: Install a registry plugin, disabled, with its default settings; grants the manifest's permissions. A package server with secret variables must be acknowledged.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginAcknowledgementRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/repositories:
+    put:
+      operationId: setPluginRepositories
+      summary: Limit the plugin to repositories, or clear the limit (all repositories).
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginRepositoriesRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/resume:
+    post:
+      operationId: resumePluginDeliveries
+      summary: "Resume event deliveries paused after repeated failures: the failure count starts over, Degraded clears and waiting retries are due at once. Refused (409) when deliveries are not paused."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The new delivery health.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginHealthResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/settings:
+    put:
+      operationId: updatePluginSettings
+      summary: Replace the settings, validated against the manifest's settings schema. Required settings cannot be removed while the plugin is enabled.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginSettingsRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/settings/{settingKey}/options:
+    get:
+      operationId: getPluginSettingOptions
+      summary: Load the choices of a setting whose manifest entry has `optionsFrom` (for example the teams or workflow states of the connected service). The named handler runs now, enabled or not, with outbound HTTP to the plugin's hosts and no ProPR permission. Refused with 404 for a setting without `optionsFrom`, and with 409 and the handler's message when it fails, for example while the service is not connected yet.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: settingKey
+          in: path
+          required: true
+          description: A setting key from the manifest.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The choices, in the order the plugin gives them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginSettingOptionsResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/uninstall:
+    post:
+      operationId: uninstallPlugin
+      summary: "Uninstall: deletes the installation, its settings, its connections and its managed extension library items. Refused (409, naming them) while an automation adds a managed item explicitly. The audit trail stays."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginUninstallRequest"
+      responses:
+        "200":
+          description: The plugin's new state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/webhooks:
+    get:
+      operationId: getPluginWebhooks
+      summary: Read the installed plugin's inbound webhook URLs (one per declared webhook, with its verification scheme) and the count of requests refused because they failed verification. Refused (409) when the plugin is not installed.
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The webhook URLs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginWebhooksResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/plugins/v1/{pluginId}/webhooks/regenerate:
+    post:
+      operationId: regeneratePluginWebhookKey
+      summary: "Replace the plugin's installation key: every webhook URL changes and the old URLs answer 404 at once. Update the URL at each sending service afterwards."
+      description: |-
+        Durable instance administrator with instance.manage_settings required. Mutations require application/json and X-ProPR-Plugins: 1, and are recorded in the plugin audit trail. Connection secrets are never returned.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Configuration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: pluginId
+          in: path
+          required: true
+          description: Plugin id, for example `example-pack`.
+          schema:
+            type: string
+        - name: X-ProPR-Plugins
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginEmptyRequest"
+      responses:
+        "200":
+          description: The new webhook URLs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginWebhooksResponse"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
   /api/instance/storage/v1/capabilities:
     get:
       operationId: getInstanceStorageCapabilities
@@ -6853,6 +7848,99 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/plugins/{installationKey}/hooks/{webhookName}:
+    post:
+      operationId: receivePluginWebhook
+      summary: Receive an inbound webhook request for a plugin
+      description: Public. ProPR verifies the request with the webhook's scheme (`hmac-sha256`, `slack-v0` or `token-header`) and the plugin's signing secret before any plugin code runs, then queues the plugin's handler as a delivery of kind `webhook`. The body is read raw, exactly as transmitted, up to 256 KiB, and verified over those bytes; a `Content-Encoding` of gzip, deflate or br is decoded only after verification, to at most 256 KiB. The webhook rate limiter applies. Bodies and signature headers are never stored or logged.
+      tags:
+        - Webhooks
+      security: []
+      parameters:
+        - name: installationKey
+          in: path
+          required: true
+          description: The unguessable installation key from the Plugins page.
+          schema:
+            type: string
+        - name: webhookName
+          in: path
+          required: true
+          description: A webhook name from the plugin manifest.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: "Any body, read raw: JSON, form-encoded or text, as the sending service signs it."
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonObject"
+      responses:
+        "200":
+          description: The webhook's respond function answered at once (a challenge echo); the handler does not run.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "202":
+          description: "Verified and queued: `{ accepted: true, deliveryId }`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonObject"
+        "400":
+          description: The delivery id header is malformed, or a verified compressed body could not be decoded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          description: "Verification failed: missing or wrong signature or token, a stale timestamp, or no signing secret set. Counted on the installation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "404":
+          description: Unknown or regenerated installation key, a disabled or uninstalled plugin, or an undeclared webhook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The delivery id was already received (a replay).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "413":
+          description: The body is larger than 256 KiB, as sent or once decoded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "415":
+          description: A verified body has an unsupported `Content-Encoding` (only gzip, deflate or br, one of them).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: Deliveries of the plugin are paused, or too many deliveries are waiting; retry after `Retry-After`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
   /api/preview-media/comments/{owner}/{repo}/{number}/{assetId}:
     get:
       operationId: getApiPreviewMediaCommentsOwnerRepoNumberAssetId
@@ -7448,7 +8536,7 @@ paths:
     get:
       operationId: listRepositoryEvents
       summary: List repository change events after a cursor
-      description: "Reads the durable change-event journal of one repository (pull request, epic queue and plan issue changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned."
+      description: "Reads the durable change-event journal of one repository (pull request, epic queue, plan issue and task changes) after `afterCursor`, in journal order, optionally filtered by domain, type, pull request and plan. Delivery is at-least-once: resume with the cursor of the last event you processed. A call without a cursor starts at the current end of the journal and returns the current cursor with no history, unless `fromStart=true`. The caller needs read access to the repository on GitHub (the check MCP `list_pull_requests` applies); events of other repositories are never returned."
       tags:
         - Repositories
       security:
@@ -7480,13 +8568,13 @@ paths:
         - name: domains
           in: query
           required: false
-          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`."
           schema:
             type: string
         - name: types
           in: query
           required: false
-          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`."
           schema:
             type: string
         - name: pullRequest
@@ -7578,13 +8666,13 @@ paths:
         - name: domains
           in: query
           required: false
-          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`."
+          description: "Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`."
           schema:
             type: string
         - name: types
           in: query
           required: false
-          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`."
+          description: "Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`."
           schema:
             type: string
         - name: pullRequest
@@ -10845,7 +11933,7 @@ components:
                     pattern: ^[\x21-\x7e]{1,512}$
                   repositories:
                     default: []
-                    maxItems: 64
+                    maxItems: 256
                     type: array
                     items:
                       type: string
@@ -10860,6 +11948,33 @@ components:
                   autoApply:
                     default: true
                     type: boolean
+                  managedBy:
+                    type: object
+                    properties:
+                      plugin:
+                        type: string
+                        maxLength: 48
+                        pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                      item:
+                        type: string
+                        pattern: ^[a-z][a-z0-9_-]{0,47}$
+                      active:
+                        type: boolean
+                      registrations:
+                        minItems: 1
+                        maxItems: 3
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                            - metadata_document
+                            - dynamic
+                            - preregistered
+                    required:
+                      - plugin
+                      - item
+                      - active
+                    additionalProperties: false
                 required:
                   - kind
                   - name
@@ -10901,7 +12016,7 @@ components:
                       - write
                   repositories:
                     default: []
-                    maxItems: 64
+                    maxItems: 256
                     type: array
                     items:
                       type: string
@@ -10916,6 +12031,33 @@ components:
                   autoApply:
                     default: true
                     type: boolean
+                  managedBy:
+                    type: object
+                    properties:
+                      plugin:
+                        type: string
+                        maxLength: 48
+                        pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                      item:
+                        type: string
+                        pattern: ^[a-z][a-z0-9_-]{0,47}$
+                      active:
+                        type: boolean
+                      registrations:
+                        minItems: 1
+                        maxItems: 3
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                            - metadata_document
+                            - dynamic
+                            - preregistered
+                    required:
+                      - plugin
+                      - item
+                      - active
+                    additionalProperties: false
                 required:
                   - kind
                   - name
@@ -11002,7 +12144,7 @@ components:
                       pattern: ^[A-Z_][A-Z0-9_]{0,99}$
                   repositories:
                     default: []
-                    maxItems: 64
+                    maxItems: 256
                     type: array
                     items:
                       type: string
@@ -11017,6 +12159,33 @@ components:
                   autoApply:
                     default: true
                     type: boolean
+                  managedBy:
+                    type: object
+                    properties:
+                      plugin:
+                        type: string
+                        maxLength: 48
+                        pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                      item:
+                        type: string
+                        pattern: ^[a-z][a-z0-9_-]{0,47}$
+                      active:
+                        type: boolean
+                      registrations:
+                        minItems: 1
+                        maxItems: 3
+                        type: array
+                        items:
+                          type: string
+                          enum:
+                            - metadata_document
+                            - dynamic
+                            - preregistered
+                    required:
+                      - plugin
+                      - item
+                      - active
+                    additionalProperties: false
                 required:
                   - name
                   - enabled
@@ -11047,7 +12216,7 @@ components:
                 type: boolean
               repositories:
                 default: []
-                maxItems: 64
+                maxItems: 256
                 type: array
                 items:
                   type: string
@@ -11062,6 +12231,33 @@ components:
               autoApply:
                 default: true
                 type: boolean
+              managedBy:
+                type: object
+                properties:
+                  plugin:
+                    type: string
+                    maxLength: 48
+                    pattern: ^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$
+                  item:
+                    type: string
+                    pattern: ^[a-z][a-z0-9_-]{0,47}$
+                  active:
+                    type: boolean
+                  registrations:
+                    minItems: 1
+                    maxItems: 3
+                    type: array
+                    items:
+                      type: string
+                      enum:
+                        - metadata_document
+                        - dynamic
+                        - preregistered
+                required:
+                  - plugin
+                  - item
+                  - active
+                additionalProperties: false
             required:
               - bundleId
               - enabled
@@ -11074,7 +12270,7 @@ components:
         - servers
         - skills
       additionalProperties: false
-      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
+      description: "Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active, and for OAuth servers the client registration methods the plugin permits at sign-in); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected."
     ExtensionLibraryRead:
       type: object
       properties:
@@ -12299,6 +13495,1779 @@ components:
       required:
         - unreadCount
       additionalProperties: false
+    PluginAcknowledgementRequest:
+      type: object
+      properties:
+        acknowledgements:
+          description: Package servers whose secret variables the administrator confirms are readable by the agent CLI, its shell tools and repository setup scripts in the task container.
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    PluginActivityResponse:
+      type: object
+      properties:
+        health:
+          $ref: "#/components/schemas/PluginHealth"
+        deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginDelivery"
+          description: The newest 100 delivery records, newest first.
+      required:
+        - health
+        - deliveries
+      additionalProperties: false
+    PluginCommandWriteRequest:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Allow this command to use write access.
+      required:
+        - allowed
+      additionalProperties: false
+    PluginConnectionRequest:
+      type: object
+      properties:
+        value:
+          anyOf:
+            - type: string
+              maxLength: 4096
+            - type: "null"
+          description: The secret to store (write-only), or null to clear it.
+      required:
+        - value
+      additionalProperties: false
+    PluginDelivery:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: The activity record id, used by the retry route.
+        deliveryId:
+          type: string
+          description: The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-issue-<comment id>` or `cmd-review-<comment id>` for a command run from an issue comment or a pull request review comment); the same on every attempt.
+        kind:
+          type: string
+          enum:
+            - event
+            - gap
+            - webhook
+            - command
+          description: "`event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. `command`: one handler slash command to its handler."
+        repository:
+          type: string
+          description: The event's or command's repository; empty for a webhook delivery.
+        eventSeq:
+          type: integer
+          description: The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery; the issue or pull request number for a command.
+        eventType:
+          description: "`<domain>.<type>`; `webhook.<name>` for a webhook delivery; `command.<name>` for a command; null for a gap."
+          type:
+            - string
+            - "null"
+        handler:
+          type:
+            - string
+            - "null"
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - retrying
+            - succeeded
+            - failed
+            - skipped
+        attempt:
+          type: integer
+          description: Attempts made so far.
+        nextAttemptAt:
+          description: When the next attempt is due, while pending or retrying.
+          type:
+            - number
+            - "null"
+        createdAt:
+          type: number
+        startedAt:
+          type:
+            - number
+            - "null"
+        finishedAt:
+          type:
+            - number
+            - "null"
+        durationMs:
+          type:
+            - number
+            - "null"
+        timedOut:
+          type: boolean
+        error:
+          description: The latest attempt's redacted error message.
+          type:
+            - string
+            - "null"
+        logs:
+          type: array
+          items:
+            type: object
+            properties:
+              level:
+                type: string
+                enum:
+                  - debug
+                  - info
+                  - warn
+                  - error
+              message:
+                type: string
+              fields:
+                type: object
+                propertyNames:
+                  type: string
+                additionalProperties: {}
+              at:
+                type: number
+            required:
+              - level
+              - message
+              - at
+            additionalProperties: false
+          description: The latest attempt's redacted log lines.
+      required:
+        - id
+        - deliveryId
+        - kind
+        - repository
+        - eventSeq
+        - eventType
+        - handler
+        - status
+        - attempt
+        - nextAttemptAt
+        - createdAt
+        - startedAt
+        - finishedAt
+        - durationMs
+        - timedOut
+        - error
+        - logs
+      additionalProperties: false
+      description: "One event delivery to a plugin handler, or a recorded gap. Holds the event id and type only: never the event payload or a credential."
+    PluginDeliveryResponse:
+      type: object
+      properties:
+        delivery:
+          $ref: "#/components/schemas/PluginDelivery"
+      required:
+        - delivery
+      additionalProperties: false
+    PluginDetailResponse:
+      type: object
+      properties:
+        plugin:
+          type: object
+          properties:
+            id:
+              type: string
+            available:
+              type: boolean
+              description: The plugin is in this ProPR version's registry.
+            manifest:
+              anyOf:
+                - type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    description:
+                      type: string
+                    version:
+                      type: string
+                    category:
+                      type: string
+                      enum:
+                        - messaging
+                        - issue-tracking
+                        - observability
+                        - deployment
+                        - context
+                        - other
+                    homepage:
+                      type: string
+                    permissions:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                            enum:
+                              - events.read
+                              - tasks.read
+                              - tasks.create
+                              - issues.read
+                              - issues.create
+                              - issues.comment
+                              - pull_requests.read
+                              - pull_requests.comment
+                              - labels.write
+                              - repositories.read
+                              - notifications.send
+                          description:
+                            type: string
+                        required:
+                          - name
+                          - description
+                        additionalProperties: false
+                    connections:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          type:
+                            type: string
+                            enum:
+                              - oauth
+                              - token
+                              - signing_secret
+                          name:
+                            type: string
+                          label:
+                            type: string
+                          help:
+                            type: string
+                          helpUrl:
+                            type: string
+                          secretUrl:
+                            description: "A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored."
+                            type: object
+                            properties:
+                              hosts:
+                                type: array
+                                items:
+                                  type: string
+                              pathPrefixes:
+                                type: array
+                                items:
+                                  type: string
+                            required:
+                              - hosts
+                            additionalProperties: false
+                          required:
+                            description: "true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it."
+                            type: boolean
+                          authorization:
+                            description: "How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`)."
+                            type: string
+                            enum:
+                              - bearer
+                              - raw
+                              - basic
+                        required:
+                          - type
+                          - name
+                          - label
+                          - help
+                          - helpUrl
+                        additionalProperties: {}
+                    settings:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          const: object
+                        properties:
+                          type: object
+                          propertyNames:
+                            type: string
+                          additionalProperties:
+                            type: object
+                            properties: {}
+                            additionalProperties: {}
+                        required:
+                          type: array
+                          items:
+                            type: string
+                      required:
+                        - type
+                        - properties
+                        - required
+                      additionalProperties: false
+                      description: "The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`)."
+                    outboundHosts:
+                      type: array
+                      items:
+                        type: string
+                    outboundHostsFromSettings:
+                      type: array
+                      items:
+                        type: string
+                      description: Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved.
+                    contributes:
+                      type: object
+                      properties:
+                        mcpServers:
+                          type: array
+                          items:
+                            type: object
+                            properties: {}
+                            additionalProperties: {}
+                          description: Contributed MCP servers without launch arguments or environment values.
+                        skills:
+                          type: array
+                          items:
+                            type: string
+                        automationTemplates:
+                          type: array
+                          items:
+                            type: string
+                        commands:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                                description: Used as /<name> in a comment.
+                              description:
+                                type: string
+                              where:
+                                type: array
+                                items:
+                                  type: string
+                                  enum:
+                                    - pull_request
+                                    - issue
+                                description: "Where the command can be used: pull request comments, issue comments or both."
+                              kind:
+                                type: string
+                                enum:
+                                  - prompt
+                                  - handler
+                                description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command."
+                              skills:
+                                type: array
+                                items:
+                                  type: string
+                                description: Skills of this plugin the command adds to its run.
+                              servers:
+                                type: array
+                                items:
+                                  type: string
+                                description: MCP servers of this plugin the command adds to its run.
+                              needsWrite:
+                                type: boolean
+                                description: "The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository."
+                              shared:
+                                type: boolean
+                                description: Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs.
+                              specific:
+                                type: array
+                                items:
+                                  type: string
+                                description: This plugin's own commands that stand in for a shared name.
+                            required:
+                              - name
+                              - description
+                              - where
+                              - kind
+                              - skills
+                              - servers
+                              - needsWrite
+                              - shared
+                              - specific
+                            additionalProperties: false
+                          description: Slash commands the plugin adds; never their prompt text.
+                        subscriptions:
+                          type: array
+                          items:
+                            type: string
+                        webhooks:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              description:
+                                type: string
+                              scheme:
+                                type: string
+                                enum:
+                                  - hmac-sha256
+                                  - slack-v0
+                                  - token-header
+                                description: How ProPR verifies the webhook's requests.
+                            required:
+                              - name
+                              - description
+                              - scheme
+                            additionalProperties: false
+                      required:
+                        - mcpServers
+                        - skills
+                        - automationTemplates
+                        - commands
+                        - subscriptions
+                        - webhooks
+                      additionalProperties: false
+                  required:
+                    - id
+                    - name
+                    - description
+                    - version
+                    - category
+                    - homepage
+                    - permissions
+                    - connections
+                    - settings
+                    - outboundHosts
+                    - outboundHostsFromSettings
+                    - contributes
+                  additionalProperties: false
+                  description: The public projection of the plugin manifest.
+                - type: "null"
+            state:
+              type: string
+              enum:
+                - available
+                - installed
+                - enabled
+            installation:
+              anyOf:
+                - type: object
+                  properties:
+                    installedVersion:
+                      type: string
+                      description: The manifest version installed or last approved.
+                    enabled:
+                      type: boolean
+                    settings:
+                      type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties:
+                        anyOf:
+                          - type: string
+                          - type: number
+                          - type: boolean
+                          - type: array
+                            items:
+                              type: string
+                          - type: object
+                            propertyNames:
+                              type: string
+                            additionalProperties:
+                              type: string
+                      description: Setting values; never secrets, which are connections.
+                    repositories:
+                      anyOf:
+                        - type: array
+                          items:
+                            type: string
+                        - type: "null"
+                      description: Repositories (`owner/repo`) the plugin is limited to; null for all repositories.
+                    grantedPermissions:
+                      type: array
+                      items:
+                        type: string
+                        enum:
+                          - events.read
+                          - tasks.read
+                          - tasks.create
+                          - issues.read
+                          - issues.create
+                          - issues.comment
+                          - pull_requests.read
+                          - pull_requests.comment
+                          - labels.write
+                          - repositories.read
+                          - notifications.send
+                    acknowledgements:
+                      type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties:
+                        type: object
+                        properties:
+                          actor:
+                            type: string
+                          at:
+                            type: number
+                          package:
+                            type: string
+                          version:
+                            type: string
+                          secretEnv:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - actor
+                          - at
+                          - package
+                          - version
+                          - secretEnv
+                        additionalProperties: false
+                      description: "Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names."
+                    installedBy:
+                      type: string
+                    installedAt:
+                      type: number
+                    updatedBy:
+                      type: string
+                    updatedAt:
+                      type: number
+                  required:
+                    - installedVersion
+                    - enabled
+                    - settings
+                    - repositories
+                    - grantedPermissions
+                    - acknowledgements
+                    - installedBy
+                    - installedAt
+                    - updatedBy
+                    - updatedAt
+                  additionalProperties: false
+                - type: "null"
+            connections:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+                    enum:
+                      - oauth
+                      - token
+                      - signing_secret
+                  label:
+                    type: string
+                  state:
+                    type: string
+                    enum:
+                      - connected
+                      - not_connected
+                      - needs_sign_in
+                    description: An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh.
+                  required:
+                    type: boolean
+                    description: "Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required."
+                  setBy:
+                    description: Who set the value; for an `oauth` connection, who configured its pre-registered client.
+                    type: string
+                  setAt:
+                    type: number
+                required:
+                  - name
+                  - type
+                  - label
+                  - state
+                  - required
+                additionalProperties: false
+            needsApproval:
+              type: boolean
+              description: The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant.
+            pendingPermissions:
+              type: array
+              items:
+                type: string
+                enum:
+                  - events.read
+                  - tasks.read
+                  - tasks.create
+                  - issues.read
+                  - issues.create
+                  - issues.comment
+                  - pull_requests.read
+                  - pull_requests.comment
+                  - labels.write
+                  - repositories.read
+                  - notifications.send
+            pendingAcknowledgements:
+              type: array
+              items:
+                type: object
+                properties:
+                  server:
+                    type: string
+                  package:
+                    type: string
+                  version:
+                    type: string
+                  secretEnv:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - server
+                  - package
+                  - version
+                  - secretEnv
+                additionalProperties: false
+            enableBlockers:
+              type: array
+              items:
+                type: string
+              description: Why enabling is refused right now; empty when it can be enabled.
+            contributions:
+              type: object
+              properties:
+                mcpServers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        description: The server name in the manifest.
+                      kind:
+                        type: string
+                        enum:
+                          - https
+                          - package
+                      managed:
+                        anyOf:
+                          - type: object
+                            properties:
+                              kind:
+                                type: string
+                                const: server
+                              name:
+                                type: string
+                                description: The library item name; prefixed with the plugin id after a name collision.
+                              enabled:
+                                type: boolean
+                                description: The library item's own enabled switch.
+                              active:
+                                type: boolean
+                                description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                            required:
+                              - kind
+                              - name
+                              - enabled
+                              - active
+                            additionalProperties: false
+                          - type: "null"
+                      href:
+                        type: string
+                        description: The extension library route that lists and edits the item.
+                    required:
+                      - name
+                      - kind
+                      - managed
+                      - href
+                    additionalProperties: false
+                skills:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      managed:
+                        anyOf:
+                          - type: object
+                            properties:
+                              kind:
+                                type: string
+                                const: skill
+                              bundleId:
+                                type: string
+                              enabled:
+                                type: boolean
+                                description: The library item's own enabled switch.
+                              active:
+                                type: boolean
+                                description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                            required:
+                              - kind
+                              - bundleId
+                              - enabled
+                              - active
+                            additionalProperties: false
+                          - type: "null"
+                      href:
+                        type: string
+                    required:
+                      - name
+                      - managed
+                      - href
+                    additionalProperties: false
+                automationTemplates:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      catalogId:
+                        type: string
+                        description: The template id in the automation template catalog.
+                      available:
+                        type: boolean
+                        description: "Listed in the catalog: the plugin is enabled."
+                      href:
+                        type: string
+                    required:
+                      - id
+                      - catalogId
+                      - available
+                      - href
+                    additionalProperties: false
+              required:
+                - mcpServers
+                - skills
+                - automationTemplates
+              additionalProperties: false
+              description: The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed.
+            commands:
+              description: Instance settings of the plugin's commands.
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  needsWrite:
+                    type: boolean
+                  writeAllowed:
+                    type: boolean
+                    description: '"Allow this command to use write access" is on. Off until an administrator switches it on.'
+                  writeChangedBy:
+                    type: string
+                  writeChangedAt:
+                    type: number
+                  sharedOwner:
+                    description: Present for a shared command.
+                    type: object
+                    properties:
+                      owner:
+                        description: The plugin the shared name runs when several enabled plugins offer it; null when none was chosen.
+                        type:
+                          - string
+                          - "null"
+                      setBy:
+                        type: string
+                      setAt:
+                        type: number
+                      candidates:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            pluginId:
+                              type: string
+                            pluginName:
+                              type: string
+                            specific:
+                              type: array
+                              items:
+                                type: string
+                            enabled:
+                              type: boolean
+                          required:
+                            - pluginId
+                            - pluginName
+                            - specific
+                            - enabled
+                          additionalProperties: false
+                        description: Every installed plugin offering the name.
+                    required:
+                      - owner
+                      - candidates
+                    additionalProperties: false
+                required:
+                  - name
+                  - needsWrite
+                  - writeAllowed
+                additionalProperties: false
+            audit:
+              type: array
+              items:
+                type: object
+                properties:
+                  action:
+                    type: string
+                    enum:
+                      - install
+                      - update_settings
+                      - set_repositories
+                      - set_connection
+                      - clear_connection
+                      - enable
+                      - disable
+                      - approve
+                      - uninstall
+                      - start_oauth
+                      - complete_oauth
+                      - disconnect_oauth
+                      - set_oauth_client
+                      - clear_oauth_client
+                      - handler_attempt
+                      - handler_call
+                      - handler_refused
+                      - retry_delivery
+                      - resume_deliveries
+                      - regenerate_webhook_key
+                      - set_command_write
+                      - set_shared_command_owner
+                  actor:
+                    type: string
+                  at:
+                    type: number
+                  detail:
+                    type: object
+                    properties: {}
+                    additionalProperties: {}
+                required:
+                  - action
+                  - actor
+                  - at
+                  - detail
+                additionalProperties: false
+              description: The newest 50 management actions, newest first.
+          required:
+            - id
+            - available
+            - manifest
+            - state
+            - installation
+            - connections
+            - needsApproval
+            - pendingPermissions
+            - pendingAcknowledgements
+            - enableBlockers
+            - audit
+          additionalProperties: false
+      required:
+        - plugin
+      additionalProperties: false
+    PluginEmptyRequest:
+      type: object
+      properties: {}
+      additionalProperties: false
+    PluginEnabledRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+      required:
+        - enabled
+      additionalProperties: false
+    PluginHealth:
+      type: object
+      properties:
+        state:
+          type: string
+          enum:
+            - healthy
+            - degraded
+            - paused
+          description: "`degraded` after repeated consecutive failures; `paused` after the configured number of them, until an administrator resumes deliveries."
+        consecutiveFailures:
+          type: integer
+        pauseAfterFailures:
+          type: integer
+        lastError:
+          type:
+            - string
+            - "null"
+        lastErrorAt:
+          type:
+            - number
+            - "null"
+        degradedAt:
+          type:
+            - number
+            - "null"
+        pausedAt:
+          type:
+            - number
+            - "null"
+      required:
+        - state
+        - consecutiveFailures
+        - pauseAfterFailures
+        - lastError
+        - lastErrorAt
+        - degradedAt
+        - pausedAt
+      additionalProperties: false
+      description: Delivery health of a plugin installation.
+    PluginHealthResponse:
+      type: object
+      properties:
+        health:
+          $ref: "#/components/schemas/PluginHealth"
+      required:
+        - health
+      additionalProperties: false
+    PluginList:
+      type: object
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginView"
+      required:
+        - plugins
+      additionalProperties: false
+    PluginOAuthClientRequest:
+      type: object
+      properties:
+        client:
+          anyOf:
+            - type: object
+              properties:
+                clientId:
+                  type: string
+                  pattern: ^[\x21-\x7e]{1,512}$
+                  description: The client id registered with the provider for this instance.
+                clientSecret:
+                  description: The client secret (write-only); leave out for a public client.
+                  anyOf:
+                    - type: string
+                      maxLength: 4096
+                    - type: "null"
+              required:
+                - clientId
+              additionalProperties: false
+            - type: "null"
+          description: The pre-registered client, or null to clear it.
+      required:
+        - client
+      additionalProperties: false
+    PluginOAuthCompleteRequest:
+      type: object
+      properties:
+        state:
+          type: string
+          description: The `state` the provider returned to the redirect URI.
+        code:
+          type: string
+        error:
+          type: string
+        iss:
+          type: string
+      required:
+        - state
+      additionalProperties: false
+    PluginOAuthStartResponse:
+      type: object
+      properties:
+        authorizationUrl:
+          type: string
+          description: Open this URL to sign in; the provider redirects to the extension OAuth callback.
+        server:
+          type: string
+          description: The managed library server being signed in.
+      required:
+        - authorizationUrl
+        - server
+      additionalProperties: false
+    PluginRepositoriesRequest:
+      type: object
+      properties:
+        repositories:
+          anyOf:
+            - maxItems: 256
+              type: array
+              items:
+                type: string
+            - type: "null"
+          description: owner/repo names; null or an empty list for all repositories.
+      required:
+        - repositories
+      additionalProperties: false
+    PluginResponse:
+      type: object
+      properties:
+        plugin:
+          $ref: "#/components/schemas/PluginView"
+      required:
+        - plugin
+      additionalProperties: false
+    PluginSettingOptionsResponse:
+      type: object
+      properties:
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                description: The value saved.
+              label:
+                type: string
+                description: The label shown.
+            required:
+              - value
+              - label
+            additionalProperties: false
+          description: At most 250 choices.
+      required:
+        - options
+      additionalProperties: false
+      description: The choices of a plugin setting, loaded from the service by the plugin's optionsFrom handler.
+    PluginSettingsRequest:
+      type: object
+      properties:
+        settings:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties:
+            anyOf:
+              - anyOf:
+                  - type: string
+                  - type: number
+                  - type: boolean
+                  - type: array
+                    items:
+                      type: string
+                  - type: object
+                    propertyNames:
+                      type: string
+                    additionalProperties:
+                      type: string
+              - type: "null"
+          description: The complete settings; validated against the manifest's settings schema. Null values are removed.
+      required:
+        - settings
+      additionalProperties: false
+    PluginSharedCommandOwnerRequest:
+      type: object
+      properties:
+        owner:
+          description: An installed plugin that offers the shared name, or null to clear the choice.
+          type:
+            - string
+            - "null"
+      required:
+        - owner
+      additionalProperties: false
+    PluginUninstallRequest:
+      type: object
+      properties:
+        confirm:
+          type: string
+          description: Must repeat the plugin id.
+      required:
+        - confirm
+      additionalProperties: false
+    PluginView:
+      type: object
+      properties:
+        id:
+          type: string
+        available:
+          type: boolean
+          description: The plugin is in this ProPR version's registry.
+        manifest:
+          anyOf:
+            - type: object
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                description:
+                  type: string
+                version:
+                  type: string
+                category:
+                  type: string
+                  enum:
+                    - messaging
+                    - issue-tracking
+                    - observability
+                    - deployment
+                    - context
+                    - other
+                homepage:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        enum:
+                          - events.read
+                          - tasks.read
+                          - tasks.create
+                          - issues.read
+                          - issues.create
+                          - issues.comment
+                          - pull_requests.read
+                          - pull_requests.comment
+                          - labels.write
+                          - repositories.read
+                          - notifications.send
+                      description:
+                        type: string
+                    required:
+                      - name
+                      - description
+                    additionalProperties: false
+                connections:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - oauth
+                          - token
+                          - signing_secret
+                      name:
+                        type: string
+                      label:
+                        type: string
+                      help:
+                        type: string
+                      helpUrl:
+                        type: string
+                      secretUrl:
+                        description: "A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored."
+                        type: object
+                        properties:
+                          hosts:
+                            type: array
+                            items:
+                              type: string
+                          pathPrefixes:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - hosts
+                        additionalProperties: false
+                      required:
+                        description: "true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it."
+                        type: boolean
+                      authorization:
+                        description: "How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`)."
+                        type: string
+                        enum:
+                          - bearer
+                          - raw
+                          - basic
+                    required:
+                      - type
+                      - name
+                      - label
+                      - help
+                      - helpUrl
+                    additionalProperties: {}
+                settings:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      const: object
+                    properties:
+                      type: object
+                      propertyNames:
+                        type: string
+                      additionalProperties:
+                        type: object
+                        properties: {}
+                        additionalProperties: {}
+                    required:
+                      type: array
+                      items:
+                        type: string
+                  required:
+                    - type
+                    - properties
+                    - required
+                  additionalProperties: false
+                  description: "The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`)."
+                outboundHosts:
+                  type: array
+                  items:
+                    type: string
+                outboundHostsFromSettings:
+                  type: array
+                  items:
+                    type: string
+                  description: Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved.
+                contributes:
+                  type: object
+                  properties:
+                    mcpServers:
+                      type: array
+                      items:
+                        type: object
+                        properties: {}
+                        additionalProperties: {}
+                      description: Contributed MCP servers without launch arguments or environment values.
+                    skills:
+                      type: array
+                      items:
+                        type: string
+                    automationTemplates:
+                      type: array
+                      items:
+                        type: string
+                    commands:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                            description: Used as /<name> in a comment.
+                          description:
+                            type: string
+                          where:
+                            type: array
+                            items:
+                              type: string
+                              enum:
+                                - pull_request
+                                - issue
+                            description: "Where the command can be used: pull request comments, issue comments or both."
+                          kind:
+                            type: string
+                            enum:
+                              - prompt
+                              - handler
+                            description: "prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command."
+                          skills:
+                            type: array
+                            items:
+                              type: string
+                            description: Skills of this plugin the command adds to its run.
+                          servers:
+                            type: array
+                            items:
+                              type: string
+                            description: MCP servers of this plugin the command adds to its run.
+                          needsWrite:
+                            type: boolean
+                            description: "The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository."
+                          shared:
+                            type: boolean
+                            description: Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs.
+                          specific:
+                            type: array
+                            items:
+                              type: string
+                            description: This plugin's own commands that stand in for a shared name.
+                        required:
+                          - name
+                          - description
+                          - where
+                          - kind
+                          - skills
+                          - servers
+                          - needsWrite
+                          - shared
+                          - specific
+                        additionalProperties: false
+                      description: Slash commands the plugin adds; never their prompt text.
+                    subscriptions:
+                      type: array
+                      items:
+                        type: string
+                    webhooks:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          description:
+                            type: string
+                          scheme:
+                            type: string
+                            enum:
+                              - hmac-sha256
+                              - slack-v0
+                              - token-header
+                            description: How ProPR verifies the webhook's requests.
+                        required:
+                          - name
+                          - description
+                          - scheme
+                        additionalProperties: false
+                  required:
+                    - mcpServers
+                    - skills
+                    - automationTemplates
+                    - commands
+                    - subscriptions
+                    - webhooks
+                  additionalProperties: false
+              required:
+                - id
+                - name
+                - description
+                - version
+                - category
+                - homepage
+                - permissions
+                - connections
+                - settings
+                - outboundHosts
+                - outboundHostsFromSettings
+                - contributes
+              additionalProperties: false
+              description: The public projection of the plugin manifest.
+            - type: "null"
+        state:
+          type: string
+          enum:
+            - available
+            - installed
+            - enabled
+        installation:
+          anyOf:
+            - type: object
+              properties:
+                installedVersion:
+                  type: string
+                  description: The manifest version installed or last approved.
+                enabled:
+                  type: boolean
+                settings:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    anyOf:
+                      - type: string
+                      - type: number
+                      - type: boolean
+                      - type: array
+                        items:
+                          type: string
+                      - type: object
+                        propertyNames:
+                          type: string
+                        additionalProperties:
+                          type: string
+                  description: Setting values; never secrets, which are connections.
+                repositories:
+                  anyOf:
+                    - type: array
+                      items:
+                        type: string
+                    - type: "null"
+                  description: Repositories (`owner/repo`) the plugin is limited to; null for all repositories.
+                grantedPermissions:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - events.read
+                      - tasks.read
+                      - tasks.create
+                      - issues.read
+                      - issues.create
+                      - issues.comment
+                      - pull_requests.read
+                      - pull_requests.comment
+                      - labels.write
+                      - repositories.read
+                      - notifications.send
+                acknowledgements:
+                  type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties:
+                    type: object
+                    properties:
+                      actor:
+                        type: string
+                      at:
+                        type: number
+                      package:
+                        type: string
+                      version:
+                        type: string
+                      secretEnv:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - actor
+                      - at
+                      - package
+                      - version
+                      - secretEnv
+                    additionalProperties: false
+                  description: "Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names."
+                installedBy:
+                  type: string
+                installedAt:
+                  type: number
+                updatedBy:
+                  type: string
+                updatedAt:
+                  type: number
+              required:
+                - installedVersion
+                - enabled
+                - settings
+                - repositories
+                - grantedPermissions
+                - acknowledgements
+                - installedBy
+                - installedAt
+                - updatedBy
+                - updatedAt
+              additionalProperties: false
+            - type: "null"
+        connections:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+                enum:
+                  - oauth
+                  - token
+                  - signing_secret
+              label:
+                type: string
+              state:
+                type: string
+                enum:
+                  - connected
+                  - not_connected
+                  - needs_sign_in
+                description: An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh.
+              required:
+                type: boolean
+                description: "Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required."
+              setBy:
+                description: Who set the value; for an `oauth` connection, who configured its pre-registered client.
+                type: string
+              setAt:
+                type: number
+            required:
+              - name
+              - type
+              - label
+              - state
+              - required
+            additionalProperties: false
+        needsApproval:
+          type: boolean
+          description: The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant.
+        pendingPermissions:
+          type: array
+          items:
+            type: string
+            enum:
+              - events.read
+              - tasks.read
+              - tasks.create
+              - issues.read
+              - issues.create
+              - issues.comment
+              - pull_requests.read
+              - pull_requests.comment
+              - labels.write
+              - repositories.read
+              - notifications.send
+        pendingAcknowledgements:
+          type: array
+          items:
+            type: object
+            properties:
+              server:
+                type: string
+              package:
+                type: string
+              version:
+                type: string
+              secretEnv:
+                type: array
+                items:
+                  type: string
+            required:
+              - server
+              - package
+              - version
+              - secretEnv
+            additionalProperties: false
+        enableBlockers:
+          type: array
+          items:
+            type: string
+          description: Why enabling is refused right now; empty when it can be enabled.
+        contributions:
+          type: object
+          properties:
+            mcpServers:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: The server name in the manifest.
+                  kind:
+                    type: string
+                    enum:
+                      - https
+                      - package
+                  managed:
+                    anyOf:
+                      - type: object
+                        properties:
+                          kind:
+                            type: string
+                            const: server
+                          name:
+                            type: string
+                            description: The library item name; prefixed with the plugin id after a name collision.
+                          enabled:
+                            type: boolean
+                            description: The library item's own enabled switch.
+                          active:
+                            type: boolean
+                            description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                        required:
+                          - kind
+                          - name
+                          - enabled
+                          - active
+                        additionalProperties: false
+                      - type: "null"
+                  href:
+                    type: string
+                    description: The extension library route that lists and edits the item.
+                required:
+                  - name
+                  - kind
+                  - managed
+                  - href
+                additionalProperties: false
+            skills:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  managed:
+                    anyOf:
+                      - type: object
+                        properties:
+                          kind:
+                            type: string
+                            const: skill
+                          bundleId:
+                            type: string
+                          enabled:
+                            type: boolean
+                            description: The library item's own enabled switch.
+                          active:
+                            type: boolean
+                            description: "False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies."
+                        required:
+                          - kind
+                          - bundleId
+                          - enabled
+                          - active
+                        additionalProperties: false
+                      - type: "null"
+                  href:
+                    type: string
+                required:
+                  - name
+                  - managed
+                  - href
+                additionalProperties: false
+            automationTemplates:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  catalogId:
+                    type: string
+                    description: The template id in the automation template catalog.
+                  available:
+                    type: boolean
+                    description: "Listed in the catalog: the plugin is enabled."
+                  href:
+                    type: string
+                required:
+                  - id
+                  - catalogId
+                  - available
+                  - href
+                additionalProperties: false
+          required:
+            - mcpServers
+            - skills
+            - automationTemplates
+          additionalProperties: false
+          description: The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed.
+        commands:
+          description: Instance settings of the plugin's commands.
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              needsWrite:
+                type: boolean
+              writeAllowed:
+                type: boolean
+                description: '"Allow this command to use write access" is on. Off until an administrator switches it on.'
+              writeChangedBy:
+                type: string
+              writeChangedAt:
+                type: number
+              sharedOwner:
+                description: Present for a shared command.
+                type: object
+                properties:
+                  owner:
+                    description: The plugin the shared name runs when several enabled plugins offer it; null when none was chosen.
+                    type:
+                      - string
+                      - "null"
+                  setBy:
+                    type: string
+                  setAt:
+                    type: number
+                  candidates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pluginId:
+                          type: string
+                        pluginName:
+                          type: string
+                        specific:
+                          type: array
+                          items:
+                            type: string
+                        enabled:
+                          type: boolean
+                      required:
+                        - pluginId
+                        - pluginName
+                        - specific
+                        - enabled
+                      additionalProperties: false
+                    description: Every installed plugin offering the name.
+                required:
+                  - owner
+                  - candidates
+                additionalProperties: false
+            required:
+              - name
+              - needsWrite
+              - writeAllowed
+            additionalProperties: false
+      required:
+        - id
+        - available
+        - manifest
+        - state
+        - installation
+        - connections
+        - needsApproval
+        - pendingPermissions
+        - pendingAcknowledgements
+        - enableBlockers
+      additionalProperties: false
+      description: A plugin with its installation state on this instance.
+    PluginWebhooksResponse:
+      type: object
+      properties:
+        webhooks:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              description:
+                type: string
+              scheme:
+                type: string
+                enum:
+                  - hmac-sha256
+                  - slack-v0
+                  - token-header
+              path:
+                type: string
+                description: "`/api/plugins/<installation key>/hooks/<name>`. The key is unguessable: treat the URL as a secret."
+              url:
+                description: The full URL; null when the instance has no public base URL.
+                type:
+                  - string
+                  - "null"
+            required:
+              - name
+              - description
+              - scheme
+              - path
+              - url
+            additionalProperties: false
+          description: One URL per webhook the plugin declares.
+        rejected:
+          type: object
+          properties:
+            count:
+              type: integer
+            lastAt:
+              type:
+                - number
+                - "null"
+            lastReason:
+              type:
+                - string
+                - "null"
+          required:
+            - count
+            - lastAt
+            - lastReason
+          additionalProperties: false
+          description: Requests refused because they failed verification. Their bodies and headers are never stored.
+        keyCreatedAt:
+          type:
+            - number
+            - "null"
+        keyCreatedBy:
+          description: The administrator who last regenerated the key, or `system`.
+          type:
+            - string
+            - "null"
+      required:
+        - webhooks
+        - rejected
+        - keyCreatedAt
+        - keyCreatedBy
+      additionalProperties: false
+      description: The inbound webhook URLs of an installed plugin.
     PullRequestReadiness:
       type: object
       properties:
@@ -12506,9 +15475,10 @@ components:
             - pull_request
             - epic_queue
             - plan_issue
+            - task
         type:
           type: string
-          description: Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`.
+          description: Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced`, `status_changed` or `queued`.
         repository:
           type: string
         pullRequest:
@@ -12519,7 +15489,7 @@ components:
           type: string
         entityId:
           type: string
-          description: PR number, epic execution id or plan issue id, as text.
+          description: PR number, epic execution id, plan issue id or task id, as text.
         head:
           description: Head SHA the event was recorded for, when it concerns one.
           type: string
@@ -12528,7 +15498,7 @@ components:
           propertyNames:
             type: string
           additionalProperties: {}
-          description: Identifiers and small scalars only; never PR bodies, comments, diffs or logs.
+          description: Identifiers and small scalars only; never PR bodies, comments, diffs, prompts, tool output or logs.
         occurredAt:
           type: string
           format: date-time

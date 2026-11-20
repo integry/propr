@@ -164,6 +164,25 @@ test('app image stages nested dependencies for every shipped workspace', () => {
   assert.match(dockerignore, /^\*\*\/node_modules$/m, 'host workspace node_modules must not enter the build');
 });
 
+test('app image ships the official plugin registry package, built, without sources or nested dependencies', () => {
+  const builderStage = dockerfile.slice(0, dockerfile.indexOf('AS runtime'));
+  const runtime = dockerfile.slice(dockerfile.indexOf('AS runtime'));
+  // Installed as a workspace (so node_modules/@propr/plugins links to it), copied and built after shared.
+  assert.ok(builderStage.indexOf('COPY packages/plugins/package*.json ./packages/plugins/') < builderStage.indexOf('RUN npm ci'));
+  assert.match(builderStage, /^COPY packages\/plugins \.\/packages\/plugins$/m);
+  assert.match(builderStage, /cd packages\/shared && npm run build \\\n\s+&& cd \.\.\/plugins && npm run build/);
+  // The runtime copy is staged after the prune, without node_modules or sources; handlers.ts files stay (they mark a plugin with handlers).
+  const staging = builderStage.indexOf('RUN mkdir -p /runtime-plugins');
+  assert.ok(staging > builderStage.indexOf('RUN npm prune --omit=dev'));
+  assert.match(builderStage, /rm -rf \/runtime-plugins\/node_modules \/runtime-plugins\/src \/runtime-plugins\/test /);
+  assert.doesNotMatch(builderStage.slice(staging, builderStage.indexOf('\n\n', staging)), /\.ts\b/, 'no .ts file (handlers.ts marks a plugin with handlers) is removed');
+  assert.match(runtime, /^COPY --from=builder \/runtime-plugins\/ \.\/packages\/plugins\/$/m);
+  // Its staging carries no nested dependencies, so it must not have any.
+  const nested = Object.entries(repoLock.packages).filter(([key, meta]) => key.startsWith('packages/plugins/node_modules/') && !meta.dev);
+  assert.deepEqual(nested.map(([key]) => key), [], 'packages/plugins has nested production dependencies: stage them with the other workspaces');
+  assert.ok(repoLock.packages['node_modules/@propr/plugins']?.link, '@propr/plugins is a linked workspace');
+});
+
 test('current lockfile nested production dependencies are all staged by the app image', () => {
   const staged = dockerfile
     .match(/--out \/runtime-deps \\\n\s+([^\n]+)$/m)[1]

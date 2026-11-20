@@ -1,0 +1,53 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture-webhooks",
+  "name": "Fixture webhooks",
+  "description": "Test fixture for plugin inbound webhooks: one webhook per verification scheme, a Slack challenge responder, a failing handler and a respond function that reaches for ctx, a counted challenge responder with a delivery id header, two names one extending the other, and a handler that leaks the body into its log and error.",
+  "version": "1.0.0",
+  "category": "other",
+  "homepage": "https://example.com/fixture-webhooks",
+  "icon": "icon.svg",
+  "connections": [
+    { "type": "signing_secret", "name": "hook-secret", "label": "Signing secret", "help": "Verifies inbound webhooks.", "helpUrl": "https://example.com/docs/webhooks" }
+  ],
+  "contributes": {
+    "webhooks": [
+      {
+        "name": "signed", "description": "HMAC-SHA256 signed, as GitHub signs", "handler": "onWebhook",
+        "verification": { "scheme": "hmac-sha256", "header": "X-Hub-Signature-256", "prefix": "sha256=", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-GitHub-Delivery"
+      },
+      {
+        "name": "slack", "description": "Slack Events API", "handler": "onWebhook", "respond": "slackChallenge",
+        "verification": { "scheme": "slack-v0", "connection": "hook-secret" }
+      },
+      {
+        "name": "token", "description": "Constant token header, as GitLab sends", "handler": "flakyWebhook",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" }
+      },
+      {
+        "name": "probe", "description": "A respond function that reaches for ctx", "handler": "onWebhook", "respond": "probeRespond",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" }
+      },
+      {
+        "name": "answered", "description": "A counted challenge responder with a sender delivery id", "handler": "onWebhook", "respond": "countedChallenge",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-Delivery-Id"
+      },
+      {
+        "name": "a", "description": "A short name, for delivery id collisions", "handler": "onWebhook",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-Delivery-Id"
+      },
+      {
+        "name": "a-b", "description": "A name extending another, for delivery id collisions", "handler": "onWebhook",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" },
+        "deliveryIdHeader": "X-Delivery-Id"
+      },
+      {
+        "name": "leaky", "description": "A handler that logs and throws the request body", "handler": "leakyWebhook",
+        "verification": { "scheme": "token-header", "header": "X-Gitlab-Token", "connection": "hook-secret" }
+      }
+    ]
+  }
+}

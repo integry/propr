@@ -142,8 +142,11 @@ demote_preferred_mirrors() {
 }
 
 # Retry only a timed-out install; any other failure ends the step with its own
-# status, so a broken install never lets the browser tests be skipped.
-for attempt in 1 2; do
+# status, so a broken install never lets the browser tests be skipped. apt keeps
+# the archives a killed attempt already fetched, so on a slow (not stalled)
+# mirror every attempt gets further: three attempts finish what two cannot.
+attempts=3
+for ((attempt = 1; attempt <= attempts; attempt++)); do
   if timeout --kill-after=15s 3m npx playwright install --with-deps chromium; then
     status=0
   else
@@ -153,7 +156,7 @@ for attempt in 1 2; do
     exit "$status"
   fi
   echo "::warning::Chromium install attempt $attempt timed out (exit $status)."
-  if [[ "$attempt" -eq 1 ]]; then
+  if [[ "$attempt" -lt "$attempts" ]]; then
     stop_apt
     demote_preferred_mirrors
   fi

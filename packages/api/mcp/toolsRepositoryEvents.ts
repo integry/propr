@@ -55,7 +55,7 @@ const CURSOR_CONTRACT = 'Delivery is at-least-once and ordered: pass the cursor 
 export function addRepositoryEventTools(tools: McpTool[], deps: ToolDeps): void {
   tools.push({
     name: 'list_repository_events',
-    description: `List durable change events of one repository after a cursor: pull_request (opened, head_changed, review_scored, ultrafix_started, ultrafix_ended, auto_merge_decision, merged, closed), epic_queue (started, advanced, blocked, completed) and plan_issue (status_changed). Filter by domains, types, pullRequest and planId. Returns {events, cursor, truncated}; truncated means more matching events follow the cursor. ${CURSOR_CONTRACT}`,
+    description: `List durable change events of one repository after a cursor: pull_request (opened, head_changed, review_scored, ultrafix_started, ultrafix_ended, auto_merge_decision, merged, closed), epic_queue (started, advanced, blocked, completed), plan_issue (status_changed) and task (queued, started, completed, failed, cancelled; entityId is the task id). Filter by domains, types, pullRequest and planId. Returns {events, cursor, truncated}; truncated means more matching events follow the cursor. ${CURSOR_CONTRACT}`,
     scope: 'read',
     readOnly: true,
     schema: z.object(filterShape()).strict(),

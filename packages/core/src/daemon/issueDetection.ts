@@ -14,6 +14,7 @@ import { restoreIssueTrigger, settleWithdrawalCleanups } from '../services/taskI
 import type { CleanupVerdict } from '../services/withdrawalCleanup.js';
 import { hasStaleTriggerLabels, readTriggerApplicationEvidence, staleTriggerMarkers, type TriggerEvidence } from './triggerApplicationEvidence.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { claimPendingIssueCommand, issueCommandJobFields, carryClaimedIssueCommand, type ClaimedIssueCommand } from '../plugins/issueCommandIntent.js';
 
 export type { DetectedIssue };
 
@@ -104,6 +105,15 @@ function issueSeatConsumed(issue: DetectedIssue): boolean {
     return Boolean(actor && !BOT_LOGIN_PATTERN.test(actor));
 }
 
+/**
+ * The seat the queued work consumes. A recovered plugin command is the command
+ * author's request, classified as its own intake would have (its label was
+ * applied by ProPR's bot); ordinary work is the label applier's.
+ */
+function queuedSeatConsumed(issue: DetectedIssue, command: ClaimedIssueCommand | null, carried: boolean): boolean {
+    return carried && command?.intent.seatConsumed !== undefined ? command.intent.seatConsumed : issueSeatConsumed(issue);
+}
+
 function excludeLabelsFor(triggers: string[]): string[] {
     return triggers.flatMap(label => [`${label}-processing`, `${label}-done`, `${label}-cancelled`]);
 }
@@ -168,6 +178,9 @@ async function settleIssueWithdrawalCleanup(issue: DetectedIssue, redisClient: R
         return { idle: true };
     }
 }
+
+/** Deletes the issue's dedupe window only while it still holds this delivery's correlation ID. */
+const RELEASE_OWNED_DEDUPE_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
 
 export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<DeliveryDisposition> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
@@ -288,17 +301,41 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         triggeringLabel: triggeringLabel
     }, 'Enqueueing parent job for matrix dispatch');
 
+    // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
+    const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
+    const storedJobData = async (): Promise<unknown> => (await (await getIssueQueue()).getJob(jobId))?.data;
+
+    // A plugin command that published this issue's label but failed to queue
+    // its job: the label starts the job carrying that command, not ordinary work.
+    // It is claimed before the add, so a refusal of the command either retires
+    // it first (this label then queues ordinary work) or finds it started. A
+    // claim another label path is still carrying into its job leaves this
+    // label nothing to queue: ordinary work would take the command's job ID.
+    // That claim is a reservation, not a job: its process may have stopped
+    // before the add, in which case nothing else wakes the command once the
+    // lease runs out. So this delivery is not acknowledged (the relay makes it
+    // again, and the poller comes back), and the dedupe window it took is
+    // released, so that redelivery reaches the claim again and either finds
+    // the job queued or reclaims the command.
+    const { status: claimStatus, claimed: pendingCommand } = await claimPendingIssueCommand(redisClient, issue, { storedJobData });
+    if (claimStatus === 'in_flight') {
+        correlatedLogger.info({ issueNumber: issue.number, repository: repoFullName }, 'A plugin command claimed for this issue is still being queued; leaving the delivery for later');
+        await redisClient.eval(RELEASE_OWNED_DEDUPE_SCRIPT, 1, dedupeKey, correlationId).catch((releaseError: unknown) => {
+            correlatedLogger.warn({ issueNumber: issue.number, repository: repoFullName, error: (releaseError as Error).message }, 'Could not release the issue dedupe window; the redelivery waits for it to run out');
+        });
+        throw new Error(`A plugin command claimed for issue ${repoFullName}#${issue.number} is still being queued; the label delivery is settled by a later delivery`);
+    }
+
     try {
         const timestamp = Date.now();
-        // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
-        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
         const issueJob = {
             repoOwner: issue.repoOwner,
             repoName: issue.repoName,
             number: issue.number,
             ...(issue.triggeredById ? { userId: issue.triggeredById } : {}),
             triggeringLabel: triggeringLabel,
-            correlationId: generateCorrelationId()
+            correlationId: generateCorrelationId(),
+            ...issueCommandJobFields(pendingCommand),
         };
 
         const addToQueueWithRetry = (): Promise<unknown> => withRetry(
@@ -313,7 +350,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             `add_issue_to_queue_${issue.number}`
         );
 
-        await addToQueueWithRetry();
+        // An add whose ID is taken keeps the existing job (e.g. one delayed for a
+        // retry), so the claim is kept only once the stored job carries the command.
+        const carried = await carryClaimedIssueCommand(redisClient, pendingCommand, { add: addToQueueWithRetry, queued: issueJob, storedJobData }, correlatedLogger);
 
         try {
             const activity = {
@@ -338,7 +377,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             repository: repoFullName,
             issueCorrelationId: issueJob.correlationId
         }, 'Successfully added parent job to processing queue');
-        return { status: 'accepted', billing: { seatConsumed: issueSeatConsumed(issue) } };
+        return { status: 'accepted', billing: { seatConsumed: queuedSeatConsumed(issue, pendingCommand, carried) } };
 
     } catch (error) {
         handleError(error, `Failed to add issue ${issue.number} to queue`, { correlationId });

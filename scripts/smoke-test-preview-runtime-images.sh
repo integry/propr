@@ -70,6 +70,9 @@ docker image inspect "$APP_IMAGE" "$UI_IMAGE" >/dev/null
 # create/resize/pixels) from every shipped importer on this native platform
 # before any service starts, so a missing nested tree never reaches packaging.
 "$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_IMAGE"
+# Core must offer every official plugin from the registry package: an image
+# without it shows an empty Plugins catalog and fails no other check.
+"$REPO_ROOT/scripts/smoke-check-app-plugins.sh" "$APP_IMAGE"
 # The worker must be able to build the configured unified agent bundle from
 # this exact image's /usr/src/app, so every agent-bundle build input ships there.
 # Only that check's build container sees the Docker socket; the worker below

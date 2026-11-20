@@ -1,4 +1,5 @@
 import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
+import officialPluginPages from './plugin-pages.json';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -96,6 +97,18 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Plugins',
+      items: [
+        'features/plugins',
+        'plugins/catalog',
+        // One page per official plugin, in catalog order: generated from
+        // packages/plugins/registry.json by `npm run plugins:docs`.
+        ...officialPluginPages,
+        'plugins/authoring',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Reference',
       items: [
         'features/agents-and-models',
@@ -124,6 +137,7 @@ const sidebars: SidebarsConfig = {
         'architecture/agent-runtime',
         'architecture/git-management',
         'architecture/repository-event-journal',
+        'architecture/plugin-runtime',
         'operations/web-ui-integration',
         'features/cli-workflows',
         {

@@ -199,6 +199,9 @@ echo "✓ app contains version-matched MCP documentation"
 # Resolve sharp from every shipped importer and run a real image operation.
 "$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_TAG"
 
+# Core must offer every official plugin from the registry package.
+"$REPO_ROOT/scripts/smoke-check-app-plugins.sh" "$APP_TAG"
+
 # The worker builds custom agent bundles from the app image's /usr/src/app.
 "$REPO_ROOT/scripts/smoke-check-app-agent-build-context.sh" "$APP_TAG"
 

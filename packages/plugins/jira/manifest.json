@@ -1,0 +1,148 @@
+{
+  "manifestVersion": 1,
+  "id": "jira",
+  "name": "Jira Cloud",
+  "description": "Hands Jira Cloud tickets to ProPR and keeps them in sync. Adding the trigger label (propr by default) to a ticket of a mapped project creates one GitHub issue with the ProPR trigger label, so ProPR starts a task. ProPR then comments on the ticket as the task starts, its pull request opens, the review reaches its goal, the pull request merges or closes, or the task fails, and can move the ticket to a workflow status. No code or logs are posted. Jira Data Center is not supported.",
+  "version": "1.0.0",
+  "category": "issue-tracking",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/jira",
+  "icon": "icon.svg",
+  "permissions": [
+    "events.read",
+    "issues.create",
+    "issues.read",
+    "pull_requests.read"
+  ],
+  "connections": [
+    {
+      "type": "token",
+      "name": "api-token",
+      "label": "Account email and API token",
+      "required": true,
+      "help": "The Atlassian account email, a colon and an API token of that account (from id.atlassian.com, Security, API tokens), such as name@example.com:ATATT3x…. The account needs Browse projects, Add comments and Transition issues in the mapped projects. ProPR sends it only to the Jira site URL below, as HTTP Basic credentials, as Atlassian documents for API tokens; the handlers never see it.",
+      "helpUrl": "https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/",
+      "authorization": "basic"
+    },
+    {
+      "type": "signing_secret",
+      "name": "webhook-secret",
+      "label": "Webhook secret",
+      "required": true,
+      "help": "The secret entered when registering the webhook in Jira (Settings, System, WebHooks). Jira signs every request with it in the X-Hub-Signature header (sha256= and the HMAC-SHA256 of the body); ProPR checks it before the plugin sees the request.",
+      "helpUrl": "https://developer.atlassian.com/cloud/jira/platform/webhooks/"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "siteUrl": {
+        "type": "string",
+        "format": "https-url",
+        "hosts": ["*.atlassian.net"],
+        "maxLength": 200,
+        "label": "Jira site URL",
+        "help": "Your Jira Cloud site, such as https://acme.atlassian.net. Only *.atlassian.net sites are accepted (Jira Data Center is not supported). The plugin calls Jira's REST API on this host only."
+      },
+      "repositoryProjects": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "optionsFrom": "projectOptions",
+        "label": "Repository projects",
+        "help": "Map a repository (owner/repo) to the Jira project whose tickets go there. Choices are loaded from Jira once the site URL and API token are set; a project key such as ENG also works. A project mapped to several repositories hands over nothing. Tickets of unmapped projects are ignored."
+      },
+      "triggerLabel": {
+        "type": "string",
+        "default": "propr",
+        "maxLength": 80,
+        "label": "Jira trigger label",
+        "help": "The Jira label that hands a ticket to ProPR when it is added (compared without letter case). Removing it later does not cancel the work."
+      },
+      "githubLabel": {
+        "type": "string",
+        "default": "AI",
+        "maxLength": 50,
+        "label": "GitHub trigger label",
+        "help": "The label put on the GitHub issues created from tickets: ProPR's trigger label for the repository (AI unless your instance uses another). It is the only label they get."
+      },
+      "syncEvents": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "task.started",
+            "pull_request.opened",
+            "review.goal_reached",
+            "pull_request.merged",
+            "pull_request.closed",
+            "task.failed"
+          ]
+        },
+        "maxItems": 6,
+        "default": [
+          "task.started",
+          "pull_request.opened",
+          "review.goal_reached",
+          "pull_request.merged",
+          "pull_request.closed",
+          "task.failed"
+        ],
+        "label": "Comment on the ticket when",
+        "help": "task.started: the task starts. pull_request.opened: its pull request opens (with a link). review.goal_reached: the review reaches its goal. pull_request.merged and pull_request.closed: the pull request merges, or closes without merging. task.failed: the task fails. Unselected events post nothing."
+      },
+      "openedState": {
+        "type": "string",
+        "maxLength": 100,
+        "optionsFrom": "stateOptions",
+        "label": "Move the ticket when the pull request opens to",
+        "help": "A status name, such as In Review, chosen from the mapped projects' workflows (save the project mapping first). Leave empty to not move tickets then. A ticket whose workflow offers no transition to this status is not moved, and Activity says so."
+      },
+      "mergedState": {
+        "type": "string",
+        "maxLength": 100,
+        "optionsFrom": "stateOptions",
+        "label": "Move the ticket when the pull request merges to",
+        "help": "A status name, such as Done. Leave empty to not move tickets then."
+      }
+    },
+    "required": ["siteUrl"]
+  },
+  "outboundHosts": [],
+  "outboundHostsFromSettings": [
+    "siteUrl"
+  ],
+  "contributes": {
+    "skills": [
+      {
+        "name": "jira-ticket",
+        "path": "skills/jira-ticket"
+      }
+    ],
+    "subscriptions": [
+      { "on": "task.started", "handler": "syncBack" },
+      { "on": "task.completed", "handler": "syncBack" },
+      { "on": "task.failed", "handler": "syncBack" },
+      { "on": "pull_request.opened", "handler": "syncBack" },
+      { "on": "pull_request.review_scored", "handler": "syncBack" },
+      { "on": "pull_request.merged", "handler": "syncBack" },
+      { "on": "pull_request.closed", "handler": "syncBack" }
+    ],
+    "webhooks": [
+      {
+        "name": "issues",
+        "description": "Jira webhook for issue created and issue updated events: a ticket that gets the trigger label is handed to ProPR",
+        "handler": "onJiraWebhook",
+        "deliveryIdHeader": "x-atlassian-webhook-identifier",
+        "verification": {
+          "scheme": "hmac-sha256",
+          "header": "x-hub-signature",
+          "prefix": "sha256=",
+          "encoding": "hex",
+          "connection": "webhook-secret"
+        }
+      }
+    ]
+  }
+}

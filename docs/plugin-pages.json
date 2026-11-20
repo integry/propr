@@ -1,0 +1,12 @@
+[
+  "plugins/webhooks",
+  "plugins/slack",
+  "plugins/discord",
+  "plugins/teams",
+  "plugins/linear",
+  "plugins/jira",
+  "plugins/sentry",
+  "plugins/notion",
+  "plugins/cloudflare",
+  "plugins/vercel"
+]

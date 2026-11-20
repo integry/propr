@@ -1,0 +1,15 @@
+{
+  "id": "example-weekly-digest",
+  "name": "Example weekly digest",
+  "description": "Each week, list the pull requests merged in the last 7 days with one line on what each changed.",
+  "category": "reporting",
+  "capabilities": ["repository_read"],
+  "schedule": "0 9 * * 1",
+  "autonomy": "dry_run",
+  "previousReportCount": 1,
+  "reviewBeforeSaving": [
+    { "field": "repositories", "note": "Choose the repositories to summarise. Without one the run has nothing to read." },
+    { "field": "schedule", "note": "Runs at 09:00 UTC every Monday. Change the time or turn the schedule off to run it only on demand." },
+    { "field": "autonomy", "note": "Starts as Dry run, so a run only writes the digest." }
+  ]
+}

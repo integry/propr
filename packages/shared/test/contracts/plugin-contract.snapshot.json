@@ -1,0 +1,1348 @@
+{
+  "manifestVersion": 1,
+  "manifest": {
+    "manifestVersion": {
+      "type": "1",
+      "required": true
+    },
+    "id": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 48
+      }
+    },
+    "name": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 80
+      }
+    },
+    "description": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "version": {
+      "type": "string",
+      "required": true
+    },
+    "category": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "messaging",
+        "issue-tracking",
+        "observability",
+        "deployment",
+        "context",
+        "other"
+      ]
+    },
+    "homepage": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
+    },
+    "icon": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
+    },
+    "permissions": {
+      "type": "string[]",
+      "required": false,
+      "enum": [
+        "events.read",
+        "tasks.read",
+        "tasks.create",
+        "issues.read",
+        "issues.create",
+        "issues.comment",
+        "pull_requests.read",
+        "pull_requests.comment",
+        "labels.write",
+        "repositories.read",
+        "notifications.send"
+      ],
+      "bounds": {
+        "maxItems": 11
+      }
+    },
+    "connections": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "connections[]{type=oauth}.type": {
+      "type": "\"oauth\"",
+      "required": true
+    },
+    "connections[]{type=oauth}.name": {
+      "type": "string",
+      "required": true
+    },
+    "connections[]{type=oauth}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "connections[]{type=oauth}.help": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "connections[]{type=oauth}.helpUrl": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
+    },
+    "connections[]{type=oauth}.required": {
+      "type": "boolean",
+      "required": false
+    },
+    "connections[]{type=oauth}.registrations": {
+      "type": "string[]",
+      "required": false,
+      "enum": [
+        "metadata_document",
+        "dynamic",
+        "preregistered"
+      ],
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 3
+      }
+    },
+    "connections[]{type=oauth}.scopes": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
+    },
+    "connections[]{type=token}.type": {
+      "type": "\"token\"",
+      "required": true
+    },
+    "connections[]{type=token}.name": {
+      "type": "string",
+      "required": true
+    },
+    "connections[]{type=token}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "connections[]{type=token}.help": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "connections[]{type=token}.helpUrl": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
+    },
+    "connections[]{type=token}.required": {
+      "type": "boolean",
+      "required": false
+    },
+    "connections[]{type=token}.secretUrl": {
+      "type": "object",
+      "required": false
+    },
+    "connections[]{type=token}.secretUrl.hosts": {
+      "type": "string[]",
+      "required": true,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 8,
+        "items.maxLength": 253
+      }
+    },
+    "connections[]{type=token}.secretUrl.pathPrefixes": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 8,
+        "items.maxLength": 200
+      }
+    },
+    "connections[]{type=token}.authorization": {
+      "type": "string",
+      "required": false,
+      "enum": [
+        "bearer",
+        "raw",
+        "basic"
+      ]
+    },
+    "connections[]{type=signing_secret}.type": {
+      "type": "\"signing_secret\"",
+      "required": true
+    },
+    "connections[]{type=signing_secret}.name": {
+      "type": "string",
+      "required": true
+    },
+    "connections[]{type=signing_secret}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "connections[]{type=signing_secret}.help": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "connections[]{type=signing_secret}.helpUrl": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
+    },
+    "connections[]{type=signing_secret}.required": {
+      "type": "boolean",
+      "required": false
+    },
+    "settings": {
+      "type": "object",
+      "required": false
+    },
+    "settings.type": {
+      "type": "\"object\"",
+      "required": true
+    },
+    "settings.properties": {
+      "type": "map",
+      "required": true
+    },
+    "settings.properties.<key>": {
+      "type": "object",
+      "required": false
+    },
+    "settings.properties.<key>{type=string}.type": {
+      "type": "\"string\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=string}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=string}.help": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=string}.default": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=string}.enum": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 64,
+        "items.minLength": 1,
+        "items.maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=string}.maxLength": {
+      "type": "integer",
+      "required": false,
+      "bounds": {
+        "exclusiveMinimum": 0,
+        "maximum": 500
+      }
+    },
+    "settings.properties.<key>{type=string}.format": {
+      "type": "string",
+      "required": false,
+      "enum": [
+        "https-url"
+      ]
+    },
+    "settings.properties.<key>{type=string}.hosts": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 8,
+        "items.maxLength": 253
+      }
+    },
+    "settings.properties.<key>{type=string}.optionsFrom": {
+      "type": "string",
+      "required": false
+    },
+    "settings.properties.<key>{type=number}.type": {
+      "type": "\"number\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=number}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=number}.help": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=number}.default": {
+      "type": "number",
+      "required": false
+    },
+    "settings.properties.<key>{type=number}.minimum": {
+      "type": "number",
+      "required": false
+    },
+    "settings.properties.<key>{type=number}.maximum": {
+      "type": "number",
+      "required": false
+    },
+    "settings.properties.<key>{type=number}.integer": {
+      "type": "boolean",
+      "required": false
+    },
+    "settings.properties.<key>{type=boolean}.type": {
+      "type": "\"boolean\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=boolean}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=boolean}.help": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=boolean}.default": {
+      "type": "boolean",
+      "required": false
+    },
+    "settings.properties.<key>{type=array}.type": {
+      "type": "\"array\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=array}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=array}.help": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=array}.items": {
+      "type": "object",
+      "required": true
+    },
+    "settings.properties.<key>{type=array}.items.type": {
+      "type": "\"string\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=array}.items.enum": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 64,
+        "items.minLength": 1,
+        "items.maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=array}.default": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 256,
+        "items.maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=array}.maxItems": {
+      "type": "integer",
+      "required": false,
+      "bounds": {
+        "exclusiveMinimum": 0,
+        "maximum": 256
+      }
+    },
+    "settings.properties.<key>{type=object}.type": {
+      "type": "\"object\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=object}.label": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "settings.properties.<key>{type=object}.help": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "settings.properties.<key>{type=object}.format": {
+      "type": "\"repository-map\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=object}.additionalProperties": {
+      "type": "object",
+      "required": true
+    },
+    "settings.properties.<key>{type=object}.additionalProperties.type": {
+      "type": "\"string\"",
+      "required": true
+    },
+    "settings.properties.<key>{type=object}.optionsFrom": {
+      "type": "string",
+      "required": false
+    },
+    "settings.properties.<key>{type=object}.default": {
+      "type": "map",
+      "required": false
+    },
+    "settings.properties.<key>{type=object}.default.<key>": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "maxLength": 500
+      }
+    },
+    "settings.required": {
+      "type": "string[]",
+      "required": false
+    },
+    "outboundHosts": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 32,
+        "items.maxLength": 253
+      }
+    },
+    "outboundHostsFromSettings": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 64
+      }
+    },
+    "contributes": {
+      "type": "object",
+      "required": false
+    },
+    "contributes.mcpServers": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.mcpServers[]{kind=https}.kind": {
+      "type": "\"https\"",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=https}.name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=https}.url": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 2048
+      }
+    },
+    "contributes.mcpServers[]{kind=https}.tools": {
+      "type": "string[]",
+      "required": true,
+      "bounds": {
+        "maxItems": 64
+      }
+    },
+    "contributes.mcpServers[]{kind=https}.capability": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "contributes.mcpServers[]{kind=https}.authentication": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "none",
+        "bearer",
+        "oauth"
+      ]
+    },
+    "contributes.mcpServers[]{kind=https}.connection": {
+      "type": "string",
+      "required": false
+    },
+    "contributes.mcpServers[]{kind=https}.autoApply": {
+      "type": "boolean",
+      "required": false
+    },
+    "contributes.mcpServers[]{kind=package}.name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.tools": {
+      "type": "string[]",
+      "required": true,
+      "bounds": {
+        "maxItems": 64
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.capability": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "contributes.mcpServers[]{kind=package}.kind": {
+      "type": "\"package\"",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.ecosystem": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "npm"
+      ]
+    },
+    "contributes.mcpServers[]{kind=package}.package": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 214
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.version": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.integrity": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.bin": {
+      "type": "string",
+      "required": false
+    },
+    "contributes.mcpServers[]{kind=package}.args": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 64,
+        "items.maxLength": 2048
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.env": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.env[].name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.env[].value": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 4096
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.secretEnv": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.mcpServers[]{kind=package}.secretEnv[].name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.secretEnv[].connection": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.mcpServers[]{kind=package}.autoApply": {
+      "type": "boolean",
+      "required": false
+    },
+    "contributes.skills": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.skills[].name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.skills[].path": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
+    },
+    "contributes.automationTemplates": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.automationTemplates[].id": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.automationTemplates[].path": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "maxLength": 256
+      }
+    },
+    "contributes.commands": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
+    },
+    "contributes.commands[].name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.commands[].description": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "contributes.commands[].where": {
+      "type": "string[]",
+      "required": true,
+      "enum": [
+        "pull_request",
+        "issue"
+      ],
+      "bounds": {
+        "minItems": 1,
+        "maxItems": 2
+      }
+    },
+    "contributes.commands[].kind": {
+      "type": "string",
+      "required": true,
+      "enum": [
+        "prompt",
+        "handler"
+      ]
+    },
+    "contributes.commands[].prompt": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 4000
+      }
+    },
+    "contributes.commands[].handler": {
+      "type": "string",
+      "required": false
+    },
+    "contributes.commands[].skills": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.commands[].servers": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.commands[].needsWrite": {
+      "type": "boolean",
+      "required": false
+    },
+    "contributes.commands[].shared": {
+      "type": "boolean",
+      "required": false
+    },
+    "contributes.commands[].specific": {
+      "type": "string[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 32
+      }
+    },
+    "contributes.commands[].permissions": {
+      "type": "string[]",
+      "required": false,
+      "enum": [
+        "events.read",
+        "tasks.read",
+        "tasks.create",
+        "issues.read",
+        "issues.create",
+        "issues.comment",
+        "pull_requests.read",
+        "pull_requests.comment",
+        "labels.write",
+        "repositories.read",
+        "notifications.send"
+      ],
+      "bounds": {
+        "maxItems": 11
+      }
+    },
+    "contributes.commands[].promptSettings": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.commands[].promptSettings[].setting": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.commands[].promptSettings[].on": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "contributes.commands[].promptSettings[].off": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "contributes.subscriptions": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 64
+      }
+    },
+    "contributes.subscriptions[].on": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.subscriptions[].handler": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.subscriptions[].filter": {
+      "type": "map",
+      "required": false
+    },
+    "contributes.subscriptions[].filter.<key>": {
+      "type": "string | number | boolean | null | (string | number | boolean | null)[]",
+      "required": false,
+      "bounds": {
+        "maxLength": 500,
+        "minItems": 1,
+        "maxItems": 32,
+        "items.maxLength": 500
+      }
+    },
+    "contributes.webhooks": {
+      "type": "object[]",
+      "required": false,
+      "bounds": {
+        "maxItems": 16
+      }
+    },
+    "contributes.webhooks[].name": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].description": {
+      "type": "string",
+      "required": true,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "contributes.webhooks[].handler": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].verification": {
+      "type": "object",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=hmac-sha256}.scheme": {
+      "type": "\"hmac-sha256\"",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=hmac-sha256}.header": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=hmac-sha256}.prefix": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 32
+      }
+    },
+    "contributes.webhooks[].verification{scheme=hmac-sha256}.encoding": {
+      "type": "string",
+      "required": false,
+      "enum": [
+        "hex",
+        "base64"
+      ]
+    },
+    "contributes.webhooks[].verification{scheme=hmac-sha256}.connection": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=slack-v0}.scheme": {
+      "type": "\"slack-v0\"",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=slack-v0}.connection": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=token-header}.scheme": {
+      "type": "\"token-header\"",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=token-header}.header": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].verification{scheme=token-header}.prefix": {
+      "type": "string",
+      "required": false,
+      "bounds": {
+        "minLength": 1,
+        "maxLength": 32
+      }
+    },
+    "contributes.webhooks[].verification{scheme=token-header}.connection": {
+      "type": "string",
+      "required": true
+    },
+    "contributes.webhooks[].deliveryIdHeader": {
+      "type": "string",
+      "required": false
+    },
+    "contributes.webhooks[].respond": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "events": {
+    "envelope": {
+      "seq": "number",
+      "repository": "string",
+      "domain": "\"epic_queue\" | \"plan_issue\" | \"pull_request\" | \"task\"",
+      "type": "string",
+      "entityId": "string",
+      "prNumber": "number | null",
+      "issueNumber": "number | null",
+      "planId": "string | null",
+      "headSha": "string | null",
+      "payload": "object",
+      "occurredAt": "string"
+    },
+    "payloads": {
+      "pull_request.opened": {
+        "baseRef": "string | null",
+        "draft": "boolean"
+      },
+      "pull_request.head_changed": {
+        "previousHeadSha": "string | null"
+      },
+      "pull_request.review_scored": {
+        "score": "number",
+        "goal": "number | null",
+        "goalReached": "boolean | null",
+        "source": "\"review\" | \"ultrafix\"",
+        "cycle": "number | null",
+        "reviewerModel": "string | null"
+      },
+      "pull_request.ultrafix_started": {
+        "goal": "number",
+        "maxCycles": "number",
+        "workEpoch": "number"
+      },
+      "pull_request.ultrafix_ended": {
+        "outcome": "\"cycles_exhausted\" | \"failed\" | \"goal_reached\" | \"stopped\" | \"style_findings_only\"",
+        "finalScore": "number | null",
+        "reason": "string | null",
+        "workEpoch": "number"
+      },
+      "pull_request.auto_merge_decision": {
+        "reason": "string",
+        "arm": "boolean",
+        "opportunity": "string",
+        "prNumber": "number",
+        "action?": "string",
+        "matchedPaths?": "string[]",
+        "method?": "string",
+        "detail?": "string",
+        "headSha?": "string",
+        "baseRef?": "string",
+        "policyPath?": "string",
+        "baseSha?": "string"
+      },
+      "pull_request.merged": {},
+      "pull_request.closed": {},
+      "epic_queue.started": {
+        "issues": "number[]",
+        "advanceOn": "string",
+        "parallel": "boolean"
+      },
+      "epic_queue.advanced": {
+        "fromIssue": "number",
+        "toIssue": "number",
+        "cursor": "number"
+      },
+      "epic_queue.blocked": {
+        "headIssue": "number | null",
+        "blockedReason": "string"
+      },
+      "epic_queue.completed": {
+        "fromIssue?": "number",
+        "cursor": "number"
+      },
+      "plan_issue.status_changed": {
+        "from": "string | null",
+        "to": "string"
+      },
+      "task.queued": {
+        "taskId": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
+        "issueNumber": "number | null",
+        "prNumber": "number | null",
+        "agent": "string | null",
+        "model": "string | null",
+        "attempts": "number"
+      },
+      "task.started": {
+        "taskId": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
+        "issueNumber": "number | null",
+        "prNumber": "number | null",
+        "agent": "string | null",
+        "model": "string | null",
+        "attempts": "number"
+      },
+      "task.completed": {
+        "taskId": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
+        "issueNumber": "number | null",
+        "prNumber": "number | null",
+        "agent": "string | null",
+        "model": "string | null",
+        "attempts": "number",
+        "status": "\"cancelled\" | \"completed\" | \"failed\"",
+        "terminalReason": "string | null",
+        "durationMs": "number | null",
+        "pullRequest": "\"opened\" | \"updated\" | null",
+        "failureCategory": "string | null"
+      },
+      "task.failed": {
+        "taskId": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
+        "issueNumber": "number | null",
+        "prNumber": "number | null",
+        "agent": "string | null",
+        "model": "string | null",
+        "attempts": "number",
+        "status": "\"cancelled\" | \"completed\" | \"failed\"",
+        "terminalReason": "string | null",
+        "durationMs": "number | null",
+        "pullRequest": "\"opened\" | \"updated\" | null",
+        "failureCategory": "string | null"
+      },
+      "task.cancelled": {
+        "taskId": "string",
+        "kind": "\"automation\" | \"follow-up\" | \"implementation\" | \"merge-conflict\" | \"review\"",
+        "issueNumber": "number | null",
+        "prNumber": "number | null",
+        "agent": "string | null",
+        "model": "string | null",
+        "attempts": "number",
+        "status": "\"cancelled\" | \"completed\" | \"failed\"",
+        "terminalReason": "string | null",
+        "durationMs": "number | null",
+        "pullRequest": "\"opened\" | \"updated\" | null",
+        "failureCategory": "string | null"
+      }
+    }
+  },
+  "sdk": {
+    "context": [
+      "pluginId",
+      "settings",
+      "repositories",
+      "propr",
+      "http",
+      "state",
+      "log",
+      "signal"
+    ],
+    "propr": {
+      "getPullRequest": "pull_requests.read",
+      "getIssue": "issues.read",
+      "getTask": "tasks.read",
+      "listEvents": "events.read",
+      "createIssue": "issues.create",
+      "createTask": "tasks.create",
+      "commentOnPullRequest": "pull_requests.comment",
+      "commentOnIssue": "issues.comment",
+      "addLabel": "labels.write",
+      "removeLabel": "labels.write"
+    },
+    "state": [
+      "get",
+      "set",
+      "delete",
+      "update",
+      "keys"
+    ],
+    "log": [
+      "debug",
+      "info",
+      "warn",
+      "error"
+    ],
+    "inputs": {
+      "event": [
+        "kind",
+        "event",
+        "deliveryId",
+        "attempt",
+        "manual?"
+      ],
+      "webhook": [
+        "kind",
+        "webhook",
+        "headers",
+        "body",
+        "receivedAt",
+        "deliveryId",
+        "attempt"
+      ],
+      "command": [
+        "kind",
+        "command",
+        "args",
+        "repository",
+        "number",
+        "target",
+        "actor",
+        "commentId",
+        "deliveryId",
+        "attempt"
+      ],
+      "invoke": [
+        "kind",
+        "payload"
+      ],
+      "setting_options": [
+        "kind",
+        "setting"
+      ]
+    },
+    "errorCodes": [
+      "permission_denied",
+      "repository_not_allowed",
+      "not_found",
+      "invalid_input",
+      "host_not_allowed",
+      "insecure_url",
+      "private_address",
+      "connection_unavailable",
+      "response_too_large",
+      "http_failed",
+      "state_limit",
+      "unavailable"
+    ],
+    "exports": [
+      "PLUGIN_HANDLER_TIMEOUT_MS",
+      "PLUGIN_HTTP_LIMITS",
+      "PLUGIN_LOG_LIMITS",
+      "PLUGIN_PROPR_LIMITS",
+      "PLUGIN_PROPR_OPERATIONS",
+      "PLUGIN_RETRY_AFTER_LIMITS_MS",
+      "PLUGIN_SDK_ERROR_CODES",
+      "PLUGIN_SETTING_OPTIONS_LIMITS",
+      "PLUGIN_STATE_LIMITS",
+      "PLUGIN_WEBHOOK_LIMITS",
+      "PluginDeliveryError",
+      "PluginSdkError",
+      "clampPluginRetryAfter",
+      "definePluginHandler",
+      "definePluginWebhookResponder",
+      "parsePluginRetryAfter",
+      "parsePluginSettingOptions"
+    ],
+    "types": {
+      "PluginCommandInput.actor": "string",
+      "PluginCommandInput.args": "string",
+      "PluginCommandInput.attempt": "number",
+      "PluginCommandInput.command": "string",
+      "PluginCommandInput.commentId": "number",
+      "PluginCommandInput.deliveryId": "string",
+      "PluginCommandInput.kind": "'command'",
+      "PluginCommandInput.number": "number",
+      "PluginCommandInput.repository": "string",
+      "PluginCommandInput.target": "'issue' | 'pull_request'",
+      "PluginContext.http": "(connection?: string) => PluginHttpFetch",
+      "PluginContext.log": "PluginLogger",
+      "PluginContext.pluginId": "string",
+      "PluginContext.propr": "PluginProprClient",
+      "PluginContext.repositories": "string[] | null",
+      "PluginContext.settings": "PluginSettingValues",
+      "PluginContext.signal": "AbortSignal",
+      "PluginContext.state": "PluginStateStore",
+      "PluginCreatedComment.id": "number",
+      "PluginCreatedComment.number": "number",
+      "PluginCreatedComment.repository": "string",
+      "PluginCreatedComment.url": "string",
+      "PluginCreatedIssue.number": "number",
+      "PluginCreatedIssue.repository": "string",
+      "PluginCreatedIssue.url": "string",
+      "PluginCreatedTask.issueNumber": "number",
+      "PluginCreatedTask.jobId": "string",
+      "PluginCreatedTask.repository": "string",
+      "PluginDeliveryError extends": "Error",
+      "PluginDeliveryError.constructor": "(message: string, options: { retryAfterMs?: number | null; permanent?: boolean } = {}) => PluginDeliveryError",
+      "PluginDeliveryError.name": "readonly \"PluginDeliveryError\"",
+      "PluginDeliveryError.permanent": "readonly boolean",
+      "PluginDeliveryError.retryAfterMs?": "readonly number",
+      "PluginEventInput.attempt": "number",
+      "PluginEventInput.deliveryId": "string",
+      "PluginEventInput.event": "RepositoryEvent",
+      "PluginEventInput.kind": "'event'",
+      "PluginEventInput.manual?": "boolean",
+      "PluginHandler": "(input: I, ctx: PluginContext) => Promise<R>",
+      "PluginHandlerInput": "PluginEventInput | PluginWebhookInput | PluginCommandInput | PluginInvokeInput | PluginSettingOptionsInput",
+      "PluginHandlerResultValue": "PluginJsonValue | void",
+      "PluginHttpFetch": "(url: string, init?: PluginHttpRequestInit) => Promise<PluginHttpResponse>",
+      "PluginHttpRequestInit.body?": "string",
+      "PluginHttpRequestInit.headers?": "Record<string, string>",
+      "PluginHttpRequestInit.json?": "PluginJsonValue",
+      "PluginHttpRequestInit.method?": "'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'",
+      "PluginHttpRequestInit.signature?": "PluginHttpSignature",
+      "PluginHttpResponse.headers": "Record<string, string>",
+      "PluginHttpResponse.json": "<T = unknown>() => Promise<T>",
+      "PluginHttpResponse.ok": "boolean",
+      "PluginHttpResponse.status": "number",
+      "PluginHttpResponse.text": "() => Promise<string>",
+      "PluginHttpResponse.url": "string",
+      "PluginHttpSignature.header": "string",
+      "PluginHttpSignature.prefix?": "string",
+      "PluginHttpSignature.timestampHeader?": "string",
+      "PluginInvokeInput.kind": "'invoke'",
+      "PluginInvokeInput.payload": "PluginJsonValue",
+      "PluginIssueSummary.author": "string | null",
+      "PluginIssueSummary.createdAt": "string",
+      "PluginIssueSummary.labels": "string[]",
+      "PluginIssueSummary.number": "number",
+      "PluginIssueSummary.repository": "string",
+      "PluginIssueSummary.state": "'open' | 'closed'",
+      "PluginIssueSummary.title": "string",
+      "PluginIssueSummary.updatedAt": "string",
+      "PluginIssueSummary.url": "string",
+      "PluginJsonValue": "string | number | boolean | null | PluginJsonValue[] | { [key: string]: PluginJsonValue }",
+      "PluginListEventsInput.afterSeq?": "number",
+      "PluginListEventsInput.domains?": "RepositoryEventDomain[]",
+      "PluginListEventsInput.limit?": "number",
+      "PluginListEventsInput.repository": "string",
+      "PluginLogLevel": "'debug' | 'info' | 'warn' | 'error'",
+      "PluginLogger": "Record<PluginLogLevel, (message: string, fields?: Record<string, unknown>) => void>",
+      "PluginProprClient.addLabel": "(repository: string, number: number, label: string) => Promise<void>",
+      "PluginProprClient.commentOnIssue": "(repository: string, number: number, body: string) => Promise<PluginCreatedComment>",
+      "PluginProprClient.commentOnPullRequest": "(repository: string, number: number, body: string) => Promise<PluginCreatedComment>",
+      "PluginProprClient.createIssue": "(repository: string, issue: { title: string; body?: string; labels?: string[] }) => Promise<PluginCreatedIssue>",
+      "PluginProprClient.createTask": "(repository: string, issueNumber: number) => Promise<PluginCreatedTask>",
+      "PluginProprClient.getIssue": "(repository: string, number: number) => Promise<PluginIssueSummary>",
+      "PluginProprClient.getPullRequest": "(repository: string, number: number) => Promise<PluginPullRequestSummary>",
+      "PluginProprClient.getTask": "(taskId: string) => Promise<PluginTaskSummary>",
+      "PluginProprClient.listEvents": "(input: PluginListEventsInput) => Promise<RepositoryEvent[]>",
+      "PluginProprClient.removeLabel": "(repository: string, number: number, label: string) => Promise<void>",
+      "PluginPullRequestSummary extends": "PluginIssueSummary",
+      "PluginPullRequestSummary.baseRef": "string",
+      "PluginPullRequestSummary.draft": "boolean",
+      "PluginPullRequestSummary.headRef": "string",
+      "PluginPullRequestSummary.headSha": "string",
+      "PluginPullRequestSummary.merged": "boolean",
+      "PluginSdkError extends": "Error",
+      "PluginSdkError.code": "readonly PluginSdkErrorCode",
+      "PluginSdkError.constructor": "(readonly code: PluginSdkErrorCode, message: string) => PluginSdkError",
+      "PluginSdkError.name": "readonly \"PluginSdkError\"",
+      "PluginSdkErrorCode": "typeof PLUGIN_SDK_ERROR_CODES[number] = \"permission_denied\" | \"repository_not_allowed\" | \"not_found\" | \"invalid_input\" | \"host_not_allowed\" | \"insecure_url\" | \"private_address\" | \"connection_unavailable\" | \"response_too_large\" | \"http_failed\" | \"state_limit\" | \"unavailable\"",
+      "PluginSettingOption.label": "string",
+      "PluginSettingOption.value": "string",
+      "PluginSettingOption[key: string]": "PluginJsonValue",
+      "PluginSettingOptionsInput.kind": "'setting_options'",
+      "PluginSettingOptionsInput.setting": "string",
+      "PluginSettingValue": "string | number | boolean | string[] | Record<string, string>",
+      "PluginSettingValues": "Record<string, PluginSettingValue>",
+      "PluginStateStore.delete": "(key: string) => Promise<boolean>",
+      "PluginStateStore.get": "<T extends PluginJsonValue = PluginJsonValue>(key: string) => Promise<T | undefined>",
+      "PluginStateStore.keys": "(prefix?: string) => Promise<string[]>",
+      "PluginStateStore.set": "(key: string, value: PluginJsonValue) => Promise<void>",
+      "PluginStateStore.update": "(key: string, change: (current: PluginJsonValue | undefined) => PluginJsonValue | undefined) => Promise<PluginJsonValue | undefined>",
+      "PluginTaskSummary.createdAt": "string",
+      "PluginTaskSummary.issueNumber": "number | null",
+      "PluginTaskSummary.kind": "string",
+      "PluginTaskSummary.model": "string | null",
+      "PluginTaskSummary.prNumber": "number | null",
+      "PluginTaskSummary.repository": "string",
+      "PluginTaskSummary.state": "string | null",
+      "PluginTaskSummary.taskId": "string",
+      "PluginWebhookInput.attempt": "number",
+      "PluginWebhookInput.body": "string",
+      "PluginWebhookInput.deliveryId": "string",
+      "PluginWebhookInput.headers": "Record<string, string>",
+      "PluginWebhookInput.kind": "'webhook'",
+      "PluginWebhookInput.receivedAt": "number",
+      "PluginWebhookInput.webhook": "string",
+      "PluginWebhookRequest.body": "string",
+      "PluginWebhookRequest.headers": "Readonly<Record<string, string>>",
+      "PluginWebhookRequest.receivedAt": "number",
+      "PluginWebhookRequest.webhook": "string",
+      "PluginWebhookResponder": "(request: PluginWebhookRequest) => PluginWebhookResponse | null | undefined",
+      "PluginWebhookResponse.body": "string",
+      "PluginWebhookResponse.contentType?": "'text/plain' | 'application/json'",
+      "PluginWebhookResponse.status?": "number",
+      "RepositoryEvent.domain": "RepositoryEventDomain",
+      "RepositoryEvent.entityId": "string",
+      "RepositoryEvent.headSha": "string | null",
+      "RepositoryEvent.issueNumber": "number | null",
+      "RepositoryEvent.occurredAt": "string",
+      "RepositoryEvent.payload": "Record<string, unknown>",
+      "RepositoryEvent.planId": "string | null",
+      "RepositoryEvent.prNumber": "number | null",
+      "RepositoryEvent.repository": "string",
+      "RepositoryEvent.seq": "number",
+      "RepositoryEvent.type": "string",
+      "RepositoryEventDomain": "(typeof REPOSITORY_EVENT_DOMAINS)[number] = \"pull_request\" | \"epic_queue\" | \"plan_issue\" | \"task\"",
+      "clampPluginRetryAfter()": "(ms: number) => number",
+      "definePluginHandler()": "<I extends PluginHandlerInput, R extends PluginHandlerResultValue = void>(handler: PluginHandler<I, R>) => PluginHandler<I, R>",
+      "definePluginWebhookResponder()": "(responder: PluginWebhookResponder) => PluginWebhookResponder",
+      "parsePluginRetryAfter()": "(value: string | null | undefined, now: number = Date.now()) => number | null",
+      "parsePluginSettingOptions()": "(value: unknown) => PluginSettingOption[] | null"
+    },
+    "suppliedTypes": [
+      "PluginHttpRequestInit",
+      "PluginHttpSignature",
+      "PluginListEventsInput",
+      "PluginWebhookResponse"
+    ]
+  }
+}

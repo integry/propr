@@ -1,0 +1,115 @@
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import {
+  PLUGIN_DEVELOPMENT_FLAG, PLUGINS_ROOT, getOfficialPlugin, loadPluginHandlers, officialPlugins, pluginDevelopmentEnabled, readPluginRegistryIndex,
+} from '../src/index.js';
+
+const scratch = await mkdtemp(path.join(tmpdir(), 'propr-plugins-registry-'));
+after(() => rm(scratch, { recursive: true, force: true }));
+
+test('the registry root is the package folder', () => {
+  assert.equal(PLUGINS_ROOT, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+  assert.deepEqual(readPluginRegistryIndex(), [
+    { id: 'webhooks', development: false }, { id: 'slack', development: false }, { id: 'discord', development: false }, { id: 'teams', development: false }, { id: 'linear', development: false }, { id: 'jira', development: false }, { id: 'sentry', development: false }, { id: 'notion', development: false }, { id: 'cloudflare', development: false }, { id: 'vercel', development: false },
+    { id: 'example-pack', development: true },
+  ]);
+});
+
+test('example-pack is exported only when the development flag is set', () => {
+  assert.deepEqual(officialPlugins({ includeDevelopment: false }).map(p => p.manifest.id), ['webhooks', 'slack', 'discord', 'teams', 'linear', 'jira', 'sentry', 'notion', 'cloudflare', 'vercel']);
+  assert.equal(getOfficialPlugin('example-pack', { includeDevelopment: false }), undefined);
+  const example = getOfficialPlugin('example-pack', { includeDevelopment: true });
+  assert.ok(example);
+  assert.equal(example.development, true);
+  assert.equal(example.manifest.name, 'Example pack');
+});
+
+test('the development flag is read from the environment', () => {
+  assert.equal(pluginDevelopmentEnabled({}), false);
+  assert.equal(pluginDevelopmentEnabled({ [PLUGIN_DEVELOPMENT_FLAG]: '0' }), false);
+  assert.equal(pluginDevelopmentEnabled({ [PLUGIN_DEVELOPMENT_FLAG]: '1' }), true);
+  assert.equal(pluginDevelopmentEnabled({ [PLUGIN_DEVELOPMENT_FLAG]: 'TRUE' }), true);
+  const previous = process.env[PLUGIN_DEVELOPMENT_FLAG];
+  try {
+    process.env[PLUGIN_DEVELOPMENT_FLAG] = '1';
+    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks', 'slack', 'discord', 'teams', 'linear', 'jira', 'sentry', 'notion', 'cloudflare', 'vercel', 'example-pack']);
+    delete process.env[PLUGIN_DEVELOPMENT_FLAG];
+    assert.deepEqual(officialPlugins().map(p => p.manifest.id), ['webhooks', 'slack', 'discord', 'teams', 'linear', 'jira', 'sentry', 'notion', 'cloudflare', 'vercel']);
+  } finally {
+    if (previous === undefined) delete process.env[PLUGIN_DEVELOPMENT_FLAG];
+    else process.env[PLUGIN_DEVELOPMENT_FLAG] = previous;
+  }
+});
+
+test('example-pack assets resolve to files in its folder', () => {
+  const { assets, directory, manifest } = getOfficialPlugin('example-pack', { includeDevelopment: true })!;
+  assert.equal(directory, path.join(PLUGINS_ROOT, 'example-pack'));
+  for (const file of [assets.manifest, assets.readme, assets.icon]) assert.ok(existsSync(file), file);
+  assert.deepEqual(assets.skills.map(s => s.name), ['example-notes']);
+  assert.ok(existsSync(path.join(assets.skills[0].path, 'SKILL.md')));
+  assert.ok(existsSync(path.join(assets.automationTemplates[0].path, 'template.json')));
+  const kinds = manifest.contributes.mcpServers.map(s => s.kind).sort();
+  assert.deepEqual(kinds, ['https', 'package']);
+  const local = manifest.contributes.mcpServers.find(s => s.kind === 'package');
+  assert.equal(local?.kind === 'package' && `${local.package}@${local.version}`, 'propr-fixture-mcp@1.0.0');
+});
+
+test('the webhooks plugin resolves its handlers, which import the shared folder', async () => {
+  const { assets, development } = getOfficialPlugin('webhooks', { includeDevelopment: false })!;
+  assert.equal(development, false);
+  for (const file of [assets.manifest, assets.readme, assets.icon]) assert.ok(existsSync(file), file);
+  assert.equal(assets.handlers, path.join(PLUGINS_ROOT, 'webhooks', 'handlers.ts'));
+  const handlers = await loadPluginHandlers('webhooks', { includeDevelopment: false });
+  assert.deepEqual(Object.keys(handlers ?? {}), ['deliver']);
+});
+
+test('released plugins are listed in registry order and an invalid manifest throws', async () => {
+  const root = path.join(scratch, 'root');
+  await cp(path.join(PLUGINS_ROOT, 'example-pack'), path.join(root, 'example-pack'), { recursive: true });
+  await writeFile(path.join(root, 'registry.json'), JSON.stringify({ version: 1, plugins: [{ id: 'example-pack' }] }));
+  assert.deepEqual(officialPlugins({ root, includeDevelopment: false }).map(p => p.manifest.id), ['example-pack']);
+
+  const broken = path.join(scratch, 'broken');
+  await cp(root, broken, { recursive: true });
+  await writeFile(path.join(broken, 'example-pack', 'manifest.json'), JSON.stringify({ manifestVersion: 1, id: 'example-pack' }));
+  assert.throws(() => officialPlugins({ root: broken }), /example-pack\/manifest\.json: name:/);
+});
+
+test('every optionsFrom and subscription of an official plugin names an exported handler', async () => {
+  for (const { manifest } of officialPlugins({ includeDevelopment: true })) {
+    const named = [
+      ...Object.values(manifest.settings.properties).flatMap(s => ((s.type === 'string' || s.type === 'object') && s.optionsFrom ? [s.optionsFrom] : [])),
+      ...manifest.contributes.subscriptions.map(s => s.handler),
+    ];
+    if (!named.length) continue;
+    const handlers = await loadPluginHandlers(manifest.id, { includeDevelopment: true });
+    for (const name of named) assert.equal(typeof handlers?.[name], 'function', `${manifest.id}: ${name}`);
+  }
+});
+
+test('each official plugin names the connections it needs: required ones block enabling, the rest are optional', async () => {
+  const { neededPluginOAuthConnections, requiredPluginConnections } = await import('@propr/shared');
+  const needs = Object.fromEntries(officialPlugins({ includeDevelopment: false }).map(({ manifest }) => [manifest.id, {
+    required: requiredPluginConnections(manifest),
+    signIn: neededPluginOAuthConnections(manifest.connections, manifest.contributes.mcpServers),
+  }]));
+  assert.deepEqual(needs, {
+    webhooks: { required: ['target-1-secret'], signIn: [] },
+    // Slack's needs depend on its mode (webhook URL or bot token), so none is marked; deliveries report what is missing.
+    slack: { required: [], signIn: [] },
+    discord: { required: ['default-webhook'], signIn: [] },
+    teams: { required: ['default-webhook'], signIn: [] },
+    linear: { required: ['api-key', 'webhook-secret'], signIn: [] },
+    jira: { required: ['api-token', 'webhook-secret'], signIn: [] },
+    // The agent sign-in is optional: an error still becomes an issue without it.
+    sentry: { required: ['auth-token', 'client-secret'], signIn: [] },
+    notion: { required: [], signIn: ['notion-account'] },
+    cloudflare: { required: ['read-token', 'deploy-token'], signIn: [] },
+    vercel: { required: [], signIn: ['vercel-read', 'vercel-deploy'] },
+  });
+});

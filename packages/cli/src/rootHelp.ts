@@ -39,6 +39,7 @@ export const COMMAND_GROUPS: readonly CommandGroup[] = [
   { label: "Pull Requests", commands: entries("pr") },
   { label: "Events", commands: entries("events") },
   { label: "Handoffs", commands: entries("handoffs"), note: "(admin recovery for PR follow-up publications)" },
+  { label: "Plugins", commands: entries("plugin"), note: "(read-only; instance administrators)" },
   { label: "Repositories", commands: entries("repo") },
   { label: "Agents", commands: entries("agent"), note: "(coding-agent configurations)" },
   { label: "Settings", commands: entries("setting") },

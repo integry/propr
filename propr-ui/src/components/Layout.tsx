@@ -23,6 +23,7 @@ import UserAvatar from './UserAvatar';
 import VoiceBriefingControl from './VoiceBriefingControl';
 import { HeaderScopeSlotContext } from './headerScopeSlot';
 import { SidebarNavigation, type NavigationState } from './SidebarNavigation';
+import { canManagePlugins } from '../pages/SettingsPage/settingsPermissions';
 import { useSidebarUsageFit } from './useSidebarUsageFit';
 
 interface LayoutProps {
@@ -81,6 +82,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     canManageMembers: userHasPermission(user, 'instance.manage_members'),
     // The MCP access log needs the permission its admin endpoints require.
     canReadMcpLog: userHasPermission(user, 'instance.manage_settings'),
+    canManagePlugins: canManagePlugins(user),
   };
   const navigationState: NavigationState = {
     currentPath: location.pathname,
@@ -208,7 +210,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         {desktop && <DesktopInstanceSelector transportReady={isConnected && user !== null} />}
         <div ref={usageFit.columnRef} className="flex min-h-0 flex-1 flex-col">
           {/* Whitespace separates navigation from the workspace control. */}
-          <SidebarNavigation state={navigationState} permissions={navigationPermissions} navRef={usageFit.navRef} />
+          <SidebarNavigation state={navigationState} permissions={navigationPermissions} navRef={usageFit.navRef} dense={usageFit.compact} />
           {/* Usage and account information stay at the bottom, with metadata
               last. mt-auto absorbs the space below navigation. When the window
               is too short for every item, Usage folds to one line first. */}

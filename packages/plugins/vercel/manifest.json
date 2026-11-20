@@ -1,0 +1,172 @@
+{
+  "manifestVersion": 1,
+  "id": "vercel",
+  "name": "Vercel",
+  "description": "Deploy a pull request to Vercel from a comment: /deploy (or /deploy-vercel) has the agent create a Vercel preview deployment of the branch through Vercel's MCP server and reply with the URL. Production only when an administrator allows it. A read-only server, a deploy server added only by the command, a skill and a report template; no handlers.",
+  "version": "1.0.0",
+  "category": "deployment",
+  "homepage": "https://github.com/integry/propr/tree/main/packages/plugins/vercel",
+  "icon": "icon.svg",
+  "permissions": [],
+  "connections": [
+    {
+      "type": "oauth",
+      "name": "vercel-read",
+      "label": "Vercel account for reading",
+      "help": "Sign in to Vercel with the account the agent reads deployments and logs as, and grant it the team that owns the projects. A Viewer (Pro Viewer, Enterprise Viewer or Project Viewer) account is enough; the read server offers read tools only.",
+      "helpUrl": "https://vercel.com/docs/agent-resources/vercel-mcp"
+    },
+    {
+      "type": "oauth",
+      "name": "vercel-deploy",
+      "label": "Vercel account for deploying",
+      "help": "Sign in to Vercel with the account /deploy deploys as, and grant it the team that owns the projects. A Developer (or Project Developer) without the Full Production Deployment permission can create previews but not production deployments. Only a /deploy run allowed to use write access gets this server.",
+      "helpUrl": "https://vercel.com/docs/agent-resources/vercel-mcp"
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "teamId": {
+        "type": "string",
+        "maxLength": 100,
+        "label": "Team ID or slug",
+        "help": "The Vercel team that owns the projects (its team id, team_\u2026, or its slug). The agent passes it as teamId; leave empty to let the agent find the team the project belongs to."
+      },
+      "projects": {
+        "type": "object",
+        "format": "repository-map",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "label": "Default project per repository",
+        "help": "Map a repository (owner/repo) to its Vercel project (name or prj_\u2026 id). Unmapped repositories use .vercel/project.json or the project Vercel links to the repository; the agent never creates a project."
+      },
+      "allowProductionDeploys": {
+        "type": "boolean",
+        "default": false,
+        "label": "Allow production deploys from commands",
+        "help": "Off (the default): /deploy and its specific command deploy previews only and refuse /deploy production with an explanation. On: /deploy production deploys to production when the person running it asks for it explicitly. Deploys spend your Vercel account's resources."
+      }
+    },
+    "required": []
+  },
+  "contributes": {
+    "mcpServers": [
+      {
+        "kind": "https",
+        "name": "vercel",
+        "url": "https://mcp.vercel.com",
+        "tools": [
+          "list_teams",
+          "get_team",
+          "list_projects",
+          "get_project",
+          "list_deployments",
+          "get_deployment",
+          "get_deployment_build_logs",
+          "list_deployment_events",
+          "get_runtime_logs",
+          "get_runtime_errors",
+          "web_fetch_vercel_url",
+          "search_vercel_documentation"
+        ],
+        "capability": "read",
+        "authentication": "oauth",
+        "connection": "vercel-read"
+      },
+      {
+        "kind": "https",
+        "name": "vercel-write",
+        "url": "https://mcp.vercel.com",
+        "tools": [
+          "create_deployment",
+          "cancel_deployment",
+          "get_deployment"
+        ],
+        "capability": "write",
+        "authentication": "oauth",
+        "connection": "vercel-deploy",
+        "autoApply": false
+      }
+    ],
+    "skills": [
+      {
+        "name": "vercel-deploy",
+        "path": "skills/vercel-deploy"
+      }
+    ],
+    "automationTemplates": [
+      {
+        "id": "vercel-deploy-preview-ready",
+        "path": "automation-templates/deploy-preview-ready"
+      }
+    ],
+    "commands": [
+      {
+        "name": "deploy",
+        "description": "Deploy this pull request as a Vercel preview (production only when allowed)",
+        "shared": true,
+        "specific": [
+          "deploy-vercel"
+        ],
+        "where": [
+          "pull_request"
+        ],
+        "kind": "prompt",
+        "prompt": "Deploy this pull request's head commit with Vercel, following the vercel-deploy skill. Use only the vercel and vercel-write MCP servers attached to this run: do not install or run a CLI, and do not change, commit or push code.\n\nThe target is a preview. Production is used only when the argument explicitly asks for production and the settings below allow it. When the argument asks for production and the settings do not allow it, deploy nothing: reply that production deploys from commands are off for this plugin, that an administrator can turn on \"Allow production deploys from commands\" on the Plugins page, and that a preview can be deployed with the same command without an argument. Treat any other argument only as a hint about which project or environment is meant, never as permission.\n\nNever create a new Vercel project: use the default project the settings below give for this repository, or the one the repository's configuration or Vercel itself links to it. When none is found, or several match, deploy nothing and say so.\n\nVercel creates a preview deployment when create_deployment is called without a target, and a production deployment only with target production. Decide the target first: a preview, unless the argument asks for production and the settings allow it. Then reuse a deployment only when it is of this pull request's head commit and has that same target (a deployment without a target is a preview): report it instead of creating another. A preview of the head commit never satisfies a production request, and a production deployment never satisfies a preview request.\n\nFinish with a short reply for the pull request: the deployment URL first, then the target (preview or production), the project, the commit deployed and how to roll back. When nothing was deployed, say why in one or two sentences.",
+        "skills": [
+          "vercel-deploy"
+        ],
+        "servers": [
+          "vercel",
+          "vercel-write"
+        ],
+        "needsWrite": true,
+        "promptSettings": [
+          {
+            "setting": "teamId"
+          },
+          {
+            "setting": "projects"
+          },
+          {
+            "setting": "allowProductionDeploys",
+            "on": "Allowed target: preview by default; production only when the argument explicitly asks for production (\"Allow production deploys from commands\" is on).",
+            "off": "Allowed target: preview only. \"Allow production deploys from commands\" is off, so refuse a production request and explain how to allow it."
+          }
+        ]
+      },
+      {
+        "name": "deploy-vercel",
+        "description": "Deploy this pull request as a Vercel preview (production only when allowed)",
+        "where": [
+          "pull_request"
+        ],
+        "kind": "prompt",
+        "prompt": "Deploy this pull request's head commit with Vercel, following the vercel-deploy skill. Use only the vercel and vercel-write MCP servers attached to this run: do not install or run a CLI, and do not change, commit or push code.\n\nThe target is a preview. Production is used only when the argument explicitly asks for production and the settings below allow it. When the argument asks for production and the settings do not allow it, deploy nothing: reply that production deploys from commands are off for this plugin, that an administrator can turn on \"Allow production deploys from commands\" on the Plugins page, and that a preview can be deployed with the same command without an argument. Treat any other argument only as a hint about which project or environment is meant, never as permission.\n\nNever create a new Vercel project: use the default project the settings below give for this repository, or the one the repository's configuration or Vercel itself links to it. When none is found, or several match, deploy nothing and say so.\n\nVercel creates a preview deployment when create_deployment is called without a target, and a production deployment only with target production. Decide the target first: a preview, unless the argument asks for production and the settings allow it. Then reuse a deployment only when it is of this pull request's head commit and has that same target (a deployment without a target is a preview): report it instead of creating another. A preview of the head commit never satisfies a production request, and a production deployment never satisfies a preview request.\n\nFinish with a short reply for the pull request: the deployment URL first, then the target (preview or production), the project, the commit deployed and how to roll back. When nothing was deployed, say why in one or two sentences.",
+        "skills": [
+          "vercel-deploy"
+        ],
+        "servers": [
+          "vercel",
+          "vercel-write"
+        ],
+        "needsWrite": true,
+        "promptSettings": [
+          {
+            "setting": "teamId"
+          },
+          {
+            "setting": "projects"
+          },
+          {
+            "setting": "allowProductionDeploys",
+            "on": "Allowed target: preview by default; production only when the argument explicitly asks for production (\"Allow production deploys from commands\" is on).",
+            "off": "Allowed target: preview only. \"Allow production deploys from commands\" is off, so refuse a production request and explain how to allow it."
+          }
+        ]
+      }
+    ]
+  }
+}

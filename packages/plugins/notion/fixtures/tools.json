@@ -1,0 +1,357 @@
+{
+  "description": "The tools of Notion's hosted MCP server (https://mcp.notion.com/mcp) as listed in Notion's documentation, each with the access the documentation describes: read (reads or searches) or write (creates, changes, deletes, posts or starts something). The manifest's allow-list may name read tools only.",
+  "capturedAt": "2026-11-17",
+  "index": "https://developers.notion.com/docs/mcp-supported-tools",
+  "tools": [
+    {
+      "name": "notion-search",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-connector-search",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-fetch",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-list-private-pages",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-list-shared-pages",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-list-favorite-pages",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-list-recent-pages",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-list-page-backlinks",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-query-meeting-notes",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-get-self",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-get-teams",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-get-groups",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-get-users",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-get-tool-access",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-search"
+    },
+    {
+      "name": "notion-get-version-changes",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-view-version",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-restore-version",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-restore-pages",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-create-comment",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-get-comments",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-update-comment",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-delete-comment",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-set-discussion-resolved",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-set-comment-reaction",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-create-suggested-edit",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-get-suggested-edit",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-resolve-suggested-edit",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-comments"
+    },
+    {
+      "name": "notion-create-pages",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-pages"
+    },
+    {
+      "name": "notion-update-page",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-pages"
+    },
+    {
+      "name": "notion-move-pages",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-pages"
+    },
+    {
+      "name": "notion-duplicate-page",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-pages"
+    },
+    {
+      "name": "notion-delete-pages",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-pages"
+    },
+    {
+      "name": "notion-get-async-task",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-pages"
+    },
+    {
+      "name": "notion-create-database",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-update-data-source",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-create-view",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-update-view",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-query-data-sources",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-query-multiple-data-sources",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-delete-databases",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-databases"
+    },
+    {
+      "name": "notion-create-file-upload",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-files"
+    },
+    {
+      "name": "notion-create-attachment",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-files"
+    },
+    {
+      "name": "notion-download-attachment",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-files"
+    },
+    {
+      "name": "notion-get-file-download-urls",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-files"
+    },
+    {
+      "name": "notion-create-folder",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-files"
+    },
+    {
+      "name": "notion-update-folder",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-files"
+    },
+    {
+      "name": "notion-convert-page-to-skill",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-download-skill",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-upload-skill",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-get-enabled-skills",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-update-enabled-skills",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-memory-search",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-search-agents",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-query-sessions",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-search-sessions",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-spawn-session",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-send-message-to-session",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-get-session-status",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-wait-session",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-stop-session",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-list-session-events",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-read-session-event",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-skills-agents"
+    },
+    {
+      "name": "notion-calendar-list-calendars",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-list-calendar-resources",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-list-events",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-list-coworkers-events",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-list-contacts",
+      "access": "read",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-create-events",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-update-events",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    },
+    {
+      "name": "notion-calendar-cancel-events",
+      "access": "write",
+      "source": "https://developers.notion.com/guides/mcp/tools-calendars"
+    }
+  ]
+}
