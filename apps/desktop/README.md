@@ -402,7 +402,9 @@ For a release, the **Release Rollout** workflow (`.github/workflows/release-roll
 `.github/CONTRIBUTING.md`) runs every step below for the release tag commit: the runtime images, `stage-draft`, and
 the authenticated `sign-draft` and `publish-draft` of the [signed RPM preview path](../../docs/docs/operations/linux-rpm-signing.md).
 It calls these workflows (`workflow_call`) and passes the image digests and run ids along, so each protected
-environment still waits for its reviewers. Inside that run, the signing step's `unsigned_run_id` and the publication
+environment still waits for its reviewers. The publish jobs output digests only, because a full reference names the
+Docker Hub namespace, which is also a secret value. The rollout's `runtime` job reads no secret. It rebuilds each
+`propr/<image>:<SHA>@sha256:<digest>` reference, verifies it against the registry and hands it on. Inside that run, the signing step's `unsigned_run_id` and the publication
 step's `signing_run_id` are the rollout's own run id. That run id is accepted only while the run is in progress and
 only when its `workflow_ref` is the main copy of `release-rollout.yml` (`scripts/release-rollout-run.mjs`). A
 separate dispatch still needs a successful `desktop-linux-preview.yml` or `desktop-linux-signed-preview.yml` run. The

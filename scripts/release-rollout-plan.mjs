@@ -9,6 +9,12 @@
 //   runtime  pick the runtime image references the desktop previews and the
 //            preview CLI bundle receive: the one this run published, else the
 //            one the plan found, each checked against the source revision.
+//            A publication passes only its digest (a full reference names the
+//            Docker Hub namespace, which is also the DOCKERHUB_USERNAME secret,
+//            and GitHub Actions drops outputs containing a secret value), so
+//            the reference is rebuilt from the public namespace constant, the
+//            source revision and that digest, then read back anonymously from
+//            the registry and compared.
 //
 // Nothing here writes to a registry, a release, or any other remote.
 
@@ -17,7 +23,7 @@ import { appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { previewTag } from '../apps/desktop/scripts/desktop-preview-identity.mjs';
-import { inspectPublishedRuntime } from './preview-runtime-images.mjs';
+import { RUNTIME_NAMESPACE, inspectPublishedRuntime, inspectPublishedRuntimeImage } from './preview-runtime-images.mjs';
 import { TARGETS } from './verify-release-rollout.mjs';
 
 export const ROLLOUT_WORKFLOW = '.github/workflows/release-rollout.yml';
@@ -26,6 +32,7 @@ const MAIN_REF = 'refs/heads/main';
 const SHA = /^[0-9a-f]{40}$/;
 const RELEASE_TAG = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const RUNTIME_IMAGES = Object.freeze(['app', 'ui', 'agent']);
 
 /**
@@ -197,13 +204,40 @@ export function planSummary(plan) {
   ].join('\n');
 }
 
-/** The reference a downstream step receives: this run's publication, else the existing one. */
-export function runtimeReferences({ sourceRevision, published = {}, existing = {} }) {
+/**
+ * The reference a downstream step receives: this run's publication, else the
+ * existing one the plan found, else (a publication whose digest did not arrive)
+ * the image the registry now holds at the source revision tag.
+ *
+ * `published` holds digests only. Each is rebuilt into
+ * `<namespace>/<image>:<source>@<digest>` and verified: the source revision tag
+ * must exist in the registry, satisfy the preview contract, and resolve to the
+ * same digest. `inspect(image)` is the anonymous registry lookup the plan uses.
+ */
+export function runtimeReferences({
+  sourceRevision, published = {}, existing = {},
+  inspect = image => inspectPublishedRuntimeImage(image, sourceRevision),
+}) {
   if (!SHA.test(sourceRevision ?? '')) throw new Error('source_revision must be a full lowercase commit SHA');
   return Object.fromEntries(RUNTIME_IMAGES.map(image => {
-    const reference = published[image] || existing[image];
-    if (!new RegExp(`^propr/${image}:${sourceRevision}@sha256:[0-9a-f]{64}$`).test(reference ?? '')) {
-      throw new Error(`No published propr/${image}:${sourceRevision}@sha256:<digest> reference is available`);
+    const tag = `${RUNTIME_NAMESPACE}/${image}:${sourceRevision}`;
+    const digest = published[image];
+    let reference;
+    if (digest) {
+      if (!DIGEST.test(digest)) throw new Error(`The published ${image} digest is not sha256:<64 lowercase hex>: ${digest}`);
+      const remote = inspect(image);
+      if (!remote) throw new Error(`This run published ${tag}@${digest}, but ${tag} is not in the registry`);
+      if (remote.digest !== digest) {
+        throw new Error(`This run published ${tag}@${digest}, but the registry resolves ${tag} to ${remote.digest}`);
+      }
+      reference = `${tag}@${digest}`;
+    } else if (existing[image]) {
+      reference = existing[image];
+    } else {
+      reference = inspect(image)?.reference;
+    }
+    if (!new RegExp(`^${RUNTIME_NAMESPACE}/${image}:${sourceRevision}@sha256:[0-9a-f]{64}$`).test(reference ?? '')) {
+      throw new Error(`No published ${tag}@sha256:<digest> reference is available`);
     }
     return [`runtime_${image}_image`, reference];
   }));
@@ -233,11 +267,15 @@ const main = async (command, env = process.env) => {
   } else if (command === 'runtime') {
     const references = runtimeReferences({
       sourceRevision: env.SOURCE_REVISION,
-      published: { app: env.PUBLISHED_APP_IMAGE, ui: env.PUBLISHED_UI_IMAGE, agent: env.PUBLISHED_AGENT_IMAGE },
+      published: { app: env.PUBLISHED_APP_DIGEST, ui: env.PUBLISHED_UI_DIGEST, agent: env.PUBLISHED_AGENT_DIGEST },
       existing: { app: env.EXISTING_APP_IMAGE, ui: env.EXISTING_UI_IMAGE, agent: env.EXISTING_AGENT_IMAGE },
     });
     const outputs = formatOutputs(references);
     if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, outputs);
+    if (env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(env.GITHUB_STEP_SUMMARY, ['### Verified runtime images', '',
+        ...Object.values(references).map(reference => `- \`${reference}\``), '', ''].join('\n'));
+    }
     process.stdout.write(outputs);
   } else {
     throw new Error('Usage: release-rollout-plan.mjs <plan|runtime>');

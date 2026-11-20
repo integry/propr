@@ -112,14 +112,26 @@ describe('Release Rollout workflow contract', () => {
     const merge = jobs.runtime.steps.find(step => step.id === 'runtime');
     assert.deepEqual(merge.env, {
       SOURCE_REVISION: source,
-      PUBLISHED_APP_IMAGE: '${{ needs.runtime-app-ui.outputs.runtime_app_image }}',
-      PUBLISHED_UI_IMAGE: '${{ needs.runtime-app-ui.outputs.runtime_ui_image }}',
-      PUBLISHED_AGENT_IMAGE: '${{ needs.runtime-agent.outputs.runtime_agent_image }}',
+      PUBLISHED_APP_DIGEST: '${{ needs.runtime-app-ui.outputs.runtime_app_digest }}',
+      PUBLISHED_UI_DIGEST: '${{ needs.runtime-app-ui.outputs.runtime_ui_digest }}',
+      PUBLISHED_AGENT_DIGEST: '${{ needs.runtime-agent.outputs.runtime_agent_digest }}',
       EXISTING_APP_IMAGE: '${{ needs.plan.outputs.runtime_app_image }}',
       EXISTING_UI_IMAGE: '${{ needs.plan.outputs.runtime_ui_image }}',
       EXISTING_AGENT_IMAGE: '${{ needs.plan.outputs.runtime_agent_image }}',
     });
     assert.equal(merge.run, 'node scripts/release-rollout-plan.mjs runtime');
+    // The registry read-back needs regctl before the merge step, and a guard
+    // after it fails the job when any of the three references is empty.
+    const stepIndex = predicate => jobs.runtime.steps.findIndex(predicate);
+    assert.ok(stepIndex(step => step.uses?.startsWith('regclient/actions/regctl-installer@')) >= 0);
+    assert.ok(stepIndex(step => step.uses?.startsWith('regclient/actions/regctl-installer@')) < stepIndex(step => step.id === 'runtime'));
+    const guard = jobs.runtime.steps.at(-1);
+    assert.equal(guard.name, 'Require all three runtime image references');
+    assert.deepEqual(guard.env, Object.fromEntries(['app', 'ui', 'agent'].map(image =>
+      [`RUNTIME_${image.toUpperCase()}_IMAGE`, `\${{ steps.runtime.outputs.runtime_${image}_image }}`])));
+    assert.match(guard.run, /for name in RUNTIME_APP_IMAGE RUNTIME_UI_IMAGE RUNTIME_AGENT_IMAGE; do\n\s+if \[ -z "\$\{!name\}" \]/);
+    assert.deepEqual(jobs.runtime.outputs, Object.fromEntries(['app', 'ui', 'agent'].map(image =>
+      [`runtime_${image}_image`, `\${{ steps.runtime.outputs.runtime_${image}_image }}`])));
     assert.equal(jobs.plan.steps.at(-1).run, 'node scripts/release-rollout-plan.mjs plan');
   });
 
@@ -141,12 +153,12 @@ describe('Release Rollout workflow contract', () => {
       assert.deepEqual(declared.sort(), Object.keys(called[key].on.workflow_dispatch.inputs).sort(), key);
     }
     assert.deepEqual(called.runtime.on.workflow_call.outputs, {
-      runtime_app_image: { description: called.runtime.on.workflow_call.outputs.runtime_app_image.description,
-        value: '${{ jobs.publish.outputs.runtime_app_image }}' },
-      runtime_ui_image: { description: called.runtime.on.workflow_call.outputs.runtime_ui_image.description,
-        value: '${{ jobs.publish.outputs.runtime_ui_image }}' },
-      runtime_agent_image: { description: called.runtime.on.workflow_call.outputs.runtime_agent_image.description,
-        value: '${{ jobs.publish-agent.outputs.runtime_agent_image }}' },
+      runtime_app_digest: { description: called.runtime.on.workflow_call.outputs.runtime_app_digest.description,
+        value: '${{ jobs.publish.outputs.runtime_app_digest }}' },
+      runtime_ui_digest: { description: called.runtime.on.workflow_call.outputs.runtime_ui_digest.description,
+        value: '${{ jobs.publish.outputs.runtime_ui_digest }}' },
+      runtime_agent_digest: { description: called.runtime.on.workflow_call.outputs.runtime_agent_digest.description,
+        value: '${{ jobs.publish-agent.outputs.runtime_agent_digest }}' },
     });
   });
 
@@ -281,6 +293,62 @@ describe('Release Rollout workflow contract', () => {
     assert.match(text, /\| Desktop Linux signed publication \| already published \|/);
     assert.match(text, /\| Desktop macOS preview \| failure \|/);
     assert.match(text, new RegExp(`propr/app:${SHA}@${digest('b')}`));
+  });
+});
+
+// Every job output and workflow_call output that is built from a secret, from a
+// step whose inputs name a secret, or from the Docker Hub namespace. GitHub
+// Actions drops an output containing a secret value, and the namespace `propr`
+// is also the DOCKERHUB_USERNAME secret, so a job that can see that secret
+// must emit nothing that names the namespace: only digests leave it.
+const SECRET_SHAPED = /secrets\.|DOCKERHUB_(?:USERNAME|TOKEN|NS)|\bpropr\/|docker\.io\//;
+const DOCKER_HUB_SECRET = /secrets\.DOCKERHUB_(?:USERNAME|TOKEN)/;
+const secretDerivedOutputs = workflow => {
+  const found = [];
+  for (const [name, definition] of Object.entries(workflow.on?.workflow_call?.outputs ?? {})) {
+    if (SECRET_SHAPED.test(String(definition.value))) found.push(`workflow_call.outputs.${name}`);
+  }
+  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+    const readsDockerHub = DOCKER_HUB_SECRET.test(JSON.stringify(job));
+    for (const [name, value] of Object.entries(job.outputs ?? {})) {
+      const where = `jobs.${jobName}.outputs.${name}`;
+      if (SECRET_SHAPED.test(String(value))) found.push(where);
+      for (const [, stepId] of String(value).matchAll(/steps\.([\w-]+)\.outputs\./g)) {
+        const step = job.steps?.find(candidate => candidate.id === stepId);
+        if (step && SECRET_SHAPED.test(JSON.stringify({ env: step.env, with: step.with }))) found.push(`${where} (step ${stepId})`);
+      }
+      if (readsDockerHub && !/_digest$/.test(name)) found.push(`${where} (job reads the Docker Hub secrets)`);
+    }
+  }
+  return found;
+};
+
+describe('no job or workflow_call output carries a secret value', () => {
+  test('the rollout and every workflow it calls emit no output built from a secret or the Docker Hub namespace', () => {
+    for (const [key, workflow] of Object.entries({ rollout, ...called })) {
+      assert.deepEqual(secretDerivedOutputs(workflow), [], key);
+    }
+    // The protected publish jobs, which read the Docker Hub secrets, emit digests only.
+    assert.deepEqual(Object.keys(called.runtime.jobs.publish.outputs), ['runtime_app_digest', 'runtime_ui_digest']);
+    assert.deepEqual(Object.keys(called.runtime.jobs['publish-agent'].outputs), ['runtime_agent_digest']);
+    // The runtime job that rebuilds the references reads no secret at all.
+    assert.doesNotMatch(JSON.stringify(jobs.runtime), /secrets\./);
+  });
+
+  test('the check catches the shapes that dropped the 0.9.3 references', () => {
+    const mutated = structuredClone(called.runtime);
+    mutated.jobs.publish.outputs = { runtime_app_image: '${{ steps.publish.outputs.runtime_app_image }}' };
+    mutated.on.workflow_call.outputs.runtime_app_digest.value = '${{ secrets.DOCKERHUB_USERNAME }}/app';
+    mutated.jobs['publish-agent'].outputs.runtime_agent_digest = 'propr/agent:${{ steps.publish.outputs.runtime_agent_digest }}';
+    // A step that reads any secret taints the outputs built from it.
+    mutated.jobs.namespace = { outputs: { value: '${{ steps.ns.outputs.value }}' },
+      steps: [{ id: 'ns', env: { NS: '${{ secrets.OTHER_SECRET }}' }, run: 'true' }] };
+    assert.deepEqual(secretDerivedOutputs(mutated).sort(), [
+      'jobs.namespace.outputs.value (step ns)',
+      'jobs.publish-agent.outputs.runtime_agent_digest',
+      'jobs.publish.outputs.runtime_app_image (job reads the Docker Hub secrets)',
+      'workflow_call.outputs.runtime_app_digest',
+    ]);
   });
 });
 
@@ -529,17 +597,59 @@ describe('release rollout plan', () => {
 
   test('passes this run\'s publication, else the existing image, and nothing unbound', () => {
     const ref = (image, revision = SHA, character = 'a') => `propr/${image}:${revision}@${digest(character)}`;
-    assert.deepEqual(runtimeReferences({ sourceRevision: SHA,
-      published: { app: ref('app', SHA, 'd'), ui: ref('ui', SHA, 'e'), agent: '' },
-      existing: { app: ref('app'), ui: '', agent: ref('agent') } }), {
-      runtime_app_image: ref('app', SHA, 'd'), runtime_ui_image: ref('ui', SHA, 'e'), runtime_agent_image: ref('agent'),
+    const noRegistry = image => { throw new Error(`unexpected registry read for ${image}`); };
+    // Nothing published in this run, every image exists: the plan's references, unchanged, no registry read.
+    assert.deepEqual(runtimeReferences({ sourceRevision: SHA, inspect: noRegistry,
+      existing: { app: ref('app'), ui: ref('ui', SHA, 'b'), agent: ref('agent', SHA, 'c') } }), {
+      runtime_app_image: ref('app'), runtime_ui_image: ref('ui', SHA, 'b'), runtime_agent_image: ref('agent', SHA, 'c'),
     });
-    for (const published of [{ app: ref('app', OTHER) }, { app: `propr/app:${SHA}` }, { app: `propr/app:latest@${digest('a')}` },
-      { app: ref('ui') }]) {
-      assert.throws(() => runtimeReferences({ sourceRevision: SHA, published: { ui: ref('ui'), agent: ref('agent'), ...published } }),
-        /No published propr\/app/, JSON.stringify(published));
+    for (const existing of [{ app: ref('app', OTHER) }, { app: `propr/app:${SHA}` }, { app: `propr/app:latest@${digest('a')}` },
+      { app: ref('ui') }, { app: `docker.io/propr/app:${SHA}@${digest('a')}` }]) {
+      assert.throws(() => runtimeReferences({ sourceRevision: SHA, inspect: () => null,
+        existing: { ui: ref('ui'), agent: ref('agent'), ...existing } }), /No published propr\/app/, JSON.stringify(existing));
     }
-    assert.throws(() => runtimeReferences({ sourceRevision: SHA, existing: { app: ref('app'), ui: ref('ui') } }), /propr\/agent/);
+    assert.throws(() => runtimeReferences({ sourceRevision: SHA, inspect: () => null, existing: { app: ref('app'), ui: ref('ui') } }),
+      /No published propr\/agent:0c6213a643f316bbe33f2800f858bd9462f83b74@sha256:<digest> reference is available/);
+  });
+
+  test('rebuilds each published digest into the exact reference and verifies it against the registry', () => {
+    const ref = (image, character) => `propr/${image}:${SHA}@${digest(character)}`;
+    const registry = { app: digest('d'), ui: digest('e'), agent: digest('c') };
+    const reads = [];
+    const inspect = image => {
+      reads.push(image);
+      return registry[image] ? { digest: registry[image], reference: `propr/${image}:${SHA}@${registry[image]}` } : null;
+    };
+    // Published digests only (the 0.9.3 shape: app and UI published by this run, agent already there).
+    assert.deepEqual(runtimeReferences({ sourceRevision: SHA, inspect,
+      published: { app: digest('d'), ui: digest('e'), agent: '' }, existing: { app: '', ui: '', agent: ref('agent', 'c') } }), {
+      runtime_app_image: ref('app', 'd'), runtime_ui_image: ref('ui', 'e'), runtime_agent_image: ref('agent', 'c'),
+    });
+    assert.deepEqual(reads, ['app', 'ui'], 'each published digest is read back; the existing agent is not');
+    // A publication whose digest did not arrive: the registry's image at the source tag.
+    assert.deepEqual(runtimeReferences({ sourceRevision: SHA, inspect, published: {}, existing: {} }), {
+      runtime_app_image: ref('app', 'd'), runtime_ui_image: ref('ui', 'e'), runtime_agent_image: ref('agent', 'c'),
+    });
+    // Verified, not assumed.
+    assert.throws(() => runtimeReferences({ sourceRevision: SHA, inspect, published: { app: digest('9') } }),
+      /This run published propr\/app:0c6213a\S+@sha256:9{64}, but the registry resolves propr\/app:0c6213a\S+ to sha256:d{64}/);
+    assert.throws(() => runtimeReferences({ sourceRevision: SHA, inspect: () => null, published: { app: digest('d') } }),
+      /This run published propr\/app:\S+, but propr\/app:\S+ is not in the registry/);
+    for (const value of [ref('app', 'd'), 'sha256:abc', `${digest('d')}\n`]) {
+      assert.throws(() => runtimeReferences({ sourceRevision: SHA, inspect, published: { app: value } }),
+        /published app digest is not sha256/, JSON.stringify(value));
+    }
+    assert.throws(() => runtimeReferences({ sourceRevision: 'abc', inspect }), /full lowercase/);
+  });
+
+  test('the runtime command reads the published digests from the environment', () => {
+    const result = spawnSync(process.execPath, ['scripts/release-rollout-plan.mjs', 'runtime'], {
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_OUTPUT: '', GITHUB_STEP_SUMMARY: '', SOURCE_REVISION: SHA,
+        PUBLISHED_APP_DIGEST: 'not-a-digest', EXISTING_UI_IMAGE: '', EXISTING_AGENT_IMAGE: '' },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /The published app digest is not sha256:<64 lowercase hex>: not-a-digest/);
   });
 });
 

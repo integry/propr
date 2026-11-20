@@ -252,11 +252,15 @@ describe('preview runtime artifact and immutable publication scope', () => {
       `docker.io/propr/ui:${revision}`,
     ]);
     assert.equal(copies.some(args => /:latest$|:0\.8\.15$/.test(args[3])), false);
+    // Only digests: the namespace is also the DOCKERHUB_USERNAME secret, and
+    // GitHub Actions drops an output that contains a secret value.
     assert.equal(readFileSync(githubOutput, 'utf8'), [
-      `runtime_app_image=propr/app:${revision}@${digest('e')}`,
-      `runtime_ui_image=propr/ui:${revision}@${digest('e')}`,
+      `runtime_app_digest=${digest('e')}`,
+      `runtime_ui_digest=${digest('e')}`,
       '',
     ].join('\n'));
+    assert.doesNotMatch(readFileSync(githubOutput, 'utf8'), /propr/);
+    assert.match(readFileSync(stepSummary, 'utf8'), new RegExp(`propr/app:${revision}@${digest('e')}`));
   });
 
   test('fails before registry mutation when an existing full-SHA tag conflicts', () => {
@@ -288,7 +292,8 @@ describe('preview runtime artifact and immutable publication scope', () => {
     assert.match(workflow, /APP_IMAGE: propr\/app:\$\{\{ needs\.identity\.outputs\.source_revision \}\}/);
     assert.match(workflow, /UI_IMAGE: propr\/ui:\$\{\{ needs\.identity\.outputs\.source_revision \}\}/);
     assert.doesNotMatch(workflow, /docker-images\.yml|release:verify|npm publish|gh release|--push(?:\s|$)|--promote-latest/);
-    assert.match(helper, /`docker\.io\/propr\/\$\{image\}:\$\{sourceRevision\}`/);
+    assert.match(helper, /^export const RUNTIME_NAMESPACE = 'propr';$/m);
+    assert.match(helper, /`docker\.io\/\$\{RUNTIME_NAMESPACE\}\/\$\{image\}:\$\{sourceRevision\}`/);
     assert.doesNotMatch(helper, /:latest|expected.version|npm|desktop.release/);
     assert.match(smoke, /api\/desktop\/discovery/);
     assert.match(smoke, /config\.js/);
