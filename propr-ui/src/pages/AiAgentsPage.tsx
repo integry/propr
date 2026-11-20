@@ -11,6 +11,7 @@ import {
 } from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
 import { useAgentHealth } from './SettingsPage/useAgentHealth';
+import { useCliVersionStates } from './SettingsPage/useCliVersionStates';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { usePlaygroundSession } from '../components/AgentChat/usePlaygroundSession';
 import { useDemoMode } from '../contexts/DemoModeContext';
@@ -36,6 +37,8 @@ const AiAgentsPage: React.FC = () => {
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
   const [agentsWarning, setAgentsWarning] = useState<string | null>(null);
+  const cliVersions = useCliVersionStates();
+  const { update: updateCliVersions } = cliVersions;
   const agentsReloadRequiredRef = useRef(false);
   const agentHealth = useAgentHealth(agents, agentsLoading || isDemoMode);
   const [syntheticAgents, setSyntheticAgents] = useState<SyntheticAgentConfig[]>([]);
@@ -66,6 +69,7 @@ const AiAgentsPage: React.FC = () => {
         setAgentsError(null);
         const data = await getAgents();
         setAgents(data.agents || []);
+        updateCliVersions(data.cliVersionStates);
         agentsReloadRequiredRef.current = false;
       } catch (err) {
         setAgentsError((err as Error).message || 'Failed to load agents');
@@ -74,7 +78,7 @@ const AiAgentsPage: React.FC = () => {
       }
     };
     loadAgents();
-  }, []);
+  }, [updateCliVersions]);
 
   useEffect(() => {
     const loadPools = async () => {
@@ -166,13 +170,18 @@ const AiAgentsPage: React.FC = () => {
       const result = await saveAgents(updatedAgents);
       setAgents(result.agents || updatedAgents);
       setAgentsWarning(result.warnings?.join(' ') || null);
-      setAgentsSuccess('Agents updated successfully! Changes are applied immediately.');
+      cliVersions.update(result.cliVersionStates);
+      const preparing = result.cliVersionStates?.some(state => state.status !== 'ready');
+      setAgentsSuccess(preparing
+        ? 'Agents saved. A changed CLI version takes effect once the worker has prepared its agent image.'
+        : 'Agents updated successfully! Changes are applied immediately.');
       return result.agents || updatedAgents;
     } catch (err) {
       if (isCommittedConfigWriteError(err)) {
         try {
           const current = await getAgents();
           setAgents(current.agents || []);
+          cliVersions.update(current.cliVersionStates);
           agentsReloadRequiredRef.current = false;
         } catch (refreshError) {
           agentsReloadRequiredRef.current = true;
@@ -257,6 +266,8 @@ const AiAgentsPage: React.FC = () => {
         onAddClick={handleAddAgentClick}
         onSelectModel={handleSelectModel}
         readOnly={isDemoMode}
+        cliVersionStateFor={cliVersions.stateFor}
+        cliVersionBecameReady={cliVersions.becameReady}
       /> : <SyntheticPoolsSection
         agents={agents}
         pools={syntheticAgents}

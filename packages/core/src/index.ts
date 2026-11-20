@@ -424,6 +424,8 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 
 // Agent abstraction exports
 export { AgentRegistry, getAgentRegistry, type AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export { agentCliVersionWarnings, describeAgentCliVersionStates, isAwaitingWorkerImagePreparation, type AgentCliVersionState, type AgentCliVersionStatus } from './agents/agentCliVersionState.js';
+export { recordAgentRuntimeEvent, agentRuntimeEvent, type AgentRuntimeEvent } from './agents/agentRuntimeEvent.js';
 export {
     AGENT_IMAGE_PREPARATION_QUEUE_NAME,
     agentImagePreparationJobId,

@@ -95,6 +95,8 @@ export interface HistoryItemMetadata {
   budget?: { capUsd: number; spentUsd: number; priorSpentUsd?: number; percent?: number; source?: 'override' | 'workflow' | 'instance_default' };
   /** `network.egress`: one run's network mode and every host its egress proxy denied. */
   networkEgress?: NetworkEgressSummary;
+  /** `agent.runtime`: the agent CLI version and image a run used. */
+  agentRuntime?: AgentRuntimeSummary;
   pushFailure?: PushFailure;
   pushSalvage?: PushSalvageEvent;
   model?: string;
@@ -251,4 +253,13 @@ export interface LiveDetails {
   historyTruncated?: boolean;
   /** Where in the live output log this state was read (see `LiveOutputPosition`). */
   liveOutputPosition?: LiveOutputPosition;
+}
+
+export interface AgentRuntimeSummary {
+  agentAlias: string;
+  agentType: string;
+  cliVersion: string | null;
+  image: string;
+  /** Set when the run used a previous CLI version while the configured one was still being prepared. */
+  configuredCliVersion?: string;
 }

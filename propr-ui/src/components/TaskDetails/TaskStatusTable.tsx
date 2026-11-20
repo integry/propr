@@ -3,6 +3,9 @@ import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
 import PushFailureDetails from './PushFailureDetails';
 import { NetworkEgressDetail, NetworkEgressIcon } from './NetworkEgressDetail';
+import { AgentRuntimeDetail } from './AgentRuntimeDetail';
+import { foldAgentRuntimeEvent, isAgentRuntimeEvent } from './agentRuntime';
+import { getReplacementEventLabel } from './timelineEventLabels';
 import { isNetworkEgress, networkEgressLabel, networkEgressNeedsAttention } from './networkEgress';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
@@ -64,23 +67,8 @@ const getEventLabel = (item: HistoryItem): string | null => {
   if (replacementLabel) return replacementLabel;
   if (item.metadata?.repositoryWorkflowDeferrals || item.metadata?.agentCapacityDeferrals) return `Waiting for ${item.metadata.repositoryWorkflowDeferrals ? 'Repository' : 'Agent'} Capacity`;
   if (isBudgetExceeded(item)) return 'Spend Cap Reached';
+  if (isAgentRuntimeEvent(item)) return 'Agent CLI';
   return extensionsEventLabel(item.metadata) ?? networkEgressLabel(item);
-};
-
-/** Automatic-replacement timeline events repeat the task's state; label them by event. */
-const getReplacementEventLabel = (item: HistoryItem): string | null => {
-  switch (item.metadata?.event) {
-    case 'replacement.dispatched':
-      return `Replacement Attempt ${item.metadata.attemptNumber ?? ''} Started`.replace('  ', ' ');
-    case 'replacement.skipped':
-      return item.reason || 'Replacement Skipped';
-    case 'replacement.exhausted':
-      return item.reason || 'Replacement Attempts Exhausted';
-    case 'pull_request.auto_assignment':
-      return item.metadata.description || item.reason || 'Pull Request Assignment';
-    default:
-      return null;
-  }
 };
 
 const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
@@ -95,7 +83,7 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   const isFix = commandMode === 'fix';
   const claudeCount = history.slice(0, index + 1).filter(h => {
     const s = h.state?.toUpperCase();
-    return (s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED') && !isBudgetExceeded(h) && !isNetworkEgress(h);
+    return (s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED') && !isBudgetExceeded(h) && !isNetworkEgress(h) && !isAgentRuntimeEvent(h);
   }).length;
 
   const isReport = commandMode === AUTOMATION_REPORT_MODE;
@@ -218,6 +206,7 @@ const TimelineContent: React.FC<{
           )}
           <CapacityDeferral metadata={item.metadata} isRunning={isRunning} />
           <BudgetExceededDetail metadata={item.metadata} />
+          <AgentRuntimeDetail metadata={item.metadata} />
           <NetworkEgressDetail metadata={item.metadata} />
           {item.metadata?.terminalReason && (
             <div className="mt-1 break-words text-xs text-slate-500" data-testid="task-terminal-reason">
@@ -315,6 +304,11 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
   const steps: HistoryItem[] = [];
   for (const item of history.filter(entry => !resolvedNoExtensions(entry.metadata))) {
     const previous = steps[steps.length - 1];
+    const folded = foldAgentRuntimeEvent(previous, item);
+    if (folded) {
+      steps[steps.length - 1] = folded;
+      continue;
+    }
     const state = item.state?.toUpperCase();
     // Metadata events (an auto-assignment, a replacement, a spend cap) are their own steps, never
     // merged into the same-state step before them, so each keeps its own label and time.
@@ -335,7 +329,7 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
 };
 
 // Match the detail renderers, including salvage summaries that are already the label.
-const hasStepDetails = (metadata: HistoryItem['metadata']): boolean => !!(metadata?.terminalReason ||
+const hasStepDetails = (metadata: HistoryItem['metadata']): boolean => !!(metadata?.terminalReason || metadata?.agentRuntime ||
   (metadata?.event === 'network.egress' && metadata.networkEgress) || metadata?.pushFailure ||
   (metadata?.pushSalvage && metadata.description !== metadata.pushSalvage.summary));
 
@@ -398,6 +392,7 @@ const BranchSteps: React.FC<{
                 {formatTaskTerminalReason(item.metadata.terminalReason)}
               </span>
             )}
+            <AgentRuntimeDetail metadata={item.metadata} inline />
             <NetworkEgressDetail metadata={item.metadata} />
             <PushFailureDetails metadata={item.metadata} />
           </StepDisclosure>

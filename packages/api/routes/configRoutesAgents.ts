@@ -16,6 +16,8 @@ import {
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
+import { buildAgentsUpdateSuccessBody, loadAgentCliVersionStates } from './configRoutesAgentsCliVersions.js';
+export { loadAgentCliVersionStates } from './configRoutesAgentsCliVersions.js';
 export { validateDefaultAgentSetting } from './configRoutesAgentDefaults.js';
 function buildAgentPreparationError(error: string, code?: string): { code?: string; error: string } {
   return code ? { code, error } : { error };
@@ -193,21 +195,6 @@ async function publishAgentUpdates({
     console.error('Failed to log agents configuration update activity:', error);
   }
 }
-async function loadReasoningLevelWarnings(
-  configStore: AgentConfigStore,
-  agents: AgentConfig[],
-): Promise<string[]> {
-  if (!configStore.loadModelReasoningLevel) return [];
-  try {
-    return configManager.findReasoningLevelCliVersionWarnings(
-      agents,
-      await configStore.loadModelReasoningLevel(),
-    );
-  } catch (warningError) {
-    console.warn('Could not evaluate reasoning-level CLI compatibility after agents save:', warningError);
-    return [];
-  }
-}
 function resolveUpdatedDefaultAgent(
   processedAgents: AgentConfig[],
   syntheticAgents: SyntheticAgentConfig[],
@@ -332,16 +319,7 @@ export async function applyAgentsUpdate({
     return publishResult;
   }
 
-  const warnings = await loadReasoningLevelWarnings(configStore, processedAgents);
-
-  return {
-    status: 200,
-    body: {
-      success: true,
-      agents: redactAgentConfigsSecrets(processedAgents),
-      ...(warnings.length > 0 ? { warnings } : {})
-    }
-  };
+  return { status: 200, body: await buildAgentsUpdateSuccessBody(configStore, registry, processedAgents) };
 }
 
 export function createAgentsRoutes(deps: AgentsRoutesDeps) {
@@ -359,7 +337,9 @@ export function createAgentsRoutes(deps: AgentsRoutesDeps) {
   const effectiveApplyFn = applyAgentsUpdateFn ?? applyAgentsUpdate;
   async function getAgents(_req: Request, res: Response): Promise<void> {
     try {
-      res.json({ agents: redactAgentConfigsSecrets(await configStore.loadAgents()) });
+      const agents = await configStore.loadAgents();
+      const cliVersionStates = await loadAgentCliVersionStates(registry, agents, true);
+      res.json({ agents: redactAgentConfigsSecrets(agents), ...(cliVersionStates.length > 0 ? { cliVersionStates } : {}) });
     } catch (error) {
       console.error('Error in /api/config/agents GET:', error);
       res.status(500).json({ error: 'Failed to load agents configuration' });

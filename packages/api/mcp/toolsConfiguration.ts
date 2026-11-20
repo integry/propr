@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, AGENT_DEFAULTS, AGENT_TYPES } from '@propr/core';
+import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, AGENT_DEFAULTS, AGENT_TYPES, AgentRegistry } from '@propr/core';
 import { AGENT_TANK_MODES, getManagedAgentConfigPath, isAgentLoginSupported, syntheticAgentConfigSchema, REASONING_LEVELS } from '@propr/shared';
 import type { createConfigRoutes } from '../routes/configRoutes.js';
 import { configRevision } from '../routes/configRevision.js';
+import { loadAgentCliVersionStates } from '../routes/configRoutesAgents.js';
 import { callWorkflow } from './adapter.js';
 import { McpError } from './config.js';
 import { type McpTool, type ToolDeps, mutationShape, repositorySchema, idSchema, ok, workflow } from './tools.js';
@@ -18,13 +19,13 @@ const agentPatch = {
   cliVersionType: z.enum(['default', 'tag', 'specific']).optional(), cliVersion: z.string().regex(/^[a-zA-Z0-9.+_-]{1,100}$/).optional(),
 };
 const safeAgent = (agent: Awaited<ReturnType<typeof loadAgents>>[number]) => Object.fromEntries(
-  ['id', 'type', ...Object.keys(agentPatch)].filter(key => key in agent).map(key => [key, agent[key as keyof typeof agent]])
+  ['id', 'type', ...Object.keys(agentPatch), 'cliVersionResolved'].filter(key => key in agent).map(key => [key, agent[key as keyof typeof agent]])
 );
 
 export function addConfigurationTools(tools: McpTool[], deps: ToolDeps, config: ReturnType<typeof createConfigRoutes>): void {
   addTriggerAccessTools(tools, config);
-  tools.push({ name: 'get_agent_configuration', description: 'Read all direct and synthetic agent configurations and actual built-in model defaults. Credential paths/environment variables are excluded.', scope: 'manage', permission: 'instance.manage_agents', readOnly: true, schema: z.object({}).strict(), run: async () => ok({ agents: (await loadAgents()).map(safeAgent), syntheticAgents: await loadSyntheticAgents(), types: AGENT_TYPES, defaults: Object.fromEntries(Object.entries(AGENT_DEFAULTS).map(([type, value]) => [type, { models: value.defaultModels, alias: value.defaultAlias, cliVersion: value.defaultCliVersion }])), reasoningLevels: REASONING_LEVELS }) });
-  for (const action of ['create', 'update', 'remove'] as const) tools.push({ name: `${action}_agent_configuration`, description: `${action} a direct agent through the existing validated configuration workflow. Creation uses managed credential storage; provider login requires secure browser setup.`, scope: 'manage', permission: 'instance.manage_agents',
+  tools.push({ name: 'get_agent_configuration', description: 'Read all direct and synthetic agent configurations and actual built-in model defaults. cliVersionStates reports, per enabled agent, the configured CLI version (cliVersionResolved) next to the version runs use right now and whether the new image is ready, still being prepared by the worker, or failed. Credential paths/environment variables are excluded.', scope: 'manage', permission: 'instance.manage_agents', readOnly: true, schema: z.object({}).strict(), run: async () => { const agents = await loadAgents(); return ok({ agents: agents.map(safeAgent), cliVersionStates: await loadAgentCliVersionStates(AgentRegistry.getInstance(), agents, true), syntheticAgents: await loadSyntheticAgents(), types: AGENT_TYPES, defaults: Object.fromEntries(Object.entries(AGENT_DEFAULTS).map(([type, value]) => [type, { models: value.defaultModels, alias: value.defaultAlias, cliVersion: value.defaultCliVersion }])), reasoningLevels: REASONING_LEVELS }); } });
+  for (const action of ['create', 'update', 'remove'] as const) tools.push({ name: `${action}_agent_configuration`, description: `${action} a direct agent through the existing validated configuration workflow. Creation uses managed credential storage; provider login requires secure browser setup.${action === 'update' ? ' A CLI version change takes effect only after the worker prepares the new agent image (often several minutes); until then runs keep the previous version. cliVersionState and warnings report that; poll get_agent_configuration for readiness.' : ''}`, scope: 'manage', permission: 'instance.manage_agents',
     schema: z.object({ ...mutationShape, agentId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/), ...(action === 'create' ? { type: z.enum(AGENT_TYPES), alias: z.string().regex(/^[a-z0-9-]{1,63}$/), supportedModels: z.array(idSchema).min(1).max(100), defaultModel: idSchema, enabled: z.literal(false).default(false) } : action === 'update' ? agentPatch : {}) }).strict(), run: async ({ principal, args }) => {
       const agents = await loadAgents();
       const previous = agents.find(agent => agent.id === args.agentId);
@@ -33,7 +34,9 @@ export function addConfigurationTools(tools: McpTool[], deps: ToolDeps, config: 
       const created = { id: args.agentId, type: args.type, ...patch, configPath: isAgentLoginSupported(args.type) ? getManagedAgentConfigPath(args.agentId, args.type) : '~/.vibe', dockerImage: '' };
       const updated = action === 'create' ? [...agents, created] : action === 'remove' ? agents.filter(agent => agent.id !== args.agentId) : agents.map(agent => agent.id === args.agentId ? { ...agent, ...patch } : agent);
       const response = await callWorkflow(config.postAgents, principal, { body: { agents: updated, expectedRevision: configRevision(agents) } });
-      return ok({ agentId: args.agentId, action, warnings: (response.data as { warnings?: unknown }).warnings, ...(action === 'create' ? { enabled: false, browserSetup: `${deps.policy.config.origin}/settings` } : {}) });
+      const data = response.data as { warnings?: unknown; cliVersionStates?: Array<{ agentId: string }> };
+      const cliVersionState = data.cliVersionStates?.find(state => state.agentId === args.agentId);
+      return ok({ agentId: args.agentId, action, warnings: data.warnings, ...(cliVersionState ? { cliVersionState } : {}), ...(action === 'create' ? { enabled: false, browserSetup: `${deps.policy.config.origin}/settings` } : {}) });
     } });
   for (const action of ['create', 'update', 'remove'] as const) tools.push({ name: `${action}_synthetic_agent`, description: `${action} a synthetic agent composition. The backend validates direct model references, unique IDs, enabled members and the default agent.`, scope: 'manage', permission: 'instance.manage_agents',
     schema: z.object({ ...mutationShape, agentId: z.uuid(), ...(action !== 'remove' ? { configuration: syntheticAgentConfigSchema } : {}) }).strict(), run: async ({ principal, args }) => {

@@ -2,12 +2,13 @@ import { formatModelName } from '../../utils/modelDisplay';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, ChevronUp, LogIn, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { isAgentLoginSupported } from '@propr/shared';
-import { AgentConfig } from '../../api/proprApi';
+import type { AgentCliVersionState, AgentConfig } from '../../api/proprApi';
 import { type AgentType, MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../../components/ui/ProviderLogo';
 import './AgentCard.css';
 import type { AgentHealthState } from './useAgentHealth';
 import AgentHealthFeedback from './AgentHealthFeedback';
+import AgentCliVersionStatus from './AgentCliVersionStatus';
 
 const AliasChip: React.FC<{ alias: string; modelId: string }> = ({ alias, modelId }) => {
   const [copyStatus, setCopyStatus] = useState<'copied' | 'failed' | null>(null);
@@ -161,6 +162,8 @@ interface AgentCardProps {
   readOnly?: boolean;
   health?: AgentHealthState;
   onRecheck?: () => void;
+  cliVersionState?: AgentCliVersionState;
+  cliVersionBecameReady?: boolean;
 }
 
 function shouldShowLogin(agentType: AgentType, health?: AgentHealthState): boolean {
@@ -194,6 +197,8 @@ const AgentCard: React.FC<AgentCardProps> = ({
   readOnly = false,
   health,
   onRecheck,
+  cliVersionState,
+  cliVersionBecameReady = false,
 }) => {
   const [expanded, setExpanded] = useState(agent.type === 'claude' || agent.type === 'codex');
   const [showLegacyModels, setShowLegacyModels] = useState(false);
@@ -348,6 +353,8 @@ const AgentCard: React.FC<AgentCardProps> = ({
       {agent.enabled && (health?.status === 'error' || health?.status === 'preparing') && (
         <AgentHealthFeedback agent={agent} health={health} onLogin={onLogin} onRecheck={onRecheck} readOnly={readOnly} />
       )}
+
+      {agent.enabled && <AgentCliVersionStatus state={cliVersionState} becameReady={cliVersionBecameReady} />}
 
       <div id={modelsId} hidden={!expanded} className="mt-2">
         {currentModels.map(renderModelRow)}
