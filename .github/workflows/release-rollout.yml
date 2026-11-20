@@ -19,6 +19,13 @@ name: Release Rollout
 # called workflows; the other called workflows read no secrets. The
 # single-step manual dispatches keep working unchanged.
 #
+# The runtime image publications pass only their digests, never a full image
+# reference: the reference starts with the Docker Hub namespace, which is also
+# the DOCKERHUB_USERNAME secret, and GitHub Actions drops a job output that
+# contains a secret value. The runtime job, which reads no secret, rebuilds each
+# reference from the public namespace, the tag commit and the digest, verifies
+# it against the registry, and passes it on.
+#
 # Re-running for a tag is safe: the plan finds runtime images and published
 # preview prereleases that already exist for the tag commit, and those steps
 # are skipped and their existing digests passed along. To resume a run that
@@ -177,17 +184,44 @@ jobs:
           node-version-file: '.nvmrc'
           package-manager-cache: false
 
-      - name: Use this run's publication, else the existing image, for each digest
+      - name: Install pinned OCI inspection client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      # The publish jobs pass digests only: a full reference names the Docker
+      # Hub namespace, which is also the DOCKERHUB_USERNAME secret, and an
+      # output containing a secret value is dropped. This job reads no secret,
+      # so the references it rebuilds (public namespace constant, source
+      # revision, digest) and verifies anonymously against the registry reach
+      # the desktop and CLI jobs as plain strings.
+      - name: Rebuild and verify this run's publication, else use the existing image, for each reference
         id: runtime
         env:
           SOURCE_REVISION: ${{ needs.plan.outputs.source_revision }}
-          PUBLISHED_APP_IMAGE: ${{ needs.runtime-app-ui.outputs.runtime_app_image }}
-          PUBLISHED_UI_IMAGE: ${{ needs.runtime-app-ui.outputs.runtime_ui_image }}
-          PUBLISHED_AGENT_IMAGE: ${{ needs.runtime-agent.outputs.runtime_agent_image }}
+          PUBLISHED_APP_DIGEST: ${{ needs.runtime-app-ui.outputs.runtime_app_digest }}
+          PUBLISHED_UI_DIGEST: ${{ needs.runtime-app-ui.outputs.runtime_ui_digest }}
+          PUBLISHED_AGENT_DIGEST: ${{ needs.runtime-agent.outputs.runtime_agent_digest }}
           EXISTING_APP_IMAGE: ${{ needs.plan.outputs.runtime_app_image }}
           EXISTING_UI_IMAGE: ${{ needs.plan.outputs.runtime_ui_image }}
           EXISTING_AGENT_IMAGE: ${{ needs.plan.outputs.runtime_agent_image }}
         run: node scripts/release-rollout-plan.mjs runtime
+
+      - name: Require all three runtime image references
+        env:
+          RUNTIME_APP_IMAGE: ${{ steps.runtime.outputs.runtime_app_image }}
+          RUNTIME_UI_IMAGE: ${{ steps.runtime.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ steps.runtime.outputs.runtime_agent_image }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in RUNTIME_APP_IMAGE RUNTIME_UI_IMAGE RUNTIME_AGENT_IMAGE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is empty; the desktop and CLI jobs would receive no runtime image."
+              missing=1
+            fi
+          done
+          exit "$missing"
 
   linux-draft:
     name: Desktop Linux unsigned draft

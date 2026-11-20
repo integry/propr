@@ -340,6 +340,10 @@ fallback, and any enabled direct agent still requires its execution image as bef
    `org.opencontainers.image.revision` and the `integry/propr` source label; any conflicting tag fails closed. Missing
    images are copied from the verified OCI candidates directly to `propr/app:<full-SHA>` and
    `propr/ui:<full-SHA>`. The job summary emits both `propr/<image>:<full-SHA>@sha256:<manifest-digest>` references.
+   The job outputs (`runtime_app_digest`, `runtime_ui_digest`) carry only the `sha256:` digests. A full reference starts
+   with the Docker Hub namespace, which is also the value of the `DOCKERHUB_USERNAME` secret, and GitHub Actions drops
+   any job output that contains a secret value. Release Rollout's `runtime` job, which reads no secret, rebuilds each
+   reference from the public namespace, the source SHA and the digest, and checks it against the registry.
 3. Dispatch **Preview Runtime Images** for the same SHA with `operation: prepare-agent`. This credential-free operation
    builds only the managed agent with `scripts/build-images.sh --sha-only --only agent --platform linux/amd64` on a
    native `ubuntu-24.04` (amd64) runner. `scripts/smoke-test-preview-agent-image.sh` then runs every container with
@@ -354,8 +358,9 @@ fallback, and any enabled direct agent still requires its execution image as bef
    import, it verifies that the candidate's manifest and config digests and smoke evidence are unchanged. It then
    preflights the single consumer tag `propr/agent:<full-SHA>` and copies the candidate only when that tag is missing.
    An existing tag is reused, never overwritten, if it resolves to exactly `linux/amd64` and carries the requested
-   revision, source, and unified-bundle labels. Otherwise publication fails before any mutation. The job emits
-   `runtime_agent_image=propr/agent:<full-SHA>@sha256:<manifest-digest>`. It never creates version, bundle, or `latest`
+   revision, source, and unified-bundle labels. Otherwise publication fails before any mutation. The job summary
+   shows `propr/agent:<full-SHA>@sha256:<manifest-digest>`; the job output is only `runtime_agent_digest=sha256:<digest>`,
+   for the same reason as the app/UI digests. It never creates version, bundle, or `latest`
    tags, npm packages, GitHub releases, or macOS artifacts, and it never touches app/UI tags. The app/UI `prepare` and
    `publish` operations do not build or publish the agent.
 5. From the `main` branch version of **Desktop Linux Preview Release**, choose `stage-draft`, enter that same SHA, and

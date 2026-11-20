@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release Rollout runtime images**: a Release Rollout run that publishes the
+  app, UI or managed agent image itself now passes the image references on to
+  the desktop builds and the preview CLI bundle. Before, GitHub Actions dropped
+  the published references because they start with the Docker Hub namespace,
+  which is also the value of the `DOCKERHUB_USERNAME` secret, so every later
+  job was skipped (v0.9.3 needed a second run). Preview Runtime Images now
+  outputs only the digests (`runtime_app_digest`, `runtime_ui_digest`,
+  `runtime_agent_digest`). The rollout's secret-free `runtime` job rebuilds each
+  `propr/<image>:<SHA>@sha256:<digest>` reference, verifies it against the
+  registry, and fails if any of the three is empty.
+
 ## [0.9.3] - 2026-11-20
 
 ### Added

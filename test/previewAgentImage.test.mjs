@@ -386,7 +386,7 @@ describe('preview managed-agent prepare and publish boundaries', () => {
     assert.deepEqual(fixture.state().copies, []);
   });
 
-  test('publishes only the missing full-SHA agent tag and emits its digest-pinned reference', () => {
+  test('publishes only the missing full-SHA agent tag and emits only its digest', () => {
     const fixture = createFixture();
     const { candidate } = prepareCandidate(fixture);
     const githubOutput = join(fixture.root, 'github-output');
@@ -395,7 +395,8 @@ describe('preview managed-agent prepare and publish boundaries', () => {
       '--github-output', githubOutput, '--step-summary', summary]);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(fixture.state().copies, [`docker.io/propr/agent:${revision}`]);
-    assert.equal(readFileSync(githubOutput, 'utf8'), `runtime_agent_image=propr/agent:${revision}@${digest('e')}\n`);
+    assert.equal(readFileSync(githubOutput, 'utf8'), `runtime_agent_digest=${digest('e')}\n`);
+    assert.match(readFileSync(summary, 'utf8'), new RegExp(`propr/agent:${revision}@${digest('e')}`));
     assert.match(readFileSync(summary, 'utf8'), /linux\/amd64 only/);
     const mutations = fixture.calls('regctl').filter(args => args[1] === 'copy');
     assert.equal(mutations.some(args => /\/(?:app|ui|docs|launcher):|:latest$|:\d+\.\d+\.\d+$/.test(args[3])), false);
@@ -409,7 +410,7 @@ describe('preview managed-agent prepare and publish boundaries', () => {
       '--github-output', githubOutput], { REMOTE_MODE: 'existing-other' });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(fixture.state().copies, []);
-    assert.equal(readFileSync(githubOutput, 'utf8'), `runtime_agent_image=propr/agent:${revision}@${digest('9')}\n`);
+    assert.equal(readFileSync(githubOutput, 'utf8'), `runtime_agent_digest=${digest('9')}\n`);
   });
 
   test('fails closed before mutation for a conflicting-source or multi-architecture existing tag', () => {
