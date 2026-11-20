@@ -644,6 +644,52 @@ describe('Antigravity goal stream adapter', () => {
         assert.equal(recorded.length, 5);
     });
 
+    // agy 1.5.12 reported `ERROR` for a stream-json run that succeeded after the CLI retried a
+    // model request; 1.5.13 reports `SUCCESS`, and ProPR must count that recovered step as done.
+    async function retriedInvocation(status: 'SUCCESS' | 'ERROR', response: string): Promise<AntigravityGoalStream> {
+        const child = fakeChild();
+        const stream = new AntigravityGoalStream(child as unknown as ChildProcess, { append: () => undefined } as never);
+        child.stdout.write(line({ event: 'init', conversation_id: 'agy', init: { model: 'gemini-3.8-flash-medium' } }));
+        child.stdout.write(line({ event: 'error', error: { message: 'API error (attempt 1): connection reset', retrying: true } }));
+        child.stderr.write('error: API error (attempt 1): connection reset; retrying\n');
+        child.stdout.write(step(1, 'DONE', { text_delta: response }));
+        child.stdout.write(line({ event: 'result', result: { conversation_id: 'agy', status, response } }));
+        child.stdout.end();
+        child.stderr.end();
+        await new Promise(resolve => setImmediate(resolve));
+        child.emit('close', 0);
+        await stream.waitForExit();
+        return stream;
+    }
+
+    test('a stream-json success after a CLI-internal retry completes the goal step', async () => {
+        const response = `Subtract added.\n\n${ANTIGRAVITY_GOAL_COMPLETE_MARKER}`;
+        const stream = await retriedInvocation('SUCCESS', response);
+        assert.deepEqual(stream.result, { status: 'success', response });
+
+        const state = harness();
+        const result = await runAntigravityGoalProtocol(async () => retriedInvocation('SUCCESS', response), taskOptions(state), COMMAND);
+        assert.equal(result.status, 'completed');
+        assert.equal(result.error, undefined);
+        assert.equal(result.lastResponse, response);
+
+        // The 1.5.12 report of the same run is what ProPR counted as a failed step.
+        const legacy = await runAntigravityGoalProtocol(async () => retriedInvocation('ERROR', response), taskOptions(harness()), COMMAND);
+        assert.equal(legacy.status, 'failed');
+    });
+
+    test('a stream-json success after a CLI-internal retry without the goal marker continues instead of failing', async () => {
+        const responses = ['Subtract added; tests next.', `Tests pass.\n\n${ANTIGRAVITY_GOAL_COMPLETE_MARKER}`];
+        const messages: string[] = [];
+        const result = await runAntigravityGoalProtocol(async message => {
+            messages.push(message);
+            return retriedInvocation('SUCCESS', responses[messages.length - 1]);
+        }, taskOptions(harness()), COMMAND);
+        assert.equal(result.status, 'completed');
+        assert.equal(messages.length, 2);
+        assert.equal(messages[1], GOAL_CONTINUE_INPUT);
+    });
+
     test("a goal attempt's conversation log keeps narration from interrupted invocations", () => {
         const init = line({ event: 'init', conversation_id: 'agy', init: { model: 'gemini-3.8-flash-medium' } });
         const raw = [

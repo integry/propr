@@ -119,14 +119,14 @@ describe('review input capacity resolution', () => {
         assert.equal(astra.safeInputTokens, 200800);
         assert.equal(astra.tokenizerProfile, 'openai-o200k');
 
-        // Codex 0.170.0 bundles GPT-6.1 Terra with a 500K default window.
+        // Codex 0.171.0 bundles GPT-6.1 Terra with a 500K default window.
         const terra = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.1-terra' });
         assert.equal(terra.source, 'runtime-verified');
         assert.equal(terra.contextWindow, 500000);
         assert.equal(terra.runtimeOverheadReserve, 12000 + 50000);
         assert.equal(terra.safeInputTokens, 500000 - REVIEW_OUTPUT_TOKEN_RESERVE - 62000);
 
-        // Codex 0.170.0 bundles GPT-6.2 Astra with the GPT-6 Astra window and
+        // Codex 0.171.0 bundles GPT-6.2 Astra with the GPT-6 Astra window and
         // GPT-6.2 Sol and GPT-6.1 Sol with the 500K window of GPT-6.1 Terra.
         const astra62 = resolveReviewInputCapacity({ agentType: 'codex', model: 'gpt-6.2-astra' });
         assert.equal(astra62.source, 'runtime-verified');
