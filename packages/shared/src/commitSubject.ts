@@ -181,10 +181,10 @@ export interface BuildCommitSubjectOptions {
 /** The subject line: generated description, else the title, else the fallback; type inferred unless given. */
 export function buildCommitSubject(options: BuildCommitSubjectOptions): string {
     const generated = normalizeCommitDescription(options.generated);
+    // The title passes the same check: an issue titled "I cannot log in" or "All tests pass" is no subject either.
     const fromTitle = normalizeCommitDescription(cleanCommitTitle(options.title));
-    const description = isAcceptableCommitDescription(generated)
-        ? generated
-        : fromTitle || normalizeCommitDescription(options.fallback) || options.fallback;
+    const description = [generated, fromTitle].find(isAcceptableCommitDescription)
+        ?? (normalizeCommitDescription(options.fallback) || options.fallback);
     const type = options.type ?? inferCommitType({ paths: options.paths, title: options.title, description });
     return formatCommitSubject(type, description);
 }
@@ -233,7 +233,7 @@ export function epicSquashCommitFields(
     const trustedType = trustedSubjectType(firstSubject);
     const fromTitle = normalizeCommitDescription(cleanCommitTitle(pull.title));
     const fromCommit = trustedType ? normalizeCommitDescription(firstSubject) : '';
-    const description = fromTitle || (isAcceptableCommitDescription(fromCommit) ? fromCommit : '') || `merge pull request #${pull.number}`;
+    const description = [fromTitle, fromCommit].find(isAcceptableCommitDescription) ?? `merge pull request #${pull.number}`;
     // The title's wording decides; the first commit's own type only breaks a tie.
     const type = inferCommitType({ title: pull.title, description, defaultType: trustedType ?? undefined });
     const subject = formatCommitSubject(type, description, COMMIT_SUBJECT_MAX_CHARS - suffix.length) + suffix;

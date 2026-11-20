@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { after, mock, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import type { AgentExecutionResult } from '@propr/core';
+import { inferCommitType } from '@propr/shared';
 import { buildCommitSubjectPrompt, generateCommitSubject } from '../packages/core/src/agents/commitSubjectGeneration.ts';
 import { applyRunSummarySelection } from '../packages/core/src/agents/runSummarySelection.ts';
 import { buildCommitMessage } from '../src/jobs/prCommentJobUtils.ts';
@@ -124,10 +125,16 @@ test('pending change paths come from git status, without ProPR runtime files', a
     const git = (...args: string[]) => promisify(execFile)('git', ['-C', dir, ...args]);
     await git('init', '-q');
     await mkdir(path.join(dir, 'docs'));
-    await mkdir(path.join(dir, '.propr', 'previews'), { recursive: true });
     await writeFile(path.join(dir, 'docs', 'a.md'), 'a');
-    await writeFile(path.join(dir, '.propr', 'previews', 'shot.png'), 'x');
-    assert.deepEqual(await pendingChangePaths(dir), ['docs/a.md']);
+    // Every path staging leaves out (assets, caches, installed helpers, previews) stays out of the type too.
+    for (const runtimeFile of ['.propr/previews/shot.png', '.propr/preview-src/page.html', '.propr/assets/output.json',
+        '.propr/cache/index.bin', '.propr/.cache/x', '.propr/node_modules/pkg/index.js']) {
+        await mkdir(path.dirname(path.join(dir, runtimeFile)), { recursive: true });
+        await writeFile(path.join(dir, runtimeFile), 'x');
+    }
+    const paths = await pendingChangePaths(dir);
+    assert.deepEqual(paths, ['docs/a.md']);
+    assert.equal(inferCommitType({ paths, title: 'Add retry documentation' }), 'docs');
     assert.deepEqual(await pendingChangePaths(path.join(dir, 'missing')), []);
   } finally {
     await rm(dir, { recursive: true, force: true });

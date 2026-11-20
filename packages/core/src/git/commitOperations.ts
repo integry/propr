@@ -1,11 +1,10 @@
 import { SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
-import { buildCommitSubject } from '@propr/shared';
+import { GENERATED_PROPR_RUNTIME_PATHS, buildCommitSubject, isGeneratedRuntimePath } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
-import { VISUAL_PREVIEW_RUNTIME_DIRECTORIES } from '../services/visualPreviewPaths.js';
 
 interface Author {
     name: string;
@@ -32,14 +31,6 @@ interface CommitOptions {
     exclude?: string[];
 }
 
-const GENERATED_PROPR_RUNTIME_PATHS = [
-    '.propr/assets',
-    '.propr/cache',
-    '.propr/.cache',
-    '.propr/node_modules',
-    ...VISUAL_PREVIEW_RUNTIME_DIRECTORIES,
-];
-
 export class InvalidCheckpointScopeError extends Error {}
 
 function validateScopedPath(file: string): string {
@@ -51,10 +42,8 @@ function validateScopedPath(file: string): string {
     return file;
 }
 
-/** Generated ProPR runtime output that commits never stage, so it is never publishable work. */
-export function isGeneratedRuntimePath(file: string): boolean {
-    return GENERATED_PROPR_RUNTIME_PATHS.some(generated => file === generated || file.startsWith(`${generated}/`));
-}
+// Staging and the commit type share one runtime-path policy (`@propr/shared`).
+export { isGeneratedRuntimePath };
 
 async function stageCommitFiles(git: SimpleGit, options: CommitOptions): Promise<void> {
     const scoped = options.include !== undefined || options.exclude !== undefined;

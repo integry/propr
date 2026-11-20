@@ -99,6 +99,24 @@ test('old and new history both parse', () => {
     assert.equal(isProprAgentCommit('fix: keep the dialog open'), false);
 });
 
+test('a first-person or test-report title is no subject either: the fixed fallback is used', () => {
+    for (const title of ['I cannot log in', 'All tests pass', '[12 by Codex] We broke the export (#13)']) {
+        const subject = buildCommitSubject({ generated: null, title, fallback: 'resolve issue #12' });
+        assert.match(subject, /^[a-z]+: resolve issue #12$/, `${title} → ${subject}`);
+    }
+    // A rejected generated description still gives way to an acceptable title, and an unacceptable title to the fallback.
+    assert.equal(buildCommitSubject({ generated: FIRST_PERSON_SUMMARY, title: 'I cannot log in', fallback: 'resolve issue #7' }), 'fix: resolve issue #7');
+});
+
+test('the epic squash subject skips a first-person or test-report sub-PR title', () => {
+    assert.equal(
+        epicSquashCommitFields({ number: 5, title: 'I cannot log in' }, 'fix: keep the session cookie\n\nKept it.').commit_title,
+        'fix: keep the session cookie (#5)',
+    );
+    assert.equal(epicSquashCommitFields({ number: 6, title: 'All tests pass' }, null).commit_title, 'test: merge pull request #6 (#6)');
+    assert.equal(epicSquashCommitFields({ number: 7, title: 'My login fix' }, `feat(ai): ${FIRST_PERSON_SUMMARY}`).commit_title, 'fix: merge pull request #7 (#7)');
+});
+
 test('the epic squash subject comes from the sub-PR title, not the first commit', () => {
     const fields = epicSquashCommitFields(
         { number: 3731, title: '[3726 by Claude Opus 5.5] Fold an aggregate CI job under the shard that made the whole run fail' },

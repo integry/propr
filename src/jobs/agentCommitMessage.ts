@@ -8,7 +8,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assembleCommitMessage, buildCommitSubject, proprAgentTrailer } from '@propr/shared';
+import { assembleCommitMessage, buildCommitSubject, isGeneratedRuntimePath, proprAgentTrailer } from '@propr/shared';
 
 const execFileAsync = promisify(execFile);
 const STATUS_TIMEOUT_MS = 15_000;
@@ -28,8 +28,8 @@ export async function pendingChangePaths(worktreePath: string | undefined): Prom
             const entry = entries[i];
             if (entry.length < 4) continue;
             const path = entry.slice(3);
-            // ProPR runtime directories (previews, scratch) are never committed.
-            if (!/^\.propr\/(?:previews|tmp)\//.test(path)) paths.push(path);
+            // Runtime output that staging never commits (assets, caches, previews) must not decide the type.
+            if (!isGeneratedRuntimePath(path)) paths.push(path);
             // Renames and copies carry the source path as the next entry.
             if (entry[0] === 'R' || entry[0] === 'C') i++;
         }
