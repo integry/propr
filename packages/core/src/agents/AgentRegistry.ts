@@ -8,6 +8,8 @@ import { GoalCapabilityProbe, type GoalCapability } from './goalCapabilities.js'
 import type { AgentRegistryOperationalStatus } from './agentRegistryTypes.js';
 import { SyntheticAgentRegistry, type BeginSyntheticRoutingOptions, type SyntheticRoutingSession } from './SyntheticAgentRegistry.js';
 import { createAgentFromConfig } from './createAgentFromConfig.js';
+import { isAwaitingWorkerImagePreparation } from './agentCliVersionState.js';
+import { instrumentAgentRuntimeEvents } from './agentRuntimeEvent.js';
 import { resolveDefaultAgentConfig, resolveUnifiedAgentImage } from './agentImagePreparation.js';
 import { closeAgentImagePreparationQueue, enqueueAgentImagePreparation } from './agentImagePreparationQueue.js';
 import { isAgentImageDiskPressureError } from './agentImageBuildCapacity.js';
@@ -195,7 +197,7 @@ export class AgentRegistry {
 
                     config.dockerImage = bundleImage;
 
-                    const agent = this.createAgentFromConfig(config);
+                    const agent = instrumentAgentRuntimeEvents(this.createAgentFromConfig(config));
                     this.agents.set(config.id, agent);
                     this.agentsByAlias.set(config.alias, agent);
 
@@ -420,7 +422,13 @@ export class AgentRegistry {
         const result = await resolveUnifiedAgentImage(configs, prepareImages);
         if (!result.image) {
             const error = result.error || 'Unified agent image is unavailable';
-            logger.error({ error, imageTag: result.imageTag }, 'Failed to resolve unified agent image');
+            // Until the worker has prepared a newly configured image, non-owner
+            // processes see it as missing: that is expected, not an error.
+            if (!prepareImages && isAwaitingWorkerImagePreparation(error)) {
+                logger.info({ reason: error, imageTag: result.imageTag }, 'Unified agent image is still being prepared by the worker; keeping the previously prepared image');
+            } else {
+                logger.error({ error, imageTag: result.imageTag }, 'Failed to resolve unified agent image');
+            }
             this.recordUnavailableUnifiedAgentImage(result.imageTag, error, prepareImages || !!this.pendingBackgroundRefresh);
             return null;
         }
@@ -476,7 +484,11 @@ export class AgentRegistry {
         if (!result.config) {
             const error = result.error || 'Default agent image is unavailable';
             this.recordUnavailableUnifiedAgentImage(result.imageTag, error, prepareImages || !!this.pendingBackgroundRefresh);
-            logger.error({ dockerImage: result.imageTag, error }, 'Failed to resolve default Claude agent image');
+            if (!prepareImages && isAwaitingWorkerImagePreparation(error)) {
+                logger.info({ dockerImage: result.imageTag, reason: error }, 'Default Claude agent image is still being prepared by the worker');
+            } else {
+                logger.error({ dockerImage: result.imageTag, error }, 'Failed to resolve default Claude agent image');
+            }
             return;
         }
 
@@ -485,7 +497,7 @@ export class AgentRegistry {
         this.agents.clear();
         this.agentsByAlias.clear();
         this.goalCapabilityProbe.clear();
-        const agent = new ClaudeAgent(result.config);
+        const agent = instrumentAgentRuntimeEvents(new ClaudeAgent(result.config));
         this.agents.set(result.config.id, agent);
         this.agentsByAlias.set(result.config.alias, agent);
 

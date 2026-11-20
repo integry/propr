@@ -1,12 +1,12 @@
 import type { RedisClientType } from 'redis';
 import type * as configManager from '@propr/core';
-import type { AgentConfig } from '@propr/core';
+import type { Agent, AgentCliVersionState, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import type { resolveVersion, computeContentHash, generateAgentBundleImageTag } from '@propr/core';
 import type { Knex } from 'knex';
 import type { ConfigLockContext } from './configHelpers.js';
 
 export type ApplyAgentsUpdateBody =
-  | { success: true; agents: AgentConfig[]; warning?: string; warnings?: string[]; committed?: boolean; out_of_sync?: boolean }
+  | { success: true; agents: AgentConfig[]; cliVersionStates?: AgentCliVersionState[]; warning?: string; warnings?: string[]; committed?: boolean; out_of_sync?: boolean }
   | { code?: string; error: string; success?: never; agents?: never; committed?: boolean; out_of_sync?: boolean };
 
 export interface ApplyAgentsUpdateResult {
@@ -44,6 +44,12 @@ export interface AgentConfigStore {
 export interface AgentRegistrySync {
   refresh: () => Promise<void>;
   setDefaultAgentAlias: (alias: string | null) => void;
+  /** Live registry view used to report the CLI version runs use right now. */
+  getAgentByAlias?: (alias: string) => Agent | undefined;
+  getOperationalStatus?: () => AgentRegistryOperationalStatus;
+  isInitialized?: () => boolean;
+  /** Throttled, inspect-only check that picks up an image the worker finished preparing. */
+  inspectAgentImageAvailability?: () => Promise<void>;
 }
 
 export interface ApplyAgentsUpdateParams {

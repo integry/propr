@@ -102,13 +102,32 @@ export const getPrimaryProcessingLabels = (): Promise<PrimaryProcessingLabelsRes
 export const updatePrimaryProcessingLabels = (primaryLabels: string[]): Promise<ConfigWriteResponse<PrimaryProcessingLabelsResponse>> =>
   postJson('/api/config/primary-processing-labels', { primary_processing_labels: primaryLabels });
 
+/** Configured vs in-effect CLI version of one enabled agent. */
+export interface AgentCliVersionState {
+  agentId: string;
+  alias: string;
+  type: string;
+  configuredVersion: string | null;
+  /** The CLI version runs use right now; null when no image is in use yet. */
+  effectiveVersion: string | null;
+  status: 'ready' | 'preparing' | 'failed';
+  error?: string;
+  nextRetryAt?: string;
+}
+
 export interface SaveAgentsResponse {
   success: boolean;
   agents: AgentConfig[];
+  cliVersionStates?: AgentCliVersionState[];
   warnings?: string[];
 }
 
-export const getAgents = (): Promise<{ agents: AgentConfig[] }> => getJson('/api/config/agents');
+export interface AgentsResponse {
+  agents: AgentConfig[];
+  cliVersionStates?: AgentCliVersionState[];
+}
+
+export const getAgents = (): Promise<AgentsResponse> => getJson('/api/config/agents');
 export const saveAgents = (agents: AgentConfig[]): Promise<SaveAgentsResponse> =>
   postJson('/api/config/agents', { agents });
 

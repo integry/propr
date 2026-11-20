@@ -65,6 +65,16 @@ The Web UI includes a Coding agents page for configuring coding agents. Each age
 
 The model IDs you enable here become the durable names used by labels and slash commands.
 
+### Changing an agent's CLI version
+
+A CLI version change is saved immediately, but it takes effect only after the worker has prepared the agent image for that version, which can take several minutes. Until then runs keep using the previously prepared image and its CLI version; they do not wait, and one image never mixes versions. While the change is pending:
+
+- **AI Agents** shows the version being prepared and the version runs use now on the agent's entry, and reports when the new version is in effect or why preparation failed.
+- The save response (REST `POST /api/config/agents` and MCP `update_agent_configuration`) returns a warning and a `cliVersionStates` entry (`preparing`, `ready` or `failed`). `GET /api/config/agents` and MCP `get_agent_configuration` return `cliVersionStates` with the configured version (`configuredVersion`) next to the one in effect (`effectiveVersion`).
+- Each run records the agent CLI version and image it used on the task timeline, under the run step. A run that used the previous version while the configured one was still being prepared says so there.
+
+Reverting to a version whose image still exists, such as the default, takes effect quickly.
+
 For an interactive login, choose direct login while adding the agent or choose **Log in** from an existing entry's **⋯** actions menu. Open the authorization URL shown in the dialog and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes of inactivity, and are not persisted in task or LLM logs.
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the add-agent modal open for Claude: the new-account/existing-config credential choice, alias, enable toggle, and supported models with one default selected. */}
