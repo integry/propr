@@ -7,7 +7,6 @@ import { ApiClient } from "../../packages/cli/src/api/client.js";
 import type { ApiResponse, RequestOptions } from "../../packages/cli/src/api/types.js";
 import { abortableSleep, E2E_JOB_DEADLINE, PlanDeadlineError } from "./planGeneration.js";
 import { ConfigManager } from "../../packages/cli/src/config/ConfigManager.js";
-import { listTasks } from "../../packages/cli/src/api/tasks.js";
 import { getTaskStatus, type TaskStatus } from "../../packages/cli/src/api/implement.js";
 import { listLlmLogs } from "../../packages/cli/src/api/logs.js";
 import {
@@ -19,6 +18,7 @@ import {
   type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
 import { findUnclaimedModelTask } from "./taskMatching.js";
+import { listRecentRepositoryTasks } from "./taskDiscovery.js";
 import { parseModelTaskTimeoutMs, MODEL_TASK_DISCOVERY_POLLS, MODEL_TASK_POLL_INTERVAL_MS } from "./modelTaskTimeout.js";
 import { isProviderUsageLimitFailure } from "./providerUsageLimit.js";
 import { isProviderAuthenticationFailure } from "./providerAuthentication.js";
@@ -196,12 +196,20 @@ export async function waitForTasks(
   const claimedTaskIds = new Set(results.map((result) => result.taskId).filter(Boolean) as string[]);
   for (let poll = 0; poll < timeoutPolls; poll++) {
     await sleep(MODEL_TASK_POLL_INTERVAL_MS, workSignals.get(client));
-    const taskList = await listTasks({ repository: repo, limit: 1000 }, client);
+    const tasks = await listRecentRepositoryTasks(repo, client, (seen) => {
+      const claimed = new Set(claimedTaskIds);
+      return results.every((r) => {
+        if (r.taskId) return true;
+        const task = findUnclaimedModelTask(seen, r, claimed);
+        if (task) claimed.add(task.id);
+        return task !== undefined;
+      });
+    });
 
     let allFound = true;
     for (const r of results) {
       if (r.taskId) continue;
-      const task = findUnclaimedModelTask(taskList.tasks, r, claimedTaskIds);
+      const task = findUnclaimedModelTask(tasks, r, claimedTaskIds);
       if (task) {
         r.taskId = task.id;
         claimedTaskIds.add(task.id);
