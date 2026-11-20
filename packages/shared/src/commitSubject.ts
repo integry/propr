@@ -43,16 +43,21 @@ function isDependencyFile(path: string): boolean {
     return isDependencyLockfile(path) || isDependencyManifest(path);
 }
 
+/** Documentation, minus dependency manifests that share a docs extension (`requirements.txt`, `docs/package.json`). */
+function isDocsChangeFile(path: string): boolean {
+    return isDocumentationFile(path) && !isDependencyFile(path);
+}
+
 /** One class covering every changed path, or null when the paths are mixed or there are none. */
 function pathClass(paths: readonly string[]): CommitType | null {
     const files = paths.map(p => p.trim()).filter(Boolean);
     if (files.length === 0) return null;
     // Tests first: a test fixture under docs/ or a `.md` snapshot is still a test change.
     if (files.every(isTestFile)) return 'test';
-    if (files.every(isDocumentationFile)) return 'docs';
-    if (files.every(isCiFile)) return 'ci';
     if (files.every(isDependencyFile)) return 'build';
-    if (files.every(f => isTestFile(f) || isDocumentationFile(f))) return 'test';
+    if (files.every(isDocsChangeFile)) return 'docs';
+    if (files.every(isCiFile)) return 'ci';
+    if (files.every(f => isTestFile(f) || isDocsChangeFile(f))) return 'test';
     return null;
 }
 

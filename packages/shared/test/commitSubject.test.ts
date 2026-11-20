@@ -69,8 +69,19 @@ test('the conventional-commit type follows the changed paths', () => {
         [['.github/workflows/ci.yml'], 'ci'],
         [['package.json', 'package-lock.json'], 'build'],
         [['test/a.test.ts', 'docs/a.md'], 'test'],
+        [['requirements.txt'], 'build'],
+        [['requirements-dev.txt', 'requirements.txt'], 'build'],
+        [['docs/requirements.txt'], 'build'],
+        [['docs/package.json', 'docs/package-lock.json'], 'build'],
     ];
     for (const [paths, type] of cases) assert.equal(inferCommitType({ paths, title: 'Add retries to uploads' }), type, paths.join(','));
+});
+
+test('a dependency manifest with a docs extension is not counted as documentation', () => {
+    assert.equal(inferCommitType({ paths: ['requirements.txt'], title: 'Upgrade requests to 2.32' }), 'build');
+    assert.equal(inferCommitType({ paths: ['README.md', 'requirements-dev.txt'], title: 'Add pytest-xdist' }), 'feat');
+    assert.equal(inferCommitType({ paths: ['test/test_api.py', 'requirements-dev.txt'], title: 'Add pytest-xdist' }), 'feat');
+    assert.equal(inferCommitType({ paths: ['notes.txt'], title: 'Add pytest-xdist' }), 'docs');
 });
 
 test('mixed paths take the type from the title wording, chore when unclear', () => {
