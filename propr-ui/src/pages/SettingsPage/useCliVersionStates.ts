@@ -15,13 +15,23 @@ const needsPolling = (states: AgentCliVersionState[]): boolean =>
  * is preparing a new image, or a failed preparation will be retried
  * automatically, the states are re-read periodically, and an agent
  * whose pending version became ready is reported in `becameReady`.
+ *
+ * `update` is authoritative (a load or save response): it supersedes every
+ * poll already in flight, so a slower poll that captured an older
+ * configuration cannot overwrite it. Likewise a poll's response is dropped
+ * when a later poll's response has already been applied.
  */
 export function useCliVersionStates() {
   const [states, setStates] = useState<AgentCliVersionState[]>([]);
   const [becameReady, setBecameReady] = useState<ReadonlySet<string>>(new Set());
   const pendingRef = useRef<Set<string>>(new Set());
+  // Sequence of state sources: each poll takes the next number when it starts,
+  // and each authoritative update takes one when it is applied. A response
+  // numbered at or below the last applied one is stale.
+  const sequenceRef = useRef(0);
+  const appliedRef = useRef(0);
 
-  const update = useCallback((next: AgentCliVersionState[] | undefined) => {
+  const apply = useCallback((next: AgentCliVersionState[] | undefined) => {
     const list = next ?? [];
     const previous = pendingRef.current;
     const pending = new Set(list.filter(state => state.status !== 'ready').map(state => state.agentId));
@@ -34,14 +44,26 @@ export function useCliVersionStates() {
     setStates(list);
   }, []);
 
+  const update = useCallback((next: AgentCliVersionState[] | undefined) => {
+    sequenceRef.current += 1;
+    appliedRef.current = sequenceRef.current;
+    apply(next);
+  }, [apply]);
+
   const polling = needsPolling(states);
   useEffect(() => {
     if (!polling) return;
     const timer = setInterval(() => {
-      getAgents().then(data => update(data.cliVersionStates)).catch(() => undefined);
+      sequenceRef.current += 1;
+      const sequence = sequenceRef.current;
+      getAgents().then(data => {
+        if (sequence <= appliedRef.current) return;
+        appliedRef.current = sequence;
+        apply(data.cliVersionStates);
+      }).catch(() => undefined);
     }, CLI_VERSION_POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [polling, update]);
+  }, [polling, apply]);
 
   const stateFor = useCallback(
     (agentId: string) => states.find(state => state.agentId === agentId),

@@ -52,4 +52,45 @@ describe('useCliVersionStates', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(CLI_VERSION_POLL_INTERVAL_MS * 3); });
     expect(getAgents).not.toHaveBeenCalled();
   });
+
+  it('ignores a poll response that started before a save marked a newer version pending', async () => {
+    let deliverReadyA: (value: unknown) => void = () => undefined;
+    getAgents.mockReturnValueOnce(new Promise(resolve => { deliverReadyA = resolve; }));
+    const { result } = renderHook(() => useCliVersionStates());
+    act(() => result.current.update([state({ configuredVersion: '0.170.0' })]));
+
+    // The poll for A is in flight when the save response marks B pending.
+    await act(async () => { await vi.advanceTimersByTimeAsync(CLI_VERSION_POLL_INTERVAL_MS); });
+    expect(getAgents).toHaveBeenCalledTimes(1);
+    const pendingB = state({ configuredVersion: '0.169.0', effectiveVersion: '0.170.0' });
+    act(() => result.current.update([pendingB]));
+
+    await act(async () => { deliverReadyA({ agents: [], cliVersionStates: [ready] }); });
+    expect(result.current.stateFor('codex-1')).toEqual(pendingB);
+    expect(result.current.becameReady.has('codex-1')).toBe(false);
+
+    // Polling continues and reports B once it is in effect.
+    const readyB = state({ configuredVersion: '0.169.0', effectiveVersion: '0.169.0', status: 'ready' });
+    getAgents.mockResolvedValue({ agents: [], cliVersionStates: [readyB] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(CLI_VERSION_POLL_INTERVAL_MS); });
+    expect(getAgents).toHaveBeenCalledTimes(2);
+    expect(result.current.stateFor('codex-1')).toEqual(readyB);
+    expect(result.current.becameReady.has('codex-1')).toBe(true);
+  });
+
+  it('ignores an older poll response that arrives after a newer one', async () => {
+    let deliverOld: (value: unknown) => void = () => undefined;
+    let deliverNew: (value: unknown) => void = () => undefined;
+    getAgents.mockReturnValueOnce(new Promise(resolve => { deliverOld = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { deliverNew = resolve; }));
+    const { result } = renderHook(() => useCliVersionStates());
+    act(() => result.current.update([state({})]));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(CLI_VERSION_POLL_INTERVAL_MS * 2); });
+    expect(getAgents).toHaveBeenCalledTimes(2);
+    await act(async () => { deliverNew({ agents: [], cliVersionStates: [ready] }); });
+    await act(async () => { deliverOld({ agents: [], cliVersionStates: [state({})] }); });
+    expect(result.current.stateFor('codex-1')?.status).toBe('ready');
+    expect(result.current.becameReady.has('codex-1')).toBe(true);
+  });
 });
