@@ -1,4 +1,4 @@
-import { stripStatusSlot } from '@propr/shared';
+import { formatCommitSubject, stripStatusSlot } from '@propr/shared';
 import type { Logger } from 'pino';
 import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
@@ -92,7 +92,7 @@ export function buildMergeConflictCommitMessage(options: {
     const { baseBranch, headBranch, pullRequestNumber, conflictedFiles, model, wasCleanMerge } = options;
 
     if (wasCleanMerge) {
-        return `merge: merge ${baseBranch} into ${headBranch}
+        return `${formatCommitSubject('merge', `merge ${baseBranch} into ${headBranch}`)}
 
 Automatically merged target branch into PR branch (clean merge, no conflicts).
 
@@ -103,7 +103,7 @@ PR: #${pullRequestNumber}`;
         ? `\nResolved conflicts in:\n${conflictedFiles.map(f => `- ${f}`).join('\n')}`
         : '';
 
-    return `merge: resolve conflicts from ${baseBranch} into ${headBranch}
+    return `${formatCommitSubject('merge', `resolve conflicts from ${baseBranch} into ${headBranch}`)}
 
 Automatically resolved merge conflicts after merging target branch into PR branch.${fileList}
 

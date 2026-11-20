@@ -570,6 +570,8 @@ export * from './text.js';
 // Repository pull request templates (.propr/pr-template.md), parsed identically by workers and the CLI.
 export * from './prTemplate.js';
 export * from './changedFileKinds.js';
+// Commit subjects for ProPR commits: short imperative line, inferred type, ProPR-Agent trailer.
+export * from './commitSubject.js';
 
 // Agents: definition/run contract and the UTC cron evaluator shared by the
 // API, MCP, CLI, UI, worker and scheduler.

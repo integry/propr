@@ -1,6 +1,7 @@
 import { SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
+import { buildCommitSubject } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
@@ -154,8 +155,9 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
     if (typeof commitMessage === 'string') {
         return commitMessage;
     }
-    const shortTitle = issueTitle ? issueTitle.substring(0, 50).replace(/\s+/g, ' ').trim() : 'issue fix';
-    return `fix(ai): Resolve issue #${issueNumber} - ${shortTitle}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`;
+    // A short conventional subject from the issue title; never an `(ai)` scope (the agent trailer marks AI commits).
+    const subject = buildCommitSubject({ title: issueTitle, fallback: issueNumber ? `resolve issue #${issueNumber}` : 'apply agent changes' });
+    return `${subject}\n\nImplemented by ProPR AI. Full conversation log in PR comment.`;
 }
 
 function assertNoUnmergedEntries(status: StatusResult): void {

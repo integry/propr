@@ -355,8 +355,8 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
     agentResult.executionId ??= randomUUID();
     // Implementation follow-ups publish a summary and commit subject: one small call picks it.
     const published = params.applyRepositoryWorkflow
-        ? await applyRunSummarySelection(agentResult, { taskId, issueRef: { number: pullRequestNumber, repoOwner, repoName }, prNumber: pullRequestNumber })
+        ? await applyRunSummarySelection(agentResult, { taskId, issueRef: { number: pullRequestNumber, repoOwner, repoName }, prNumber: pullRequestNumber, commitSubject: {} })
         : agentResult;
 
-    return { claudeResult: agentResultToClaudeResponse(published), agentType: agent.config.type };
+    return { claudeResult: { ...agentResultToClaudeResponse(published), agentAlias: agent.config.alias }, agentType: agent.config.type };
 }

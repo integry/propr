@@ -152,6 +152,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         commitMessage: result.commitMessage || null,
         ...(result.summarySelection && { summarySelection: result.summarySelection }),
         ...(result.unfinishedReason && { unfinishedReason: result.unfinishedReason }),
+        ...(result.commitSubject && { commitSubject: result.commitSubject }),
         conversationLog: result.conversationLog,
         tokenUsage: result.tokenUsage,
         usageMetrics: result.usageMetrics

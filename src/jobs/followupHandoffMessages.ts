@@ -1,3 +1,4 @@
+import { proprAgentTrailer } from '@propr/shared';
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { handoffCommentMarker, HANDOFF_NORMAL_COMPLETION_MARKER, HANDOFF_NORMAL_FAILURE_MARKER } from './followupHandoffMarker.js';
 import { parseClaimedComments, type FollowupHandoffRecord } from './followupHandoffStore.js';
@@ -5,9 +6,11 @@ import { parseClaimedComments, type FollowupHandoffRecord } from './followupHand
 /** Comment bodies, commit messages and task outcome wording of follow-up handoff recovery. */
 
 export function recoveryCommitMessage(record: FollowupHandoffRecord): string {
-    return `fix(ai): recover interrupted follow-up for PR #${record.pull_request}\n\n`
+    // No run summary or generated subject survives the restart: a fixed conventional subject, no `(ai)` scope.
+    return `chore: recover interrupted follow-up for PR #${record.pull_request}\n\n`
         + 'The agent produced this work before a worker restart interrupted publication. '
-        + 'ProPR adopted the retained worktree and committed it during follow-up handoff recovery.';
+        + 'ProPR adopted the retained worktree and committed it during follow-up handoff recovery.'
+        + (record.llm ? `\n\n${proprAgentTrailer(null, record.llm)}` : '');
 }
 
 export function recoveredCompletionBody(record: FollowupHandoffRecord): string {

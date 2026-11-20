@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Commit subjects are short imperative lines, not the run summary**
+  (#3736): commits from issue runs and PR follow-ups now get a subject of
+  72 characters or fewer that says what changed, such as
+  `fix: keep the create dialog open`. A separate small-model call
+  (`summarization.agent_alias`, the same path PR task titles use) writes it.
+  The agent's run summary moves to the commit body. A reply that is written
+  in the first person or reports test results is rejected. When the call
+  fails, is rejected or no small model is configured, the subject is the PR
+  or issue title, never the summary.
+  - The conventional-commit type follows the change instead of always
+    `feat`. A change that touches only docs, only tests, only CI files or
+    only dependency files is `docs`, `test`, `ci` or `build`. Otherwise the
+    title's wording decides (`fix`, `feat`, `refactor`, …), and an unclear
+    change is `chore`.
+  - The `(ai)` scope is dropped. Agent commits carry a
+    `ProPR-Agent: <agent alias>/<model>` trailer instead.
+  - A sub-PR squashed into an epic branch takes its subject from the sub-PR
+    title, followed by ` (#N)`. The first commit's message becomes the squash
+    body.
+  - Merge-conflict commit subjects are capped at 72 characters. The
+    follow-up recovery commit is `chore: recover interrupted follow-up …`.
+    Existing history is not rewritten. Old `feat(ai):` subjects and new
+    subjects both parse (`parseCommitSubject`, `isProprAgentCommit` in
+    `@propr/shared`).
+
 - **Bundled Claude Code 2.1.329, Codex CLI 0.171.0 and Antigravity CLI
   1.5.13**: the `propr/agent` image moves from Claude Code 2.1.328, Codex
   0.170.0 and Antigravity CLI 1.5.12. OpenCode stays on 1.19.6 and Mistral

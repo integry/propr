@@ -1,4 +1,4 @@
-import { mergeCommitTitleFields } from '@propr/shared';
+import { epicSquashCommitFields, mergeCommitTitleFields } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { findPlanIssueByRepoAndPR, updatePlanIssueByPR, PlanIssueStatus } from '../config/planIssueManager.js';
 import { isEpicBranch } from '../services/taskExecutionService.js';
@@ -114,12 +114,15 @@ async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: Auto
     let commitTitle: string | undefined;
     let commitMessage: string | undefined;
 
-    if (isEpicBranch(prInfo.baseBranch)) {
+    if (isEpicBranch(prInfo.baseBranch) && mergeMethod === 'squash') {
+        // The squash subject comes from the sub-PR title; the first commit's message (the run summary) is the body.
         const firstCommit = await getFirstCommitMessage(owner, repoName, prNumber);
-        if (firstCommit) {
-            commitTitle = firstCommit.title;
-            commitMessage = firstCommit.message;
-            log.debug({ owner, repoName, prNumber, commitTitle }, 'Using first commit message for epic branch merge');
+        const firstMessage = firstCommit ? [firstCommit.title, firstCommit.message].filter(Boolean).join('\n\n') : null;
+        if (typeof prInfo.title === 'string' || firstMessage) {
+            const fields = epicSquashCommitFields({ number: prNumber, title: prInfo.title }, firstMessage);
+            commitTitle = fields.commit_title;
+            commitMessage = fields.commit_message;
+            log.debug({ owner, repoName, prNumber, commitTitle }, 'Using the sub-PR title for the epic branch squash subject');
         }
     }
 
