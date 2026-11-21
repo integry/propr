@@ -61,6 +61,8 @@ Each agent run starts a dedicated container from the unified `propr/agent` image
 - A per-agent timeout (`CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`)
 - A stall and degenerate-output watchdog: a run with no output for `AGENT_STALL_TIMEOUT_MS` (10 minutes; 30 minutes, `AGENT_TOOL_STALL_TIMEOUT_MS`, while a silent tool call runs), or with `AGENT_DEGENERATE_OUTPUT_LIMIT` (50) consecutive whitespace-only text deltas, is stopped instead of holding its worker slot and repository capacity until the timeout
 
+The default limit stays at 512 PIDs to bound runaway process creation on shared workers. Docker's init process reaps exited orphans, so browser and build helpers release their PID slots after exit. If a browser verification suite still reaches the limit with live processes and threads, reduce its test parallelism or raise `AGENT_CONTAINER_PIDS_LIMIT` on a worker with capacity for that workload.
+
 GitHub's permission names are not a blanket ban on every mutation: its
 [Create a commit comment endpoint](https://docs.github.com/en/rest/commits/comments#create-a-commit-comment)
 accepts `contents: read`. Commit comments are therefore an exception to this
