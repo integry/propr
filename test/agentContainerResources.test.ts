@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { describe, test } from 'node:test';
 import {
     buildAgentContainerResourceArgs,
@@ -8,6 +9,7 @@ import {
 describe('agent container resource policy', () => {
     test('caps the automatic CPU default at detected host capacity', () => {
         assert.deepEqual(buildAgentContainerResourceArgs({}, 2), [
+            '--init',
             '--memory', '6g',
             '--memory-swap', '6g',
             '--cpus', '2',
@@ -28,6 +30,7 @@ describe('agent container resource policy', () => {
             AGENT_CONTAINER_CPU_LIMIT: '1.5',
             AGENT_CONTAINER_PIDS_LIMIT: '1024',
         }), [
+            '--init',
             '--memory', '12g',
             '--memory-swap', '12g',
             '--cpus', '1.5',
@@ -37,6 +40,7 @@ describe('agent container resource policy', () => {
 
     test('enforces Docker\'s minimum memory limit', () => {
         assert.deepEqual(buildAgentContainerResourceArgs({ AGENT_CONTAINER_MEMORY_LIMIT: '6m' }, 4), [
+            '--init',
             '--memory', '6m',
             '--memory-swap', '6m',
             '--cpus', '4',
@@ -50,6 +54,7 @@ describe('agent container resource policy', () => {
 
     test('enforces Docker\'s minimum effective CPU quota', () => {
         assert.deepEqual(buildAgentContainerResourceArgs({ AGENT_CONTAINER_CPU_LIMIT: '0.01' }), [
+            '--init',
             '--memory', '6g',
             '--memory-swap', '6g',
             '--cpus', '0.01',
@@ -75,4 +80,32 @@ describe('agent container resource policy', () => {
             /AGENT_CONTAINER_PIDS_LIMIT/
         );
     });
+});
+
+test('Docker init reaps an orphan, forwards SIGTERM and preserves the exit code', {
+    skip: !process.env.PROPR_TEST_AGENT_IMAGE && 'set PROPR_TEST_AGENT_IMAGE to run the Docker integration check',
+}, () => {
+    const probe = `
+import os, signal, subprocess, sys, time
+
+# The shell exits, leaving its background sleep adopted by PID 1.
+pid = int(subprocess.check_output(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"]))
+os.kill(pid, signal.SIGTERM)
+deadline = time.monotonic() + 5
+while os.path.exists(f"/proc/{pid}"):
+    if time.monotonic() >= deadline:
+        sys.exit(f"orphan was not reaped: {open(f'/proc/{pid}/status').read()}")
+    time.sleep(0.05)
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(37))
+signal.alarm(5)
+os.kill(1, signal.SIGTERM)
+signal.pause()
+`;
+    const run = spawnSync('docker', [
+        'run', '--rm', ...buildAgentContainerResourceArgs({}, 1),
+        '--user', '0:0', '--entrypoint', 'python3', process.env.PROPR_TEST_AGENT_IMAGE!, '-c', probe,
+    ], { encoding: 'utf8', timeout: 120_000 });
+    if (run.error) throw run.error;
+    assert.equal(run.status, 37, run.stderr);
 });

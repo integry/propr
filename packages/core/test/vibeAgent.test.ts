@@ -72,7 +72,8 @@ test('Vibe Docker args use supported default CLI invocation', () => {
     const networkIndex = args.indexOf('--network');
     assert.ok(networkIndex !== -1);
     assert.equal(args[networkIndex + 1], 'bridge');
-    assert.deepEqual(args.slice(1, 9), [
+    assert.deepEqual(args.slice(1, 10), [
+        '--init',
         '--memory', '6g', '--memory-swap', '6g',
         '--cpus', resolveDefaultAgentCpuLimit(), '--pids-limit', '512'
     ]);
