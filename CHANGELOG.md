@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.14** (#3752)
+  - npm reported Claude Code 2.1.330 as `latest` and 2.1.323 as `stable`.
+    All four Claude tool-policy runtime tests passed with the installed
+    2.1.330 binary. [npm version tags](https://www.npmjs.com/package/@anthropic-ai/claude-code?activeTab=versions)
+  - Antigravity 1.5.14 is Linux x64 release `5302690847260672`. The
+    downloaded archive passed the SHA-512 check against Google's install
+    manifest, and the extracted binary reported `1.5.14`. [Google's Linux x64 manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
+  - The Antigravity image verifier passed against synthetic stream fixtures
+    for the new pin. The authenticated image run was blocked by missing
+    Docker and Antigravity sign-in state.
+
 - **Commit subjects are short imperative lines, not the run summary**
   (#3736): commits from issue runs and PR follow-ups now get a subject of
   72 characters or fewer that says what changed, such as
