@@ -366,10 +366,17 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
                 repoUrl: REPO_URL.replace(OWNER, owner), owner, repoName: REPO, authToken: TOKEN, baseBranch: 'main',
                 lockRetry: { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 },
             }),
-            (error: Error) => {
+            (error: NodeJS.ErrnoException) => {
+                assert.notStrictEqual(error.name, 'GitLockContentionError');
                 assert.doesNotMatch(error.message, /stayed locked by another Git process/);
-                // The real config write must be what failed, not an earlier lookup.
-                assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
+                // A root test process can create the preparation gate even though
+                // its unprivileged Git subprocess cannot write the config.
+                if (error.code === 'EACCES') {
+                    assert.strictEqual(error.syscall, 'mkdir');
+                    assert.strictEqual(error.path, path.join(clonePath, '.git', 'propr-preparation'));
+                } else {
+                    assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
+                }
                 assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.ok(!error.message.includes(TOKEN));
                 return true;
