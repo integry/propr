@@ -505,6 +505,43 @@ for (const entry of ['refresh', 'index-branch', 'index-all'] as const) {
     });
 }
 
+for (const entry of ['refresh', 'index'] as const) {
+    test(`${entry} reports a held preparation gate as retryable contention instead of an ordinary fetch warning`, async t => {
+        const owner = `${OWNER}-busy-${entry}`;
+        const repoUrl = REPO_URL.replace(OWNER, owner);
+        const clone = await createSharedClone(`busy-${entry}`, repoUrl);
+        const { withRepositoryPreparation } = await import('../packages/core/src/git/repositoryPreparation.js');
+        const previous = process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+        process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = '1';
+        t.after(() => {
+            if (previous === undefined) delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+            else process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = previous;
+        });
+        let release!: () => void;
+        let entered!: () => void;
+        const ready = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        // No repair marker: another worker is simply still preparing the shared clone.
+        const holder = withRepositoryPreparation(hooklessGit.createHooklessGit(clone), async () => { entered(); await wait; });
+        await ready;
+        try {
+            // The contender must not inherit the holder's async context.
+            const contend = () => entry === 'refresh'
+                ? repoManager.ensureRepoCloned({ repoUrl, owner, repoName: REPO, authToken: TOKEN })
+                : repoManager.fetchLatestChanges({ owner, repoName: REPO, authToken: TOKEN });
+            await assert.rejects(contend(), { name: 'RepositoryPreparationBusyError' });
+        } finally {
+            release();
+            await holder;
+        }
+        assert.ok(existsSync(path.join(clone, '.git')), 'the busy clone is retained');
+        if (entry === 'index') {
+            const result = await repoManager.fetchLatestChanges({ owner, repoName: REPO, authToken: TOKEN });
+            assert.ok(result.success, result.error);
+        }
+    });
+}
+
 test('failure to resolve the common Git directory is classified as a retained refresh failure', async () => {
     const owner = `${OWNER}-invalid-gitdir`;
     const repoUrl = REPO_URL.replace(OWNER, owner);

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
-import { lstat, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { UnrecoverableError } from 'bullmq';
 import type { SimpleGit } from 'simple-git';
 import { StorageBusyError, StorageLifecycle } from '../storage/lifecycle.js';
@@ -23,7 +23,25 @@ export class RepositoryPreparationBusyError extends Error {
     }
 }
 
-const held = new AsyncLocalStorage<ReadonlySet<string>>();
+const DEFAULT_WAIT_MS = 120_000;
+
+/** Large repositories can hold the gate for minutes; operators can lengthen the wait. */
+function preparationWaitMs(): number {
+    const configured = Number(process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS);
+    return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_WAIT_MS;
+}
+
+/** Gates held by this async context, each with the revisions whose closure it has verified. */
+const held = new AsyncLocalStorage<ReadonlyMap<string, Set<string>>>();
+
+/**
+ * Revisions already verified complete during the current hold of this gate.
+ * Objects are immutable and preparation only adds them, so a closure verified
+ * under the gate need not be walked again before the gate is released.
+ */
+export function verifiedInPreparation(common: string): Set<string> | undefined {
+    return held.getStore()?.get(common);
+}
 
 /** Cross-process preparation gate, shared by the clone and its linked worktrees. */
 export async function withRepositoryPreparation<T>(git: SimpleGit, run: (common: string) => Promise<T>): Promise<T> {
@@ -34,18 +52,13 @@ export async function withRepositoryPreparation<T>(git: SimpleGit, run: (common:
     try {
         return await gate.exclusive(() => {
             acquired = true;
-            return held.run(new Set([...(held.getStore() ?? []), common]), () => run(common));
-        }, 120_000);
+            return held.run(new Map([...(held.getStore() ?? []), [common, new Set<string>()]]), () => run(common));
+        }, preparationWaitMs());
     } catch (error) {
         if (acquired || !(error instanceof StorageBusyError)) throw error;
-        const marker = await lstat(path.join(common, OBJECT_REPAIR_MARKER)).catch((inspectionError: NodeJS.ErrnoException) => {
-            if (inspectionError.code !== 'ENOENT') throw inspectionError;
-            return undefined;
-        });
-        if (marker) {
-            throw new RepositoryRepairRequiredError(common,
-                'the preparation gate timed out with a repair marker present; inspect the gate owner before intervening');
-        }
+        // A timeout proves contention only. The repair marker also exists while a
+        // healthy repair runs, so it is classified under the acquired gate, where
+        // no other holder can still be repairing.
         throw new RepositoryPreparationBusyError(common, error);
     }
 }

@@ -157,10 +157,12 @@ test('status persistence failure prevents enqueueing', async () => {
 });
 
 
-test('a terminal repository repair error stops preparation before indexing is queued', async () => {
-  fetchError = Object.assign(new Error('Repository object repair required'), { name: 'RepositoryRepairRequiredError' });
-  const result = await queueIndexingJob('owner/repo', false, 'release');
-  assert.deepEqual(result, { success: false, error: fetchError.message });
-  assert.deepEqual(writes, []);
-  assert.deepEqual(payloads, []);
-});
+for (const name of ['RepositoryRepairRequiredError', 'RepositoryPreparationBusyError']) {
+  test(`${name} from the fetch stops preparation before indexing is queued`, async () => {
+    fetchError = Object.assign(new Error(`Preparation stopped: ${name}`), { name });
+    const result = await queueIndexingJob('owner/repo', false, 'release');
+    assert.deepEqual(result, { success: false, error: fetchError.message });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(payloads, []);
+  });
+}

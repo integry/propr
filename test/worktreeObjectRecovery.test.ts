@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { simpleGit } from 'simple-git';
 import { UnrecoverableError } from 'bullmq';
 import { StorageLifecycle } from '../packages/core/src/storage/lifecycle.js';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, fork } from 'node:child_process';
+import { once } from 'node:events';
 import { RepositoryPreparationBusyError, withRepositoryPreparation } from '../packages/core/src/git/repositoryPreparation.js';
 
 process.env.GIT_SHALLOW_CLONE_DEPTH = '1';
@@ -207,28 +208,35 @@ test('marker write failure stops automatic recovery before starting a donor', as
     assert.equal(mkdtemp.mock.callCount(), 0);
 });
 
-test('a contended gate reports its repair marker read-only and keeps its owner', async t => {
-    const f = await fixture(t);
-    const exclusive = StorageLifecycle.prototype.exclusive;
-    t.mock.method(StorageLifecycle.prototype, 'exclusive', function <T>(this: StorageLifecycle, run: () => Promise<T>) {
-        return exclusive.call(this, run, 0);
+function shortGateWait(t: TestContext) {
+    const previous = process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+    process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = '1';
+    t.after(() => {
+        if (previous === undefined) delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+        else process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = previous;
     });
+}
+
+test('a gate timeout is retryable contention even while a live holder has a repair marker', async t => {
+    const f = await fixture(t);
+    shortGateWait(t);
     let release!: () => void;
     let entered!: () => void;
     const ready = new Promise<void>(resolve => { entered = resolve; });
     const wait = new Promise<void>(resolve => { release = resolve; });
     const holder = withRepositoryPreparation(f.git, async () => { entered(); await wait; });
     await ready;
+    const common = path.join(f.clone, '.git');
+    const marker = path.join(common, 'propr-object-repair-required.json');
     try {
-        const common = path.join(f.clone, '.git');
         const gate = path.join(common, 'propr-preparation', 'gate');
         const owner = await fs.readdir(gate);
-        const marker = path.join(common, 'propr-object-repair-required.json');
         await assert.rejects(ensureWorktreeObjects(f.git, f.revision), RepositoryPreparationBusyError);
+        // The marker is also present throughout a healthy repair by the holder.
         await writeFile(marker, JSON.stringify({ revision: f.revision }));
-        await assert.rejects(ensureWorktreeObjects(f.git, f.revision), error => {
-            assert.ok(error instanceof RepositoryRepairRequiredError);
-            assert.match(error.message, /inspect the gate owner/);
+        await assert.rejects(ensureWorktreeObjects(simpleGit(f.clone), f.revision), error => {
+            assert.ok(error instanceof RepositoryPreparationBusyError);
+            assert.ok(!(error instanceof UnrecoverableError));
             return true;
         });
         assert.deepEqual(await fs.readdir(gate), owner);
@@ -237,6 +245,82 @@ test('a contended gate reports its repair marker read-only and keeps its owner',
         release();
         await holder;
     }
+    // Under the acquired gate the same marker is classified against the cache.
+    await f.removeObject(f.tree);
+    await assert.rejects(ensureWorktreeObjects(f.git, f.revision), error => {
+        assert.ok(error instanceof RepositoryRepairRequiredError);
+        assert.match(error.message, /previous automatic repair failed or was interrupted/);
+        return true;
+    });
+});
+
+test('the gate wait is configurable and defaults when the setting is unusable', async t => {
+    const f = await fixture(t);
+    const waits: Array<number | undefined> = [];
+    t.mock.method(StorageLifecycle.prototype, 'exclusive', async function <T>(run: () => Promise<T>, waitMs?: number) {
+        waits.push(waitMs);
+        return run();
+    });
+    const previous = process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+    t.after(() => {
+        if (previous === undefined) delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+        else process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = previous;
+    });
+    for (const value of ['', '900000', 'soon', '-5']) {
+        process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = value;
+        await withRepositoryPreparation(f.git, async () => undefined);
+    }
+    assert.deepEqual(waits, [120_000, 900_000, 120_000, 120_000]);
+});
+
+test('the gate excludes another process that enters through a linked worktree', async t => {
+    const f = await fixture(t);
+    shortGateWait(t);
+    const linked = path.join(f.root, 'linked');
+    await f.git.raw(['worktree', 'add', '-b', 'linked', linked]);
+    const child = fork(path.resolve('test/fixtures/repository-preparation/holder.ts'), [linked], {
+        execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    });
+    t.after(() => { child.kill(); });
+    const [message] = await once(child, 'message') as [{ held: string }];
+    // The child resolved the gate from the worktree's common directory.
+    assert.equal(message.held, await fs.realpath(path.join(f.clone, '.git')));
+    const record = path.join(message.held, 'propr-preparation', 'gate');
+    const [owner] = await fs.readdir(record);
+    assert.ok(!(await readFile(path.join(record, owner), 'utf8')).includes(`"pid":${process.pid},`));
+    await assert.rejects(ensureWorktreeObjects(f.git, f.revision), RepositoryPreparationBusyError);
+    await assert.rejects(withRepositoryPreparation(simpleGit(linked), async () => undefined), RepositoryPreparationBusyError);
+
+    delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+    const waiting = ensureWorktreeObjects(f.git, f.revision);
+    const exited = once(child, 'exit');
+    child.send('release');
+    assert.equal(await waiting, f.revision);
+    assert.deepEqual(await exited, [0, null]);
+});
+
+test('a closure verified under the gate is not walked again during the same hold', async t => {
+    const f = await fixture(t);
+    await writeFile(path.join(f.clone, 'file'), 'next');
+    await f.git.add('.').commit('next');
+    const tip = (await f.git.revparse(['HEAD'])).trim();
+    const raw = f.git.raw.bind(f.git);
+    const walks: string[][] = [];
+    t.mock.method(f.git, 'raw', async (args: string[]) => {
+        if (args[0] === 'rev-list' && args.includes('--missing=error')) walks.push(args.slice(4));
+        return raw(args);
+    });
+    await withRepositoryPreparation(f.git, async () => {
+        await ensureWorktreeObjects(f.git, f.revision);
+        await ensureWorktreeObjects(f.git, f.revision);
+        await ensureWorktreeObjects(f.git, tip);
+    });
+    // The second revision stops at the closure already proven in this hold.
+    assert.deepEqual(walks, [[f.revision, '--'], [tip, '--not', f.revision, '--']]);
+    await f.removeObject(f.tree);
+    await ensureWorktreeObjects(f.git, f.revision);
+    assert.equal(walks.filter(walk => walk[0] === f.revision).length >= 2, true, 'a new hold verifies again');
+    await f.git.raw(['fsck', '--no-dangling']);
 });
 
 test('only restoring the marked revision clears the incident and its abandoned donor', async t => {
@@ -388,4 +472,168 @@ test('reuse repairs a missing published local tip before fast-forwarding it', as
     });
     assert.equal(await readFile(path.join(checkout, 'file'), 'utf8'), 'published update');
     assert.equal((await f.git.revparse(['refs/heads/task'])).trim(), tip);
+});
+
+/** Publish a commit on `branch` in the remote, fetch it, and return its ID. */
+async function publish(f: Awaited<ReturnType<typeof fixture>>, branch: string, content: string): Promise<string> {
+    const remote = simpleGit(f.remote);
+    await remote.raw(['checkout', '-B', branch, 'main']);
+    await writeFile(path.join(f.remote, 'file'), content);
+    await remote.add('.').commit(content);
+    const tip = (await remote.revparse(['HEAD'])).trim();
+    await remote.checkout('main');
+    await f.git.fetch('origin');
+    return tip;
+}
+
+/** Give the next ordinary fetch something to connect to the cached refs. */
+async function advanceRemote(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+    const remote = simpleGit(f.remote);
+    await writeFile(path.join(f.remote, 'file'), `advanced ${Date.now()}`);
+    await remote.add('.').commit('advance main');
+    return (await remote.revparse(['HEAD'])).trim();
+}
+
+const fetchMain = (f: Awaited<ReturnType<typeof fixture>>) =>
+    () => f.git.raw(['fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main']);
+const markerPath = (f: Awaited<ReturnType<typeof fixture>>) => path.join(f.clone, '.git', 'propr-object-repair-required.json');
+
+for (const diagnostic of ['named by Git', 'found by the ref scan'] as const) {
+    test(`fetch recovery repairs a missing tip commit of a ref other than the fetched branch (${diagnostic})`, async t => {
+        const f = await fixture(t);
+        const other = await publish(f, 'other', 'other branch');
+        const advanced = await advanceRemote(f);
+        await f.removeObject(other);
+        const listed = await f.git.raw(['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes/origin/other']);
+        assert.equal(listed.trim(), `${other} refs/remotes/origin/other`, 'ref listing must show a ref whose tip object is absent');
+        await assert.rejects(fetchMain(f)(), /bad object refs\/remotes\/origin\/other/);
+
+        let fetches = 0;
+        await fetchWithObjectRecovery(f.git, async () => {
+            // Some failures do not name a ref; the scan alone must then find the tip.
+            if (++fetches === 1 && diagnostic === 'found by the ref scan') throw new Error('error: remote did not send all necessary objects');
+            return fetchMain(f)();
+        }, 'main');
+        assert.equal(fetches, 2);
+        assert.equal((await f.git.revparse(['origin/main'])).trim(), advanced);
+        assert.equal((await f.git.raw(['cat-file', '-t', other])).trim(), 'commit');
+        await assert.rejects(access(markerPath(f)));
+        await f.git.raw(['fsck', '--no-dangling']);
+    });
+}
+
+for (const published of [true, false]) {
+    test(`fetch recovery inspects a superseded-tip backup ref whose ${published ? 'published tip is restored' : 'unpublished tip is retained for manual recovery'}`, async t => {
+        const f = await fixture(t);
+        let tip: string;
+        if (published) {
+            tip = await publish(f, 'task', 'published task work');
+            await f.git.raw(['update-ref', '-d', 'refs/remotes/origin/task']);
+        } else {
+            await f.git.checkoutLocalBranch('task');
+            await writeFile(path.join(f.clone, 'file'), 'unpublished task work');
+            await f.git.add('.').commit('unpublished');
+            tip = (await f.git.revparse(['HEAD'])).trim();
+            await f.git.checkout('main');
+            await f.git.branch(['-D', 'task']);
+        }
+        // The backup is now the only ref naming the tip.
+        const backup = 'refs/propr/superseded/task/20260101T000000Z-' + tip.slice(0, 12);
+        await f.git.raw(['update-ref', backup, tip]);
+        const advanced = await advanceRemote(f);
+        await f.removeObject(tip);
+        await assert.rejects(fetchMain(f)(), /bad object refs\/propr\/superseded\//);
+        const donors = t.mock.method(fs, 'mkdtemp');
+
+        const recovery = () => fetchWithObjectRecovery(f.git, fetchMain(f), 'main');
+        if (published) {
+            await recovery();
+            assert.equal((await f.git.revparse(['origin/main'])).trim(), advanced);
+            await assert.rejects(access(markerPath(f)));
+            await f.git.raw(['fsck', '--no-dangling']);
+        } else {
+            await assert.rejects(recovery(), error => {
+                assert.ok(error instanceof RepositoryRepairRequiredError);
+                assert.ok(error.message.includes(`ref '${backup}'`), error.message);
+                return true;
+            });
+            assert.equal(JSON.parse(await readFile(markerPath(f), 'utf8')).revision, tip);
+            // Later attempts stop at the marker without another donor.
+            await assert.rejects(recovery(), /previous automatic repair failed or was interrupted/);
+        }
+        assert.equal(donors.mock.callCount(), 1);
+        assert.equal((await f.git.raw(['rev-parse', '--verify', backup])).trim(), tip);
+    });
+}
+
+test('fetch recovery restores an annotated tag object whose target commit is intact', async t => {
+    const f = await fixture(t);
+    await simpleGit(f.remote).raw(['tag', '-a', 'v1', '-m', 'release', f.revision]);
+    await f.git.fetch(['origin', '--tags']);
+    const tag = (await f.git.raw(['rev-parse', '--verify', 'refs/tags/v1'])).trim();
+    assert.equal((await f.git.raw(['cat-file', '-t', tag])).trim(), 'tag');
+    const advanced = await advanceRemote(f);
+    await f.removeObject(tag);
+    assert.equal((await f.git.raw(['cat-file', '-t', f.revision])).trim(), 'commit');
+    await assert.rejects(fetchMain(f)(), /bad object refs\/tags\/v1/);
+
+    await fetchWithObjectRecovery(f.git, fetchMain(f), 'main');
+    assert.equal((await f.git.revparse(['origin/main'])).trim(), advanced);
+    assert.equal((await f.git.raw(['cat-file', '-t', tag])).trim(), 'tag');
+    assert.equal((await f.git.raw(['rev-parse', '--verify', 'refs/tags/v1'])).trim(), tag);
+    // The donor's temporary ref never reaches the live clone.
+    assert.equal((await f.git.raw(['for-each-ref', 'refs/propr'])).trim(), '');
+    await assert.rejects(access(markerPath(f)));
+    await f.git.raw(['fsck', '--no-dangling']);
+});
+
+test('a second damaged ref left after the one repair is recorded and stops without another donor', async t => {
+    const f = await fixture(t);
+    const tips = [await publish(f, 'first', 'first branch'), await publish(f, 'second', 'second branch')];
+    const advanced = await advanceRemote(f);
+    for (const tip of tips) await f.removeObject(tip);
+    const donors = t.mock.method(fs, 'mkdtemp');
+    const present = async (tip: string) => f.git.raw(['cat-file', '-t', tip]).then(() => true, () => false);
+
+    let fetches = 0;
+    const recovery = () => fetchWithObjectRecovery(f.git, () => { fetches++; return fetchMain(f)(); }, 'main');
+    await assert.rejects(recovery(), error => {
+        assert.ok(error instanceof RepositoryRepairRequiredError);
+        assert.ok(error instanceof UnrecoverableError);
+        assert.match(error.message, /objects are still missing after the one automatic repair restored another ref/);
+        return true;
+    });
+    assert.equal(fetches, 2);
+    assert.equal(donors.mock.callCount(), 1);
+    const restored = await Promise.all(tips.map(present));
+    assert.deepEqual([...restored].sort(), [false, true]);
+    const unresolved = tips[restored.indexOf(false)];
+    assert.equal(JSON.parse(await readFile(markerPath(f), 'utf8')).revision, unresolved);
+
+    // The recorded incident blocks every later automatic attempt.
+    await assert.rejects(recovery(), /previous automatic repair failed or was interrupted/);
+    assert.equal(donors.mock.callCount(), 1);
+
+    // Removing the marker authorizes exactly one more attempt, which completes the repair.
+    await rm(markerPath(f));
+    await recovery();
+    assert.equal(donors.mock.callCount(), 2);
+    assert.equal((await f.git.revparse(['origin/main'])).trim(), advanced);
+    await assert.rejects(access(markerPath(f)));
+    await f.git.raw(['fsck', '--no-dangling']);
+});
+
+test('an unrelated failure of the retried fetch keeps its ordinary handling', async t => {
+    const f = await fixture(t);
+    await f.removeObject(f.tree);
+    let fetches = 0;
+    await assert.rejects(fetchWithObjectRecovery(f.git, async () => {
+        throw new Error(++fetches === 1 ? 'fatal: unresolved deltas left after unpacking' : 'fatal: unable to access remote: timed out');
+    }, 'main'), error => {
+        assert.ok(!(error instanceof RepositoryRepairRequiredError));
+        assert.match((error as Error).message, /timed out/);
+        return true;
+    });
+    assert.equal(fetches, 2);
+    await assert.rejects(access(markerPath(f)));
 });

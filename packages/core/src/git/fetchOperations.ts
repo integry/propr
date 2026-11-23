@@ -1,5 +1,5 @@
 import { fetchWithObjectRecovery, RepositoryRepairRequiredError } from './objectRecovery.js';
-import { withRepositoryPreparation } from './repositoryPreparation.js';
+import { RepositoryPreparationBusyError, withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
@@ -106,7 +106,9 @@ async function fetchLatestChangesInternal(options: FetchLatestChangesOptions): P
             return { success: true, repoPath: localRepoPath };
         });
     } catch (error) {
-        if (error instanceof RepositoryRepairRequiredError) throw error;
+        // Neither outcome prepared the checkout: callers must not index it as if a
+        // fetch had merely warned. Contention stays retryable; repair is terminal.
+        if (error instanceof RepositoryRepairRequiredError || error instanceof RepositoryPreparationBusyError) throw error;
         const errorMessage = (error as Error).message;
         logger.warn({ repo: `${owner}/${repoName}`, branch, error: errorMessage }, 'Failed to fetch latest changes');
         return { success: false, repoPath: localRepoPath, error: errorMessage };
