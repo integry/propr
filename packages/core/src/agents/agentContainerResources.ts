@@ -100,6 +100,7 @@ export function buildAgentContainerResourceArgs(
     const pids = validatePidsLimit(configuredValue(environment.AGENT_CONTAINER_PIDS_LIMIT, DEFAULT_PIDS_LIMIT));
 
     return [
+        '--init',
         '--memory', memory,
         '--memory-swap', memory,
         '--cpus', cpus,

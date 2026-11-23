@@ -30,7 +30,8 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.match(wrapperScript, /Continuing so the agent can inspect and repair/);
         assert.match(wrapperScript, /exec "\$entrypoint" "\$@"/);
         assert.ok(wrapped.includes('no-new-privileges'));
-        assert.deepStrictEqual(wrapped.slice(1, 9), [
+        assert.deepStrictEqual(wrapped.slice(1, 10), [
+            '--init',
             '--memory', '6g', '--memory-swap', '6g',
             '--cpus', resolveDefaultAgentCpuLimit(), '--pids-limit', '512'
         ]);
