@@ -1,3 +1,4 @@
+import { withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
@@ -85,22 +86,24 @@ async function fetchLatestChangesInternal(options: FetchLatestChangesOptions): P
         }
 
         const git: SimpleGit = createHooklessGit(localRepoPath);
-        if (!await git.checkIsRepo()) {
-            logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists but is not a valid git repository');
-            return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };
-        }
+        return await withRepositoryPreparation(git, async () => {
+            if (!await git.checkIsRepo()) {
+                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists but is not a valid git repository');
+                return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };
+            }
 
-        const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
+            const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+            await setupAuthenticatedRemote(git, repoUrl, authToken);
 
-        if (branch && branch !== 'HEAD') {
-            await fetchSpecificBranch(git, owner, repoName, branch);
-        } else {
-            await fetchAllBranches(git, owner, repoName);
-        }
+            if (branch && branch !== 'HEAD') {
+                await fetchSpecificBranch(git, owner, repoName, branch);
+            } else {
+                await fetchAllBranches(git, owner, repoName);
+            }
 
-        logger.info({ repo: `${owner}/${repoName}`, branch: branch || 'all', path: localRepoPath }, 'Successfully fetched latest changes');
-        return { success: true, repoPath: localRepoPath };
+            logger.info({ repo: `${owner}/${repoName}`, branch: branch || 'all', path: localRepoPath }, 'Successfully fetched latest changes');
+            return { success: true, repoPath: localRepoPath };
+        });
     } catch (error) {
         const errorMessage = (error as Error).message;
         logger.warn({ repo: `${owner}/${repoName}`, branch, error: errorMessage }, 'Failed to fetch latest changes');

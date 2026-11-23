@@ -1,3 +1,4 @@
+import { withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { registerRepositoryCache } from '../storage/registry.js';
 import { SimpleGit } from 'simple-git';
@@ -107,16 +108,20 @@ interface UpdateExistingRepoParams {
     opts: EnsureRepoClonedOptions;
 }
 
-async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
-    const { repoUrl, owner, repoName, authToken, baseBranch, lockRetry } = opts;
-    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
-
+async function updateExistingRepo(params: UpdateExistingRepoParams): Promise<void> {
     // Add to safe.directory BEFORE any git operations on this path
     try {
-        await createHooklessGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
+        await createHooklessGit().raw(['config', '--global', '--add', 'safe.directory', params.localRepoPath]);
     } catch {
         // Non-fatal - continue anyway, the directory might already be safe
     }
+
+    return withRepositoryPreparation(createHooklessGit(params.localRepoPath), () => updateExistingRepoInternal(params));
+}
+
+async function updateExistingRepoInternal({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
+    const { repoUrl, owner, repoName, authToken, baseBranch, lockRetry } = opts;
+    logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
 
     try {
         const git: SimpleGit = createHooklessGit(localRepoPath);
@@ -305,7 +310,9 @@ async function fetchReusableBranch(git: SimpleGit, branch: string): Promise<stri
 }
 
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
-    return repositoryStorageLifecycle.use(() => createWorktreeForIssueInternal(localRepoPath, issueInfo, options));
+    assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, issueInfo.owner, issueInfo.repoName);
+    return repositoryStorageLifecycle.use(() => withRepositoryPreparation(createHooklessGit(localRepoPath),
+        () => createWorktreeForIssueInternal(localRepoPath, issueInfo, options)));
 }
 
 async function createWorktreeForIssueInternal(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions): Promise<WorktreeResult> {

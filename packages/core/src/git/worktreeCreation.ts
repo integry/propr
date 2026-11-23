@@ -1,3 +1,5 @@
+import { ensureWorktreeObjects, RepositoryRepairRequiredError } from './objectRecovery.js';
+import { withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
@@ -67,9 +69,18 @@ export async function addWorktreeWithoutTracking(
         refuseLocalOnlyCommits?: boolean;
     },
 ): Promise<string> {
-    const { startPoint, resetBranch = false, refuseLocalOnlyCommits = false } = options;
+    return withRepositoryPreparation(git, () => addVerifiedWorktree(git, worktreePath, branchName, options));
+}
+
+async function addVerifiedWorktree(
+    git: SimpleGit, worktreePath: string, branchName: string,
+    options: { startPoint: string; resetBranch?: boolean; refuseLocalOnlyCommits?: boolean },
+): Promise<string> {
+    const { resetBranch = false, refuseLocalOnlyCommits = false } = options;
+    const startPoint = await ensureWorktreeObjects(git, options.startPoint);
     const reuseExisting = async () => {
-        await realignDivergedLocalBranch(git, branchName, startPoint, refuseLocalOnlyCommits);
+        await realignDivergedLocalBranch(git, branchName, startPoint, refuseLocalOnlyCommits, options.startPoint);
+        await ensureWorktreeObjects(git, `refs/heads/${branchName}`);
         return git.raw(['worktree', 'add', worktreePath, branchName]);
     };
     if (resetBranch && await localBranchExists(git, branchName)) return reuseExisting();
@@ -105,7 +116,7 @@ export async function addWorktreeWithoutTracking(
  * branch restarts from the start point. A branch checked out in any worktree
  * is never moved.
  */
-async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, startPoint: string, refuse: boolean): Promise<void> {
+async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, startPoint: string, refuse: boolean, startLabel = startPoint): Promise<void> {
     let target: string;
     try {
         target = (await git.raw(['rev-parse', '--verify', `${startPoint}^{commit}`])).trim();
@@ -117,7 +128,7 @@ async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, st
     if (refuse) {
         const localOnly = Number((await git.raw(['rev-list', '--count', local, '--not', target])).trim());
         if (localOnly !== 0) {
-            throw new Error(`Local branch '${branchName}' has ${localOnly} commit(s) that are not on ${startPoint} (local tip ${local}); `
+            throw new Error(`Local branch '${branchName}' has ${localOnly} commit(s) that are not on ${startLabel} (local tip ${local}); `
                 + `refusing to reuse or reset it so that work is not discarded or published. Nothing was changed: push, back up or delete refs/heads/${branchName} in the clone, then retry`);
         }
     }
@@ -382,6 +393,7 @@ async function handleImproperWorktree(_worktreePath: string, _branchName: string
 }
 
 async function handleWorktreeCreationError(git: SimpleGit, branchName: string, error: Error): Promise<void> {
+    if (error instanceof RepositoryRepairRequiredError) throw error;
     logger.error({ branchName, error: error.message }, 'Failed to create worktree from remote branch');
 
     try {
@@ -493,7 +505,9 @@ interface WorktreeResult {
 }
 
 export async function createWorktreeFromExistingBranch(localRepoPath: string, branchName: string, options: CreateWorktreeFromExistingBranchOptions): Promise<WorktreeResult> {
-    return repositoryStorageLifecycle.use(() => createWorktreeFromExistingBranchInternal(localRepoPath, branchName, options));
+    assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, options.owner, options.repoName);
+    return repositoryStorageLifecycle.use(() => withRepositoryPreparation(createHooklessGit(localRepoPath),
+        () => createWorktreeFromExistingBranchInternal(localRepoPath, branchName, options)));
 }
 
 async function createWorktreeFromExistingBranchInternal(localRepoPath: string, branchName: string, options: CreateWorktreeFromExistingBranchOptions): Promise<WorktreeResult> {
