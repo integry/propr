@@ -93,6 +93,12 @@ export const ANTIGRAVITY_MODELS: ModelInfo[] = [
   { id: 'antigravity-gemini-4-argon', name: 'Antigravity Gemini 4 Argon', shortName: 'Gemini 4 Argon', shortAlias: 'argon', githubLabel: 'llm-antigravity-argon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-argon', minAgentVersion: '1.4.0' },
   // Gemini 4 Hydrogen ships in Antigravity CLI 1.5.8 as gemini-4-hydrogen-{low,medium,high,xhigh}.
   { id: 'antigravity-gemini-4-hydrogen', name: 'Antigravity Gemini 4 Hydrogen', shortName: 'Gemini 4 Hydrogen', shortAlias: 'hydrogen', githubLabel: 'llm-antigravity-hydrogen', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-hydrogen', minAgentVersion: '1.5.8' },
+  // Gemini 4 Neon ships in Antigravity CLI 1.5.12 as gemini-4-neon-{low,medium,high,xhigh};
+  // `agy login` Google AI Pro accounts list it in /model.
+  { id: 'antigravity-gemini-4-neon', name: 'Antigravity Gemini 4 Neon', shortName: 'Gemini 4 Neon', shortAlias: 'neon', githubLabel: 'llm-antigravity-neon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-neon', minAgentVersion: '1.5.12' },
+  // Gemini 4 Carbon ships in Antigravity CLI 1.5.8 as gemini-4-carbon-{low,medium,high};
+  // `agy login` lists it for Google AI Ultra subscribers only.
+  { id: 'antigravity-gemini-4-carbon', name: 'Antigravity Gemini 4 Carbon', shortName: 'Gemini 4 Carbon', shortAlias: 'carbon', githubLabel: 'llm-antigravity-carbon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-carbon', minAgentVersion: '1.5.8' },
   { id: 'antigravity-claude-sonnet-5.5', name: 'Antigravity Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-antigravity-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5' },
   { id: 'antigravity-claude-opus-5.5', name: 'Antigravity Claude Opus 5.5', shortName: 'Claude Opus 5.5', shortAlias: 'opus55', githubLabel: 'llm-antigravity-opus55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5.5' },
   { id: 'antigravity-gpt-oss-120b', name: 'Antigravity GPT-OSS 120B', shortName: 'GPT-OSS 120B', shortAlias: 'gpt-oss-120b', githubLabel: 'llm-antigravity-gpt-oss-120b', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'openai/gpt-oss-120b' },
@@ -186,7 +192,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CLAUDE_MODELS.map(m => m.id),
     defaultAlias: 'claude',
     npmPackage: '@anthropic-ai/claude-code',
-    defaultCliVersion: '2.1.327'
+    defaultCliVersion: '2.1.330'
   },
   codex: {
     dockerImage: 'propr/agent:latest',
@@ -194,7 +200,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: CODEX_MODELS.map(m => m.id),
     defaultAlias: 'codex',
     npmPackage: '@openai/codex',
-    defaultCliVersion: '0.170.0'
+    defaultCliVersion: '0.171.0'
   },
   antigravity: {
     dockerImage: 'propr/agent:latest',
@@ -202,7 +208,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.11'
+    defaultCliVersion: '1.5.15'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

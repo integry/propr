@@ -105,7 +105,7 @@ scope and platform-specific scenario expectations are unchanged.
 
 ### Source-built Linux local runtime
 
-The checked-in `0.9.2` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
+The checked-in `0.9.3` launcher manifest is release preparation metadata, not evidence that its images or desktop installers are published. To build the current committed source under
 commit-scoped local tags, generate its explicit local-only manifest, smoke the discovery/auth capability surface in
 owned ephemeral containers, and package the desktop against that manifest:
 
@@ -398,6 +398,18 @@ preview identity is `desktop-linux-preview-v<version>-<first-12-source-SHA>`; dr
 different asset at that identity. Finalization re-inspects both package architectures and accepts no ZIP, macOS,
 Windows, stable update manifest, signature, or extra file.
 
+For a release, the **Release Rollout** workflow (`.github/workflows/release-rollout.yml`, see "Releases" in
+`.github/CONTRIBUTING.md`) runs every step below for the release tag commit: the runtime images, `stage-draft`, and
+the authenticated `sign-draft` and `publish-draft` of the [signed RPM preview path](../../docs/docs/operations/linux-rpm-signing.md).
+It calls these workflows (`workflow_call`) and passes the image digests and run ids along, so each protected
+environment still waits for its reviewers. The publish jobs output digests only, because a full reference names the
+Docker Hub namespace, which is also a secret value. The rollout's `runtime` job reads no secret. It rebuilds each
+`propr/<image>:<SHA>@sha256:<digest>` reference, verifies it against the registry and hands it on. Inside that run, the signing step's `unsigned_run_id` and the publication
+step's `signing_run_id` are the rollout's own run id. That run id is accepted only while the run is in progress and
+only when its `workflow_ref` is the main copy of `release-rollout.yml` (`scripts/release-rollout-run.mjs`). A
+separate dispatch still needs a successful `desktop-linux-preview.yml` or `desktop-linux-signed-preview.yml` run. The
+manual dispatches below are unchanged.
+
 Before staging, publish the source revision's multi-architecture app/UI runtime images for `linux/amd64` and
 `linux/arm64`, and its managed agent image for `linux/amd64` only, then obtain their immutable references:
 
@@ -422,6 +434,12 @@ gh workflow run preview-runtime-images.yml --ref main -f operation=publish-agent
 gh workflow run preview-runtime-images.yml --ref main -f operation=prepare -f source_revision="$SOURCE_SHA"
 gh workflow run preview-runtime-images.yml --ref main -f operation=publish -f source_revision="$SOURCE_SHA"
 ```
+
+`propr/app:<SHA>` and `propr/ui:<SHA>` belong to this publication. A release tags its own linux/amd64-only app/UI
+images `release-<SHA>` (`scripts/build-images.sh`), so the tag commit of a release can be previewed. Releases built
+before this change (v0.9.2 and earlier) pushed an amd64-only image under the bare SHA. That tag is never overwritten, so `publish` (and the Release
+Rollout plan) stops for those revisions and names the reason. The managed agent is linux/amd64 in both flows, so an
+existing release `propr/agent:<SHA>` that carries the source and unified-bundle labels is reused.
 
 The managed agent image is `linux/amd64` only because `Dockerfile.agent` pins amd64 Debian packages. The `arm64`
 DEB/RPM packages and app/UI images remain native, but on an `arm64` host the agent pull fails with no matching manifest
@@ -532,6 +550,12 @@ restrict deployment to `main`, set environment variable `PROPR_DESKTOP_MACOS_PRE
 a tag ruleset for `refs/tags/desktop-macos-preview-v*` that blocks updates and deletion. Store no secrets in it. If
 publication is rejected or fails, the run leaves only a draft; delete it or re-run the failed `publish` job.
 
+Release Rollout (`.github/workflows/release-rollout.yml`) calls this workflow for a release tag commit with the runtime
+images it published or found, and skips it when the prerelease for that commit is already published. Called that way,
+the attestations still name `desktop-macos-preview.yml` as their signer workflow (it is the reusable workflow that
+signs), so `publish` and users verify them with the same `--signer-workflow`. The run's `--source-ref` is still
+`refs/heads/main`.
+
 The workflow must be dispatched from `main`: the identity job refuses any other ref, and attestation verification
 requires `--source-ref refs/heads/main`. A pull-request branch cannot produce a preview. The workflow contract test
 (`scripts/macos-preview-workflow.test.mjs`) covers these properties. Unsigned macOS builds never self-update: without
@@ -580,7 +604,7 @@ Debian/Ubuntu DEB installation and native removal:
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.9.2
+VERSION=0.9.3
 sudo apt install "./ProPR-Desktop-${VERSION}-linux-${ARCH}.deb"
 propr-desktop
 xdg-open 'propr://connect?api=http%3A%2F%2Flocalhost%3A4000'
@@ -592,7 +616,7 @@ Fedora/RHEL-family RPM installation, followed by the package-manager-independent
 
 ```sh
 ARCH=x64 # use arm64 on an ARM64 Linux machine
-VERSION=0.9.2
+VERSION=0.9.3
 sudo rpm --install "ProPR-Desktop-${VERSION}-linux-${ARCH}.rpm"
 propr-desktop
 sudo rpm --erase propr-desktop
@@ -608,7 +632,7 @@ removing it:
 
 ```sh
 ARCH=arm64 # use x64 on an Intel Mac
-VERSION=0.9.2
+VERSION=0.9.3
 mount_point="$(mktemp -d)"
 hdiutil attach -readonly -nobrowse -mountpoint "$mount_point" \
   "ProPR-Desktop-${VERSION}-macos-${ARCH}.dmg"

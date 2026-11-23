@@ -1,30 +1,5 @@
 # Dependency audit exception
 
-## picomatch GHSA-fc5q-39xc-vjpf
-
-**picomatch GHSA-fc5q-39xc-vjpf, remediated 2026-11-17 without an exception.**
-This high-severity ReDoS advisory (single-branch repeated extglobs such as
-`+(*)` or `+(*a)`) covers every published `picomatch <= 4.0.7` with no patched
-release, and made both `npm run audit:runtime` and
-`npm run desktop:audit:packaging` fail. Both lines in the tree now install from
-reviewed, vendored builds that add the same guard to `lib/parse.js`:
-
-- `vendor/picomatch` (4.0.7 base, version `4.0.8-extglobguard.2`) through the
-  root dependency and the `"picomatch": "$picomatch"` override, for `vite`,
-  `vitest`, `tinyglobby`, `fdir` and the other `picomatch@^4` users;
-- `vendor/picomatch-v2` (2.3.2 base, version `4.0.8-v2.3.2-extglobguard.2`)
-  through scoped overrides for `anymatch`, `micromatch` and `readdirp`, which
-  `chokidar@3`, `fast-glob` and Repomix's `globby` use.
-
-Both versions sort above `4.0.7` because npm audit and GitHub dependency review
-match the advisory range including prereleases. The guard matches the risky
-extglobs as literal text; the READMEs in those directories record provenance,
-the four upstream test assertions this changes and the residual nested-repeat
-case (`+(a*(a))`). `test/vendoredPicomatch.test.mjs` guards the tarballs, the
-lockfile and the behaviour. Both builds also replace upstream's quadratic
-`removeBackslashes` regex in `lib/utils.js` with an equivalent linear scan
-(CodeQL alerts 246 and 247). Remove both when upstream publishes fixed releases.
-
 ## minimatch GHSA-g3hv-75wg-m249
 
 **minimatch GHSA-g3hv-75wg-m249, remediated 2026-10-31 without an exception.**

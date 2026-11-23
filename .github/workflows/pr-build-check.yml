@@ -1140,13 +1140,15 @@ jobs:
         # result is already a failed job, and the browser specs take far
         # longer than every other stage here.
         if: steps.filter.outputs.ui != 'false' && steps.build.outcome != 'failure'
-        # A stalled apt mirror otherwise holds the check for an hour. Three
-        # 3m attempts plus cleanup between them fit in 13 minutes.
-        timeout-minutes: 13
+        id: chromium_install
+        # Allow for the download, two launch probes, and up to three 3m apt
+        # attempts with cleanup between retries.
+        timeout-minutes: 17
         run: ./scripts/ci-install-chromium.sh
 
       - name: Run PWA and Mobile Browser Smoke Test
         if: steps.filter.outputs.ui != 'false' && steps.build.outcome != 'failure'
+        id: browser_smoke
         env:
           # Spec files run one per worker (propr-ui/playwright.config.ts). A
           # hosted runner has four CPUs; a rootless worker is expected to be
@@ -1183,6 +1185,8 @@ jobs:
             echo "CLI packaging: ${{ steps.cli_pack.outcome }}"
             echo "Change detection: ${{ steps.filter.outcome }}"
             echo "Changed-area checks: ${{ steps.build.outcome }}"
+            echo "Chromium install: ${{ steps.chromium_install.outcome }}"
+            echo "PWA and mobile browser smoke: ${{ steps.browser_smoke.outcome }}"
           } >> build_log.txt
 
       - name: Sanitize failure log

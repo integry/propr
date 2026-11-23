@@ -63,6 +63,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     commitMessage: result.commitMessage || null,
     ...(result.summarySelection && { summarySelection: result.summarySelection }),
     ...(result.unfinishedReason && { unfinishedReason: result.unfinishedReason }),
+    ...(result.commitSubject && { commitSubject: result.commitSubject }),
     conversationLog: result.conversationLog,
     tokenUsage: result.tokenUsage,
     usageMetrics: result.usageMetrics
@@ -191,7 +192,12 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
 
   // One small call picks the summary when the last message may not be one; the
   // comment, PR body and commit subject all read it from this result.
-  const claudeResult = agentResultToClaudeResponse(await applyRunSummarySelection(agentResult, { taskId, correlationId, issueRef: agentIssueRef }));
+  const claudeResult: ClaudeCodeResponse = {
+    ...agentResultToClaudeResponse(await applyRunSummarySelection(agentResult, {
+      taskId, correlationId, issueRef: agentIssueRef, commitSubject: { title: currentIssueData.data.title },
+    })),
+    agentAlias,
+  };
 
   await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
     reason: `${agent.config.type} agent execution completed`,

@@ -75,9 +75,10 @@ test('null gives the fixed sentence and clears the commit message so the title i
   assert.equal(result.summarySelection, 'none');
   const message = buildCommitMessage({
     changesSummary: '', unprocessedComments: [], pullRequestNumber: 3,
-    claudeResult: { success: true } as never, llm: 'x', authorsText: '@a',
+    claudeResult: { success: true, commitSubject: 'should not be used' } as never, llm: 'x', authorsText: '@a',
   });
-  assert.match(message, /^feat\(ai\): Apply follow-up changes from PR comment\n/);
+  assert.match(message, /^chore: apply follow-up changes from PR #3\n/);
+  assert.match(message, /\n\nProPR-Agent: x$/);
 });
 
 for (const [name, reply] of [

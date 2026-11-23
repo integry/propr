@@ -26,6 +26,7 @@ import { schedulePRCommentUsageLimitRetry } from './prCommentUsageLimitRecovery.
 import { automaticRetryFailureMetadata } from './prCommentAutomaticRetry.js';
 import { normalFailureHandoffMarkers } from './followupHandoffMarker.js';
 import type { FollowupHandoffRecord } from './followupHandoffStore.js';
+import { buildAgentCommitMessage } from './agentCommitMessage.js';
 
 export async function fetchOriginalContributionDiscussion(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
@@ -121,28 +122,29 @@ export async function fetchAllComments(octokit: Awaited<ReturnType<typeof getAut
 }
 
 export interface CommitMessageOptions {
-    changesSummary: string; unprocessedComments: UnprocessedComment[];
-    pullRequestNumber: number; claudeResult: ClaudeCodeResponse;
-    llm: string | null | undefined; authorsText: string;
+    changesSummary: string; unprocessedComments: UnprocessedComment[]; pullRequestNumber: number;
+    claudeResult: ClaudeCodeResponse; llm: string | null | undefined; authorsText: string;
+    /** PR title, the subject when no generated subject is usable; changed paths, for the conventional-commit type. */
+    title?: string | null; paths?: readonly string[];
 }
 
+/**
+ * The follow-up commit: a short imperative subject (generated, else the PR
+ * title, never the summary), the run summary and references in the body, and
+ * the `ProPR-Agent` trailer.
+ */
 export function buildCommitMessage(options: CommitMessageOptions): string {
     const { changesSummary, unprocessedComments, pullRequestNumber, claudeResult, llm, authorsText } = options;
     const publishableSummary = sanitizeAgentReport(changesSummary);
-
     const commentReferences = unprocessedComments.map(c => `Comment by: @${c.author} (ID: ${c.id})`).join('\n');
     const terminationReason = resolveAgentTerminationReason(claudeResult);
-    const partialExecutionNote = terminationReason
-        ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}`
-        : '';
+    const partialExecutionNote = terminationReason ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}` : '';
     const modelId = claudeResult.model || llm || DEFAULT_MODEL_NAME;
-    return `feat(ai): ${publishableSummary ? publishableSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
-
-${publishableSummary || `Implemented changes requested by ${authorsText}`}
-
-PR: #${pullRequestNumber}
-${commentReferences}
-Model: ${modelId ? getModelName(modelId) : 'unconfigured'}${partialExecutionNote}`;
+    const references = `PR: #${pullRequestNumber}\n${commentReferences}\nModel: ${modelId ? getModelName(modelId) : 'unconfigured'}${partialExecutionNote}`;
+    const body = `${publishableSummary || `Implemented changes requested by ${authorsText}`}\n\n${references}`;
+    // No published summary means nothing to describe: the subject is the PR title.
+    return buildAgentCommitMessage({ generatedSubject: publishableSummary ? claudeResult.commitSubject : null, title: options.title,
+        fallbackSubject: `apply follow-up changes from PR #${pullRequestNumber}`, paths: options.paths, body, agentAlias: claudeResult.agentAlias, model: modelId });
 }
 
 export interface PromptOptions {

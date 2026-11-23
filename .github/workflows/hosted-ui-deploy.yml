@@ -30,6 +30,8 @@ jobs:
     # The Cloudflare token lives only in this protected environment, so no
     # build, PR or other release job can read it. Its deployment policy allows
     # the release tags (v*) and main, the ref manual deploys are dispatched from.
+    # When called (workflow_call), this job reads the environment secrets only
+    # if the caller passes them: the release job uses `secrets: inherit`.
     environment:
       name: hosted-ui-production
       url: https://app.propr.dev/
@@ -80,43 +82,40 @@ jobs:
           fi
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
-      # Release artifacts are already public when this runs: a missing
-      # environment secret skips the deploy with a notice instead of failing
-      # the release.
+      # Release artifacts are already public when this runs (the release
+      # workflow calls this after the GitHub release and latest promotion), so
+      # failing here does not block or roll back the release. It does make the
+      # run visibly not fully successful: a skipped deploy is never green.
       - name: Check Cloudflare credentials
-        id: credentials
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "configured=false" >> "$GITHUB_OUTPUT"
-          message="CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set in the hosted-ui-production environment; app.propr.dev was not deployed. Add them (docs/docs/operations/hosted-ui-release.md), then run the Hosted UI Deploy workflow from main with this release tag."
-          echo "::notice title=Hosted UI deploy skipped::$message"
+          message="CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set in the hosted-ui-production environment; app.propr.dev was not deployed. Add them (docs/docs/operations/hosted-ui-release.md), then re-run this job or run the Hosted UI Deploy workflow from main with release_tag $RELEASE_TAG."
+          echo "::error title=Hosted UI not deployed::$message"
           {
-            echo "### Hosted UI deploy skipped"
+            echo "### Hosted UI not deployed"
             echo "$message"
           } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Checkout release tag
-        if: steps.credentials.outputs.configured == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: refs/tags/${{ inputs.release_tag }}
           persist-credentials: false
 
       - name: Set up Node.js
-        if: steps.credentials.outputs.configured == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
           package-manager-cache: false
 
       - name: Confirm checkout is the release version
-        if: steps.credentials.outputs.configured == 'true'
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
@@ -127,22 +126,18 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.credentials.outputs.configured == 'true'
         run: npm ci
 
       # The UI resolves @propr/shared through its package.json entry
       # (dist/index.js), which a clean install does not contain.
       # @propr/client needs no build: the UI aliases its workspace source.
       - name: Build shared workspace
-        if: steps.credentials.outputs.configured == 'true'
         run: npm run build -w @propr/shared
 
       - name: Build hosted UI
-        if: steps.credentials.outputs.configured == 'true'
         run: npm run build -w propr-ui
 
       - name: Deploy to Cloudflare Workers
-        if: steps.credentials.outputs.configured == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -150,7 +145,6 @@ jobs:
         run: npx --yes wrangler@4.156.0 deploy --config wrangler.hosted-ui.toml
 
       - name: Verify app.propr.dev serves the release
-        if: steps.credentials.outputs.configured == 'true'
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: node scripts/verify-hosted-ui-release.mjs

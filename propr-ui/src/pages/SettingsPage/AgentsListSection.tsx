@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AgentConfig } from '../../api/proprApi';
+import type { AgentCliVersionState, AgentConfig } from '../../api/proprApi';
 import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import AgentCard from './AgentCard';
@@ -36,6 +36,8 @@ interface AgentsListSectionProps {
   onSelectModel?: (agentId: string, modelId: string) => void;
   readOnly?: boolean;
   agentHealth?: ReturnType<typeof useAgentHealth>;
+  cliVersionStateFor?: (agentId: string) => AgentCliVersionState | undefined;
+  cliVersionBecameReady?: ReadonlySet<string>;
 }
 
 const AgentsListSection: React.FC<AgentsListSectionProps> = ({
@@ -52,6 +54,8 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   onSelectModel,
   readOnly = false,
   agentHealth,
+  cliVersionStateFor,
+  cliVersionBecameReady,
 }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
@@ -144,6 +148,8 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
               onToggle={() => handleToggleAgent(agent)}
               onSelectModel={onSelectModel}
               readOnly={readOnly}
+              cliVersionState={cliVersionStateFor?.(agent.id)}
+              cliVersionBecameReady={cliVersionBecameReady?.has(agent.id)}
             />
           ))}
           {agents.length === 0 && (

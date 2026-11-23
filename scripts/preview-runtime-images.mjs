@@ -19,6 +19,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The public Docker Hub namespace of every preview runtime image. It is a
+// constant, never read from a secret: the DOCKERHUB_USERNAME secret has the
+// same value, so anything built from that secret is masked and dropped from
+// job outputs.
+export const RUNTIME_NAMESPACE = 'propr';
 const SOURCE_SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ARCHITECTURES = ['amd64', 'arm64'];
@@ -223,7 +228,7 @@ export function validateAgentSmokeEvidence(evidence, { sourceRevision, configDig
   exactKeys(evidence, [
     'schemaVersion', 'image', 'sourceRevision', 'configDigest', 'platform', 'network', 'credentials', 'checks', 'cliVersions',
   ], 'Agent smoke evidence');
-  if (evidence.schemaVersion !== 1 || evidence.image !== `propr/${AGENT_IMAGE}:${sourceRevision}`
+  if (evidence.schemaVersion !== 1 || evidence.image !== `${RUNTIME_NAMESPACE}/${AGENT_IMAGE}:${sourceRevision}`
     || evidence.sourceRevision !== sourceRevision || evidence.configDigest !== configDigest
     || evidence.platform !== 'linux/amd64' || evidence.network !== 'none' || evidence.credentials !== 'none') {
     throw new Error('Agent smoke evidence does not describe the exact credential-free candidate');
@@ -246,7 +251,7 @@ const packageNativeImages = ({ sourceRevision, architecture, output }) => {
   mkdirSync(outputDirectory, { recursive: true, mode: 0o700 });
   const images = {};
   for (const image of Object.keys(IMAGES)) {
-    const reference = `propr/${image}:${sourceRevision}`;
+    const reference = `${RUNTIME_NAMESPACE}/${image}:${sourceRevision}`;
     const inspection = parseDockerInspection(run('docker', [
       'image', 'inspect', '--format', '{{json .}}', reference,
     ]));
@@ -392,7 +397,7 @@ export const inspectRuntimeReference = (reference, image, sourceRevision, expect
   }
   const digest = registry(['image', 'digest', reference]);
   if (!DIGEST.test(digest)) throw new Error(`${image} image has an invalid top-level digest`);
-  return { digest, reference: `propr/${image}:${sourceRevision}@${digest}` };
+  return { digest, reference: `${RUNTIME_NAMESPACE}/${image}:${sourceRevision}@${digest}` };
 };
 
 const localReference = (path, tag) => `ocidir://${path}:${tag}`;
@@ -457,14 +462,54 @@ const validateCandidate = (directory, sourceRevision) => {
   return metadata;
 };
 
-const inspectRemoteIfPresent = (image, sourceRevision, expectedArchitectures = ARCHITECTURES) => {
-  const reference = `docker.io/propr/${image}:${sourceRevision}`;
-  const probe = spawnSync('regctl', ['manifest', 'get', reference, '--format', 'raw-body'], { encoding: 'utf8' });
-  if (probe.status === 0) return inspectRuntimeReference(reference, image, sourceRevision, expectedArchitectures);
+// Release builds name their linux/amd64-only app/UI commit tag release-<sha>
+// (scripts/build-images.sh), so the bare <sha> tag of those repositories is
+// this publication's. Releases built before that change wrote an amd64-only
+// image there; it is never overwritten, so that source cannot get previews.
+const existingTagConflict = (reference, image, error) => new Error([
+  `${reference} already exists but is not the source-bound two-architecture preview manifest`,
+  `(${error instanceof Error ? error.message : String(error)}).`,
+  'It is never overwritten. Releases built before app/UI release commit tags moved to release-<sha>',
+  `pushed a linux/amd64-only ${image} image under the bare commit tag; publish previews from a later source revision.`,
+].join(' '));
+
+const inspectRemoteIfPresent = (image, sourceRevision, expectedArchitectures = ARCHITECTURES, spawn = spawnSync, registry = runRegctl) => {
+  const reference = `docker.io/${RUNTIME_NAMESPACE}/${image}:${sourceRevision}`;
+  const probe = spawn('regctl', ['manifest', 'get', reference, '--format', 'raw-body'], { encoding: 'utf8' });
+  if (probe.status === 0) {
+    try {
+      return inspectRuntimeReference(reference, image, sourceRevision, expectedArchitectures, registry);
+    } catch (error) {
+      if (Object.hasOwn(IMAGES, image)) throw existingTagConflict(reference, image, error);
+      throw error;
+    }
+  }
   const failure = `${probe.stdout || ''}\n${probe.stderr || ''}`;
   if (/manifest unknown|name unknown|not found|404/i.test(failure)
     && !/unauthorized|denied|authentication|insufficient.scope/i.test(failure)) return null;
   throw new Error(`Unable to safely inspect existing ${reference}: ${failure.trim()}`);
+};
+
+// Read-only, credential-free lookup of the three published preview runtime
+// images for one source revision. Each entry is the exact digest-pinned
+// reference when the immutable tag already holds a valid image, or null when
+// the tag does not exist yet. A tag that exists but does not satisfy the
+// preview contract throws: it would make publication fail later anyway.
+export const inspectPublishedRuntimeImage = (image, sourceRevision, { spawn = spawnSync, registry = runRegctl } = {}) => {
+  requireSourceRevision(sourceRevision);
+  requireKnownImage(image);
+  return inspectRemoteIfPresent(image, sourceRevision, image === AGENT_IMAGE ? AGENT_ARCHITECTURES : ARCHITECTURES, spawn, registry);
+};
+
+export const inspectPublishedRuntime = (sourceRevision, { spawn = spawnSync, registry = runRegctl } = {}) => {
+  requireSourceRevision(sourceRevision);
+  const referenceOf = (image, architectures) =>
+    inspectRemoteIfPresent(image, sourceRevision, architectures, spawn, registry)?.reference ?? null;
+  return {
+    app: referenceOf('app', ARCHITECTURES),
+    ui: referenceOf('ui', ARCHITECTURES),
+    agent: referenceOf(AGENT_IMAGE, AGENT_ARCHITECTURES),
+  };
 };
 
 const publishImages = ({ sourceRevision, input, githubOutput, stepSummary }) => {
@@ -487,7 +532,7 @@ const publishImages = ({ sourceRevision, input, githubOutput, stepSummary }) => 
     for (const image of Object.keys(IMAGES)) existing[image] = inspectRemoteIfPresent(image, sourceRevision);
     for (const image of Object.keys(IMAGES)) {
       if (existing[image]) continue;
-      const target = `docker.io/propr/${image}:${sourceRevision}`;
+      const target = `docker.io/${RUNTIME_NAMESPACE}/${image}:${sourceRevision}`;
       const appeared = inspectRemoteIfPresent(image, sourceRevision);
       if (appeared) {
         existing[image] = appeared;
@@ -499,9 +544,14 @@ const publishImages = ({ sourceRevision, input, githubOutput, stepSummary }) => 
     const published = {};
     for (const image of Object.keys(IMAGES)) published[image] = inspectRemoteIfPresent(image, sourceRevision);
     if (!published.app || !published.ui) throw new Error('Published preview runtime image pair is incomplete');
+    // Outputs carry only the digests: the full reference starts with the Docker
+    // Hub namespace, which is also the DOCKERHUB_USERNAME secret, and GitHub
+    // Actions drops any job output that contains a secret value. The caller
+    // rebuilds the reference from the public namespace, the source revision
+    // and the digest, and verifies it against the registry.
     const output = [
-      `runtime_app_image=${published.app.reference}`,
-      `runtime_ui_image=${published.ui.reference}`,
+      `runtime_app_digest=${published.app.digest}`,
+      `runtime_ui_digest=${published.ui.digest}`,
     ].join('\n');
     if (githubOutput) appendFileSync(githubOutput, `${output}\n`);
     if (stepSummary) appendFileSync(stepSummary, [
@@ -513,14 +563,14 @@ const publishImages = ({ sourceRevision, input, githubOutput, stepSummary }) => 
       'Use these exact values as the Desktop Linux Preview Release `runtime_app_image` and `runtime_ui_image` inputs.',
       '',
     ].join('\n'));
-    process.stdout.write(`${output}\n`);
+    process.stdout.write(`${published.app.reference}\n${published.ui.reference}\n`);
     return published;
   } finally {
     rmSync(localRoot, { recursive: true, force: true });
   }
 };
 
-const agentReference = sourceRevision => `propr/${AGENT_IMAGE}:${sourceRevision}`;
+const agentReference = sourceRevision => `${RUNTIME_NAMESPACE}/${AGENT_IMAGE}:${sourceRevision}`;
 
 // Resolve the single linux/amd64 image config behind an agent reference, which
 // may be a plain image manifest (docker save import, ordinary release) or a
@@ -687,7 +737,8 @@ const publishAgentImage = ({ sourceRevision, input, githubOutput, stepSummary })
     published = inspectRemoteIfPresent(AGENT_IMAGE, sourceRevision, AGENT_ARCHITECTURES);
     if (!published) throw new Error('Published preview agent image is unavailable after publication');
     const reused = published.digest !== candidate.image.manifestDigest;
-    const output = `runtime_agent_image=${published.reference}`;
+    // Only the digest: see publishImages for why no output names the namespace.
+    const output = `runtime_agent_digest=${published.digest}`;
     if (githubOutput) appendFileSync(githubOutput, `${output}\n`);
     if (stepSummary) appendFileSync(stepSummary, [
       '### Verified Linux preview managed-agent image',
@@ -700,7 +751,7 @@ const publishAgentImage = ({ sourceRevision, input, githubOutput, stepSummary })
       'Use this exact value as the Desktop Linux Preview Release `runtime_agent_image` input.',
       '',
     ].join('\n'));
-    process.stdout.write(`${output}\n`);
+    process.stdout.write(`${published.reference}\n`);
     return { ...published, reused };
   } finally {
     rmSync(localRoot, { recursive: true, force: true });

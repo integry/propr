@@ -10,7 +10,7 @@ import { buildAttributionLine, buildSlashCommandsBlock, type PluginCommandHelpRo
 import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { describeUncommittedFiles, quoteBlockerExplanation } from './blockedRunText.js';
 import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
-import { committedFilesList, isUnfinishedRun, unfinishedRunWarning } from '@propr/shared';
+import { committedFilesList, isUnfinishedRun, stripProprAgentTrailer, unfinishedRunWarning } from '@propr/shared';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -147,7 +147,7 @@ function getLatestUsefulConversationSummary(claudeResult: ClaudeCodeResponse): s
 function getCompletionSummary(claudeResult: ClaudeCodeResponse, commitMessage: string, changesSummary: string): string {
     // The summary-selection call already decided; the comment shows its choice so it agrees with the commit.
     if (claudeResult.summarySelection && claudeResult.summary) return claudeResult.summary;
-    const commitBody = commitMessage.split('\n\n').slice(1).join('\n\n').trim();
+    const commitBody = stripProprAgentTrailer(commitMessage.split('\n\n').slice(1).join('\n\n')).trim();
     const primarySummary = (claudeResult.summary || claudeResult.finalResult?.result || changesSummary || '').trim();
     const conversationSummary = getLatestUsefulConversationSummary(claudeResult);
 

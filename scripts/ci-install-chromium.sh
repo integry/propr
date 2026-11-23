@@ -2,14 +2,29 @@
 
 set -euo pipefail
 
-# GitHub-hosted runners are disposable, so Playwright may apt-install the
-# browser's system libraries there. The self-hosted runner is a shared host:
-# only the browser itself is downloaded (into the job's
-# PLAYWRIGHT_BROWSERS_PATH), and missing system libraries make the browser
-# tests fail instead of changing the host's packages.
+# Self-hosted runners download into the job's PLAYWRIGHT_BROWSERS_PATH.
+# The browser suite reports missing libraries without changing host packages.
 if [[ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]]; then
   exec npx playwright install chromium
 fi
+
+check_chromium() {
+  timeout --kill-after=5s 30s node --input-type=module -e '
+    import { chromium } from "playwright";
+    const browser = await chromium.launch({ timeout: 20_000 });
+    await browser.close();
+  '
+}
+
+# The hosted image already ships browser libraries. Verify that the pinned
+# Chromium can use them before asking apt to download fonts or upgrade packages.
+echo "Installing Playwright Chromium."
+timeout --kill-after=15s 3m npx playwright install chromium
+if check_chromium; then
+  echo "Playwright Chromium launched with the runner's existing libraries."
+  exit 0
+fi
+echo "::warning::Playwright Chromium could not launch; installing system dependencies."
 
 as_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -141,14 +156,14 @@ demote_preferred_mirrors() {
   done <<<"$lists"
 }
 
-# Retry only a timed-out install; any other failure ends the step with its own
-# status, so a broken install never lets the browser tests be skipped. apt keeps
-# the archives a killed attempt already fetched, so on a slow (not stalled)
-# mirror every attempt gets further: three attempts finish what two cannot.
+# Retry only a timed-out dependency install. apt keeps archives from earlier
+# attempts, so a third attempt can finish a slow download. Verify Chromium
+# can launch after the dependencies are installed.
 attempts=3
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  if timeout --kill-after=15s 3m npx playwright install --with-deps chromium; then
-    status=0
+  if timeout --kill-after=15s 3m npx playwright install-deps chromium; then
+    check_chromium
+    exit 0
   else
     status=$?
   fi

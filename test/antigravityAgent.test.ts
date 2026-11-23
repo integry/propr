@@ -196,6 +196,34 @@ describe('toAntigravityCliModelId', () => {
         }
     });
 
+    test('maps Gemini 4 Neon efforts, including XHigh, to the agy 1.5.12 IDs', () => {
+        for (const effort of ['low', 'medium', 'high', 'xhigh'] as const) {
+            const expected = `gemini-4-neon-${effort}`;
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-4-neon', effort), expected);
+            assert.equal(toAntigravityCliModelId(`antigravity:antigravity-gemini-4-neon`, effort), expected);
+            assert.ok(antigravityModelIdsMatch(expected, expected));
+        }
+        // agy login on Google AI Pro shows the display name "Gemini 4 Neon (High)".
+        assert.ok(antigravityModelIdsMatch('gemini-4-neon-high', 'Gemini 4 Neon (High)'));
+        assert.ok(antigravityModelIdsMatch('antigravity-gemini-4-neon', 'Gemini 4 Neon (XHigh)'));
+        assert.ok(!antigravityModelIdsMatch('gemini-4-neon-xhigh', 'Gemini 4 Neon (High)'));
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-4-neon', 'max'), 'gemini-4-neon-xhigh');
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-4-neon', 'auto'), 'gemini-4-neon-medium');
+    });
+
+    test('maps Gemini 4 Carbon efforts to the agy 1.5.8 IDs and caps XHigh at High', () => {
+        for (const effort of ['low', 'medium', 'high'] as const) {
+            const expected = `gemini-4-carbon-${effort}`;
+            assert.equal(toAntigravityCliModelId('antigravity-gemini-4-carbon', effort), expected);
+            assert.equal(toAntigravityCliModelId(`antigravity:antigravity-gemini-4-carbon`, effort), expected);
+            assert.ok(antigravityModelIdsMatch(expected, expected));
+        }
+        assert.ok(antigravityModelIdsMatch('gemini-4-carbon-high', 'Gemini 4 Carbon (High)'));
+        assert.ok(!antigravityModelIdsMatch('gemini-4-carbon-high', 'Gemini 4 Argon (High)'));
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-4-carbon', 'xhigh'), 'gemini-4-carbon-high');
+        assert.equal(toAntigravityCliModelId('antigravity-gemini-4-carbon', 'auto'), 'gemini-4-carbon-medium');
+    });
+
     test('selects the closest supported effort going down for GPT-OSS', () => {
         assert.equal(toAntigravityCliModelId('antigravity-gpt-oss-120b', 'high'), 'gpt-oss-120b-medium');
         assert.equal(toAntigravityCliModelId('antigravity-gemini-3.8-flash'), 'gemini-3.8-flash-medium');

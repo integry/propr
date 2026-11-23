@@ -1,6 +1,6 @@
 {
   "name": "propr",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "type": "module",
   "main": "index.js",
@@ -16,20 +16,10 @@
     },
     "@electron/packager": "20.3.0",
     "@electron/rebuild": "4.2.0",
-    "anymatch": {
-      "picomatch": "file:vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz"
-    },
     "braces": "$braces",
     "hono": "4.13.18",
-    "micromatch": {
-      "picomatch": "file:vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz"
-    },
-    "picomatch": "$picomatch",
     "postcss-selector-parser": "7.1.6",
     "react": "19.2.7",
-    "readdirp": {
-      "picomatch": "file:vendor/picomatch-4.0.8-v2.3.2-extglobguard.2.tgz"
-    },
     "repomix": {
       "minimatch": "11.0.3"
     }
@@ -48,7 +38,7 @@
     "test:notifications:ui": "npm --workspace propr-ui test -- src/api/notificationApi.test.ts src/serviceWorker.test.ts src/serviceWorkerRegistration.test.ts src/hooks/useBrowserPush.test.tsx src/pages/SettingsPage/NotificationSettingsSection.test.tsx src/pages/InboxPage.test.tsx src/pages/inboxUtils.test.ts src/components/Inbox/NotificationActions.test.tsx src/components/MobileBottomNavigation.test.tsx src/contexts/NotificationCenterContext.test.tsx src/utils/notificationIntents.test.ts src/pages/PlanStudioPage.notificationIntent.test.tsx src/components/TaskPlanner/PlanEditor.notificationIntent.test.tsx src/components/TaskPlanner/PlanIssuesManager.notificationIntent.test.tsx src/components/TaskPlanner/PlanEditor.responsive.test.tsx",
     "test:notifications": "npm run build -w @propr/shared && npm run build -w @propr/core && npm run test:notifications:server && npm run test:notifications:ui",
     "pretest:unit": "npm run build -w @propr/shared && npm run build -w @propr/local-setup",
-    "test:unit": "NODE_ENV=test npx tsx --experimental-test-module-mocks --test test/minimal.test.ts test/modelName.test.ts test/agentContainerResources.test.ts test/agentDockerfileSupplyChain.test.ts test/agentImageBuildCapacity.test.ts test/agentImageBuildLock.test.ts test/agentImagePreparation.test.ts test/agentImageSlotStatusHint.test.ts test/apiOpenCodeRoutes.test.ts test/daemonEventIntake.test.ts test/databaseMigrationGate.test.ts test/deployPrPreview.test.mjs test/generateContext.test.ts test/githubEventIntakeMode.test.ts test/intakeModePrerequisites.test.ts test/orchestratorMigrationPhase.test.mjs test/validateRoutingUrl.test.ts test/routingWebSocketProtocol.test.ts test/routingWebSocketIntakeService.test.ts test/routingStatusPublisher.test.ts test/routingDeliveryInterest.test.ts test/deliveryInterestHandlerGuard.test.ts test/releaseValidation.test.mjs test/sessionSecret.test.ts test/testSuiteRunner.test.mjs test/ciChangeClassification.test.mjs test/nodeTestProof.test.mjs test/ciRunnerRouting.test.mjs test/ciChromiumInstall.test.mjs test/ciWorkflowDeduplication.test.mjs test/ciFullSuiteSelection.test.mjs test/nightlyHealthIssue.test.mjs packages/api/test/connectAuth.test.ts packages/api/test/attachmentUploadCleanup.test.ts packages/api/test/configReloadSubscription.test.ts packages/api/test/desktopApiBoundary.test.ts packages/api/test/dockerCommandSafety.test.ts packages/api/test/listenAddress.test.ts packages/api/test/oauthState.test.ts packages/api/test/requestRateLimits.test.ts packages/api/test/statusRoutes.test.ts packages/api/test/agentRuntimeRoutes.test.ts packages/api/test/instanceAuthorization.test.ts packages/api/test/routeAuthorization.test.ts packages/api/test/openapiRouteCoverage.test.ts packages/api/test/openapiResponseConformance.test.ts packages/core/test/refinementOutput.test.ts test/buildDocsManifest.test.mjs test/usageTipsCatalog.test.mjs test/automationTemplatesCatalog.test.ts test/docsStaticServing.test.mjs test/openapiReferencePage.test.mjs",
+    "test:unit": "NODE_ENV=test npx tsx --experimental-test-module-mocks --test test/minimal.test.ts test/modelName.test.ts test/agentContainerResources.test.ts test/agentDockerfileSupplyChain.test.ts test/agentImageBuildCapacity.test.ts test/agentImageBuildLock.test.ts test/agentImagePreparation.test.ts test/agentImageSlotStatusHint.test.ts test/apiOpenCodeRoutes.test.ts test/daemonEventIntake.test.ts test/databaseMigrationGate.test.ts test/deployPrPreview.test.mjs test/generateContext.test.ts test/githubEventIntakeMode.test.ts test/intakeModePrerequisites.test.ts test/orchestratorMigrationPhase.test.mjs test/validateRoutingUrl.test.ts test/routingWebSocketProtocol.test.ts test/routingWebSocketIntakeService.test.ts test/routingStatusPublisher.test.ts test/routingDeliveryInterest.test.ts test/deliveryInterestHandlerGuard.test.ts test/releaseValidation.test.mjs test/releaseRollout.test.mjs test/releaseRolloutWorkflow.test.mjs test/releaseFollowups.test.mjs test/sessionSecret.test.ts test/testSuiteRunner.test.mjs test/ciChangeClassification.test.mjs test/nodeTestProof.test.mjs test/ciRunnerRouting.test.mjs test/ciChromiumInstall.test.mjs test/ciWorkflowDeduplication.test.mjs test/ciFullSuiteSelection.test.mjs test/nightlyHealthIssue.test.mjs packages/api/test/connectAuth.test.ts packages/api/test/attachmentUploadCleanup.test.ts packages/api/test/configReloadSubscription.test.ts packages/api/test/desktopApiBoundary.test.ts packages/api/test/dockerCommandSafety.test.ts packages/api/test/listenAddress.test.ts packages/api/test/oauthState.test.ts packages/api/test/requestRateLimits.test.ts packages/api/test/statusRoutes.test.ts packages/api/test/agentRuntimeRoutes.test.ts packages/api/test/instanceAuthorization.test.ts packages/api/test/routeAuthorization.test.ts packages/api/test/openapiRouteCoverage.test.ts packages/api/test/openapiResponseConformance.test.ts packages/core/test/refinementOutput.test.ts test/buildDocsManifest.test.mjs test/usageTipsCatalog.test.mjs test/automationTemplatesCatalog.test.ts test/docsStaticServing.test.mjs test/openapiReferencePage.test.mjs",
     "test:e2e": "npx tsx --test test/e2e.test.ts",
     "test:docker": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test test/*.test.ts",
     "test:docker:single": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker npx tsx --test",
@@ -91,6 +81,7 @@
     "images:smoke": "./scripts/smoke-test-images.sh",
     "images:smoke:sqlite-startup": "./scripts/smoke-test-sqlite-startup.sh",
     "release:verify": "node scripts/verify-release.mjs",
+    "release:rollout": "node scripts/verify-release-rollout.mjs",
     "cli:pack": "node packages/cli/scripts/build-publish.mjs",
     "cli:publish": "node packages/cli/scripts/build-publish.mjs --publish",
     "deploy:hosted-ui": "npm run build -w @propr/shared && npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml",
@@ -146,7 +137,7 @@
     "url": "git+https://github.com/integry/propr.git"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.327",
+    "@anthropic-ai/claude-code": "^2.1.330",
     "@anthropic-ai/sdk": "^0.71.2",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
@@ -154,8 +145,8 @@
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",
-    "@propr/core": "^0.9.2",
-    "@propr/local-setup": "^0.9.2",
+    "@propr/core": "^0.9.3",
+    "@propr/local-setup": "^0.9.3",
     "better-sqlite3": "13.0.3",
     "braces": "file:vendor/braces-3.0.4-depthguard.1.tgz",
     "bullmq": "^5.81.3",
@@ -172,7 +163,6 @@
     "knex": "^3.1.0",
     "passport": "^0.7.0",
     "passport-github2": "^0.1.12",
-    "picomatch": "file:vendor/picomatch-4.0.8-extglobguard.2.tgz",
     "pino": "^9.7.0",
     "pino-pretty": "^13.0.0",
     "redis": "^5.0.0",

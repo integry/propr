@@ -135,8 +135,16 @@ process.stdout.write(state[key]);
       GITHUB_REF: 'refs/heads/main', GITHUB_SHA: source, GITHUB_EVENT_NAME: 'workflow_dispatch' };
     check(good, ci);
     for (const bad of [{ GITHUB_REPOSITORY: 'other/propr' }, { GITHUB_REF: 'refs/heads/feature' },
-      { GITHUB_SHA: 'b'.repeat(40) }, { GITHUB_EVENT_NAME: 'pull_request' }]) {
+      { GITHUB_SHA: 'b'.repeat(40) }, { GITHUB_EVENT_NAME: 'pull_request' }, { GITHUB_EVENT_NAME: 'workflow_run' }]) {
       assert.throws(() => check(good, { ...ci, ...bad }), /CI preparation/);
+    }
+    // The automatic Release Rollout run is trusted only from its reviewed main copy.
+    const rollout = { ...ci, GITHUB_EVENT_NAME: 'workflow_run',
+      GITHUB_WORKFLOW_REF: 'integry/propr/.github/workflows/release-rollout.yml@refs/heads/main' };
+    check(good, rollout);
+    for (const bad of [{ GITHUB_WORKFLOW_REF: 'integry/propr/.github/workflows/release-rollout.yml@refs/heads/feature' },
+      { GITHUB_WORKFLOW_REF: 'integry/propr/.github/workflows/other.yml@refs/heads/main' }, { GITHUB_EVENT_NAME: 'push' }]) {
+      assert.throws(() => check(good, { ...rollout, ...bad }), /CI preparation/);
     }
   } finally {
     process.env.PATH = previousPath;

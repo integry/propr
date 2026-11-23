@@ -16,6 +16,7 @@ import {
 import { pullRequestBodyKey as prKey, PullRequestBodyLockLostError, withPullRequestBodyLock } from './pullRequestBodyLock.js';
 import { decideStatusBodyEdit, recordStatusEdit } from './pullRequestStatusEditPacing.js';
 import { recordPullRequestStatusWrite } from './pullRequestStatusProvenance.js';
+import { observeRateBudget, type RateBudget } from './pullRequestStatusRateBudget.js';
 import { sameStatusSubject } from './pullRequestStatusSubject.js';
 import { decidePullRequestTitleForSync, recordPendingPullRequestTitleSlot, recordPullRequestTitleSlot } from './pullRequestStatusTitle.js';
 import {
@@ -265,13 +266,15 @@ async function syncPullRequestStatusOnce(
     repository: string, prNumber: number, overrides: Partial<PullRequestStatusSyncDeps>,
 ): Promise<SyncOutcome> {
     const resolved = resolveDeps(overrides);
-    const deps: PullRequestStatusSyncDeps = { ...resolved, github: await resolved.github() };
-    const { notes, ...outcome } = await syncUnderBodyLock(deps, repository, prNumber);
+    // The installation's rate limit budget, as this update's own requests report it.
+    const budget = observeRateBudget(await resolved.github());
+    const deps: PullRequestStatusSyncDeps = { ...resolved, github: budget.github };
+    const { notes, ...outcome } = await syncUnderBodyLock(deps, repository, prNumber, budget.latest);
     await syncEpicSideOfStatus(deps.github, deps.redis, { repository, prNumber }, notes);
     return outcome;
 }
 
-async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: string, prNumber: number): Promise<SyncOutcome & { notes: EpicSyncNotes }> {
+async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: string, prNumber: number, budget: () => RateBudget | null): Promise<SyncOutcome & { notes: EpicSyncNotes }> {
     return await withPullRequestBodyLock(repository, prNumber, deps.redis, async lease => {
         const desired = await statusForLatestPull(deps, repository, prNumber);
         const { status, pull, checksReadFailed } = desired;
@@ -285,7 +288,7 @@ async function syncUnderBodyLock(deps: PullRequestStatusSyncDeps, repository: st
             ? await undeterminedEpicUpdate({ pull, status: status! }, deps.now(), decideTitle)
             : { body: bodyWithStatus(current, status, deps.now(), { repository, prNumber }), title: await decideTitle(status) };
         const written = extractPullRequestStatusBlock(next) !== null;
-        const { bodyChanged, paceInMs } = await decideStatusBodyEdit(deps.redis, { repository, prNumber }, { current, next, renames: title.title !== null }, deps.now().getTime());
+        const { bodyChanged, paceInMs } = await decideStatusBodyEdit(deps.redis, { repository, prNumber }, { current, next, renames: title.title !== null, budget: budget() }, deps.now().getTime());
         const read = {
             awaitingMergeability: awaitsMergeability(status), open: status !== null, baseSha: pull.base?.sha ?? null, checksReadFailed, checksAwaitedForMs: desired.checksAwaitedForMs,
             titleSettleInMs: withEpicChildReadContinuation(earliest(earliest(title.settleInMs, desired.checksAwaitedForMs), paceInMs), desired),

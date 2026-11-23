@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { parse } from 'yaml';
 import { createPreviewPackage, writePreviewEvidence } from '../packages/cli/scripts/preview-package.mjs';
-import { buildPreviewInput, operatorSummary, sourceReady, trust, validateDispatch, verifyOutput }
+import { RELEASE_ROLLOUT_WORKFLOW_REF, buildPreviewInput, operatorSummary, sourceReady, trust, validateDispatch, verifyOutput }
   from '../scripts/preview-cli-workflow.mjs';
 
 const text = readFileSync('.github/workflows/preview-cli-bundle.yml', 'utf8');
@@ -28,23 +28,40 @@ const fixture = () => { const dir = mkdtempSync(join(tmpdir(), 'preview-cli-work
 afterEach(() => { while (fixtures.length) rmSync(fixtures.pop(), { recursive: true, force: true }); });
 
 describe('Preview CLI Bundle workflow contract', () => {
-  test('is manual-only with exactly the four required string inputs', () => {
-    assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
-    const inputs = workflow.on.workflow_dispatch.inputs;
-    assert.deepEqual(Object.keys(inputs).sort(), ['agent_image', 'app_image', 'source_revision', 'ui_image']);
-    for (const input of Object.values(inputs)) assert.deepEqual([input.required, input.type, input.default], [true, 'string', undefined]);
+  test('is manual or Release Rollout-called only, with exactly the four required string inputs', () => {
+    assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch', 'workflow_call']);
+    for (const trigger of ['workflow_dispatch', 'workflow_call']) {
+      const inputs = workflow.on[trigger].inputs;
+      assert.deepEqual(Object.keys(inputs).sort(), ['agent_image', 'app_image', 'source_revision', 'ui_image']);
+      for (const input of Object.values(inputs)) assert.deepEqual([input.required, input.type, input.default], [true, 'string', undefined]);
+    }
+    assert.equal(workflow.on.workflow_call.secrets, undefined, 'no secret is passed to the bundle');
   });
 
   test('refuses non-main or non-manual dispatch and malformed trusted SHA before any checkout', () => {
     const guard = steps[0];
     assert.equal(guard.uses, undefined);
-    assert.deepEqual(guard.env, { DISPATCH_EVENT: '${{ github.event_name }}', DISPATCH_REF: '${{ github.ref }}', TRUSTED_MAIN: '${{ github.sha }}' });
+    assert.deepEqual(guard.env, {
+      DISPATCH_EVENT: '${{ github.event_name }}', DISPATCH_REF: '${{ github.ref }}', TRUSTED_MAIN: '${{ github.sha }}',
+      WORKFLOW_REF: '${{ github.workflow_ref }}',
+    });
     const run = env => spawnSync('bash', ['-c', guard.run], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
-    const good = { DISPATCH_EVENT: 'workflow_dispatch', DISPATCH_REF: 'refs/heads/main', TRUSTED_MAIN: 'a'.repeat(40) };
+    const good = {
+      DISPATCH_EVENT: 'workflow_dispatch', DISPATCH_REF: 'refs/heads/main', TRUSTED_MAIN: 'a'.repeat(40),
+      WORKFLOW_REF: 'integry/propr/.github/workflows/preview-cli-bundle.yml@refs/heads/main',
+    };
+    const rollout = { ...good, DISPATCH_EVENT: 'workflow_run', WORKFLOW_REF: RELEASE_ROLLOUT_WORKFLOW_REF };
     assert.equal(run(good).status, 0);
+    assert.equal(run(rollout).status, 0, 'the automatic main Release Rollout run is accepted');
     for (const bad of [{ DISPATCH_EVENT: 'push' }, { DISPATCH_EVENT: 'pull_request' }, { DISPATCH_REF: 'refs/heads/feature' },
-      { DISPATCH_REF: 'refs/tags/v1' }, { TRUSTED_MAIN: 'A'.repeat(40) }, { TRUSTED_MAIN: 'a'.repeat(39) }, { TRUSTED_MAIN: '' }]) {
+      { DISPATCH_REF: 'refs/tags/v1' }, { TRUSTED_MAIN: 'A'.repeat(40) }, { TRUSTED_MAIN: 'a'.repeat(39) }, { TRUSTED_MAIN: '' },
+      { DISPATCH_EVENT: 'workflow_run' }]) {
       assert.notEqual(run({ ...good, ...bad }).status, 0, JSON.stringify(bad));
+    }
+    for (const bad of [{ WORKFLOW_REF: 'integry/propr/.github/workflows/release-rollout.yml@refs/heads/feature' },
+      { WORKFLOW_REF: 'fork/propr/.github/workflows/release-rollout.yml@refs/heads/main' }, { WORKFLOW_REF: '' },
+      { DISPATCH_EVENT: 'pull_request_target' }, { DISPATCH_REF: 'refs/heads/feature' }]) {
+      assert.notEqual(run({ ...rollout, ...bad }).status, 0, JSON.stringify(bad));
     }
   });
 
@@ -93,11 +110,11 @@ describe('Preview CLI Bundle workflow contract', () => {
     const gate = steps[stepIndex('trust')];
     assert.deepEqual(gate.env, {
       DISPATCH_EVENT: '${{ github.event_name }}', DISPATCH_REF: '${{ github.ref }}', DISPATCH_REPOSITORY: '${{ github.repository }}',
-      TRUSTED_MAIN: '${{ github.sha }}', SOURCE_REVISION: '${{ inputs.source_revision }}', APP_IMAGE: '${{ inputs.app_image }}',
+      WORKFLOW_REF: '${{ github.workflow_ref }}', TRUSTED_MAIN: '${{ github.sha }}', SOURCE_REVISION: '${{ inputs.source_revision }}', APP_IMAGE: '${{ inputs.app_image }}',
       UI_IMAGE: '${{ inputs.ui_image }}', AGENT_IMAGE: '${{ inputs.agent_image }}',
     });
     for (const flag of ['--source-revision "$SOURCE_REVISION"', '--app-image "$APP_IMAGE"', '--ui-image "$UI_IMAGE"', '--agent-image "$AGENT_IMAGE"',
-      '--trusted-main "$TRUSTED_MAIN"', '--output "$RUNNER_TEMP/propr-cli-preview-input.json"']) assert.ok(gate.run.includes(flag), flag);
+      '--trusted-main "$TRUSTED_MAIN"', '--workflow-ref "$WORKFLOW_REF"', '--output "$RUNNER_TEMP/propr-cli-preview-input.json"']) assert.ok(gate.run.includes(flag), flag);
     const build = steps[stepIndex('Verify runtime images, build, pack and smoke the preview CLI')];
     assert.equal(build['working-directory'], 'source');
     assert.equal(build.env, undefined, 'GITHUB_REF and GITHUB_SHA must reach the helper unchanged');
@@ -205,6 +222,14 @@ describe('preview CLI workflow trust helper', () => {
   test('validateDispatch and buildPreviewInput are fail-closed pure gates', () => {
     assert.equal(validateDispatch(dispatch('a'.repeat(40))), 'a'.repeat(40));
     assert.throws(() => validateDispatch({ ...dispatch('a'.repeat(40)), eventName: 'workflow_call' }));
+    // An automatic Release Rollout run is trusted only from its reviewed main copy.
+    const rollout = { ...dispatch('a'.repeat(40)), eventName: 'workflow_run', workflowRef: RELEASE_ROLLOUT_WORKFLOW_REF };
+    assert.equal(validateDispatch(rollout), 'a'.repeat(40));
+    for (const workflowRef of [undefined, '', 'integry/propr/.github/workflows/release-rollout.yml@refs/heads/feature',
+      'integry/propr/.github/workflows/preview-cli-bundle.yml@refs/heads/main']) {
+      assert.throws(() => validateDispatch({ ...rollout, workflowRef }), /Release Rollout/);
+    }
+    assert.throws(() => validateDispatch({ ...rollout, ref: 'refs/heads/feature' }));
     assert.throws(() => buildPreviewInput({ sourceRevision: 'a'.repeat(40), ...images('a'.repeat(40)), app: undefined }));
   });
 });
@@ -312,7 +337,7 @@ describe('preview CLI workflow output verification', () => {
     const ok = spawnSync(process.execPath, ['scripts/preview-cli-workflow.mjs', 'verify-output', '--root', good.root, '--input', good.input,
       '--trusted-main', trustedMain, '--github-output', out, '--summary', summary], { encoding: 'utf8', cwd: process.cwd() });
     assert.equal(ok.status, 0, ok.stderr);
-    assert.match(readFileSync(out, 'utf8'), new RegExp(`^version=${good.version.replaceAll('.', '\\.')}\nartifact_path=.+${good.version.replaceAll('.', '\\.')}\n$`));
+    assert.match(readFileSync(out, 'utf8'), new RegExp(`^version=${good.version.replaceAll('.', '\\.')}\nartifact_path=.+${good.version.replaceAll('.', '\\.')}\ntarball=propr-cli-${good.version.replaceAll('.', '\\.')}\\.tgz\ntarball_sha256=[0-9a-f]{64}\n$`));
     assert.ok(readFileSync(summary, 'utf8').startsWith('### Preview CLI bundle prepared (prepare-only)'));
   });
 });

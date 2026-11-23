@@ -31,6 +31,7 @@ import { buildCompletionComment } from './prCompletionComment.js';
 import { enabledPluginCommandHelp } from '../shared/pluginCommandHelp.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { buildCommitMessage } from './prCommentJobUtils.js';
+import { pendingChangePaths, pullRequestTitleFromTaskTitle } from './agentCommitMessage.js';
 import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
 import { selectedReviewFeedbackIds } from './reviewFindingSelector.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
@@ -138,7 +139,10 @@ async function commitAndPush(
     if (!state.worktreeInfo) throw new Error('Cannot commit PR comment changes without a worktree');
     // No summary chosen: the commit subject falls back to the request title.
     const changesSummary = state.claudeResult.summarySelection === 'none' ? '' : sanitizeAgentReport(state.claudeResult.summary || state.claudeResult.finalResult?.result || '');
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: context.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
+    const commitMessage = buildCommitMessage({
+        changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: context.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText,
+        title: pullRequestTitleFromTaskTitle(completionInputs.jobData?.title), paths: await pendingChangePaths(state.worktreeInfo.worktreePath),
+    });
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: context.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
     let reviewDigestSection = '';

@@ -424,6 +424,8 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 
 // Agent abstraction exports
 export { AgentRegistry, getAgentRegistry, type AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export { agentCliVersionWarnings, describeAgentCliVersionStates, isAwaitingWorkerImagePreparation, type AgentCliVersionState, type AgentCliVersionStatus } from './agents/agentCliVersionState.js';
+export { recordAgentRuntimeEvent, agentRuntimeEvent, type AgentRuntimeEvent } from './agents/agentRuntimeEvent.js';
 export {
     AGENT_IMAGE_PREPARATION_QUEUE_NAME,
     agentImagePreparationJobId,
@@ -446,6 +448,7 @@ export * from './goalExports.js';
 export * from './agents/syntheticRouting.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason, taskTerminalReasonForAgentTermination } from './agents/termination.js';
 export { applyRunSummarySelection, selectRunSummary, buildSummaryCandidates, NO_RUN_SUMMARY_TEXT } from './agents/runSummarySelection.js';
+export { generateCommitSubject, buildCommitSubjectPrompt } from './agents/commitSubjectGeneration.js';
 export { AgentActivityWatchdog, AGENT_WATCHDOG_MESSAGE_PREFIX, describeAgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export type { AgentWatchdogRule, AgentWatchdogSettings, AgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export {

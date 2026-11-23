@@ -2,12 +2,13 @@ import type { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 import { pullRequestBodyKey } from './pullRequestBodyLock.js';
 import { extractPullRequestStatusBlock, sameRenderedStatus, STATUS_TIMESTAMP_PATTERN, stripPullRequestStatusBlock } from './pullRequestStatusBlock.js';
+import { isLowRateBudget, logSkippedForRateBudget, lowBudgetRetryMs, type RateBudget } from './pullRequestStatusRateBudget.js';
 
 /**
  * Pacing of status block edits. Every completed check changes the counts the
  * block shows, so a CI run of forty checks would edit the body forty times
  * within minutes. An edit that only moves check progress (counts, failed or
- * cancelled check names) waits until COALESCE_MS have passed since the last
+ * cancelled check names, runs a CI suspension cancelled) waits until COALESCE_MS have passed since the last
  * status edit of the pull request, and then writes the counts of that moment;
  * any other change (a new state, activity, reason, score or cycle) is written
  * at once. The last edit time is kept in this process and, when Redis is
@@ -34,7 +35,7 @@ function redisKey(key: string): string {
 }
 
 /** The parts of a status line that only report check progress, which a burst of check completions changes edit by edit. */
-const CHECK_PROGRESS_PARTS = / · (?:checks: [^·]*|failed: [^·]*|cancelled: [^·]*)(?= · |$)/g;
+const CHECK_PROGRESS_PARTS = / · (?:checks: [^·]*|failed: [^·]*|cancelled: [^·]*|runs cancelled by ProPR: [^·]*)(?= · |$)/g;
 
 function withoutCheckProgress(block: string): string {
     return block.replace(STATUS_TIMESTAMP_PATTERN, '').replace(/\r\n/g, '\n').split('\n').map(line => line.replace(CHECK_PROGRESS_PARTS, '')).join('\n');
@@ -79,15 +80,22 @@ export async function statusEditWaitMs(
  * Whether the status sync writes `next` over `current` now. Bodies that say
  * the same status are not written. A change of check progress alone, without
  * a rename in the same write, waits for the coalescing window: the update
- * runs again after `paceInMs`. Any other change is written now.
+ * runs again after `paceInMs`. While the installation's rate limit budget is
+ * low (pullRequestStatusRateBudget) such a change is skipped and read again
+ * once the budget resets. Any other change is written now.
  */
 export async function decideStatusBodyEdit(
     redis: PullRequestStatusEditPacingRedis | null, target: { repository: string; prNumber: number },
-    edit: { current: string; next: string; renames: boolean }, now: number,
+    edit: { current: string; next: string; renames: boolean; budget?: RateBudget | null }, now: number,
 ): Promise<{ bodyChanged: boolean; paceInMs: number | null }> {
     const { current, next } = edit;
     if (next === current || sameRenderedStatus(next, current)) return { bodyChanged: false, paceInMs: null };
     if (edit.renames || !onlyCheckProgressChanged(current, next)) return { bodyChanged: true, paceInMs: null };
+    if (isLowRateBudget(edit.budget)) {
+        const retryInMs = lowBudgetRetryMs(edit.budget, now);
+        logSkippedForRateBudget(target, edit.budget, retryInMs);
+        return { bodyChanged: false, paceInMs: retryInMs };
+    }
     const wait = await statusEditWaitMs(redis, target.repository, target.prNumber, now);
     return wait > 0 ? { bodyChanged: false, paceInMs: wait } : { bodyChanged: true, paceInMs: null };
 }

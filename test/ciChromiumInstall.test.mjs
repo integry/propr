@@ -25,13 +25,14 @@ const stub = (root, name, body) => {
     chmodSync(join(root, name), 0o755);
 };
 
-// Runs the helper with every privileged or slow command stubbed. Each
-// `timeout` call (one per install attempt) consumes the next scripted status.
+// Runs the helper with privileged and slow commands stubbed. Dependency
+// attempts consume the scripted statuses; download and launch have separate
+// statuses so the apt-specific tests can exercise the fallback directly.
 // `sources` and `mirrors` seed the scratch /etc/apt: `mirrors` maps a list file
 // name to its content, and `{mirrors}` in `sources` names the scratch directory.
 function runInstall({
     statuses = [0], uid = 1000, sudoStatus = 0, mirrorWriteStatus = 0, environment = 'github-hosted',
-    sources = {}, mirrors = {},
+    sources = {}, mirrors = {}, downloadStatus = 0, launchStatuses = [1, 0],
 } = {}) {
     // `null` leaves RUNNER_ENVIRONMENT unset.
     const root = freshDirectory('install');
@@ -44,11 +45,20 @@ function runInstall({
     for (const [name, content] of Object.entries(mirrors)) writeFileSync(join(etc, name), content);
     const log = join(root, 'calls');
     writeFileSync(join(root, 'statuses'), `${statuses.join('\n')}\n`);
+    const launches = join(root, 'launches');
+    writeFileSync(launches, `${launchStatuses.join('\n')}\n`);
     stub(root, 'id', `echo ${uid}`);
     stub(root, 'sleep', ':');
     stub(root, 'npx', `echo "npx $*" >> '${log}'`);
     stub(root, 'timeout', [
+        'if [[ "$3" == node ]]; then',
+        `  echo "timeout $1 $2 $3" >> '${log}'`,
+        `  status=$(head -n 1 '${launches}')`,
+        `  sed -i 1d '${launches}'`,
+        '  exit "$status"',
+        'fi',
         `echo "timeout $*" >> '${log}'`,
+        `if [[ "$3 $4 $5 $6" == 'npx playwright install chromium' ]]; then exit ${downloadStatus}; fi`,
         `status=$(head -n 1 '${join(root, 'statuses')}')`,
         `sed -i 1d '${join(root, 'statuses')}'`,
         'exit "$status"',
@@ -83,19 +93,42 @@ function runInstall({
     const confPath = join(etc, 'apt.conf.d', '99propr-ci-network-timeouts');
     const aptConf = existsSync(confPath) ? readFileSync(confPath, 'utf8') : null;
     const mirrorList = (name) => readFileSync(join(etc, name), 'utf8');
-    const attempts = calls.filter(call => call.startsWith('timeout --kill-after'));
+    const attempts = calls.filter(call => call.endsWith('npx playwright install-deps chromium'));
     return { ...result, stdout: relative(result.stdout), calls, aptConf, attempts, mirrorList };
 }
 
-const ATTEMPT = 'timeout --kill-after=15s 3m npx playwright install --with-deps chromium';
+const DOWNLOAD = 'timeout --kill-after=15s 3m npx playwright install chromium';
+const LAUNCH = 'timeout --kill-after=5s 30s node';
+const ATTEMPT = 'timeout --kill-after=15s 3m npx playwright install-deps chromium';
 
 describe('hosted Chromium install', () => {
+    test('uses the pinned browser and existing libraries without touching apt when Chromium launches', () => {
+        const ready = runInstall({ launchStatuses: [0], sudoStatus: 1 });
+        assert.equal(ready.status, 0, ready.stderr);
+        assert.deepEqual(ready.calls, [DOWNLOAD, LAUNCH]);
+        assert.equal(ready.aptConf, null);
+    });
+
+    test('fails the step if the download fails or Chromium still cannot launch after apt', () => {
+        const downloadFailed = runInstall({ downloadStatus: 124 });
+        assert.equal(downloadFailed.status, 124);
+        assert.deepEqual(downloadFailed.calls, [DOWNLOAD]);
+        assert.equal(downloadFailed.aptConf, null);
+
+        const stillBroken = runInstall({ launchStatuses: [1, 42] });
+        assert.equal(stillBroken.status, 42);
+        assert.deepEqual(stillBroken.calls.slice(-2), [ATTEMPT, LAUNCH]);
+    });
+
     test('bounds every apt fetch before Playwright installs its own dependency list', () => {
         const clean = runInstall();
         assert.equal(clean.status, 0, clean.stderr);
         assert.deepEqual(clean.calls, [
+            DOWNLOAD,
+            LAUNCH,
             'sudo -n -- tee /etc/apt/apt.conf.d/99propr-ci-network-timeouts',
             ATTEMPT,
+            LAUNCH,
         ]);
         for (const option of ['Acquire::Retries "3";', 'Acquire::http::Timeout "30";', 'Acquire::https::Timeout "30";']) {
             assert.ok(clean.aptConf.split('\n').includes(option), option);
@@ -106,11 +139,13 @@ describe('hosted Chromium install', () => {
         // Already root (a container job): no sudo.
         const asRoot = runInstall({ uid: 0 });
         assert.equal(asRoot.status, 0, asRoot.stderr);
-        assert.deepEqual(asRoot.calls, ['tee /etc/apt/apt.conf.d/99propr-ci-network-timeouts', ATTEMPT]);
+        assert.deepEqual(asRoot.calls, [
+            DOWNLOAD, LAUNCH, 'tee /etc/apt/apt.conf.d/99propr-ci-network-timeouts', ATTEMPT, LAUNCH,
+        ]);
         assert.match(asRoot.aptConf, /Acquire::http::Timeout "30";/);
     });
 
-    test('retries a timed-out install up to three times after clearing leftover apt processes', () => {
+    test('allows three dependency install attempts and clears leftover apt processes before retries', () => {
         for (const timedOut of [124, 137]) {
             const recovered = runInstall({ statuses: [timedOut, 0] });
             assert.equal(recovered.status, 0, `retry recovers after exit ${timedOut}`);
@@ -129,6 +164,7 @@ describe('hosted Chromium install', () => {
             const third = runInstall({ statuses: [timedOut, timedOut, 0] });
             assert.equal(third.status, 0, `third attempt recovers after exit ${timedOut}`);
             assert.deepEqual(third.attempts, [ATTEMPT, ATTEMPT, ATTEMPT]);
+            assert.deepEqual(third.calls.slice(-2), [ATTEMPT, LAUNCH]);
             assert.match(third.stdout, /::warning::Chromium install attempt 2 timed out/);
             assert.equal(third.calls.filter(call => call.endsWith('dpkg --configure -a')).length, 2);
 
@@ -339,7 +375,7 @@ describe('hosted Chromium install', () => {
             const failed = runInstall({ statuses: [status, 0] });
             assert.equal(failed.status, status);
             assert.deepEqual(failed.attempts, [ATTEMPT]);
-            assert.doesNotMatch(failed.stdout, /::warning::/);
+            assert.doesNotMatch(failed.stdout, /Chromium install attempt/);
         }
         // Without root, the bounded apt configuration cannot be written and
         // the install does not go ahead unbounded.
@@ -386,7 +422,8 @@ describe('Chromium install steps in workflows', () => {
                 installs.push(`${file}: ${name}`);
                 const timeout = step.match(/\n\s+timeout-minutes: (\d+)\n/);
                 assert.ok(timeout, `${file}: ${name} sets a step timeout`);
-                assert.ok(Number(timeout[1]) <= 15, `${file}: ${name} times out within 15 minutes`);
+                const maxMinutes = file === 'pr-build-check.yml' && name === 'Install Chromium for PWA Smoke Test' ? 17 : 15;
+                assert.ok(Number(timeout[1]) <= maxMinutes, `${file}: ${name} times out within ${maxMinutes} minutes`);
             }
         }
         for (const expected of [
@@ -399,13 +436,16 @@ describe('Chromium install steps in workflows', () => {
         }
     });
 
-    test('the hosted smoke-test install keeps its attempts inside the step timeout', () => {
+    test('the hosted smoke-test install keeps its download, probes and fallback inside the step timeout', () => {
         const step = workflowSteps(readFileSync(join(WORKFLOWS, 'pr-build-check.yml'), 'utf8'))
             .find(candidate => candidate.includes('- name: Install Chromium for PWA Smoke Test'));
         const minutes = Number(step.match(/timeout-minutes: (\d+)/)[1]);
-        // Three 3m attempts with a 15s kill grace, plus at most 5s + 60s
-        // cleanup between consecutive attempts.
-        assert.ok(3 * (3 * 60 + 15) + 2 * 65 < minutes * 60, 'every attempt fits in the step timeout');
+        const download = 3 * 60 + 15;
+        const aptAttempts = 3 * (3 * 60 + 15);
+        const launchProbes = 2 * (30 + 5);
+        const aptCleanup = 2 * (5 + 60);
+        assert.ok(download + aptAttempts + launchProbes + aptCleanup < minutes * 60,
+            'the full hosted installation fits in the step timeout');
     });
 
     test('the docs-validation setup bounds its Chromium download', () => {

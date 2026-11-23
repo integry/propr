@@ -10,6 +10,7 @@ import { resolveConfiguredModel } from '../config/configuredModel.js';
 import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';
 import type { AgentExecutionResult } from './types.js';
+import { generateCommitSubject } from './commitSubjectGeneration.js';
 
 export const NO_RUN_SUMMARY_TEXT = 'The agent did not provide a summary.';
 export const MAX_SUMMARY_CANDIDATES = 6;
@@ -171,6 +172,12 @@ export interface RunSummaryContext {
     correlationId?: string;
     issueRef: { number: number; repoOwner: string; repoName: string };
     prNumber?: number;
+    /**
+     * Also proposes the commit subject from the published summary, with a
+     * separate small call (`commitSubject` on the result). `title` is the issue
+     * or PR title, given to the model as context only.
+     */
+    commitSubject?: { title?: string | null };
 }
 
 interface ApplyRunSummaryDeps {
@@ -198,6 +205,17 @@ export async function applyRunSummarySelection(
     result: AgentExecutionResult,
     context: RunSummaryContext,
     deps: ApplyRunSummaryDeps = {},
+): Promise<AgentExecutionResult> {
+    const published = await selectPublishedSummary(result, context, deps);
+    if (!context.commitSubject || !published.success || published.summarySelection === 'none') return published;
+    const commitSubject = await generateCommitSubject(published.summary, { ...context, title: context.commitSubject.title }, deps);
+    return commitSubject ? { ...published, commitSubject } : published;
+}
+
+async function selectPublishedSummary(
+    result: AgentExecutionResult,
+    context: RunSummaryContext,
+    deps: ApplyRunSummaryDeps,
 ): Promise<AgentExecutionResult> {
     if (!result.success || !result.summary?.trim()) return result;
     const candidates = buildSummaryCandidates(result.conversationLog, result.summary);

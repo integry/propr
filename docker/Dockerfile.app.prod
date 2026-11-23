@@ -49,6 +49,9 @@ COPY packages/client/src ./packages/client/src
 # Compile-time input only: scripts/preview-cli-workflow.mjs imports the CLI
 # preview packager. The CLI is not installed or shipped as a workspace here.
 COPY packages/cli/scripts/preview-package.mjs ./packages/cli/scripts/
+# Compile-time input only: scripts/release-rollout-plan.mjs imports the desktop
+# preview tag naming. The desktop app is not built or shipped here.
+COPY apps/desktop/scripts/desktop-preview-identity.mjs ./apps/desktop/scripts/
 
 # Record the exact release and source revision alongside the Markdown that is
 # shipped. sidebars.ts is parsed as text and is never executed by this step.

@@ -17,6 +17,41 @@ on:
         description: Full lowercase commit SHA already reachable from main
         required: true
         type: string
+  # Release Rollout (release-rollout.yml) calls publish-agent, then publish, for
+  # the release tag commit. The jobs, their environment and its approval are the
+  # same as for a manual dispatch; only the two Docker Hub credentials the
+  # protected publish jobs already read are passed through.
+  workflow_call:
+    inputs:
+      operation:
+        description: prepare, publish, prepare-agent, or publish-agent (validated by the identity job)
+        required: true
+        type: string
+      source_revision:
+        description: Full lowercase commit SHA already reachable from main
+        required: true
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+    # Only digests leave the protected publish jobs. A full image reference
+    # starts with the Docker Hub namespace, which is also the value of the
+    # DOCKERHUB_USERNAME secret, and GitHub Actions drops any job output that
+    # contains a secret value. The caller rebuilds the reference from the
+    # public namespace, the source revision and the digest, and verifies it
+    # against the registry.
+    outputs:
+      runtime_app_digest:
+        description: sha256:<digest> of the two-architecture app manifest at the source SHA tag (publish only)
+        value: ${{ jobs.publish.outputs.runtime_app_digest }}
+      runtime_ui_digest:
+        description: sha256:<digest> of the two-architecture UI manifest at the source SHA tag (publish only)
+        value: ${{ jobs.publish.outputs.runtime_ui_digest }}
+      runtime_agent_digest:
+        description: sha256:<digest> of the linux/amd64 managed agent at the source SHA tag (publish-agent only)
+        value: ${{ jobs.publish-agent.outputs.runtime_agent_digest }}
 
 permissions:
   contents: read
@@ -216,8 +251,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      runtime_app_image: ${{ steps.publish.outputs.runtime_app_image }}
-      runtime_ui_image: ${{ steps.publish.outputs.runtime_ui_image }}
+      runtime_app_digest: ${{ steps.publish.outputs.runtime_app_digest }}
+      runtime_ui_digest: ${{ steps.publish.outputs.runtime_ui_digest }}
     steps:
       - name: Require the configured protected publication environment
         env:
@@ -430,7 +465,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      runtime_agent_image: ${{ steps.publish.outputs.runtime_agent_image }}
+      runtime_agent_digest: ${{ steps.publish.outputs.runtime_agent_digest }}
     steps:
       - name: Require the configured protected publication environment
         env:
