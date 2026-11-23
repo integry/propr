@@ -7,6 +7,7 @@ let workerStatus = 'completed';
 let enqueueError: Error | undefined;
 let statusError: Error | undefined;
 let statusAfterFetch: string | undefined;
+let fetchError: Error | undefined;
 let statusBeforeReject: string | undefined;
 let payloads: { fullReindex: boolean; baseBranch: string }[] = [];
 let expectedBranch = 'release';
@@ -57,6 +58,7 @@ mock.module('@propr/core', {
     getRepoUrl: () => 'https://example.com/owner/repo',
     getAuthenticatedOctokit: async () => ({ auth: async () => ({ token: 'fixture' }) }),
     fetchLatestChanges: async () => {
+      if (fetchError) throw fetchError;
       if (statusAfterFetch) status = statusAfterFetch;
       return { success: true };
     },
@@ -80,6 +82,7 @@ beforeEach(() => {
   enqueueError = undefined;
   statusError = undefined;
   statusAfterFetch = undefined;
+  fetchError = undefined;
   statusBeforeReject = undefined;
   payloads = [];
   expectedBranch = 'release';
@@ -151,4 +154,13 @@ test('status persistence failure prevents enqueueing', async () => {
   statusError = new Error('Database unavailable');
   await assert.rejects(queueIndexingJob('owner/repo', false, 'release'), statusError);
   assert.equal(status, 'completed');
+});
+
+
+test('a terminal repository repair error stops preparation before indexing is queued', async () => {
+  fetchError = Object.assign(new Error('Repository object repair required'), { name: 'RepositoryRepairRequiredError' });
+  const result = await queueIndexingJob('owner/repo', false, 'release');
+  assert.deepEqual(result, { success: false, error: fetchError.message });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(payloads, []);
 });

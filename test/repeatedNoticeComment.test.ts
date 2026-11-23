@@ -349,6 +349,7 @@ test('repository repair failures group notices and never promise automatic retry
     }
     assert.equal(failures, 2);
     assert.equal(thread.comments.length, 1);
+    assert.match(thread.comments[0].body, /\*\*Error Category:\*\* repository repair required/);
     assert.match(thread.comments[0].body, /Automatic retries stopped/);
     assert.doesNotMatch(thread.comments[0].body, /will automatically retry/);
 });

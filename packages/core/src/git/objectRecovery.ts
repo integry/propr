@@ -1,91 +1,191 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { UnrecoverableError } from 'bullmq';
 import type { SimpleGit } from 'simple-git';
 import { createHooklessGit } from './hooklessGit.js';
 import { configureGitRemoteAuthentication, redactAuthenticatedGitUrl } from './repoBranching.js';
-import { withRepositoryPreparation } from './repositoryPreparation.js';
+import { OBJECT_REPAIR_MARKER, RepositoryRepairRequiredError, withRepositoryPreparation } from './repositoryPreparation.js';
 import logger from '../utils/logger.js';
 
-export class RepositoryRepairRequiredError extends UnrecoverableError {
-    constructor(common: string, detail: string) {
-        super(`Repository object repair required at ${common}: ${detail}. Local branches and worktrees were retained. `
-            + 'Repair the missing objects, or remove propr-object-repair-required.json after fixing remote access to allow one new repair attempt, then retry the task.');
-        this.name = 'RepositoryRepairRequiredError';
-    }
-}
+export { RepositoryRepairRequiredError } from './repositoryPreparation.js';
+
+export const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
+const DONOR_PREFIX = 'propr-object-recovery-';
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** Walk trees and blobs too: resolving a commit alone does not prove it can be checked out. */
 async function verifyObjects(git: SimpleGit, revision: string): Promise<void> {
-    await git.raw(['rev-list', '--objects', '--no-object-names', '--missing=error', revision, '--']);
+    await git.raw(['rev-list', '--objects', '--quiet', '--missing=error', revision, '--']);
 }
 
 function missingObject(error: unknown): boolean {
-    return /unable to read tree|bad tree object|missing (?:blob|tree|commit)|could not read [0-9a-f]|bad object [0-9a-f]|unable to read [0-9a-f]/i.test(String((error as Error)?.message ?? error));
+    return /unable to read tree|bad tree object|missing (?:blob|tree|commit)|could not read [0-9a-f]{7,}|bad object [0-9a-f]{7,}|unable to read [0-9a-f]{7,}/i.test(String((error as Error)?.message ?? error));
 }
 
-/**
- * Pin and verify before creating a branch. Recovery only adds immutable objects:
- * no reset, prune, ref import, alternates, or replacement of the live clone.
- * A durable marker bounds recovery across retries and process restarts.
- */
-export async function ensureWorktreeObjects(git: SimpleGit, startPoint: string): Promise<string> {
-    return withRepositoryPreparation(git, async () => {
-        const common = (await git.raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
-        const marker = path.join(common, 'propr-object-repair-required.json');
-        const revision = (await git.raw(['rev-parse', '--verify', '--end-of-options', startPoint])).trim();
-        if (!/^[0-9a-f]{40,64}$/.test(revision)) throw new Error('Invalid worktree starting revision');
-        try {
-            await verifyObjects(git, revision);
-            return revision;
-        } catch (error) {
-            if (!missingObject(error)) throw error;
+async function hasMissingObjects(git: SimpleGit, revision: string): Promise<boolean> {
+    try {
+        await verifyObjects(git, revision);
+        return false;
+    } catch (error) {
+        if (!missingObject(error)) throw error;
+        return true;
+    }
+}
+
+async function removeStaleDonors(common: string): Promise<void> {
+    const entries = await fs.readdir(common, { withFileTypes: true });
+    for (const entry of entries) {
+        if (entry.isDirectory() && /^propr-object-recovery-[a-zA-Z0-9]{6}$/.test(entry.name)) {
+            await fs.rm(path.join(common, entry.name), { recursive: true, force: true });
         }
-        try {
-            await fs.writeFile(marker, JSON.stringify({ revision, startedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+}
+
+async function readMarker(marker: string): Promise<string | undefined> {
+    return fs.readFile(marker, 'utf8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return undefined;
+    });
+}
+
+async function unlinkVerifiedMarker(marker: string, contents: string): Promise<void> {
+    // An operator can intervene outside the worker gate. Recheck immediately
+    // before removal so an observed replacement is never cleared with old evidence.
+    if (await readMarker(marker) === contents) {
+        await fs.unlink(marker).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+        });
+    }
+}
+
+/** The gate is held. Only the incident recorded in the marker can clear it. */
+async function clearResolvedMarker(git: SimpleGit, common: string, marker: string, revision: string, missing: boolean): Promise<void> {
+    const contents = await readMarker(marker);
+    if (contents === undefined) return;
+    let recorded: unknown;
+    try { recorded = JSON.parse(contents)?.revision; }
+    catch { return; } // Retain unreadable incident data for an operator.
+    if (typeof recorded !== 'string' || !OBJECT_ID.test(recorded)) return;
+    if (recorded === revision ? missing : await hasMissingObjects(git, recorded)) return;
+    await removeStaleDonors(common);
+    await unlinkVerifiedMarker(marker, contents);
+}
+
+async function donorDepth(git: SimpleGit, revision: string): Promise<string[]> {
+    if (!GIT_SHALLOW_CLONE_DEPTH || (await git.raw(['rev-parse', '--is-shallow-repository'])).trim() !== 'true') return [];
+    try {
+        // A cached tip may have advanced since cloning. The reachable commit
+        // count bounds the longest path to its shallow boundaries, even at merges.
+        const count = Number((await git.raw(['rev-list', '--count', revision, '--'])).trim());
+        if (count > 0) return [`--depth=${Math.max(count, GIT_SHALLOW_CLONE_DEPTH)}`];
+    } catch (error) {
+        if (!missingObject(error)) throw error;
+        // A missing commit can hide the distance to a boundary.
+    }
+    return [];
+}
+
+/** Recover only after a closure check has proved damage while holding the gate. */
+async function repairIfMissing(git: SimpleGit, common: string, revision: string, token?: string): Promise<boolean> {
+    const missing = await hasMissingObjects(git, revision);
+    const marker = path.join(common, OBJECT_REPAIR_MARKER);
+    try {
+        await clearResolvedMarker(git, common, marker, revision, missing);
+    } catch (error) {
+        throw new RepositoryRepairRequiredError(common, `could not verify or clear the recorded repair; inspect cache permissions or storage (${(error as Error).message})`);
+    }
+    if (!missing) return false;
+    const contents = JSON.stringify({ revision, startedAt: new Date().toISOString() });
+    try {
+        await fs.writeFile(marker, contents, { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
             throw new RepositoryRepairRequiredError(common, 'a previous automatic repair failed or was interrupted');
         }
-        let temporary: string | undefined;
-        try {
-            logger.warn({ common, revision }, 'Missing Git objects; attempting one additive repair');
-            // Same filesystem as the destination permits atomic hard-link publication.
-            temporary = await fs.mkdtemp(path.join(common, 'propr-object-recovery-'));
-            const donor = createHooklessGit(temporary);
-            await donor.init(true);
-            const remote = (await git.getConfig('remote.origin.url')).value;
-            if (!remote) throw new Error('origin has no URL');
-            await configureGitRemoteAuthentication(donor, undefined, remote);
-            // A fresh object database prevents fetch negotiation from assuming the
-            // damaged clone already has every object reachable from its commits.
-            await donor.raw(['fetch', '--no-tags', '--no-recurse-submodules', remote, `${revision}:refs/heads/recovery`]);
-            await verifyObjects(donor, revision);
-            await donor.raw(['fsck', '--strict', '--no-dangling']);
-            await donor.raw(['repack', '-ad']);
-            const source = path.join(temporary, 'objects', 'pack');
-            const destination = path.join(common, 'objects', 'pack');
-            await fs.mkdir(destination, { recursive: true });
-            // Pack first, index last: readers never discover a partial pack.
-            const files = (await fs.readdir(source)).filter(file => /^pack-[0-9a-f]+\.(pack|idx)$/.test(file))
-                .sort((a, b) => Number(a.endsWith('.idx')) - Number(b.endsWith('.idx')));
-            for (const file of files) {
-                try { await fs.link(path.join(source, file), path.join(destination, file)); }
-                catch (error) {
-                    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-                    // Never overwrite an existing pack; final verification must pass.
-                }
+        throw new RepositoryRepairRequiredError(common,
+            `the repair marker could not be recorded; inspect cache permissions or storage (${(error as Error).message})`,
+            'Restore write access to the repository cache, then retry the task.');
+    }
+    let temporary: string | undefined;
+    try {
+        logger.warn({ common, revision }, 'Missing Git objects; attempting one additive repair');
+        await removeStaleDonors(common);
+        // Same filesystem as the destination permits atomic hard-link publication.
+        temporary = await fs.mkdtemp(path.join(common, DONOR_PREFIX));
+        const donor = createHooklessGit(temporary);
+        await donor.init(true);
+        const remote = (await git.getConfig('remote.origin.url')).value;
+        if (!remote) throw new Error('origin has no URL');
+        const fetchUrl = remote.replace(/^(https:\/\/)[^/]*@/i, '$1');
+        await configureGitRemoteAuthentication(donor, token, fetchUrl);
+        // A fresh object database prevents negotiation using the damaged clone.
+        const depth = await donorDepth(git, revision);
+        await donor.raw(['fetch', '--no-tags', '--no-recurse-submodules', ...depth, '--', fetchUrl, `${revision}:refs/heads/recovery`]);
+        // The fetch checks the pack, and this walks its closure without enforcing
+        // modern fsck formatting rules on historical objects.
+        await verifyObjects(donor, revision);
+        await donor.raw(['repack', '-ad']);
+        const source = path.join(temporary, 'objects', 'pack');
+        const destination = path.join(common, 'objects', 'pack');
+        await fs.mkdir(destination, { recursive: true });
+        // Pack first, index last: readers never discover a partial pack.
+        const files = (await fs.readdir(source)).filter(file => /^pack-[0-9a-f]+\.(pack|idx)$/.test(file))
+            .sort((a, b) => Number(a.endsWith('.idx')) - Number(b.endsWith('.idx')));
+        for (const file of files) {
+            try { await fs.link(path.join(source, file), path.join(destination, file)); }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+                // Never overwrite an existing pack; final verification must pass.
             }
-            await verifyObjects(git, revision);
-            await fs.unlink(marker);
-            logger.info({ common, revision }, 'Restored Git objects; worktree preparation can continue');
-            return revision;
+        }
+        await verifyObjects(git, revision);
+        await fs.rm(temporary, { recursive: true, force: true });
+        temporary = undefined;
+        await unlinkVerifiedMarker(marker, contents);
+        logger.info({ common, revision }, 'Restored Git objects; worktree preparation can continue');
+        return true;
+    } catch (error) {
+        throw new RepositoryRepairRequiredError(common, redactAuthenticatedGitUrl((error as Error).message));
+    } finally {
+        if (temporary) await fs.rm(temporary, { recursive: true, force: true }).catch(() => {
+            logger.warn({ temporary }, 'Could not remove the temporary object recovery repository');
+        });
+    }
+}
+
+/** Pin and verify before creating a branch. Recovery only adds immutable objects. */
+export async function ensureWorktreeObjects(git: SimpleGit, startPoint: string): Promise<string> {
+    return withRepositoryPreparation(git, async common => {
+        const revision = OBJECT_ID.test(startPoint)
+            ? startPoint
+            : (await git.raw(['rev-parse', '--verify', '--end-of-options', startPoint])).trim();
+        if (!OBJECT_ID.test(revision)) throw new Error('Invalid worktree starting revision');
+        await repairIfMissing(git, common, revision);
+        return revision;
+    });
+}
+
+/** Retry an interrupted ordinary fetch once, after proving and repairing cached damage. */
+export async function fetchWithObjectRecovery<T>(
+    git: SimpleGit, fetch: () => Promise<T>, branch?: string, token?: string,
+): Promise<T> {
+    return withRepositoryPreparation(git, async common => {
+        try {
+            return await fetch();
         } catch (error) {
-            throw new RepositoryRepairRequiredError(common, redactAuthenticatedGitUrl((error as Error).message));
-        } finally {
-            if (temporary) await fs.rm(temporary, { recursive: true, force: true }).catch(() => {
-                logger.warn({ temporary }, 'Could not remove the temporary object recovery repository');
-            });
+            const missingFetchBase = /failed to resolve \d+ delta|unresolved deltas left after unpacking|did not send all necessary objects|bad object refs\/|invalid object [0-9a-f]{7,}/i;
+            if (!missingObject(error) && !missingFetchBase.test((error as Error).message)) throw error;
+
+            // Even a single-branch fetch can negotiate from other cached refs.
+            // Read object IDs without peeling so a ref with a missing tip is visible.
+            const preferred = branch
+                ? (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/remotes/origin/${branch}`])).trim()
+                : '';
+            if (OBJECT_ID.test(preferred) && await repairIfMissing(git, common, preferred, token)) return fetch();
+            const refs = await git.raw(['for-each-ref', '--format=%(objectname)', 'refs/remotes/origin', 'refs/heads', 'refs/tags']);
+            for (const revision of new Set(refs.split('\n'))) {
+                if (revision !== preferred && OBJECT_ID.test(revision) && await repairIfMissing(git, common, revision, token)) return fetch();
+            }
+            throw error;
         }
     });
 }

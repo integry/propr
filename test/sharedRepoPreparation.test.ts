@@ -358,6 +358,7 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
     await git(clonePath, ['worktree', 'add', '--no-track', '-b', 'task-ro', worktreePath, 'origin/main']);
     await writeFile(path.join(worktreePath, 'in-progress.txt'), 'uncommitted agent work\n');
     const configBefore = await readLocalConfig(clonePath);
+    await mkdir(path.join(clonePath, '.git', 'propr-preparation'));
     const restore = await denyGitDirWrites(clonePath);
     const started = Date.now();
     try {
@@ -369,14 +370,7 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
             (error: NodeJS.ErrnoException) => {
                 assert.notStrictEqual(error.name, 'GitLockContentionError');
                 assert.doesNotMatch(error.message, /stayed locked by another Git process/);
-                // A root test process can create the preparation gate even though
-                // its unprivileged Git subprocess cannot write the config.
-                if (error.code === 'EACCES') {
-                    assert.strictEqual(error.syscall, 'mkdir');
-                    assert.strictEqual(error.path, path.join(clonePath, '.git', 'propr-preparation'));
-                } else {
-                    assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
-                }
+                assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
                 assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.ok(!error.message.includes(TOKEN));
                 return true;
@@ -467,4 +461,58 @@ test('concurrent pushes from worktrees do not contend on shared config', async (
         assert.strictEqual(remoteRef.split(/\s+/)[0], await git(worktreePath, ['rev-parse', 'HEAD']));
     }
     assert.ok(!(await readLocalConfig(clonePath)).includes(TOKEN));
+});
+
+for (const entry of ['refresh', 'index-branch', 'index-all'] as const) {
+    test(`${entry} repairs missing local objects before retrying an interrupted fetch`, async () => {
+        const owner = `${OWNER}-thin-${entry}`;
+        const repoUrl = REPO_URL.replace(OWNER, owner);
+        const clone = await createSharedClone(`thin-${entry}`, repoUrl);
+        const writer = path.join(rootDir, `thin-writer-${entry}`);
+        const branch = `thin-${entry}`;
+        await git(rootDir, ['clone', `file://${remotePath}`, writer]);
+        await git(writer, ['checkout', '-b', branch]);
+        const before = Array.from({ length: 6000 }, (_, index) => `line ${index} for delta compression in ${entry}\n`).join('');
+        await writeFile(path.join(writer, 'delta.txt'), before);
+        await git(writer, ['add', 'delta.txt']);
+        await git(writer, ['commit', '-m', 'delta base']);
+        await git(writer, ['push', 'origin', branch]);
+        await git(clone, ['fetch', 'origin']);
+        const blob = await git(clone, ['rev-parse', `origin/${branch}:delta.txt`]);
+
+        await writeFile(path.join(writer, 'delta.txt'), before.replace('line 2000', 'edited 2000'));
+        await git(writer, ['commit', '-am', 'small edit']);
+        await git(writer, ['push', 'origin', branch]);
+        await rm(path.join(clone, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+        await assert.rejects(git(clone, ['fetch', 'origin', '--prune']), /failed to resolve \d+ delta|unresolved deltas left after unpacking/);
+
+        if (entry === 'refresh') {
+            await repoManager.ensureRepoCloned({ repoUrl, owner, repoName: REPO, baseBranch: branch, authToken: TOKEN });
+        } else {
+            const fetchLatest = () => repoManager.fetchLatestChanges({
+                owner, repoName: REPO, authToken: TOKEN, branch: entry === 'index-branch' ? branch : undefined,
+            });
+            if (entry === 'index-branch') {
+                const marker = path.join(clone, '.git', 'propr-object-repair-required.json');
+                await writeFile(marker, JSON.stringify({ revision: await git(clone, ['rev-parse', `origin/${branch}`]) }));
+                await assert.rejects(fetchLatest(), { name: 'RepositoryRepairRequiredError' });
+                await rm(marker);
+            }
+            const result = await fetchLatest();
+            assert.ok(result.success, result.error);
+        }
+        assert.strictEqual(await git(clone, ['rev-parse', `origin/${branch}`]), await git(writer, ['rev-parse', 'HEAD']));
+    });
+}
+
+test('failure to resolve the common Git directory is classified as a retained refresh failure', async () => {
+    const owner = `${OWNER}-invalid-gitdir`;
+    const repoUrl = REPO_URL.replace(OWNER, owner);
+    const clone = path.join(clonesDir, owner, REPO);
+    await mkdir(clone, { recursive: true });
+    await writeFile(path.join(clone, '.git'), 'gitdir: missing-directory\n');
+
+    await assert.rejects(repoManager.ensureRepoCloned({ repoUrl, owner, repoName: REPO, authToken: TOKEN }),
+        /could not be refreshed; retained for recovery/);
+    assert.strictEqual(await readFile(path.join(clone, '.git'), 'utf8'), 'gitdir: missing-directory\n');
 });

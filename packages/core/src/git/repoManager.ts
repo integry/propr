@@ -1,4 +1,5 @@
-import { withRepositoryPreparation } from './repositoryPreparation.js';
+import { ensureWorktreeObjects, fetchWithObjectRecovery, GIT_SHALLOW_CLONE_DEPTH, RepositoryRepairRequiredError } from './objectRecovery.js';
+import { RepositoryPreparationBusyError, withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { registerRepositoryCache } from '../storage/registry.js';
 import { SimpleGit } from 'simple-git';
@@ -35,7 +36,6 @@ import {
 } from './repositoryPaths.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
-const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
 function getRepoPath(owner: string, repoName: string): string {
     return resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
@@ -108,28 +108,31 @@ interface UpdateExistingRepoParams {
     opts: EnsureRepoClonedOptions;
 }
 
-async function updateExistingRepo(params: UpdateExistingRepoParams): Promise<void> {
+async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
+    const { repoUrl, owner, repoName, authToken, baseBranch, lockRetry } = opts;
     // Add to safe.directory BEFORE any git operations on this path
     try {
-        await createHooklessGit().raw(['config', '--global', '--add', 'safe.directory', params.localRepoPath]);
+        await createHooklessGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
     } catch {
         // Non-fatal - continue anyway, the directory might already be safe
     }
 
-    return withRepositoryPreparation(createHooklessGit(params.localRepoPath), () => updateExistingRepoInternal(params));
-}
-
-async function updateExistingRepoInternal({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
-    const { repoUrl, owner, repoName, authToken, baseBranch, lockRetry } = opts;
     logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
 
+    let refreshed = false;
     try {
-        const git: SimpleGit = createHooklessGit(localRepoPath);
-        if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
-        await configureGcWorktreePrune(git);
-        await setupAuthenticatedRemote(git, repoUrl, authToken, lockRetry);
-        await withGitLockRetry('fetching origin', () => git.fetch(['origin', '--prune']), lockRetry);
+        const git = createHooklessGit(localRepoPath);
+        await withRepositoryPreparation(git, async () => {
+            if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
+            await configureGcWorktreePrune(git);
+            await setupAuthenticatedRemote(git, repoUrl, authToken, lockRetry);
+            await fetchWithObjectRecovery(git, () => withGitLockRetry('fetching origin', () => git.fetch(['origin', '--prune']), lockRetry),
+                baseBranch === 'HEAD' ? undefined : baseBranch, authToken);
+            refreshed = true;
+            await finishExistingRepoRefresh(git, { localRepoPath, opts });
+        });
     } catch (gitError) {
+        if (refreshed || gitError instanceof RepositoryRepairRequiredError || gitError instanceof RepositoryPreparationBusyError) throw gitError;
         const errorMessage = redactAuthenticatedGitUrl((gitError as Error).message);
         // Another worker holding a lock in this shared clone says nothing about
         // its health; removing or re-cloning would destroy that worker's state.
@@ -145,8 +148,10 @@ async function updateExistingRepoInternal({ localRepoPath, opts }: UpdateExistin
         // Authentication/network failures and corrupt state never authorize deletion.
         throw new Error(`Repository ${owner}/${repoName} could not be refreshed; retained for recovery: ${redactAuthenticatedGitUrl(errorMessage)}`);
     }
+}
 
-    const git: SimpleGit = createHooklessGit(localRepoPath);
+async function finishExistingRepoRefresh(git: SimpleGit, { localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
+    const { repoUrl, owner, repoName, authToken, baseBranch } = opts;
     // Treat 'HEAD' as unspecified - use default branch detection
     const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
     let targetBranch = effectiveBranch || 'main';
@@ -282,9 +287,12 @@ async function resolveIssueStartPoint(
     // simple-git does not reject without stderr; compare the merge base instead.
     let onBranch = false;
     try {
+        // Verify the fetched closure before using it to prove ancestry.
+        const fetched = await ensureWorktreeObjects(git, branchHead);
         const commit = (await git.revparse([`${startRevision.revision}^{commit}`])).trim();
-        onBranch = (await git.raw(['merge-base', commit, branchHead])).trim() === commit;
+        onBranch = (await git.raw(['merge-base', commit, fetched])).trim() === commit;
     } catch (error) {
+        if (error instanceof RepositoryRepairRequiredError) throw error;
         logger.warn({ baseBranch, startRevision: startRevision.revision, error: (error as Error).message }, 'Requested start revision could not be resolved');
     }
     if (!onBranch) throw unusable(`it is not on the fetched '${baseBranch}' branch`);
@@ -299,11 +307,11 @@ async function fetchReusableBranch(git: SimpleGit, branch: string): Promise<stri
     try {
         await git.raw(['check-ref-format', '--branch', branch]);
         await configureGitRemoteAuthentication(git);
-        await git.raw(['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
-        await git.revparse([`origin/${branch}^{commit}`]);
+        await fetchWithObjectRecovery(git, () => git.raw(['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]), branch);
         logger.info({ branch }, 'Continuing the pushed work branch of the replaced attempt');
         return `origin/${branch}`;
     } catch (error) {
+        if (error instanceof RepositoryRepairRequiredError) throw error;
         logger.warn({ branch, error: (error as Error).message }, 'Pushed work branch of the replaced attempt is unavailable; starting a fresh branch');
         return null;
     }
@@ -369,9 +377,10 @@ async function createWorktreeForIssueInternal(localRepoPath: string, issueInfo: 
         // updating refs/remotes/origin/<branch> in some git configurations
         try {
             await configureGitRemoteAuthentication(git);
-            await git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']);
+            await fetchWithObjectRecovery(git, () => git.raw(['fetch', 'origin', `+refs/heads/${resolvedBaseBranch}:refs/remotes/origin/${resolvedBaseBranch}`, '--prune']), resolvedBaseBranch);
             logger.debug({ baseBranch: resolvedBaseBranch }, 'Fetched latest changes for base branch with explicit refspec');
         } catch (fetchError) {
+            if (fetchError instanceof RepositoryRepairRequiredError) throw fetchError;
             const fetchErrorMessage = (fetchError as Error).message;
             // Check if this is an empty repository error (no branches exist)
             // This shouldn't happen normally since ensureRepoCloned creates seed commits for empty repos

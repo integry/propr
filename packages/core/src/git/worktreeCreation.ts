@@ -1,4 +1,4 @@
-import { ensureWorktreeObjects, RepositoryRepairRequiredError } from './objectRecovery.js';
+import { ensureWorktreeObjects, fetchWithObjectRecovery, RepositoryRepairRequiredError } from './objectRecovery.js';
 import { withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { SimpleGit } from 'simple-git';
@@ -27,16 +27,19 @@ const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor
  * it refuses an existing branch. Listing refs (show-ref, for-each-ref) can skip
  * a branch whose tip object is missing, which then looked absent here while Git
  * still refused to create it, failing every later run on the branch (#3687).
- * A branch whose tip is missing is reported as a bad ref rather than absent,
- * and an unreadable ref database propagates as a Git error.
+ * A missing tip object is returned as its raw ID, and an unreadable ref
+ * database propagates as a Git error.
  */
+async function readLocalBranchTip(git: SimpleGit, branchName: string): Promise<string> {
+    return (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/heads/${branchName}`])).trim();
+}
+
 async function localBranchExists(git: SimpleGit, branchName: string): Promise<boolean> {
-    const ref = `refs/heads/${branchName}`;
-    const tip = (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', ref])).trim();
+    const tip = await readLocalBranchTip(git, branchName);
     if (!tip) return false;
     const commit = (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', `${tip}^{commit}`])).trim();
     if (!commit) {
-        throw new Error(`Local branch '${branchName}' is a bad ref: its tip ${tip} is missing from the clone; nothing was changed, repair or delete ${ref} by hand`);
+        throw new Error(`Local branch '${branchName}' is a bad ref: its tip ${tip} is missing from the clone; nothing was changed, repair or delete refs/heads/${branchName} by hand`);
     }
     return true;
 }
@@ -78,16 +81,23 @@ async function addVerifiedWorktree(
 ): Promise<string> {
     const { resetBranch = false, refuseLocalOnlyCommits = false } = options;
     const startPoint = await ensureWorktreeObjects(git, options.startPoint);
-    const reuseExisting = async () => {
-        await realignDivergedLocalBranch(git, branchName, {
+    const reuseExisting = async (tip: string) => {
+        if (tip !== startPoint) await ensureWorktreeObjects(git, tip);
+        const expectedTip = await realignDivergedLocalBranch(git, branchName, {
+            local: tip,
             startPoint,
             startLabel: options.startPoint,
             refuseLocalOnlyCommits,
         });
-        await ensureWorktreeObjects(git, `refs/heads/${branchName}`);
+        // Git attaches by branch name. Check again after verification and alignment
+        // in case a writer outside the preparation gate changed the ref.
+        if (await readLocalBranchTip(git, branchName) !== expectedTip) {
+            throw new Error(`Local branch '${branchName}' changed while preparing its worktree; retry preparation`);
+        }
         return git.raw(['worktree', 'add', worktreePath, branchName]);
     };
-    if (resetBranch && await localBranchExists(git, branchName)) return reuseExisting();
+    const tip = resetBranch ? await readLocalBranchTip(git, branchName) : '';
+    if (tip) return reuseExisting(tip);
     try {
         return await git.raw(['worktree', 'add', '--no-track', '-b', branchName, worktreePath, startPoint]);
     } catch (error) {
@@ -95,11 +105,12 @@ async function addVerifiedWorktree(
         // and Git disagree: reuse it the same safe way instead of failing every
         // later run on it. A fresh-branch caller never reuses one.
         if (!resetBranch || !isBranchAlreadyExistsError((error as Error).message || '')) throw error;
-        if (!await localBranchExists(git, branchName)) {
+        const appearedTip = await readLocalBranchTip(git, branchName);
+        if (!appearedTip) {
             throw new Error(`Local branch '${branchName}' blocks the worktree but cannot be read; nothing was changed, inspect refs/heads/${branchName} in the clone`);
         }
         logger.warn({ branchName, startPoint }, 'Branch appeared after the existence check; reusing the existing local branch');
-        return reuseExisting();
+        return reuseExisting(appearedTip);
     }
 }
 
@@ -123,26 +134,26 @@ async function addVerifiedWorktree(
 async function realignDivergedLocalBranch(
     git: SimpleGit,
     branchName: string,
-    { startPoint, startLabel, refuseLocalOnlyCommits }: { startPoint: string; startLabel: string; refuseLocalOnlyCommits: boolean },
-): Promise<void> {
+    { local, startPoint, startLabel, refuseLocalOnlyCommits }: { local: string; startPoint: string; startLabel: string; refuseLocalOnlyCommits: boolean },
+): Promise<string> {
     let target: string;
     try {
         target = (await git.raw(['rev-parse', '--verify', `${startPoint}^{commit}`])).trim();
     } catch {
-        return; // No start point to align with; keep the branch as it is.
+        return local; // No start point to align with; keep the branch as it is.
     }
-    const local = (await git.raw(['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`])).trim();
-    if (local === target) return;
+    if (local === target) return local;
+    const localCommit = (await git.raw(['rev-parse', '--verify', `${local}^{commit}`])).trim();
     if (refuseLocalOnlyCommits) {
-        const localOnly = Number((await git.raw(['rev-list', '--count', local, '--not', target])).trim());
+        const localOnly = Number((await git.raw(['rev-list', '--count', localCommit, '--not', target])).trim());
         if (localOnly !== 0) {
             throw new Error(`Local branch '${branchName}' has ${localOnly} commit(s) that are not on ${startLabel} (local tip ${local}); `
                 + `refusing to reuse or reset it so that work is not discarded or published. Nothing was changed: push, back up or delete refs/heads/${branchName} in the clone, then retry`);
         }
     }
-    const behind = (await git.raw(['rev-list', '--count', target, '--not', local])).trim();
-    if (behind === '0') return; // Equal content or ahead: unpushed work stays on the branch.
-    await restartLocalBranch(git, branchName, { from: local, to: target, reason: `align with ${startPoint}` });
+    const behind = (await git.raw(['rev-list', '--count', target, '--not', localCommit])).trim();
+    if (behind === '0') return local; // Equal content or ahead: unpushed work stays on the branch.
+    return await restartLocalBranch(git, branchName, { from: local, to: target, reason: `align with ${startPoint}` }) ? target : local;
 }
 
 /** Backup ref for a superseded branch tip: the second alone can repeat, so the tip's short id keeps it unique. */
@@ -401,7 +412,6 @@ async function handleImproperWorktree(_worktreePath: string, _branchName: string
 }
 
 async function handleWorktreeCreationError(git: SimpleGit, branchName: string, error: Error): Promise<void> {
-    if (error instanceof RepositoryRepairRequiredError) throw error;
     logger.error({ branchName, error: error.message }, 'Failed to create worktree from remote branch');
 
     try {
@@ -431,6 +441,7 @@ async function addWorktreeFromRemoteWithRecovery(git: SimpleGit, worktreePath: s
         try {
             return await addWorktree();
         } catch (error) {
+            if (error instanceof RepositoryRepairRequiredError) throw error;
             const message = (error as Error).message || '';
             if (!clearedMissing && isMissingRegisteredWorktreeError(message)) {
                 const cleared = await clearMissingWorktreeRegistration(git, worktreePath).catch(inspectionError => {
@@ -469,6 +480,7 @@ async function createWorktreeFromRemote(git: SimpleGit, worktreePath: string, br
         logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Git worktree add command completed');
 
     } catch (error) {
+        if (error instanceof RepositoryRepairRequiredError) throw error;
         if ((error as Error).message && (error as Error).message.includes('is already used by worktree')) {
             await handleWorktreeConflict();
         } else if ((error as Error).message && (error as Error).message.includes('.git is a directory')) {
@@ -540,7 +552,7 @@ async function createWorktreeFromExistingBranchInternal(localRepoPath: string, b
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations
         await configureGitRemoteAuthentication(git);
-        await git.raw(['fetch', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`, '--prune']);
+        await fetchWithObjectRecovery(git, () => git.raw(['fetch', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`, '--prune']), branchName);
         logger.debug({ branchName }, 'Fetched latest changes for branch with explicit refspec');
 
         await createWorktreeFromRemote(git, worktreePath, branchName, localRepoPath);
