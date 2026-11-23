@@ -79,7 +79,11 @@ async function addVerifiedWorktree(
     const { resetBranch = false, refuseLocalOnlyCommits = false } = options;
     const startPoint = await ensureWorktreeObjects(git, options.startPoint);
     const reuseExisting = async () => {
-        await realignDivergedLocalBranch(git, branchName, startPoint, refuseLocalOnlyCommits, options.startPoint);
+        await realignDivergedLocalBranch(git, branchName, {
+            startPoint,
+            startLabel: options.startPoint,
+            refuseLocalOnlyCommits,
+        });
         await ensureWorktreeObjects(git, `refs/heads/${branchName}`);
         return git.raw(['worktree', 'add', worktreePath, branchName]);
     };
@@ -101,7 +105,7 @@ async function addVerifiedWorktree(
 
 /**
  * Brings a reused local branch onto its start point (the pull request head)
- * without losing commits. A branch behind is fast-forwarded. With `refuse`
+ * without losing commits. A branch behind is fast-forwarded. With `refuseLocalOnlyCommits`
  * (a follow-up on a pull request branch), a branch carrying commits the start
  * point lacks, unpushed or diverged, is refused with an error naming it and
  * nothing changes: continuing would publish them with the next push and
@@ -116,7 +120,11 @@ async function addVerifiedWorktree(
  * branch restarts from the start point. A branch checked out in any worktree
  * is never moved.
  */
-async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, startPoint: string, refuse: boolean, startLabel = startPoint): Promise<void> {
+async function realignDivergedLocalBranch(
+    git: SimpleGit,
+    branchName: string,
+    { startPoint, startLabel, refuseLocalOnlyCommits }: { startPoint: string; startLabel: string; refuseLocalOnlyCommits: boolean },
+): Promise<void> {
     let target: string;
     try {
         target = (await git.raw(['rev-parse', '--verify', `${startPoint}^{commit}`])).trim();
@@ -125,7 +133,7 @@ async function realignDivergedLocalBranch(git: SimpleGit, branchName: string, st
     }
     const local = (await git.raw(['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`])).trim();
     if (local === target) return;
-    if (refuse) {
+    if (refuseLocalOnlyCommits) {
         const localOnly = Number((await git.raw(['rev-list', '--count', local, '--not', target])).trim());
         if (localOnly !== 0) {
             throw new Error(`Local branch '${branchName}' has ${localOnly} commit(s) that are not on ${startLabel} (local tip ${local}); `
