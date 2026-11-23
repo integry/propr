@@ -48,7 +48,7 @@ test('Antigravity installer versions only allow latest', async () => {
         throw new Error('fetch should not be called for installer-backed CLI versions');
     };
 
-    assert.equal(await resolveVersion('antigravity', 'default'), '1.5.14');
+    assert.equal(await resolveVersion('antigravity', 'default'), '1.5.15');
     assert.equal(await resolveVersion('antigravity', 'tag', 'latest'), 'latest');
     await assert.rejects(
         () => resolveVersion('antigravity', 'tag', 'preview'),

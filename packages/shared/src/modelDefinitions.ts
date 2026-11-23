@@ -208,7 +208,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: '1.5.14'
+    defaultCliVersion: '1.5.15'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

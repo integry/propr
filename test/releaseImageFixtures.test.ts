@@ -222,7 +222,7 @@ test('authenticated image verifier accepts the pinned version and canonical init
   const result = runAntigravityVerification();
 
   assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
-  assert.match(result.stdout, /Antigravity CLI version 1\.5\.14/);
+  assert.match(result.stdout, /Antigravity CLI version 1\.5\.15/);
   for (const id of ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low']) {
     assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported ${id}`));
   }
