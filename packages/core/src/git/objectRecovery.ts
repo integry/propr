@@ -73,12 +73,21 @@ async function unlinkVerifiedMarker(marker: string, contents: string): Promise<v
     }
 }
 
+/**
+ * An incident opened for an interrupted ordinary fetch. Restoring its revision
+ * proves nothing about other refs, so only a successful fetch closes it.
+ */
+function awaitsFetch(contents: string): boolean {
+    try { return JSON.parse(contents)?.fetchVerificationPending === true; }
+    catch { return false; } // Retain unreadable incident data for an operator.
+}
+
 /** The gate is held. Only the incident recorded in the marker can clear it. */
 async function clearResolvedMarker(
     git: SimpleGit, common: string, marker: string, { revision, missing }: { revision: string; missing: boolean },
 ): Promise<void> {
     const contents = await readMarker(marker);
-    if (contents === undefined) return;
+    if (contents === undefined || awaitsFetch(contents)) return;
     let recorded: unknown;
     try { recorded = JSON.parse(contents)?.revision; }
     catch { return; } // Retain unreadable incident data for an operator.
@@ -103,8 +112,8 @@ async function donorDepth(git: SimpleGit, revision: string): Promise<string[]> {
 }
 
 /** Persist the unresolved revision. Returns nothing when an earlier incident is already recorded. */
-async function recordIncident(common: string, revision: string, context: string): Promise<string | undefined> {
-    const contents = JSON.stringify({ revision, startedAt: new Date().toISOString() });
+async function recordIncident(common: string, revision: string, context: string, forFetch: boolean): Promise<string | undefined> {
+    const contents = JSON.stringify({ revision, startedAt: new Date().toISOString(), ...(forFetch ? { fetchVerificationPending: true } : {}) });
     try {
         await fs.writeFile(path.join(common, OBJECT_REPAIR_MARKER), contents, { flag: 'wx', mode: 0o600 });
         return contents;
@@ -116,9 +125,13 @@ async function recordIncident(common: string, revision: string, context: string)
     }
 }
 
-/** Recover only after a closure check has proved damage while holding the gate. */
+/**
+ * Recover only after a closure check has proved damage while holding the gate.
+ * `forFetch` leaves the incident recorded after the repair: the interrupted
+ * fetch has not succeeded yet, and its caller clears the incident when it does.
+ */
 async function repairIfMissing(
-    git: SimpleGit, common: string, { revision, ref }: { revision: string; ref?: string }, token?: string,
+    git: SimpleGit, common: string, { revision, ref }: { revision: string; ref?: string }, { token, forFetch = false }: { token?: string; forFetch?: boolean } = {},
 ): Promise<boolean> {
     const context = ref ? `ref '${ref}': ` : '';
     const missing = await hasMissingObjects(git, common, revision);
@@ -129,7 +142,7 @@ async function repairIfMissing(
         throw new RepositoryRepairRequiredError(common, `${context}could not verify or clear the recorded repair; inspect cache permissions or storage (${(error as Error).message})`);
     }
     if (!missing) return false;
-    const contents = await recordIncident(common, revision, context);
+    const contents = await recordIncident(common, revision, context, forFetch);
     if (contents === undefined) {
         throw new RepositoryRepairRequiredError(common, `${context}a previous automatic repair failed or was interrupted`);
     }
@@ -169,7 +182,7 @@ async function repairIfMissing(
         verifiedInPreparation(common)?.add(revision);
         await fs.rm(temporary, { recursive: true, force: true });
         temporary = undefined;
-        await unlinkVerifiedMarker(marker, contents);
+        if (!forFetch) await unlinkVerifiedMarker(marker, contents);
         logger.info({ common, revision }, 'Restored Git objects; worktree preparation can continue');
         return true;
     } catch (error) {
@@ -190,6 +203,24 @@ export async function ensureWorktreeObjects(git: SimpleGit, startPoint: string, 
         if (!OBJECT_ID.test(revision)) throw new Error('Invalid worktree starting revision');
         await repairIfMissing(git, common, { revision, ref });
         return revision;
+    });
+}
+
+/**
+ * Ancestry needs commits only. A tree or blob missing from a later commit on
+ * the branch does not stop a checkout of an earlier one, so the closure is
+ * walked, and repaired, only when the commit history itself cannot be read.
+ * Returns whether a repair restored it.
+ */
+export async function ensureCommitHistory(git: SimpleGit, revision: string, ref?: string): Promise<boolean> {
+    return withRepositoryPreparation(git, async common => {
+        try {
+            await git.raw(['rev-list', '--quiet', '--end-of-options', revision, '--']);
+            return false;
+        } catch (error) {
+            if (!missingObject(error)) throw error;
+            return repairIfMissing(git, common, { revision, ref });
+        }
     });
 }
 
@@ -227,43 +258,83 @@ async function* fetchRecoveryCandidates(
     }
 }
 
-/**
- * The single authorized repair has been spent. Verifying its revision proved
- * nothing about other refs, so a retry that is still blocked by missing objects
- * records the remaining damage and stops instead of starting another donor.
- */
-async function retryFetchAfterRepair<T>(
-    git: SimpleGit, common: string, fetch: () => Promise<T>, branch?: string,
-): Promise<T> {
-    try {
-        return await fetch();
-    } catch (error) {
-        if (!fetchBlockedByMissingObjects(error)) throw error;
-        for await (const { revision, ref } of fetchRecoveryCandidates(git, error, branch)) {
-            if (!await hasMissingObjects(git, common, revision)) continue;
-            const context = `ref '${ref}': `;
-            // An earlier recorded incident is kept; either marker stops automatic repair.
-            await recordIncident(common, revision, context);
-            throw new RepositoryRepairRequiredError(common,
-                `${context}objects are still missing after the one automatic repair restored another ref (${redactAuthenticatedGitUrl((error as Error).message)})`);
-        }
-        throw error;
-    }
+/** The ordinary fetch succeeded under the gate: an incident that was waiting for it is over. */
+async function clearVerifiedFetch(common: string): Promise<void> {
+    const marker = path.join(common, OBJECT_REPAIR_MARKER);
+    const contents = await readMarker(marker);
+    if (contents === undefined || !awaitsFetch(contents)) return;
+    await removeStaleDonors(common);
+    await unlinkVerifiedMarker(marker, contents);
 }
 
-/** Retry an interrupted ordinary fetch once, after proving and repairing cached damage. */
+/** Point the retained incident at the damage that still blocks the fetch. It keeps waiting for the fetch. */
+async function retainIncidentFor(common: string, revision: string, context: string): Promise<void> {
+    const marker = path.join(common, OBJECT_REPAIR_MARKER);
+    const current = await readMarker(marker);
+    // An operator removed the marker outside the gate; this attempt is still spent.
+    if (current === undefined) return void await recordIncident(common, revision, context, true);
+    let recorded: unknown;
+    try { recorded = JSON.parse(current)?.revision; }
+    catch { return; } // Retain unreadable incident data for an operator.
+    if (recorded === revision) return;
+    const replacement = `${marker}.next`;
+    await fs.writeFile(replacement, JSON.stringify({ revision, startedAt: new Date().toISOString(), fetchVerificationPending: true }), { mode: 0o600 });
+    await fs.rename(replacement, marker);
+}
+
+/**
+ * The single authorized repair has been spent, in this call or in one that was
+ * interrupted before its fetch succeeded. Verifying the repaired revision
+ * proved nothing about other refs, so a fetch that is still blocked by missing
+ * objects records the remaining damage and stops instead of starting another donor.
+ */
+async function remainingDamage(
+    git: SimpleGit, common: string, { error, branch, repaired }: { error: unknown; branch?: string; repaired: boolean },
+): Promise<unknown> {
+    for await (const { revision, ref } of fetchRecoveryCandidates(git, error, branch)) {
+        if (!await hasMissingObjects(git, common, revision)) continue;
+        const context = `ref '${ref}': `;
+        await retainIncidentFor(common, revision, context);
+        const reason = repaired
+            ? 'objects are still missing after the one automatic repair restored another ref'
+            : 'a previous automatic repair failed or was interrupted before its fetch succeeded';
+        return new RepositoryRepairRequiredError(common, `${context}${reason} (${redactAuthenticatedGitUrl((error as Error).message)})`);
+    }
+    return error;
+}
+
+async function fetchIncidentOpen(common: string): Promise<boolean> {
+    const contents = await readMarker(path.join(common, OBJECT_REPAIR_MARKER));
+    return contents !== undefined && awaitsFetch(contents);
+}
+
+/**
+ * Retry an interrupted ordinary fetch once, after proving and repairing cached
+ * damage. The incident stays recorded from before the donor starts until a
+ * fetch succeeds, so a worker that stops anywhere in between leaves the next
+ * one a fetch to verify, not another repair to attempt.
+ */
 export async function fetchWithObjectRecovery<T>(
     git: SimpleGit, fetch: () => Promise<T>, branch?: string, token?: string,
 ): Promise<T> {
     return withRepositoryPreparation(git, async common => {
-        try {
-            return await fetch();
-        } catch (error) {
-            if (!fetchBlockedByMissingObjects(error)) throw error;
-            for await (const candidate of fetchRecoveryCandidates(git, error, branch)) {
-                if (await repairIfMissing(git, common, candidate, token)) return retryFetchAfterRepair(git, common, fetch, branch);
+        let repaired = false;
+        for (;;) {
+            let result: T;
+            try {
+                result = await fetch();
+            } catch (error) {
+                if (!fetchBlockedByMissingObjects(error)) throw error;
+                if (repaired || await fetchIncidentOpen(common)) throw await remainingDamage(git, common, { error, branch, repaired });
+                for await (const candidate of fetchRecoveryCandidates(git, error, branch)) {
+                    repaired = await repairIfMissing(git, common, candidate, { token, forFetch: true });
+                    if (repaired) break;
+                }
+                if (!repaired) throw error;
+                continue;
             }
-            throw error;
+            await clearVerifiedFetch(common);
+            return result;
         }
     });
 }

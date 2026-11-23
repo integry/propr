@@ -1,4 +1,4 @@
-import { ensureWorktreeObjects, fetchWithObjectRecovery, GIT_SHALLOW_CLONE_DEPTH, RepositoryRepairRequiredError } from './objectRecovery.js';
+import { ensureCommitHistory, fetchWithObjectRecovery, GIT_SHALLOW_CLONE_DEPTH, RepositoryRepairRequiredError } from './objectRecovery.js';
 import { RepositoryPreparationBusyError, withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { registerRepositoryCache } from '../storage/registry.js';
@@ -287,10 +287,20 @@ async function resolveIssueStartPoint(
     // simple-git does not reject without stderr; compare the merge base instead.
     let onBranch = false;
     try {
-        // Verify the fetched closure before using it to prove ancestry.
-        const fetched = await ensureWorktreeObjects(git, branchHead);
-        const commit = (await git.revparse([`${startRevision.revision}^{commit}`])).trim();
-        onBranch = (await git.raw(['merge-base', commit, fetched])).trim() === commit;
+        // Pin the fetched head without walking it: the policy commit is the one
+        // checked out, and its closure is verified before the branch is created.
+        const fetched = (await git.raw(['rev-parse', '--verify', '--end-of-options', branchHead])).trim();
+        const provesAncestry = async () => {
+            const commit = (await git.revparse([`${startRevision.revision}^{commit}`])).trim();
+            return (await git.raw(['merge-base', commit, fetched])).trim() === commit;
+        };
+        try {
+            onBranch = await provesAncestry();
+        } catch (error) {
+            // Only commits missing from the branch history prevent the proof.
+            if (!await ensureCommitHistory(git, fetched, `refs/remotes/${branchHead}`)) throw error;
+            onBranch = await provesAncestry();
+        }
     } catch (error) {
         if (error instanceof RepositoryRepairRequiredError) throw error;
         logger.warn({ baseBranch, startRevision: startRevision.revision, error: (error as Error).message }, 'Requested start revision could not be resolved');

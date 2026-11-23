@@ -511,11 +511,11 @@ for (const entry of ['refresh', 'index'] as const) {
         const repoUrl = REPO_URL.replace(OWNER, owner);
         const clone = await createSharedClone(`busy-${entry}`, repoUrl);
         const { withRepositoryPreparation } = await import('../packages/core/src/git/repositoryPreparation.js');
-        const previous = process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
-        process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = '1';
-        t.after(() => {
-            if (previous === undefined) delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
-            else process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = previous;
+        // Contend on the real gate without waiting out the production timeout.
+        const { StorageLifecycle } = await import('../packages/core/src/storage/lifecycle.js');
+        const exclusive = StorageLifecycle.prototype.exclusive;
+        const shortWait = t.mock.method(StorageLifecycle.prototype, 'exclusive', function <T>(this: InstanceType<typeof StorageLifecycle>, run: () => Promise<T>) {
+            return exclusive.call(this, run, 1) as Promise<T>;
         });
         let release!: () => void;
         let entered!: () => void;
@@ -535,6 +535,7 @@ for (const entry of ['refresh', 'index'] as const) {
             await holder;
         }
         assert.ok(existsSync(path.join(clone, '.git')), 'the busy clone is retained');
+        shortWait.mock.restore();
         if (entry === 'index') {
             const result = await repoManager.fetchLatestChanges({ owner, repoName: REPO, authToken: TOKEN });
             assert.ok(result.success, result.error);

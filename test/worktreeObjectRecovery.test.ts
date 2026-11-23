@@ -208,12 +208,11 @@ test('marker write failure stops automatic recovery before starting a donor', as
     assert.equal(mkdtemp.mock.callCount(), 0);
 });
 
+/** Contend on the real gate without waiting out the production timeout. */
 function shortGateWait(t: TestContext) {
-    const previous = process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
-    process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = '1';
-    t.after(() => {
-        if (previous === undefined) delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
-        else process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = previous;
+    const exclusive = StorageLifecycle.prototype.exclusive;
+    return t.mock.method(StorageLifecycle.prototype, 'exclusive', function <T>(this: StorageLifecycle, run: () => Promise<T>) {
+        return exclusive.call(this, run, 1) as Promise<T>;
     });
 }
 
@@ -254,28 +253,9 @@ test('a gate timeout is retryable contention even while a live holder has a repa
     });
 });
 
-test('the gate wait is configurable and defaults when the setting is unusable', async t => {
-    const f = await fixture(t);
-    const waits: Array<number | undefined> = [];
-    t.mock.method(StorageLifecycle.prototype, 'exclusive', async function <T>(run: () => Promise<T>, waitMs?: number) {
-        waits.push(waitMs);
-        return run();
-    });
-    const previous = process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
-    t.after(() => {
-        if (previous === undefined) delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
-        else process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = previous;
-    });
-    for (const value of ['', '900000', 'soon', '-5']) {
-        process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS = value;
-        await withRepositoryPreparation(f.git, async () => undefined);
-    }
-    assert.deepEqual(waits, [120_000, 900_000, 120_000, 120_000]);
-});
-
 test('the gate excludes another process that enters through a linked worktree', async t => {
     const f = await fixture(t);
-    shortGateWait(t);
+    const shortWait = shortGateWait(t);
     const linked = path.join(f.root, 'linked');
     await f.git.raw(['worktree', 'add', '-b', 'linked', linked]);
     const child = fork(path.resolve('test/fixtures/repository-preparation/holder.ts'), [linked], {
@@ -291,7 +271,7 @@ test('the gate excludes another process that enters through a linked worktree', 
     await assert.rejects(ensureWorktreeObjects(f.git, f.revision), RepositoryPreparationBusyError);
     await assert.rejects(withRepositoryPreparation(simpleGit(linked), async () => undefined), RepositoryPreparationBusyError);
 
-    delete process.env.GIT_REPOSITORY_PREPARATION_WAIT_MS;
+    shortWait.mock.restore();
     const waiting = ensureWorktreeObjects(f.git, f.revision);
     const exited = once(child, 'exit');
     child.send('release');
@@ -623,9 +603,10 @@ test('a second damaged ref left after the one repair is recorded and stops witho
     await f.git.raw(['fsck', '--no-dangling']);
 });
 
-test('an unrelated failure of the retried fetch keeps its ordinary handling', async t => {
+test('an unrelated failure of the retried fetch keeps its ordinary handling and leaves the fetch to verify', async t => {
     const f = await fixture(t);
     await f.removeObject(f.tree);
+    const donors = t.mock.method(fs, 'mkdtemp');
     let fetches = 0;
     await assert.rejects(fetchWithObjectRecovery(f.git, async () => {
         throw new Error(++fetches === 1 ? 'fatal: unresolved deltas left after unpacking' : 'fatal: unable to access remote: timed out');
@@ -635,5 +616,77 @@ test('an unrelated failure of the retried fetch keeps its ordinary handling', as
         return true;
     });
     assert.equal(fetches, 2);
+    // The repair is spent and its fetch has not succeeded: the incident stays open.
+    assert.equal(JSON.parse(await readFile(markerPath(f), 'utf8')).fetchVerificationPending, true);
+    // Evidence that the repaired revision is healthy does not close it.
+    assert.equal(await ensureWorktreeObjects(f.git, f.revision), f.revision);
+    await access(markerPath(f));
+
+    await fetchWithObjectRecovery(f.git, fetchMain(f), 'main');
+    await assert.rejects(access(markerPath(f)));
+    assert.equal(donors.mock.callCount(), 1);
+});
+
+test('a repair interrupted before its fetch was retried does not authorize a donor for another damaged ref', async t => {
+    const f = await fixture(t);
+    const tips = [await publish(f, 'first', 'first branch'), await publish(f, 'second', 'second branch')];
+    const advanced = await advanceRemote(f);
+    for (const tip of tips) await f.removeObject(tip);
+    const donors = t.mock.method(fs, 'mkdtemp');
+    const present = async (tip: string) => f.git.raw(['cat-file', '-t', tip]).then(() => true, () => false);
+
+    // The worker stops after the donor restored one ref and before the retry ran.
+    let fetches = 0;
+    await assert.rejects(fetchWithObjectRecovery(f.git, () => {
+        if (++fetches === 2) throw new Error('worker stopped');
+        return fetchMain(f)();
+    }, 'main'), /worker stopped/);
+    assert.equal(donors.mock.callCount(), 1);
+    const restored = await Promise.all(tips.map(present));
+    assert.deepEqual([...restored].sort(), [false, true]);
+    const [repaired, unresolved] = [tips[restored.indexOf(true)], tips[restored.indexOf(false)]];
+    const interrupted = JSON.parse(await readFile(markerPath(f), 'utf8'));
+    assert.deepEqual([interrupted.revision, interrupted.fetchVerificationPending], [repaired, true]);
+
+    // The next worker verifies the fetch, finds the second ref, and stops.
+    const recovery = () => fetchWithObjectRecovery(f.git, fetchMain(f), 'main');
+    await assert.rejects(recovery(), error => {
+        assert.ok(error instanceof RepositoryRepairRequiredError);
+        assert.match(error.message, /previous automatic repair failed or was interrupted before its fetch succeeded/);
+        return true;
+    });
+    assert.equal(donors.mock.callCount(), 1);
+    const retained = JSON.parse(await readFile(markerPath(f), 'utf8'));
+    assert.deepEqual([retained.revision, retained.fetchVerificationPending], [unresolved, true]);
+    // Preparation of the still-damaged revision is refused as well.
+    await assert.rejects(ensureWorktreeObjects(f.git, unresolved), /previous automatic repair failed or was interrupted/);
+    assert.equal(donors.mock.callCount(), 1);
+
+    // An operator authorizes one more attempt, which completes the repair.
+    await rm(markerPath(f));
+    await recovery();
+    assert.equal(donors.mock.callCount(), 2);
+    assert.equal((await f.git.revparse(['origin/main'])).trim(), advanced);
+    await assert.rejects(access(markerPath(f)));
+    await f.git.raw(['fsck', '--no-dangling']);
+});
+
+test('a worker stopped during the donor leaves an incident that blocks another donor until the fetch succeeds', async t => {
+    const f = await fixture(t);
+    const other = await publish(f, 'other', 'other branch');
+    await advanceRemote(f);
+    await f.removeObject(other);
+    // Left by a worker that recorded the incident and never published its donor.
+    await writeFile(markerPath(f), JSON.stringify({ revision: other, startedAt: 'earlier', fetchVerificationPending: true }));
+    const donors = t.mock.method(fs, 'mkdtemp');
+    const recovery = () => fetchWithObjectRecovery(f.git, fetchMain(f), 'main');
+    await assert.rejects(recovery(), RepositoryRepairRequiredError);
+    assert.equal(donors.mock.callCount(), 0);
+    assert.equal(JSON.parse(await readFile(markerPath(f), 'utf8')).revision, other);
+
+    // An operator restores the object directly; the verified fetch closes the incident.
+    await f.git.raw(['fetch', 'origin', other]);
+    await recovery();
+    assert.equal(donors.mock.callCount(), 0);
     await assert.rejects(access(markerPath(f)));
 });

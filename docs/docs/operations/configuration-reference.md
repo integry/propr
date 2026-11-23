@@ -164,7 +164,6 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `PUSH_RESCUE_SWEEP_INTERVAL_MS` | `21600000` (6 hours) | How often the daemon deletes expired rescue refs and bundles. | Optional tuning. |
 | `GIT_DEFAULT_BRANCH` | `main` | Default base branch for PRs. Per-repo overrides use `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` — see [Branch Configuration](../features/branch-config.md). | Optional. |
 | `GIT_SHALLOW_CLONE_DEPTH` | Empty (full clones) | Depth for shallow clones; leave empty to clone full history. | Optional. |
-| `GIT_REPOSITORY_PREPARATION_WAIT_MS` | `120000` (2 minutes) | How long a task waits for another task's clone refresh, indexing fetch, or worktree preparation on the same repository before failing with a retryable "repository preparation is busy" error. Raise it for large repositories with many parallel tasks. | Optional tuning. |
 
 ## Hosted UI Tunnel
 
