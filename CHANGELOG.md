@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
+  - npm reported Claude Code 2.1.330 as `latest` and 2.1.323 as `stable`.
+    All four Claude tool-policy runtime tests passed with the installed
+    2.1.330 binary. [npm version tags](https://www.npmjs.com/package/@anthropic-ai/claude-code?activeTab=versions)
+  - Antigravity 1.5.15 is Linux x64 release `5514532022517760`. The
+    downloaded archive passed the SHA-512 check against Google's install
+    manifest, and the extracted binary reported `1.5.15`. [Google's Linux x64 manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
+  - The Antigravity CLI now retains all saved local conversations by default
+    and no longer prunes them to the 500 most recent at startup.
+  - Newly configured Orchestrator planner and executor roles default to high
+    effort when available and otherwise use the model family's highest offered
+    effort. Existing effort selections are preserved. [Antigravity CLI changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md#1515)
+  - The Antigravity image verifier passed against synthetic stream fixtures
+    for 1.5.15. The authenticated image run requires a Docker host with
+    Antigravity sign-in state.
+
 - **Commit subjects are short imperative lines, not the run summary**
   (#3736): commits from issue runs and PR follow-ups now get a subject of
   72 characters or fewer that says what changed, such as
