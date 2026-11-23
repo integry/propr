@@ -82,7 +82,7 @@ async function addVerifiedWorktree(
     const { resetBranch = false, refuseLocalOnlyCommits = false } = options;
     const startPoint = await ensureWorktreeObjects(git, options.startPoint);
     const reuseExisting = async (tip: string) => {
-        if (tip !== startPoint) await ensureWorktreeObjects(git, tip);
+        if (tip !== startPoint) await ensureWorktreeObjects(git, tip, `refs/heads/${branchName}`);
         const expectedTip = await realignDivergedLocalBranch(git, branchName, {
             local: tip,
             startPoint,

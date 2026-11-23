@@ -87,13 +87,16 @@ async function donorDepth(git: SimpleGit, revision: string): Promise<string[]> {
 }
 
 /** Recover only after a closure check has proved damage while holding the gate. */
-async function repairIfMissing(git: SimpleGit, common: string, revision: string, token?: string): Promise<boolean> {
+async function repairIfMissing(
+    git: SimpleGit, common: string, { revision, ref }: { revision: string; ref?: string }, token?: string,
+): Promise<boolean> {
+    const context = ref ? `ref '${ref}': ` : '';
     const missing = await hasMissingObjects(git, revision);
     const marker = path.join(common, OBJECT_REPAIR_MARKER);
     try {
         await clearResolvedMarker(git, common, marker, { revision, missing });
     } catch (error) {
-        throw new RepositoryRepairRequiredError(common, `could not verify or clear the recorded repair; inspect cache permissions or storage (${(error as Error).message})`);
+        throw new RepositoryRepairRequiredError(common, `${context}could not verify or clear the recorded repair; inspect cache permissions or storage (${(error as Error).message})`);
     }
     if (!missing) return false;
     const contents = JSON.stringify({ revision, startedAt: new Date().toISOString() });
@@ -101,10 +104,10 @@ async function repairIfMissing(git: SimpleGit, common: string, revision: string,
         await fs.writeFile(marker, contents, { flag: 'wx', mode: 0o600 });
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-            throw new RepositoryRepairRequiredError(common, 'a previous automatic repair failed or was interrupted');
+            throw new RepositoryRepairRequiredError(common, `${context}a previous automatic repair failed or was interrupted`);
         }
         throw new RepositoryRepairRequiredError(common,
-            `the repair marker could not be recorded; inspect cache permissions or storage (${(error as Error).message})`,
+            `${context}the repair marker could not be recorded; inspect cache permissions or storage (${(error as Error).message})`,
             'Restore write access to the repository cache, then retry the task.');
     }
     let temporary: string | undefined;
@@ -146,7 +149,7 @@ async function repairIfMissing(git: SimpleGit, common: string, revision: string,
         logger.info({ common, revision }, 'Restored Git objects; worktree preparation can continue');
         return true;
     } catch (error) {
-        throw new RepositoryRepairRequiredError(common, redactAuthenticatedGitUrl((error as Error).message));
+        throw new RepositoryRepairRequiredError(common, context + redactAuthenticatedGitUrl((error as Error).message));
     } finally {
         if (temporary) await fs.rm(temporary, { recursive: true, force: true }).catch(() => {
             logger.warn({ temporary }, 'Could not remove the temporary object recovery repository');
@@ -155,13 +158,13 @@ async function repairIfMissing(git: SimpleGit, common: string, revision: string,
 }
 
 /** Pin and verify before creating a branch. Recovery only adds immutable objects. */
-export async function ensureWorktreeObjects(git: SimpleGit, startPoint: string): Promise<string> {
+export async function ensureWorktreeObjects(git: SimpleGit, startPoint: string, ref?: string): Promise<string> {
     return withRepositoryPreparation(git, async common => {
         const revision = OBJECT_ID.test(startPoint)
             ? startPoint
             : (await git.raw(['rev-parse', '--verify', '--end-of-options', startPoint])).trim();
         if (!OBJECT_ID.test(revision)) throw new Error('Invalid worktree starting revision');
-        await repairIfMissing(git, common, revision);
+        await repairIfMissing(git, common, { revision, ref });
         return revision;
     });
 }
@@ -179,13 +182,18 @@ export async function fetchWithObjectRecovery<T>(
 
             // Even a single-branch fetch can negotiate from other cached refs.
             // Read object IDs without peeling so a ref with a missing tip is visible.
-            const preferred = branch
-                ? (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', `refs/remotes/origin/${branch}`])).trim()
+            const preferredRef = branch ? `refs/remotes/origin/${branch}` : undefined;
+            const preferred = preferredRef
+                ? (await git.raw(['rev-parse', '--verify', '--quiet', '--end-of-options', preferredRef])).trim()
                 : '';
-            if (OBJECT_ID.test(preferred) && await repairIfMissing(git, common, preferred, token)) return fetch();
-            const refs = await git.raw(['for-each-ref', '--format=%(objectname)', 'refs/remotes/origin', 'refs/heads', 'refs/tags']);
-            for (const revision of new Set(refs.split('\n'))) {
-                if (revision !== preferred && OBJECT_ID.test(revision) && await repairIfMissing(git, common, revision, token)) return fetch();
+            if (OBJECT_ID.test(preferred) && await repairIfMissing(git, common, { revision: preferred, ref: preferredRef }, token)) return fetch();
+            const checked = new Set([preferred]);
+            const refs = await git.raw(['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes/origin', 'refs/heads', 'refs/tags']);
+            for (const line of refs.split('\n')) {
+                const [revision, ref] = line.split(' ');
+                if (!OBJECT_ID.test(revision) || checked.has(revision)) continue;
+                checked.add(revision);
+                if (await repairIfMissing(git, common, { revision, ref }, token)) return fetch();
             }
             throw error;
         }
