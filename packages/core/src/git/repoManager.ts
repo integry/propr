@@ -370,8 +370,11 @@ async function createWorktreeForIssueInternal(localRepoPath: string, issueInfo: 
         // including checkouts whose directories are temporarily unavailable.
 
         const reusedStartPoint = reuseBranch ? await fetchReusableBranch(git, reuseBranch) : null;
-        if (reusedStartPoint) branchName = reuseBranch!;
-        if (!reusedStartPoint) await cleanupExistingBranch(git, branchName);
+        if (reusedStartPoint) {
+            branchName = reuseBranch!;
+        } else {
+            await cleanupExistingBranch(git, branchName);
+        }
         // Use explicit refspec to ensure remote tracking ref is updated
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations

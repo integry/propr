@@ -45,16 +45,16 @@ async function resetCurrentBranchToRemote(git: SimpleGit, owner: string, repoNam
     }
 }
 
-async function fetchSpecificBranch(git: SimpleGit, owner: string, repoName: string, branch: string, authToken: string): Promise<void> {
-    logger.info({ repo: `${owner}/${repoName}`, branch }, 'Fetching latest changes for specific branch...');
+async function fetchSpecificBranch(git: SimpleGit, repo: string, branch: string, authToken: string): Promise<void> {
+    logger.info({ repo, branch }, 'Fetching latest changes for specific branch...');
     await fetchWithObjectRecovery(git, () => git.fetch(['origin', branch, '--prune']), branch, authToken);
     try {
         await git.checkout(branch);
         await git.reset(['--hard', `origin/${branch}`]);
         const newHead = await git.revparse(['HEAD']);
-        logger.info({ repo: `${owner}/${repoName}`, branch, commitHash: newHead.trim() }, 'Reset local branch to match remote');
+        logger.info({ repo, branch, commitHash: newHead.trim() }, 'Reset local branch to match remote');
     } catch (resetError) {
-        logger.warn({ repo: `${owner}/${repoName}`, branch, error: (resetError as Error).message }, 'Could not reset local branch to remote, continuing with fetched refs');
+        logger.warn({ repo, branch, error: (resetError as Error).message }, 'Could not reset local branch to remote, continuing with fetched refs');
     }
 }
 
@@ -97,7 +97,7 @@ async function fetchLatestChangesInternal(options: FetchLatestChangesOptions): P
             await setupAuthenticatedRemote(git, repoUrl, authToken);
 
             if (branch && branch !== 'HEAD') {
-                await fetchSpecificBranch(git, owner, repoName, branch, authToken);
+                await fetchSpecificBranch(git, `${owner}/${repoName}`, branch, authToken);
             } else {
                 await fetchAllBranches(git, owner, repoName, authToken);
             }

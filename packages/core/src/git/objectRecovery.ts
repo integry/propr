@@ -58,7 +58,9 @@ async function unlinkVerifiedMarker(marker: string, contents: string): Promise<v
 }
 
 /** The gate is held. Only the incident recorded in the marker can clear it. */
-async function clearResolvedMarker(git: SimpleGit, common: string, marker: string, revision: string, missing: boolean): Promise<void> {
+async function clearResolvedMarker(
+    git: SimpleGit, common: string, marker: string, { revision, missing }: { revision: string; missing: boolean },
+): Promise<void> {
     const contents = await readMarker(marker);
     if (contents === undefined) return;
     let recorded: unknown;
@@ -89,7 +91,7 @@ async function repairIfMissing(git: SimpleGit, common: string, revision: string,
     const missing = await hasMissingObjects(git, revision);
     const marker = path.join(common, OBJECT_REPAIR_MARKER);
     try {
-        await clearResolvedMarker(git, common, marker, revision, missing);
+        await clearResolvedMarker(git, common, marker, { revision, missing });
     } catch (error) {
         throw new RepositoryRepairRequiredError(common, `could not verify or clear the recorded repair; inspect cache permissions or storage (${(error as Error).message})`);
     }
