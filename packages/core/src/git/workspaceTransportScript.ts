@@ -6,14 +6,26 @@
  *    setup hook nor the agent inherits it, and keeps it only as a git
  *    `http.extraheader` passed through the environment of its own git commands
  *    (never argv, never `.git/config`, never a file).
- * 2. Fetches the base ref the worker published and checks out the task branch
- *    at exactly the base commit.
+ * 2. Fetches the base ref the worker published into a private, wrapper-owned
+ *    bare repository, clones that into the workspace without credentials and
+ *    checks out the task branch at exactly the base commit.
+ *
+ *    Every credentialed git command runs only in that private repository,
+ *    against the fixed transport remote URL, with global configuration and
+ *    git's command-selecting environment variables ignored. The workspace's
+ *    `.git` (and `~/.gitconfig`) belong to the setup hook and agent once they
+ *    start, so their configuration (`core.sshCommand`, `url.*.insteadOf`,
+ *    remotes, credential helpers, filters) never reaches an authenticated
+ *    operation.
  * 3. Runs the wrapped entrypoint as a child (stdin and termination signals are
  *    forwarded) and keeps its exit status.
  * 4. Snapshots the workspace (agent HEAD plus every non-ignored change, and
- *    `.propr/previews`) as one commit, pushes it to the run's temporary result
- *    ref, and falls back to a bundle in the result directory when the push
- *    fails. A `status` file there records which path was taken.
+ *    `.propr/previews`) as one commit under the agent's unprivileged identity
+ *    (agent-configured filters run with the agent's privileges, never the
+ *    wrapper's), carries it into the private repository as a bundle, pushes it
+ *    from there to the run's temporary result ref, and falls back to a bundle
+ *    in the result directory when the push fails. A `status` file there
+ *    records which path was taken.
  * 5. Drops the token and exits with the agent's status.
  */
 
@@ -56,16 +68,45 @@ if [ -n "$token" ]; then
     auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\\n')"
 fi
 token=""
+trusted=""
+stage=""
 
+# Git in the wrapper's private repository only: no global config (HOME may be
+# the agent's), no inherited variables that select programs or repositories.
+git_isolation=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_SSH -u GIT_SSH_COMMAND
+    -u GIT_SSH_VARIANT -u GIT_ASKPASS -u SSH_ASKPASS -u GIT_PROXY_COMMAND -u GIT_EXEC_PATH -u GIT_EXTERNAL_DIFF
+    -u GIT_TEMPLATE_DIR -u GIT_ALLOW_PROTOCOL GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0)
+trusted_git() {
+    "\${git_isolation[@]}" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+        git --git-dir="$trusted/repo.git" "$@"
+}
+# The only credentialed shape: private repository, fixed remote URL, trusted configuration.
 transport_git() {
-    GIT_CONFIG_COUNT=3 \\
-    GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \\
-    GIT_CONFIG_KEY_1=http.https://github.com/.extraheader GIT_CONFIG_VALUE_1="$auth_header" \\
-    GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2=/dev/null \\
-    GIT_TERMINAL_PROMPT=0 git "$@"
+    "\${git_isolation[@]}" GIT_CONFIG_COUNT=3 \\
+        GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+        GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= \\
+        GIT_CONFIG_KEY_2=http.https://github.com/.extraheader GIT_CONFIG_VALUE_2="$auth_header" \\
+        git --git-dir="$trusted/repo.git" "$@"
 }
 local_git() {
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"
+}
+drops_privileges() {
+    [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1 && [ "$(id -u node)" != "0" ]
+}
+# Run a command as the agent's identity (as the repository setup wrapper does).
+as_agent() {
+    if drops_privileges; then
+        su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+    else
+        "$@"
+    fi
+}
+drop_secrets() {
+    auth_header=""
+    [ -z "$trusted" ] || rm -rf "$trusted"
+    [ -z "$stage" ] || rm -rf "$stage"
 }
 record() {
     printf '%s\\n' "$*" > "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}.tmp" && mv "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}.tmp" "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}"
@@ -73,21 +114,39 @@ record() {
 bootstrap_failed() {
     echo "ProPR workspace transport: $*" >&2
     record "failed bootstrap"
-    auth_header=""
+    drop_secrets
     exit ${WORKSPACE_BOOTSTRAP_FAILURE_EXIT}
 }
 
+# Snapshot, run as the agent: args are workspace, base commit, bundle path; prints the snapshot commit.
+snapshot_script='
+set -u
+cd "$1" || exit 1
+g() { GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"; }
+g add -A . >/dev/null 2>&1 || exit 1
+if [ -d .propr/previews ]; then g add -A -f -- .propr/previews >/dev/null 2>&1 || exit 1; fi
+tree="$(g write-tree 2>/dev/null)" && [ -n "$tree" ] || exit 1
+head="$(g rev-parse --verify -q HEAD)" && [ -n "$head" ] || exit 1
+snapshot="$(g commit-tree "$tree" -p "$head" -m "ProPR workspace result" 2>/dev/null)" && [ -n "$snapshot" ] || exit 1
+g update-ref ${WORKSPACE_RESULT_BUNDLE_REF} "$snapshot" || exit 1
+g bundle create -q "$3" ${WORKSPACE_RESULT_BUNDLE_REF} "^$2" >/dev/null 2>&1 || exit 1
+printf "%s\\n" "$snapshot"
+'
+
 mkdir -p "$result_dir" && chmod 700 "$result_dir" || { echo "ProPR workspace transport: cannot create $result_dir" >&2; exit ${WORKSPACE_BOOTSTRAP_FAILURE_EXIT}; }
+trusted="$(mktemp -d "\${TMPDIR:-/tmp}/propr-workspace-transport.XXXXXX")" && chmod 700 "$trusted" || bootstrap_failed "cannot create the transport repository"
+git init -q --bare "$trusted/repo.git" >/dev/null 2>&1 || bootstrap_failed "cannot create the transport repository"
+transport_git fetch -q --no-tags "$remote" "+$base_ref:refs/propr/base" || bootstrap_failed "cannot fetch the task base"
+[ "$(trusted_git rev-parse --verify -q refs/propr/base)" = "$base_commit" ] || bootstrap_failed "fetched base does not match $base_commit"
 mkdir -p "$workspace" || bootstrap_failed "cannot create $workspace"
 cd "$workspace" || bootstrap_failed "cannot enter $workspace"
 [ -z "$(ls -A . 2>/dev/null)" ] || bootstrap_failed "$workspace is not empty"
 local_git init -q . || bootstrap_failed "git init failed"
 local_git remote add origin "$remote" || bootstrap_failed "cannot add origin"
-transport_git fetch -q --no-tags origin "+$base_ref:refs/propr/base" || bootstrap_failed "cannot fetch the task base"
-[ "$(local_git rev-parse refs/propr/base)" = "$base_commit" ] || bootstrap_failed "fetched base does not match $base_commit"
+local_git fetch -q --no-tags "$trusted/repo.git" "+refs/propr/base:refs/propr/base" || bootstrap_failed "cannot copy the task base"
 local_git checkout -q -B "$branch" "$base_commit" || bootstrap_failed "cannot check out $branch"
 local_git update-ref -d refs/propr/base
-if [ "$(id -u)" = "0" ] && id node >/dev/null 2>&1; then
+if drops_privileges; then
     chown -R node:node "$workspace" 2>/dev/null || true
 fi
 echo "ProPR workspace transport: cloned $base_commit into $workspace" >&2
@@ -107,33 +166,34 @@ done
 trap - TERM INT HUP
 
 if [ -n "$result_ref" ]; then
-    cd "$workspace" 2>/dev/null || { record "failed workspace"; auth_header=""; exit "$status"; }
     export GIT_AUTHOR_NAME="\${GIT_AUTHOR_NAME:-ProPR}" GIT_AUTHOR_EMAIL="\${GIT_AUTHOR_EMAIL:-bot@propr.dev}"
     export GIT_COMMITTER_NAME="\${GIT_COMMITTER_NAME:-ProPR}" GIT_COMMITTER_EMAIL="\${GIT_COMMITTER_EMAIL:-bot@propr.dev}"
     snapshot=""
-    if local_git add -A . >/dev/null 2>&1; then
-        if [ -d .propr/previews ]; then local_git add -A -f -- .propr/previews >/dev/null 2>&1; fi
-        tree="$(local_git write-tree 2>/dev/null)"
-        head="$(local_git rev-parse --verify -q HEAD)"
-        if [ -n "$tree" ] && [ -n "$head" ]; then
-            snapshot="$(local_git commit-tree "$tree" -p "$head" -m "ProPR workspace result" 2>/dev/null)"
+    stage="$(mktemp -d "\${TMPDIR:-/tmp}/propr-workspace-stage.XXXXXX")" || stage=""
+    if [ -n "$stage" ]; then
+        if drops_privileges; then chown node:node "$stage" 2>/dev/null || true; fi
+        reported="$(cd / && as_agent /bin/bash -c "$snapshot_script" propr-snapshot "$workspace" "$base_commit" "$stage/snapshot.bundle" </dev/null 2>/dev/null)"
+        # The bundle is agent-written data; only what it carries crosses into the private repository.
+        if [ -n "$reported" ] \\
+            && trusted_git fetch -q --no-tags "$stage/snapshot.bundle" "+${WORKSPACE_RESULT_BUNDLE_REF}:${WORKSPACE_RESULT_BUNDLE_REF}" >/dev/null 2>&1 \\
+            && [ "$(trusted_git rev-parse --verify -q ${WORKSPACE_RESULT_BUNDLE_REF})" = "$reported" ]; then
+            snapshot="$reported"
         fi
     fi
     if [ -z "$snapshot" ]; then
         echo "ProPR workspace transport: could not snapshot the workspace" >&2
         record "failed snapshot"
-    elif transport_git push -q --no-verify origin "$snapshot:$result_ref" 2>/dev/null; then
+    elif transport_git push -q --no-verify "$remote" "$snapshot:$result_ref" 2>/dev/null; then
         record "pushed $snapshot"
     else
         echo "ProPR workspace transport: result push failed; leaving a bundle for the worker" >&2
-        if local_git update-ref ${WORKSPACE_RESULT_BUNDLE_REF} "$snapshot" \\
-            && local_git bundle create -q "$result_dir/${WORKSPACE_RESULT_BUNDLE_FILE}" ${WORKSPACE_RESULT_BUNDLE_REF} "^$base_commit" 2>/dev/null; then
+        if trusted_git bundle create -q "$result_dir/${WORKSPACE_RESULT_BUNDLE_FILE}" ${WORKSPACE_RESULT_BUNDLE_REF} "^$base_commit" 2>/dev/null; then
             record "bundle $snapshot"
         else
             record "failed bundle"
         fi
     fi
 fi
-auth_header=""
+drop_secrets
 exit "$status"
 `.trim();

