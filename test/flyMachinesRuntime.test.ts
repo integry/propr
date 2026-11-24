@@ -47,6 +47,8 @@ interface FakeMachine {
     events: any[];
     pendingLogs: string[];
     signals: number[];
+    mtimes: Map<string, number>;
+    killed?: boolean;
     ran?: boolean;
 }
 
@@ -59,6 +61,12 @@ class FakeFly {
     /** Log polls before the agent "runs". */
     delayPolls = 1;
     ignoreSignals = false;
+    /** The forced kill exec fails (e.g. the exec API is down). */
+    killFails = false;
+    /** This many DELETE requests fail with 503 before they succeed. */
+    failDeletes = 0;
+    /** Content read requests (not stats) per file. */
+    contentReads = new Map<string, number>();
     private nextId = 1;
 
     finish(machine: FakeMachine, stdout: string, stderr: string, exitCode: number): void {
@@ -87,7 +95,7 @@ class FakeFly {
         const match = /\/apps\/([^/]+)\/machines(?:\/([^/?]+))?(?:\/([a-z]+))?/.exec(parsed.pathname)!;
         const [, , id, action] = match;
         if (method === 'POST' && !id) {
-            const machine: FakeMachine = { id: `m${this.nextId++}`, state: 'created', request: body, files: new Map(), events: [], pendingLogs: [], signals: [] };
+            const machine: FakeMachine = { id: `m${this.nextId++}`, state: 'created', request: body, files: new Map(), mtimes: new Map(), events: [], pendingLogs: [], signals: [] };
             for (const file of body.config.files ?? []) machine.files.set(file.guest_path, Buffer.from(file.raw_value, 'base64'));
             this.machines.set(machine.id, machine);
             return json(200, { id: machine.id, state: 'created', region: body.region, instance_id: 'i1' });
@@ -103,18 +111,38 @@ class FakeFly {
         if (action === 'exec') {
             const [, , script, , file, offset, length] = body.command as string[];
             const content = machine.files.get(file);
-            if (script.includes('stat -c')) return json(200, content ? { exit_code: 0, stdout: `${content.length}\n` } : { exit_code: 3 });
+            if (script.includes('stat -c')) {
+                if (!content) return json(200, { exit_code: 3 });
+                const mtime = machine.mtimes.get(file) ?? Date.parse('2026-11-24T10:00:00.250Z');
+                const human = `${new Date(mtime).toISOString().replace('T', ' ').replace(/\.(\d+)Z$/, '.$1000000')} +0000`;
+                return json(200, { exit_code: 0, stdout: `${content.length} ${Math.floor(mtime / 1000)} ${human}\n` });
+            }
+            if (script.includes('kill -s KILL')) {
+                if (this.killFails) return json(200, { exit_code: 1, stderr: 'kill: No such process' });
+                machine.killed = true;
+                this.finish(machine, 'partial\n', 'killed\n', 137);
+                return json(200, { exit_code: 0 });
+            }
+            if (script === ': > "$1"') { machine.files.set(file, Buffer.alloc(0)); return json(200, { exit_code: 0 }); }
+            this.contentReads.set(file, (this.contentReads.get(file) ?? 0) + 1);
             const slice = content!.subarray(Number(offset), Number(offset) + Number(length));
             return json(200, { exit_code: 0, stdout: slice.toString('base64') });
         }
+        if (method === 'DELETE' && this.failDeletes > 0) { this.failDeletes--; return json(503, { error: 'service unavailable' }); }
         if (method === 'DELETE') { this.machines.delete(machine.id); this.destroyed.push(machine.id); return json(200, { ok: true }); }
         if (method === 'GET') return json(200, { id: machine.id, state: machine.state, events: machine.events });
         return json(400, { error: `unexpected ${method} ${url}` });
     };
 }
 
-function runtime(fly: FakeFly, environment: Record<string, string> = FLY_ENV) {
-    return new FlyMachinesRuntime({ environment, fetch: fly.fetch, pollIntervalMs: 2 });
+function runtime(fly: FakeFly, environment: Record<string, string> = FLY_ENV, now?: () => number) {
+    return new FlyMachinesRuntime({ environment, fetch: fly.fetch, pollIntervalMs: 2, ...(now ? { now } : {}) });
+}
+
+/** Once the Machine started, the clock jumps a second per reading, so deadlines and stop windows elapse within a few polls. */
+function fastClock(fly: FakeFly): () => number {
+    let at = Date.now();
+    return () => ([...fly.machines.values()].some(machine => machine.state === 'started') ? (at += 1000) : at);
 }
 
 test('config: token and app are required; size, memory, region and private network are validated', () => {
@@ -356,4 +384,207 @@ test('upload step: credential stores become per-run files and refreshed tokens a
     assert.equal(result.exitCode, 0);
     assert.deepEqual(started.mounts, []);
     assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"refreshed"}');
+});
+
+test('timeout: an agent that ignores TERM is killed before the run settles, keeping its partial output and files', async () => {
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    fly.ignoreSignals = true;
+    const handle = runtime(fly, FLY_ENV, fastClock(fly)).start(spec(), { timeout: 30, preserveOutputOnTimeout: true });
+    const result = await handle.wait();
+    const machine = fly.machines.get('m1')!;
+    assert.equal(machine.killed, true, 'the agent was killed after its grace period');
+    assert.deepEqual(machine.signals, [15]);
+    assert.equal(result.timedOut, true);
+    assert.equal(result.exitCode, 137, 'the exit status the launcher recorded after the kill');
+    assert.equal(result.stdout, 'partial\n');
+    assert.deepEqual(fly.destroyed, [], 'the stopped Machine keeps its result files');
+    assert.equal((await handle.readFile!(FLY_RUN_FILES.stderr))!.toString(), 'killed\n');
+    await handle.release!();
+    assert.deepEqual(fly.destroyed, ['m1']);
+});
+
+test('timeout: when the kill cannot be confirmed the Machine is destroyed before settling, or the run fails', async () => {
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    fly.ignoreSignals = true;
+    fly.killFails = true;
+    const handle = runtime(fly, FLY_ENV, fastClock(fly)).start(spec(), { timeout: 30, preserveOutputOnTimeout: true });
+    const result = await handle.wait();
+    assert.deepEqual(fly.destroyed, ['m1'], 'destroyed before wait() settled');
+    assert.equal(result.timedOut, true);
+    assert.equal(result.exitCode, null);
+    assert.equal(await handle.readFile!(FLY_RUN_FILES.stdout), null, 'nothing is read from a destroyed run');
+
+    // Neither the kill nor the destroy succeeds: the run does not report a settled timeout.
+    const stuck = new FakeFly();
+    stuck.agent = () => undefined;
+    stuck.ignoreSignals = true;
+    stuck.killFails = true;
+    stuck.failDeletes = 1;
+    const failing = runtime(stuck, FLY_ENV, fastClock(stuck)).start(spec(), { timeout: 30, preserveOutputOnTimeout: true });
+    await assert.rejects(failing.wait(), /timed out and its Fly Machine m1 could not be stopped/);
+    assert.equal(await failing.readFile!(FLY_RUN_FILES.stdout), null, 'a run that may still be executing is not read');
+    await failing.release!();
+    assert.deepEqual(stuck.destroyed, ['m1'], 'cleanup retried the destroy');
+});
+
+test('cancellation: a failed destroy leaves the Machine eligible for cleanup, and a failed release can be retried', async () => {
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    fly.failDeletes = 2;
+    const controller = new AbortController();
+    const handle = runtime(fly).start(spec(), { timeout: 10_000, signal: controller.signal });
+    while (!(handle as any).id) await new Promise(resolve => setTimeout(resolve, 2));
+    controller.abort();
+    await assert.rejects(handle.wait(), /aborted/i);
+    assert.deepEqual(fly.destroyed, [], 'the cancel-time destroy failed');
+    assert.ok(fly.machines.has('m1'));
+    await assert.rejects(handle.release!(), /returned 503/);
+    await handle.release!();
+    assert.deepEqual(fly.destroyed, ['m1'], 'a later release destroyed it');
+    const deletes = fly.requests.filter(request => request.method === 'DELETE').length;
+    assert.equal(deletes, 3);
+    await handle.release!();
+    assert.equal(fly.requests.filter(request => request.method === 'DELETE').length, deletes, 'release is idempotent once it succeeded');
+});
+
+test('retain(): marks the run retained inside the Machine before later reads, and only release() destroys it', async () => {
+    const fly = new FakeFly();
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    await handle.wait();
+    handle.retain!();
+    // A read issued right after retain() waits for the mark.
+    assert.equal((await handle.readFile!(FLY_RUN_FILES.stderr))!.toString(), 'err\n');
+    assert.ok(fly.machines.get('m1')!.files.has(FLY_RUN_FILES.retain), 'the launcher sees the retain marker and keeps lingering');
+    assert.deepEqual(fly.destroyed, []);
+    await handle.release!();
+    assert.deepEqual(fly.destroyed, ['m1']);
+    const script = renderFlyMachineRequest(spec(), { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }).config.init.entrypoint![2];
+    assert.match(script, /\[ -f "\$run_dir\/retain" \] \|\| break/, 'the linger loop continues while the marker exists');
+});
+
+test('readFileWithStat: the remote modification time is returned and an oversized file is refused after the stat', async () => {
+    const fly = new FakeFly();
+    fly.agent = machine => {
+        fly.finish(machine, 'out\n', 'err\n', 0);
+        machine.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"t":2}'));
+        machine.mtimes.set('/home/node/.claude/.credentials.json', Date.parse('2026-11-24T09:59:30.123Z'));
+        machine.files.set('/home/node/.claude/big.json', Buffer.alloc(4096));
+    };
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    await handle.wait();
+    const read = await handle.readFileWithStat!('/home/node/.claude/.credentials.json', { maxBytes: 1024 });
+    assert.ok(read && read !== 'oversized');
+    assert.equal(read.content.toString(), '{"t":2}');
+    assert.equal(read.mtimeMs, Date.parse('2026-11-24T09:59:30.123Z'));
+    assert.equal(await handle.readFileWithStat!('/home/node/.claude/big.json', { maxBytes: 1024 }), 'oversized');
+    assert.equal(fly.contentReads.get('/home/node/.claude/big.json'), undefined, 'no content of the oversized file was transferred');
+    await handle.release!();
+});
+
+function credentialRun(store: string, name: string) {
+    const run = new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'i', name, stdin: false, network: agentRunNetwork('bridge'),
+        workspace: { hostPath: '/tmp/w', containerPath: '/home/node/workspace', readOnly: false, mode: 'bind' },
+    }).credentialBind(store, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true }).command('claude').build();
+    run.entrypoint = '/home/node/claude-entrypoint.sh';
+    return run;
+}
+
+function credentialStore(): string {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-claude-'));
+    fs.writeFileSync(path.join(store, '.credentials.json'), '{"token":"old"}', { mode: 0o600 });
+    return store;
+}
+
+/** A finished run whose credential file the collector reads back. */
+function finishedHandle(run: any, read: (file: string, options: { maxBytes: number }) => Promise<any>) {
+    let retained = 0;
+    let released = 0;
+    const handle: any = {
+        spec: run, stdout: null, stderr: null,
+        wait: async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() }),
+        stop: async () => undefined, inspect: async () => ({ liveness: 'stopped', name: run.name }), isAlive: async () => false,
+        readFileWithStat: read,
+        retain: () => { retained++; },
+        release: async () => { released++; },
+    };
+    return { handle, counts: () => ({ retained, released }) };
+}
+
+test('credential write-back orders concurrent refreshes by the run\'s modification time, not collection time', async () => {
+    const store = credentialStore();
+    const run = credentialRun(store, 'older-refresh');
+    const uploaded = uploadAgentRunFiles(run);
+    // Another run refreshed and committed after this one refreshed (but before this one finished).
+    const refreshedAt = Date.now() - 60_000;
+    fs.writeFileSync(path.join(store, '.credentials.json'), '{"token":"newer"}');
+    const older = finishedHandle(run, async file => (file.endsWith('.credentials.json') ? { content: Buffer.from('{"token":"older"}'), mtimeMs: refreshedAt } : null));
+    const collected = await uploaded.collect(older.handle);
+    assert.deepEqual(collected.results.map(result => result.outcome), ['kept-canonical']);
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"newer"}');
+
+    // A refresh made after the canonical change still wins.
+    const later = uploadAgentRunFiles(credentialRun(store, 'newer-refresh'));
+    fs.writeFileSync(path.join(store, '.credentials.json'), '{"token":"other"}', { flag: 'w' });
+    fs.utimesSync(path.join(store, '.credentials.json'), new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    const newer = finishedHandle(run, async file => (file.endsWith('.credentials.json') ? { content: Buffer.from('{"token":"latest"}'), mtimeMs: Date.now() } : null));
+    assert.deepEqual((await later.collect(newer.handle)).results.map(result => result.outcome), ['written-newer']);
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"latest"}');
+
+    // Without a modification time from the runtime, a changed canonical credential is kept.
+    const untimed = uploadAgentRunFiles(credentialRun(store, 'untimed-refresh'));
+    fs.writeFileSync(path.join(store, '.credentials.json'), '{"token":"canonical"}');
+    const legacy: any = { ...finishedHandle(run, async () => null).handle, readFileWithStat: undefined, readFile: async (file: string) => (file.endsWith('.credentials.json') ? Buffer.from('{"token":"untimed"}') : null) };
+    assert.deepEqual((await untimed.collect(legacy)).results.map(result => result.outcome), ['kept-canonical']);
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"canonical"}');
+});
+
+test('credential write-back: an oversized credential is refused with a bound and never committed', async () => {
+    const store = credentialStore();
+    const run = credentialRun(store, 'oversized-refresh');
+    const uploaded = uploadAgentRunFiles(run);
+    const bounds: number[] = [];
+    const { handle } = finishedHandle(run, async (_file, options) => { bounds.push(options.maxBytes); return 'oversized'; });
+    const collected = await uploaded.collect(handle);
+    assert.ok(bounds.length > 0 && bounds.every(bound => bound === 1024 * 1024), 'every credential read carries the size limit');
+    assert.deepEqual(collected.results, []);
+    assert.equal(collected.keepRun, false);
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"old"}');
+});
+
+test('credential write-back failure saves the refreshed copy for recovery; an unreadable one keeps the run', async () => {
+    const { CredentialBroker } = await import('../packages/core/src/agents/credentials/broker.ts');
+    const { collectingHandle } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+    const { STAGING_RETAINED_FILE } = await import('../packages/core/src/agents/credentials/hostCredentialStaging.ts');
+    const store = credentialStore();
+    const run = credentialRun(store, 'commit-fails');
+    const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunDir, '.locks') } });
+    broker.commit = async () => { throw new Error('EROFS: read-only file system'); };
+    const uploaded = uploadAgentRunFiles(run, { broker });
+    const refreshed = finishedHandle(run, async file => (file.endsWith('.credentials.json') ? { content: Buffer.from('{"token":"refreshed"}'), mtimeMs: Date.now() } : null));
+    const wrapped = collectingHandle(refreshed.handle, handle => uploaded.collect(handle));
+    await wrapped.wait();
+    const collected = await uploaded.collect(refreshed.handle);
+    assert.ok(collected.recoveryDir?.startsWith(credentialRunDir));
+    assert.equal(collected.keepRun, false, 'the saved copy releases the run');
+    const saved = path.join(collected.recoveryDir!, 'claude-config', '.credentials.json');
+    assert.equal(fs.readFileSync(saved, 'utf8'), '{"token":"refreshed"}');
+    assert.equal(fs.statSync(saved).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(collected.recoveryDir!).mode & 0o777, 0o700);
+    const marker = JSON.parse(fs.readFileSync(path.join(collected.recoveryDir!, STAGING_RETAINED_FILE), 'utf8'));
+    assert.deepEqual(marker.files, [{ staged: saved, canonical: path.join(store, '.credentials.json') }]);
+    assert.match(marker.error, /EROFS/);
+    await wrapped.release!();
+    assert.deepEqual(refreshed.counts(), { retained: 0, released: 1 });
+
+    // The refreshed credential cannot be read back: the run may hold its only copy and is kept.
+    const unreadable = uploadAgentRunFiles(credentialRun(store, 'read-fails'));
+    const failing = finishedHandle(run, async () => { throw new Error('exec API unavailable'); });
+    const kept = collectingHandle(failing.handle, handle => unreadable.collect(handle));
+    await kept.wait();
+    assert.equal((await unreadable.collect(failing.handle)).keepRun, true);
+    await kept.release!();
+    assert.deepEqual(failing.counts(), { retained: 1, released: 0 }, 'retained, and release() does not discard it');
 });

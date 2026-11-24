@@ -311,6 +311,12 @@ export interface AgentRunResult {
     computeUsage?: AgentRunComputeUsage;
 }
 
+/** A file read back from a run, with its modification time there (milliseconds since the epoch). */
+export interface AgentRunFileRead {
+    content: Buffer;
+    mtimeMs: number;
+}
+
 export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> {
     readonly spec: AgentRunSpec;
     /**
@@ -332,6 +338,12 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
      * clone-mode run until {@link AgentRunHandle.release}.
      */
     readFile?(path: string): Promise<Buffer | null>;
+    /**
+     * Like {@link AgentRunHandle.readFile}, with the file's modification time in
+     * the run's filesystem. A file larger than `maxBytes` is refused as
+     * `'oversized'` before any of its content is transferred.
+     */
+    readFileWithStat?(path: string, options: { maxBytes: number }): Promise<AgentRunFileRead | 'oversized' | null>;
     /** Discards what the runtime kept of a finished run (e.g. the stopped container). Idempotent. */
     release?(): Promise<void>;
     /**

@@ -191,3 +191,13 @@ export function flyMachineExitCode(machine: FlyMachine | null): number | null {
     }
     return null;
 }
+
+/** `stat -c "%s %Y %y"`: size, whole seconds, and the human timestamp whose fraction gives sub-second precision. */
+export function parseFlyStat(output: string): { size: number; mtimeMs: number } | undefined {
+    const [sizeText, secondsText, ...human] = output.trim().split(/\s+/);
+    const size = Number(sizeText);
+    const seconds = Number(secondsText);
+    if (!Number.isSafeInteger(size) || size < 0 || !Number.isFinite(seconds)) return undefined;
+    const fraction = /\.(\d+)$/.exec(human[1] ?? '')?.[1];
+    return { size, mtimeMs: seconds * 1000 + (fraction ? Math.floor(Number(`0.${fraction}`) * 1000) : 0) };
+}

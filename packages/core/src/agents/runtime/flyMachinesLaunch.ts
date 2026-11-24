@@ -17,7 +17,8 @@ import type { AgentRunSpec } from './types.js';
  * - forwards termination signals to the agent and records its exit status;
  * - then waits, up to the configured linger, for the worker to read the
  *   result files and destroy the Machine (`auto_destroy` removes it if the
- *   worker never does).
+ *   worker never does). A run the worker retained (its {@link FLY_RUN_FILES.retain}
+ *   marker exists) keeps waiting until the Machine is destroyed.
  */
 
 /** Launcher state inside the Machine: root-only, outside the workspace. */
@@ -26,6 +27,10 @@ export const FLY_RUN_FILES = {
     stdout: `${FLY_RUN_DIR}/stdout`,
     stderr: `${FLY_RUN_DIR}/stderr`,
     exitStatus: `${FLY_RUN_DIR}/exit-status`,
+    /** The agent's pid, which is also its process group (it runs in its own session). */
+    pid: `${FLY_RUN_DIR}/pid`,
+    /** Present once the worker retained the run: the launcher keeps lingering until the Machine is destroyed. */
+    retain: `${FLY_RUN_DIR}/retain`,
     stdin: `${FLY_RUN_DIR}/stdin`,
     uploads: `${FLY_RUN_DIR}/uploads`,
 } as const;
@@ -65,8 +70,10 @@ else
   sed -u "s/^/$mark_err/" < "$p.err-mark" >&2 & err_mark=$!
   tee -a "$run_dir/stdout" < "$p.out" > "$p.out-mark" & out_tee=$!
   tee -a "$run_dir/stderr" < "$p.err" > "$p.err-mark" & err_tee=$!
-  "$@" < "$stdin" > "$p.out" 2> "$p.err" &
+  # Its own session, so a forced stop can kill everything the agent started (process group = pid).
+  setsid "$@" < "$stdin" > "$p.out" 2> "$p.err" &
   child=$!
+  printf '%s\n' "$child" > "$run_dir/pid"
   trap 'kill -s TERM "$child" 2>/dev/null' TERM
   trap 'kill -s INT "$child" 2>/dev/null' INT
   trap 'kill -s HUP "$child" 2>/dev/null' HUP
@@ -80,9 +87,15 @@ else
 fi
 printf '%s\\n' "$status" > "$run_dir/exit-status.tmp" && mv -f "$run_dir/exit-status.tmp" "$run_dir/exit-status"
 printf '\\n%s%s\\n' "$mark_exit" "$status"
+# A retained run (the worker may need its result later) lingers until the Machine is destroyed.
+stopping=
 sleep "$linger" & sleeper=$!
-trap 'kill "$sleeper" 2>/dev/null' TERM INT HUP
-wait "$sleeper"
+trap 'stopping=1; kill "$sleeper" 2>/dev/null' TERM INT HUP
+while :; do
+  wait "$sleeper"
+  [ -z "$stopping" ] && [ -f "$run_dir/retain" ] || break
+  sleep 3600 & sleeper=$!
+done
 exit "$status"
 `;
 

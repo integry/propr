@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import logger from '../../utils/logger.js';
@@ -6,9 +7,9 @@ import {
     type CredentialBundle, type CredentialStoreRequest, type CredentialWriteBackResult, type ReturnedCredentialFile,
 } from '../credentials/broker.js';
 import {
-    canWriteBack, credentialRunRoot, definedVariables, type CredentialBindMount,
+    canWriteBack, credentialRunRoot, definedVariables, STAGING_RETAINED_FILE, type CredentialBindMount,
 } from '../credentials/hostCredentialStaging.js';
-import type { AgentRunFile, AgentRunHandle, AgentRunMount, AgentRunSpec } from './types.js';
+import type { AgentRunFile, AgentRunFileRead, AgentRunHandle, AgentRunMount, AgentRunSpec } from './types.js';
 
 /**
  * Upload transport for runtimes without bind mounts (Fly Machines and other
@@ -18,7 +19,11 @@ import type { AgentRunFile, AgentRunHandle, AgentRunMount, AgentRunSpec } from '
  *
  * - A credential store bind gets the broker's per-run copy (only the
  *   provider manifest's files); refreshed tokens are written back to the
- *   canonical store when the run finished.
+ *   canonical store when the run finished, ordered by their modification
+ *   time in the run. A refresh that cannot be written back is saved to a
+ *   retained recovery directory beside the host staging copies; one that
+ *   cannot be read (or saved) keeps the run itself, which is then never
+ *   released automatically.
  * - Any other bind is copied in (bounded, regular files only, symlinks
  *   skipped); writes to it stay in the sandbox. Log directories are created
  *   empty. A writable copy is never written back.
@@ -47,7 +52,18 @@ export interface UploadedAgentRunFiles {
     secretEnv: Record<string, string>;
     bundle: CredentialBundle;
     /** Read refreshed credentials back through the handle and write them to their canonical stores. Never throws. */
-    collect(handle: AgentRunHandle): Promise<CredentialWriteBackResult[]>;
+    collect(handle: AgentRunHandle): Promise<CredentialCollection>;
+}
+
+export interface CredentialCollection {
+    results: CredentialWriteBackResult[];
+    /** Refreshed credentials that were not written back were saved here (retained; never swept). */
+    recoveryDir?: string;
+    /**
+     * The run may hold the only copy of a refreshed credential (it could not
+     * be read back, or not saved after a failed write-back): it must be kept.
+     */
+    keepRun: boolean;
 }
 
 interface UploadOptions {
@@ -102,6 +118,63 @@ function copyBindSource(mount: BindMount): AgentRunFile[] {
     if (mount.purpose === 'logs' && stat.isDirectory()) return [{ type: 'directory', path: mount.target, mode: 0o777, purpose: 'logs' }];
     walk(mount.source, mount.target);
     return files;
+}
+
+/**
+ * A refreshable output read back from the run, bounded before its content is
+ * transferred. Without the runtime's modification time the copy is dated 0, so
+ * a canonical file another writer changed meanwhile is kept, never overwritten.
+ */
+async function readReturnedCredential(handle: AgentRunHandle, guestPath: string): Promise<AgentRunFileRead | 'oversized' | null> {
+    if (handle.readFileWithStat) return handle.readFileWithStat(guestPath, { maxBytes: MAX_RETURNED_CREDENTIAL_BYTES });
+    const content = await handle.readFile?.(guestPath);
+    if (!content) return null;
+    return content.length > MAX_RETURNED_CREDENTIAL_BYTES ? 'oversized' : { content, mtimeMs: 0 };
+}
+
+function changedOutputs(bundle: CredentialBundle, returned: readonly ReturnedCredentialFile[]): ReturnedCredentialFile[] {
+    return returned.filter(file => {
+        const store = bundle.stores.find(candidate => candidate.id === file.storeId);
+        return !!store && createHash('sha256').update(file.content).digest('hex') !== store.baseline[file.path];
+    });
+}
+
+/**
+ * Durably save refreshed credentials that were not written back, in a
+ * root-only directory marked retained (the staging sweep never removes it),
+ * laid out like a retained host staging copy. Returns the directory, or
+ * undefined when it could not be saved completely.
+ */
+function saveRecoveryCopy(root: string, run: { name: string; bundle: CredentialBundle }, files: ReturnedCredentialFile[], error: string): string | undefined {
+    const { name: runName, bundle } = run;
+    const safeName = runName.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(-80);
+    const directory = path.join(root, `${safeName}-recovered-${randomBytes(6).toString('hex')}`);
+    const writeDurably = (target: string, content: Buffer): void => {
+        const fd = fs.openSync(target, 'wx', 0o600);
+        try { fs.writeSync(fd, content); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    };
+    try {
+        fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(directory, { mode: 0o700 });
+        const saved = files.map(file => {
+            const store = bundle.stores.find(candidate => candidate.id === file.storeId)!;
+            const target = path.join(directory, store.id, file.path);
+            fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+            writeDurably(target, file.content);
+            const seconds = file.mtimeMs / 1000;
+            if (seconds > 0) fs.utimesSync(target, seconds, seconds);
+            return { staged: target, canonical: path.join(store.canonicalRoot, file.path) };
+        });
+        writeDurably(path.join(directory, STAGING_RETAINED_FILE), Buffer.from(`${JSON.stringify({ retainedAt: new Date().toISOString(), error, files: saved }, null, 2)}\n`));
+        logger.error(
+            { run: runName, recoveryDir: directory, error, files: saved },
+            'Credential broker could not write back refreshed credentials from the run; saved them for recovery. Restore each saved file that is newer than its canonical file, then delete the directory',
+        );
+        return directory;
+    } catch (saveError) {
+        logger.error({ run: runName, recoveryDir: directory, error, saveError: (saveError as Error).message }, 'Could not save refreshed credentials that were not written back');
+        return undefined;
+    }
 }
 
 function storeFiles(bundle: CredentialBundle, targets: StoreTarget[]): AgentRunFile[] {
@@ -163,29 +236,49 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
         // Name only: the value travels in the launch environment, never in the spec.
         env: [...spec.env, ...Object.keys(bundle.secretEnv).map(name => ({ name, order: nextOrder++ }))],
     };
-    let collection: Promise<CredentialWriteBackResult[]> | undefined;
-    const collect = (handle: AgentRunHandle): Promise<CredentialWriteBackResult[]> => collection ??= (async () => {
+    let collection: Promise<CredentialCollection> | undefined;
+    const collect = (handle: AgentRunHandle): Promise<CredentialCollection> => collection ??= (async () => {
         const returned: ReturnedCredentialFile[] = [];
+        const unread: string[] = [];
         for (const target of targets.filter(candidate => candidate.writeBack)) {
             const store = bundle.stores.find(candidate => candidate.id === target.storeId)!;
             for (const output of store.outputs) {
+                const guestPath = path.posix.join(target.mount.target, output);
                 try {
-                    const content = await handle.readFile?.(path.posix.join(target.mount.target, output));
-                    if (content && content.length <= MAX_RETURNED_CREDENTIAL_BYTES) returned.push({ storeId: store.id, path: output, content, mtimeMs: Date.now() });
+                    const read = await readReturnedCredential(handle, guestPath);
+                    if (read === 'oversized') {
+                        logger.warn({ run: spec.name, store: store.id, file: output, maxBytes: MAX_RETURNED_CREDENTIAL_BYTES }, 'Refreshed credential from the run exceeds the size limit; not writing it back');
+                    } else if (read) {
+                        returned.push({ storeId: store.id, path: output, content: read.content, mtimeMs: read.mtimeMs });
+                    }
                 } catch (error) {
+                    unread.push(guestPath);
                     logger.warn({ run: spec.name, store: store.id, file: output, error: (error as Error).message }, 'Could not read a refreshed credential back from the run');
                 }
             }
         }
+        let results: CredentialWriteBackResult[] = [];
+        let recoveryDir: string | undefined;
+        let unsaved = false;
         try {
-            const results = await broker.commit(bundle, returned);
+            results = await broker.commit(bundle, returned);
             const written = results.filter(result => result.outcome !== 'unchanged');
             if (written.length > 0) logger.info({ run: spec.name, results: written }, 'Credential broker wrote back refreshed credentials');
-            return results;
         } catch (error) {
-            logger.error({ run: spec.name, error: (error as Error).message }, 'Credential broker could not write back refreshed credentials from the run');
-            return [];
+            const message = (error as Error).message;
+            const pending = changedOutputs(bundle, returned);
+            if (pending.length > 0) {
+                recoveryDir = saveRecoveryCopy(credentialRunRoot(environment), { name: spec.name, bundle }, pending, message);
+                unsaved = !recoveryDir;
+            } else {
+                logger.error({ run: spec.name, error: message }, 'Credential broker could not write back refreshed credentials from the run');
+            }
         }
+        const keepRun = unread.length > 0 || unsaved;
+        if (keepRun) {
+            logger.error({ run: spec.name, unread, unsaved }, 'The run may hold the only copy of a refreshed credential; keeping it until it is released explicitly');
+        }
+        return { results, keepRun, ...(recoveryDir ? { recoveryDir } : {}) };
     })();
     return { spec: uploadedSpec, secretEnv: bundle.secretEnv, bundle, collect };
 }
@@ -193,20 +286,34 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
 /**
  * A handle whose `wait()` settles only after the run's refreshed credentials
  * were collected, so they are read before the workspace transport (or the
- * caller) releases the run.
+ * caller) releases the run. A run that may hold the only copy of a refreshed
+ * credential is retained, and `release()` keeps it instead of discarding it.
  */
-export function collectingHandle<Handle extends AgentRunHandle>(handle: Handle, collect: (handle: AgentRunHandle) => Promise<unknown>): Handle {
+export function collectingHandle<Handle extends AgentRunHandle>(handle: Handle, collect: (handle: AgentRunHandle) => Promise<Pick<CredentialCollection, 'keepRun'>>): Handle {
+    let collected: Promise<boolean> | undefined;
+    const collectOnce = (): Promise<boolean> => collected ??= collect(handle).then(outcome => {
+        if (outcome.keepRun) handle.retain?.();
+        return outcome.keepRun;
+    });
     let waited: ReturnType<Handle['wait']> | undefined;
     const wait = () => waited ??= handle.wait().then(async result => {
-        await collect(handle);
+        await collectOnce();
         return result;
     }, async error => {
-        await collect(handle);
+        await collectOnce();
         throw error;
     }) as ReturnType<Handle['wait']>;
+    const release = handle.release ? async () => {
+        if (waited && await collected?.catch(() => false)) {
+            logger.warn({ run: handle.spec.name }, 'Not releasing the run: it may hold the only copy of a refreshed credential');
+            return;
+        }
+        return handle.release!();
+    } : undefined;
     return new Proxy(handle, {
         get(target, property) {
             if (property === 'wait') return wait;
+            if (property === 'release') return release;
             const value = Reflect.get(target, property, target);
             return typeof value === 'function' ? value.bind(target) : value;
         },
