@@ -18,17 +18,54 @@
 #   PROPR_SPRITES_SETUP_HASH=... bash sprites-agent-setup.sh <directory with the entrypoint scripts>
 set -euo pipefail
 
+log() { echo "ProPR Sprite setup: $*" >&2; }
+die() { log "$*"; exit 1; }
+
+# Sprites ship Node through an nvm shim (/.sprite/bin/node) that only the
+# default user's PATH contains; sudo's secure_path drops it, so root and the
+# node user would have no node. Link the shim's real bin directory's node, npm
+# and npx into <target dir> (a directory on every PATH) when node is missing.
+link_sprite_node() {
+    local shim="$1" target_dir="$2" real_node real_dir bin
+    command -v node >/dev/null 2>&1 && return 0
+    [ -x "$shim" ] || return 0
+    real_node="$("$shim" -p 'process.execPath' 2>/dev/null || true)"
+    if [ -z "$real_node" ] || [ ! -x "$real_node" ]; then return 0; fi
+    real_dir="$(dirname "$real_node")"
+    log "linking node, npm and npx from $real_dir into $target_dir"
+    for bin in node npm npx; do
+        if [ -e "$real_dir/$bin" ]; then ln -sf "$real_dir/$bin" "$target_dir/$bin"; fi
+    done
+    hash -r
+}
+
+installed_version() { "$@" --version 2>/dev/null | head -n 1 || true; }
+# Installs <package>@<version> under $npm_prefix and links <bin name> into
+# $bin_dir. npm 12 (on Sprites) blocks install scripts that allowScripts does
+# not cover, which leaves Claude Code without its native binary, so the pinned
+# package's own scripts are allowed explicitly.
+pin_npm_cli() {
+    local package="$1" version="$2" bin_name="$3"
+    if ! installed_version "$npm_prefix/bin/$bin_name" | grep -qF "$version"; then
+        log "installing $package@$version"
+        npm install --global --no-fund --no-audit --allow-scripts="$package" --prefix "$npm_prefix" "$package@$version" >&2
+    fi
+    ln -sf "$npm_prefix/bin/$bin_name" "$bin_dir/$bin_name"
+    installed_version "$bin_dir/$bin_name" | grep -qF "$version" || die "$bin_name is not at the pinned version $version"
+}
+
+# Sourcing the script (the unit tests do) only defines the functions above.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
 source_dir="${1:?usage: sprites-agent-setup.sh <directory with the entrypoint scripts>}"
 : "${CLAUDE_CLI_VERSION:?CLAUDE_CLI_VERSION is required}"
 : "${CODEX_CLI_VERSION:?CODEX_CLI_VERSION is required}"
 : "${PROPR_SPRITES_SETUP_HASH:?PROPR_SPRITES_SETUP_HASH is required}"
 
-log() { echo "ProPR Sprite setup: $*" >&2; }
-die() { log "$*"; exit 1; }
-
 [ "$(id -u)" = "0" ] || die "must run as root (sudo -n)"
 # The launcher reads NUL-separated records with mapfile -d (bash 4.4+).
 [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; } || die "bash 4.4 or later is required"
+link_sprite_node /.sprite/bin/node /usr/local/bin
 for tool in node npm git curl tar sha512sum mkfifo tee stat install useradd; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool $tool is missing on this Sprite"
 done
@@ -72,16 +109,6 @@ command -v gosu >/dev/null 2>&1 || ln -sf "$(command -v su-exec)" /usr/local/bin
 [ "$(su-exec node id -u)" = "$(id -u node)" ] || die "su-exec cannot drop to the node user"
 
 # --- pinned CLIs ---------------------------------------------------------
-installed_version() { "$@" --version 2>/dev/null | head -n 1 || true; }
-pin_npm_cli() {
-    local package="$1" version="$2" bin_name="$3"
-    if ! installed_version "$npm_prefix/bin/$bin_name" | grep -qF "$version"; then
-        log "installing $package@$version"
-        npm install --global --no-fund --no-audit --prefix "$npm_prefix" "$package@$version" >&2
-    fi
-    ln -sf "$npm_prefix/bin/$bin_name" "$bin_dir/$bin_name"
-    installed_version "$bin_dir/$bin_name" | grep -qF "$version" || die "$bin_name is not at the pinned version $version"
-}
 pin_npm_cli @anthropic-ai/claude-code "$CLAUDE_CLI_VERSION" claude
 pin_npm_cli @openai/codex "$CODEX_CLI_VERSION" codex
 
