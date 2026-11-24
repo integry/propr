@@ -201,7 +201,7 @@ describe('AgentRunSpec is runtime-neutral', () => {
         assert.equal(environment.PROPR_AGENT_TYPE, 'claude');
         assert.deepEqual(spec.resources, { init: true, memory: '4g', memorySwap: '4g', cpus: '2', pidsLimit: '512' });
         assert.deepEqual(spec.network, { mode: 'named', name: 'propr_default' });
-        assert.deepEqual(spec.mcpGrant, { servers: ['propr'], network: 'propr_default' });
+        assert.deepEqual(spec.mcpGrant, { servers: ['propr'], network: 'propr_default', transport: 'private-network' });
         assert.ok(agentRunMounts(spec, 'credential').some(mount => mount.type === 'bind' && mount.target === '/home/node/.claude'));
         assert.equal(spec.profile.image, 'propr/claude:golden');
         assert.equal(spec.repoSetup?.providerEntrypoint, '/home/node/claude-entrypoint.sh');
