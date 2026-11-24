@@ -48,6 +48,41 @@ test('a lease lasts through result retrieval and release wipes the separate tmp 
     await Promise.all([next.release!(), concurrent.release!()]);
 });
 
+test('closing the runtime deletes idle Sprites once and leaves leased Sprites until release', async () => {
+    const { runtime, client, builder } = fixture();
+    const idle = runtime.start(builder.build());
+    await idle.wait();
+    const leased = runtime.start(builder.build());
+    await leased.wait();
+    await idle.release!();
+    await Promise.all([runtime.close(), runtime.close()]);
+    assert.deepEqual(client.deleted, [client.created[0].name]);
+    assert.throws(() => runtime.start(builder.build()), /closed/);
+    await leased.release!();
+    assert.deepEqual(client.deleted, client.created.map(sprite => sprite.name));
+    assert.equal(client.created.length, 2);
+});
+
+test('closing during a failed restore discards the Sprite without provisioning a replacement', async () => {
+    const { runtime, client, builder } = fixture();
+    const run = runtime.start(builder.build());
+    await run.wait();
+    const restoring = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    client.created[0].restoreCheckpoint = async () => {
+        restoring.resolve();
+        await resume.promise;
+        throw new Error('restore failed');
+    };
+    const released = run.release!();
+    await restoring.promise;
+    await runtime.close();
+    resume.resolve();
+    await released;
+    assert.equal(client.created.length, 1);
+    assert.deepEqual(client.deleted, [client.created[0].name]);
+});
+
 test('a failed or killed run restores before reuse and a failed restore destroys and reprovisions', async () => {
     const { runtime, client, builder } = fixture();
     client.setup = sprite => { sprite.exitCode = 19; };
@@ -143,7 +178,7 @@ test('credentials use one upload and only checked exports reach the broker. The 
     assert.deepEqual(sprite.events.slice(-5), ['export', 'read-export', 'restart', 'wipe', 'restore']);
 });
 
-test('launcher reader accepts only bounded regular files without following any component', t => {
+test('launcher reader accepts only bounded regular files without following any component', { skip: process.platform !== 'linux' }, t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-export-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const valid = path.join(dir, 'valid');
@@ -156,6 +191,34 @@ test('launcher reader accepts only bounded regular files without following any c
         'import runpy,sys,pathlib; print(runpy.run_path("scripts/sprites-launcher.py")["regular"](pathlib.Path(sys.argv[1]))[0])', file], { timeout: 2000 });
     assert.equal(read(valid).status, 0);
     for (const file of ['link', 'parent/valid', 'large', 'pipe', '.']) assert.equal(read(path.join(dir, file)).status, 1, file);
+});
+
+test('a non-root credential reader can traverse a 0711 run directory', { skip: process.platform !== 'linux' }, t => {
+    const run = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-run-'));
+    const home = path.join(run, 'home');
+    t.after(() => {
+        fs.chmodSync(home, 0o700);
+        fs.rmSync(run, { recursive: true, force: true });
+    });
+    fs.mkdirSync(home);
+    const file = path.join(home, 'credential');
+    fs.writeFileSync(file, 'refresh');
+    fs.chmodSync(file, 0o444);
+    fs.chmodSync(run, 0o711);
+    // An unprivileged test runner owns its fixture. Make the next component
+    // search-only for the owner too, so a read-only directory fd always fails.
+    fs.chmodSync(home, 0o111);
+    const result = spawnSync('python3', ['-I', '-c', `
+import os, pathlib, runpy, sys
+regular = runpy.run_path('scripts/sprites-launcher.py')['regular']
+if os.geteuid() == 0:
+    os.setgroups([])
+    os.setgid(65534)
+    os.setuid(65534)
+assert os.geteuid() != 0
+assert regular(pathlib.Path(sys.argv[1]))[0] == b'refresh'
+`, file], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
 });
 
 test('an invalid credential export still restores the checkpoint and releases the lease', async t => {

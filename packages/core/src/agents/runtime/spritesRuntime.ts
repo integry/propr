@@ -15,9 +15,14 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] as const };
     readonly unsupportedMount = unsupportedMount;
-    private pool?: { token: string; ready: Promise<SpritePool> };
+    private readonly pools = new Map<string, Promise<SpritePool>>();
+    private closing?: Promise<void>;
 
     constructor(private readonly client?: SpriteClient, private readonly environment = process.env) {}
+
+    close(): Promise<void> {
+        return this.closing ??= Promise.all([...this.pools.values()].map(async pool => (await pool).close())).then(() => {});
+    }
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         const type = spec.profile.agentType;
@@ -31,12 +36,13 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         if (spec.network.restriction || spec.network.policy?.mode === 'restricted' || spec.network.mode === 'named')
             throw new Error('Sprites requires open networking');
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
-        if (this.pool?.token !== token) {
-            const ready = this.client ? Promise.resolve(new SpritePool(this.client))
+        if (this.closing) throw new Error('Sprites runtime is closed');
+        let pool = this.pools.get(token);
+        if (!pool) {
+            pool = this.client ? Promise.resolve(new SpritePool(this.client))
                 : import('@fly/sprites').then(({ SpritesClient }) => new SpritePool(new SpritesClient(token)));
-            this.pool = { token, ready };
+            this.pools.set(token, pool);
         }
-        const pool = this.pool.ready;
         options = { ...options, extraEnvVars: { ...options.extraEnvVars } };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;

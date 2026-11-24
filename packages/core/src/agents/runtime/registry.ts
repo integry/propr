@@ -34,6 +34,12 @@ export function registerAgentRuntime(kind: string, factory: AgentRuntimeFactory)
     instances.delete(kind);
 }
 
+export async function closeAgentRuntimes(): Promise<void> {
+    const runtimes = [...instances.values()];
+    instances.clear();
+    await Promise.all(runtimes.map(runtime => runtime.close?.()));
+}
+
 export function registeredAgentRuntimes(): string[] {
     return [...factories.keys()];
 }

@@ -98,10 +98,10 @@ def agent():
 
 def regular(path):
     """Pin each directory by fd. Check the opened file again and bound the read."""
-    parent = os.open('/', os.O_DIRECTORY)
+    parent = os.open('/', os.O_PATH | os.O_DIRECTORY)
     try:
         for part in path.parts[1:-1]:
-            child = os.open(part, os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            child = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
             os.close(parent)
             parent = child
         before = os.lstat(path.name, dir_fd=parent)

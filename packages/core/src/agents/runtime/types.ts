@@ -328,6 +328,7 @@ export type AgentRunConfigSelection = Pick<AgentConfig, 'runtime'>
 export interface AgentRuntime<Options = unknown, Result extends AgentRunResult = AgentRunResult> {
     readonly kind: string;
     readonly capabilities: AgentRuntimeCapabilities;
+    close?(): Promise<void>;
     start(spec: AgentRunSpec, options?: Options): AgentRunHandle<Result>;
     /**
      * For runtimes without bind mounts: why a bind cannot be provided another

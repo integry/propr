@@ -50,12 +50,14 @@ const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'gh-wrapper
 
 export class SpritePool {
     private idle: Slot[] = [];
+    private closed = false;
     constructor(private readonly client: SpriteClient) {}
 
     private async provision(signal = new AbortController().signal): Promise<Slot> {
         // Never discover or adopt a machine by name. Another worker, including an earlier
         // incarnation of this worker, can still have a live run on one it created.
         const sprite = await this.client.createSprite(`propr-${randomUUID()}`);
+        logger.info({ sprite: sprite.name }, 'Worker created Sprite');
         try {
             const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
             const fs = sprite.filesystem();
@@ -91,26 +93,36 @@ export class SpritePool {
         try {
             await this.client.deleteSprite(sprite.name);
         } catch (error) {
-            logger.error({ sprite: sprite.name }, 'Could not delete Sprite after failed startup');
+            logger.error({ sprite: sprite.name }, 'Could not delete Sprite');
             throw error;
         }
     }
 
     async acquire(signal: AbortSignal): Promise<Slot> {
         signal.throwIfAborted();
+        if (this.closed) throw new Error('Sprite pool is closed');
         return this.idle.pop() ?? this.provision(signal);
     }
 
+    async close(): Promise<void> {
+        this.closed = true;
+        // discard logs the Sprite name for manual cleanup if deletion fails.
+        await Promise.allSettled(this.idle.splice(0).map(slot => this.discard(slot.sprite)));
+    }
+
     async release(slot: Slot): Promise<void> {
+        if (this.closed) return this.discard(slot.sprite);
         try {
             // Stop descendants that outlived the launcher, including detached processes.
             await slot.sprite.restart();
             await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
             await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
-            this.idle.push(slot);
         } catch {
-            await this.client.deleteSprite(slot.sprite.name);
-            this.idle.push(await this.provision());
+            await this.discard(slot.sprite);
+            if (this.closed) return;
+            slot = await this.provision();
         }
+        if (this.closed) await this.discard(slot.sprite);
+        else this.idle.push(slot);
     }
 }
