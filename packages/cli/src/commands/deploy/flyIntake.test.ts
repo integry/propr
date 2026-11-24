@@ -55,7 +55,7 @@ test("an explicit GH_AUTH_MODE needs its own credentials whatever the intake mod
   // The --no-relay case: OAuth sign-in only, GH_AUTH_MODE=app, no App. Polling
   // would pass the intake check, and core auth would exit at boot.
   const oauth = { GH_OAUTH_CLIENT_ID: "c", GH_OAUTH_CLIENT_SECRET: "s", PROPR_DEMO_MODE: "false" };
-  for (const intake of [{}, { GITHUB_EVENT_INTAKE_MODE: "polling" }]) {
+  for (const intake of [{}, { GITHUB_EVENT_INTAKE_MODE: "polling" }] as Record<string, string>[]) {
     assert.throws(
       () => selectFlyIntakeMode({ ...oauth, ...intake, GH_AUTH_MODE: "app" }, none),
       /GitHub auth mode app on the Machine needs GH_APP_ID, the App private key \(HOST_GH_PRIVATE_KEY or --github-app-key\), GH_INSTALLATION_ID/,

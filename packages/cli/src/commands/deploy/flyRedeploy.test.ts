@@ -193,7 +193,7 @@ test("a --no-relay deploy without GitHub credentials stops before uploading secr
 
 test("an explicit GH_AUTH_MODE without its credentials stops before uploading secrets, polling or not", async () => {
   for (const authMode of ["app", "relay"]) {
-    for (const intake of [{}, { GITHUB_EVENT_INTAKE_MODE: "polling" }]) {
+    for (const intake of [{}, { GITHUB_EVENT_INTAKE_MODE: "polling" }] as Record<string, string>[]) {
       const app = flyApp();
       const envFile = { ...OAUTH_ENV, ...intake, GH_AUTH_MODE: authMode };
       await assert.rejects(deploy(app, { relay: false }, envFile, "gh"), new RegExp(`GitHub auth mode ${authMode} on the Machine needs`));
