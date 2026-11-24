@@ -1294,6 +1294,109 @@ describe('summary miner batch fallback', () => {
       });
     }
 
+    function pricedFailure(alias: string, providerCostUsd: number, error = 'provider unavailable') {
+      return createAgent(alias, unlistedModel, async () => ({
+        success: false, response: '', modelUsed: unlistedModel, executionTimeMs: 1, error, providerCostUsd
+      }));
+    }
+    const virtualCostAgent = () => createAgent('cost-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    for (const caller of ['file batch', 'directory batch', 'keyword extraction', 'semantic scoring']) {
+      test(`${caller} logs the known total when every routed member fails with a reported cost`, async () => {
+        const routingSession = beginCostRoute([pricedFailure('cost-first', 0.25), pricedFailure('cost-second', 0.5)]);
+        const routeOptions = { agent: virtualCostAgent() as never, routingSession };
+        const batchOptions = {
+          ...routeOptions, log: log as never, fullName: 'integry/propr', branch: 'main',
+          modelUsed: 'smart', primaryAgentAliasSetting: 'cost-pool'
+        };
+
+        switch (caller) {
+          case 'file batch':
+            assert.equal((await processSingleBatch({ ...batchOptions, batch: [file] })).success, false);
+            break;
+          case 'directory batch':
+            await processDirectoryBatch({ ...batchOptions, directories: [directory] });
+            break;
+          case 'keyword extraction':
+            await extractKeywordsWithLLM('Update the A helper', routeOptions);
+            break;
+          case 'semantic scoring':
+            await db('file_summaries').insert({
+              path: 'integry/propr/src/a.ts', branch: 'main', summary: 'Exports A.',
+              commit_hash: 'cost-hash', model_used: 'index-model'
+            });
+            await scoreSemanticRelevance('Update the A helper', {
+              ...routeOptions, repoName: 'integry/propr', branch: 'main', modelId: 'cost-pool:smart'
+            });
+            break;
+        }
+
+        const llmLog = await latestLog();
+        assert.equal(llmLog.success, 0);
+        assert.equal(llmLog.agent_alias, 'cost-second');
+        assert.equal(llmLog.cost_usd, 0.75);
+      });
+
+      if (!caller.endsWith('batch')) continue;
+      test(`${caller} adds a priced fallback to the cost of an exhausted route`, async () => {
+        // A retryable-looking failure reason must not turn the spent route into an unknown total.
+        const routingSession = beginCostRoute([
+          pricedFailure('cost-first', 0.25, 'provider timeout'), pricedFailure('cost-second', 0.5, 'provider timeout')
+        ]);
+        const fallback = createAgent('fallback', unlistedModel, async () => ({
+          success: true, response: caller === 'file batch' ? fileSummary : directorySummary,
+          modelUsed: unlistedModel, executionTimeMs: 1, providerCostUsd: 0.125
+        }));
+        const batchOptions = {
+          agent: virtualCostAgent() as never, routingSession, log: log as never, fullName: 'integry/propr', branch: 'main',
+          modelUsed: 'smart', primaryAgentAliasSetting: 'cost-pool',
+          fallbackAgent: fallback as never, fallbackModelUsed: unlistedModel, fallbackAgentAliasSetting: 'fallback'
+        };
+
+        const result = caller === 'file batch'
+          ? await processSingleBatch({ ...batchOptions, batch: [file] })
+          : await processDirectoryBatch({ ...batchOptions, directories: [directory] });
+
+        assert.equal(result.fallbackUsed, true);
+        const llmLog = await latestLog();
+        assert.equal(llmLog.success, 1);
+        assert.equal(llmLog.agent_alias, 'fallback');
+        assert.equal(llmLog.cost_usd, 0.875);
+      });
+    }
+
+    for (const unpriced of ['missing', 'rejected']) {
+      test(`route exhaustion carries no cost when an attempt's cost is ${unpriced}`, async () => {
+        const unknown = createAgent('cost-second', unlistedModel, async () => {
+          if (unpriced === 'rejected') throw new Error('provider unavailable');
+          return { success: false, response: '', modelUsed: unlistedModel, executionTimeMs: 1, error: 'provider unavailable' };
+        });
+        const route = beginCostRoute([pricedFailure('cost-first', 0.25), unknown]);
+
+        await assert.rejects(route.analyze('Generate a summary'), (error: { name?: string; providerCostUsd?: number }) => {
+          assert.equal(error.name, 'SyntheticPoolExhaustedError');
+          assert.equal(error.providerCostUsd, undefined);
+          return true;
+        });
+        // No attempt runs on an already exhausted route, so no spend is reported.
+        await assert.rejects(route.analyze('Generate another summary'), (error: { providerCostUsd?: number; analysisAttempts?: number }) => {
+          assert.equal(error.providerCostUsd, undefined);
+          assert.equal(error.analysisAttempts, 0);
+          return true;
+        });
+      });
+    }
+
+    test('route exhaustion carries the total of fully priced attempts, including zero', async () => {
+      const route = beginCostRoute([pricedFailure('cost-first', 0), pricedFailure('cost-second', 0)]);
+      await assert.rejects(route.analyze('Generate a summary'), (error: { providerCostUsd?: number }) => {
+        assert.equal(error.providerCostUsd, 0);
+        return true;
+      });
+    });
+
     test('file batch sums the cost of every retry and the fallback', async () => {
       const primaryAgent = createAgent('primary', 'opencode-litellm/custom-model', async () => ({
         success: true, response: '', modelUsed: 'opencode-litellm/custom-model', executionTimeMs: 1, providerCostUsd: 0.01

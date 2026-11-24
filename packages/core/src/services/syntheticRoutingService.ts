@@ -8,8 +8,7 @@ import { loadSyntheticAgents } from '../config/configManager.js';
 import type { Agent, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from '../agents/types.js';
 import logger from '../utils/logger.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
-import { SyntheticPoolExhaustedError, isNonRetryableSyntheticFailure } from './syntheticRoutingTypes.js';
-import type { BeginSyntheticRoutingOptions, SyntheticMemberDiagnostic, SyntheticPhysicalSelection, SyntheticRoutingServiceOptions, SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
+import { SyntheticPoolExhaustedError, isNonRetryableSyntheticFailure, withAnalysisSpend, type BeginSyntheticRoutingOptions, type SyntheticMemberDiagnostic, type SyntheticPhysicalSelection, type SyntheticRoutingServiceOptions, type SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
 import { AliasSpecificAgentTankSnapshotProvider } from './syntheticUsageSnapshotProvider.js';
 import { AgentCapacityError, agentAliasHasCapacity } from '../agents/agentCapacity.js';
 import { chooseMemberWithCapacity, type CapacityCandidate } from './syntheticCapacitySelection.js';
@@ -152,8 +151,10 @@ export class SyntheticRoutingSession {
   async analyze(prompt: string, options: AnalyzeOptions = {}): Promise<AnalysisResult> {
     this.constrain(estimateTokens(`${prompt}${options.context || ''}`) + DEFAULT_OUTPUT_RESERVE_TOKENS);
     let providerCostUsd: number | undefined = 0;
+    const attemptsBefore = this.executionAttemptCount;
     for (;;) {
-      const selection = await this.select();
+      // Exhaustion after fully priced attempts still reports what they cost.
+      const selection = await this.select().catch((error: unknown) => { throw withAnalysisSpend(error, this.executionAttemptCount - attemptsBefore, providerCostUsd); });
       this.executionAttemptCount += 1;
       const routingMetadata = this.service.metadataFor(selection);
       try {

@@ -6,6 +6,7 @@ import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 import { nestedLaunchGate } from '../../agents/agentRunNesting.js';
 
 // --- Types ---
@@ -267,6 +268,7 @@ export async function scoreSemanticRelevance(
         return parsed.files;
       } catch (err) {
         routedMetadata ??= callRoute?.routingMetadata;
+        providerCostUsd ??= exhaustedRouteProviderCost(err);
         const chunkDurationMs = Date.now() - startTime;
         const modelUsed = resolvedSemanticModel(actualModelUsed, routedMetadata, modelId, agent.config.defaultModel);
         const physicalAgentAlias = routedAgentAlias(routedMetadata, agent.config.alias);

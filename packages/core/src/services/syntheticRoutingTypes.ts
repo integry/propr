@@ -85,6 +85,31 @@ export class SyntheticPoolExhaustedError extends Error {
     super(`Synthetic pool exhausted for '${virtualAgentAlias}:${virtualModel}' [call ${callId}]: ${details}`);
     this.name = 'SyntheticPoolExhaustedError';
   }
+
+  /**
+   * Total provider-reported cost of the physical attempts that ran in the
+   * analyze call this error ended. Set only when at least one attempt ran and
+   * every attempt reported a valid cost; otherwise the spend is unknown.
+   */
+  providerCostUsd?: number;
+  /** Physical attempts that ran in the analyze call this error ended; 0 means nothing was spent. */
+  analysisAttempts?: number;
+}
+
+/** Record on a route-exhaustion error what the analyze call it ended had already spent. */
+export function withAnalysisSpend(error: unknown, attempts: number, providerCostUsd: number | undefined): unknown {
+  if (error instanceof SyntheticPoolExhaustedError) {
+    error.analysisAttempts = attempts;
+    if (attempts > 0) error.providerCostUsd = providerCostUsd;
+  }
+  return error;
+}
+
+/** The known spend carried by a route-exhaustion error, if any. */
+export function exhaustedRouteProviderCost(error: unknown): number | undefined {
+  if (!(error instanceof SyntheticPoolExhaustedError)) return undefined;
+  const cost = error.providerCostUsd;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
 }
 
 /** A capacity wait never consumes a member: no failover, no failed attempt. */

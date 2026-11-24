@@ -5,6 +5,7 @@ import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.j
 import { loadSettings } from '../../config/configManager.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
@@ -307,6 +308,7 @@ export async function extractKeywordsWithLLM(
     return { primary, alternatives, all };
   } catch (error) {
     errorMessage = (error as Error).message;
+    providerCostUsd ??= exhaustedRouteProviderCost(error);
     correlatedLogger.warn(
       { error: errorMessage },
       'LLM keyword extraction failed, falling back to basic extraction'

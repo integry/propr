@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 import type { AnalysisResult } from '../../agents/types.js';
+import { SyntheticPoolExhaustedError, exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 
 // --- Types ---
 
@@ -207,8 +208,9 @@ export async function getSummarizationCallHistory(limit: number = 100): Promise<
 
 /**
  * Sums provider-reported costs across every analyze call behind one logged
- * batch (retries and fallback). A call without a reported cost leaves the
- * total unknown, so the log keeps its catalog estimate instead of a partial sum.
+ * batch (retries and fallback). A call without a reported cost, including a
+ * rejection that carries no known spend, leaves the total unknown, so the log
+ * keeps its catalog estimate instead of a partial sum.
  */
 export interface ProviderCostTracker { total: number; calls: number; complete: boolean }
 
@@ -220,14 +222,21 @@ export async function analyzeWithProviderCost(
   tracker: ProviderCostTracker | undefined,
   analyze: () => Promise<AnalysisResult>
 ): Promise<AnalysisResult> {
-  let result: AnalysisResult | undefined;
+  let cost: number | undefined;
+  let spent = true;
   try {
-    result = await analyze();
+    const result = await analyze();
+    cost = result.providerCostUsd;
     return result;
+  } catch (error) {
+    // An exhausted route still reports the spend of its fully priced attempts.
+    // Re-entering an already exhausted route runs no attempt and spends nothing.
+    cost = exhaustedRouteProviderCost(error);
+    spent = !(error instanceof SyntheticPoolExhaustedError && error.analysisAttempts === 0);
+    throw error;
   } finally {
-    if (tracker) {
+    if (tracker && spent) {
       tracker.calls++;
-      const cost = result?.providerCostUsd;
       if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) tracker.total += cost;
       else tracker.complete = false;
     }
