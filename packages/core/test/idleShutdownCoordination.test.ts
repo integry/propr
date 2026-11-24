@@ -20,7 +20,7 @@ import {
     waitForIdleAcks,
     withdrawIdleShutdownIntent,
 } from '../src/idle/idleShutdownIntent.js';
-import { setIdleShutdownComposedProcess, startIdleShutdownListener } from '../src/idle/idleShutdownListener.js';
+import { IDLE_QUIESCE_MAX_UNCONFIRMED_MS, setIdleShutdownComposedProcess, startIdleShutdownListener } from '../src/idle/idleShutdownListener.js';
 import { RoutingIdleWake } from '../src/intake/routingIdleFrames.js';
 
 /** Shared Redis state with pub/sub that, like Redis, does not keep messages for a disconnected subscriber. */
@@ -194,6 +194,107 @@ test('an API process whose quiesce callback fails does not acknowledge, and retr
     const settled = calls;
     await settle();
     assert.equal(calls, settled, 'a successful callback is not repeated');
+    await listener.stop();
+});
+
+/** Shift `Date.now` forward for the listener's quiesce watchdog; returns the restore. */
+function advanceClock(ms: number): () => void {
+    const realNow = Date.now;
+    Date.now = () => realNow() + ms;
+    return () => { Date.now = realNow; };
+}
+
+test('a withdrawn drain resumes API admission at once while the quiesce publication is still pending, and the late completion is not acknowledged', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    const events: string[] = [];
+    let finishPublication!: () => void;
+    const publication = new Promise<void>(resolve => { finishPublication = resolve; });
+    const listener = startIdleShutdownListener({
+        role: 'api',
+        id: 'a1',
+        createConnection: hub.connect,
+        // The activity record's write stays pending, as a Redis command does while the connection is lost.
+        onQuiesce: async () => { events.push('quiesce'); await publication; },
+        onResume: () => { events.push('resume'); },
+        pollMs: 10,
+    });
+    await settle();
+    const intent = newIdleShutdownIntent('quiesce', 'idle');
+    await issueIdleShutdownIntent(daemon as never, intent);
+    await settle();
+    assert.deepEqual(events, ['quiesce']);
+
+    // The daemon reaches its deadline and withdraws through its own connection.
+    await withdrawIdleShutdownIntent(daemon as never, intent.id);
+    await settle();
+    assert.deepEqual(events, ['quiesce', 'resume'], 'admission resumes without waiting for the pending publication');
+
+    // A late read of the request (still stored when the daemon could not delete it) and the publication finishing.
+    hub.strings.set(IDLE_SHUTDOWN_INTENT_REDIS_KEY, JSON.stringify(intent));
+    finishPublication();
+    await settle();
+    await settle();
+    assert.deepEqual(hub.hash(`${IDLE_SHUTDOWN_ACKS_REDIS_PREFIX}${intent.id}`), {}, 'the abandoned quiesce is never acknowledged');
+    assert.deepEqual(events, ['quiesce', 'resume'], 'nor applied again');
+    hub.strings.delete(IDLE_SHUTDOWN_INTENT_REDIS_KEY);
+    await listener.stop();
+});
+
+test('a quiesced API whose Redis commands never settle resumes admission once the request is unconfirmed past the limit', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    const events: string[] = [];
+    let stalled = false;
+    const pending: Array<() => void> = [];
+    // The listener's connections: while stalled, every command stays pending (and the withdrawal message is lost).
+    const connect = () => {
+        const connection = hub.connect() as unknown as FakeConnection;
+        for (const method of ['get', 'hset'] as const) {
+            const original = connection[method].bind(connection) as (...args: string[]) => Promise<unknown>;
+            (connection as unknown as Record<string, unknown>)[method] = (...args: string[]) => (stalled
+                ? new Promise(resolve => { pending.push(() => { resolve(original(...args)); }); })
+                : original(...args));
+        }
+        return connection as never;
+    };
+    const listener = startIdleShutdownListener({
+        role: 'api',
+        id: 'a1',
+        createConnection: connect,
+        onQuiesce: async () => { events.push('quiesce'); },
+        onResume: () => { events.push('resume'); },
+        pollMs: 10,
+    });
+    await settle();
+    const [, subscriber] = hub.connections.slice(1) as FakeConnection[];
+    stalled = true;
+    const intent = newIdleShutdownIntent('quiesce', 'idle');
+    await issueIdleShutdownIntent(daemon as never, intent);
+    await settle();
+    assert.deepEqual(events, ['quiesce'], 'quiesced; its acknowledgement is pending');
+    subscriber.drop();
+    await withdrawIdleShutdownIntent(daemon as never, intent.id);
+    // The withdrawal was missed and the request stays stored (the daemon's delete did not reach Redis either).
+    hub.strings.set(IDLE_SHUTDOWN_INTENT_REDIS_KEY, JSON.stringify(intent));
+    await settle();
+    assert.deepEqual(events, ['quiesce'], 'still within the unconfirmed limit');
+    assert.ok(pending.length <= 3, `polls do not pile up behind the pending command (${pending.length} pending)`);
+
+    const restore = advanceClock(IDLE_QUIESCE_MAX_UNCONFIRMED_MS + 1_000);
+    try {
+        await settle();
+        assert.deepEqual(events, ['quiesce', 'resume'], 'the watchdog resumes admission, the chain still blocked');
+        // Redis recovers: the pending acknowledgement and reads complete, and the stored request is read again.
+        stalled = false;
+        for (const release of pending.splice(0)) release();
+        await settle();
+        await settle();
+        assert.deepEqual(events, ['quiesce', 'resume'], 'the given-up quiesce is not applied again');
+    } finally {
+        restore();
+    }
+    hub.strings.delete(IDLE_SHUTDOWN_INTENT_REDIS_KEY);
     await listener.stop();
 });
 

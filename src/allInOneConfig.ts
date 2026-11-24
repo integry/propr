@@ -249,6 +249,13 @@ export interface BoundedExitCall {
     stopHost?: HostStop | null;
     /** A termination signal. During the host stop it means the host is stopping this process: the stop was accepted. */
     signal?: string;
+    /**
+     * Idle exit only: the start of the idle period the stop was decided on (epoch ms). A request the API saw after it
+     * (one the quiesced API turned away with `Retry-After` included) is a client about to retry: read again once the
+     * close is over (the API no longer admits requests) and before the host is asked to stop, it makes the exit 1,
+     * so the supervisor starts the control plane for that retry instead of leaving it stopped.
+     */
+    activitySince?: number | null;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
@@ -272,7 +279,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): P
  * top: the process exits by then, and reaching it before the close is over
  * exits with at least 1, since that wake reached a process still running and
  * the supervisor must start it instead. An idle exit with `stopHost` asks the
- * host to stop before it exits 0 (see {@link BoundedExitCall.stopHost}). Logs
+ * host to stop before it exits 0 (see {@link BoundedExitCall.stopHost}); a
+ * request the API saw since the idle period began, read once the close is
+ * over, makes it exit 1 instead (see {@link BoundedExitCall.activitySince}). Logs
  * are flushed (bounded, and for an exit before `exitBy` only for the time left
  * until then) before exiting. Calling the returned function again does
  * nothing, except that a signal during the host stop counts as its acceptance.
@@ -285,6 +294,8 @@ export function createBoundedExit(options: {
     flush?: (timeoutMs?: number) => Promise<void>;
     deadlineMs?: number;
     hostStopTimeoutMs?: number;
+    /** The last request the API in this process saw (epoch ms, 0 for none), for {@link BoundedExitCall.activitySince}. */
+    lastActivityAt?: () => number;
 }): (exitCode?: number, call?: BoundedExitCall) => void {
     const deadlineMs = options.deadlineMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
     const hostStopTimeoutMs = options.hostStopTimeoutMs ?? DEFAULT_HOST_STOP_TIMEOUT_MS;
@@ -298,6 +309,21 @@ export function createBoundedExit(options: {
         exiting = true;
         const exitBy = call.exitBy ?? null;
         const untilExitBy = exitBy === null ? Number.POSITIVE_INFINITY : Math.max(0, exitBy - Date.now());
+
+        /** An idle exit after a request reached the API since the idle period began: the client's retry needs the instance up. */
+        const activityAfterIdle = (code: number): number => {
+            const since = call.activitySince ?? null;
+            if (code !== 0 || since === null || !options.lastActivityAt) return code;
+            let last: number;
+            try {
+                last = options.lastActivityAt();
+            } catch {
+                last = Number.POSITIVE_INFINITY;
+            }
+            if (!(last > since)) return code;
+            options.log.error(`all-in-one: a request reached the API while the idle stop was closing${Number.isFinite(last) ? ` (at ${new Date(last).toISOString()})` : ''}; exiting with code 1 so the supervisor starts the control plane again for its retry`);
+            return 1;
+        };
 
         /** Step before the exit of an idle stop: the whole host stops, or the exit is 1. */
         const stopHost = async (code: number): Promise<number> => {
@@ -328,7 +354,9 @@ export function createBoundedExit(options: {
             if (done) return;
             done = true;
             clearTimeout(deadline);
-            void stopHost(closeCode).then(async code => {
+            // Read here, once the close is over: requests reach the API until its shutdown stage, after the last check
+            // the daemon made, and the earlier closes may have taken most of the allowance.
+            void stopHost(activityAfterIdle(closeCode)).then(async code => {
                 const flushFor = code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined;
                 await (options.flush?.(flushFor) ?? Promise.resolve()).catch(() => undefined);
                 // The flush got the time left until the wake, and may have used all of it: an exit 0 at or after the wake

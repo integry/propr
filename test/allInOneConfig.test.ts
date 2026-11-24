@@ -415,3 +415,28 @@ test('SIGTERM ends a real process whose drain hangs within the shutdown timeout'
     assert.match(output, /received SIGTERM, shutting down gracefully/);
     assert.match(output, /did not finish within 1s \(still closing: api\); exiting anyway/);
 });
+
+test('an idle exit rechecks API activity once the close is over: a request after the idle period began exits 1 without a host stop', async () => {
+    const since = Date.now() - 1_000;
+    const run = async (lastActivityAt: () => number, call: { activitySince?: number | null; signal?: string } = { activitySince: since }) => {
+        const exits: number[] = [];
+        let hostStops = 0;
+        let closed = false;
+        createBoundedExit({
+            // Read only once the close is over: the request arrives while a component is still closing.
+            close: async () => { closed = true; return []; },
+            exit: code => { exits.push(code); },
+            pendingStep: () => null,
+            log: quietLog,
+            lastActivityAt: () => (closed ? lastActivityAt() : 0),
+            deadlineMs: 1_000,
+        })(0, { ...call, stopHost: async () => { hostStops += 1; } });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return { exits, hostStops };
+    };
+    assert.deepEqual(await run(() => since + 1), { exits: [1], hostStops: 0 }, 'a request during the close');
+    assert.deepEqual(await run(() => since), { exits: [0], hostStops: 1 }, 'the last request predates the idle period');
+    assert.deepEqual(await run(() => 0), { exits: [0], hostStops: 1 }, 'no request at all');
+    assert.deepEqual(await run(() => since + 1, {}), { exits: [0], hostStops: 1 }, 'no idle boundary given (not an idle exit)');
+    assert.deepEqual(await run(() => { throw new Error('unreadable'); }), { exits: [1], hostStops: 0 }, 'unreadable activity counts as a request');
+});

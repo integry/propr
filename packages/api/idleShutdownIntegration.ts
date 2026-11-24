@@ -102,6 +102,8 @@ export function startApiIdleShutdown(options: {
     onQuiesce: async intent => {
       idleActivity.quiesce(intent.id);
       const drained = await idleActivity.waitForDrain(API_QUIESCE_DRAIN_TIMEOUT_MS);
+      // Withdrawn while the requests drained: the listener already resumed admission and drops this step.
+      if (idleActivity.quiescedIntent !== intent.id) return;
       // The daemon re-checks this record right after the acknowledgement. A failed write
       // would leave an earlier (possibly quiet, still fresh) record in place, so it must not
       // be acknowledged: throwing keeps the listener from acknowledging and retries on its next poll.

@@ -18,7 +18,7 @@
  * image, or the launcher/CLI `minimal` profile.
  */
 import 'dotenv/config';
-import { logger, setIdleShutdownComposedProcess } from '@propr/core';
+import { idleActivity, logger, setIdleShutdownComposedProcess } from '@propr/core';
 import {
     createBoundedExit, createComponentSupervisor, installShutdownSignalHandlers, prepareAllInOneEnvironment, resolveIndexingMode,
     resolveShutdownTimeoutMs, type StartupStage,
@@ -66,6 +66,8 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         },
         flush: timeoutMs => flushLogs(timeoutMs),
         deadlineMs: resolveShutdownTimeoutMs(process.env.PROPR_SHUTDOWN_TIMEOUT_MS),
+        // The API runs in this process: a request it turned away during an idle stop's close shows here at once.
+        lastActivityAt: () => idleActivity.snapshot().lastRequestAt,
     });
 
     // A drain that cannot finish (a component stuck closing) still ends the
@@ -87,7 +89,7 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
     // would leave Redis and the other containers keeping it started (see flyMachineStop.ts).
     setIdleShutdownComposedProcess(true);
     const machineStop = resolveFlyMachineStop(process.env);
-    const idleShutdownStop = (exitCode = 0, options: { exitBy?: number | null } = {}): void => {
+    const idleShutdownStop = (exitCode = 0, options: { exitBy?: number | null; activitySince?: number | null } = {}): void => {
         logger.info('all-in-one: idle shutdown, closing every component');
         closeAndExit(exitCode, { ...options, stopHost: machineStop.kind === 'ready' ? machineStop.stop : null });
     };

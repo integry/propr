@@ -198,7 +198,7 @@ export interface DaemonStartOptions extends DaemonOptions {
      * at least `exitCode`, and with at least 1 when it is still running at `exitBy` (the wake arranged for scheduled work).
      * Given, idle shutdown can stop the instance; a standalone daemon reports that it needs the composed process.
      */
-    idleShutdownStop?: (exitCode?: number, options?: { exitBy?: number | null }) => void;
+    idleShutdownStop?: (exitCode?: number, options?: { exitBy?: number | null; activitySince?: number | null }) => void;
 }
 
 async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDaemon> {

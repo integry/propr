@@ -26,6 +26,7 @@ const { recordAcceptedReplay } = await import('../src/daemon/idleReplayObligatio
 const { createDaemonWorkProducers } = await import('../src/daemon/workProducers.js');
 const { createDaemonActivitySources } = await import('../src/daemon/idleSignalSources.js');
 const { createIdleActivityMiddleware, startApiIdleShutdown } = await import('../packages/api/idleShutdownIntegration.js');
+const { createBoundedExit } = await import('../src/allInOneConfig.js');
 const {
     IDLE_LAST_SHUTDOWN_REDIS_KEY, IDLE_LAST_WAKE_REDIS_KEY, IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig,
 } = await import('@propr/shared');
@@ -1137,4 +1138,53 @@ test('with no request during the drain, the same activity checks let the stop en
         assert.ok(events.includes('worker acknowledged the stop'));
         assert.deepEqual(stops, [0]);
     });
+});
+
+/**
+ * An idle stop through the all-in-one's real bounded exit, which reads this process's API tracker once the close is
+ * over. An earlier component's close is held; `during` runs while it is (the API is still up and quiesced).
+ */
+async function idleStopThroughBoundedExit(during: (middleware: ReturnType<typeof createIdleActivityMiddleware>) => void) {
+    let result: { exited: number[]; hostStops: number; errors: string[] } | null = null;
+    await composedWithApi(async ({ hub, events, middleware, collectActivity, idleSince }) => {
+        const { ctx } = context(hub, new FakeRouting(true), { ...hintStore(), collect: collectActivity });
+        let releaseEarlierClose!: () => void;
+        const earlierClose = new Promise<void>(resolve => { releaseEarlierClose = resolve; });
+        const exited: number[] = [];
+        const errors: string[] = [];
+        let hostStops = 0;
+        const closeAndExit = createBoundedExit({
+            close: async () => { events.push('closing'); await earlierClose; return []; },
+            exit: code => { exited.push(code); },
+            pendingStep: () => 'worker',
+            log: { info: () => undefined, error: message => { errors.push(message); } },
+            lastActivityAt: () => idleActivity.snapshot().lastRequestAt,
+            deadlineMs: 5_000,
+        });
+        const stopProcess = (code: number, options?: { exitBy: number | null; activitySince?: number | null }) => {
+            closeAndExit(code, { ...options, stopHost: async () => { hostStops += 1; } });
+        };
+        assert.equal(await drainIdleControlPlane({ ...request, idleSince }, { ...ctx, collectWork: async () => emptyIdleSignals(), collectActivity, stopProcess }), true);
+        assert.ok(events.includes('closing'), 'the last checks passed: the coordinated close is under way');
+        during(middleware);
+        releaseEarlierClose();
+        await settle();
+        result = { exited, hostStops, errors };
+    });
+    return result!;
+}
+
+test('a request the quiesced API turns away during the coordinated close keeps the host up: exit 1, no host stop', async () => {
+    let answer: ReturnType<typeof requestThroughApi> | null = null;
+    const { exited, hostStops, errors } = await idleStopThroughBoundedExit(middleware => { answer = requestThroughApi(middleware); });
+    assert.deepEqual(answer, { status: 503, retryAfter: '5', admitted: false }, 'the API was still up, and quiesced');
+    assert.equal(hostStops, 0, 'the host is not asked to stop');
+    assert.deepEqual(exited, [1], 'the supervisor starts the control plane again, and it serves the retry');
+    assert.match(errors.join('\n'), /a request reached the API while the idle stop was closing/);
+});
+
+test('without a request during the coordinated close, the host is stopped and the exit is 0', async () => {
+    const { exited, hostStops } = await idleStopThroughBoundedExit(() => undefined);
+    assert.equal(hostStops, 1);
+    assert.deepEqual(exited, [0]);
 });

@@ -104,7 +104,9 @@ import {
  *      API turned away since step 5 is a client about to retry, so the stop is
  *      called off instead, as it is when that check is not over in time for
  *      the close to end before the wake. Otherwise close every component
- *      together, through the process's one coordinated close (`stopProcess`),
+ *      together, through the process's one coordinated close (`stopProcess`:
+ *      a request the API turned away during that close, read once it is
+ *      over and before the host is asked to stop, still exits 1),
  *      or (standalone) the daemon's own resources, flush logs and exit 0. The
  *      process must have exited by the arranged wake: a close still running
  *      then exits 1 instead, so the supervisor starts it for that work.
@@ -176,7 +178,9 @@ export interface IdleDrainContext {
      * acknowledged the stop; this runs the process's coordinated close of
      * every component (including the daemon) and exits with at least
      * `exitCode`, and with at least 1 when `exitBy` (epoch ms, the arranged
-     * wake) comes before the exit. Replaces the daemon's own close and exit.
+     * wake) comes before the exit, or when the API saw a request after
+     * `activitySince` (the idle period's start) by the time the close is over.
+     * Replaces the daemon's own close and exit.
      */
     stopProcess?: IdleStopProcess;
     timings?: Partial<IdleDrainTimings>;
@@ -461,7 +465,9 @@ async function finishStop(ctx: IdleDrainContext, stop: StopUnderWay & { roles: r
     if (active.length > 0) return callOff('the API saw activity while the control plane was stopping', { blockers: active, wakeAt: toIso(wakeAt) });
     // Bounded even with no wake arranged: Redis going away now must not keep the stopped control plane up.
     await beforeIdleDeadline(ctx.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined), earliest(Date.now() + timings.closeDeadlineMs, decideBy));
-    await stopDaemonProcess(ctx, stop.record, { closeDeadlineMs: timings.closeDeadlineMs, exitCode: 0, wakeAt });
+    // The API admits (and turns away) requests until its shutdown stage, after this check: the coordinated close
+    // reads its activity again once it is over, before the host is asked to stop.
+    await stopDaemonProcess(ctx, stop.record, { closeDeadlineMs: timings.closeDeadlineMs, exitCode: 0, wakeAt, activitySince: stop.idleSince });
     return true;
 }
 

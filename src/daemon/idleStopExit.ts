@@ -4,7 +4,7 @@ import { flushLogs } from '../shared/flushLogs.js';
 import type { IdleDrainContext } from './idleShutdown.js';
 
 /** The composed process's coordinated close of every component; see {@link IdleDrainContext.stopProcess}. */
-export type IdleStopProcess = (exitCode: number, options?: { exitBy: number | null }) => void;
+export type IdleStopProcess = (exitCode: number, options?: { exitBy: number | null; activitySince?: number | null }) => void;
 
 const toIso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
 
@@ -18,14 +18,25 @@ const toIso = (ms: number | null): string | null => (ms === null ? null : new Da
 export async function stopDaemonProcess(
     ctx: Pick<IdleDrainContext, 'stopProcess' | 'close' | 'exit'>,
     record: IdleShutdownRecord,
-    options: { closeDeadlineMs: number; exitCode: number; wakeAt: number | null; flush?: (timeoutMs?: number) => Promise<void> },
+    options: {
+        closeDeadlineMs: number;
+        exitCode: number;
+        wakeAt: number | null;
+        /**
+         * An idle exit (0): the start of the idle period it was decided on. Composed, the coordinated close reads the
+         * API's activity again once it is over, and exits 1 when a request came after this (see `createBoundedExit`).
+         */
+        activitySince?: number | null;
+        flush?: (timeoutMs?: number) => Promise<void>;
+    },
 ): Promise<void> {
     const { closeDeadlineMs, exitCode, flush = flushLogs } = options;
     const exitBy = exitCode === 0 ? options.wakeAt : null;
     if (ctx.stopProcess) {
         // Bounded there: the composed close ends in process.exit within its own deadline, and exits 1 at `exitBy`.
         logger.info({ ...record, exitBy: toIso(exitBy) }, `Idle shutdown: closing every component of this process (exit ${exitCode})`);
-        ctx.stopProcess(exitCode, { exitBy });
+        // The activity boundary counts only for an exit 0 (the coordinated close ignores it otherwise).
+        ctx.stopProcess(exitCode, { exitBy, activitySince: options.activitySince });
         return;
     }
     logger.info({ ...record, exitBy: toIso(exitBy) }, exitCode === 0 ? 'Idle shutdown: control plane stopped (exit 0)' : `Idle shutdown called off: closing the daemon (exit ${exitCode})`);
