@@ -39,12 +39,33 @@ test("adds the daemon's live status: blockers, last shutdown and last wake", asy
   assert.ok(rows.some(row => row.name === "Next scheduled work"));
 });
 
-test("leaves the backend alone on a direct-webhook stack that does not turn it on", async () => {
-  let reads = 0;
-  const readStatus = async () => { reads++; return { idleShutdown: null }; };
-  await checkIdleShutdown({ GITHUB_EVENT_INTAKE_MODE: "direct_webhook" }, readStatus);
-  assert.equal(reads, 0);
-  await checkIdleShutdown({ GITHUB_EVENT_INTAKE_MODE: "direct_webhook", PROPR_IDLE_SHUTDOWN: "on" }, readStatus);
-  await checkIdleShutdown({}, readStatus);
-  assert.equal(reads, 2);
+for (const intake of ["direct_webhook", "polling"]) {
+  test(`reports a Settings-enabled instance on a ${intake} stack with the environment unset`, async () => {
+    let reads = 0;
+    const rows = await checkIdleShutdown({ GITHUB_EVENT_INTAKE_MODE: intake }, async () => {
+      reads++;
+      return {
+        idleShutdown: {
+          enabled: true, afterMs: 1_800_000, source: "settings", idle: false, idleSince: null, shutdownAt: null,
+          blockers: [{ signal: "scheduled_work", detail: "github-polling: next poll within the idle window" }],
+          nextDueAt: "2026-11-24T12:01:00.000Z", checkedAt: "2026-11-24T12:00:00.000Z",
+          lastShutdown: { shutdownAt: "2026-11-24T02:00:00.000Z", reason: "idle for 1800s", idleForMs: 1_800_000, nextDueAt: null },
+          lastWake: { wokeAt: "2026-11-24T08:00:00.000Z", source: "http", coldStartMs: 5100, sleptMs: 21_600_000, shutdownAt: "2026-11-24T02:00:00.000Z" },
+        },
+      };
+    });
+    assert.equal(reads, 1);
+    assert.match(rows.find(row => row.name === "Idle shutdown (live)")?.detail ?? "", /^on after 30m \(settings\); busy — github-polling/);
+    assert.ok(rows.some(row => row.name === "Last idle shutdown"));
+    assert.ok(rows.some(row => row.name === "Last wake"));
+    assert.ok(rows.some(row => row.name === "Next scheduled work"));
+    assert.equal(rows.some(row => row.name === "Idle shutdown intake" && row.status === "warn"), intake === "polling");
+  });
+}
+
+test("falls back to the environment rows when the backend cannot be read", async () => {
+  for (const intake of ["direct_webhook", "polling", "routing_websocket"]) {
+    const rows = await checkIdleShutdown({ GITHUB_EVENT_INTAKE_MODE: intake }, async () => { throw new Error("ECONNREFUSED"); });
+    assert.deepEqual(rows.map(row => row.name), ["Idle shutdown"], intake);
+  }
 });

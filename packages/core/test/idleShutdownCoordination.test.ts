@@ -153,6 +153,39 @@ test('an API process quiesces, acknowledges, and resumes when the drain is withd
     await listener.stop();
 });
 
+test('an API process whose quiesce callback fails does not acknowledge, and retries it on the next poll', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    let failing = true;
+    let calls = 0;
+    const listener = startIdleShutdownListener({
+        role: 'api',
+        id: 'a1',
+        createConnection: hub.connect,
+        onQuiesce: async () => {
+            calls += 1;
+            if (failing) throw new Error('could not publish the API activity record');
+        },
+        pollMs: 10,
+    });
+    await settle();
+    const intent = newIdleShutdownIntent('quiesce', 'idle');
+    await issueIdleShutdownIntent(daemon as never, intent);
+    // Several polls pass while the callback keeps failing.
+    const unconfirmed = await waitForIdleAcks(daemon as never, intent, { roles: ['api'], timeoutMs: 100, ...FAST });
+    assert.equal(unconfirmed.confirmed, false, 'a failed quiesce is never acknowledged');
+    assert.ok(calls >= 2, `the failed callback is retried on later polls (called ${calls}x)`);
+    assert.deepEqual(hub.hash(`${IDLE_SHUTDOWN_ACKS_REDIS_PREFIX}${intent.id}`), {});
+
+    failing = false;
+    const confirmed = await waitForIdleAcks(daemon as never, intent, { roles: ['api'], timeoutMs: 2_000, ...FAST });
+    assert.equal(confirmed.confirmed, true, 'acknowledged once the callback succeeds');
+    const settled = calls;
+    await settle();
+    assert.equal(calls, settled, 'a successful callback is not repeated');
+    await listener.stop();
+});
+
 class FakeSocket {
     sent: Array<Record<string, unknown>> = [];
 }

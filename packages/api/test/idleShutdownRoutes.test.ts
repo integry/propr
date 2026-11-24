@@ -1,10 +1,24 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import type { Request, Response } from 'express';
-import { IDLE_STATUS_REDIS_KEY, IDLE_WAKE_SIGNAL_REDIS_KEY, type StoredIdleShutdownSetting } from '@propr/shared';
-import { closeConnection, idleActivity } from '@propr/core';
+import {
+  IDLE_ACTIVITY_REDIS_PREFIX,
+  IDLE_SHUTDOWN_ACKS_REDIS_PREFIX,
+  IDLE_STATUS_REDIS_KEY,
+  IDLE_WAKE_SIGNAL_REDIS_KEY,
+  type StoredIdleShutdownSetting,
+} from '@propr/shared';
+import {
+  closeConnection,
+  idleActivity,
+  issueIdleShutdownIntent,
+  newIdleShutdownIntent,
+  parseIdleActivity,
+  waitForIdleAcks,
+  withdrawIdleShutdownIntent,
+} from '@propr/core';
 import { createIdleShutdownRoutes } from '../routes/idleShutdownRoutes.js';
-import { classifyIdleRequest, createIdleActivityMiddleware, createWakeHandler } from '../idleShutdownIntegration.js';
+import { classifyIdleRequest, createIdleActivityMiddleware, createWakeHandler, startApiIdleShutdown } from '../idleShutdownIntegration.js';
 
 after(() => closeConnection());
 
@@ -109,9 +123,11 @@ test('the middleware counts a request until its response closes and records the 
   res.emit('finish');
   res.emit('close');
   assert.equal(idleActivity.snapshot().httpRequests, 0);
-  middleware({ path: '/api/tasks' } as Request, response() as unknown as Response, () => undefined);
+  const second = response();
+  middleware({ path: '/api/tasks' } as Request, second as unknown as Response, () => undefined);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(writes, [[IDLE_WAKE_SIGNAL_REDIS_KEY, 'http']]);
+  second.emit('close');
 });
 
 test('while the daemon drains, a quiesced API turns requests away and records them as activity', async () => {
@@ -151,4 +167,74 @@ test('/wake answers at once and records a Connect wake ping', async () => {
   assert.deepEqual(res.body, { status: 'awake' });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(writes, [[IDLE_WAKE_SIGNAL_REDIS_KEY, 'connect_ping', 'EX', 300, 'NX']]);
+});
+
+/** Shared Redis state; `duplicate()` opens another connection on it, like ioredis. */
+class FakeRedis {
+  constructor(
+    private readonly state: { strings: Map<string, string>; hashes: Map<string, Map<string, string>>; rejectActivityWrites: boolean; connections: FakeRedis[] } = {
+      strings: new Map(), hashes: new Map(), rejectActivityWrites: false, connections: [],
+    },
+  ) { state.connections.push(this); }
+  private listeners: Record<string, Array<(...args: string[]) => void>> = {};
+  private channels = new Set<string>();
+  get strings() { return this.state.strings; }
+  set rejectActivityWrites(reject: boolean) { this.state.rejectActivityWrites = reject; }
+  duplicate() { return new FakeRedis(this.state); }
+  on(event: string, listener: (...args: string[]) => void) { (this.listeners[event] ||= []).push(listener); return this; }
+  async subscribe(channel: string) { this.channels.add(channel); }
+  async publish(channel: string, message: string) {
+    for (const connection of this.state.connections) {
+      if (connection.channels.has(channel)) for (const listener of connection.listeners.message ?? []) listener(channel, message);
+    }
+    return 1;
+  }
+  async get(key: string) { return this.state.strings.get(key) ?? null; }
+  async set(key: string, value: string) {
+    if (this.state.rejectActivityWrites && key.startsWith(IDLE_ACTIVITY_REDIS_PREFIX)) throw new Error('OOM command not allowed');
+    this.state.strings.set(key, value);
+    return 'OK';
+  }
+  async del(key: string) { return this.state.strings.delete(key) ? 1 : 0; }
+  async expire() { return 1; }
+  async hset(key: string, field: string, value: string) {
+    if (!this.state.hashes.has(key)) this.state.hashes.set(key, new Map());
+    this.state.hashes.get(key)!.set(field, value);
+    return 1;
+  }
+  async hdel(key: string, field: string) { return this.state.hashes.get(key)?.delete(field) ? 1 : 0; }
+  async hgetall(key: string) { return Object.fromEntries(this.state.hashes.get(key) ?? []); }
+  async quit() { return 'OK'; }
+}
+
+test('a quiesced API does not acknowledge while its activity record cannot be written', async () => {
+  const redis = new FakeRedis();
+  let sessions = 0;
+  const inFlight = idleActivity.snapshot();
+  assert.equal(inFlight.httpRequests + inFlight.mcpRequests, 0, 'no request is in flight, so the drain itself does not delay the acknowledgement');
+  const stop = startApiIdleShutdown({ redis: redis as never, countSessions: () => sessions });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const activityKey = [...redis.strings.keys()].find(key => key.startsWith(IDLE_ACTIVITY_REDIS_PREFIX))!;
+    assert.equal(parseIdleActivity(redis.strings.get(activityKey) ?? null)?.uiSessions, 0, 'an earlier quiet record');
+
+    // A Web UI session opens, but activity writes now fail: the quiet record stays (and stays fresh).
+    redis.rejectActivityWrites = true;
+    sessions = 1;
+    const intent = newIdleShutdownIntent('quiesce', 'idle');
+    await issueIdleShutdownIntent(redis as never, intent);
+    const unconfirmed = await waitForIdleAcks(redis as never, intent, { roles: ['api'], timeoutMs: 6_000, pollMs: 50 });
+    assert.equal(unconfirmed.confirmed, false, 'the daemon never gets to re-check against the earlier quiet record');
+    assert.deepEqual(await redis.hgetall(`${IDLE_SHUTDOWN_ACKS_REDIS_PREFIX}${intent.id}`), {});
+    assert.equal(parseIdleActivity(redis.strings.get(activityKey) ?? null)?.uiSessions, 0);
+
+    // Once the record can be written, the retried quiesce publishes the session and acknowledges.
+    redis.rejectActivityWrites = false;
+    const confirmed = await waitForIdleAcks(redis as never, intent, { roles: ['api'], timeoutMs: 8_000, pollMs: 50 });
+    assert.equal(confirmed.confirmed, true);
+    assert.equal(parseIdleActivity(redis.strings.get(activityKey) ?? null)?.uiSessions, 1, 'the acknowledged record shows the open session');
+    await withdrawIdleShutdownIntent(redis as never, intent.id);
+  } finally {
+    await stop();
+  }
 });

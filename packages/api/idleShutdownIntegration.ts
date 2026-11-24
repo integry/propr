@@ -102,9 +102,11 @@ export function startApiIdleShutdown(options: {
     onQuiesce: async intent => {
       idleActivity.quiesce(intent.id);
       const drained = await idleActivity.waitForDrain(API_QUIESCE_DRAIN_TIMEOUT_MS);
-      // The daemon re-checks this record next; a failed write leaves it stale, which aborts the drain.
-      const published = await publisher.publish();
-      options.log?.info({ drained, published }, 'Idle shutdown: API quiesced');
+      // The daemon re-checks this record right after the acknowledgement. A failed write
+      // would leave an earlier (possibly quiet, still fresh) record in place, so it must not
+      // be acknowledged: throwing keeps the listener from acknowledging and retries on its next poll.
+      if (!await publisher.publish()) throw new Error('could not publish the API activity record');
+      options.log?.info({ drained }, 'Idle shutdown: API quiesced');
     },
     onResume: () => {
       idleActivity.resume();

@@ -13,11 +13,10 @@ import type { CheckResult } from "./checkCommands.js";
  * reachable, the daemon's live status — which also reflects a value saved in
  * the Web UI.
  *
- * The live status is read only when the environment turns idle shutdown on or
- * the stack uses Connect (routing_websocket, the default intake), whose routing
- * diagnostics already read the same status. A direct-webhook or polling stack
- * that leaves the setting unset gets no extra backend request, so an ordinary
- * `propr check` stays offline there.
+ * The live status is read for every intake mode: the setting can be turned on
+ * in the Web UI with the environment left unset, so only the backend knows the
+ * effective value. The read is bounded and best effort (shared with the routing
+ * diagnostics); when it fails, only the environment rows are shown.
  */
 
 const GROUP = "Configuration" as const;
@@ -79,12 +78,10 @@ export async function checkIdleShutdown(
   }
 
   let live: IdleShutdownStatus | null = null;
-  if (config.enabled || intakeMode === "routing_websocket") {
-    try {
-      live = parseIdleShutdownStatus((await readStatus?.())?.idleShutdown);
-    } catch {
-      live = null;
-    }
+  try {
+    live = parseIdleShutdownStatus((await readStatus?.())?.idleShutdown);
+  } catch {
+    live = null;
   }
   const enabled = live?.enabled ?? config.enabled;
   if (enabled && intakeMode === "polling") {

@@ -4,7 +4,8 @@
  * daemon's drain request (see idleShutdownIntent.ts):
  *
  *   - `quiesce` (API only): stop admitting requests, let the ones in flight
- *     finish, publish the activity record and acknowledge. When the request
+ *     finish, publish the activity record and acknowledge — only once that
+ *     callback succeeded; a failure is retried on the next poll. When the request
  *     is withdrawn (the daemon found work) the API admits requests again.
  *   - `stop`: when the request names this process's generation, acknowledge,
  *     then run the process's own graceful shutdown (the default sends SIGTERM
@@ -112,6 +113,8 @@ export function startIdleShutdownListener(options: IdleShutdownListenerOptions):
     });
     let quiesced: { id: string; confirmedAt: number } | null = null;
     let quiesceAcked: string | null = null;
+    /** The intent whose `onQuiesce` completed; entering quiescence is not enough to acknowledge. */
+    let quiesceReady: string | null = null;
     let stopping = false;
     let ignoredStop: string | null = null;
     let closed = false;
@@ -122,6 +125,7 @@ export function startIdleShutdownListener(options: IdleShutdownListenerOptions):
         options.log?.info({ intentId: quiesced.id, reason }, 'Idle shutdown drain withdrawn; admitting requests again');
         quiesced = null;
         quiesceAcked = null;
+        quiesceReady = null;
         options.onResume?.();
     };
 
@@ -130,9 +134,15 @@ export function startIdleShutdownListener(options: IdleShutdownListenerOptions):
         if (!quiesced) {
             quiesced = { id: intent.id, confirmedAt: Date.now() };
             options.log?.info({ intentId: intent.id }, 'Idle shutdown: quiescing (no new requests while the daemon re-checks)');
-            await options.onQuiesce(intent);
         }
         quiesced.confirmedAt = Date.now();
+        if (quiesceReady !== intent.id) {
+            // A failed callback (e.g. the activity record could not be published) stays
+            // unacknowledged and is retried on the next poll; the daemon times out and aborts
+            // rather than re-checking against older evidence.
+            await options.onQuiesce(intent);
+            quiesceReady = intent.id;
+        }
         if (quiesceAcked !== intent.id) {
             await acknowledgeIdleShutdownIntent(commands, intent, registration.key);
             quiesceAcked = intent.id;
