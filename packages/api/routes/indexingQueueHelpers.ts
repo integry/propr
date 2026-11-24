@@ -134,20 +134,13 @@ async function queueResummarizationForRepo({
   let repoPath: string;
   try {
     repoPath = await deps.ensureRepoCloned({ repoUrl, owner, repoName: name, authToken: token, baseBranch });
-  } catch {
-    console.error(`Failed to clone repository ${repoFullName} for resummarization`);
+    const fetchResult = await deps.fetchLatestChanges({ owner, repoName: name, authToken: token, branch: baseBranch });
+    if (!fetchResult.success) {
+      console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
+    }
+  } catch (error) {
+    console.error(`Failed to prepare repository ${repoFullName} for resummarization: ${(error as Error).message}`);
     return 'failedClone';
-  }
-
-  const fetchResult = await deps.fetchLatestChanges({
-    owner,
-    repoName: name,
-    authToken: token,
-    branch: baseBranch
-  });
-
-  if (!fetchResult.success) {
-    console.warn(`Failed to fetch latest changes for ${repoFullName}: ${fetchResult.error}`);
   }
 
   const correlationId = generateCorrelationId();
@@ -265,8 +258,12 @@ export async function queueIndexingJob(
     return { success: false, error: `Failed to clone repository: ${(cloneError as Error).message}` };
   }
 
-  const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token, branch: baseBranch });
-  if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
+  try {
+    const fetchResult = await fetchLatestChanges({ owner, repoName: name, authToken: token, branch: baseBranch });
+    if (!fetchResult.success) console.warn(`Failed to fetch latest changes for ${repository}: ${fetchResult.error}`);
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
 
   // Read after clone/fetch so enqueue rollback uses the latest pre-submission
   // status, including any indexing run that finished during repository setup.

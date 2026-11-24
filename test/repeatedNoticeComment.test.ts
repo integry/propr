@@ -57,7 +57,7 @@ await mock.module('@propr/core', { namedExports: {
     TaskStates: { CANCELLED: 'cancelled', COMPLETED: 'completed', FAILED: 'failed' },
 } });
 const { publishRepeatedNotice, buildRepeatedNoticeBody, normalizeNoticeText } = await import('../src/jobs/repeatedNoticeComment.js');
-const { handleUsageLimitError, postCancellationNotice, rateLimitNoticeFingerprint } = await import('../src/jobs/errorHandlers.js');
+const { handleGenericError, handleUsageLimitError, postCancellationNotice, rateLimitNoticeFingerprint } = await import('../src/jobs/errorHandlers.js');
 
 const target = { owner: 'acme', repo: 'widgets', issueNumber: 42 };
 const log = { info() {}, warn() {}, error() {} };
@@ -330,4 +330,26 @@ test('sibling runs hitting one usage limit at the same time leave one rate-limit
     assert.equal(thread.comments.length, 1);
     assert.match(thread.comments[0].body, /⌛ \*\*Rate Limit Reached\*\*/);
     assert.match(thread.comments[0].body, /Reported 2 times/);
+});
+
+
+test('repository repair failures group notices and never promise automatic retry', async () => {
+    const thread = fakeThread();
+    let failures = 0;
+    const error = Object.assign(new Error('Repository object repair required at /cache/repo: missing tree'), {
+        name: 'RepositoryRepairRequiredError',
+    });
+    const options = {
+        octokit: thread.octokit, claudeResult: null, worktreeInfo: undefined,
+        correlatedLogger: log, taskId: 'repair-task', AI_PROCESSING_TAG: 'AI-processing',
+        stateManager: { getTaskState: async () => ({ state: 'processing' }), markTaskFailed: async () => { failures++; } },
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await handleGenericError(error, { id: 'job' } as never, issue as never, options as never);
+    }
+    assert.equal(failures, 2);
+    assert.equal(thread.comments.length, 1);
+    assert.match(thread.comments[0].body, /\*\*Error Category:\*\* repository repair required/);
+    assert.match(thread.comments[0].body, /Automatic retries stopped/);
+    assert.doesNotMatch(thread.comments[0].body, /will automatically retry/);
 });

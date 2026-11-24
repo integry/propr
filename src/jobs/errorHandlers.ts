@@ -283,7 +283,11 @@ export async function handleGenericError(
     options: GenericErrorOptions
 ): Promise<void> {
     const { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG } = options;
-    const errorCategory = categorizeError(error.message);
+    const errorCategory = error.name === 'RepositoryRepairRequiredError'
+        ? 'repository_repair_required'
+        : error.name === 'RepositoryPreparationBusyError'
+            ? 'repository_preparation_busy'
+            : categorizeError(error.message);
     const isUserCancelled = error.message?.includes('aborted by user');
 
     const sanitizedMessage = sanitizeErrorMessage(error.message);
@@ -363,8 +367,17 @@ async function postErrorComment(issueRef: IssueJobData, error: Error, options: P
         };
         const sanitizedMessage = sanitizeErrorMessage(error.message);
         const sanitizedStack = error.stack ? sanitizeErrorMessage(error.stack) : sanitizedMessage;
-        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>${replacementSection}\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: errorMessage });
+        const retryNotice = error.name === 'RepositoryRepairRequiredError'
+            ? 'Automatic retries stopped. Repair the repository cache, then request processing again.'
+            : 'The system will automatically retry this task. If the issue persists, please contact support.';
+        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replaceAll('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>${replacementSection}\n\n---\n*${retryNotice}*`;
+        if (error.name === 'RepositoryRepairRequiredError') {
+            await publishRepeatedNotice(octokit, { owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number }, {
+                kind: 'repository-repair-required', scope: 'issue', fingerprint: 'repository-repair-required', body: errorMessage,
+            }, { log: correlatedLogger });
+        } else {
+            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: errorMessage });
+        }
         await safeRemoveLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
     } catch (commentError) {
         correlatedLogger.error({ error: (commentError as Error).message, issueNumber: issueRef.number }, 'Failed to post error comment to GitHub issue');

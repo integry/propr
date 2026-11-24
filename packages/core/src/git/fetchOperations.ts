@@ -1,3 +1,5 @@
+import { fetchWithObjectRecovery, RepositoryRepairRequiredError } from './objectRecovery.js';
+import { RepositoryPreparationBusyError, withRepositoryPreparation } from './repositoryPreparation.js';
 import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
@@ -43,22 +45,22 @@ async function resetCurrentBranchToRemote(git: SimpleGit, owner: string, repoNam
     }
 }
 
-async function fetchSpecificBranch(git: SimpleGit, owner: string, repoName: string, branch: string): Promise<void> {
-    logger.info({ repo: `${owner}/${repoName}`, branch }, 'Fetching latest changes for specific branch...');
-    await git.fetch(['origin', branch, '--prune']);
+async function fetchSpecificBranch(git: SimpleGit, repo: string, branch: string, authToken: string): Promise<void> {
+    logger.info({ repo, branch }, 'Fetching latest changes for specific branch...');
+    await fetchWithObjectRecovery(git, () => git.fetch(['origin', branch, '--prune']), branch, authToken);
     try {
         await git.checkout(branch);
         await git.reset(['--hard', `origin/${branch}`]);
         const newHead = await git.revparse(['HEAD']);
-        logger.info({ repo: `${owner}/${repoName}`, branch, commitHash: newHead.trim() }, 'Reset local branch to match remote');
+        logger.info({ repo, branch, commitHash: newHead.trim() }, 'Reset local branch to match remote');
     } catch (resetError) {
-        logger.warn({ repo: `${owner}/${repoName}`, branch, error: (resetError as Error).message }, 'Could not reset local branch to remote, continuing with fetched refs');
+        logger.warn({ repo, branch, error: (resetError as Error).message }, 'Could not reset local branch to remote, continuing with fetched refs');
     }
 }
 
-async function fetchAllBranches(git: SimpleGit, owner: string, repoName: string): Promise<void> {
+async function fetchAllBranches(git: SimpleGit, owner: string, repoName: string, authToken: string): Promise<void> {
     logger.info({ repo: `${owner}/${repoName}` }, 'Fetching latest changes from origin...');
-    await git.fetch(['origin', '--prune']);
+    await fetchWithObjectRecovery(git, () => git.fetch(['origin', '--prune']), undefined, authToken);
     try {
         await resetCurrentBranchToRemote(git, owner, repoName);
     } catch (resetError) {
@@ -85,23 +87,28 @@ async function fetchLatestChangesInternal(options: FetchLatestChangesOptions): P
         }
 
         const git: SimpleGit = createHooklessGit(localRepoPath);
-        if (!await git.checkIsRepo()) {
-            logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists but is not a valid git repository');
-            return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };
-        }
+        return await withRepositoryPreparation(git, async () => {
+            if (!await git.checkIsRepo()) {
+                logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists but is not a valid git repository');
+                return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };
+            }
 
-        const repoUrl = `https://github.com/${owner}/${repoName}.git`;
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
+            const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+            await setupAuthenticatedRemote(git, repoUrl, authToken);
 
-        if (branch && branch !== 'HEAD') {
-            await fetchSpecificBranch(git, owner, repoName, branch);
-        } else {
-            await fetchAllBranches(git, owner, repoName);
-        }
+            if (branch && branch !== 'HEAD') {
+                await fetchSpecificBranch(git, `${owner}/${repoName}`, branch, authToken);
+            } else {
+                await fetchAllBranches(git, owner, repoName, authToken);
+            }
 
-        logger.info({ repo: `${owner}/${repoName}`, branch: branch || 'all', path: localRepoPath }, 'Successfully fetched latest changes');
-        return { success: true, repoPath: localRepoPath };
+            logger.info({ repo: `${owner}/${repoName}`, branch: branch || 'all', path: localRepoPath }, 'Successfully fetched latest changes');
+            return { success: true, repoPath: localRepoPath };
+        });
     } catch (error) {
+        // Neither outcome prepared the checkout: callers must not index it as if a
+        // fetch had merely warned. Contention stays retryable; repair is terminal.
+        if (error instanceof RepositoryRepairRequiredError || error instanceof RepositoryPreparationBusyError) throw error;
         const errorMessage = (error as Error).message;
         logger.warn({ repo: `${owner}/${repoName}`, branch, error: errorMessage }, 'Failed to fetch latest changes');
         return { success: false, repoPath: localRepoPath, error: errorMessage };
