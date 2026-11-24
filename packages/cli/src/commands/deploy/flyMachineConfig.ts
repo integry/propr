@@ -354,6 +354,14 @@ export function legacyRootfsSizeGb(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): n
 }
 
 /**
+ * Fly's `rootfs.persist` value for legacy mode. The Machine config field is a
+ * string ("never", "always" or "restart", as in `fly machine run
+ * --rootfs-persist`); flyctl rejects a boolean with "cannot unmarshal bool into
+ * Go value of type string".
+ */
+export const LEGACY_DOCKER_ROOTFS_PERSIST = "always";
+
+/**
  * Machine-level legacy fields: the shared scratch volume, and a persistent
  * root filesystem for the Docker image store, so Docker images stay off the
  * Fly volume (capped at 5 GB on the Free plan) and survive restarts.
@@ -361,7 +369,7 @@ export function legacyRootfsSizeGb(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): n
 function buildLegacyDockerMachineFields(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): JsonObject {
   return {
     volumes: [{ name: LEGACY_DOCKER_SHARED_VOLUME, temp_dir: { storage_type: "disk", size_mb: 8192 } }],
-    rootfs: { size_gb: legacyRootfsSizeGb(plan), persist: true },
+    rootfs: { size_gb: legacyRootfsSizeGb(plan), persist: LEGACY_DOCKER_ROOTFS_PERSIST },
   };
 }
 

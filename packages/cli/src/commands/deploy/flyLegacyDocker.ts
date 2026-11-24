@@ -9,7 +9,7 @@
  *
  *  1. overlay2 cannot use the Machine's root filesystem (itself an overlay) as
  *     its backing store, so /var/lib/docker is an ext4 filesystem image on the
- *     Machine's PERSISTENT root filesystem (`rootfs.persist`), loop-mounted
+ *     Machine's PERSISTENT root filesystem (`rootfs.persist: "always"`), loop-mounted
  *     before dockerd starts. The image survives restarts, so pulled agent
  *     images are not downloaded again. It is not on the Fly volume: the Free
  *     plan caps volumes at 5 GB, while the rootfs size is not under that cap,
@@ -157,7 +157,7 @@ export function renderLegacyDockerBootScript(diskSizeGb: number): string {
     "",
     "# Fix 1: overlay2 needs a real filesystem under /var/lib/docker, not the",
     "# Machine's overlay root. Keep an ext4 image on the persistent root filesystem",
-    "# (rootfs.persist) and loop-mount it.",
+    "# (rootfs.persist \"always\") and loop-mount it.",
     `IMG=${LEGACY_DOCKER_DISK_IMAGE}`,
     `DOCKER_ROOT=${LEGACY_DOCKER_DATA_ROOT}`,
     ...renderLegacyDockerDiskSteps(diskSizeGb),

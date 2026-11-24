@@ -245,7 +245,10 @@ test("flyctl: an undersized reused volume is extended and confirmed before secre
     assert.ok(extend < argv.findIndex((a) => a.startsWith("secrets import")), "extended before secrets are uploaded");
     assert.equal(result.volumeSizeGb, 20);
     // Docker images live on the persistent rootfs, so the volume does not size them.
-    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "16");
+    const machineJson = readFileSync(join(outDir, "propr-machine.json"), "utf-8");
+    assert.equal(dockerDiskSizeArg(machineJson), "16");
+    // flyctl decodes rootfs.persist as a Go string ("never" | "always" | "restart"); a boolean is rejected.
+    assert.deepEqual((JSON.parse(machineJson) as { rootfs?: unknown }).rootfs, { size_gb: 20, persist: "always" });
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -315,7 +318,29 @@ test("Machines API: an undersized reused volume is extended and confirmed; the D
   assert.deepEqual(calls, ["org-plan", "list:1", "extend:vol_1:20", "list:20", "secrets"]);
   assert.equal(result.volumeSizeGb, 20);
   assert.equal(dockerDiskSizeArg(JSON.stringify(createdConfig)), "16");
-  assert.deepEqual((createdConfig as { rootfs?: unknown }).rootfs, { size_gb: 20, persist: true });
+  assert.deepEqual((createdConfig as { rootfs?: unknown }).rootfs, { size_gb: 20, persist: "always" });
+});
+
+test("Machines API: updating an existing legacy Machine sends rootfs.persist as the string \"always\"", async () => {
+  let updated: { id: string; config: unknown } | undefined;
+  const api = {
+    async orgPlan() { return "paid"; },
+    async appOwner() { return { exists: true, org: "personal" }; },
+    async appExists() { return true; },
+    async listVolumes() { return [{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 20, state: "created" }]; },
+    async listSecretNames() { return []; },
+    async setSecrets() {},
+    async ensurePublicIps() { return []; },
+    async listMachines() { return [{ id: "m-old", state: "started", region: "iad", config: { mounts: [{ volume: "vol_1", path: "/usr/src/app/data" }] } }]; },
+    async createMachine() { throw new Error("must update the existing Machine"); },
+    async updateMachine(_app: string, id: string, input: { config: unknown }) { updated = { id, config: input.config }; return { id, state: "started", region: "iad" }; },
+    async waitForState() {},
+  } as unknown as FlyMachinesApi;
+  await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1", ...RELAY }, generatedSecrets: {} }, createMachinesApiTarget(api));
+  assert.equal(updated?.id, "m-old");
+  const rootfs = (updated?.config as { rootfs?: { persist?: unknown } }).rootfs;
+  assert.deepEqual(rootfs, { size_gb: 20, persist: "always" });
+  assert.equal(typeof rootfs?.persist, "string");
 });
 
 test("Machines API: a volume Fly still reports undersized stops the deploy before secrets", async () => {

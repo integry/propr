@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     boot, keeping pulled images.
   - Fits the Fly Free plan (#3785). `--legacy-docker` keeps Docker images on a
     persistent root filesystem (`rootfs.size_gb`, default 20 GB, set with
-    `--rootfs-size`; `rootfs.persist: true`) instead of the volume, which stays
+    `--rootfs-size`; `rootfs.persist: "always"`) instead of the volume, which stays
     at the 1 GB default for SQLite and Redis. Boot removes the image an
     earlier release left on the volume. A `--volume-size` over 5 GB is refused
     before anything is created when Fly reports the org owning the app (an
