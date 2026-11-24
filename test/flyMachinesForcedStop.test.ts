@@ -108,12 +108,12 @@ test('forced timeout stop kills a TERM-ignoring agent but keeps the clone wrappe
         // and `-c` instead of `-lc` (so the test PATH survives a login shell) differ.
         const { init } = renderFlyMachineRequest(spec, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }).config;
         const [shell, ...launcherArgs] = init.entrypoint!;
-        const [, , workdir, user, ...command] = init.cmd!;
+        const [, , workdir, user, noNewPrivileges, ...command] = init.cmd!;
         assert.deepEqual(command.slice(0, 2), ['/bin/bash', '-lc']);
         command[1] = '-c';
         const leftoverPidFile = path.join(root, 'leftover.pid');
         const readyFile = path.join(root, 'ready');
-        launcher = spawn(shell!, [...launcherArgs, runDir, '0', workdir!, user!, ...command], {
+        launcher = spawn(shell!, [...launcherArgs, runDir, '0', workdir!, user!, noNewPrivileges!, ...command], {
             detached: true, stdio: 'ignore',
             env: {
                 PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV,
