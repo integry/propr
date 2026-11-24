@@ -106,8 +106,26 @@ export async function launcherIsRunning(sprite: SpriteLike, paths: SpritesRunPat
     return probe.exitCode === 0;
 }
 
-export function signalLauncher(sprite: SpriteLike, paths: SpritesRunPaths, signal: 'TERM' | 'KILL'): Promise<unknown> {
-    return sprite.execFile('sudo', ['-n', 'bash', '-c', SPRITES_SIGNAL_SCRIPT, 'propr-signal', signal, paths.pid], { timeout: SIGNAL_TIMEOUT_MS });
+/** TERM goes to the launcher (forwarded to the run's session); KILL kills the run's whole process boundary. */
+export function signalLauncher(sprite: SpriteLike, paths: SpritesRunPaths, signal: 'TERM' | 'KILL') {
+    return sprite.execFile('sudo', ['-n', 'bash', '-c', SPRITES_SIGNAL_SCRIPT, 'propr-signal', signal, paths.root], { timeout: SIGNAL_TIMEOUT_MS });
+}
+
+/**
+ * Kills every process of the run and its launcher, and resolves true only once
+ * none of them is left: a Sprite is not reused while the run could still act on it.
+ */
+export async function terminateRunProcesses(sprite: SpriteLike, paths: SpritesRunPaths, attempts = 3): Promise<boolean> {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            const result = await signalLauncher(sprite, paths, 'KILL');
+            if (result.exitCode === 0) return true;
+            logger.warn({ sprite: sprite.name, run: paths.root, attempt, stderr: String(result.stderr).trim() }, 'Processes of the Sprites run survived SIGKILL');
+        } catch (error) {
+            logger.warn({ sprite: sprite.name, run: paths.root, attempt, error: (error as Error).message }, 'Could not stop the processes of the Sprites run');
+        }
+    }
+    return false;
 }
 
 // eslint-disable-next-line complexity -- one run's streaming, stop, reconnect and settlement share its state

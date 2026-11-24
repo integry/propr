@@ -196,6 +196,53 @@ export function spritesManifest(records: ReadonlyArray<readonly string[]>): Buff
     return encodeNulList(records.flat());
 }
 
+/** Environment variable every process of a run inherits (its value is the run directory). */
+export const SPRITES_RUN_TAG = 'PROPR_SPRITES_RUN';
+
+/**
+ * Bash functions shared by the launcher and {@link SPRITES_SIGNAL_SCRIPT}:
+ * `run_members <run dir> <session id>` lists the run's live processes (its
+ * session or process group, or anything carrying its {@link SPRITES_RUN_TAG},
+ * which catches processes that started a session of their own), and
+ * `kill_run_members` SIGKILLs them until none is left (status 1 when some survive).
+ */
+const SPRITES_RUN_MEMBERS_FUNCTIONS = `
+run_members() {
+    local tag="${SPRITES_RUN_TAG}=$1" group="$2" entry pid stat own_group own_session
+    local -a fields
+    case "$group" in ''|*[!0-9]*|0|1) group="" ;; esac
+    read -r -a fields <<< "$(sed 's/^.*) //' "/proc/$$/stat")"
+    own_group="\${fields[2]}"; own_session="\${fields[3]}"
+    { [ "$group" != "$own_group" ] && [ "$group" != "$own_session" ]; } || group=""
+    for entry in /proc/[0-9]*; do
+        pid="\${entry#/proc/}"
+        [ "$pid" != "$$" ] || continue
+        stat="$(cat -- "$entry/stat" 2>/dev/null)" || continue
+        read -r -a fields <<< "\${stat##*) }"
+        [ "\${fields[0]}" != "Z" ] || continue
+        if [ -n "$group" ] && { [ "\${fields[2]}" = "$group" ] || [ "\${fields[3]}" = "$group" ]; }; then echo "$pid"; continue; fi
+        if tr '\\0' '\\n' < "$entry/environ" 2>/dev/null | grep -qxF -- "$tag"; then echo "$pid"; fi
+    done
+}
+# Zombies are dead: only their parent's wait is pending.
+pid_alive() {
+    local stat
+    stat="$(cat -- "/proc/$1/stat" 2>/dev/null)" || return 1
+    stat="\${stat##*) }"
+    [ "\${stat%% *}" != "Z" ]
+}
+kill_run_members() {
+    local attempt pids
+    for attempt in $(seq 1 20); do
+        pids="$(run_members "$1" "$2")"
+        [ -n "$pids" ] || return 0
+        kill -s KILL -- $pids 2>/dev/null
+        sleep 0.25
+    done
+    [ -z "$(run_members "$1" "$2")" ]
+}
+`.trim();
+
 const RESULT_DIR = WORKSPACE_TRANSPORT_RESULT_DIR;
 
 /**
@@ -204,13 +251,17 @@ const RESULT_DIR = WORKSPACE_TRANSPORT_RESULT_DIR;
  * through it). It records its PID, installs the run's files, runs the spec's
  * command as root or `node` with only the spec's environment, the prompt on
  * stdin from a file, and stdout/stderr appended to separate log files the
- * worker follows. Then it returns the refreshable credentials and the
- * workspace result through the run directory, removes every credential copy
- * and records the command's exit status.
+ * worker follows. The command runs in its own session (`setsid`) and carries
+ * `PROPR_SPRITES_RUN=<run dir>` in its environment: that is the run's process
+ * boundary, which TERM is forwarded to and which is killed once the command
+ * exits (as a container's processes die with it). Then it returns the
+ * refreshable credentials and the workspace result through the run
+ * directory, removes every credential copy and records the exit status.
  */
 export const SPRITES_LAUNCHER_SCRIPT = `
 set -u
 run_dir="$1"
+${SPRITES_RUN_MEMBERS_FUNCTIONS}
 [ "$(id -u)" = "0" ] || { echo "ProPR Sprites runtime: the launcher must run as root through passwordless sudo" >&2; exit ${SPRITES_LAUNCHER_EXIT_FAILURE}; }
 owner="$(stat -c %u:%g "$run_dir")" || exit ${SPRITES_LAUNCHER_EXIT_FAILURE}
 stores=()
@@ -227,8 +278,10 @@ fail() {
 : > "$run_dir/stdout.log" && : > "$run_dir/stderr.log" && chown "$owner" -- "$run_dir/stdout.log" "$run_dir/stderr.log" || exit ${SPRITES_LAUNCHER_EXIT_FAILURE}
 printf '%s\\n' "$$" > "$run_dir/pid.tmp" && chown "$owner" -- "$run_dir/pid.tmp" && mv -f -- "$run_dir/pid.tmp" "$run_dir/pid" || fail "cannot record the launcher PID"
 id node >/dev/null 2>&1 || fail "the Sprite has no node user; the ProPR setup script has not run"
+command -v setsid >/dev/null 2>&1 || fail "the Sprite has no setsid (util-linux)"
 mapfile -d '' -t argv < "$run_dir/argv" || fail "cannot read the command"
 mapfile -d '' -t envv < "$run_dir/env" || fail "cannot read the environment"
+envv+=("${SPRITES_RUN_TAG}=$run_dir")
 rm -f -- "$run_dir/env"
 mapfile -d '' -t manifest < "$run_dir/manifest" || fail "cannot read the manifest"
 workdir="$(cat "$run_dir/workdir")"
@@ -264,17 +317,22 @@ cd "$workdir" || fail "cannot enter $workdir"
 if [ "$run_user" = "root" ]; then runner=(env -i); else runner=(su-exec node env -i); fi
 input=/dev/null
 [ ! -f "$run_dir/stdin" ] || input="$run_dir/stdin"
-"\${runner[@]}" "\${envv[@]}" "\${argv[@]}" <"$input" >>"$run_dir/stdout.log" 2>>"$run_dir/stderr.log" &
+# Not a process group leader (no job control), so setsid makes the command the leader of a new session without forking.
+setsid "\${runner[@]}" "\${envv[@]}" "\${argv[@]}" <"$input" >>"$run_dir/stdout.log" 2>>"$run_dir/stderr.log" &
 child=$!
-trap 'kill -s TERM "$child" 2>/dev/null' TERM
-trap 'kill -s INT "$child" 2>/dev/null' INT
-trap 'kill -s HUP "$child" 2>/dev/null' HUP
+printf '%s\\n' "$child" > "$run_dir/pgid.tmp" && chown "$owner" -- "$run_dir/pgid.tmp" && mv -f -- "$run_dir/pgid.tmp" "$run_dir/pgid"
+forward() { kill -s "$1" -- "-$child" 2>/dev/null || kill -s "$1" "$child" 2>/dev/null; }
+trap 'forward TERM' TERM
+trap 'forward INT' INT
+trap 'forward HUP' HUP
 while :; do
     wait "$child"
     status=$?
     kill -0 "$child" 2>/dev/null || break
 done
 trap - TERM INT HUP
+# Nothing the run started outlives it (background jobs, daemons that left the session).
+kill_run_members "$run_dir" "$child" || echo "ProPR Sprites runtime: processes of the run survived SIGKILL" >> "$run_dir/stderr.log"
 j=0
 while [ "$j" -lt "\${#outputs[@]}" ]; do
     src="\${outputs[$j]}"; ret="\${outputs[$((j + 1))]}"; j=$((j + 2))
@@ -306,12 +364,30 @@ for _ in $(seq 1 300); do [ -s "$2" ] && break; sleep 0.1; done
 exec tail -c "+$1" --pid="$(cat "$2")" -s 0.5 -F -- "$3" 2>/dev/null
 `.trim();
 
-/** Signals the launcher (which forwards TERM/INT/HUP to the agent); KILL also kills its children. */
+
+/**
+ * Stops a run: `bash -c <script> propr-signal <TERM|KILL> <run dir>`. TERM goes
+ * to the launcher, which forwards it to the run's session. KILL kills every
+ * process of the run (session, process group and tagged processes), then the
+ * launcher if it does not finish within a few seconds, and exits 0 only when
+ * none of them is left: the run is verifiably stopped.
+ */
 export const SPRITES_SIGNAL_SCRIPT = `
-pid="$(cat "$2" 2>/dev/null)" || exit 0
-[ -n "$pid" ] || exit 0
-if [ "$1" = "KILL" ]; then
-    for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do kill -s KILL "$child" 2>/dev/null; done
+run_dir="$2"
+${SPRITES_RUN_MEMBERS_FUNCTIONS}
+pid="$(cat "$run_dir/pid" 2>/dev/null)"
+case "$pid" in ''|*[!0-9]*|0|1) pid="" ;; esac
+if [ "$1" != "KILL" ]; then
+    [ -z "$pid" ] || kill -s "$1" "$pid" 2>/dev/null
+    exit 0
 fi
-kill -s "$1" "$pid" 2>/dev/null || true
+kill_run_members "$run_dir" "$(cat "$run_dir/pgid" 2>/dev/null)"
+members=$?
+if [ -n "$pid" ]; then
+    for _ in $(seq 1 20); do pid_alive "$pid" || break; sleep 0.25; done
+    if pid_alive "$pid"; then kill -s KILL "$pid" 2>/dev/null; sleep 0.25; fi
+    if pid_alive "$pid"; then echo "the launcher $pid survived SIGKILL" >&2; exit 1; fi
+fi
+[ "$members" = 0 ] || { echo "processes of the run survived SIGKILL: $(run_members "$run_dir" "$(cat "$run_dir/pgid" 2>/dev/null)" | tr '\\n' ' ')" >&2; exit 1; }
+exit 0
 `.trim();

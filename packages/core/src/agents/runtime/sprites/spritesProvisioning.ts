@@ -106,7 +106,7 @@ export class SpritePool {
         for (;;) {
             signal?.throwIfAborted();
             const limit = this.maxSprites();
-            if (skip.size >= limit) throw new Error(`Every Sprite of this worker (${limit}) is running another process's agent run`);
+            if (skip.size >= limit) throw new Error(`Every Sprite of this worker (${limit}) is running another process's agent run or holds credentials awaiting recovery`);
             for (let slot = 0; slot < limit; slot++) {
                 if (this.busy.has(slot) || skip.has(slot)) continue;
                 this.busy.add(slot);
@@ -148,6 +148,23 @@ export async function spriteRunInProgress(sprite: SpriteLike): Promise<boolean> 
     } catch {
         return false;
     }
+}
+
+/**
+ * Written into a run directory whose refreshed credentials could not be written
+ * back to their canonical store: that directory holds the only valid copy of a
+ * rotated token. While any run directory carries it, the Sprite is quarantined:
+ * it is neither restored (which would delete the directory) nor given another
+ * run. Removing the directory once its tokens are recovered lifts the quarantine.
+ */
+export const SPRITES_RETAINED_CREDENTIALS_MARKER = 'credentials-retained';
+
+/** Run directories on the Sprite holding credentials awaiting recovery. Throws when the Sprite cannot be checked. */
+export async function retainedCredentialRuns(sprite: SpriteLike): Promise<string[]> {
+    const script = 'for f in "$1"/*/"$2"; do [ -e "$f" ] && printf "%s\\n" "${f%/*}"; done; exit 0';
+    const result = await sprite.execFile('bash', ['-c', script, 'propr-retained', SPRITES_RUN_ROOT, SPRITES_RETAINED_CREDENTIALS_MARKER], { timeout: 60_000 });
+    if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}: ${text(result.stderr).trim()}`);
+    return text(result.stdout).split('\n').map(line => line.trim()).filter(Boolean);
 }
 
 /** Get the Sprite, creating it (in the configured region) when it does not exist. */

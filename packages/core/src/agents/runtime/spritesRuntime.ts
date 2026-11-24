@@ -13,8 +13,11 @@ import {
 } from './sprites/spritesCommand.js';
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
 import { prepareSpritesCredentials, type SpritesCredentialSync } from './sprites/spritesCredentials.js';
-import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession } from './sprites/spritesExecution.js';
-import { clearCleanMarker, prepareSprite, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, spriteRunInProgress, wakeSprite, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
+import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession, terminateRunProcesses } from './sprites/spritesExecution.js';
+import { clearCleanMarker, prepareSprite, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
+import {
+    acquireSprite, persistRecoveryObligation, spriteHoldsRetainedCredentials, startDeadlineResult, untilAborted, SpritesStartDeadlineError, type SpriteRunLease,
+} from './sprites/spritesRunLifecycle.js';
 import { defaultSpritesClientFactory, type SpriteCommandLike, type SpriteLike, type SpritesClientFactory, type SpritesClientLike } from './sprites/spritesSdk.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
@@ -71,19 +74,24 @@ export function spritesRunId(spec: Pick<AgentRunSpec, 'name'>): string {
 const CLONED_LINE = 'ProPR workspace transport: cloned';
 const SESSION_HEADROOM_MS = 10 * 60_000;
 
-interface Lease { sprite: SpriteLike; name: string; release(): void }
-
 class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     private readonly output = new LazyOutputStreams();
     private readonly cancellation = new AbortController();
     private readonly result: Promise<ExecutionResult>;
     readonly timings: SpritesStartupTimings = {};
     private readonly paths: SpritesRunPaths;
-    private lease?: Lease;
+    private lease?: SpriteRunLease;
     private started = false;
     private settled = false;
     private retainedCredentials = false;
+    /** The Sprite must stay out of the pool: its retained credentials have no persisted recovery marker, or the run's processes could not be stopped. */
+    private holdSprite = false;
     private retained = false;
+    /** The launch's acquisition and preparation, settled; cleanup waits for it so it never races work still running on the Sprite. */
+    private preparation: Promise<void> = Promise.resolve();
+    private preparationSettled = true;
+    /** The one cleanup of this run's Sprite, followed by freeing its slot. */
+    private cleanup?: Promise<void>;
     private released?: Promise<void>;
     private releaseTimer?: NodeJS.Timeout;
 
@@ -91,7 +99,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         readonly spec: AgentRunSpec,
         options: AgentRunOptions,
         private readonly runtime: SpritesRuntime,
-        attach?: { lease: Lease },
+        attach?: { lease: SpriteRunLease },
     ) {
         this.paths = spritesRunPaths(spritesRunId(spec));
         const ownership = getExecutionOwnershipContext()?.signal;
@@ -100,7 +108,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         const settle = (): void => {
             this.settled = true;
             this.output.end();
-            if (!this.released && !this.retained) {
+            if (!this.released && !this.cleanup && !this.retained) {
                 this.releaseTimer = setTimeout(() => { void this.release().catch(() => undefined); }, spec.workspace.mode === 'clone' ? UNRELEASED_RUN_REMOVAL_MS : 0);
                 this.releaseTimer.unref();
             }
@@ -115,35 +123,47 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     private async launch(options: AgentRunOptions, signal: AbortSignal): Promise<ExecutionResult> {
         const requested = Date.now();
         const timeoutMs = options.timeout ?? 300_000;
-        const config = this.runtime.config();
-        const argv = renderSpritesArgv(this.spec);
-        const plan = planSpritesMounts(this.spec);
-        const admitted = admitCostExecution('sprites', [], { costCapExempt: options.costCapExempt, agentRun: { spec: this.spec } });
-        const refusal = admitted ? await admitted : null;
-        if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
-        const launchEnvironment = { ...process.env, ...options.extraEnvVars };
-        const credentials = prepareSpritesCredentials(this.spec, plan, { launchEnvironment: options.extraEnvVars, environment: this.runtime.environment });
-        const environment = resolveSpritesEnvironment(this.spec, launchEnvironment);
-        for (const [name, value] of Object.entries(credentials?.secretEnv ?? {})) environment.set(name, value);
-        const client = await this.runtime.client();
-        this.lease = await this.runtime.acquire(client, config, signal, this.timings);
-        const { sprite } = this.lease;
-        let provisioned = Date.now();
+        // The deadline covers the whole run: queueing for a Sprite, first-time setup and preparation count against it.
+        const deadline = new AbortController();
+        const deadlineTimer = setTimeout(() => deadline.abort(new SpritesStartDeadlineError(this.spec.name, timeoutMs)), timeoutMs);
+        deadlineTimer.unref();
+        const startup = AbortSignal.any([signal, deadline.signal]);
+        let credentials: SpritesCredentialSync | undefined;
         try {
-            const wakeStarted = Date.now();
-            const provisioning = await prepareSprite(sprite, this.runtime.setupBundle(), config);
-            Object.assign(this.timings, { ...(provisioning.setupMs !== undefined ? { setupMs: provisioning.setupMs } : {}), ...(provisioning.restoreMs !== undefined ? { restoreMs: provisioning.restoreMs } : {}) });
-            this.timings.wakeMs = (this.timings.wakeMs ?? 0) + Math.max(0, Date.now() - wakeStarted - (provisioning.setupMs ?? 0) - (provisioning.restoreMs ?? 0));
-            signal.throwIfAborted();
-            provisioned = Date.now();
-            await this.uploadRun(sprite, { argv, environment, plan, credentials, stdinData: options.stdinData });
-            this.timings.credentialSyncMs = Date.now() - provisioned;
-            signal.throwIfAborted();
-        } catch (error) {
-            await this.cleanSprite();
-            this.lease.release();
-            throw signal.aborted && this.cancellation.signal.aborted ? new AgentRunStoppedError(this.spec.name) : error;
+            const config = this.runtime.config();
+            const argv = renderSpritesArgv(this.spec);
+            const plan = planSpritesMounts(this.spec);
+            const admitted = admitCostExecution('sprites', [], { costCapExempt: options.costCapExempt, agentRun: { spec: this.spec } });
+            const refusal = admitted ? await admitted : null;
+            if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
+            const launchEnvironment = { ...process.env, ...options.extraEnvVars };
+            credentials = prepareSpritesCredentials(this.spec, plan, { launchEnvironment: options.extraEnvVars, environment: this.runtime.environment });
+            const environment = resolveSpritesEnvironment(this.spec, launchEnvironment);
+            for (const [name, value] of Object.entries(credentials?.secretEnv ?? {})) environment.set(name, value);
+            const preparation = this.prepare(config, startup, { argv, environment, plan, credentials, stdinData: options.stdinData });
+            this.preparationSettled = false;
+            // Registered before the race below, so a failed preparation is known as settled when the race sees it.
+            const settle = () => { this.preparationSettled = true; };
+            this.preparation = preparation.then(settle, settle);
+            try {
+                await untilAborted(preparation, startup);
+                // An expired or cancelled run never reaches the Sprite.
+                startup.throwIfAborted();
+            } catch (error) {
+                const cleanup = this.cleanUp();
+                // Abandoned preparation still owns the Sprite: cleanup (and freeing the slot) follows it, but the run settles now.
+                if (this.preparationSettled) await cleanup;
+                if (signal.aborted) throw this.cancellation.signal.aborted ? new AgentRunStoppedError(this.spec.name) : error;
+                if (deadline.signal.aborted) {
+                    logger.warn({ run: this.spec.name, sprite: this.lease?.name, timeoutMs, timings: this.timings }, 'Sprites run reached its deadline before it started');
+                    return startDeadlineResult(timeoutMs, options.preserveOutputOnTimeout ?? false);
+                }
+                throw error;
+            }
+        } finally {
+            clearTimeout(deadlineTimer);
         }
+        const { sprite } = this.lease!;
         const sessionStarted = Date.now();
         const command = sprite.createSession('sudo', ['-n', '/bin/bash', this.paths.launcher, this.paths.root], {
             cwd: '/', maxRunAfterDisconnect: `${Math.ceil((timeoutMs + SESSION_HEADROOM_MS) / 1000)}s`,
@@ -156,7 +176,24 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         }
     }
 
-    private async reattach(options: AgentRunOptions, signal: AbortSignal, lease: Lease): Promise<ExecutionResult> {
+    /** Acquires a Sprite and prepares it for the run, stopping at the next step once `signal` aborts. */
+    private async prepare(config: SpritesRuntimeConfig, signal: AbortSignal, run: Parameters<SpritesRunHandle['uploadRun']>[1]): Promise<void> {
+        const client = await this.runtime.client();
+        signal.throwIfAborted();
+        this.lease = await this.runtime.acquire(client, config, signal, this.timings);
+        const { sprite } = this.lease;
+        signal.throwIfAborted();
+        const wakeStarted = Date.now();
+        const provisioning = await prepareSprite(sprite, this.runtime.setupBundle(), config);
+        Object.assign(this.timings, { ...(provisioning.setupMs !== undefined ? { setupMs: provisioning.setupMs } : {}), ...(provisioning.restoreMs !== undefined ? { restoreMs: provisioning.restoreMs } : {}) });
+        this.timings.wakeMs = (this.timings.wakeMs ?? 0) + Math.max(0, Date.now() - wakeStarted - (provisioning.setupMs ?? 0) - (provisioning.restoreMs ?? 0));
+        signal.throwIfAborted();
+        const provisioned = Date.now();
+        await this.uploadRun(sprite, run);
+        this.timings.credentialSyncMs = Date.now() - provisioned;
+    }
+
+    private async reattach(options: AgentRunOptions, signal: AbortSignal, lease: SpriteRunLease): Promise<ExecutionResult> {
         this.lease = lease;
         this.started = true;
         const plan = planSpritesMounts(this.spec);
@@ -232,6 +269,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         const outcome = await credentials.writeBack(this.lease.sprite.filesystem(), this.paths);
         this.retainedCredentials = outcome.retained;
         this.timings.credentialWriteBackMs = Date.now() - started;
+        if (outcome.retained && !await persistRecoveryObligation(this.lease.sprite, this.paths, this.spec.name)) this.holdSprite = true;
     }
 
     /**
@@ -242,8 +280,9 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     private async cleanSprite(): Promise<void> {
         if (!this.lease) return;
         const { sprite, name } = this.lease;
-        // A run directory holding the only copy of a rotated token must survive.
-        if (!this.retainedCredentials && this.runtime.config().restoreCheckpoint) {
+        // A run directory (this run's or another's) holding the only copy of a rotated token must survive.
+        const quarantined = this.retainedCredentials || await spriteHoldsRetainedCredentials(sprite, this.spec.name);
+        if (!quarantined && this.runtime.config().restoreCheckpoint) {
             try {
                 const restoreMs = await restoreCleanCheckpoint(sprite, this.runtime.setupBundle());
                 if (restoreMs !== undefined) {
@@ -309,7 +348,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
 
     /** The workspace result files, copied by the launcher into the run directory once the run finished. */
     async readFile(filePath: string): Promise<Buffer | null> {
-        if (!this.settled || this.released || !this.lease) return null;
+        if (!this.settled || this.cleanup || !this.lease) return null;
         const relative = path.posix.relative(WORKSPACE_TRANSPORT_RESULT_DIR, filePath);
         if (!relative || relative.startsWith('..') || path.posix.isAbsolute(relative)) return null;
         try {
@@ -328,18 +367,39 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     }
 
     /**
-     * Restores the Sprite to its clean checkpoint (or removes everything the run
-     * left, keeping only a run directory with unreturned credentials) and frees
-     * the Sprite for the next run.
+     * Stops the run, restores the Sprite to its clean checkpoint (or removes
+     * everything the run left, keeping only a run directory with unreturned
+     * credentials) and frees the Sprite for the next run.
      */
     release(): Promise<void> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
         this.released ??= (async () => {
             if (!this.settled) await this.stop();
-            await this.cleanSprite();
-            this.lease?.release();
+            await this.cleanUp();
         })();
         return this.released;
+    }
+
+    /**
+     * The run's only cleanup of its Sprite, and the only place its slot is
+     * freed: after any preparation still running, after every process of the
+     * run is verifiably gone, and after the Sprite was cleaned. Until then no
+     * other run can acquire the Sprite, and nothing of this run touches it afterwards.
+     */
+    private cleanUp(): Promise<void> {
+        this.cleanup ??= (async () => {
+            await this.preparation;
+            const lease = this.lease;
+            if (!lease) return;
+            if (this.started && !await terminateRunProcesses(lease.sprite, this.paths)) {
+                logger.error({ run: this.spec.name, sprite: lease.name }, 'Could not verify that the Sprites run stopped; this worker keeps the Sprite out of use until it restarts');
+                return;
+            }
+            await this.cleanSprite();
+            if (this.holdSprite) return;
+            lease.release();
+        })();
+        return this.cleanup;
     }
 }
 
@@ -384,29 +444,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         return this.clientPromise;
     }
 
-    async acquire(client: SpritesClientLike, config: SpritesRuntimeConfig, signal: AbortSignal, timings: SpritesStartupTimings): Promise<Lease> {
-        const queued = Date.now();
-        const skip = new Set<number>();
-        for (;;) {
-            const slot = await this.pool.acquireSlot(signal, skip);
-            timings.queueMs = Date.now() - queued;
-            const name = spriteName(config, slot.slot);
-            let lease: Lease;
-            try {
-                const started = Date.now();
-                const { sprite, created } = await wakeSprite(client, name, config);
-                timings.wakeMs = Date.now() - started;
-                timings.created = created;
-                lease = { sprite, name, release: slot.release };
-            } catch (error) {
-                slot.release();
-                throw new Error(`Could not wake or create Sprite ${name}: ${(error as Error).message}`, { cause: error });
-            }
-            if (timings.created || !await spriteRunInProgress(lease.sprite)) return lease;
-            logger.warn({ sprite: name }, 'Sprite is running another process\'s agent run; set PROPR_SPRITES_WORKER_ID per ProPR process on one host');
-            slot.release();
-            skip.add(slot.slot);
-        }
+    acquire(client: SpritesClientLike, config: SpritesRuntimeConfig, signal: AbortSignal, timings: SpritesStartupTimings): Promise<SpriteRunLease> {
+        return acquireSprite({ pool: this.pool, client, config }, signal, timings);
     }
 
     unsupportedMount(mount: Parameters<NonNullable<AgentRuntime['unsupportedMount']>>[0]): string | undefined {

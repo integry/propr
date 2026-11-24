@@ -68,6 +68,10 @@ export class FakeSprite {
     /** Drop each follower connection once, after it delivered its first chunk. */
     dropFollowersOnce = false;
     keepAwakeFails = false;
+    /** The run's processes survive SIGKILL (the signal script reports survivors). */
+    survivesKill = false;
+    /** Sessions created, in order (the launcher of each run). */
+    readonly sessions: string[] = [];
     private readonly launchers = new Map<string, { running: boolean; terminate: () => void }>();
     private dropped = new Set<string>();
 
@@ -115,12 +119,17 @@ export class FakeSprite {
         if (file === 'sudo' && args.includes('propr-signal')) {
             const signal = args[args.indexOf('propr-signal') + 1];
             this.signals.push(signal);
-            this.launchers.get(path.posix.dirname(args[args.indexOf('propr-signal') + 2]))?.terminate();
-            return { stdout: '', stderr: '', exitCode: 0 };
+            this.launchers.get(args[args.indexOf('propr-signal') + 2])?.terminate();
+            return { stdout: '', stderr: '', exitCode: this.survivesKill ? 1 : 0 };
         }
         if (file === 'sudo' && args.includes('propr-scrub')) {
             for (const target of args.slice(args.indexOf('propr-scrub') + 1)) await this.filesystem().rm(target);
             return { stdout: '', stderr: '', exitCode: 0 };
+        }
+        if (file === 'bash' && args.includes('propr-retained')) {
+            const [root, marker] = args.slice(args.indexOf('propr-retained') + 1);
+            const runs = [...this.files.keys()].filter(key => key.startsWith(`${root}/`) && key.endsWith(`/${marker}`) && key.split('/').length === root.split('/').length + 2);
+            return { stdout: runs.map(run => `${path.posix.dirname(run)}\n`).join(''), stderr: '', exitCode: 0 };
         }
         if (file === 'sudo' && args.includes('propr-busy')) {
             return { stdout: '', stderr: '', exitCode: [...this.launchers.values()].some(launcher => launcher.running) ? 0 : 1 };
@@ -153,6 +162,7 @@ export class FakeSprite {
         const session = new FakeCommand();
         if (command !== 'sudo' || args[1] !== '/bin/bash') throw new Error(`unexpected session ${command} ${args.join(' ')}`);
         const root = args[3];
+        this.sessions.push(root);
         void this.runLauncher(root);
         return session;
     }

@@ -429,3 +429,201 @@ test('Docker-only preparation and sweeps are skipped when no agent runs on Docke
     assert.deepEqual(await runningContainerMountSources(unreachable, { PROPR_AGENT_RUNTIME: 'sprites' }), []);
     await assert.rejects(runningContainerMountSources(unreachable, {}), /docker ps failed/);
 });
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const scrubs = (sprite: { calls: Array<{ args: string[] }> }) => sprite.calls.filter(call => call.args.includes('propr-scrub')).length;
+
+test('credentials retained after a failed write-back quarantine the Sprite: no restore, no reuse, until the run directory is deleted', async () => {
+    const client = new FakeSpritesClient();
+    const credentials = claudeStore();
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            context.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"token":"rotated"}'));
+            fs.chmodSync(credentials, 0o500); // the canonical store cannot take the refreshed token
+            return 0;
+        };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const first = runtime.start(cloneSpec(credentials, { name: 'claude-issue-30' }), { timeout: 10_000 });
+    try {
+        assert.equal((await first.wait()).exitCode, 0);
+    } finally {
+        fs.chmodSync(credentials, 0o700);
+    }
+    await first.release();
+    const sprite = client.sprites.get('propr-w1-0')!;
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-30' })}`;
+    const retainedToken = `${root}/returned/claude-config/.credentials.json`;
+    assert.equal(sprite.files.get(retainedToken)?.toString(), '{"token":"rotated"}');
+    assert.ok(sprite.files.has(`${root}/credentials-retained`), 'the recovery obligation is persisted on the Sprite');
+    assert.deepEqual(sprite.restored, [], 'release does not restore over the retained credentials');
+
+    // Another run (this process or another one) must not restore the Sprite or run on it.
+    sprite.agent = async () => 0;
+    await assert.rejects(runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-31' }), { timeout: 10_000 }).wait(), /holds credentials awaiting recovery/);
+    await assert.rejects(runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' }).start(cloneSpec(claudeStore(), { name: 'claude-issue-32' }), { timeout: 10_000 }).wait(), /awaiting recovery/);
+    assert.deepEqual(sprite.restored, []);
+    assert.equal(sprite.files.get(retainedToken)?.toString(), '{"token":"rotated"}', 'the only rotated token survives the next acquisitions');
+    assert.deepEqual(sprite.sessions, [root]);
+
+    // A second slot keeps the worker running meanwhile.
+    const wider = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '2' });
+    const elsewhere = wider.start(cloneSpec(claudeStore(), { name: 'claude-issue-33' }), { timeout: 10_000 });
+    assert.equal((await elsewhere.wait()).exitCode, 0);
+    assert.equal(elsewhere.timings.created, true);
+    await elsewhere.release();
+
+    // Once the operator recovered the token and deleted the directory, the Sprite is used again.
+    await sprite.filesystem().rm(root);
+    const after = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-34' }), { timeout: 10_000 });
+    assert.equal((await after.wait()).exitCode, 0);
+    assert.deepEqual(sprite.restored, ['v1']);
+    await after.release();
+});
+
+test('a failed preparation cleans and frees its Sprite once; a later release() never touches the next run', async () => {
+    const client = new FakeSpritesClient();
+    let finishSecond!: () => void;
+    const secondHeld = new Promise<void>(resolve => { finishSecond = resolve; });
+    let failUpload = true;
+    client.configureSprite = sprite => {
+        const filesystem = sprite.filesystem.bind(sprite);
+        sprite.filesystem = () => {
+            const fsApi = filesystem();
+            return { ...fsApi, writeFile: async (file: string, data: string | Buffer, options?: { mode?: number }) => {
+                if (failUpload && file.endsWith('/launch.sh')) { failUpload = false; throw new Error('upload failed'); }
+                return fsApi.writeFile(file, data, options);
+            } };
+        };
+        sprite.agent = async context => { await secondHeld; context.write('stdout', 'second done\n'); return 0; };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const first = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-40' }), { timeout: 10_000 });
+    const second = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-41' }), { timeout: 10_000 });
+    await assert.rejects(first.wait(), /upload failed/);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    for (let i = 0; i < 200 && sprite.sessions.length === 0; i++) await sleep(5);
+    assert.equal(sprite.sessions.length, 1, 'the queued run got the Sprite');
+    const before = { restored: sprite.restored.length, scrubs: scrubs(sprite), files: sprite.files.size };
+    await first.release();
+    assert.equal(sprite.restored.length, before.restored, 'the failed run does not restore the Sprite under the next run');
+    assert.equal(scrubs(sprite), before.scrubs);
+    const secondRoot = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-41' })}`;
+    assert.ok(sprite.files.has(`${secondRoot}/launch.sh`), 'the next run keeps its files');
+    finishSecond();
+    assert.equal((await second.wait()).stdout, 'second done\n');
+    await second.release();
+});
+
+test('the deadline covers queueing for a Sprite: an expired run settles as timed out and never starts', async () => {
+    const client = new FakeSpritesClient();
+    let finishFirst!: () => void;
+    const firstHeld = new Promise<void>(resolve => { finishFirst = resolve; });
+    client.configureSprite = sprite => { sprite.agent = async () => { await firstHeld; return 0; }; };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const first = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-50' }), { timeout: 60_000 });
+    await sleep(50);
+    const started = Date.now();
+    const queued = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-51' }), { timeout: 200, preserveOutputOnTimeout: true });
+    const result = await queued.wait();
+    assert.ok(Date.now() - started < 2_000, 'settled at its deadline while the Sprite was still busy');
+    assert.equal(result.timedOut, true);
+    assert.match(result.stderr, /timed out after 200ms/);
+    await assert.rejects(runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-52' }), { timeout: 100 }).wait(), /timed out after 100ms/);
+    finishFirst();
+    await first.wait();
+    await Promise.all([first.release(), queued.release()]);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    assert.deepEqual(sprite.sessions, [`/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-50' })}`], 'expired runs never start a session');
+});
+
+test('the deadline covers first-time setup: the run settles on time and its Sprite is freed only after the setup finished', async () => {
+    const client = new FakeSpritesClient();
+    let setupDone = false;
+    client.configureSprite = sprite => {
+        const execFile = sprite.execFile.bind(sprite);
+        sprite.execFile = async (file: string, args: string[] = []) => {
+            if (file === 'sudo' && args.includes('env')) { await sleep(400); setupDone = true; }
+            return execFile(file, args);
+        };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const slow = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-55' }), { timeout: 150 });
+    await assert.rejects(slow.wait(), /timed out after 150ms/);
+    assert.equal(setupDone, false, 'settled before the setup finished');
+    const next = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-56' }), { timeout: 10_000 });
+    await slow.release();
+    assert.equal(setupDone, true, 'release waits for the abandoned setup before cleaning the Sprite');
+    assert.equal((await next.wait()).exitCode, 0);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    assert.deepEqual(sprite.sessions, [`/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-56' })}`]);
+    await next.release();
+});
+
+test('release() verifies every process of the run is gone before the Sprite is reused, and keeps it otherwise', async () => {
+    const client = new FakeSpritesClient();
+    client.configureSprite = sprite => { sprite.agent = async () => 0; };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const first = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-60' }), { timeout: 10_000 });
+    assert.equal((await first.wait()).exitCode, 0);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    sprite.survivesKill = true;
+    await first.release();
+    assert.ok(sprite.signals.includes('KILL'), 'release kills the run\'s process boundary');
+    assert.deepEqual(sprite.restored, [], 'a Sprite with surviving processes is not cleaned for reuse');
+    const keepAlive = setInterval(() => undefined, 50); // the run deadline timer does not hold the process open
+    const queued = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-61' }), { timeout: 200 });
+    await assert.rejects(queued.wait(), /timed out after 200ms/, 'its slot stays taken');
+    clearInterval(keepAlive);
+    assert.equal(sprite.sessions.length, 1);
+});
+
+const linuxProcesses = process.platform === 'linux' && fs.existsSync('/proc/self/stat') && fs.existsSync('/usr/bin/setsid');
+
+test('the launcher contains the run\'s processes: KILL takes descendants that ignore TERM or left the session, and exit kills leftovers', { skip: !linuxProcesses }, async t => {
+    const { execFileSync, spawn } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SIGNAL_SCRIPT } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-procs-');
+    const launcher = path.join(dir, 'launch.sh');
+    // The launcher runs as root on a Sprite; here as the test user (who owns every process it starts).
+    fs.writeFileSync(launcher, SPRITES_LAUNCHER_SCRIPT.replace('[ "$(id -u)" = "0" ]', 'true').replace('id node >/dev/null 2>&1', 'true'));
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const marker = `propr-${process.pid}-${Date.now()}`;
+    const alive = (): string[] => {
+        const ps = execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' });
+        return ps.split('\n').filter(line => new RegExp(`^\\s*\\d+ sleep 8640[01] ${marker} `).test(line));
+    };
+    const runDir = (name: string, script: string) => {
+        const run = path.join(dir, name);
+        fs.mkdirSync(run);
+        fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', script]));
+        fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+        fs.writeFileSync(path.join(run, 'manifest'), '');
+        fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, `${name}-work`));
+        fs.writeFileSync(path.join(run, 'user'), 'root');
+        return run;
+    };
+    // sleep's extra argument tags the process (GNU sleep sums its arguments, so both are numbers).
+    const stubborn = `trap "" TERM; bash -c 'trap "" TERM; exec -a "sleep 86400 ${marker}" sleep 86400' & setsid bash -c 'trap "" TERM; exec -a "sleep 86401 ${marker}" sleep 86401' & echo started; wait`;
+    const run = runDir('stopped', stubborn);
+    const child = spawn('bash', [launcher, run], { stdio: 'ignore' });
+    const exited = new Promise<number | null>(resolve => child.on('exit', resolve));
+    t.after(() => {
+        child.kill('SIGKILL');
+        for (const line of alive()) process.kill(Number(line.trim().split(' ')[0]), 'SIGKILL');
+    });
+    for (let i = 0; i < 200 && alive().length < 2; i++) await sleep(25);
+    assert.equal(alive().length, 2, 'the agent\'s grandchild and an escaped daemon are running');
+    execFileSync('bash', ['-c', SPRITES_SIGNAL_SCRIPT, 'propr-signal', 'TERM', run]);
+    await sleep(300);
+    assert.equal(alive().length, 2, 'they ignore TERM');
+    execFileSync('bash', ['-c', SPRITES_SIGNAL_SCRIPT, 'propr-signal', 'KILL', run]); // throws unless it verified that nothing survived
+    assert.deepEqual(alive(), []);
+    assert.equal(await exited, 137, 'the launcher finishes normally once its command was killed');
+    assert.equal(fs.readFileSync(path.join(run, 'exit-status'), 'utf8'), '137\n');
+
+    const leftovers = runDir('finished', `nohup bash -c 'exec -a "sleep 86400 ${marker}" sleep 86400' >/dev/null 2>&1 & setsid bash -c 'exec -a "sleep 86401 ${marker}" sleep 86401' & sleep 0.3; echo bye`);
+    execFileSync('bash', [launcher, leftovers]);
+    assert.deepEqual(alive(), [], 'background processes do not outlive the run');
+    assert.equal(fs.readFileSync(path.join(leftovers, 'stdout.log'), 'utf8'), 'bye\n');
+});
