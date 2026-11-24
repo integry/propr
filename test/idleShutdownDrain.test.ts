@@ -1057,6 +1057,9 @@ async function composedWithApi(run: (setup: { hub: Hub; events: string[]; middle
     // Anything an earlier test left on the process-wide tracker predates this idle period.
     await new Promise(resolve => setTimeout(resolve, 5));
     const idleSince = Date.now();
+    // The drain counts a request only when it is strictly after `idleSince` (epoch ms). Without this wait, a test's
+    // request can land in the same millisecond, go unseen and make the drain stop (a timing-dependent failure).
+    while (Date.now() <= idleSince) await new Promise(resolve => setTimeout(resolve, 1));
     const stopApi = startApiIdleShutdown({ redis: hub.connect() as never, countSessions: () => 0 });
     const worker = startIdleShutdownListener({
         role: 'worker', id: 'worker-composed', createConnection: hub.connect, pollMs: 10,
