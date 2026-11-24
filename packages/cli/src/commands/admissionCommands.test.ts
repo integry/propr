@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { AgentRunAdmissionReport } from "../api/index.js";
-import { ADMISSION_HEADERS, createAdmissionCommand, formatAdmissionReport, formatAdmissionRows } from "./admissionCommands.js";
+import { ADMISSION_HEADERS, createAdmissionCommand, formatAdmissionReport, formatAdmissionRows, formatRuntimeLines } from "./admissionCommands.js";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleLog = console.log;
@@ -148,4 +148,21 @@ test("propr admission reads the admission route and prints the table", async () 
 test("propr admission --json prints the response unchanged", async () => {
   const { output } = await run(["--json"]);
   assert.deepEqual(JSON.parse(output.join("\n")), report());
+});
+
+test("the runtime section says when restricted runs are refused and how MCP is reached", () => {
+  const refusing = {
+    runtime: "remote", selectedBy: "PROPR_AGENT_RUNTIME", registered: ["docker", "remote"],
+    capabilities: { bindMounts: true, restrictedNetwork: false, mcpPrivateNetwork: false, mcpReachableUrl: true, reattach: true },
+    network: { instanceMode: "restricted" as const, enforced: true, restrictedRuns: "refused" as const, enforcement: null, refusingRuns: true, refusal: "Agent runtime \"remote\" cannot enforce the restricted network policy." },
+    mcp: { transport: "reachable-url" as const, reason: "Runs reach ProPR MCP at a reachable URL with their per-run grant token." },
+  };
+  const text = formatAdmissionReport({ ...report(), runtime: refusing }).join("\n");
+  assert.match(text, /^Agent runtime: remote \(PROPR_AGENT_RUNTIME\) · instance network mode restricted \(enforced\)$/m);
+  assert.match(text, /^  Restricted runs: REFUSED \(the instance mode is restricted, so runs are being refused now\)\.$/m);
+  assert.match(text, /^  ProPR MCP: reachable-url\. /m);
+  const docker = { ...refusing, runtime: "docker", selectedBy: "default", network: { ...refusing.network, instanceMode: "open" as const, enforced: false, restrictedRuns: "enforced" as const, refusingRuns: false, refusal: undefined, enforcement: { method: "egress-proxy-socket", description: "" } } };
+  assert.deepEqual(formatRuntimeLines(docker).slice(0, 2), ["Agent runtime: docker (default) · instance network mode open", "  Restricted runs: enforced by egress-proxy-socket."]);
+  assert.deepEqual(formatRuntimeLines(null, "Unknown agent runtime \"sprites\""), ["Agent runtime: unavailable: Unknown agent runtime \"sprites\""]);
+  assert.deepEqual(formatRuntimeLines(undefined), [], "an older server without the section adds nothing");
 });

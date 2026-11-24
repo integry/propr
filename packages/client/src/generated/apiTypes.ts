@@ -91,8 +91,52 @@ export interface AgentRunAdmissionReport {
     /** Why repository usage could not be read; `repositories` is then empty and means unknown, not idle. */
     unavailable?: string;
   };
+  /** Null when the runtime selection could not be resolved; see `runtimeUnavailable`. */
+  runtime: AgentRunAdmissionRuntime | null;
+  runtimeUnavailable?: string;
   /** Subscription usage is reported elsewhere; this says where. */
   subscriptionUsage: string;
+}
+
+/** What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks. */
+export interface AgentRunAdmissionRuntime {
+  /** Default agent runtime (an agent's own `runtime` setting can select another, checked the same way at launch). */
+  runtime: string;
+  selectedBy: "PROPR_AGENT_RUNTIME" | "default";
+  /** Runtimes this process can launch. */
+  registered: string[];
+  capabilities: {
+    bindMounts: boolean;
+    /** Outbound traffic can be confined to the run's host/port allowlist. */
+    restrictedNetwork: boolean;
+    /** Runs can join the private network that reaches ProPR MCP. */
+    mcpPrivateNetwork: boolean;
+    /** Runs can reach ProPR MCP at a reachable URL with a per-run token (the fallback without private networking). */
+    mcpReachableUrl: boolean;
+    reattach: boolean;
+  };
+  network: {
+    /** Instance network mode; null when the policy could not be read (runs then fail closed). */
+    instanceMode: "open" | "restricted" | null;
+    enforced: boolean | null;
+    /** enforced: restricted runs are confined; refused: admission refuses them before launch instead of running them open. */
+    restrictedRuns: "enforced" | "refused";
+    /** How the runtime confines restricted runs. */
+    enforcement: {
+      method: string;
+      description: string;
+    } | null;
+    /** The error a restricted run gets on this runtime. */
+    refusal?: string;
+    /** The instance mode is restricted and this runtime cannot enforce it: runs are being refused. */
+    refusingRuns: boolean;
+    unavailable?: string;
+  };
+  mcp: {
+    /** How runs granted ProPR MCP reach it on this runtime. */
+    transport: "private-network" | "reachable-url" | "unavailable";
+    reason: string;
+  };
 }
 
 /** Admitted executions by state. */
