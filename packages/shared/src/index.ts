@@ -620,3 +620,5 @@ export * from './repositoryEvents.js';
 export * from './ultrafixCycle.js';
 // Reading and waiting on the repository change-event journal: cursor codec, limits and errors.
 export * from './repositoryEventWait.js';
+// Opt-in control-plane idle shutdown: settings, Redis keys and wake hint shapes.
+export * from './idleShutdown.js';

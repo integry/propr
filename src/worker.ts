@@ -9,7 +9,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManag
 import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
-import { setUltrafixDeps } from '@propr/core';
+import { setUltrafixDeps, startIdleShutdownListener } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -319,6 +319,9 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
         }
     });
+
+    // Opt-in idle shutdown: the daemon asks every process to drain and exit 0.
+    startIdleShutdownListener({ redis: subscriberRedis, log: logger });
 
     // Handle incoming config update messages
     subscriberRedis.on('message', async (channel, message) => {

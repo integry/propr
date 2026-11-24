@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 327
-    documented: 89
+    total: 330
+    documented: 92
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -398,6 +398,81 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-propr-permission: instance.manage_runtime
+      x-legacy-error: true
+  /api/admin/idle-shutdown:
+    get:
+      operationId: getIdleShutdownSettings
+      summary: Read the idle shutdown setting and what keeps the instance awake
+      description: |-
+        Off by default. The environment (`PROPR_IDLE_SHUTDOWN`, `PROPR_IDLE_SHUTDOWN_AFTER`) wins over the instance setting. See docs/operations/idle-shutdown.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Administration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The effective setting and the daemon's latest status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleShutdownSettings"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+    put:
+      operationId: updateIdleShutdownSettings
+      summary: Turn idle shutdown on or off and set the idle window
+      description: |-
+        The daemon applies the change on its next check (within 30 seconds).
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Administration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdleShutdownSettingsRequest"
+      responses:
+        "200":
+          description: The saved setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleShutdownSettings"
+        "400":
+          description: The body is not `{ enabled, after? }` or `after` is not a duration between 1m and 24h.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        "409":
+          description: The setting is pinned by the environment; code `ENVIRONMENT_MANAGED`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
       x-legacy-error: true
   /api/admin/mcp:
     get:
@@ -9581,6 +9656,25 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public
       x-legacy-error: true
+  /wake:
+    post:
+      operationId: wakeInstance
+      summary: Wake ping for an instance that stops when idle
+      description: "Public and side-effect free: reaching the process is the point (on Fly the request starts the Machine). Records `connect_ping` as the wake source."
+      tags:
+        - System
+      security: []
+      responses:
+        "202":
+          description: The instance is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleWakeAccepted"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
   /webhook:
     post:
       operationId: receiveGitHubWebhook
@@ -11707,6 +11801,209 @@ components:
         - status
       additionalProperties: false
       description: Liveness probe result.
+    IdleShutdownSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Effective switch. Off unless an operator turns it on.
+        afterMs:
+          type: integer
+        after:
+          type: string
+          description: The window in `.env` form, for example `15m`.
+        source:
+          type: string
+          enum:
+            - environment
+            - settings
+            - default
+        environmentManaged:
+          type: boolean
+          description: "`PROPR_IDLE_SHUTDOWN` or `PROPR_IDLE_SHUTDOWN_AFTER` is set, so the setting cannot be changed here."
+        environment:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties:
+            type:
+              - string
+              - "null"
+        warnings:
+          type: array
+          items:
+            type: string
+        status:
+          anyOf:
+            - $ref: "#/components/schemas/IdleShutdownStatus"
+            - type: "null"
+          description: Null until the daemon has published a status.
+      required:
+        - enabled
+        - afterMs
+        - after
+        - source
+        - environmentManaged
+        - environment
+        - warnings
+        - status
+      additionalProperties: false
+      description: Idle shutdown setting and live status.
+    IdleShutdownSettingsRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        after:
+          description: Duration between `1m` and `24h`, for example `15m` or `1h30m`. Keeps the saved value when omitted.
+          type: string
+      required:
+        - enabled
+      additionalProperties: false
+      description: Change the idle shutdown instance setting.
+    IdleShutdownStatus:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        afterMs:
+          type: integer
+        source:
+          type: string
+          enum:
+            - environment
+            - settings
+            - default
+        idle:
+          type: boolean
+          description: Whether every signal is quiet and nothing is due within the window.
+        idleSince:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        shutdownAt:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+          description: When the instance stops if nothing changes; null while not idle or when disabled.
+        blockers:
+          type: array
+          items:
+            type: object
+            properties:
+              signal:
+                type: string
+                enum:
+                  - queue_jobs
+                  - agent_runs
+                  - ui_sessions
+                  - mcp_requests
+                  - http_requests
+                  - followup_handoffs
+                  - connect_deliveries
+                  - goals
+                  - ultrafix_loops
+                  - scheduled_work
+                  - unavailable
+              detail:
+                type: string
+            required:
+              - signal
+              - detail
+            additionalProperties: false
+          description: What keeps the instance awake right now.
+        nextDueAt:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+          description: "Next due time of scheduled work: the wake hint published before an idle exit."
+        checkedAt:
+          type: string
+          format: date-time
+        lastShutdown:
+          anyOf:
+            - type: object
+              properties:
+                shutdownAt:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                idleForMs:
+                  type: number
+                nextDueAt:
+                  anyOf:
+                    - type: string
+                      format: date-time
+                    - type: "null"
+              required:
+                - shutdownAt
+                - reason
+                - idleForMs
+                - nextDueAt
+              additionalProperties: false
+            - type: "null"
+        lastWake:
+          anyOf:
+            - type: object
+              properties:
+                wokeAt:
+                  type: string
+                  format: date-time
+                source:
+                  type: string
+                  enum:
+                    - http
+                    - connect_ping
+                    - schedule
+                    - unknown
+                coldStartMs:
+                  type: number
+                  description: Process start to daemon ready.
+                sleptMs:
+                  type:
+                    - number
+                    - "null"
+                shutdownAt:
+                  anyOf:
+                    - type: string
+                      format: date-time
+                    - type: "null"
+              required:
+                - wokeAt
+                - source
+                - coldStartMs
+                - sleptMs
+                - shutdownAt
+              additionalProperties: false
+            - type: "null"
+      required:
+        - enabled
+        - afterMs
+        - source
+        - idle
+        - idleSince
+        - shutdownAt
+        - blockers
+        - nextDueAt
+        - checkedAt
+        - lastShutdown
+        - lastWake
+      additionalProperties: {}
+      description: The daemon's idle detector status, refreshed every 30 seconds.
+    IdleWakeAccepted:
+      type: object
+      properties:
+        status:
+          type: string
+          const: awake
+      required:
+        - status
+      additionalProperties: false
+      description: The instance is running.
     InstanceDatabaseExport:
       type: object
       properties:

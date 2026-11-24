@@ -28,6 +28,7 @@ import { createApiClient, getSystemStatus } from "../api/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
+import { checkIdleShutdown } from "./idleShutdownCheck.js";
 import { printOutput } from "../utils/index.js";
 import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
@@ -555,6 +556,14 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // delivery id, and last ACK (when the backend is reachable) for the default
   // routing_websocket path.
   for (const r of await checkRoutingDiagnostics(fileEnv)) emit(r);
+
+  // 7d. Opt-in idle shutdown: the environment setting plus, when the backend is
+  // reachable, the daemon's live status (blockers, last shutdown and wake).
+  const idleEnv: Record<string, string | undefined> = { ...fileEnv };
+  for (const key of ["PROPR_IDLE_SHUTDOWN", "PROPR_IDLE_SHUTDOWN_AFTER", "GITHUB_EVENT_INTAKE_MODE", "ENABLE_GITHUB_WEBHOOKS"]) {
+    if (process.env[key] !== undefined) idleEnv[key] = process.env[key];
+  }
+  for (const r of await checkIdleShutdown(idleEnv, async () => getSystemStatus(await createApiClient({ defaultTimeout: 1000 })))) emit(r);
 
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;

@@ -59,6 +59,7 @@ import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoop
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
+import { recoverFromIdleWake, startDaemonIdleShutdown, type DaemonIdleShutdown } from './daemon/idleShutdown.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -448,7 +449,14 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
+    // Opt-in idle shutdown (PROPR_IDLE_SHUTDOWN / Settings). The detector always
+    // runs so its status is visible, but only stops the instance when enabled.
+    // After an idle stop, recover Connect replay and record the wake source.
+    void recoverFromIdleWake({ redis: redisClient, routingService, processStartedAt: performance.timeOrigin })
+        .catch((error: unknown) => logger.warn({ error: (error as Error).message }, 'Idle wake recovery failed'));
+    let idleShutdown: DaemonIdleShutdown | null = null;
     const close = async (): Promise<void> => {
+        await idleShutdown?.stop();
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(ultrafixResumeSweepInterval);
@@ -476,6 +484,13 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     };
     process.on('SIGINT', () => { void shutdown('SIGINT'); });
     process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+    idleShutdown = startDaemonIdleShutdown({
+        redis: redisClient,
+        intakeMode: EVENT_INTAKE_MODE,
+        pollingIntervalMs: POLLING_INTERVAL_MS,
+        getRoutingService: () => routingService,
+        close,
+    });
 }
 
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>

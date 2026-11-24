@@ -58,6 +58,7 @@ import {
   createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
   createAdminMcpRoutes,
+  createIdleShutdownRoutes,
   createGoalRoutes,
   createAutomationDefinitionRoutes,
   automationDefinitionAttachmentUpload,
@@ -123,6 +124,8 @@ import {
   registerRouteEntries,
 } from './routeRegistry.js';
 import { createAgentRunInternalRoutes } from './routes/agentRunInternalRoutes.js';
+import { createIdleShutdownRouteEntries } from './idleShutdownRouteRegistry.js';
+import { createIdleActivityMiddleware, createWakeHandler, startApiIdleShutdown } from './idleShutdownIntegration.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
   startVisualPreviewOAuthRefreshScheduler,
@@ -202,6 +205,10 @@ app.disable('x-powered-by');
 installApiFinalHandler(app);
 app.use(apiSecurityHeaders);
 app.use(refusePublicFleetData);
+// Opt-in idle shutdown: in-flight requests keep the instance awake, and the
+// Connect wake ping (or any first request) names what woke it.
+app.use(createIdleActivityMiddleware(() => ioRedisClient));
+app.post('/wake', createWakeHandler(() => ioRedisClient));
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
 
@@ -306,6 +313,7 @@ let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: 
 let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
 let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
 let connectMcpRegistration: ConnectRegistrationManager | undefined;
+let stopApiIdleShutdown: (() => Promise<void>) | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -457,6 +465,7 @@ export function setupRoutes(): void {
   const adminRoutes = createAdminRoutes();
   const followupHandoffRoutes = createFollowupHandoffRoutes(createDefaultFollowupHandoffDeps());
   const adminMcpRoutes = createAdminMcpRoutes({ database: db, redisClient });
+  const idleShutdownRoutes = createIdleShutdownRoutes({ redisClient });
   const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes({
     managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
   });
@@ -523,6 +532,7 @@ export function setupRoutes(): void {
     ...operationalRoutes,
     ...createStorageRouteEntries(storageRoutes),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
+    ...createIdleShutdownRouteEntries(idleShutdownRoutes),
     ...createManagementRouteEntries({
       adminRoutes,
       adminMcpRoutes,
@@ -769,6 +779,11 @@ async function start(): Promise<void> {
         notificationProjection: notificationBackground,
       });
       console.log('[WebSocket] Queue features initialized for real-time updates');
+      stopApiIdleShutdown = startApiIdleShutdown({
+        redis: getIoRedisClient(),
+        countSessions: () => socketService.getConnectedClientCount(),
+        log: { info: (details, message) => console.log(`[idle-shutdown] ${message}`, details) },
+      });
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
       // actually serves webhooks — i.e. direct_webhook mode, where this process
@@ -824,6 +839,7 @@ async function start(): Promise<void> {
           { name: 'visual-preview OAuth refresh scheduler', close: () => visualPreviewOAuthRefreshScheduler?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
+          { name: 'idle shutdown activity', close: () => stopApiIdleShutdown?.() ?? Promise.resolve() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'browser sessions', close: () => socketAuthMiddleware.close() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }

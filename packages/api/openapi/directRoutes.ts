@@ -33,6 +33,8 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   // The public OAuth Client ID Metadata Document: ProPR's client name and redirect URI only.
   { method: 'get', path: '/api/instance/extensions/v1/oauth/client-metadata.json', auth: 'public', source: 'server.ts' },
   { method: 'get', path: '/health', auth: 'public', source: 'server.ts' },
+  // The Connect wake ping for opt-in idle shutdown; records the wake source and nothing else.
+  { method: 'post', path: '/wake', auth: 'public', source: 'server.ts' },
   { method: 'post', path: '/webhook', auth: 'webhook', source: 'server.ts' },
   { method: 'get', path: '/api/compatibility', auth: 'public', source: 'server.ts' },
   // Agent run containers authenticate with a request signed by SYSTEM_TASK_SECRET.

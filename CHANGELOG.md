@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in idle shutdown for the control plane** (#3770)
+  - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
+    (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the
+    control plane with exit code 0 after it has been idle for the window, so a
+    supervisor with an `on-failure` restart policy leaves the host stopped.
+  - Idle means no queued or running BullMQ job in any queue, no active agent
+    run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
+    Web UI session or in-flight MCP/HTTP request, and no scheduled work due
+    within the window.
+  - Before exiting, the daemon sends a wake hint (next due time) to Connect and
+    writes it to `<DATA_DIR>/idle-wake-hint.json`. On the next start it asks
+    Connect to replay deliveries cached while stopped and records the wake
+    source and cold-start duration. `POST /wake` is the Connect wake ping.
+  - `propr check`, `GET /api/status` (`idleShutdown`) and
+    `GET/PUT /api/admin/idle-shutdown` report what keeps the instance awake,
+    the last idle shutdown and the last wake. See
+    [Idle shutdown](docs/docs/operations/idle-shutdown.md).
+
 ### Changed
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)

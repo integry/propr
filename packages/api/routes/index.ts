@@ -43,6 +43,7 @@ export {
   registerHostedFleetRoutes
 } from './hostedFleetRoutes.js';
 export { createAdminMcpRoutes } from './adminMcpRoutes.js';
+export { createIdleShutdownRoutes } from './idleShutdownRoutes.js';
 export { createDesktopAuthRoutes } from './desktopAuthRoutes.js';
 export { createActiveWorkRoutes } from './activeWorkRoutes.js';
 export { createGoalRoutes } from './goalRoutes.js';

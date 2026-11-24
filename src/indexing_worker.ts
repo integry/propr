@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
 import { createWorker, INDEXING_QUEUE_NAME, indexingQueue, runMigrations } from '@propr/core';
 import type { IndexingJobData, JobResult } from '@propr/core';
-import { logger, startEgressProxySweeper } from '@propr/core';
+import { logger, startEgressProxySweeper, startIdleShutdownListener } from '@propr/core';
 import { runWithNetworkPolicy } from './jobs/networkEgress.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { generateCorrelationId } from '@propr/core';
@@ -389,8 +389,11 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
     // Summarization agents run under the instance network policy, with per-run proxies like the worker's.
     const egressProxySweeper = startEgressProxySweeper();
     enforceInstanceNetworkPolicyOutsideRuns();
+    // Opt-in idle shutdown: the daemon asks every process to drain and exit 0.
+    const stopIdleShutdownListener = startIdleShutdownListener({ log: logger });
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.on(signal, async () => {
+            void stopIdleShutdownListener();
             logger.info(`Indexing Worker received ${signal}, shutting down gracefully...`);
             clearInterval(scanInterval);
             // Proxies close only after running jobs (and their containers) have drained.

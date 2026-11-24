@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- connection lifecycle, dispatch and the idle wake/replay frames share one socket state */
 /**
  * Routing WebSocket intake service (daemon side).
  *
@@ -98,6 +99,7 @@ import {
 import { ConnectAccountStatusTracker, parseRoutingFrame } from './routingConnectAccountStatus.js';
 import { DeliveryInterestAnnouncer } from './routingDeliveryInterest.js';
 import { cacheTokenFrame } from './routingTokenFrame.js';
+import { buildReplayFrame, buildWakeHintFrame } from './routingIdleFrames.js';
 
 export type {
     DeliveryAckBilling,
@@ -160,6 +162,8 @@ export class RoutingWebSocketIntakeService {
      * than cutting it off mid-flight and relying on relay redelivery.
      */
     private readonly inFlightWork = new Set<Promise<void>>();
+    /** Set by {@link requestReplayOnConnect}: ask for cached deliveries on the next open. */
+    private pendingReplaySince: string | null | undefined = undefined;
 
     /** Tracks in-flight vs. accepted deliveries to keep ACKing safe under redelivery. */
     private readonly deliveries: DeliveryTracker;
@@ -284,6 +288,9 @@ export class RoutingWebSocketIntakeService {
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.keepalive.start(socket);
             this.accountStatus.open(socket, this.deliveryInterest.open(socket), frame => this.send(frame, socket));
+            if (this.pendingReplaySince !== undefined && this.send(buildReplayFrame(this.pendingReplaySince), socket)) {
+                this.pendingReplaySince = undefined;
+            }
             this.notifyStatusChange();
         });
 
@@ -592,6 +599,25 @@ export class RoutingWebSocketIntakeService {
 
         // Exponential backoff, capped.
         this.currentReconnectDelayMs = Math.min(this.currentReconnectDelayMs * 2, this.maxReconnectDelayMs);
+    }
+
+    /** Deliveries received and still being handled (not yet ACKed). */
+    getInFlightCount(): number {
+        return this.inFlightWork.size;
+    }
+
+    /**
+     * Idle shutdown: tell Connect when scheduled work is next due, just before
+     * {@link stop}. Returns whether the frame reached an open socket.
+     */
+    sendWakeHint(nextDueAt: string | null): boolean {
+        return this.socket !== null && this.send(buildWakeHintFrame(nextDueAt), this.socket);
+    }
+
+    /** Idle wake: ask for deliveries cached while stopped once the socket opens. */
+    requestReplayOnConnect(since: string | null): void {
+        this.pendingReplaySince = since;
+        if (this.socket && this.connected && this.send(buildReplayFrame(since), this.socket)) this.pendingReplaySince = undefined;
     }
 
     /**
