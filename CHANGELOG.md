@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Machine.
   - Writes `GITHUB_EVENT_INTAKE_MODE` on every run: `direct_webhook` in
     demo mode, `routing_websocket` with a relay token, and `direct_webhook`
-    or `polling` for an own GitHub App. Demo and `--no-relay` deploys
+    or `polling` for an own GitHub App, and `polling` when the app holds both
+    kinds of credentials next to an earlier, unreadable `GH_AUTH_MODE` (an
+    earlier intake, such as a demo deploy's, is not kept). Demo and `--no-relay` deploys
     therefore no longer crash-loop on the relay WebSocket. A deploy with no
     GitHub credentials stops before it sets secrets.
   - The app container lists every Fly secret name (including ones left by

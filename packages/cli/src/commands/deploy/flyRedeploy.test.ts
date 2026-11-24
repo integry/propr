@@ -247,7 +247,6 @@ test("an own App + Connect app redeployed with only an OAuth client keeps App au
     const first = await deploy(app, TUNNEL_FLAGS, { ...OWN_APP_ENV, ...extra }, "gh");
     assert.equal(first.GH_AUTH_MODE, "app");
     assert.equal(first.PROPR_GH_RELAY_TOKEN, "shared-relay-token", "Connect sign-in got a relay token");
-    const intake = first.GITHUB_EVENT_INTAKE_MODE;
     assert.deepEqual(intakeErrors(first), []);
 
     // No App, no tunnel flags, no local login: GH_AUTH_MODE=app stays on Fly,
@@ -255,9 +254,36 @@ test("an own App + Connect app redeployed with only an OAuth client keeps App au
     const second = await deploy(app, {}, OAUTH_ENV);
     assert.equal(second.GH_AUTH_MODE, "app");
     assert.deepEqual(authModes(second), ["app", "app"]);
-    assert.equal(second.GITHUB_EVENT_INTAKE_MODE, intake, "the earlier intake is kept");
+    // GH_AUTH_MODE and the earlier intake cannot be read back: polling starts under either mode.
+    assert.equal(second.GITHUB_EVENT_INTAKE_MODE, "polling");
     assert.deepEqual(intakeErrors(second), []);
   }
+});
+
+test("an own App + Connect app put into demo mode and back out does not keep the demo intake", async () => {
+  const app = flyApp();
+  // 1. Own App with Connect, no webhook secret: App auth, relay token, polling.
+  const first = await deploy(app, TUNNEL_FLAGS, OWN_APP_ENV, "gh");
+  assert.equal(first.GH_AUTH_MODE, "app");
+  assert.equal(first.PROPR_GH_RELAY_TOKEN, "shared-relay-token");
+  assert.equal(first.GITHUB_EVENT_INTAKE_MODE, "polling");
+  assert.equal(first.GH_WEBHOOK_SECRET, undefined);
+
+  // 2. Demo mode, no GitHub credentials, no local login: the demo pins
+  // direct_webhook, and the App credentials and GH_AUTH_MODE=app stay on Fly.
+  const demo = await deploy(app, {}, { PROPR_DEMO_MODE: "true" });
+  assert.equal(parseTruthyEnvValue(demo.PROPR_DEMO_MODE), true);
+  assert.equal(demo.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
+  assert.equal(demo.GH_AUTH_MODE, "app");
+
+  // 3. Only the OAuth client, no tunnel flags, no local login: demo mode is off,
+  // GH_AUTH_MODE=app is unreadable, and there is still no webhook secret, so the
+  // demo's direct_webhook would fail the daemon's boot check.
+  const third = await deploy(app, {}, OAUTH_ENV);
+  assert.equal(parseTruthyEnvValue(third.PROPR_DEMO_MODE), false);
+  assert.deepEqual(authModes(third), ["app", "app"]);
+  assert.equal(third.GITHUB_EVENT_INTAKE_MODE, "polling");
+  assert.deepEqual(intakeErrors(third), []);
 });
 
 test("a demo deploy with a GitHub login and no shared-App installation skips relay enrollment", async () => {

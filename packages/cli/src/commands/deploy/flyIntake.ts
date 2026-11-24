@@ -16,8 +16,10 @@
  * rules the daemon applies at boot. Fly secret values cannot be read back, so
  * a secret left by an earlier deploy counts by name only. That includes
  * GH_AUTH_MODE: when an earlier one could be either relay or app (both kinds
- * of credentials are present), the intake the earlier deploy pinned is kept,
- * or polling (valid under both) is pinned.
+ * of credentials are present), polling (valid under both) is pinned. The
+ * intake an earlier deploy pinned is not kept: it cannot be read back either,
+ * and a demo deploy pins direct_webhook under demo mode's exemption from the
+ * prerequisite checks, so it may not start once demo mode is off.
  */
 
 import {
@@ -72,12 +74,9 @@ export function selectFlyIntakeMode(values: Readonly<Record<string, string>>, ex
 
   const explicit = values[FLY_INTAKE_MODE_KEY]?.trim();
   // Several candidates: GH_AUTH_MODE is a secret an earlier deploy left, known
-  // by name only, and both relay and App credentials are present. The intake
-  // that earlier deploy pinned next to it is kept; failing that, polling runs
-  // under either mode.
-  if (!explicit && auths.length > 1 && !(FLY_INTAKE_MODE_KEY in values) && existing.has(FLY_INTAKE_MODE_KEY)) {
-    return { secrets: {}, summary: "GitHub event intake: kept from the earlier deploy (GH_AUTH_MODE from that deploy is kept too)." };
-  }
+  // by name only, and both relay and App credentials are present. Polling runs
+  // under either mode. The intake pinned earlier is unreadable too, and may
+  // have been a demo deploy's direct_webhook, so it is replaced, not kept.
   const auth = auths[0]!;
   const mode: GithubEventIntakeMode = explicit
     ? resolveGithubEventIntakeMode({ eventIntakeMode: explicit }).mode

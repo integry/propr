@@ -82,12 +82,13 @@ test("an explicit GH_AUTH_MODE needs its own credentials whatever the intake mod
 
 test("a GH_AUTH_MODE left by an earlier deploy is unreadable: with relay and App credentials the intake must suit both", () => {
   const earlier = new Set(["GH_AUTH_MODE", "GH_APP_ID", "PROPR_GH_PRIVATE_KEY_B64", "GH_INSTALLATION_ID", "PROPR_GH_RELAY_TOKEN"]);
-  // The intake that earlier deploy pinned next to its mode is kept (nothing uploaded).
-  const kept = selectFlyIntakeMode({ PROPR_DEMO_MODE: "false" }, new Set([...earlier, "GITHUB_EVENT_INTAKE_MODE"]));
-  assert.deepEqual(kept.secrets, {});
-  assert.match(kept.summary, /kept from the earlier deploy/);
-  // No intake to keep: polling runs under relay and app auth alike.
+  // Polling runs under relay and app auth alike. An intake an earlier deploy
+  // pinned is unreadable as well (a demo deploy's direct_webhook, say), so it is
+  // replaced rather than kept.
   assert.equal(mode({ PROPR_DEMO_MODE: "false" }, earlier), "polling");
+  const replaced = selectFlyIntakeMode({ PROPR_DEMO_MODE: "false" }, new Set([...earlier, "GITHUB_EVENT_INTAKE_MODE"]));
+  assert.deepEqual(replaced.secrets, { GITHUB_EVENT_INTAKE_MODE: "polling" });
+  assert.match(replaced.summary, /polling \(GH_AUTH_MODE from an earlier deploy/);
   assert.equal(mode({ PROPR_DEMO_MODE: "false" }, new Set([...earlier, "GH_WEBHOOK_SECRET"])), "polling");
   // A stack intake that only one of the two modes can run is refused.
   assert.throws(
