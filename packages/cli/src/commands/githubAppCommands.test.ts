@@ -663,7 +663,11 @@ test('ordinary checks skip GitHub App requests; explicit verification reports re
   const requests: string[] = [];
   let status = 0;
   t.mock.method(globalThis, 'fetch', async (input: Parameters<typeof fetch>[0]) => {
-    requests.push(String(input));
+    const url = String(input);
+    // Only GitHub requests are recorded. Best-effort reads of the local
+    // backend (routing and idle-shutdown status) find a stopped stack.
+    if (!url.startsWith('https://api.github.com/')) throw new TypeError('fetch failed');
+    requests.push(url);
     if (!status) throw new TypeError('fetch failed');
     return Response.json({}, { status });
   });
