@@ -19,6 +19,7 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 let failureAt: 'ownership' | 'docker' | undefined;
+let verificationError: Error | undefined;
 let dockerResult = { stdout: '', stderr: 'execution failed', exitCode: 1 };
 const setWorktreeOwnership = mock.fn(async () => {
   await Promise.resolve();
@@ -28,7 +29,7 @@ await mock.module('../packages/core/src/claude/claudeHelpers.js', {
   namedExports: {
     setWorktreeOwnership,
     verifyWorktreeStructure: () => null,
-    verifyWorktreePostExecution: () => undefined,
+    verifyWorktreePostExecution: () => { if (verificationError) throw verificationError; },
     UsageLimitError: class UsageLimitError extends Error {},
   },
 });
@@ -80,6 +81,7 @@ after(() => closeConnection());
 beforeEach(() => {
   persistLlmLog.mock.resetCalls();
   executeDockerCommand.mock.resetCalls();
+  verificationError = undefined;
   dockerResult = { stdout: '', stderr: 'execution failed', exitCode: 1 };
 });
 
@@ -211,4 +213,37 @@ test('executeTask and analyze forward step_finish provider costs to results and 
   assert.equal(analysisResult.providerCostUsd, 1.25);
   assert.equal(persistLlmLog.mock.callCount(), 1);
   assert.equal(persistLlmLog.mock.calls[0].arguments[0].costUsd, 1.25);
+});
+
+test('a post-execution verification failure keeps the reported cost on one failed log and the returned result', async () => {
+  failureAt = undefined;
+  verificationError = new Error('worktree verification failed');
+  dockerResult = {
+    stdout: [
+      JSON.stringify({ type: 'text', sessionID: 'ses_verify', part: { type: 'text', text: 'Done' } }),
+      JSON.stringify({ type: 'step_finish', sessionID: 'ses_verify', part: { id: 'p1', type: 'step-finish', cost: 0.75, tokens: { input: 100, output: 20 } } }),
+    ].join('\n'),
+    stderr: '',
+    exitCode: 0,
+  };
+
+  const response = await new OpenCodeAgent(config).executeTask({
+    worktreePath: '/tmp/opencode-verify',
+    issueRef: { number: 42, repoOwner: 'owner', repoName: 'repo' },
+    prompt: 'Implement feature',
+    githubToken: 'test-token',
+    taskId: 'task-verify',
+  });
+
+  assert.equal(response.success, false);
+  assert.equal(response.error, 'worktree verification failed');
+  assert.equal(response.providerCostUsd, 0.75);
+  assert.equal(response.cost, 0.75);
+  assert.equal(response.tokenUsage?.input_tokens, 100);
+  assert.equal(response.sessionId, 'ses_verify');
+  assert.equal(persistLlmLog.mock.callCount(), 1);
+  const entry = persistLlmLog.mock.calls[0].arguments[0];
+  assert.equal(entry.success, false);
+  assert.equal(entry.errorMessage, 'worktree verification failed');
+  assert.equal(entry.costUsd, 0.75);
 });

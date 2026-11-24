@@ -1397,6 +1397,100 @@ describe('summary miner batch fallback', () => {
       });
     });
 
+    function capacityWait() {
+      return Object.assign(new Error("Timed out waiting for agent capacity: 'cost-second' stayed at its ceiling"), { name: 'AgentCapacityWaitTimeoutError' });
+    }
+
+    for (const waitAt of ['selection', 'admission']) {
+      test(`a capacity wait at ${waitAt} carries the cost of the priced attempts before it`, async () => {
+        const waiting = createAgent('cost-second', unlistedModel, async () => { throw capacityWait(); });
+        const route = beginCostRoute([pricedFailure('cost-first', 0.25), waiting]);
+        const raised = capacityWait();
+        if (waitAt === 'selection') {
+          const select = route.select.bind(route);
+          let selections = 0;
+          route.select = async () => {
+            if (++selections > 1) throw raised;
+            return select();
+          };
+        }
+
+        await assert.rejects(route.analyze('Generate a summary'), (error: Error & { providerCostUsd?: number; analysisAttempts?: number }) => {
+          if (waitAt === 'selection') assert.equal(error, raised);
+          assert.equal(error.name, 'AgentCapacityWaitTimeoutError');
+          assert.equal(error.analysisAttempts, 1);
+          assert.equal(error.providerCostUsd, 0.25);
+          return true;
+        });
+      });
+    }
+
+    test('a capacity wait before the first attempt carries no spend', async () => {
+      const waiting = createAgent('cost-first', unlistedModel, async () => { throw capacityWait(); });
+      await assert.rejects(beginCostRoute([waiting]).analyze('Generate a summary'), (error: Error & { providerCostUsd?: number; analysisAttempts?: number }) => {
+        assert.equal(error.name, 'AgentCapacityWaitTimeoutError');
+        assert.equal(error.analysisAttempts, 0);
+        assert.equal(error.providerCostUsd, undefined);
+        return true;
+      });
+    });
+
+    test('a capacity wait returned as a failed result keeps the cost of the priced attempts before it', async () => {
+      const waiting = createAgent('cost-second', unlistedModel, async () => ({
+        success: false, response: '', modelUsed: unlistedModel, executionTimeMs: 1, error: "Waiting for agent capacity: 'cost-second' at its ceiling"
+      }));
+      const result = await beginCostRoute([pricedFailure('cost-first', 0.25), waiting]).analyze('Generate a summary');
+      assert.equal(result.success, false);
+      assert.equal(result.providerCostUsd, 0.25);
+    });
+
+    for (const caller of ['file batch', 'directory batch']) {
+      for (const waitAfter of ['a priced attempt', 'no attempt']) {
+        test(`${caller} keeps the known total when a capacity wait follows ${waitAfter}`, async () => {
+          let calls = 0;
+          const second = createAgent('cost-second', unlistedModel, async () => {
+            if (++calls === 1) throw capacityWait();
+            return {
+              success: true, response: caller === 'file batch' ? fileSummary : directorySummary,
+              modelUsed: unlistedModel, executionTimeMs: 1, providerCostUsd: 0.5
+            };
+          });
+          const members = waitAfter === 'a priced attempt' ? [pricedFailure('cost-first', 0.25), second] : [second];
+          const batchOptions = {
+            agent: virtualCostAgent() as never, routingSession: beginCostRoute(members), log: log as never,
+            fullName: 'integry/propr', branch: 'main', modelUsed: 'smart', primaryAgentAliasSetting: 'cost-pool'
+          };
+
+          const result = caller === 'file batch'
+            ? await processSingleBatch({ ...batchOptions, batch: [file] })
+            : await processDirectoryBatch({ ...batchOptions, directories: [directory] });
+
+          assert.equal(result.fallbackUsed, false);
+          assert.equal(calls, 2);
+          const llmLog = await latestLog();
+          assert.equal(llmLog.success, 1);
+          assert.equal(llmLog.cost_usd, waitAfter === 'a priced attempt' ? 0.75 : 0.5);
+        });
+      }
+    }
+
+    test('file batch ignores a capacity wait raised by a direct agent before its first attempt', async () => {
+      let calls = 0;
+      const primary = createAgent('primary', unlistedModel, async () => {
+        if (++calls === 1) throw capacityWait();
+        return { success: true, response: fileSummary, modelUsed: unlistedModel, executionTimeMs: 1, providerCostUsd: 0.5 };
+      });
+
+      const result = await processSingleBatch({
+        fullName: 'integry/propr', batch: [file], agent: primary as never, log: log as never,
+        modelUsed: unlistedModel, primaryAgentAliasSetting: 'primary', branch: 'main'
+      });
+
+      assert.equal(result.success, true);
+      assert.equal(calls, 2);
+      assert.equal((await latestLog()).cost_usd, 0.5);
+    });
+
     test('file batch sums the cost of every retry and the fallback', async () => {
       const primaryAgent = createAgent('primary', 'opencode-litellm/custom-model', async () => ({
         success: true, response: '', modelUsed: 'opencode-litellm/custom-model', executionTimeMs: 1, providerCostUsd: 0.01

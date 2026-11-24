@@ -103,11 +103,12 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const response = this.buildExecutionResponse({ result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics });
+            const completed = this.buildExecutionResponse({ result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics });
+            // Verification runs before the log is written, so a verification failure
+            // is recorded once, on the response that carries the run's tokens and cost.
+            const response = this.reportExecutionOutcome({ response: completed, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: parsedOutput.error, modelUsed, worktreePath, worktreeGitContent });
 
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata });
-
-            this.reportExecutionOutcome({ success: response.success, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: parsedOutput.error, modelUsed, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
@@ -123,14 +124,22 @@ export class OpenCodeAgent implements Agent {
         }
     }
 
-    private reportExecutionOutcome(params: { success: boolean; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): void {
-        const { success, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
-        if (!success) {
+    /** Logs the outcome and returns the response, failed when post-execution verification throws. */
+    private reportExecutionOutcome(params: { response: AgentExecutionResult; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): AgentExecutionResult {
+        const { response, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
+        if (!response.success) {
             logger.error({ issueNumber, exitCode, stderr, agentAlias: this.config.alias, error }, 'OpenCode agent execution failed');
-        } else {
-            logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'OpenCode agent execution succeeded');
-            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
+            return response;
         }
+        try {
+            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
+        } catch (verificationError) {
+            const message = (verificationError as Error).message;
+            logger.error({ issueNumber, model: modelUsed, agentAlias: this.config.alias, error: message }, 'OpenCode post-execution verification failed');
+            return { ...response, success: false, error: message };
+        }
+        logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'OpenCode agent execution succeeded');
+        return response;
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {

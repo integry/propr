@@ -8,7 +8,7 @@ import { loadSyntheticAgents } from '../config/configManager.js';
 import type { Agent, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from '../agents/types.js';
 import logger from '../utils/logger.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
-import { SyntheticPoolExhaustedError, isNonRetryableSyntheticFailure, withAnalysisSpend, type BeginSyntheticRoutingOptions, type SyntheticMemberDiagnostic, type SyntheticPhysicalSelection, type SyntheticRoutingServiceOptions, type SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
+import { SyntheticPoolExhaustedError, addKnownCost, analysisAttemptCost, isCapacityWaitFailure, isNonRetryableSyntheticFailure, withAnalysisSpend, type BeginSyntheticRoutingOptions, type SyntheticMemberDiagnostic, type SyntheticPhysicalSelection, type SyntheticRoutingServiceOptions, type SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
 import { AliasSpecificAgentTankSnapshotProvider } from './syntheticUsageSnapshotProvider.js';
 import { AgentCapacityError, agentAliasHasCapacity } from '../agents/agentCapacity.js';
 import { chooseMemberWithCapacity, type CapacityCandidate } from './syntheticCapacitySelection.js';
@@ -150,29 +150,30 @@ export class SyntheticRoutingSession {
 
   async analyze(prompt: string, options: AnalyzeOptions = {}): Promise<AnalysisResult> {
     this.constrain(estimateTokens(`${prompt}${options.context || ''}`) + DEFAULT_OUTPUT_RESERVE_TOKENS);
-    let providerCostUsd: number | undefined = 0;
-    const attemptsBefore = this.executionAttemptCount;
+    // spentAttempts counts attempts that reached a provider; a capacity wait is not one.
+    let providerCostUsd: number | undefined = 0, spentAttempts = 0;
     for (;;) {
-      // Exhaustion after fully priced attempts still reports what they cost.
-      const selection = await this.select().catch((error: unknown) => { throw withAnalysisSpend(error, this.executionAttemptCount - attemptsBefore, providerCostUsd); });
+      // Exhaustion or a capacity wait after fully priced attempts still reports what they cost.
+      const selection = await this.select().catch((error: unknown) => { throw withAnalysisSpend(error, spentAttempts, providerCostUsd); });
       this.executionAttemptCount += 1;
-      const routingMetadata = this.service.metadataFor(selection);
       try {
         const result = await selection.physicalAgent.analyze(prompt, {
           ...options,
           model: selection.physicalModel,
           metadata: selection.synthetic
-            ? { ...options.metadata, syntheticRouting: routingMetadata }
+            ? { ...options.metadata, syntheticRouting: this.service.metadataFor(selection) }
             : options.metadata,
         });
         // The caller's total covers all physical attempts in this invocation.
-        const cost = result.providerCostUsd;
-        providerCostUsd = providerCostUsd !== undefined && cost !== undefined && Number.isFinite(cost) && cost >= 0
-          ? providerCostUsd + cost : undefined;
-        if (result.success || isNonRetryableSyntheticFailure(result) || !selection.synthetic) return cost === providerCostUsd ? result : { ...result, providerCostUsd };
+        const cost = analysisAttemptCost(result);
+        spentAttempts += cost.spent ? 1 : 0;
+        providerCostUsd = addKnownCost(providerCostUsd, cost.providerCostUsd);
+        if (result.success || isNonRetryableSyntheticFailure(result) || !selection.synthetic) return result.providerCostUsd === providerCostUsd ? result : { ...result, providerCostUsd };
         this.failCurrent(resultFailure(result).message);
       } catch (error) {
+        if (isCapacityWaitFailure(error)) throw withAnalysisSpend(error, spentAttempts, providerCostUsd);
         if (isNonRetryableSyntheticFailure(error) || !selection.synthetic) throw error;
+        spentAttempts += 1;
         providerCostUsd = undefined;
         this.failCurrent((error as Error).message);
       }

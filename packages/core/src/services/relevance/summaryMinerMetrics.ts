@@ -1,6 +1,6 @@
 import { Redis } from 'ioredis';
 import type { AnalysisResult } from '../../agents/types.js';
-import { SyntheticPoolExhaustedError, exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
+import { endedAnalysisWithoutSpend, exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 
 // --- Types ---
 
@@ -229,10 +229,11 @@ export async function analyzeWithProviderCost(
     cost = result.providerCostUsd;
     return result;
   } catch (error) {
-    // An exhausted route still reports the spend of its fully priced attempts.
-    // Re-entering an already exhausted route runs no attempt and spends nothing.
+    // An exhausted route or a capacity wait still reports the spend of the fully
+    // priced attempts before it. One that ends a call before any attempt reached
+    // a provider (a wait for capacity, a re-entered exhausted route) spends nothing.
     cost = exhaustedRouteProviderCost(error);
-    spent = !(error instanceof SyntheticPoolExhaustedError && error.analysisAttempts === 0);
+    spent = !endedAnalysisWithoutSpend(error);
     throw error;
   } finally {
     if (tracker && spent) {
