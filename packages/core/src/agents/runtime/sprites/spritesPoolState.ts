@@ -40,6 +40,7 @@ export interface SpriteRunnerRecord {
     heartbeatAt: number;
     /** When it entered its current state. */
     since: number;
+    setupFingerprint?: string;
     /** The clean setup checkpoint. */
     checkpoint?: string;
     /** Per-repository warm clone baseline, when its idle baseline is not the clean checkpoint. */
@@ -106,7 +107,7 @@ export type SpriteLeaseDecision =
     | { action: 'lease'; name: string; record: SpriteRunnerRecord }
     | { action: 'provision'; name: string; record: SpriteRunnerRecord }
     | { action: 'reap'; name: string; record: SpriteRunnerRecord }
-    | { action: 'wait'; position: number; runners: number };
+    | { action: 'wait'; position: number; runners: number; retained: string[] };
 
 function claim(record: SpriteRunnerRecord, state: SpriteRunnerState, holder: { leaseId: string; owner: string; now: number }) {
     const { leaseId, owner, now } = holder;
@@ -131,7 +132,10 @@ export function acquireSpriteRunner(state: SpritePoolState, request: SpriteLease
     const free = Math.max(0, request.max - runners.length);
     const queue = [...state.waiting].sort(([a, x], [b, y]) => x.joinedAt - y.joinedAt || a.localeCompare(b));
     const position = queue.findIndex(([id]) => id === leaseId);
-    if (position >= idle.length + orphans.length + free) return { action: 'wait', position, runners: runners.length };
+    if (position >= idle.length + orphans.length + free) return {
+        action: 'wait', position, runners: runners.length,
+        retained: runners.filter(([, record]) => record.state === 'retained').map(([name]) => name),
+    };
     const leave = () => state.waiting.delete(leaseId);
     if (idle.length) {
         const [name, record] = idle.find(([, r]) => request.repo && r.warm?.repo === request.repo)
@@ -189,14 +193,16 @@ export type SpriteReleaseOutcome = 'idle' | 'discard' | 'lost';
 /**
  * Returns a restored runner to the pool. `discard` when the pool holds more
  * runners than its bound (the bound was lowered): the caller deletes the
- * Sprite, whose record is already gone. `lost` when the lease lapsed and the
+ * Sprite while holding its counted slot. `lost` when the lease lapsed and the
  * runner was taken over for reaping.
  */
 export function releaseSpriteRunner(state: SpritePoolState, { name, leaseId, now, max }: SpriteRunnerLease & { max: number }, patch: Partial<SpriteRunnerRecord>): SpriteReleaseOutcome {
     const record = state.runners.get(name);
     if (!record || record.leaseId !== leaseId) return 'lost';
-    if (state.runners.size > max) {
-        state.runners.delete(name);
+    // Concurrent releases may already be deleting enough runners to reach the new bound.
+    const remaining = [...state.runners.values()].filter(runner => runner.state !== 'reaping').length;
+    if (remaining > max) {
+        Object.assign(record, { state: 'reaping', heartbeatAt: now, since: now });
         return 'discard';
     }
     Object.assign(record, patch, { state: 'idle', heartbeatAt: now, since: now });

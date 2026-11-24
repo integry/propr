@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
@@ -17,7 +17,7 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
     })) as SpritesCliPins;
 }
 
-export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite' | 'sprite' | 'listAllSprites'>;
+export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite' | 'getSprite' | 'sprite' | 'listAllSprites'>;
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -53,6 +53,13 @@ export async function createNamedCheckpoint(sprite: Sprite, comment: string, ste
 
 const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'gh-wrapper.sh',
     'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh'];
+export function readSpriteSetup(root = projectRoot()) {
+    const pins = readSpritesCliPins(root);
+    const files = setupFiles.map(name => ({ name, contents: readFileSync(path.join(root, 'scripts', name), 'utf8') }));
+    const fingerprint = createHash('sha256').update(JSON.stringify({ pins, files })).digest('hex');
+    return { pins, files, fingerprint };
+}
+
 export const CLEAN_CHECKPOINT_COMMENT = 'propr clean setup';
 
 /**
@@ -60,16 +67,16 @@ export const CLEAN_CHECKPOINT_COMMENT = 'propr clean setup';
  * checkpoint. Throws (with the setup's stderr tail) on failure; the caller owns
  * the Sprite either way.
  */
-export async function setupSprite(sprite: Sprite, signal: AbortSignal): Promise<string> {
+export async function setupSprite(sprite: Sprite, signal: AbortSignal, setup: ReturnType<typeof readSpriteSetup>): Promise<string> {
     try {
         const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
         const fs = sprite.filesystem();
         const dir = '/var/tmp/propr-setup';
         await step(() => fs.mkdir(dir, { mode: 0o700 }));
-        for (const file of setupFiles) {
-            await step(() => fs.writeFile(dir + '/' + file, readFileSync(path.join(projectRoot(), 'scripts', file))));
+        for (const file of setup.files) {
+            await step(() => fs.writeFile(dir + '/' + file.name, file.contents));
         }
-        const pins = Object.entries(readSpritesCliPins()).map(([name, value]) => `${name}=${value}`);
+        const pins = Object.entries(setup.pins).map(([name, value]) => `${name}=${value}`);
         await step(() => sprite.execFile('sudo', ['-n', 'env', ...pins, '/bin/bash', dir + '/sprites-agent-setup.sh', dir], { signal, timeout: 20 * 60_000 }));
         await step(() => fs.rm(dir, { recursive: true }));
         const checkpoint = await createNamedCheckpoint(sprite, CLEAN_CHECKPOINT_COMMENT, step);

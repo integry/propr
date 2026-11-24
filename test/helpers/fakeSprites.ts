@@ -113,6 +113,11 @@ export class FakeSprites implements SpriteClient {
         return sprite as unknown as Sprite;
     }
     async deleteSprite(name: string) { this.deleted.push(name); }
+    async getSprite(name: string): Promise<Sprite> {
+        const sprite = (await this.listAllSprites(name)).find(candidate => candidate.name === name);
+        if (!sprite) throw Object.assign(new Error('Sprite not found'), { statusCode: 404 });
+        return sprite;
+    }
     sprite(name: string): Sprite {
         const sprite = [...this.created, ...this.foreign].find(candidate => candidate.name === name);
         if (!sprite) throw new Error(`unknown Sprite ${name}`);
