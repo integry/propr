@@ -1128,6 +1128,87 @@ test('the launcher never exports a credential through a symlink the agent plante
     assert.equal(fs.lstatSync(path.join(innerLink.run, 'result', 'status')).isFile(), true);
 });
 
+test('with the checkpoint restore disabled, a symlink one run planted never redirects the next run\'s root mkdir, chown, install or rm', { skip: !linuxProcesses }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SCRUB_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-planted-');
+    // Stands in for /opt/propr/bin, the first directory of the root PATH, which root must never hand to the agent user.
+    const protectedDir = path.join(dir, 'opt-propr-bin');
+    fs.mkdirSync(path.join(protectedDir, 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(protectedDir, 'settings.json'), 'root');
+    fs.mkdirSync(path.join(protectedDir, 'repo'));
+    const home = path.join(dir, 'home'); // on a Sprite /home/node, here inside /tmp: everything below the top-level directory is checked
+    fs.mkdirSync(home);
+    // As the test user (see above), with every ownership change recorded (resolved, as chown resolves it) instead of made.
+    const chowned = path.join(dir, 'chowned');
+    const launcher = path.join(dir, 'launch.sh');
+    fs.writeFileSync(launcher, SPRITES_LAUNCHER_SCRIPT.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000').replace('[ "$(id -u)" = "0" ]', 'true')
+        .replace('id node >/dev/null 2>&1', 'true').replace('-o node -g node ', '')
+        .replaceAll('chown -R node:node --', 'probe_chown --').replaceAll('chown node:node --', 'probe_chown --')
+        .replace('set -u\n', `set -u\nprobe_chown() { shift; for target; do realpath -- "$target" >> ${JSON.stringify(chowned)}; done; }\n`));
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const logs = path.join(home, 'claude-logs');
+    const workdir = path.join(home, 'work');
+    const launch = (name: string, manifest: string[], agent: string) => {
+        const run = path.join(dir, name);
+        fs.mkdirSync(path.join(run, 'files'), { recursive: true });
+        fs.mkdirSync(path.join(run, 'store', 'opencode'), { recursive: true });
+        fs.writeFileSync(path.join(run, 'files', '0'), '{"seed":true}');
+        fs.writeFileSync(path.join(run, 'store', 'opencode', 'auth.json'), '{"token":"run"}');
+        fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', agent, 'agent', home, protectedDir]));
+        fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+        fs.writeFileSync(path.join(run, 'manifest'), nul(manifest));
+        fs.writeFileSync(path.join(run, 'workdir'), workdir);
+        fs.writeFileSync(path.join(run, 'user'), 'root');
+        fs.rmSync(chowned, { force: true });
+        execFileSync('bash', [launcher, run]);
+        return { run, chowned: fs.existsSync(chowned) ? fs.readFileSync(chowned, 'utf8').split('\n').filter(Boolean) : [] };
+    };
+    const protectedUntouched = (why: string) => {
+        assert.deepEqual(fs.readdirSync(protectedDir).sort(), ['opencode', 'repo', 'settings.json'], `${why}: nothing is created in or removed from the protected directory`);
+        assert.equal(fs.readFileSync(path.join(protectedDir, 'settings.json'), 'utf8'), 'root');
+    };
+
+    // Run 1: the repository's code replaces its log directory, its workspace and the ancestors of later targets with
+    // symlinks to the protected directory. It also links the ancestor of its own seed file there, which the
+    // launcher removes as the run's copy when it ends.
+    const plant = 'for name in claude-logs work .cache .config .local; do rm -rf "$1/$name" && ln -s "$2" "$1/$name"; done; rm -rf "$1/.seed" && ln -s "$2" "$1/.seed"';
+    const first = launch('first', ['dir', logs, 'file', 'files/0', path.join(home, '.seed', 'settings.json'), '444'], plant);
+    assert.equal(fs.readFileSync(path.join(first.run, 'exit-status'), 'utf8'), '0\n');
+    protectedUntouched('the run\'s cleanup');
+    assert.equal(fs.existsSync(path.join(home, '.seed')), false, 'the planted link is removed instead of followed');
+    for (const name of ['claude-logs', 'work', '.cache', '.config', '.local']) assert.equal(fs.lstatSync(path.join(home, name)).isSymbolicLink(), true, `${name} is left for the next run`);
+
+    // Run 2 on the same, unrestored filesystem: every record and the workspace are installed beneath real directories.
+    const second = launch('second', [
+        'purge', path.join(home, '.cache', 'opencode'),
+        'store', 'store/opencode', path.join(home, '.local', 'share', 'opencode'),
+        'dir', logs,
+        'file', 'files/0', path.join(home, '.config', 'seed.json'), '444',
+    ], 'test -f "$1/.local/share/opencode/auth.json" && test -f "$1/.config/seed.json" && test -d "$1/claude-logs" && printf ok');
+    assert.equal(fs.readFileSync(path.join(second.run, 'exit-status'), 'utf8'), '0\n', fs.readFileSync(path.join(second.run, 'stderr.log'), 'utf8'));
+    assert.equal(fs.readFileSync(path.join(second.run, 'stdout.log'), 'utf8'), 'ok');
+    protectedUntouched('the next run');
+    assert.equal(fs.existsSync(path.join(home, '.cache')), false, 'the purge removed the planted link, not what it led to');
+    for (const name of ['claude-logs', 'work', '.config', '.local']) {
+        const stat = fs.lstatSync(path.join(home, name));
+        assert.equal(!stat.isSymbolicLink() && stat.isDirectory(), true, `${name} is a real directory again`);
+    }
+    assert.ok(second.chowned.length > 0, 'ownership changes were made');
+    for (const target of second.chowned) assert.ok(target.startsWith(`${home}/`), `ownership is only given below the agent's own directories, not ${target}`);
+    assert.ok(second.chowned.includes(logs) && second.chowned.includes(workdir), 'the log directory and the workspace are the real ones');
+
+    // The scrub of a run that could not be restored: a planted ancestor is removed, not followed.
+    fs.rmSync(workdir, { recursive: true });
+    fs.symlinkSync(protectedDir, workdir);
+    execFileSync('bash', ['-c', SPRITES_SCRUB_SCRIPT, 'propr-scrub', path.join(workdir, 'repo'), path.join(home, 'claude-logs')]);
+    protectedUntouched('the scrub');
+    assert.equal(fs.existsSync(workdir) || fs.existsSync(logs), false);
+    // Paths that are not plain are refused rather than resolved.
+    assert.throws(() => execFileSync('bash', ['-c', SPRITES_SCRUB_SCRIPT, 'propr-scrub', `${home}/../opt-propr-bin/repo`], { stdio: 'pipe' }));
+    protectedUntouched('a path with ..');
+});
+
 test('rotation in Antigravity\'s disposable HOME followed by KILL: the launcher returns the live token (same path checks), not the stale store copy', { skip: !linuxProcesses }, async t => {
     const { execFileSync, spawn } = await import('node:child_process');
     const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SIGNAL_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');

@@ -6,10 +6,12 @@ import type { AgentType } from '../../types.js';
 import { renderAgentRunEntrypoint } from '../dockerRunArgs.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import { isSafeSpritesTarget, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME } from './spritesCredentialRecords.js';
+import { SPRITES_SECURE_PATH_FUNCTION } from './spritesPathSafety.js';
 
 export {
     spritesLiveOutputRecord, spritesOutputRecord, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME, SPRITES_LIVE_CREDENTIAL_ROOTS,
 } from './spritesCredentialRecords.js';
+export { SPRITES_SCRUB_SCRIPT, SPRITES_SECURE_PATH_FUNCTION } from './spritesPathSafety.js';
 
 /**
  * How an {@link AgentRunSpec} becomes a command on a Sprite.
@@ -68,9 +70,6 @@ export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>
     if (!safeWorkdir) throw new Error(`Agent runtime "sprites" cannot run ${spec.name} in ${spec.workdir} (the workdir must be under ${SPRITES_AGENT_HOME}/ or /tmp/)`);
     return keepLiveCredentials ? [workdir, WORKSPACE_TRANSPORT_RESULT_DIR] : [workdir, WORKSPACE_TRANSPORT_RESULT_DIR, SPRITES_ANTIGRAVITY_HOME, ...SPRITES_CREDENTIAL_TARGETS];
 }
-
-/** Removes the given paths as root: `bash -c <script> propr-scrub <path>...`. */
-export const SPRITES_SCRUB_SCRIPT = 'rm -rf -- "$@"';
 
 /**
  * A root-started run's PATH has only root-owned directories: root resolves the
@@ -344,7 +343,8 @@ stores=()
 record_status() {
     printf '%s\\n' "$1" > "$run_dir/exit-status.tmp" && chown "$owner" -- "$run_dir/exit-status.tmp" && mv -f -- "$run_dir/exit-status.tmp" "$run_dir/exit-status"
 }
-remove_credentials() { for dst in "\${stores[@]}"; do rm -rf -- "$dst"; done; }
+${SPRITES_SECURE_PATH_FUNCTION}
+remove_credentials() { for dst in "\${stores[@]}"; do secure_path "$dst" && rm -rf -- "$dst"; done; }
 # plain_file <boundary> <path below it>: 0 when it is a regular file reached only through real directories,
 # 1 when a component is absent, 2 when one is a symlink or another file type (or the path is not plain).
 plain_file() {
@@ -396,22 +396,25 @@ count=\${#manifest[@]}
 while [ "$i" -lt "$count" ]; do
     kind="\${manifest[$i]}"
     case "$kind" in
-        purge) rm -rf -- "\${manifest[$((i + 1))]}"; i=$((i + 2)) ;;
+        purge)
+            dst="\${manifest[$((i + 1))]}"; i=$((i + 2))
+            { secure_path "$dst" && rm -rf -- "$dst"; } || fail "cannot remove $dst" ;;
         stamp)
             touch -m -d "@\${manifest[$((i + 2))]}" -- "$run_dir/\${manifest[$((i + 1))]}" || fail "cannot keep the modification time of \${manifest[$((i + 1))]}"
             i=$((i + 3)) ;;
         store)
             src="$run_dir/\${manifest[$((i + 1))]}"; dst="\${manifest[$((i + 2))]}"; i=$((i + 3))
             stores+=("$dst")
-            rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && cp -a -- "$src" "$dst" \\
+            secure_path "$dst" && rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && cp -a -- "$src" "$dst" \\
                 && chown -R node:node -- "$dst" && chmod 700 -- "$dst" || fail "cannot install credentials at $dst" ;;
         dir)
             dst="\${manifest[$((i + 1))]}"; i=$((i + 2))
-            mkdir -p -- "$dst" && chown node:node -- "$dst" || fail "cannot create $dst" ;;
+            # An empty directory stands in for the host bind: what an earlier run left there may be a planted symlink.
+            secure_path "$dst" && { [ -d "$dst" ] || rm -f -- "$dst"; } && mkdir -p -- "$dst" && chown node:node -- "$dst" || fail "cannot create $dst" ;;
         file)
             src="$run_dir/\${manifest[$((i + 1))]}"; dst="\${manifest[$((i + 2))]}"; mode="\${manifest[$((i + 3))]}"; i=$((i + 4))
             stores+=("$dst")
-            mkdir -p -- "$(dirname -- "$dst")" && install -m "$mode" -o node -g node -- "$src" "$dst" || fail "cannot install $dst" ;;
+            secure_path "$dst" && rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && install -m "$mode" -o node -g node -- "$src" "$dst" || fail "cannot install $dst" ;;
         output) outputs+=("\${manifest[$((i + 1))]}" "\${manifest[$((i + 2))]}" "$run_dir/\${manifest[$((i + 3))]}"); i=$((i + 4)) ;;
         live)
             live_boundary["$run_dir/\${manifest[$((i + 3))]}"]="\${manifest[$((i + 1))]}"
@@ -421,6 +424,7 @@ while [ "$i" -lt "$count" ]; do
     esac
 done
 rm -rf -- "$run_dir/store" "$run_dir/files" "${RESULT_DIR}"
+secure_path "$workdir" || fail "cannot prepare $workdir"
 if [ -f "$run_dir/clone" ]; then rm -rf -- "$workdir"; fi
 mkdir -p -- "$workdir" || fail "cannot create $workdir"
 [ -f "$run_dir/clone" ] || chown node:node -- "$workdir"
