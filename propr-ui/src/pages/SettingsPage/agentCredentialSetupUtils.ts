@@ -11,6 +11,8 @@ import {
 } from '../../config/modelDefinitions';
 
 export type AgentFormData = Omit<AgentConfig, 'id'> & { id?: string };
+/** Agent types the Fly Sprites runtime maps today; the others run on Docker. */
+export const SPRITES_RUNTIME_AGENT_TYPES: ReadonlyArray<AgentConfig['type']> = ['claude', 'codex'];
 export type CredentialSetup = 'login' | 'existing';
 
 export function updateModelReasoningLevel(
@@ -38,6 +40,9 @@ export function validateAgentFormData(
   }
   if (!formData.configPath) errors.configPath = 'Config path is required';
   if (formData.supportedModels.length === 0) errors.supportedModels = 'At least one model is required';
+  if (formData.runtime === 'sprites' && !SPRITES_RUNTIME_AGENT_TYPES.includes(formData.type)) {
+    errors.runtime = 'Fly Sprites runs Claude Code and Codex agents only';
+  }
   return errors;
 }
 
@@ -67,6 +72,7 @@ export function buildAgentConfig(formData: AgentFormData): AgentConfig {
     envVars: Object.keys(envVars).length > 0 ? envVars : undefined,
     cliVersionType,
     cliVersion: cliVersionType === 'default' ? undefined : formData.cliVersion,
+    runtime: formData.runtime || undefined,
   };
 }
 

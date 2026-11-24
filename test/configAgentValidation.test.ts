@@ -36,6 +36,21 @@ describe('agent config validation', () => {
         assert.strictEqual(validateAgentsConfig(agents), null);
     });
 
+    test('accepts registered agent runtimes and normalizes the name', async () => {
+        const { normalizeAgentsConfig, validateAgentsConfig } = await import('../packages/api/routes/configAgentValidation.js');
+        const agent = (runtime: unknown): AgentConfig => ({
+            id: 'claude-1', type: 'claude', alias: 'claude', enabled: true, dockerImage: 'propr/agent:latest',
+            configPath: '/home/user/.claude', supportedModels: ['claude-opus-5-5'], cliVersionType: 'default', runtime: runtime as string,
+        });
+        const [normalized] = normalizeAgentsConfig([agent(' Sprites ')]);
+        assert.strictEqual(normalized.runtime, 'sprites');
+        assert.strictEqual(validateAgentsConfig([normalized]), null);
+        assert.strictEqual(validateAgentsConfig([agent('docker')]), null);
+        assert.strictEqual(validateAgentsConfig([agent(undefined)]), null);
+        assert.match(validateAgentsConfig([agent('podman')]) ?? '', /invalid runtime 'podman'.*docker, sprites/);
+        assert.match(validateAgentsConfig([agent(42)]) ?? '', /invalid runtime '42'/);
+    });
+
     test('accepts only the generated per-agent managed credential path', async () => {
         const { validateAgentsConfig } = await import('../packages/api/routes/configAgentValidation.js');
         const managedAgent: AgentConfig = {

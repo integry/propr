@@ -20,6 +20,28 @@ vi.mock('../../api/proprApi', () => ({
 }));
 
 describe('AgentConfigModal', () => {
+  it('saves the selected agent runtime and offers Fly Sprites only to agents it can run', () => {
+    const onSave = vi.fn();
+    const claude = { id: 'claude-1', type: 'claude' as const, alias: 'claude', enabled: true,
+      dockerImage: 'propr/agent:latest', configPath: '/home/user/.claude', supportedModels: ['claude-opus-5-5'],
+      defaultModel: 'claude-opus-5-5' };
+    const { unmount } = render(<AgentConfigModal agent={claude} existingAliases={[]} onClose={vi.fn()} onSave={onSave} />);
+    expect(screen.getByRole('radio', { name: 'Instance default' })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('radio', { name: 'Fly Sprites' }));
+    expect(screen.getByText(/Needs PROPR_SPRITES_TOKEN on the worker/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    expect(onSave.mock.calls[0][0].runtime).toBe('sprites');
+    unmount();
+
+    render(<AgentConfigModal agent={{ ...claude, runtime: 'sprites' }} existingAliases={[]} onClose={vi.fn()} onSave={onSave} />);
+    expect(screen.getByRole('radio', { name: 'Fly Sprites' })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('radio', { name: 'Instance default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    expect(onSave.mock.calls[1][0].runtime).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: /^vibe$/i }));
+    expect(screen.getByRole('radio', { name: 'Fly Sprites' })).toBeDisabled();
+  });
+
   it('preserves distinct migrated effort labels when editing and saving an Antigravity agent', () => {
     const onSave = vi.fn();
     const labels = {

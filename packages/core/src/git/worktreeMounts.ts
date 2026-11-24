@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import logger from '../utils/logger.js';
+import { dockerAgentRuntimeInUse } from '../agents/runtime/runtimeSelection.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,9 +20,29 @@ const queryDocker: DockerQuery = async (command, args, options) => {
     }
 };
 
-/** Host paths mounted into running containers. Throws when Docker can't be read. */
-export async function runningContainerMountSources(executeDockerCommand: DockerQuery = queryDocker): Promise<WorktreeMount[]> {
-    const listed = await executeDockerCommand('docker', ['ps', '-q', '--no-trunc'], { timeout: 15_000 });
+/** The Docker CLI is missing, or its daemon cannot be reached at all. */
+function dockerUnreachable(failure: { exitCode: number | null; stderr: string } | Error): boolean {
+    if (failure instanceof Error) return (failure as NodeJS.ErrnoException).code === 'ENOENT';
+    return /Cannot connect to the Docker daemon|error during connect|docker: not found|No such file or directory/i.test(failure.stderr);
+}
+
+/**
+ * Host paths mounted into running containers. Throws when Docker can't be read,
+ * except on a worker whose agents run on another runtime (Sprites) and has
+ * no reachable Docker: no container can mount anything there.
+ */
+export async function runningContainerMountSources(
+    executeDockerCommand: DockerQuery = queryDocker,
+    environment: NodeJS.ProcessEnv = process.env,
+): Promise<WorktreeMount[]> {
+    let listed: Awaited<ReturnType<DockerQuery>>;
+    try {
+        listed = await executeDockerCommand('docker', ['ps', '-q', '--no-trunc'], { timeout: 15_000 });
+    } catch (error) {
+        if (!dockerAgentRuntimeInUse([], environment) && dockerUnreachable(error as Error)) return [];
+        throw error;
+    }
+    if (listed.exitCode !== 0 && !dockerAgentRuntimeInUse([], environment) && dockerUnreachable(listed)) return [];
     if (listed.exitCode !== 0) throw new Error(`docker ps failed: ${listed.stderr.trim()}`);
     const ids = listed.stdout.split('\n').map(id => id.trim()).filter(Boolean);
     if (ids.length === 0) return [];
@@ -54,6 +75,7 @@ export async function runningContainerMountSources(executeDockerCommand: DockerQ
 let startupProbe: Promise<void> | undefined;
 /** A process-level diagnostic; each removal still refreshes Docker authority. */
 export function probeWorktreeReclamationDocker(): Promise<void> {
+    if (!dockerAgentRuntimeInUse()) return Promise.resolve();
     return startupProbe ??= runningContainerMountSources().then(() => undefined).catch(error => {
         logger.warn({ error: (error as Error).message }, 'Worktree reclamation disabled: Docker unavailable; provide the Docker CLI on PATH and access to its socket');
     });

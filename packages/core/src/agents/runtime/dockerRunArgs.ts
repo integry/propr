@@ -54,7 +54,7 @@ function renderLabelArgs(labels: Record<string, string>): string[] {
  * Without a setup wrapper the transport wrapper starts the explicit
  * entrypoint as the unprivileged agent user itself.
  */
-function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArgs: string[] } {
+export function renderAgentRunEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArgs: string[] } {
     const { repoSetup } = spec;
     const clone = spec.workspace.mode === 'clone' ? spec.workspace.clone : undefined;
     if (spec.workspace.mode === 'clone' && !clone) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but was not prepared by it`);
@@ -81,7 +81,7 @@ function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArg
  */
 export function renderDockerRunArgs(spec: AgentRunSpec): string[] {
     const { security, repoSetup } = spec;
-    const { entrypoint, wrapperArgs } = renderEntrypoint(spec);
+    const { entrypoint, wrapperArgs } = renderAgentRunEntrypoint(spec);
     return [
         'run',
         ...(spec.resources ? renderDockerResourceArgs(spec.resources) : []),

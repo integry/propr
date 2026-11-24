@@ -89,7 +89,7 @@ function perRunCredentialMounts(spec: AgentRunSpec): CredentialBindMount[] {
  * `NAME` inherited from the client environment (omitted when unset there).
  * An unreadable file defines nothing here; Docker refuses to start the run.
  */
-function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
+export function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
     const values = new Map<string, string>();
     let content: string;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch { return values; }
@@ -111,7 +111,7 @@ function envFileValues(filePath: string, launchEnvironment: Environment): Map<st
  * fallback secret appended by name would replace an env-file value; those
  * variables must count as defined too.
  */
-function definedVariables(spec: AgentRunSpec, launchEnvironment: Environment): string[] {
+export function definedVariables(spec: AgentRunSpec, launchEnvironment: Environment): string[] {
     const effective = new Map<string, string>();
     for (const file of [...spec.envFiles].sort((left, right) => left.order - right.order)) {
         for (const [name, value] of envFileValues(file.path, launchEnvironment)) effective.set(name, value);

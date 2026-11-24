@@ -187,7 +187,8 @@ registerAgentRuntime('goal-remote', () => new DockerRuntime());
 
 for (const [selection, select, expected] of [
     ['a registered non-Docker runtime', { runtime: 'goal-remote' }, /support only the "docker" agent runtime; "goal-remote" is selected/],
-    ['an unknown PROPR_AGENT_RUNTIME', { env: 'sprites' }, /Unknown agent runtime "sprites"/],
+    ['an unknown PROPR_AGENT_RUNTIME', { env: 'podman' }, /Unknown agent runtime "podman"/],
+    ['the Sprites runtime', { env: 'sprites' }, /support only the "docker" agent runtime; "sprites" is selected/],
 ] as const) {
     for (const provider of ['claude', 'antigravity', 'codex'] as const) {
         test(`${provider} native goal refuses ${selection} before preparing a Docker launch`, async () => {

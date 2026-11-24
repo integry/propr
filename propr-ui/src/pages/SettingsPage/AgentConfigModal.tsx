@@ -22,6 +22,7 @@ import {
   type CredentialSetup,
 } from './agentCredentialSetupUtils';
 import AgentTypeSelector from './AgentTypeSelector';
+import AgentRuntimeSelector from './AgentRuntimeSelector';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
 import { buildSelectableModels } from './modelSelectionHelpers';
@@ -108,7 +109,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         envVars: agent.envVars || {},
         cliVersionType: agent.cliVersionType || 'default',
         cliVersion: (agent.cliVersionType || 'default') === 'default' ? undefined : agent.cliVersion,
-        cliVersionResolved: agent.cliVersionResolved || AGENT_DEFAULTS[agent.type].defaultCliVersion
+        cliVersionResolved: agent.cliVersionResolved || AGENT_DEFAULTS[agent.type].defaultCliVersion,
+        runtime: agent.runtime,
       });
     }
   }, [agent]);
@@ -357,6 +359,12 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               modelCustomLabels: { ...prev.modelCustomLabels, [modelId]: label }
             }))}
             onReasoningLevelChange={handleReasoningLevelChange}
+          />
+
+          <AgentRuntimeSelector
+            agentType={formData.type}
+            value={formData.runtime}
+            onChange={runtime => setFormData(prev => ({ ...prev, runtime }))}
           />
 
           <AgentEnabledToggle checked={formData.enabled} onChange={enabled => setFormData(prev => ({ ...prev, enabled }))} />

@@ -1,4 +1,4 @@
-import { AGENT_TYPES, toProprOpenCodeModelId, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
+import { AGENT_TYPES, registeredAgentRuntimes, toProprOpenCodeModelId, validateAgentType, type AgentConfig, type CliVersionType } from '@propr/core';
 import {
   MANAGED_AGENT_CREDENTIALS_PREFIX,
   getManagedAgentConfigPath,
@@ -36,8 +36,10 @@ export function normalizeAgentsConfig(agents: AgentConfig[]): AgentConfig[] {
           typeof level === 'string' ? level.trim().toLowerCase() : level
         ])) as AgentConfig['modelReasoningLevels']
       : agent.modelReasoningLevels;
+    const runtime = typeof agent.runtime === 'string' ? agent.runtime.trim().toLowerCase() || undefined : agent.runtime;
     return {
       ...agent,
+      runtime,
       alias: typeof agent.alias === 'string' ? normalizeAgentAlias(agent.alias) : agent.alias,
       cliVersion: cliVersionType === 'default' ? undefined : (typeof agent.cliVersion === 'string' ? agent.cliVersion.trim() : agent.cliVersion),
       defaultModel: typeof agent.defaultModel === 'string' ? normalizeSupportedModel(agent.type, agent.defaultModel) : agent.defaultModel,
@@ -94,6 +96,14 @@ function validateAgentBaseFields(agent: AgentConfig, normalizedAlias: string): s
   return null;
 }
 
+/** Unset follows PROPR_AGENT_RUNTIME; a set runtime must be one this installation registers. */
+function validateAgentRuntime(agent: AgentConfig): string | null {
+  if (agent.runtime === undefined || agent.runtime === null) return null;
+  const runtimes = registeredAgentRuntimes();
+  if (typeof agent.runtime === 'string' && runtimes.includes(agent.runtime.trim().toLowerCase())) return null;
+  return `Agent '${agent.id}' has invalid runtime '${String(agent.runtime)}'. Must be one of: ${runtimes.join(', ')}`;
+}
+
 function validateAgentCliVersion(agent: AgentConfig): string | null {
   if (agent.cliVersionType !== undefined && !VALID_CLI_VERSION_TYPES.includes(agent.cliVersionType)) {
     return `Agent '${agent.id}' has invalid cliVersionType '${String(agent.cliVersionType)}'. Must be one of: ${VALID_CLI_VERSION_TYPES.join(', ')}`;
@@ -143,6 +153,8 @@ function validateSingleAgent(agent: AgentConfig, seenAliases: Set<string>): stri
   const normalizedAlias = normalizeAgentAlias(agent.alias);
   const baseFieldError = validateAgentBaseFields(agent, normalizedAlias);
   if (baseFieldError) return baseFieldError;
+  const runtimeError = validateAgentRuntime(agent);
+  if (runtimeError) return runtimeError;
   const cliVersionError = validateAgentCliVersion(agent);
   if (cliVersionError) return cliVersionError;
   const reasoningLevelError = validateAgentModelReasoningLevels(agent);

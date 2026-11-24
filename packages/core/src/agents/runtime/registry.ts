@@ -6,16 +6,22 @@ import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.j
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
+import { SpritesRuntime } from './spritesRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
+export const SPRITES_AGENT_RUNTIME = 'sprites';
 
 /** Every runtime accepts the same launch options and settles with the executor result shape. */
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
 export type AgentRuntimeFactory = () => ProviderAgentRuntime;
 
-const factories = new Map<string, AgentRuntimeFactory>([[DEFAULT_AGENT_RUNTIME, () => new DockerRuntime()]]);
+const factories = new Map<string, AgentRuntimeFactory>([
+    [DEFAULT_AGENT_RUNTIME, () => new DockerRuntime()],
+    // Constructing it reads no settings and loads no SDK; both happen when a run starts.
+    [SPRITES_AGENT_RUNTIME, () => new SpritesRuntime()],
+]);
 const instances = new Map<string, ProviderAgentRuntime>();
 
 const RUNTIME_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -86,12 +92,19 @@ export function restrictedNetworkRefusal(runtime: Pick<ProviderAgentRuntime, 'ki
     return `Agent runtime "${runtime.kind}" cannot enforce the restricted network policy${source ? ` (${source})` : ''}: it declares no way to confine outbound traffic to the allowlist, so restricted runs are refused instead of running with open networking. Use a runtime that supports restricted networking (docker), or set the network mode to open.`;
 }
 
+/** A runtime without bind mounts must provide every bind another way (uploads, broker copies), or the run is refused. */
+function assertMountsProvided(runtime: ProviderAgentRuntime, spec: AgentRunSpec): void {
+    for (const mount of spec.mounts) {
+        if (mount.type !== 'bind') continue;
+        const reason = runtime.unsupportedMount ? runtime.unsupportedMount(mount) : 'cannot bind-mount the workspace or credentials';
+        if (reason) throw new AgentRuntimeCapabilityError(`Agent runtime "${runtime.kind}" ${reason} for ${spec.name}`, runtime.kind, 'bind_mounts');
+    }
+}
+
 /** Refuse a spec the runtime cannot honour instead of running it with weaker isolation. */
 export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: AgentRunSpec): void {
     const { capabilities, kind } = runtime;
-    if (!capabilities.supportsBindMounts && spec.mounts.some(mount => mount.type === 'bind')) {
-        throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot bind-mount the workspace or credentials for ${spec.name}`, kind, 'bind_mounts');
-    }
+    if (!capabilities.supportsBindMounts) assertMountsProvided(runtime, spec);
     const transport = spec.workspace.mode;
     if (transport && !runtimeWorkspaceTransports(capabilities).includes(transport)) {
         throw new Error(`Agent runtime "${kind}" cannot run the "${transport}" workspace transport for ${spec.name}`);

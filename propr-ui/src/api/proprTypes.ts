@@ -207,6 +207,8 @@ export interface AgentConfig {
   cliVersionType?: CliVersionType;
   cliVersion?: string;
   cliVersionResolved?: string;
+  /** Agent runtime (`docker`, `sprites`); unset follows the worker's PROPR_AGENT_RUNTIME. */
+  runtime?: string;
 }
 
 export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';

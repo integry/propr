@@ -31,7 +31,7 @@ This table maps each agent type to the unified image, its type-specific entrypoi
 | OpenCode | `propr/agent` | `Dockerfile.agent` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
 | Mistral Vibe | `propr/agent` | `Dockerfile.agent` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
 
-Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default and currently the only built-in runtime (`PROPR_AGENT_RUNTIME=docker`). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
+Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default runtime (`PROPR_AGENT_RUNTIME=docker`); [Fly Sprites](#fly-sprites-runtime) is the other built-in one (`PROPR_AGENT_RUNTIME=sprites`, or an agent's **Runtime** setting). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
 
 ## Container Configuration
 
@@ -253,3 +253,57 @@ MISTRAL_API_KEY=...
 Vibe can use either a valid Vibe config directory or `MISTRAL_API_KEY`. The entrypoint copies config into a per-run runtime home, sets `HOME` and `VIBE_HOME` to that runtime directory, loads `.env` defaults from the Vibe home, and sets `VIBE_ACTIVE_MODEL` when ProPR selects a model.
 
 Implementation prompts are written to a temporary prompt file and passed through the Vibe prompt-file runner so the prompt does not need to appear directly in process arguments. Analysis runs can use read-only config mode and a shorter `VIBE_ANALYSIS_TIMEOUT_MS`.
+
+## Fly Sprites Runtime
+
+[Fly Sprites](https://fly.io/sprites/) are persistent microVMs, billed only for CPU and memory while they are active. ProPR can run Claude Code and Codex agents on them instead of in local Docker containers. A Sprite cannot boot the `propr/agent` image, and Docker inside a Sprite is unreliable, so the runtime drives the agent CLIs on the Sprite directly. Select it for every agent with `PROPR_AGENT_RUNTIME=sprites` on the worker, or per agent with **Settings → Agents → Edit → Runtime → Fly Sprites** (the agent config's `runtime: "sprites"`).
+
+### Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PROPR_SPRITES_TOKEN` (or `SPRITES_TOKEN`) | required | Org-scoped Sprites API token. It is a secret: it is never logged and never reaches a run. |
+| `PROPR_SPRITES_NAME_PREFIX` | `propr` | Prefix of the Sprite names (`<prefix>-<worker>-<slot>`). |
+| `PROPR_SPRITES_REGION` | Sprites default | Region new Sprites are created in. |
+| `PROPR_SPRITES_RAM_MB`, `PROPR_SPRITES_CPUS` | Sprites default | Size of new Sprites. |
+| `PROPR_SPRITES_MAX_SPRITES` | `4` | Sprites one worker runs at once (one run per Sprite). |
+| `PROPR_SPRITES_RESTORE_CHECKPOINT` | `true` | Restore each Sprite to its clean post-setup checkpoint before every run. |
+| `PROPR_SPRITES_KEEP_AWAKE_INTERVAL_MS` | `30000` | Interval of the keep-awake renewal during a run. |
+| `PROPR_SPRITES_WORKER_ID` | hash of `FLY_MACHINE_ID` or the host name | Stable worker identity in Sprite names, so a restarted worker finds its own Sprites. Set it per process when several ProPR processes on one host run agents; a Sprite whose launcher belongs to another process is skipped. |
+| `PROPR_SPRITES_API_URL` | `https://api.sprites.dev` | Sprites API endpoint. |
+| `SPRITES_CLIENT_SIGNALS` | `0` | The SDK's usage-attribution headers. ProPR sets `0` unless the operator set the variable. |
+
+Sprites runs always use the [clone workspace transport](./coding-agent-integration.md#workspace-transport): the worker's worktree never leaves the worker, and the result comes back through the temporary result ref (or the bundle fallback, read through the Sprites filesystem API). Restricted network mode is not enforced on Sprites, so restricted runs are refused before launch. ProPR MCP is reached at its reachable URL with the per-run token. Native goal sessions still need Docker. When no enabled agent selects Docker, the worker skips agent image preparation, image liveness checks, and the Docker part of the worktree sweep, so a Sprites-only worker needs no Docker daemon. Agent runtime packages (extra apt packages) apply only to the Docker image.
+
+### How A Run Executes
+
+1. **Sprite.** The worker takes a free Sprite slot of its own and creates the Sprite in the configured region if it does not exist yet.
+2. **Setup.** The first time a Sprite sees a setup revision, the runtime uploads `scripts/sprites-agent-setup.sh` with the entrypoint scripts and runs it as root. It creates an unprivileged `node` user with `/home/node` (never in sudoers), provides `su-exec`/`gosu`, and installs the Claude Code, Codex and Antigravity CLIs at the versions `Dockerfile.agent` pins under `/opt/propr` (ahead of the Sprite's own, older CLIs). It also installs `/home/node/<agent>-entrypoint.sh`, the `gh` wrapper, and the image's git configuration. The Sprite is then checkpointed. The revision hashes the setup files and the pins, so changing either provisions Sprites again.
+3. **Restore.** Every later run first restores that clean checkpoint, so nothing from an earlier run or account remains.
+4. **Credential sync.** The credential broker copies only the provider manifest's files (for example `.credentials.json`, `settings.json`, `CLAUDE.md` for Claude, or `auth.json`, `config.toml` for Codex). It uploads them through the filesystem API with mode `0600` into a per-run directory that only the Sprite user can read. The root launcher installs them at `/home/node/.claude` or `/home/node/.codex` for the `node` user. The Sprite's own `~/.claude` and `~/.codex` under `/home/sprite` are never touched.
+5. **Run.** A detachable session starts the launcher with `sudo`. The launcher runs the spec's entrypoint, repository-setup wrapper, clone wrapper and CLI arguments unchanged, as `docker run --user 0:0` would. The provider entrypoint drops to `node` before the CLI starts. The prompt arrives on stdin from a file, and only the spec's environment is passed.
+6. **Output.** stdout and stderr go to separate log files on the Sprite. The worker follows each file with a plain exec of `tail --pid`. After a dropped connection it reconnects from the bytes it already received, so output is neither lost nor repeated. A worker restart can reattach to the run (`SpritesRuntime.attach`) and recover the complete output.
+7. **Finish.** The launcher copies refreshed token files and the workspace result files back into the run directory, deletes every credential copy, and records the exit status. Refreshed tokens are written back to the canonical store under its lock, the same way as for Docker runs. If the write-back fails, the copy stays in the Sprite's run directory and the worker logs where it is. Once the worker has the workspace result, it removes the run directory and frees the Sprite. An idle Sprite goes cold and stops billing.
+
+### Keep-Awake And Cold Pauses
+
+The output followers keep a connection open for the whole run, and the worker also runs a cheap command on the Sprite every `PROPR_SPRITES_KEEP_AWAKE_INTERVAL_MS`. If the renewal or an output connection fails, the worker checks the Sprite state. A Sprite that went `cold` (or paused, stopped or suspended) under the run fails it with `SpritesRunInterruptedError` and a message naming the Sprite and the run. The run never hangs: an output connection that cannot be reestablished after 5 attempts, or a launcher that ended without an exit status (for example a Sprite restored under it), fails the same way. The deadline, cancellation, the spend cap and the activity watchdog stop the run through its launcher: `TERM` first, then `KILL` after 10 seconds.
+
+### Startup Overhead
+
+Each run logs one `Sprites run startup overhead` line with these timings (milliseconds), and `Sprites run workspace cloned` once the clone finished:
+
+| Field | Measures |
+| --- | --- |
+| `queueMs` | Waiting for a free Sprite of this worker (all `PROPR_SPRITES_MAX_SPRITES` busy). |
+| `wakeMs`, `created` | Getting the Sprite awake, or creating it (`created: true`), plus reading its setup stamp. |
+| `setupMs` | First-time provisioning with its checkpoint. It only appears when a Sprite is new or the setup revision changed. It is dominated by the `npm install` of the pinned CLIs. |
+| `restoreMs` | Restoring the clean checkpoint before a run. |
+| `credentialSyncMs` | Uploading the run files and the per-run credential copy. |
+| `totalMs` | From the run request until the launcher started. |
+| `cloneMs` | From the launcher start to the clone transport's "cloned" line: the authenticated fetch and checkout inside the Sprite. |
+| `credentialWriteBackMs` | After the run: reading refreshed tokens back and writing them to the canonical stores. |
+
+A warm, provisioned Sprite pays `wakeMs + restoreMs + credentialSyncMs` before the agent starts, plus `cloneMs` for the repository. A cold Sprite adds its wake-up to `wakeMs`. A new Sprite or a new setup revision adds `setupMs` once. To measure a deployment, read these log lines, or run the live integration test (`PROPR_SPRITES_LIVE_TOKEN=... npx tsx --test test/spritesRuntime.live.test.ts`), which prints them for a real Sprite.
+
+The Sprite image has no `bc` and no GNU `time`, so the launcher and setup script use neither. Timings are measured on the worker.

@@ -320,4 +320,16 @@ export interface AgentRuntime<Options = unknown, Result extends AgentRunResult =
     readonly kind: string;
     readonly capabilities: AgentRuntimeCapabilities;
     start(spec: AgentRunSpec, options?: Options): AgentRunHandle<Result>;
+    /**
+     * For runtimes without bind mounts: why a bind cannot be provided another
+     * way (uploaded files, credential-broker copies, empty log directories), or
+     * undefined when the runtime materialises it. Absent: every bind is refused.
+     */
+    unsupportedMount?(mount: Extract<AgentRunMount, { type: 'bind' }>): string | undefined;
+    /**
+     * Reattach to a run this process did not start (a worker restart), when
+     * {@link AgentRuntimeCapabilities.reattach} is set. Resolves to null when the
+     * runtime has no trace of the run.
+     */
+    attach?(spec: AgentRunSpec, options?: Options): Promise<AgentRunHandle<Result> | null>;
 }
