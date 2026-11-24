@@ -63,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a component that never finished starting, such as a worker waiting for an
     agent image, kept it running after "shutting down gracefully". It now
     waits up to 10 seconds for such a component and exits with code 0 within
-    `PROPR_SHUTDOWN_TIMEOUT_MS` (default 50 seconds).
+    `PROPR_SHUTDOWN_TIMEOUT_MS` (default 50 seconds). An idle stop still
+    closing then exits 1 instead, without stopping the host, since the API
+    may still have answered a request or wake ping.
 - **`propr deploy fly`: the control plane on one Fly Machine** (#3768)
   - Runs the all-in-one app container and Redis in one Machine
     (multi-container), with SQLite and the Redis AOF on an encrypted Fly

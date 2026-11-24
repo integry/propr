@@ -250,6 +250,13 @@ export interface BoundedExitCall {
     /** A termination signal. During the host stop it means the host is stopping this process: the stop was accepted. */
     signal?: string;
     /**
+     * An idle stop (not a termination signal). Its close reaching the relative deadline exits 1 without a host stop:
+     * components close in order and the API closes last, so while an earlier close hangs the API still answers, and
+     * a request or Connect wake ping it acknowledged then may come after the activity read in the exit. A SIGTERM
+     * close reaching that deadline still exits 0, as the supervisor stopping it expects.
+     */
+    idle?: boolean;
+    /**
      * Idle exit only: the start of the idle period the stop was decided on (epoch ms). A request the API saw after it
      * (one the quiesced API turned away with `Retry-After` included) is a client about to retry: read again once the
      * close is over (the API no longer admits requests) and before the host is asked to stop, it makes the exit 1,
@@ -271,7 +278,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): P
  * that is still running at `deadlineMs` (a component that never finishes
  * starting, a connection that never drains) no longer keeps the process up;
  * it is logged by name and the process exits 0, as a supervisor stop (Fly,
- * systemd) and an idle shutdown both expect. A close that completes with
+ * systemd) expects. An idle stop's close exits 1 then instead, without asking
+ * the host to stop (see {@link BoundedExitCall.idle}). A close that completes with
  * failed steps exits 1. The caller may ask for a higher code (an idle stop
  * called off exits 1, so an on-failure supervisor starts the process again).
  *
@@ -373,6 +381,13 @@ export function createBoundedExit(options: {
         const deadline = setTimeout(() => {
             if (untilExitBy <= deadlineMs) {
                 options.log.error(`all-in-one: still shutting down when the wake arranged for the idle stop came (still closing: ${options.pendingStep() ?? 'unknown'}); exiting with code 1 so the supervisor starts it again`);
+                finish(Math.max(1, exitCode));
+                return;
+            }
+            if (call.idle) {
+                // The close is not over, so the API may still be answering: a request or wake ping it acknowledges
+                // while the host stop or the log flush runs would come after any activity read here. Exit 1, no host stop.
+                options.log.error(`all-in-one: the idle stop did not finish closing within ${formatMs(deadlineMs)} (still closing: ${options.pendingStep() ?? 'unknown'}); exiting with code 1 without stopping the host, so the supervisor starts the control plane again for any request it served meanwhile`);
                 finish(Math.max(1, exitCode));
                 return;
             }

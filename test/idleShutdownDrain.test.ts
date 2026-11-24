@@ -1143,8 +1143,14 @@ test('with no request during the drain, the same activity checks let the stop en
 /**
  * An idle stop through the all-in-one's real bounded exit, which reads this process's API tracker once the close is
  * over. An earlier component's close is held; `during` runs while it is (the API is still up and quiesced).
+ *
+ * With `closeTimesOut`, that close is never released: the bounded exit reaches its (short) deadline with the API
+ * still up, and `afterDeadline` runs at each awaited step that follows it (the host stop and the log flush).
  */
-async function idleStopThroughBoundedExit(during: (middleware: ReturnType<typeof createIdleActivityMiddleware>) => void) {
+async function idleStopThroughBoundedExit(
+    during: (middleware: ReturnType<typeof createIdleActivityMiddleware>) => void,
+    options: { closeTimesOut?: boolean; afterDeadline?: (middleware: ReturnType<typeof createIdleActivityMiddleware>) => void } = {},
+) {
     let result: { exited: number[]; hostStops: number; errors: string[] } | null = null;
     await composedWithApi(async ({ hub, events, middleware, collectActivity, idleSince }) => {
         const { ctx } = context(hub, new FakeRouting(true), { ...hintStore(), collect: collectActivity });
@@ -1159,15 +1165,21 @@ async function idleStopThroughBoundedExit(during: (middleware: ReturnType<typeof
             pendingStep: () => 'worker',
             log: { info: () => undefined, error: message => { errors.push(message); } },
             lastActivityAt: () => idleActivity.snapshot().lastRequestAt,
-            deadlineMs: 5_000,
+            flush: async () => { options.afterDeadline?.(middleware); },
+            deadlineMs: options.closeTimesOut ? 40 : 5_000,
         });
-        const stopProcess = (code: number, options?: { exitBy: number | null; activitySince?: number | null }) => {
-            closeAndExit(code, { ...options, stopHost: async () => { hostStops += 1; } });
+        // As the all-in-one's idleShutdownStop passes it (src/allInOne.ts).
+        const stopProcess = (code: number, call?: { exitBy: number | null; activitySince?: number | null }) => {
+            closeAndExit(code, { ...call, idle: true, stopHost: async () => { hostStops += 1; options.afterDeadline?.(middleware); } });
         };
         assert.equal(await drainIdleControlPlane({ ...request, idleSince }, { ...ctx, collectWork: async () => emptyIdleSignals(), collectActivity, stopProcess }), true);
         assert.ok(events.includes('closing'), 'the last checks passed: the coordinated close is under way');
         during(middleware);
-        releaseEarlierClose();
+        if (options.closeTimesOut) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+        } else {
+            releaseEarlierClose();
+        }
         await settle();
         result = { exited, hostStops, errors };
     });
@@ -1249,4 +1261,17 @@ test('a Connect wake ping answered during the coordinated close keeps the host u
     assert.equal(hostStops, 0, 'the host is not asked to stop');
     assert.deepEqual(exited, [1], 'the supervisor starts the control plane again, and that start asks for the replay');
     assert.match(errors.join('\n'), /a request reached the API while the idle stop was closing/);
+});
+
+test('an idle close that reaches its deadline exits 1 without a host stop: a wake ping the still-running API acknowledges after it keeps the host up', async () => {
+    const answers: Array<ReturnType<typeof wakePingThroughApi>> = [];
+    const { exited, hostStops, errors } = await idleStopThroughBoundedExit(() => undefined, {
+        closeTimesOut: true,
+        // The earlier close still hangs, so the API is still up: Connect pings it after the deadline.
+        afterDeadline: middleware => { answers.push(wakePingThroughApi(middleware)); },
+    });
+    assert.deepEqual(answers, [{ status: 202, body: { status: 'awake' } }], 'the ping was acknowledged after the close deadline');
+    assert.equal(hostStops, 0, 'the host is not asked to stop');
+    assert.deepEqual(exited, [1], 'the supervisor starts the control plane again, and that start asks for the replay');
+    assert.match(errors.join('\n'), /the idle stop did not finish closing within 40 ms \(still closing: worker\); exiting with code 1 without stopping the host/);
 });

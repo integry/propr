@@ -228,6 +228,32 @@ test('the all-in-one exit is bounded: a close that never finishes still ends in 
     assert.deepEqual(errors, ['all-in-one: shutdown did not finish within 20 ms (still closing: api); exiting anyway']);
 });
 
+test('an idle close that reaches the deadline exits 1 without a host stop; a signal close still exits 0', async () => {
+    const run = async (call: { idle?: boolean; signal?: string }) => {
+        const exits: number[] = [];
+        const errors: string[] = [];
+        let hostStops = 0;
+        createBoundedExit({
+            close: () => new Promise<string[]>(() => undefined),
+            exit: code => { exits.push(code); },
+            pendingStep: () => 'api',
+            log: { info: () => undefined, error: message => errors.push(message) },
+            // No request seen: only the unfinished close decides.
+            lastActivityAt: () => 0,
+            deadlineMs: 20,
+        })(0, { ...call, activitySince: call.idle ? Date.now() : undefined, stopHost: async () => { hostStops += 1; } });
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return { exits, hostStops, errors };
+    };
+    const idle = await run({ idle: true });
+    assert.deepEqual(idle.exits, [1], 'the API may still have answered: the supervisor starts the control plane again');
+    assert.equal(idle.hostStops, 0, 'the host is not asked to stop');
+    assert.deepEqual(idle.errors, ['all-in-one: the idle stop did not finish closing within 20 ms (still closing: api); exiting with code 1 without stopping the host, so the supervisor starts the control plane again for any request it served meanwhile']);
+    const signal = await run({ signal: 'SIGTERM' });
+    assert.deepEqual(signal.exits, [0], 'a supervisor stop still exits 0');
+    assert.match(signal.errors[0], /did not finish within 20 ms \(still closing: api\); exiting anyway/);
+});
+
 test('the all-in-one exit reports the close result: 0 when clean, 1 when a step failed', async () => {
     for (const [failed, code] of [[[], 0], [['worker'], 1]] as const) {
         const exits: number[] = [];
@@ -242,7 +268,7 @@ test('signal and idle shutdown in all-in-one both go through the bounded exit', 
     assert.match(source, /const closeAndExit = createBoundedExit\(/);
     assert.equal(source.match(/process\.exit\(failed/g), null, 'no unbounded exit after close()');
     assert.match(source, /installShutdownSignalHandlers\(\{\n\s+stop: signal => closeAndExit\(0, \{ signal \}\),/);
-    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode, \{ \.\.\.options, stopHost: /, 'the arranged wake and the host stop reach the bounded exit');
+    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode, \{ \.\.\.options, idle: true, stopHost: /, 'the arranged wake and the host stop reach the bounded exit');
 });
 
 test('the all-in-one exit keeps the code its caller asked for (a called-off idle stop exits 1)', async () => {

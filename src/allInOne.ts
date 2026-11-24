@@ -91,7 +91,7 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
     const machineStop = resolveFlyMachineStop(process.env);
     const idleShutdownStop = (exitCode = 0, options: { exitBy?: number | null; activitySince?: number | null } = {}): void => {
         logger.info('all-in-one: idle shutdown, closing every component');
-        closeAndExit(exitCode, { ...options, stopHost: machineStop.kind === 'ready' ? machineStop.stop : null });
+        closeAndExit(exitCode, { ...options, idle: true, stopHost: machineStop.kind === 'ready' ? machineStop.stop : null });
     };
 
     const stages: StartupStage[] = [
