@@ -58,6 +58,7 @@ export class SpritePool {
     private idle: Slot[] = [];
     private readonly shutdown = new AbortController();
     private readonly pending = new Set<Promise<Slot>>();
+    private readonly releases = new Set<Promise<void>>();
     private readonly replacements: Promise<Slot>[] = [];
     private get closed() { return this.shutdown.signal.aborted; }
     constructor(private readonly client: SpriteClient) {}
@@ -131,7 +132,19 @@ export class SpritePool {
         if (this.closed) throw new Error('Sprite pool is closed');
         const idle = this.idle.pop();
         if (idle) return idle;
-        const work = this.replacements.shift() ?? this.provisionForPool();
+        const replacement = this.replacements.shift();
+        if (replacement) {
+            try { return await this.claim(replacement, signal); }
+            catch {
+                signal.throwIfAborted();
+                this.shutdown.signal.throwIfAborted();
+                // A speculative replacement failed. Give this run its own provisioning attempt.
+            }
+        }
+        return this.claim(this.provisionForPool(), signal);
+    }
+
+    private async claim(work: Promise<Slot>, signal: AbortSignal) {
         try { return await startupStep(signal, () => work); }
         catch (error) {
             if (signal.aborted) void work.then(slot => this.recycleClean(slot)).catch(() => {});
@@ -141,7 +154,7 @@ export class SpritePool {
 
     async close(): Promise<void> {
         this.shutdown.abort();
-        await Promise.allSettled([...this.pending, ...this.idle.splice(0).map(slot => this.discard(slot.sprite))]);
+        await Promise.allSettled([...this.pending, ...this.releases, ...this.idle.splice(0).map(slot => this.discard(slot.sprite))]);
     }
 
     private replaceInBackground() {
@@ -156,6 +169,14 @@ export class SpritePool {
         void work.then(slot => unclaimed() ? this.recycleClean(slot) : undefined, () => {
             if (unclaimed() && !this.closed) logger.warn('Failed to replace discarded Sprite');
         }).catch(() => {});
+    }
+
+    releaseInBackground(slot: Slot): void {
+        const release = this.release(slot).catch(() => {
+            logger.warn({ sprite: slot.sprite.name }, 'Failed to release unused Sprite');
+        });
+        this.releases.add(release);
+        void release.then(() => this.releases.delete(release));
     }
 
     async release(slot: Slot): Promise<void> {

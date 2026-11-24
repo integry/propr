@@ -15,6 +15,8 @@ export class FakeSprite {
     failExport = false;
     exitCode = 0;
     hold = false;
+    pendingSpawn = false;
+    exitBeforeOutputEnds = false;
     launched = Promise.withResolvers<void>();
     output = 'agent output';
     credential = '';
@@ -66,8 +68,21 @@ export class FakeSprite {
         }
         this.launched.resolve();
         setImmediate(() => {
+            if (this.pendingSpawn) {
+                cmd.stdout.end();
+                cmd.stderr.end();
+                return;
+            }
             cmd.emit('spawn');
             cmd.stdout.write(this.output.slice(0, 4));
+            if (this.exitBeforeOutputEnds) {
+                cmd.emit('exit', this.exitCode);
+                setImmediate(() => {
+                    cmd.stdout.end(this.output.slice(4));
+                    setImmediate(() => cmd.stderr.end(this.stderr));
+                });
+                return;
+            }
             cmd.stdout.end(this.output.slice(4));
             cmd.stderr.end(this.stderr);
             if (!this.hold) cmd.emit('exit', options?.sessionId ? 0 : this.exitCode);

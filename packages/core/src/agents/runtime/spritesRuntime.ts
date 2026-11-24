@@ -9,13 +9,14 @@ import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from '.
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
-import { prepareSpriteRun, unsupportedMount } from './sprites/spritesRun.js';
+import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
+    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] as const };
+    readonly capabilities = SpritesRuntime.capabilities;
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
     private closing?: Promise<void>;
@@ -75,33 +76,41 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
             const inputPath = `/opt/propr/inbox/${randomUUID()}.json`;
             const launch = { spec, options, token, inputPath };
-            const prepared = prepareSpriteRun(launch);
+            const validated = validateSpriteRun(launch);
             const ready = await startupStep(signal, () => pool);
-            const sprite = await startupStep(signal, async () => {
-                // An interrupted upload may still write to the leased Sprite. Discard it before reuse.
+            const { sprite, prepared } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal);
+                let prepared: ReturnType<typeof prepareSpriteRun>;
                 try {
+                    signal.throwIfAborted();
+                    prepared = prepareSpriteRun(launch, validated);
+                } catch (error) {
+                    ready.releaseInBackground(acquired);
+                    throw error;
+                }
+                try {
+                    // An interrupted upload may still write to the leased Sprite. Discard it before reuse.
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => prepared.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    return acquired.sprite;
+                    return { sprite: acquired.sprite, prepared };
                 } catch (error) {
                     await ready.discard(acquired.sprite);
                     throw error;
                 }
             });
-            signal.throwIfAborted();
-            const executionSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
-            const outcome = await execute(sprite, launch, {
-                output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
-            });
-            // A physical cost refusal has no workspace result for the caller to retain.
-            if (!commit && slot) {
-                const unused = slot;
-                slot = undefined;
-                await ready.release(unused);
+            try {
+                signal.throwIfAborted();
+                const executionSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
+                return await execute(sprite, launch, {
+                    output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
+                });
+            } finally {
+                if (!commit && slot) {
+                    ready.releaseInBackground(slot);
+                    slot = undefined;
+                }
             }
-            return outcome;
         })().finally(() => { settled = true; output.end(); });
         const release = () => released ??= (async () => {
             await result.catch(() => {});

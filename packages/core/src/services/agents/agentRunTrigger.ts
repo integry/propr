@@ -234,6 +234,13 @@ export async function loadConfiguredDefaultAgentAlias(): Promise<string | null> 
   return typeof alias === 'string' && alias.trim() ? alias.trim() : null;
 }
 
+async function extensionAdmissionRefusal(agent?: AgentConfig) {
+  const kind = agent?.runtime?.trim().toLowerCase();
+  if (!kind) return;
+  const { configuredExtensionRefusal } = await import('../../agents/runtime/registry.js');
+  return configuredExtensionRefusal(kind);
+}
+
 /**
  * The agent type the worker uses when a definition names no agent, resolved
  * like `AgentRegistry.getDefaultAgent`: the configured default alias, then the
@@ -241,14 +248,6 @@ export async function loadConfiguredDefaultAgentAlias(): Promise<string | null> 
  * registry falls back to a Claude agent from the environment. Null when no
  * default agent can be resolved.
  */
-async function extensionAdmissionRefusal(agent?: AgentConfig) {
-  const { getAgentRuntime, extensionRuntimeRefusal } = await import('../../agents/runtime/registry.js');
-  try {
-    const runtime = getAgentRuntime(agent);
-    return runtime.capabilities.supportsExtensions ? null : extensionRuntimeRefusal(runtime);
-  } catch (error) { return (error as Error).message; }
-}
-
 function defaultAgent(agents: AgentConfig[], configuredAlias: string | null) {
   const enabled = agents.filter(agent => agent.enabled);
   const resolved = (configuredAlias ? enabled.find(agent => agent.alias === configuredAlias) : undefined)

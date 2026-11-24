@@ -11,6 +11,8 @@ import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRunti
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { CloneWorkspaceTransport } from '../packages/core/src/git/workspaceCloneTransport.ts';
+import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
+import { CLAUDE_JSON_SEED_CONTAINER_PATH } from '../packages/core/src/claude/docker/claudeConfigSeed.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
 
 const token = 'test-org-secret';
@@ -156,7 +158,15 @@ test('credentials use one upload and only checked exports reach the broker. The 
     builder.credentialBind(root, '/home/node/.gemini-source', true, { provider: 'antigravity', store: 'config', perRun: true })
         .env('SPRITES_TOKEN', token).env('OTHER', token).env('PROPR_ANTIGRAVITY_SOURCE_CONFIG', '/home/node/.gemini-source');
     builder.spec.repoSetup = buildAgentRunRepoSetup('antigravity');
-    client.setup = sprite => { sprite.credential = 'refreshed'; sprite.output = token + '\n'; };
+    const envFile = path.join(root, 'launch.env');
+    fs.writeFileSync(envFile, 'PROVIDER_AUTH=old');
+    builder.envFile(envFile);
+    client.setup = sprite => {
+        fs.writeFileSync(path.join(root, relative), 'rotated');
+        fs.writeFileSync(envFile, 'PROVIDER_AUTH=new');
+        sprite.credential = 'refreshed';
+        sprite.output = token + '\n';
+    };
     const run = runtime.start(builder.build());
     const result = await run.wait();
     const sprite = client.created[0];
@@ -170,11 +180,25 @@ test('credentials use one upload and only checked exports reach the broker. The 
     assert.ok(input.agent.argv.includes('/opt/propr/entrypoints/antigravity-entrypoint.sh'));
     assert.ok(!sprite.launches[0].includes('.gemini-source'));
     assert.equal(input.agent.env.PROPR_ANTIGRAVITY_SOURCE_CONFIG, undefined);
+    assert.equal(input.agent.env.PROVIDER_AUTH, 'new');
     assert.equal(input.agent.env.HOME, '/opt/propr/run/tmp/propr-antigravity-home');
-    assert.deepEqual(input.files, [[relative, Buffer.from('baseline').toString('base64'), false]]);
+    assert.deepEqual(input.files, [[relative, Buffer.from('rotated').toString('base64'), false]]);
     await run.release!();
     assert.equal(fs.readFileSync(path.join(root, relative), 'utf8'), 'refreshed');
     assert.deepEqual(sprite.events.slice(-5), ['export', 'read-export', 'restart', 'wipe', 'restore']);
+});
+
+test('the final Claude seed is checked for the organization token after acquisition', async t => {
+    const { runtime, client, builder } = fixture();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-seed-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const seed = path.join(root, 'claude.json');
+    fs.writeFileSync(seed, '{}');
+    builder.strictBind(seed, CLAUDE_JSON_SEED_CONTAINER_PATH, true, 'credential');
+    client.setup = () => fs.writeFileSync(seed, JSON.stringify({ leaked: token }));
+    await assert.rejects(runtime.start(builder.build()).wait(), /org credential/);
+    assert.deepEqual(client.created[0].launches, []);
+    await runtime.close();
 });
 
 test('launcher reader accepts only bounded regular files without following any component', { skip: process.platform !== 'linux' }, t => {
@@ -394,20 +418,25 @@ test('invalid upload payloads fail before a Sprite is acquired', async () => {
     const spec = builder.build();
     await assert.rejects(runtime.start({ ...spec, workspace: { ...spec.workspace, readOnly: true } }).wait(), /clone workspace/);
     await assert.rejects(runtime.start(spec, { stdinData: token }).wait(), /organization credential/);
+    await assert.rejects(runtime.start(spec, { extraEnvVars: { [WORKSPACE_TRANSPORT_TOKEN_ENV]: token } }).wait(), /organization credential/);
+    await assert.rejects(runtime.start(builder.envFile('/missing/sprite-env-file').build()).wait(), /ENOENT/);
     assert.deepEqual(client.created, []);
     await runtime.close();
 });
 
-test('stderr workflow markers fail the run even when the provider reports success', async () => {
+test('stdout and failing workflow markers arriving after exit are drained through both stream ends', async () => {
     const { executeWithRepositoryWorkflow, repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
     const { runtime, builder, client } = fixture();
     const result = await executeWithRepositoryWorkflow({ revision: 'base', fileRevision: 'blob', baseBranch: 'main',
         config: { hooks: { before_run: 'exit 7' }, validation: ['true'] }, timeoutMs: 1000, maxParallelTasks: 1 }, async () => {
         const marker = repositoryWorkflowExecution.getStore()!.marker;
-        client.setup = sprite => { sprite.stderr = `\n${marker}:validation:0:0\n${marker}:hook:before_run:7\n`; };
+        client.setup = sprite => {
+            sprite.exitBeforeOutputEnds = true;
+            sprite.stderr = `\n${marker}:validation:0:0\n${marker}:hook:before_run:7\n`;
+        };
         builder.spec.repoSetup = buildAgentRunRepoSetup('antigravity');
         const run = runtime.start(builder.build());
-        await run.wait();
+        assert.equal((await run.wait()).stdout, 'agent output');
         await run.release!();
         return { success: true, modifiedFiles: [], logs: '', modelUsed: 'test', executionTimeMs: 0 };
     });
@@ -445,22 +474,82 @@ test('failed pool initialization can be retried and cannot interrupt shutdown', 
     assert.deepEqual(client.deleted, [client.created[0].name]);
 });
 
-test('refusal at physical launch skips provider credential export', async t => {
+test('physical refusal settles while unused-slot deletion is pending and survives cleanup failure', { timeout: 3000 }, async t => {
     const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
     const { RunCostCapExceededError } = await import('../packages/core/src/budget/runCostCap.ts');
     const { runtime, client, builder } = fixture();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-store-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     builder.credentialBind(root, '/home/node/.gemini-source', true, { provider: 'antigravity', store: 'config', perRun: true });
+    client.setup = sprite => { sprite.failWipe = true; };
+    const deletion = Promise.withResolvers<void>();
+    client.deleteSprite = () => deletion.promise;
     await runWithActiveRunCostCap({ taskId: 'test', exceeded: false, admit: async () => {},
         beginExecution: () => { throw new RunCostCapExceededError('cap reached'); } }, async () => {
         const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true });
         assert.equal((await run.wait()).costCapExceeded, true);
         await run.release!();
     });
-    assert.deepEqual(client.created[0].events, ['checkpoint', 'restore', 'restart', 'wipe', 'restore']);
+    deletion.reject(new Error('delete failed'));
+    await runtime.close();
+    assert.deepEqual(client.created[0].events, ['checkpoint', 'restore', 'restart', 'wipe']);
+});
+
+test('timeout before spawn settles while unused-slot cleanup is pending', { timeout: 3000 }, async () => {
+    const { runtime, client, builder } = fixture();
+    const restart = Promise.withResolvers<void>();
+    client.setup = sprite => {
+        sprite.pendingSpawn = true;
+        sprite.restart = () => restart.promise;
+    };
+    const run = runtime.start(builder.build(), { timeout: 30, preserveOutputOnTimeout: true });
+    assert.equal((await run.wait()).timedOut, true);
+    assert.equal(run.recoveryLocation, undefined);
+    await run.release!();
+    restart.resolve();
     await runtime.close();
 });
+
+test('a run claiming a failed replacement gets one fresh provisioning attempt', async () => {
+    const client = new FakeSprites();
+    const pool = new SpritePool(client);
+    const signal = new AbortController().signal;
+    const original = await pool.acquire(signal);
+    client.created[0].failWipe = true;
+    const replacement = Promise.withResolvers<never>();
+    const create = client.createSprite.bind(client);
+    let attempts = 0;
+    client.createSprite = name => ++attempts === 1 ? replacement.promise : create(name);
+    await pool.release(original);
+    const acquiring = pool.acquire(signal);
+    replacement.reject(new Error('transient replacement failure'));
+    const fresh = await acquiring;
+    assert.equal(attempts, 2);
+    assert.equal(fresh.sprite.name, client.created[1].name);
+    await pool.release(fresh);
+    await pool.close();
+});
+
+for (const interruption of ['cancel', 'shutdown'] as const) {
+    test(`a claimed replacement does not start fresh provisioning after ${interruption}`, async () => {
+        const client = new FakeSprites();
+        const pool = new SpritePool(client);
+        const caller = new AbortController();
+        const original = await pool.acquire(caller.signal);
+        client.created[0].failWipe = true;
+        const replacement = Promise.withResolvers<never>();
+        let attempts = 0;
+        client.createSprite = () => { attempts++; return replacement.promise; };
+        await pool.release(original);
+        const acquiring = pool.acquire(caller.signal);
+        if (interruption === 'cancel') caller.abort();
+        else await pool.close();
+        replacement.reject(new Error('replacement failed'));
+        await assert.rejects(acquiring, { name: 'AbortError' });
+        assert.equal(attempts, 1);
+        await pool.close();
+    });
+}
 
 test('a stalled restore times out and release does not wait for replacement setup', { timeout: 3000 }, async t => {
     const { runtime, client, builder } = fixture();

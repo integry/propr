@@ -8,6 +8,25 @@ import { startRunPipeline, type RunPipeline } from '../runPipeline.js';
 import { startupStep } from './spritesProvisioning.js';
 import { spriteLauncher, type SpriteLaunch, type prepareSpriteRun } from './spritesRun.js';
 
+async function drainOutput(command: SpriteCommand) {
+    const { stdout, stderr } = command;
+    if (stdout.readableEnded && stderr.readableEnded) return;
+    await new Promise<void>(resolve => {
+        const finish = () => {
+            clearTimeout(grace);
+            stdout.off('end', check);
+            stderr.off('end', check);
+            resolve();
+        };
+        const check = () => {
+            if (stdout.readableEnded && stderr.readableEnded) finish();
+        };
+        const grace = setTimeout(finish, 2000);
+        stdout.once('end', check);
+        stderr.once('end', check);
+    });
+}
+
 function waitForConnection(command: SpriteCommand, signal: AbortSignal, pipeline: RunPipeline, onSpawn: () => void) {
     let force: ReturnType<typeof setTimeout> | undefined;
     let abort: () => void;
@@ -15,20 +34,25 @@ function waitForConnection(command: SpriteCommand, signal: AbortSignal, pipeline
     const stderr = (data: Buffer) => pipeline.write('stderr', data);
     command.stdout.on('data', stdout);
     command.stderr.on('data', stderr);
+    const spawned = () => { onSpawn(); command.stdin.end(); };
     return new Promise<number>(resolve => {
         abort = () => {
             command.kill('SIGTERM');
             force = setTimeout(() => { command.kill('SIGKILL'); resolve(-1); }, 5000);
             force.unref();
         };
-        command.once('spawn', () => { onSpawn(); command.stdin.end(); });
+        command.once('spawn', spawned);
         command.on('error', () => resolve(-1));
         command.once('exit', resolve);
         if (signal.aborted) abort();
         else signal.addEventListener('abort', abort, { once: true });
-    }).finally(() => {
+    }).then(async code => {
         clearTimeout(force);
         signal.removeEventListener('abort', abort);
+        if (code >= 0) await drainOutput(command);
+        return code;
+    }).finally(() => {
+        command.off('spawn', spawned);
         command.stdout.off('data', stdout);
         command.stderr.off('data', stderr);
         command.close();
