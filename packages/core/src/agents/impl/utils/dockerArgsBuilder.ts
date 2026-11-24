@@ -158,7 +158,7 @@ function buildBaseRunSpec(options: {
     }
     builder
         .bind('/tmp/claude-logs', '/tmp/claude-logs', false, 'logs')
-        .bind(configPath, '/home/node/.claude', false, 'credential');
+        .credentialBind(configPath, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: !goal });
     addClaudeConfigSeed(builder);
     if (!repositoryInspection) builder.env('GH_TOKEN', githubToken);
     if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');

@@ -1,6 +1,7 @@
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } from '../../network/egressExecution.js';
 import type { AgentConfig } from '../types.js';
+import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -103,8 +104,22 @@ export async function runAgent(
 ): Promise<ExecutionResult> {
     const runtime = getAgentRuntime(config);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
-    assertAgentRuntimeSupports(runtime, resolved);
-    return runtime.start(resolved, options).wait();
+    // Runtimes that bind host paths get per-run credential copies staged on the host.
+    // Others are refused below while the spec still binds the canonical store; they
+    // carry credentials with the transport-neutral CredentialBroker bundle instead.
+    const staged = runtime.capabilities.supportsBindMounts
+        ? stageAgentRunCredentials(resolved, { launchEnvironment: options.extraEnvVars })
+        : undefined;
+    try {
+        const runSpec = staged?.spec ?? resolved;
+        assertAgentRuntimeSupports(runtime, runSpec);
+        const runOptions = staged && Object.keys(staged.secretEnv).length > 0
+            ? { ...options, extraEnvVars: { ...options.extraEnvVars, ...staged.secretEnv } }
+            : options;
+        return await runtime.start(runSpec, runOptions).wait();
+    } finally {
+        await staged?.complete();
+    }
 }
 
 /**

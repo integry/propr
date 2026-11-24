@@ -54,7 +54,7 @@ Branch names include the model identifier, so concurrent multi-model runs never 
 Each agent run starts a dedicated container from the unified `propr/agent` image. The container gets:
 
 - The task worktree mounted as its working directory
-- The agent's credential directory (for example `~/.claude`, `~/.codex`, `~/.gemini`) mounted read-write into the container's home so the CLI can refresh auth state (Vibe's config is mounted read-only)
+- A per-run copy of only the credential and config files its CLI needs (see [Per-run credential copies](#per-run-credential-copies)), never the host's whole credential directory
 - For all five agents, read-only git metadata and shared clones (`/tmp/git-processor`). The task worktree is writable, but its `.git` entry is mounted read-only. Other repositories' working copies cannot be changed.
 - Implementation, follow-up, review-fix, direct-goal, and repository-associated analysis runs receive a read-only installation token as `GH_TOKEN`. It grants `contents`, `issues`, `pull_requests`, and `metadata` reads, plus `checks`, `actions`, and `statuses` reads when the installation grants those optional permissions. `gh issue view`, `gh pr view`, `gh pr checks` (with the optional CI permissions), and cloning/fetching related repositories work; pushes, merges, issue/PR comments, and label changes are refused by GitHub. Fetch into an agent-created clone; shared clone metadata remains read-only.
 - Memory, CPU, and process limits (defaults `6g`, up to 4 CPUs, and 512 PIDs; override with `AGENT_CONTAINER_MEMORY_LIMIT`, `AGENT_CONTAINER_CPU_LIMIT`, `AGENT_CONTAINER_PIDS_LIMIT`) and the `no-new-privileges` security option
@@ -62,6 +62,28 @@ Each agent run starts a dedicated container from the unified `propr/agent` image
 - A stall and degenerate-output watchdog: a run with no output for `AGENT_STALL_TIMEOUT_MS` (10 minutes; 30 minutes, `AGENT_TOOL_STALL_TIMEOUT_MS`, while a silent tool call runs), or with `AGENT_DEGENERATE_OUTPUT_LIMIT` (50) consecutive whitespace-only text deltas, is stopped instead of holding its worker slot and repository capacity until the timeout
 
 The default limit stays at 512 PIDs to bound runaway process creation on shared workers. Docker's init process reaps exited orphans, so browser and build helpers release their PID slots after exit. If a browser verification suite still reaches the limit with live processes and threads, reduce its test parallelism or raise `AGENT_CONTAINER_PIDS_LIMIT` on a worker with capacity for that workload.
+
+### Per-run credential copies
+
+Provider logins live in host directories such as `~/.claude`, `~/.codex`, `~/.gemini`, OpenCode's config and data directories and `~/.vibe`. Agent runs no longer mount those directories. A credential broker copies only the files each provider declares into a fresh per-run directory, mounts that copy, and removes it when the run ends:
+
+| Provider | Copied into the run | Written back after the run |
+|---|---|---|
+| Claude | `.credentials.json`, `settings.json`, `CLAUDE.md`, `agents/`, `commands/`, `skills/`, `output-styles/` | `.credentials.json` |
+| Codex | `auth.json`, `config.toml`, `AGENTS.md`, `prompts/`, `rules/`, `skills/` | `auth.json` |
+| Antigravity | `antigravity-cli/antigravity-oauth-token`, `antigravity-cli/settings.json` | `antigravity-cli/antigravity-oauth-token` |
+| OpenCode | Config: `opencode.json(c)`, `config.json`, `tui.json`, `AGENTS.md` and the agent, command, mode, plugin, tool, skill and theme directories. Data: `auth.json`, `account.json` | `auth.json`, `account.json` |
+| Vibe (read-only) | `config.toml`, `settings.json`, `credentials.json`, `agents/`, `prompts/`; `MISTRAL_API_KEY` from `.env` as a secret variable | Nothing |
+
+- **Only refreshed tokens go back.** After the run the broker compares each refreshable file with the copy the run received. Only the files that changed are written to the host store, atomically and with the original owner and mode. Session logs, history, caches, edited settings and new files stay in the disposable copy. A file the run deleted is not deleted on the host.
+- **Concurrent runs.** Write-back for a store happens under a lock file in `<run dir>/.locks`, which serialises worker processes that share the directory. If the host file is unchanged since the run started, the refreshed copy is written. If another run already replaced it, the most recently modified copy wins, so an older token never overwrites a newer one. A lock left by a crashed worker is broken after 60 seconds.
+- **API keys instead of files.** When the agent's environment already supplies `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (Claude), `CODEX_API_KEY` (Codex) or `MISTRAL_API_KEY` (Vibe), the provider's OAuth token file is not copied at all. Vibe's `.env` key reaches the run as a variable passed by name, so its value never appears in `docker run` arguments.
+- **Symlinks are skipped.** A symlink inside a store is neither copied nor written through.
+- **Where copies live.** Copies are staged under `PROPR_AGENT_CREDENTIAL_RUN_DIR`, which defaults to `<PROPR_MANAGED_CREDENTIALS_DIR>/.propr-runs` (`~/.propr/agent-credentials/.propr-runs`). The worker and the Docker daemon must see this directory at the same path; the bundled Compose files already mount the managed credential root that way. Copies older than 24 hours, left by a crashed worker, are removed the next time a run is staged. A store larger than 2,000 files or 32 MiB is refused rather than copied.
+- **Exceptions that keep the direct mount.** Goal sessions resume their provider session from the credential directory. They therefore still mount it directly: native Claude, Codex and Antigravity goal sessions, and Codex goal runs. When managed native-log capture is enabled (`PROPR_MANAGED_LOGS=1`), runs also default to the direct mount, because that capture reads provider logs from the host store.
+- **Rollback.** Set `PROPR_AGENT_CREDENTIAL_BROKER=legacy` on the worker to mount the host credential directories directly, as before (read-write, except Vibe). `PROPR_AGENT_CREDENTIAL_BROKER=per-run` forces per-run copies, including when managed native-log capture is enabled.
+
+Runtimes without host bind mounts use the same broker through its transport-neutral API, exported from `@propr/core`. `CredentialBroker.materialize()` returns the files a run receives and the refreshable paths it must return. `CredentialBroker.commit()` takes the returned files and applies the same lock and newer-wins rules.
 
 GitHub's permission names are not a blanket ban on every mutation: its
 [Create a commit comment endpoint](https://docs.github.com/en/rest/commits/comments#create-a-commit-comment)
