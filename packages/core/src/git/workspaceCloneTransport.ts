@@ -134,6 +134,14 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
     }
 
     async prepare(spec: AgentRunSpec): Promise<PreparedWorkspace> {
+        // A read-only workspace is a kernel read-only mount in bind mode. A sandbox checkout
+        // cannot give the same guarantee: file modes do not stop an agent that runs as root
+        // (Vibe's read-only analysis config does), and an agent-owned parent directory lets the
+        // agent move the checkout away and put altered content in its place. Refuse before
+        // anything is published or a token is minted.
+        if (spec.workspace.readOnly) {
+            throw new WorkspaceTransportError(`Clone workspace transport cannot enforce a read-only workspace for ${spec.name}; run it with the bind transport`);
+        }
         const worktree = spec.workspace.hostPath;
         const local = createHooklessGit(worktree);
         let baseCommit: string;
@@ -152,14 +160,13 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         const run: CloneRun = {
             worktree, repository, remote, runId, localRef: prefix, ownsCommits: agentOwnsCommits(spec),
             clone: {
-                remote, baseRef: `${prefix}/base`, baseCommit, branch,
-                ...(spec.workspace.readOnly ? {} : { resultRef: `${prefix}/result` }),
+                remote, baseRef: `${prefix}/base`, baseCommit, branch, resultRef: `${prefix}/result`,
                 resultDir: WORKSPACE_TRANSPORT_RESULT_DIR, script: WORKSPACE_TRANSPORT_SCRIPT,
             },
         };
         try {
             await (await this.workerGit(run)).raw(['push', '--no-verify', '--quiet', remote, `${baseCommit}:${run.clone.baseRef}`]);
-            run.token = await this.deps.mintToken(repository, spec.workspace.readOnly ? 'read' : 'write');
+            run.token = await this.deps.mintToken(repository, 'write');
         } catch (error) {
             await this.cleanup(run);
             if (error instanceof WorkspaceTransportError) throw error;
@@ -203,7 +210,6 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
     }
 
     private async complete(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult): Promise<WorkspaceRunOutcome> {
-        if (!run.clone.resultRef) return { applied: false, reason: 'read-only workspace' };
         run.result = 'pending';
         try {
             const outcome = await this.retrieveAndApply(run, handle, result);

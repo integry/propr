@@ -504,6 +504,25 @@ test('clone mode is refused on runtimes that cannot run it and for native goal s
     assert.doesNotThrow(() => assertNativeGoalRuntime(undefined, { PROPR_WORKSPACE_TRANSPORT: 'bind' }));
 });
 
+test('a read-only run dispatched under PROPR_WORKSPACE_TRANSPORT=clone is refused before it starts', async () => {
+    const started: any[] = [];
+    registerAgentRuntime('clone-capable', () => ({
+        kind: 'clone-capable',
+        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false, workspaceTransports: ['bind', 'clone'] },
+        start: (runSpec: any) => { started.push(runSpec); throw new Error('must not start'); },
+    }) as any);
+    const readOnly = spec();
+    readOnly.workspace.readOnly = true;
+    const previous = process.env.PROPR_WORKSPACE_TRANSPORT;
+    process.env.PROPR_WORKSPACE_TRANSPORT = 'clone';
+    try {
+        await assert.rejects(runAgent({ runtime: 'clone-capable' }, readOnly, {}), /cannot enforce a read-only workspace for claude-issue-1-abc; run it with the bind transport/);
+        assert.equal(started.length, 0);
+    } finally {
+        if (previous === undefined) delete process.env.PROPR_WORKSPACE_TRANSPORT; else process.env.PROPR_WORKSPACE_TRANSPORT = previous;
+    }
+});
+
 test('the runtime file API extracts the single file docker cp streams as tar', async () => {
     const { extractSingleFileFromTar } = await import('../packages/core/src/agents/runtime/dockerContainerFiles.ts');
     const header = Buffer.alloc(512);

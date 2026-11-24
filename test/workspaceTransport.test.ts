@@ -345,15 +345,20 @@ test('when the agent owns git, its commits move the task branch and the rest sta
     assert.equal(git(f.worktree, 'status', '--porcelain'), '?? after.txt');
 });
 
-test('a read-only clone gets a read token and returns nothing', async () => {
+test('a read-only workspace is refused in clone mode before anything is published, minted or started', async () => {
     const f = fixture();
     const runtime = localRuntime(f);
-    const result = await runWithWorkspaceTransport(runtime, runSpec(f, { readOnly: true }), {}, { transport: f.transport });
-    assert.equal(result.exitCode, 0, result.stderr);
-    assert.deepEqual(f.minted, ['acme/widgets:read']);
-    assert.equal(runtime.started[0].spec.workspace.clone!.resultRef, undefined);
+    // The editing agent would modify, delete and add repository files if it ever ran.
+    await assert.rejects(runWithWorkspaceTransport(runtime, runSpec(f, { readOnly: true }), { stdinData: 'analyse' }, { transport: f.transport }),
+        (error: unknown) => error instanceof WorkspaceTransportError && /cannot enforce a read-only workspace.*bind transport/.test(error.message));
+    assert.equal(runtime.started.length, 0, 'no run starts with a writable checkout');
+    assert.ok(!fs.existsSync(f.sandbox), 'no checkout is created for the agent to write to');
+    assert.deepEqual(f.minted, [], 'no token is minted');
+    assert.deepEqual(f.revoked, []);
+    assert.equal(remoteRunRefs(f), '', 'no base ref is published');
     assert.equal(git(f.worktree, 'status', '--porcelain'), '');
-    assert.equal(remoteRunRefs(f), '');
+    assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'original\n');
+    assert.ok(fs.existsSync(path.join(f.worktree, 'remove-me.txt')));
 });
 
 /**
