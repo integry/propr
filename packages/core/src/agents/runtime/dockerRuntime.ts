@@ -123,10 +123,20 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     private readonly result: Promise<ExecutionResult>;
     /** Reaches the executor's launch preparation (network, admission) and its final pre-spawn check. */
     private readonly cancellation = new AbortController();
+    /**
+     * The environment the launch's Docker client ran with beyond `process.env`
+     * (both the direct spawn and admission's client merge `extraEnvVars` over it),
+     * so `stop`/`inspect` reach the daemon the run was launched on (`DOCKER_HOST`,
+     * `DOCKER_CONTEXT`, `DOCKER_CONFIG`, ...) rather than the default one.
+     */
+    private readonly dockerEnvironment: Readonly<Record<string, string>> | undefined;
     private spawned = false;
     private settled = false;
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions) {
+        this.dockerEnvironment = options.extraEnvVars && Object.keys(options.extraEnvVars).length > 0
+            ? Object.freeze({ ...options.extraEnvVars })
+            : undefined;
         const args = renderDockerRunArgs(spec);
         const signal = options.signal ? AbortSignal.any([options.signal, this.cancellation.signal]) : this.cancellation.signal;
         const { restriction } = spec.network;
@@ -169,7 +179,7 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         if (this.spawned) {
             const seconds = String(Math.max(0, Math.ceil(timeoutMs / 1000)));
             const stopped = await executeDockerCommand('docker', ['stop', '--signal', signal, '--time', seconds, this.spec.name], {
-                timeout: timeoutMs + INSPECT_TIMEOUT_MS,
+                timeout: timeoutMs + INSPECT_TIMEOUT_MS, ...this.controlOptions(),
             });
             if (stopped.exitCode !== 0 && !/No such container/i.test(stopped.stderr)) {
                 throw new Error(`Failed to stop agent run ${this.spec.name}: ${stopped.stderr.trim() || `exit ${stopped.exitCode}`}`);
@@ -180,6 +190,11 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         if (!await this.settlesWithin(timeoutMs + INSPECT_TIMEOUT_MS)) {
             throw new Error(`Agent run ${this.spec.name} did not settle after it was stopped`);
         }
+    }
+
+    /** Options addressing a control command (`stop`, `inspect`) to the run's own Docker daemon. */
+    private controlOptions(): Pick<DockerCommandOptions, 'extraEnvVars'> {
+        return this.dockerEnvironment ? { extraEnvVars: { ...this.dockerEnvironment } } : {};
     }
 
     private async settlesWithin(ms: number): Promise<boolean> {
@@ -199,7 +214,7 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         try {
             inspected = await executeDockerCommand('docker', [
                 'inspect', '--type', 'container', '--format', '{{.Id}} {{.State.Status}}', name,
-            ], { timeout: INSPECT_TIMEOUT_MS });
+            ], { timeout: INSPECT_TIMEOUT_MS, ...this.controlOptions() });
         } catch {
             return { liveness: 'unavailable', name };
         }
