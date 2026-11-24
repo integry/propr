@@ -3,6 +3,7 @@ import type { IdleShutdownStatus } from '@propr/shared';
 import { getIdleShutdownSettings, updateIdleShutdownSettings, type IdleShutdownSettings } from '../../api/idleShutdownApi';
 import { SettingsCheckboxField, SettingsField, SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
 import { SETTINGS_CONTROL } from './settingsStyles';
+import { formatDateTime } from '../../utils/dateFormat';
 
 const WAKE_SOURCES: Record<string, string> = {
   http: 'HTTP request',
@@ -13,8 +14,7 @@ const WAKE_SOURCES: Record<string, string> = {
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return formatDateTime(value) || value;
 }
 
 function formatDuration(ms: number): string {
