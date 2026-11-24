@@ -38,6 +38,7 @@ export {
 } from './claudeOutputHelpers.js';
 
 export { buildAnalysisSafetySuffix } from './analysisPromptSafety.js';
+export { attachComputeUsage } from '../../runtime/computeUsage.js';
 export { analysisReasoningLevelField } from './analysisReasoningLevel.js';
 
 export {

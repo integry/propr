@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import type { ResolvedNetworkPolicy } from '../../network/networkPolicy.js';
 import type { AgentType } from '../types.js';
+import type { AgentRunComputeUsage } from './computeUsage.js';
 
 /**
  * Runtime-neutral description of one coding-agent run.
@@ -306,6 +307,8 @@ export interface AgentRunResult {
     timeoutMs?: number;
     costCapExceeded?: boolean;
     watchdogTrip?: unknown;
+    /** What the sandbox consumed: wall time, CPU, memory and (once priced) cost. */
+    computeUsage?: AgentRunComputeUsage;
 }
 
 export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> {

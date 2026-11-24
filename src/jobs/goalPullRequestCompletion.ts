@@ -1,11 +1,13 @@
 import { writePullRequestBody } from '../github/pullRequestBodyWriter.js';
 import {
     appendVisualPreviewSection,
+    formatComputeUsage,
     formatSubscriptionUsage,
     getAuthenticatedOctokit,
     getDetailedUsageStats,
     getModelName,
     logger,
+    normalizeComputeUsage,
     redactSecrets,
     sanitizeAgentReport,
     retryConfigs,
@@ -80,6 +82,8 @@ function buildImplementationDetails(result: AgentExecutionResult): string {
         lines.push(`* **Tokens:** ${stats.totalTokens.toLocaleString()} (${stats.totalInputWithCache.toLocaleString()} in / ${stats.outputTokens.toLocaleString()} out)`);
     }
     if (result.cost != null && result.cost > 0) lines.push(`* **Cost:** $${result.cost.toFixed(2)}`);
+    const computeUsage = normalizeComputeUsage(result.computeUsage);
+    if (computeUsage) lines.push(`* **Compute:** ${formatComputeUsage(computeUsage)}`);
     const subscriptionUsage = formatSubscriptionUsage(result.usageMetrics);
     if (subscriptionUsage) lines.push(`* **Subscription usage:** ${subscriptionUsage}`);
     if (result.modifiedFiles.length > 0) {

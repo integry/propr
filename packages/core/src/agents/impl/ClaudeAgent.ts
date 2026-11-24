@@ -39,7 +39,7 @@ import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { failedExecutionResult, usageLimitExecutionResult, recordUnreturnedFailedExecution, persistFailedExecutionLog } from './utils/failedAgentExecution.js';
-import { processDockerResult, buildDockerArgs, buildClaudeRunSpec, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, analysisReasoningLevelField, type PersistLogsParams } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, buildClaudeRunSpec, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, attachComputeUsage, getClaudeAnalysisText, buildAnalysisSafetySuffix, analysisReasoningLevelField, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { assertToolPolicySupported, claudeToolPolicyArgs } from '../agentToolPolicy.js';
 import {
@@ -198,6 +198,7 @@ export class ClaudeAgent implements Agent {
             }
 
             if (usageMetrics) response.usageMetrics = usageMetrics;
+            attachComputeUsage(response, result);
             return response;
         } catch (error) {
             // A capacity wait is not a provider failure: the job defers or reports the wait.

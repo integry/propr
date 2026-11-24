@@ -6,6 +6,7 @@ import { goalAttention, whereGoalPausedAwaitingOperator } from '../services/goal
 import { orderByNewest } from './activityDigest.js';
 import { getAgentActivity } from './agentActivity.js';
 import { compactText, summarizeTask } from './listSummaries.js';
+import { taskComputeUsage } from './taskComputeUsage.js';
 
 /** Live narration, terminal transitions and operator inputs stay small enough to embed in a detail read. */
 const ACTIVITY_LIMIT = 5;
@@ -334,6 +335,7 @@ export async function taskDetail(
       elapsedSeconds: typeof summary?.elapsed_ms === 'number' ? Math.round(summary.elapsed_ms / 1000) : null,
     },
     changesSummary: await changesSummary(deps, target.taskId),
+    computeUsage: await taskComputeUsage(deps.db, target.taskId) as JsonObject | null,
     pullRequest: pullRequests[0] ?? null,
   };
 }

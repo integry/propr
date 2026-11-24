@@ -6,6 +6,7 @@ import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.j
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { collectingHandle, uploadAgentRunFiles, type UploadedAgentRunFiles } from './agentRunFileUpload.js';
+import { withComputeCost } from './computeUsage.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { FLY_MACHINES_RUNTIME_KIND, FlyMachinesRuntime } from './flyMachinesRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
@@ -195,14 +196,17 @@ export async function runAgent(
             : options;
         // Refreshed credentials are read back from the run before anything releases it.
         const runRuntime = uploaded ? withCredentialCollection(runtime, uploaded) : runtime;
+        const startedAt = Date.now();
         if (mode === 'bind') {
             assertAgentRuntimeSupports(runtime, runSpec);
-            return await runRuntime.start(runSpec, runOptions).wait();
+            const result = await runRuntime.start(runSpec, runOptions).wait();
+            return withRunComputeUsage(runtime.kind, startedAt, result);
         }
-        return await runWithWorkspaceTransport(runRuntime, runSpec, runOptions, {
+        const result = await runWithWorkspaceTransport(runRuntime, runSpec, runOptions, {
             transport: await createWorkspaceTransport(mode),
             assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
         });
+        return withRunComputeUsage(runtime.kind, startedAt, result);
     } finally {
         await staged?.complete();
     }
@@ -214,6 +218,19 @@ function withCredentialCollection(runtime: ProviderAgentRuntime, uploaded: Uploa
         capabilities: runtime.capabilities,
         start: (spec, options) => collectingHandle(runtime.start(spec, options), handle => uploaded.collect(handle)),
     };
+}
+
+/**
+ * The result with its compute usage priced: the runtime's own report, or for a
+ * runtime that reports none, the wall time the dispatcher observed. The cost is
+ * the runtime's, else the `PROPR_COMPUTE_RATES` rate for its kind, else unknown.
+ */
+function withRunComputeUsage(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+    const usage = result.computeUsage ?? {
+        runtime: kind, wallTimeMs: Date.now() - startedAt,
+        cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null,
+    };
+    return { ...result, computeUsage: withComputeCost({ ...usage, runtime: usage.runtime || kind }) };
 }
 
 /**
