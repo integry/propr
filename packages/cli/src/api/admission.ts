@@ -54,7 +54,28 @@ export interface AgentRunAdmissionReport {
   agents: AdmissionAgent[];
   queueWorkers: { label: string; inUse: number | null; total: number | null; workers: number | null };
   repositoryWorkflowSlots: { label: string; repositories: Array<{ repository: string; inUse: number; limit: number; waiting: number }>; unavailable?: string };
+  /** Absent from servers older than the runtime capability report. */
+  runtime?: AdmissionRuntime | null;
+  runtimeUnavailable?: string;
   subscriptionUsage: string;
+}
+
+/** What the default agent runtime can enforce; admission refuses runs needing what it lacks. */
+export interface AdmissionRuntime {
+  runtime: string;
+  selectedBy: string;
+  registered: string[];
+  capabilities: { bindMounts: boolean; restrictedNetwork: boolean; mcpPrivateNetwork: boolean; mcpReachableUrl: boolean; reattach: boolean };
+  network: {
+    instanceMode: "open" | "restricted" | null;
+    enforced: boolean | null;
+    restrictedRuns: "enforced" | "refused";
+    enforcement: { method: string; description: string } | null;
+    refusal?: string;
+    refusingRuns: boolean;
+    unavailable?: string;
+  };
+  mcp: { transport: "private-network" | "reachable-url" | "unavailable"; reason: string };
 }
 
 export async function getAgentRunAdmission(client?: ApiClient): Promise<AgentRunAdmissionReport> {
