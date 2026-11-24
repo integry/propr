@@ -38,3 +38,13 @@ test("adds the daemon's live status: blockers, last shutdown and last wake", asy
   assert.ok(rows.some(row => row.name === "Last idle shutdown"));
   assert.ok(rows.some(row => row.name === "Next scheduled work"));
 });
+
+test("leaves the backend alone on a direct-webhook stack that does not turn it on", async () => {
+  let reads = 0;
+  const readStatus = async () => { reads++; return { idleShutdown: null }; };
+  await checkIdleShutdown({ GITHUB_EVENT_INTAKE_MODE: "direct_webhook" }, readStatus);
+  assert.equal(reads, 0);
+  await checkIdleShutdown({ GITHUB_EVENT_INTAKE_MODE: "direct_webhook", PROPR_IDLE_SHUTDOWN: "on" }, readStatus);
+  await checkIdleShutdown({}, readStatus);
+  assert.equal(reads, 2);
+});
