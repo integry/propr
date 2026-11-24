@@ -71,22 +71,22 @@ describe('OpenCode cost parsing', () => {
         assert.equal(mixed.cost, 0.5);
     });
 
-    test('does not promote a partial step subtotal when another billable step has no valid cost', () => {
+    test('sums known step costs when other steps have missing or invalid costs', () => {
         const unpricedStep = { type: 'step_finish', sessionID: 's1', part: { id: 'b', type: 'step-finish', tokens: { input: 20, output: 10 } } };
-        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0), unpricedStep)).cost, undefined);
-        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0.25), stepFinish('b', -1))).cost, undefined);
-        // A later repeat of the same part id with a valid cost completes coverage.
-        assert.equal(parseOpenCodeJsonl(jsonl(unpricedStep, stepFinish('b', 0.25))).cost, 0.25);
+        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0), unpricedStep)).cost, 0);
+        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0.25), unpricedStep)).cost, 0.25);
+        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0.25), stepFinish('b', -1))).cost, 0.25);
+        assert.equal(parseOpenCodeJsonl(jsonl(unpricedStep, stepFinish('b', 0.25), stepFinish('b', 0.25))).cost, 0.25);
         // A cumulative result total still covers the whole run even if one step omitted cost.
         assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0.25), unpricedStep, { type: 'result', sessionID: 's1', total_cost_usd: 0.9 })).cost, 0.9);
     });
 
-    test('a zero cumulative result does not erase positive step costs', () => {
+    test('a zero cumulative result replaces positive step costs', () => {
         const parsed = parseOpenCodeJsonl(jsonl(
             stepFinish('a', 0.25), stepFinish('b', 0.5),
             { type: 'result', sessionID: 's1', cost: 0 },
         ));
-        assert.equal(parsed.cost, 0.75);
+        assert.equal(parsed.cost, 0);
     });
 
     test('does not read costs from other event types', () => {

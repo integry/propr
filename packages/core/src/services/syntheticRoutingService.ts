@@ -151,6 +151,7 @@ export class SyntheticRoutingSession {
 
   async analyze(prompt: string, options: AnalyzeOptions = {}): Promise<AnalysisResult> {
     this.constrain(estimateTokens(`${prompt}${options.context || ''}`) + DEFAULT_OUTPUT_RESERVE_TOKENS);
+    let providerCostUsd: number | undefined = 0;
     for (;;) {
       const selection = await this.select();
       this.executionAttemptCount += 1;
@@ -163,12 +164,15 @@ export class SyntheticRoutingSession {
             ? { ...options.metadata, syntheticRouting: routingMetadata }
             : options.metadata,
         });
-        if (result.success) return result;
-        const failure = resultFailure(result);
-        if (isNonRetryableSyntheticFailure(result) || !selection.synthetic) return result;
-        this.failCurrent(failure.message);
+        // The caller's total covers all physical attempts in this invocation.
+        const cost = result.providerCostUsd;
+        providerCostUsd = providerCostUsd !== undefined && cost !== undefined && Number.isFinite(cost) && cost >= 0
+          ? providerCostUsd + cost : undefined;
+        if (result.success || isNonRetryableSyntheticFailure(result) || !selection.synthetic) return cost === providerCostUsd ? result : { ...result, providerCostUsd };
+        this.failCurrent(resultFailure(result).message);
       } catch (error) {
         if (isNonRetryableSyntheticFailure(error) || !selection.synthetic) throw error;
+        providerCostUsd = undefined;
         this.failCurrent((error as Error).message);
       }
     }

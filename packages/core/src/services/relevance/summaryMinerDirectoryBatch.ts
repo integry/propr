@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { Agent, type AnalyzeOptions } from '../../agents/types.js';
-import { logSummarizationCall, createProviderCostTracker, trackProviderCost, trackedProviderCost, type ProviderCostTracker } from './summaryMinerMetrics.js';
+import { logSummarizationCall, analyzeWithProviderCost, createProviderCostTracker, trackedProviderCost, type ProviderCostTracker } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import {
@@ -408,10 +408,9 @@ async function analyzeDirectoryBatchWithAgent(options: {
         metadata: { phase: 'directory_aggregation', directoryCount: activeDirectories.length },
         suppressLlmLog: true
       };
-      const analysisResult = routingSession
-        ? await routingSession.analyze(activePrompt, analyzeOptions)
-        : await agent.analyze(activePrompt, analyzeOptions);
-      trackProviderCost(costTracker, analysisResult);
+      const analysisResult = await analyzeWithProviderCost(costTracker, () => routingSession
+        ? routingSession.analyze(activePrompt, analyzeOptions)
+        : agent.analyze(activePrompt, analyzeOptions));
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
       }

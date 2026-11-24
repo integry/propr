@@ -7,7 +7,7 @@ import { recordPrimarySummarizationQuotaFailure, recordPrimarySummarizationRespo
 import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
 import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { buildBatchPrompt, parseBatchResponse, type BatchFile } from './summaryMinerBatchHelpers.js';
-import { createProviderCostTracker, trackProviderCost, trackedProviderCost, type ProviderCostTracker } from './summaryMinerMetrics.js';
+import { analyzeWithProviderCost, createProviderCostTracker, trackedProviderCost, type ProviderCostTracker } from './summaryMinerMetrics.js';
 
 export { DEFAULT_INSTRUCTIONS, parseBatchResponse } from './summaryMinerBatchHelpers.js';
 export type { BatchFile } from './summaryMinerBatchHelpers.js';
@@ -413,10 +413,9 @@ async function analyzeBatchWithAgent(options: {
         metadata: { phase: 'batch_summarization', fileCount: activeBatch.length },
         suppressLlmLog: true
       };
-      const analysisResult = routingSession
-        ? await routingSession.analyze(activePrompt, analyzeOptions)
-        : await agent.analyze(activePrompt, analyzeOptions);
-      trackProviderCost(costTracker, analysisResult);
+      const analysisResult = await analyzeWithProviderCost(costTracker, () => routingSession
+        ? routingSession.analyze(activePrompt, analyzeOptions)
+        : agent.analyze(activePrompt, analyzeOptions));
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Summarization agent analysis failed');
       }

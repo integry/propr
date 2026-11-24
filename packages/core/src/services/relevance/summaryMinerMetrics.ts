@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import type { AnalysisResult } from '../../agents/types.js';
 
 // --- Types ---
 
@@ -206,7 +207,7 @@ export async function getSummarizationCallHistory(limit: number = 100): Promise<
 
 /**
  * Sums provider-reported costs across every analyze call behind one logged
- * batch (retries and fallback). A call that returned without a cost leaves the
+ * batch (retries and fallback). A call without a reported cost leaves the
  * total unknown, so the log keeps its catalog estimate instead of a partial sum.
  */
 export interface ProviderCostTracker { total: number; calls: number; complete: boolean }
@@ -215,12 +216,22 @@ export function createProviderCostTracker(): ProviderCostTracker {
   return { total: 0, calls: 0, complete: true };
 }
 
-export function trackProviderCost(tracker: ProviderCostTracker | undefined, result: { providerCostUsd?: number }): void {
-  if (!tracker) return;
-  tracker.calls++;
-  const cost = result.providerCostUsd;
-  if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) tracker.total += cost;
-  else tracker.complete = false;
+export async function analyzeWithProviderCost(
+  tracker: ProviderCostTracker | undefined,
+  analyze: () => Promise<AnalysisResult>
+): Promise<AnalysisResult> {
+  let result: AnalysisResult | undefined;
+  try {
+    result = await analyze();
+    return result;
+  } finally {
+    if (tracker) {
+      tracker.calls++;
+      const cost = result?.providerCostUsd;
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) tracker.total += cost;
+      else tracker.complete = false;
+    }
+  }
 }
 
 export function trackedProviderCost(tracker: ProviderCostTracker): number | undefined {
