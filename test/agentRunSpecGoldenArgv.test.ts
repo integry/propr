@@ -25,6 +25,9 @@ const { AntigravityAgent } = await import('../packages/core/src/agents/impl/Anti
 const { VibeAgent } = await import('../packages/core/src/agents/impl/VibeAgent.ts');
 const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
 const { agentRunEnvironment, agentRunMounts } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
+// The agent classes open the shared SQLite connection on import; close it or the
+// file never exits and the suite runner kills it at its 180s timeout.
+const { closeConnection } = await import('../packages/core/src/db/connection.ts');
 
 import type { AgentConfig, AgentToolPolicy } from '../packages/core/src/agents/types.ts';
 import type { AgentRunSpec } from '../packages/core/src/agents/runtime/types.ts';
@@ -58,9 +61,10 @@ before(() => {
     process.env.AGENT_CONTAINER_MEMORY_LIMIT = '4g';
 });
 
-after(() => {
+after(async () => {
     process.env = savedEnvironment;
     rmSync(root, { recursive: true, force: true });
+    await closeConnection();
 });
 
 function assertStructured(spec: AgentRunSpec): void {
