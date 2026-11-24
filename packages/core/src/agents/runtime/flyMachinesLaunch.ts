@@ -1,4 +1,5 @@
 import { envFileValues } from '../credentials/hostCredentialStaging.js';
+import { WORKSPACE_AGENT_USER, WORKSPACE_RESULT_PHASE_FILE } from '../../git/workspaceTransportScript.js';
 import { renderAgentRunCommand } from './dockerRunArgs.js';
 import type { FlyCreateMachineRequest, FlyMachineFile } from './flyMachinesApi.js';
 import { flyMachineGuest, type FlyMachinesConfig } from './flyMachinesConfig.js';
@@ -102,45 +103,108 @@ exit "$status"
 `;
 
 /**
- * Forced stop of a timed-out run, executed in the Machine as
- * `sh -c <script> sh <pid file> [<wrapper phase file>]`. The recorded pid
- * leads the run's session. Without a phase file (no clone transport) or
- * before the wrapper started the agent, the whole process group is killed.
- * A clone transport wrapper leads the session and must outlive its agent to
+ * Forced stop of a timed-out run, executed in the Machine (as root) as
+ * `sh -c <script> sh <pid file> <wrapper phase file or ''> <agent user>`. The
+ * recorded pid leads the run's session. An agent process can leave that
+ * session (`setsid`), so session membership alone does not find everything
+ * the agent started: every process running as the agent user (any of its
+ * real, effective or saved user IDs) is the agent's too, since the Machine
+ * runs nothing else under that identity. The launcher, which holds the
+ * output pipes, is always spared; when it runs as the agent user itself the
+ * user cannot tell the agent apart, and only the session is used.
+ *
+ * Without a phase file (no clone transport) or before the wrapper started the
+ * agent, the whole process group and every agent-user process are killed. A
+ * clone transport wrapper leads the session and must outlive its agent to
  * snapshot and publish the workspace, so it is held stopped while its phase
  * is read (it cannot start finalizing meanwhile) and then:
  *
- * - `agent`: every other process in the session (the agent, its children and
- *   whatever it left behind) is killed; the wrapper then sees its agent exit
- *   and finalizes. Prints `killed`.
+ * - `agent`: every other process in the session and every agent-user process
+ *   is killed, rescanning until none is left running; the wrapper then sees
+ *   its agent exit and finalizes. Prints `killed`. Should one survive, the
+ *   wrapper is killed too (nothing is published while an agent process may
+ *   still change the checkout) and the script fails.
  * - `finalizing`: the agent already exited; nothing is killed. Prints `finalizing`.
+ *
+ * A fourth argument replaces `/proc` (tests only).
  */
 export const FLY_FORCED_STOP_SCRIPT = `pid=$(cat "$1") || exit 1
-phase_file=\${2:-}
-kill_session_except_leader() {
-  for pass in 1 2 3; do
-    for stat in /proc/[0-9]*/stat; do
-      proc=\${stat#/proc/}; proc=\${proc%/stat}
-      [ "$proc" = "$pid" ] && continue
-      line=$(cat "$stat" 2>/dev/null) || continue
-      set -- \${line##*) }
-      [ "\${4:-}" = "$pid" ] && kill -s KILL "$proc" 2>/dev/null
-    done
+phase_file=\${2:-}; agent_user=\${3:-}; proc_root=\${4:-/proc}; self=$$
+agent_uid=
+case "$agent_user" in
+  '') ;;
+  *[!0-9]*) agent_uid=$(id -u "$agent_user" 2>/dev/null) || agent_uid= ;;
+  *) agent_uid=$agent_user ;;
+esac
+[ "$agent_uid" = 0 ] && agent_uid=
+launcher=
+if line=$(cat "$proc_root/$pid/stat" 2>/dev/null); then set -- \${line##*) }; launcher=\${2:-}; fi
+runs_as_agent() {
+  [ -n "$agent_uid" ] || return 1
+  uids=$(grep '^Uid:' "$proc_root/$1/status" 2>/dev/null) || return 1
+  for uid in $uids; do [ "$uid" = "$agent_uid" ] && return 0; done
+  return 1
+}
+# The launcher's readers run as the launcher: the agent user is no criterion when that is the launcher's own.
+[ -n "$launcher" ] && runs_as_agent "$launcher" && agent_uid=
+# One pass: KILL each running agent process (the leader too unless $1 = spare); succeeds when none was found.
+sweep() {
+  spare=$1; found=0
+  for stat in "$proc_root"/[0-9]*/stat; do
+    proc=\${stat#"$proc_root"/}; proc=\${proc%/stat}
+    [ "$proc" = "$self" ] || [ "$proc" = "$launcher" ] && continue
+    [ "$proc" = "$pid" ] && [ "$spare" = spare ] && continue
+    line=$(cat "$stat" 2>/dev/null) || continue
+    set -- \${line##*) }
+    [ "\${1:-}" = Z ] && continue
+    if [ "\${4:-}" = "$pid" ] || runs_as_agent "$proc"; then kill -s KILL "$proc" 2>/dev/null && found=1; fi
   done
-  return 0
+  [ "$found" = 0 ]
+}
+# Rescans until nothing is left running (a dying process stays listed until it is a zombie).
+kill_agent() {
+  passes=0
+  while [ "$passes" -lt 20 ]; do
+    sweep "$1" && return 0
+    passes=$((passes + 1))
+    [ "$passes" -lt 3 ] || sleep 0.1 2>/dev/null || sleep 1
+  done
+  echo "agent processes survived the forced stop" >&2
+  return 1
 }
 if [ -n "$phase_file" ] && kill -s STOP "$pid" 2>/dev/null; then
   trap 'kill -s CONT "$pid" 2>/dev/null' EXIT
   phase=$(cat "$phase_file" 2>/dev/null)
   case "$phase" in
-    agent) kill_session_except_leader; echo killed; exit 0 ;;
+    agent)
+      if kill_agent spare; then echo killed; exit 0; fi
+      trap - EXIT
+      kill -s KILL -- "-$pid" 2>/dev/null; kill -s KILL "$pid" 2>/dev/null
+      exit 1 ;;
     finalizing) echo finalizing; exit 0 ;;
   esac
   kill -s CONT "$pid" 2>/dev/null
   trap - EXIT
 fi
-kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid"
+status=0
+kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid" || status=1
+kill_agent all || status=1
+exit "$status"
 `;
+
+/**
+ * The forced-stop command (see {@link FLY_FORCED_STOP_SCRIPT}) for a run: a
+ * clone run's agent runs as {@link WORKSPACE_AGENT_USER}; any other run's as
+ * its `user` when that is not root, else as {@link WORKSPACE_AGENT_USER} too
+ * (ProPR provider entrypoints drop to it).
+ */
+export function flyForcedStopCommand(spec: AgentRunSpec): string[] {
+    const resultDir = spec.workspace.clone?.resultDir;
+    const phaseFile = resultDir ? `${resultDir.replace(/\/+$/, '')}/${WORKSPACE_RESULT_PHASE_FILE}` : '';
+    const runUser = spec.user?.split(':')[0]?.trim();
+    const agentUser = !resultDir && runUser && runUser !== '0' && runUser !== 'root' ? runUser : WORKSPACE_AGENT_USER;
+    return ['/bin/sh', '-c', FLY_FORCED_STOP_SCRIPT, 'sh', FLY_RUN_FILES.pid, phaseFile, agentUser];
+}
 
 export interface FlyMachineLaunchInput {
     config: Pick<FlyMachinesConfig, 'region' | 'size' | 'memoryMb' | 'image' | 'resultLingerSeconds'>;

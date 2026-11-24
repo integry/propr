@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-const { FLY_FORCED_STOP_SCRIPT, FLY_RUN_FILES, renderFlyMachineRequest } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
+const { FLY_FORCED_STOP_SCRIPT, FLY_RUN_FILES, flyForcedStopCommand, renderFlyMachineRequest } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const {
     WORKSPACE_TRANSPORT_ENVIRONMENT: E, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_RESULT_PHASE_FILE, WORKSPACE_RESULT_STATUS_FILE,
@@ -49,14 +49,47 @@ function exited(child: ChildProcess): Promise<number | null> {
     });
 }
 
-/** The forced stop exactly as the run handle execs it in the Machine (as root there; same user here). */
-function forcedStop(pidFile: string, phaseFile?: string): { status: number | null; stdout: string } {
-    const ran = spawnSync('/bin/sh', ['-c', FLY_FORCED_STOP_SCRIPT, 'sh', pidFile, ...(phaseFile ? [phaseFile] : [])], { encoding: 'utf8', timeout: 30_000 });
-    return { status: ran.status, stdout: ran.stdout.trim() };
+/** Uid the processes {@link fakeProc} marks as the agent's run under (everything here really runs as one user). */
+const AGENT_UID = '4242';
+
+/**
+ * A copy of `/proc` in which the given processes run as {@link AGENT_UID}:
+ * every other entry links to the real one. The agent user cannot be
+ * simulated otherwise without root (the test, its runner and the agent all
+ * share one user ID here).
+ */
+function fakeProc(root: string, agentPids: number[]): string {
+    const dir = path.join(root, 'proc');
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir);
+    for (const name of fs.readdirSync('/proc')) {
+        if (!/^\d+$/.test(name)) continue;
+        if (!agentPids.includes(Number(name))) { fs.symlinkSync(`/proc/${name}`, path.join(dir, name)); continue; }
+        fs.mkdirSync(path.join(dir, name));
+        fs.symlinkSync(`/proc/${name}/stat`, path.join(dir, name, 'stat'));
+        fs.writeFileSync(path.join(dir, name, 'status'), `Name:\tagent\nUid:\t${AGENT_UID}\t${AGENT_UID}\t${AGENT_UID}\t${AGENT_UID}\n`);
+    }
+    return dir;
 }
 
 /**
- * The agent: changes the cloned checkout, leaves a process behind, then
+ * The forced stop exactly as the run handle execs it in the Machine (as root there; same user here).
+ * Without `agent`, no process runs as the agent user.
+ */
+function forcedStop(pidFile: string, phaseFile?: string, agent?: { procRoot: string }): { status: number | null; stdout: string } {
+    const args = [pidFile, phaseFile ?? '', ...(agent ? [AGENT_UID, agent.procRoot] : [])];
+    const ran = spawnSync('/bin/sh', ['-c', FLY_FORCED_STOP_SCRIPT, 'sh', ...args], { encoding: 'utf8', timeout: 30_000 });
+    return { status: ran.status, stdout: ran.stdout.trim() };
+}
+
+function sessionOf(pid: number): number {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[3]);
+}
+
+/**
+ * The agent: changes the cloned checkout, leaves a process behind (one in
+ * its session, one detached that keeps writing into the checkout), then
  * ignores TERM and keeps running until it is killed.
  */
 const AGENT_SCRIPT = `#!/bin/bash
@@ -65,13 +98,17 @@ echo changed > a.txt
 echo new > new.txt
 ( trap '' TERM; while :; do sleep 0.1; done ) &
 echo $! > "$LEFTOVER_PID_FILE"
+# Detached into its own session (a background build server, say), still writing into the checkout.
+setsid /bin/bash -c 'trap "" TERM; n=0; while :; do n=$((n + 1)); echo "$n" > detached.txt; sleep 0.02; done' < /dev/null > /dev/null 2>&1 &
+echo $! > "$DETACHED_PID_FILE"
 touch "$READY_FILE"
 while :; do sleep 0.1; done
 `;
 
-test('forced timeout stop kills a TERM-ignoring agent but keeps the clone wrapper alive to publish its changes', { timeout: 60_000 }, async () => {
+test('forced timeout stop kills a TERM-ignoring agent and its detached processes, but keeps the clone wrapper alive to publish its changes', { timeout: 60_000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-forced-stop-'));
     let launcher: ChildProcess | undefined;
+    let detached = 0;
     try {
         const remote = path.join(root, 'remote.git');
         const seed = path.join(root, 'seed');
@@ -113,11 +150,12 @@ test('forced timeout stop kills a TERM-ignoring agent but keeps the clone wrappe
         command[1] = '-c';
         const leftoverPidFile = path.join(root, 'leftover.pid');
         const readyFile = path.join(root, 'ready');
+        const detachedPidFile = path.join(root, 'detached.pid');
         launcher = spawn(shell!, [...launcherArgs, runDir, '0', workdir!, user!, noNewPrivileges!, ...command], {
             detached: true, stdio: 'ignore',
             env: {
                 PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV,
-                LEFTOVER_PID_FILE: leftoverPidFile, READY_FILE: readyFile,
+                LEFTOVER_PID_FILE: leftoverPidFile, DETACHED_PID_FILE: detachedPidFile, READY_FILE: readyFile,
                 [E.path]: workspace, [E.remote]: remote, [E.baseRef]: baseRef, [E.baseCommit]: base,
                 [E.branch]: 'task', [E.resultRef]: resultRef, [E.resultDir]: resultDir,
             },
@@ -127,14 +165,22 @@ test('forced timeout stop kills a TERM-ignoring agent but keeps the clone wrappe
         await until(() => fs.existsSync(readyFile), 'the agent to change the checkout');
         assert.equal(fs.readFileSync(path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE), 'utf8').trim(), 'agent');
         const leftover = Number(fs.readFileSync(leftoverPidFile, 'utf8'));
+        detached = Number(fs.readFileSync(detachedPidFile, 'utf8'));
+        await until(() => fs.existsSync(path.join(workspace, 'detached.txt')), 'the detached process to write');
+        const leader = Number(fs.readFileSync(runFile(FLY_RUN_FILES.pid), 'utf8'));
+        assert.notEqual(sessionOf(detached), sessionOf(leader), 'the detached process left the run\'s session');
 
         // The deadline's TERM reaches the launcher (Fly signals the main process), which forwards it; the agent ignores it.
         process.kill(launcher.pid!, 'SIGTERM');
         await new Promise(resolve => setTimeout(resolve, 500));
         assert.equal(fs.existsSync(runFile(FLY_RUN_FILES.exitStatus)), false, 'the agent ignored TERM');
 
-        const stopped = forcedStop(runFile(FLY_RUN_FILES.pid), path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE));
+        // Only the agent's own processes run as the agent user (the wrapper and launcher run as root).
+        const procRoot = fakeProc(root, [detached]);
+        const stopped = forcedStop(runFile(FLY_RUN_FILES.pid), path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE), { procRoot });
         assert.deepEqual(stopped, { status: 0, stdout: 'killed' });
+        // The script resumes the wrapper as it exits: the writer must already be dead by then.
+        assert.equal(alive(detached), false, 'the detached process is dead before the wrapper resumes to finalize');
         assert.equal(await launcherExit, 137, 'the launcher exits with the killed agent\'s status (zero linger)');
         assert.equal(fs.readFileSync(runFile(FLY_RUN_FILES.exitStatus), 'utf8').trim(), '137');
         assert.equal(alive(leftover), false, 'what the agent left behind is killed too');
@@ -144,9 +190,14 @@ test('forced timeout stop kills a TERM-ignoring agent but keeps the clone wrappe
         assert.equal(git(root, '--git-dir', remote, 'rev-parse', resultRef), snapshot);
         assert.equal(git(root, '--git-dir', remote, 'show', `${resultRef}:a.txt`), 'changed');
         assert.equal(git(root, '--git-dir', remote, 'show', `${resultRef}:new.txt`), 'new');
+        const written = fs.readFileSync(path.join(workspace, 'detached.txt'), 'utf8').trim();
+        assert.equal(git(root, '--git-dir', remote, 'show', `${resultRef}:detached.txt`), written, 'the published snapshot is the final checkout');
+        await new Promise(resolve => setTimeout(resolve, 200));
+        assert.equal(fs.readFileSync(path.join(workspace, 'detached.txt'), 'utf8').trim(), written, 'nothing writes into the checkout after publication');
         assert.equal(fs.readFileSync(path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE), 'utf8').trim(), 'finalizing');
     } finally {
         if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
+        if (detached) try { process.kill(detached, 'SIGKILL'); } catch { /* already gone */ }
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
@@ -180,17 +231,36 @@ test('forced stop spares a finalizing clone wrapper, and kills the whole group o
         assert.equal(alive(finalizingChild), true, 'the finalization work keeps running');
         assert.notEqual(processState(finalizing.leader.pid!), 'T', 'the wrapper is resumed');
 
-        // No clone transport (no phase file argument) or a wrapper still bootstrapping: the whole group goes.
+        // No clone transport (no phase file argument) or a wrapper still bootstrapping: the whole group goes,
+        // and so does whatever the agent detached into another session.
         for (const phase of [undefined, path.join(root, 'absent-phase')]) {
             const plain = start();
             const plainChild = await childOf(leaders.length - 1);
+            const detached = spawn('/bin/bash', ['-c', 'trap "" TERM; while :; do sleep 0.05; done'], { detached: true, stdio: 'ignore' });
+            leaders.push(detached);
             const exit = exited(plain.leader);
-            assert.equal(forcedStop(pidFile, phase).status, 0);
+            assert.equal(forcedStop(pidFile, phase, { procRoot: fakeProc(root, [detached.pid!]) }).status, 0);
             await exit;
             await until(() => !alive(plainChild), 'the group to be killed', 5_000);
+            assert.equal(alive(detached.pid!), false, 'the detached agent process is killed too');
         }
     } finally {
         for (const leader of leaders) if (leader.pid) try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* already gone */ }
         fs.rmSync(root, { recursive: true, force: true });
     }
+});
+
+test('the forced stop names the user the agent runs as', () => {
+    const build = (user: string, clone: boolean) => {
+        const spec = new AgentRunSpecBuilder({
+            agentType: 'claude', image: 'propr/agent:test', name: 'claude-issue-7-abc', stdin: true, user,
+            network: agentRunNetwork('bridge'),
+            workspace: { hostPath: '/tmp/w', containerPath: '/home/node/workspace', readOnly: false, mode: clone ? 'clone' : 'bind' },
+        }).command('claude', '-p').build();
+        if (clone) spec.workspace.clone = { remote: 'r', baseRef: 'b', baseCommit: 'c', branch: 't', resultRef: 'x', resultDir: '/tmp/r/', script: 's' };
+        return flyForcedStopCommand(spec);
+    };
+    assert.deepEqual(build('0:0', true), ['/bin/sh', '-c', FLY_FORCED_STOP_SCRIPT, 'sh', FLY_RUN_FILES.pid, '/tmp/r/phase', 'node']);
+    assert.deepEqual(build('1000:1000', false).slice(3), ['sh', FLY_RUN_FILES.pid, '', '1000']);
+    assert.deepEqual(build('root', false).slice(3), ['sh', FLY_RUN_FILES.pid, '', 'node'], 'a root run\'s provider entrypoint drops the agent to node');
 });

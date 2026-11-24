@@ -11,8 +11,7 @@ import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, typ
 import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient } from './flyMachinesApi.js';
 import { confinedCredentialPath, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
-import { FLY_FORCED_STOP_SCRIPT, FLY_RUN_FILES, parseFlyLogLine, renderFlyMachineRequest } from './flyMachinesLaunch.js';
-import { WORKSPACE_RESULT_PHASE_FILE } from '../../git/workspaceTransportScript.js';
+import { flyForcedStopCommand, FLY_RUN_FILES, parseFlyLogLine, renderFlyMachineRequest } from './flyMachinesLaunch.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
 
 /** How long a Machine create → `started` may take: image pull plus boot. */
@@ -286,7 +285,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
 
     /**
      * Deadline: TERM the agent (the launcher forwards it) and give it the stop
-     * window; then KILL it ({@link FLY_FORCED_STOP_SCRIPT}), so the launcher
+     * window; then KILL it ({@link flyForcedStopCommand}), so the launcher
      * records the exit and the Machine keeps the partial output and result
      * files. A clone transport wrapper is spared and given time to snapshot
      * and publish the workspace first. Failing that, destroy the Machine.
@@ -297,13 +296,11 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         await this.deps.client.signal(this.machineId!, signalNumber('SIGTERM')).catch(() => undefined);
         await this.awaitExit(context, live, DEFAULT_STOP_TIMEOUT_MS);
         if (this.exitCode !== undefined) return;
-        const resultDir = this.spec.workspace.clone?.resultDir;
-        const phaseFile = resultDir ? `${resultDir.replace(/\/+$/, '')}/${WORKSPACE_RESULT_PHASE_FILE}` : undefined;
-        const killed = await this.deps.client.exec(this.machineId!, [
-            '/bin/sh', '-c', FLY_FORCED_STOP_SCRIPT, 'sh', FLY_RUN_FILES.pid, ...(phaseFile ? [phaseFile] : []),
-        ], 30).catch(error => ({ exit_code: -1, stdout: '', stderr: (error as Error).message }));
+        const clone = Boolean(this.spec.workspace.clone?.resultDir);
+        const killed = await this.deps.client.exec(this.machineId!, flyForcedStopCommand(this.spec), 30)
+            .catch(error => ({ exit_code: -1, stdout: '', stderr: (error as Error).message }));
         if (killed.exit_code !== 0) logger.warn({ run: this.spec.name, machine: this.machineId, error: killed.stderr.trim() || `exit ${killed.exit_code}` }, 'Could not kill the timed-out agent in its Fly Machine; destroying the Machine');
-        else await this.awaitExit(context, live, phaseFile ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS);
+        else await this.awaitExit(context, live, clone ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS);
         if (this.exitCode !== undefined) return;
         await this.discardMachine('timed-out');
         if (!this.machineGone) throw new Error(`Agent run ${this.spec.name} timed out and its Fly Machine ${this.machineId} could not be stopped`);

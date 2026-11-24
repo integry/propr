@@ -468,7 +468,7 @@ test('timeout: a clone run\'s forced stop spares its wrapper and waits for it to
     const handle = runtime(fly, FLY_ENV, fastClock(fly)).start(spec(), { timeout: 30, preserveOutputOnTimeout: true });
     const result = await handle.wait();
     const machine = fly.machines.get('m1')!;
-    assert.deepEqual(machine.lastKill!.slice(3), ['sh', FLY_RUN_FILES.pid, '/tmp/r/phase'], 'the forced stop is told where the wrapper records its phase');
+    assert.deepEqual(machine.lastKill!.slice(3), ['sh', FLY_RUN_FILES.pid, '/tmp/r/phase', 'node'], 'the forced stop is told where the wrapper records its phase, and whom the agent runs as');
     assert.equal(result.timedOut, true);
     assert.equal(result.exitCode, 137, 'the exit recorded once the wrapper finished');
     assert.deepEqual(fly.destroyed, [], 'the finalizing Machine was not destroyed');
