@@ -99,30 +99,47 @@ test('handle streams forward output once read; stop and inspect address the run 
     assert.equal(calls.length, before, 'a settled run needs no docker stop');
 });
 
-test('handle stop, inspect and isAlive address the Docker daemon the run was launched on', async () => {
-    calls.length = 0;
-    let release!: () => void;
+/** A launch whose preparation (network policy, admission) waits on `prepared` before its Docker client reads the environment. */
+function delayedDaemonLaunch() {
+    const state = { launchedOn: undefined as string | undefined, prepare: (): void => undefined, release: (): void => undefined };
     respond = async call => {
         if (call.args[0] === 'run') {
+            await new Promise<void>(resolve => { state.prepare = resolve; });
+            // Like admission's create/start client and the direct spawn: the daemon is chosen once preparation is done.
+            state.launchedOn = call.options.extraEnvVars?.DOCKER_HOST ?? 'default';
             call.options.agentRun.onSpawn();
-            await new Promise<void>(resolve => { release = resolve; });
+            await new Promise<void>(resolve => { state.release = resolve; });
             return { stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() };
         }
         if (call.args[0] === 'inspect') {
-            // Only the launch daemon knows the run; the default daemon reports it absent.
-            return call.options.extraEnvVars?.DOCKER_HOST === 'tcp://daemon-b:2376'
+            // Only the daemon the launch actually used knows the run; any other reports it absent.
+            return (call.options.extraEnvVars?.DOCKER_HOST ?? 'default') === state.launchedOn
                 ? { stdout: 'abc123 running\n', stderr: '', exitCode: 0, messageTimestamps: new Map() }
                 : { stdout: '', stderr: 'Error: No such container: claude-issue-1-abc', exitCode: 1, messageTimestamps: new Map() };
         }
         return { stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() };
     };
+    return state;
+}
+
+for (const restricted of [false, true]) test(`launch, stop, inspect and isAlive address one Docker daemon even if the caller reuses its environment${restricted ? ' (spec-restricted network)' : ''}`, async () => {
+    calls.length = 0;
+    const launch = delayedDaemonLaunch();
     const launchEnv: Record<string, string> = { DOCKER_HOST: 'tcp://daemon-b:2376', DOCKER_TLS_VERIFY: '1', POLICY_TOKEN: 't' };
-    const handle = new DockerRuntime().start(spec(), { extraEnvVars: launchEnv });
-    // A caller reusing its options object afterwards does not retarget the handle.
-    launchEnv.DOCKER_HOST = 'tcp://elsewhere:2376';
+    const base = spec();
+    // A spec-restricted launch resolves the applying network policy before the executor is even called.
+    const run = restricted ? { ...base, network: { ...base.network, restriction: { mode: 'restricted' as const, source: 'workflow' as const, allow: ['registry.npmjs.org'] } } } : base;
+    const handle = new DockerRuntime().start(run, { extraEnvVars: launchEnv });
+    await new Promise(resolve => setImmediate(resolve));
+    // The caller reuses its options object while the launch is still being prepared.
+    launchEnv.DOCKER_HOST = 'tcp://daemon-c:2376';
+    launchEnv.DOCKER_CONTEXT = 'other';
+    launch.prepare();
     await new Promise(resolve => setImmediate(resolve));
     const expected = { DOCKER_HOST: 'tcp://daemon-b:2376', DOCKER_TLS_VERIFY: '1', POLICY_TOKEN: 't' };
-    assert.deepEqual(calls[0].options.extraEnvVars, launchEnv, 'the launch itself sees the caller environment');
+    assert.equal(launch.launchedOn, 'tcp://daemon-b:2376', 'the launch keeps the daemon it was started with');
+    assert.deepEqual(calls[0].options.extraEnvVars, expected);
+    assert.notEqual(calls[0].options.extraEnvVars, launchEnv, 'the launch never holds the caller object');
 
     assert.deepEqual(await handle.inspect(), { liveness: 'running', id: 'abc123', name: 'claude-issue-1-abc' });
     assert.equal(await handle.isAlive(), true);
@@ -135,19 +152,26 @@ test('handle stop, inspect and isAlive address the Docker daemon the run was lau
     const stop = calls.at(-1)!;
     assert.deepEqual(stop.args, ['stop', '--signal', 'SIGTERM', '--time', '1', 'claude-issue-1-abc']);
     assert.deepEqual(stop.options.extraEnvVars, expected);
-    release();
+    launch.release();
     await stopping;
 });
 
-test('handle control commands keep the default Docker environment when the launch had none', async () => {
+test('launch and control commands keep the default Docker environment when the launch had none', async () => {
     calls.length = 0;
-    respond = async call => {
-        if (call.args[0] === 'run') return new Promise(() => undefined);
-        return { stdout: 'abc123 running\n', stderr: '', exitCode: 0, messageTimestamps: new Map() };
-    };
-    const handle = new DockerRuntime().start(spec(), { extraEnvVars: {} });
-    await handle.inspect();
+    const launch = delayedDaemonLaunch();
+    const launchEnv: Record<string, string> = {};
+    const handle = new DockerRuntime().start(spec(), { extraEnvVars: launchEnv });
+    await new Promise(resolve => setImmediate(resolve));
+    // An initially empty environment the caller fills in later does not retarget the launch either.
+    launchEnv.DOCKER_HOST = 'tcp://daemon-c:2376';
+    launch.prepare();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(launch.launchedOn, 'default');
+    assert.equal('extraEnvVars' in calls[0].options, false);
+    assert.equal(await handle.isAlive(), true);
     assert.equal('extraEnvVars' in calls.at(-1)!.options, false);
+    launch.release();
+    await handle.wait();
 });
 
 const OUTPUT_CHUNK = 'x'.repeat(64 * 1024);

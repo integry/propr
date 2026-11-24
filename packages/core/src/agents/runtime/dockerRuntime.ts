@@ -124,10 +124,13 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     /** Reaches the executor's launch preparation (network, admission) and its final pre-spawn check. */
     private readonly cancellation = new AbortController();
     /**
-     * The environment the launch's Docker client ran with beyond `process.env`
-     * (both the direct spawn and admission's client merge `extraEnvVars` over it),
-     * so `stop`/`inspect` reach the daemon the run was launched on (`DOCKER_HOST`,
-     * `DOCKER_CONTEXT`, `DOCKER_CONFIG`, ...) rather than the default one.
+     * The handle's own snapshot of the caller's `extraEnvVars`, taken once at
+     * `start()`: the Docker client environment beyond `process.env` (both the
+     * direct spawn and admission's client merge it over `process.env`). The
+     * launch and every `stop`/`inspect` are given copies of this one snapshot,
+     * never the caller's object, so all of them address the same daemon
+     * (`DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, ...) even if the caller
+     * reuses that object while the launch is still being prepared.
      */
     private readonly dockerEnvironment: Readonly<Record<string, string>> | undefined;
     private spawned = false;
@@ -143,9 +146,12 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         // The spec's restriction is installed as the launch's policy scope, so the executor's
         // network boundary confines the container whatever policy (if any) is ambient. A spec that
         // demands confinement is not exempted from it by a caller's exemption reason.
-        const launchOptions = restriction ? { ...options, networkPolicyExempt: undefined } : options;
+        const launchOptions: AgentRunOptions = { ...options, ...(restriction && { networkPolicyExempt: undefined }) };
+        // The launch's Docker client gets the handle's snapshot, as stop/inspect do, not the caller's object.
+        delete launchOptions.extraEnvVars;
         this.result = executeWithAgentRunNetworkRestriction(restriction, spec.name, () => executeDockerCommand('docker', args, {
             ...launchOptions,
+            ...this.dockerClientOptions(),
             signal,
             agentRun: {
                 spec,
@@ -179,7 +185,7 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         if (this.spawned) {
             const seconds = String(Math.max(0, Math.ceil(timeoutMs / 1000)));
             const stopped = await executeDockerCommand('docker', ['stop', '--signal', signal, '--time', seconds, this.spec.name], {
-                timeout: timeoutMs + INSPECT_TIMEOUT_MS, ...this.controlOptions(),
+                timeout: timeoutMs + INSPECT_TIMEOUT_MS, ...this.dockerClientOptions(),
             });
             if (stopped.exitCode !== 0 && !/No such container/i.test(stopped.stderr)) {
                 throw new Error(`Failed to stop agent run ${this.spec.name}: ${stopped.stderr.trim() || `exit ${stopped.exitCode}`}`);
@@ -192,8 +198,11 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         }
     }
 
-    /** Options addressing a control command (`stop`, `inspect`) to the run's own Docker daemon. */
-    private controlOptions(): Pick<DockerCommandOptions, 'extraEnvVars'> {
+    /**
+     * Options addressing a Docker command (the launch, `stop`, `inspect`) to the
+     * run's own daemon: a fresh copy of the start-time snapshot for each command.
+     */
+    private dockerClientOptions(): Pick<DockerCommandOptions, 'extraEnvVars'> {
         return this.dockerEnvironment ? { extraEnvVars: { ...this.dockerEnvironment } } : {};
     }
 
@@ -214,7 +223,7 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         try {
             inspected = await executeDockerCommand('docker', [
                 'inspect', '--type', 'container', '--format', '{{.Id}} {{.State.Status}}', name,
-            ], { timeout: INSPECT_TIMEOUT_MS, ...this.controlOptions() });
+            ], { timeout: INSPECT_TIMEOUT_MS, ...this.dockerClientOptions() });
         } catch {
             return { liveness: 'unavailable', name };
         }
