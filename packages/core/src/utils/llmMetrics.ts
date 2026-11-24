@@ -221,10 +221,10 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
-interface PersistedExecution { executionId: number | string; taskId: string | null; /** False when the execution row exists but its conversation details could not all be stored. */ detailsPersisted: boolean; }
+interface PersistedExecution { executionId: number | string; taskId: string | null; }
 /**
  * Writes the execution row and its details; the row once inserted, even if its
- * details then fail (`detailsPersisted` is false and the failure is logged), `already_persisted` when the execution id already has a
+ * details then fail (the failure is logged as incomplete details), `already_persisted` when the execution id already has a
  * row, else null.
  */
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
@@ -256,13 +256,12 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         };
         const executionId = await insertExecutionRow(db, executionData, claudeResult.executionId, { correlationId, taskId });
         if (executionId === ALREADY_PERSISTED) return executionId;
-        persisted = { executionId, taskId: effectiveTaskId, detailsPersisted: true };
+        persisted = { executionId, taskId: effectiveTaskId };
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
     } catch (error) {
         if (persisted) {
-            persisted.detailsPersisted = false;
             logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId, executionId: persisted.executionId, detailCount: claudeResult.conversationLog?.length ?? 0 },
                 'LLM execution row persisted but its conversation details are incomplete');
         } else {

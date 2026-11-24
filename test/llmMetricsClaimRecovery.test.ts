@@ -132,10 +132,11 @@ test('a failure while counting keeps the counters claimed; the next record inser
 });
 
 test('a row whose details fail to insert still counts as recorded', async () => {
-    failNext.detailsInsert = 1;
+    failNext.detailsInsert = 3;
     await record('details-fail');
-    assert.equal(failNext.detailsInsert, 0, 'the details insert was attempted and failed');
+    assert.equal(failNext.detailsInsert, 0, 'every details insert attempt failed');
     assert.equal(executions.length, 1);
+    assert.equal(claims.has('llm:metrics:persisted:details-fail'), true, 'the row claim is kept');
     await record('details-fail');
     assert.equal(executions.length, 1);
     assert.equal(failedCount(), 1);

@@ -16,27 +16,28 @@ import type { ConversationDetail } from './llmMetrics.types.js';
 const DETAIL_INSERT_BATCH_SIZE = 100;
 const DETAIL_PERSIST_ATTEMPTS = 3;
 
-export async function insertConversationDetails(details: ConversationDetail[], batchSize = DETAIL_INSERT_BATCH_SIZE): Promise<void> {
-    for (let start = 0; start < details.length; start += batchSize) {
-        await db('llm_execution_details').insert(details.slice(start, start + batchSize)).onConflict(['execution_id', 'sequence_number']).ignore();
-    }
-}
+interface DetailContext { correlationId?: string; taskId?: string | null; executionId?: number | string; }
 
-interface DetailContext { correlationId?: string; taskId?: string | null; executionId: number | string; }
-
-async function insertDetailsWithRetry(details: ConversationDetail[], context: DetailContext): Promise<void> {
+async function insertBatchWithRetry(batch: ConversationDetail[], context: DetailContext): Promise<void> {
     for (let attempt = 1; ; attempt++) {
         try {
-            await insertConversationDetails(details);
+            await db('llm_execution_details').insert(batch).onConflict(['execution_id', 'sequence_number']).ignore();
             return;
         } catch (error) {
             if (attempt >= DETAIL_PERSIST_ATTEMPTS) throw error;
-            logger.warn({ ...context, attempt, error: (error as Error).message }, 'Retrying conversation detail insert; already stored rows are skipped');
+            logger.warn({ ...context, attempt, firstSequence: batch[0].sequence_number, error: (error as Error).message }, 'Retrying conversation detail batch insert');
         }
     }
 }
 
-/** Stores the details, retrying failed batches; throws when they cannot all be stored. */
+/** Inserts the details in order, batch by batch; each batch gets its own retry budget. */
+export async function insertConversationDetails(details: ConversationDetail[], context: DetailContext = {}): Promise<void> {
+    for (let start = 0; start < details.length; start += DETAIL_INSERT_BATCH_SIZE) {
+        await insertBatchWithRetry(details.slice(start, start + DETAIL_INSERT_BATCH_SIZE), context);
+    }
+}
+
+/** Stores the details; throws when a batch still fails after its retries. */
 export async function persistConversationDetails(details: ConversationDetail[], context: DetailContext): Promise<void> {
     if (details.length === 0) return;
     const [first] = details;
@@ -49,5 +50,5 @@ export async function persistConversationDetails(details: ConversationDetail[], 
             toolName: first.tool_name
         }
     }, 'DEBUG: Sample detail before insert');
-    await insertDetailsWithRetry(details, context);
+    await insertConversationDetails(details, context);
 }
