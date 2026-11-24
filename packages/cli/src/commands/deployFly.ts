@@ -18,14 +18,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { parse as parseDotenv } from "dotenv";
-import { DEFAULT_PROPR_GH_RELAY_URL, validateRelayUrl } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { loadLauncherManifest, resolveStackRoot } from "../orchestrator/index.js";
-import { enrollRelayToken } from "../api/relay.js";
-import { discoverInstallationId } from "./relayCommands.js";
 import { buildTunnelSetupEnv } from "./tunnelCommand.js";
 import { createFlyctlRunner, detectFlyctl, FlyctlBackend } from "./deploy/flyctlBackend.js";
 import { FlyMachinesApi } from "./deploy/flyMachinesApi.js";
+import { planFlyRelay, resolveFlyRelaySecrets } from "./deploy/flyRelay.js";
 import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./deploy/flyDeployRunner.js";
 import {
   FLY_AGENT_RUNTIMES,
@@ -196,34 +194,6 @@ function readEnvFile(options: DeployFlyOptions, rootDir: string): { path?: strin
   return { path, values: parseDotenv(readFileSync(path, "utf-8")) };
 }
 
-/** Mint a relay token for this Machine unless the stack already brings GitHub credentials. */
-async function relaySecrets(
-  options: DeployFlyOptions,
-  secrets: Record<string, string>,
-  githubToken: string | undefined,
-  label: string,
-): Promise<Record<string, string> | undefined> {
-  const hasOwnApp = Boolean(secrets.GH_APP_ID && secrets[FLY_GH_PRIVATE_KEY_SECRET]);
-  const auto = options.relay === undefined;
-  if (options.relay === false || (auto && (hasOwnApp || secrets.PROPR_GH_RELAY_TOKEN))) return undefined;
-  if (!githubToken) {
-    if (auto) return undefined;
-    throw new Error("--relay needs a GitHub login; run `propr login` first");
-  }
-  const baseUrl = options.relayUrl ?? secrets.PROPR_GH_RELAY_URL ?? DEFAULT_PROPR_GH_RELAY_URL;
-  const urlError = validateRelayUrl(baseUrl);
-  if (urlError) throw new Error(urlError);
-  const client = { baseUrl, githubToken };
-  const installationId = options.installation ?? secrets.GH_INSTALLATION_ID ?? (await discoverInstallationId(client));
-  const enrolled = await enrollRelayToken(client, { installationId, label });
-  return {
-    GH_AUTH_MODE: "relay",
-    PROPR_GH_RELAY_URL: baseUrl,
-    PROPR_GH_RELAY_TOKEN: enrolled.token,
-    GH_INSTALLATION_ID: installationId,
-  };
-}
-
 function selectTarget(options: DeployFlyOptions, outDir: string): FlyDeployTarget {
   const backend = options.backend ?? "auto";
   if (!["auto", "flyctl", "api"].includes(backend)) throw new Error(`--backend must be auto, flyctl or api (got "${backend}")`);
@@ -267,21 +237,25 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   const { secrets, notes } = collectFlySecrets(plan, options, envFile.values);
   const outDir = resolve(options.out ?? "propr-fly");
   const generatedSecrets = { SESSION_SECRET: randomBytes(32).toString("hex") };
+  const relayContext = { connect: Boolean(plan.tunnel), githubToken: configManager.getGithubToken() };
+  // Fails before any Fly call when Connect cannot get the relay token it needs.
+  const relayPlan = planFlyRelay(options, secrets, relayContext);
 
   if (options.dryRun) {
     const files = writeFlyFiles(plan, outDir);
     console.log(`Dry run: wrote ${files.flyToml} and ${files.machineConfig}; nothing was sent to Fly.`);
     console.log(`Secrets that would be set: ${[...Object.keys(secrets), ...Object.keys(generatedSecrets)].sort().join(", ") || "(none)"}`);
+    if (relayPlan.kind === "enroll") console.log("Note: a real run enrolls a GitHub relay token for this Machine.");
     for (const note of notes) console.log(`Note: ${note}`);
     printSummary(plan);
     return;
   }
 
   const target = selectTarget(options, outDir);
-  const relay = await relaySecrets(options, secrets, configManager.getGithubToken(), `fly:${plan.app}@${hostname()}`);
+  const relay = await resolveFlyRelaySecrets(options, secrets, { ...relayContext, label: `fly:${plan.app}@${hostname()}` });
   if (relay) {
-    Object.assign(secrets, relay);
-    console.log(`Enrolled a GitHub relay token for installation ${relay.GH_INSTALLATION_ID}.`);
+    Object.assign(secrets, relay.secrets);
+    if (relay.enrolledInstallationId) console.log(`Enrolled a GitHub relay token for installation ${relay.enrolledInstallationId}.`);
   }
   const result = await runFlyDeploy({ plan, secrets, generatedSecrets }, target, (line) => console.log(line));
   for (const note of notes) console.log(`Note: ${note}`);
@@ -315,7 +289,7 @@ export function createDeployCommand(): Command {
     .option("--tunnel-token <token>", "Connector token from ProPR Connect (enables the hosted UI tunnel)")
     .option("--tunnel-url <url>", "Public proxy URL from ProPR Connect, e.g. https://t-<id>.propr.dev")
     .option("--instance-id <id>", "Instance id from ProPR Connect (derives the proxy URL)")
-    .option("--relay", "Enroll a GitHub relay token for the Machine (default: when no GitHub App or relay token is configured)")
+    .option("--relay", "Enroll a GitHub relay token for the Machine (default: when no relay token is configured and either Connect is on or there is no GitHub App)")
     .option("--no-relay", "Do not enroll a GitHub relay token")
     .option("--relay-url <url>", "Relay base URL (default: the hosted relay)")
     .option("--installation <id>", "GitHub App installation id for relay enrollment")

@@ -57,7 +57,7 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 
 ## GitHub relay and Connect
 
-**GitHub relay.** When the stack brings neither its own GitHub App (`GH_APP_ID` plus a key) nor a relay token, and you are logged in with `propr login`, the command enrolls a new relay token labelled `fly:<app>@<host>`, just as `propr relay enroll` does. `--relay` always enrolls, and `--no-relay` never does. The installation id is discovered when you have exactly one; otherwise pass `--installation <id>`.
+**GitHub relay.** When the stack brings neither its own GitHub App (`GH_APP_ID` plus a key) nor a relay token, and you are logged in with `propr login`, the command enrolls a new relay token labelled `fly:<app>@<host>`, just as `propr relay enroll` does. Connect sign-in (below) also needs a relay token, even with your own GitHub App: with the tunnel flags and no relay token, the command enrolls one and keeps the own App for GitHub API calls (`GH_AUTH_MODE=app`). If it cannot enroll (not logged in, or `--no-relay`), it stops before creating anything on Fly. `--relay` always enrolls, and `--no-relay` never does. The installation id is discovered when you have exactly one; otherwise pass `--installation <id>`.
 
 **ProPR Connect.** To drive the Fly instance from the hosted UI at `https://app.propr.dev`, pass the values that ProPR Connect shows for `propr tunnel setup`:
 
