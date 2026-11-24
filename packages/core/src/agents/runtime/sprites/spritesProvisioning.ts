@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import logger from '../../../utils/logger.js';
-import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
+import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
+import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -25,7 +26,7 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'>;
-export type Slot = { sprite: Sprite; checkpoint: string };
+export type Slot = { sprite: Sprite; checkpoint: string; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -45,7 +46,7 @@ export async function startupStep<T>(signal: AbortSignal, operation: () => T | P
 async function complete(stream: AsyncIterable<StreamMessage>) {
     let finished = false;
     for await (const message of stream) {
-        if (message.type === 'error') throw new Error('Sprite checkpoint operation failed');
+        if (message.type === 'error') throw new Error(message.error || message.data || 'Sprite checkpoint operation failed');
         finished = message.type === 'complete';
     }
     if (!finished) throw new Error('Sprite checkpoint operation ended before completion');
@@ -179,18 +180,58 @@ export class SpritePool {
         void release.then(() => this.releases.delete(release));
     }
 
-    async release(slot: Slot): Promise<void> {
-        if (this.closed) return this.discard(slot.sprite);
-        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000)]);
-        try {
-            await startupStep(signal, () => slot.sprite.restart());
-            await startupStep(signal, () => slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
-            await startupStep(signal, async () => complete(await slot.sprite.restoreCheckpoint(slot.checkpoint)));
-        } catch {
-            await this.discard(slot.sprite);
-            if (!this.closed) this.replaceInBackground();
-            return;
+    private async replace(slot: Slot, step: string, error: unknown): Promise<void> {
+        logger.warn({ sprite: slot.sprite.name, run: slot.restricted?.run, step, error: error instanceof Error ? error.message : String(error) },
+            'Sprite release failed, discarding Sprite');
+        await this.discard(slot.sprite);
+        if (!this.closed) this.replaceInBackground();
+    }
+
+    async release(slot: Slot, commit?: () => Promise<void>): Promise<void> {
+        const { sprite, restricted } = slot;
+        if (restricted) {
+            try {
+                const policy = await startupStep(AbortSignal.timeout(60_000), () => sprite.getNetworkPolicy());
+                if (!sameSpriteNetworkPolicy(policy, restricted.policy)) {
+                    const message = `Network policy mismatch at release for run ${restricted.run} on Sprite ${sprite.name}`;
+                    restricted.recordDiagnostic(message);
+                    throw new Error(message);
+                }
+            } catch (error) {
+                return this.replace(slot, 'check applied network policy', error);
+            }
         }
-        await this.recycleClean(slot);
+        try {
+            await commit?.();
+        } finally {
+            await this.reset(slot);
+        }
+    }
+
+    private async reset(slot: Slot): Promise<void> {
+        const { sprite, checkpoint, restricted } = slot;
+        if (this.closed) return this.discard(sprite);
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000)]);
+        let step = 'restart';
+        try {
+            // Stop descendants that outlived the launcher, including detached processes.
+            await startupStep(signal, () => sprite.restart());
+            step = 'wipe /tmp';
+            await startupStep(signal, () => sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
+            step = 'restore checkpoint';
+            await startupStep(signal, async () => complete(await sprite.restoreCheckpoint(checkpoint)));
+            if (restricted) {
+                step = 'clear network policy';
+                await startupStep(signal, () => sprite.updateNetworkPolicy(OPEN_SPRITE_NETWORK_POLICY));
+                step = 'verify cleared network policy';
+                const policy = await startupStep(signal, () => sprite.getNetworkPolicy());
+                if (!sameSpriteNetworkPolicy(policy, OPEN_SPRITE_NETWORK_POLICY)) {
+                    throw new Error('Sprite did not verify the cleared network policy');
+                }
+            }
+        } catch (error) {
+            return this.replace(slot, step, error);
+        }
+        await this.recycleClean({ sprite, checkpoint });
     }
 }

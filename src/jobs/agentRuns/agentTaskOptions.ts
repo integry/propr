@@ -61,11 +61,10 @@ export function agentRunExecutionUpdate(alias: string, model: string | undefined
  * Whether this launch may receive extension library items, so the run
  * executes under the network-policy scope they need. Decided without reading
  * the library: the scope must exist before the launch resolves its items.
- * Agents without a configuration (and runs without an extension request)
- * never carry extensions.
+ * Both run phases request extensions in agentTaskOptions above.
  */
-export function launchCarriesExtensions(resolved: { agent: unknown }, options: AgentTaskOptions): boolean {
+export function launchCarriesExtensions(resolved: { agent: unknown }): boolean {
     const config = (resolved.agent as { config?: { type: string } }).config;
     // The runtimes whose adapters resolve library items (`executeWithExtensions`).
-    return !!config && !!options.extensions && ['claude', 'codex'].includes(config.type);
+    return !!config && ['claude', 'codex'].includes(config.type);
 }

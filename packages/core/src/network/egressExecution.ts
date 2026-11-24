@@ -43,6 +43,7 @@ export interface NetworkEgressReport extends EgressProxyStats {
     mode: AgentNetworkMode;
     source: ResolvedNetworkPolicy['source'];
     note?: string;
+    diagnostics?: string[];
     /** Instance and repository additions to the built-in base list. */
     allow: string[];
     restrictedContainers: number;
@@ -55,6 +56,7 @@ export interface NetworkEgressReport extends EgressProxyStats {
 interface NetworkEgressContext {
     policy: ResolvedNetworkPolicy;
     recorder: EgressDenialRecorder;
+    diagnostics: string[];
     restrictedContainers: number;
     fallbacks: NetworkEgressFallback[];
     refusals: NetworkEgressFallback[];
@@ -62,6 +64,7 @@ interface NetworkEgressContext {
 
 const networkEgressExecution = new AsyncLocalStorage<NetworkEgressContext>();
 export const currentAgentNetworkPolicy = () => networkEgressExecution.getStore()?.policy;
+export const currentNetworkEgressDiagnostics = () => networkEgressExecution.getStore()?.diagnostics;
 const activeProxies = new Map<string, EgressProxy>();
 /** Directories this process owns, from before the proxy listens until it is released. */
 const ownedDirectories = new Set<string>();
@@ -74,6 +77,7 @@ function reportFor(context: NetworkEgressContext): NetworkEgressReport {
     const { policy } = context;
     return {
         mode: policy.mode, source: policy.source, ...(policy.note ? { note: policy.note } : {}), allow: policy.allow,
+        ...(context.diagnostics.length ? { diagnostics: context.diagnostics } : {}),
         restrictedContainers: context.restrictedContainers, fallbacks: context.fallbacks, refusals: context.refusals, ...context.recorder.stats(),
     };
 }
@@ -108,7 +112,7 @@ export async function executeWithNetworkPolicy<T>(
         return { result, report: reportFor(enclosing), nested: true };
     }
     if (enclosing) logger.debug({ enclosing: enclosing.policy, policy }, 'Nested network policy scope with a different policy keeps its own record');
-    const context: NetworkEgressContext = { policy, recorder: new EgressDenialRecorder(), restrictedContainers: 0, fallbacks: [], refusals: [] };
+    const context: NetworkEgressContext = { policy, recorder: new EgressDenialRecorder(), diagnostics: [], restrictedContainers: 0, fallbacks: [], refusals: [] };
     try {
         const result = await networkEgressExecution.run(context, execute);
         return { result, report: reportFor(context), nested: false };

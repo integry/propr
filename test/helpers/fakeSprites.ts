@@ -23,6 +23,9 @@ export class FakeSprite {
     attachedStderr?: string;
     credential = '';
     stderr = '';
+    networkPolicy: { rules: unknown[] } = { rules: [] };
+    policies: Array<{ rules: unknown[] }> = [];
+    failPolicy = false;
     constructor(readonly name: string) {}
     filesystem() {
         return {
@@ -33,6 +36,13 @@ export class FakeSprite {
         };
     }
     async restart() { this.events.push('restart'); }
+    async updateNetworkPolicy(policy: { rules: unknown[] }) {
+        if (this.failPolicy) throw new Error('policy update failed');
+        this.events.push(policy.rules.length ? 'restrict' : 'open');
+        this.policies.push(policy);
+        this.networkPolicy = structuredClone(policy);
+    }
+    async getNetworkPolicy() { return structuredClone(this.networkPolicy); }
     async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
         if (cmd === 'sudo' && args.join(' ') === '-n find /tmp -xdev -mindepth 1 -delete') {
             this.events.push('wipe');
