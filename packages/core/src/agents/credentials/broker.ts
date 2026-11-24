@@ -5,7 +5,7 @@ import type { AgentType } from '../types.js';
 import { withCredentialStoreLock, type CredentialStoreLockOptions } from './credentialStoreLock.js';
 import { parseDotenv } from './dotenv.js';
 import {
-    providerCredentialManifest, type CredentialStoreKind, type ProviderCredentialManifest,
+    isLoginCredentialEntry, providerCredentialManifest, type CredentialStoreKind, type ProviderCredentialManifest,
 } from './providerManifests.js';
 
 /**
@@ -280,7 +280,7 @@ export class CredentialBroker {
         const outputs: string[] = [];
         for (const entry of manifest.entries) {
             const refresh = entry.type === 'file' && entry.refresh === true;
-            if (refresh && apiKeyRun) { reader.skip(entry.path, 'api-key-env'); continue; }
+            if (apiKeyRun && isLoginCredentialEntry(entry)) { reader.skip(entry.path, 'api-key-env'); continue; }
             reader.readEntry(entry.path, entry.type, refresh);
             if (refresh) outputs.push(entry.path);
         }

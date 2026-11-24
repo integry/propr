@@ -185,11 +185,20 @@ test('API-key runs do not receive the OAuth token file, and secret files never o
     assert.deepEqual(staged.bundle.stores[0].skipped, [{ path: '.credentials.json', reason: 'api-key-env' }]);
     void staged.complete();
 
-    const vibeRoot = makeStore({ '.env': 'MISTRAL_API_KEY=from-file', 'config.toml': '' });
+    const vibeRoot = makeStore({ '.env': 'MISTRAL_API_KEY=from-file', 'config.toml': '', 'credentials.json': '{"login":1}' });
     const vibe = stageAgentRunCredentials(specWith([{ provider: 'vibe', source: vibeRoot, target: '/home/node/.vibe', readOnly: true }], { MISTRAL_API_KEY: 'from-agent' }), { environment: brokerEnvironment });
     assert.ok(vibe);
     assert.deepEqual(vibe.secretEnv, {});
+    assert.deepEqual(listFiles(stagedSource(vibe.spec, '/home/node/.vibe')), ['config.toml'], 'the stored Vibe login is not copied');
+    assert.deepEqual(vibe.bundle.stores[0].outputs, []);
+    assert.deepEqual(vibe.bundle.stores[0].skipped, [{ path: 'credentials.json', reason: 'api-key-env' }]);
     void vibe.complete();
+
+    const vibeLogin = stageAgentRunCredentials(specWith([{ provider: 'vibe', source: vibeRoot, target: '/home/node/.vibe', readOnly: true }]), { environment: brokerEnvironment });
+    assert.ok(vibeLogin);
+    assert.deepEqual(listFiles(stagedSource(vibeLogin.spec, '/home/node/.vibe')), ['config.toml', 'credentials.json'], 'a login run still receives it');
+    assert.deepEqual(vibeLogin.bundle.stores[0].outputs, [], 'read-only: nothing is written back');
+    void vibeLogin.complete();
 });
 
 test('variables supplied through an environment file take precedence over fallback secrets and API-key detection', () => {

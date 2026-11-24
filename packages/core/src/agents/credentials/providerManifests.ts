@@ -18,8 +18,13 @@ export interface CredentialManifestEntry {
     /** POSIX path relative to the store root. */
     path: string;
     type: 'file' | 'directory';
-    /** The CLI rewrites this file when it refreshes a token; it is written back after the run. */
+    /** The CLI rewrites this file when it refreshes a token; it is written back after the run. Implies `login`. */
     refresh?: boolean;
+    /**
+     * The file holds a stored login. It is not materialised when the run
+     * authenticates with an API key, whether or not the CLI may refresh it.
+     */
+    login?: boolean;
 }
 
 /** A dotenv-style file whose listed variables are supplied to the run as secrets instead of as a file. */
@@ -35,13 +40,14 @@ export interface ProviderCredentialManifest {
     secretEnvFiles?: readonly CredentialSecretEnvSource[];
     /**
      * Variables that authenticate the provider without any file. When the run
-     * already defines one, the refreshable token files are not materialised:
-     * an API-key run never sees the OAuth login.
+     * already defines one, the login files (`login` or `refresh` entries) are
+     * not materialised: an API-key run never sees the stored login.
      */
     apiKeyEnv?: readonly string[];
 }
 
 const file = (path: string, refresh = false): CredentialManifestEntry => ({ path, type: 'file', ...(refresh ? { refresh } : {}) });
+const loginFile = (path: string): CredentialManifestEntry => ({ path, type: 'file', login: true });
 const directory = (path: string): CredentialManifestEntry => ({ path, type: 'directory' });
 
 const MANIFESTS: readonly ProviderCredentialManifest[] = Object.freeze([
@@ -107,7 +113,7 @@ const MANIFESTS: readonly ProviderCredentialManifest[] = Object.freeze([
         entries: [
             file('config.toml'),
             file('settings.json'),
-            file('credentials.json'),
+            loginFile('credentials.json'),
             directory('agents'),
             directory('prompts'),
         ],
@@ -122,6 +128,11 @@ export function providerCredentialManifest(provider: AgentType, store: Credentia
 
 export function providerCredentialManifests(): readonly ProviderCredentialManifest[] {
     return MANIFESTS;
+}
+
+/** Whether an API-key run must not receive this entry. */
+export function isLoginCredentialEntry(entry: CredentialManifestEntry): boolean {
+    return entry.type === 'file' && (entry.refresh === true || entry.login === true);
 }
 
 /** Files the provider may refresh, i.e. what a runtime must return after the run. */
