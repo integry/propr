@@ -3,6 +3,7 @@ import { executeDockerCommand, type DockerCommandOptions, type ExecutionResult }
 import { ExecutionAbortedError } from '../../claude/docker/dockerExecutionOwnership.js';
 import { executeWithAgentRunNetworkRestriction } from '../../network/agentRunNetworkRestriction.js';
 import { renderDockerRunArgs } from './dockerRunArgs.js';
+import { readDockerContainerFile } from './dockerContainerFiles.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export { renderDockerRunArgs } from './dockerRunArgs.js';
@@ -14,6 +15,9 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 const INSPECT_TIMEOUT_MS = 15_000;
 /** How long a run may take to exit after a successful `docker stop` before its launch is cancelled outright. */
 const STOPPED_RUN_SETTLE_MS = 5_000;
+/** A kept clone-mode container nobody released or retained is removed after this long. */
+export const UNRELEASED_RUN_REMOVAL_MS = 10 * 60_000;
+const REMOVE_TIMEOUT_MS = 30_000;
 
 export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.freeze({
     supportsBindMounts: true,
@@ -21,6 +25,8 @@ export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.free
     supportsMcpPrivateNetwork: true,
     // Runs use `--rm -i` with the worker holding stdin; a restarted worker cannot reattach.
     reattach: false,
+    // Clone mode suits a Docker host that cannot see the worker's paths (remote DOCKER_HOST).
+    workspaceTransports: Object.freeze(['bind', 'clone'] as const),
 });
 
 type StreamName = 'stdout' | 'stderr';
@@ -135,6 +141,12 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     private readonly dockerEnvironment: Readonly<Record<string, string>> | undefined;
     private spawned = false;
     private settled = false;
+    /** Clone-mode runs are not `--rm`: the container stays until {@link release} so result files can be read. */
+    private readonly kept: boolean;
+    private released?: Promise<void>;
+    private releaseTimer?: NodeJS.Timeout;
+    /** Set by {@link retain}: the container stays until an explicit {@link release}. */
+    private retained = false;
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions) {
         this.dockerEnvironment = options.extraEnvVars && Object.keys(options.extraEnvVars).length > 0
@@ -160,7 +172,15 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
             },
         }));
         // Callers that only stop or inspect still observe the settlement through wait().
-        const settle = (): void => { this.settled = true; this.output.end(); };
+        this.kept = spec.workspace.mode === 'clone';
+        const settle = (): void => {
+            this.settled = true;
+            this.output.end();
+            if (this.kept && !this.released && !this.retained) {
+                this.releaseTimer = setTimeout(() => { void this.release().catch(() => undefined); }, UNRELEASED_RUN_REMOVAL_MS);
+                this.releaseTimer.unref();
+            }
+        };
         this.result.then(settle, settle);
     }
 
@@ -236,6 +256,35 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
 
     async isAlive(): Promise<boolean> {
         return (await this.inspect()).liveness === 'running';
+    }
+
+    /** `docker cp` out of the finished container: only a kept (clone-mode) run still has one. */
+    async readFile(filePath: string): Promise<Buffer | null> {
+        if (!this.kept || !this.settled || this.released) return null;
+        return readDockerContainerFile(this.spec.name, filePath, this.dockerEnvironment);
+    }
+
+    /** Cancels the automatic removal of the kept container (installed when the run settles). */
+    retain(): void {
+        if (!this.kept) return;
+        this.retained = true;
+        if (this.releaseTimer) clearTimeout(this.releaseTimer);
+        this.releaseTimer = undefined;
+    }
+
+    release(): Promise<void> {
+        if (!this.kept) return Promise.resolve();
+        if (this.releaseTimer) clearTimeout(this.releaseTimer);
+        this.released ??= (async () => {
+            if (!this.settled) await this.stop();
+            const removed = await executeDockerCommand('docker', ['rm', '-f', this.spec.name], {
+                timeout: REMOVE_TIMEOUT_MS, ...this.dockerClientOptions(),
+            });
+            if (removed.exitCode !== 0 && !/No such container/i.test(removed.stderr)) {
+                throw new Error(`Failed to remove agent run ${this.spec.name}: ${removed.stderr.trim() || `exit ${removed.exitCode}`}`);
+            }
+        })();
+        return this.released;
     }
 }
 

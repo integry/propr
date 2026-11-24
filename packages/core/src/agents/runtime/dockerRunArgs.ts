@@ -1,3 +1,4 @@
+import { WORKSPACE_DIRECT_AGENT_LAUNCH, cloneRunStartsAsRoot } from '../../git/workspaceTransportScript.js';
 import type { AgentRunEnvVar, AgentRunMount, AgentRunResources, AgentRunSpec } from './types.js';
 
 /** A `--mount` field, CSV-quoted when it contains a comma or quote. */
@@ -47,6 +48,32 @@ function renderLabelArgs(labels: Record<string, string>): string[] {
 }
 
 /**
+ * Entrypoint and the arguments between the image and the provider CLI. A
+ * clone-mode workspace adds its transport wrapper outside the repository
+ * setup wrapper: `bash -lc <transport> <setup> <provider entrypoint> ...`.
+ * Without a setup wrapper the transport wrapper starts the explicit
+ * entrypoint as the unprivileged agent user itself.
+ */
+function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArgs: string[] } {
+    const { repoSetup } = spec;
+    const clone = spec.workspace.mode === 'clone' ? spec.workspace.clone : undefined;
+    if (spec.workspace.mode === 'clone' && !clone) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but was not prepared by it`);
+    // The transport wrapper holds a repository token; it must not share a user ID with the agent.
+    if (clone && !cloneRunStartsAsRoot(spec.user)) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but does not start as root`);
+    if (!clone) {
+        return { entrypoint: repoSetup ? repoSetup.shell : spec.entrypoint, wrapperArgs: repoSetup ? ['-lc', repoSetup.script, repoSetup.providerEntrypoint] : [] };
+    }
+    if (repoSetup) {
+        // The root-started provider entrypoint drops to the agent user only to run a command;
+        // without one it opens a root shell next to the credential-holding wrapper.
+        if (spec.args.length === 0) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but gives its provider entrypoint no command to run as the agent user`);
+        return { entrypoint: repoSetup.shell, wrapperArgs: ['-lc', clone.script, repoSetup.script, repoSetup.providerEntrypoint] };
+    }
+    if (!spec.entrypoint) throw new Error(`Agent run ${spec.name} needs an explicit entrypoint for the clone workspace transport`);
+    return { entrypoint: '/bin/bash', wrapperArgs: ['-lc', clone.script, WORKSPACE_DIRECT_AGENT_LAUNCH, spec.entrypoint] };
+}
+
+/**
  * Render an {@link AgentRunSpec} to the `docker run` argv (without the
  * `docker` executable). Launch-time additions that belong to the Docker
  * transport — attempt labels, extension mounts, egress socket mounts and the
@@ -54,12 +81,13 @@ function renderLabelArgs(labels: Record<string, string>): string[] {
  */
 export function renderDockerRunArgs(spec: AgentRunSpec): string[] {
     const { security, repoSetup } = spec;
-    const entrypoint = repoSetup ? repoSetup.shell : spec.entrypoint;
+    const { entrypoint, wrapperArgs } = renderEntrypoint(spec);
     return [
         'run',
         ...(spec.resources ? renderDockerResourceArgs(spec.resources) : []),
         ...(repoSetup ? renderDockerEnvArgs(repoSetup.env) : []),
-        '--rm',
+        // A clone-mode run is kept after it exits so its result files can be read; its handle removes it.
+        ...(spec.workspace.mode === 'clone' ? [] : ['--rm']),
         ...(spec.stdin ? ['-i'] : []),
         '--name', spec.name,
         ...renderLabelArgs(spec.labels),
@@ -74,7 +102,7 @@ export function renderDockerRunArgs(spec: AgentRunSpec): string[] {
         '-w', spec.workdir,
         ...(entrypoint ? ['--entrypoint', entrypoint] : []),
         spec.profile.image,
-        ...(repoSetup ? ['-lc', repoSetup.script, repoSetup.providerEntrypoint] : []),
+        ...wrapperArgs,
         ...spec.args,
     ];
 }
