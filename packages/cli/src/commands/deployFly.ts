@@ -23,8 +23,16 @@ import { loadLauncherManifest, resolveStackRoot } from "../orchestrator/index.js
 import { buildTunnelSetupEnv } from "./tunnelCommand.js";
 import { createFlyctlRunner, detectFlyctl, FlyctlBackend } from "./deploy/flyctlBackend.js";
 import { FlyMachinesApi } from "./deploy/flyMachinesApi.js";
-import { planFlyRelay, resolveFlyRelaySecrets } from "./deploy/flyRelay.js";
-import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./deploy/flyDeployRunner.js";
+import { planFlyRelay, resolveFlyRelaySecrets, type FlyRelayDeps } from "./deploy/flyRelay.js";
+import { describeFlyBrowserAuth, flyOAuthCallbackUrl, planFlyBrowserAuth, type FlyBrowserAuth } from "./deploy/flyBrowserAuth.js";
+import {
+  createFlyctlTarget,
+  createMachinesApiTarget,
+  runFlyDeploy,
+  writeFlyFiles,
+  type FlyDeployResult,
+  type FlyDeployTarget,
+} from "./deploy/flyDeployRunner.js";
 import {
   FLY_AGENT_RUNTIMES,
   FLY_DEFAULTS,
@@ -210,11 +218,12 @@ function selectTarget(options: DeployFlyOptions, outDir: string): FlyDeployTarge
   return createMachinesApiTarget(new FlyMachinesApi({ token }));
 }
 
-function printSummary(plan: FlyDeployPlan): void {
+function printSummary(plan: FlyDeployPlan, browserAuth: FlyBrowserAuth): void {
   const url = flyPublicUrl(plan.app);
   console.log("");
   console.log(`Control plane: ${url}`);
   if (plan.tunnel) console.log(`Hosted UI:     https://app.propr.dev (through ${plan.tunnel.publicUrl})`);
+  console.log(`Sign-in:       ${describeFlyBrowserAuth(plan, browserAuth)}`);
   console.log(`Machine:       ${vmSizeLabel(plan)}, ${plan.memoryMb} MB, ${plan.region}; volume ${plan.volumeName} (${plan.volumeSizeGb} GB)`);
   console.log(`Agents:        ${plan.agentRuntime}`);
   if (plan.idleShutdownAfter) {
@@ -227,19 +236,46 @@ function printSummary(plan: FlyDeployPlan): void {
   console.log(`  fly logs --app ${plan.app}            # watch the first boot`);
 }
 
+export interface PreparedFlyDeploy extends CollectedSecrets {
+  plan: FlyDeployPlan;
+  relayPlan: ReturnType<typeof planFlyRelay>;
+  browserAuth: FlyBrowserAuth;
+}
+
+/**
+ * Everything the deploy decides before contacting Fly, dry run or not. Throws
+ * on a deployment that could not work: Connect without a way to get its relay
+ * token, or a control plane nobody could sign in to.
+ */
+export function prepareFlyDeploy(
+  options: DeployFlyOptions,
+  images: Record<string, string>,
+  envFileValues: Record<string, string>,
+  githubToken: string | undefined,
+  readFile?: (path: string) => string,
+): PreparedFlyDeploy {
+  const plan = resolveFlyDeployPlan(options, images);
+  const { secrets, notes } = collectFlySecrets(plan, options, envFileValues, readFile);
+  const relayPlan = planFlyRelay(options, secrets, { connect: Boolean(plan.tunnel), githubToken });
+  const browserAuth = planFlyBrowserAuth(plan, secrets);
+  if (browserAuth === "github") {
+    notes.push(`Browser sign-in uses the stack's GitHub OAuth client; its callback URL must be ${flyOAuthCallbackUrl(plan)}.`);
+  }
+  return { plan, secrets, notes, relayPlan, browserAuth };
+}
+
 export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   const configManager = await createConfigManager();
   const rootDir = resolveStackRoot(configManager, options.root);
   const manifest = loadLauncherManifest();
-  const plan = resolveFlyDeployPlan(options, manifest.images);
   const envFile = readEnvFile(options, rootDir);
   if (envFile.path) console.log(`Reading secrets from ${envFile.path}.`);
-  const { secrets, notes } = collectFlySecrets(plan, options, envFile.values);
+  const githubToken = configManager.getGithubToken();
+  // Fails before any Fly call when the Machine could not work (see prepareFlyDeploy).
+  const prepared = prepareFlyDeploy(options, manifest.images, envFile.values, githubToken);
+  const { plan, secrets, notes, relayPlan, browserAuth } = prepared;
   const outDir = resolve(options.out ?? "propr-fly");
   const generatedSecrets = { SESSION_SECRET: randomBytes(32).toString("hex") };
-  const relayContext = { connect: Boolean(plan.tunnel), githubToken: configManager.getGithubToken() };
-  // Fails before any Fly call when Connect cannot get the relay token it needs.
-  const relayPlan = planFlyRelay(options, secrets, relayContext);
 
   if (options.dryRun) {
     const files = writeFlyFiles(plan, outDir);
@@ -247,19 +283,35 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
     console.log(`Secrets that would be set: ${[...Object.keys(secrets), ...Object.keys(generatedSecrets)].sort().join(", ") || "(none)"}`);
     if (relayPlan.kind === "enroll") console.log("Note: a real run enrolls a GitHub relay token for this Machine.");
     for (const note of notes) console.log(`Note: ${note}`);
-    printSummary(plan);
+    printSummary(plan, browserAuth);
     return;
   }
 
   const target = selectTarget(options, outDir);
-  const relay = await resolveFlyRelaySecrets(options, secrets, { ...relayContext, label: `fly:${plan.app}@${hostname()}` });
+  const context = { githubToken, label: `fly:${plan.app}@${hostname()}`, generatedSecrets };
+  const result = await deployPreparedFly(prepared, options, target, context, (line) => console.log(line));
+  for (const note of notes) console.log(`Note: ${note}`);
+  printSummary({ ...plan, volumeSizeGb: result.volumeSizeGb }, browserAuth);
+}
+
+/** Enroll or complete the relay credentials, then run the deploy sequence against `target`. */
+export async function deployPreparedFly(
+  prepared: PreparedFlyDeploy,
+  options: DeployFlyOptions,
+  target: FlyDeployTarget,
+  context: { githubToken?: string; label: string; generatedSecrets: Record<string, string> },
+  log: (line: string) => void = () => {},
+  relayDeps?: FlyRelayDeps,
+): Promise<FlyDeployResult> {
+  const { plan } = prepared;
+  const secrets = { ...prepared.secrets };
+  const relayContext = { connect: Boolean(plan.tunnel), githubToken: context.githubToken, label: context.label };
+  const relay = await resolveFlyRelaySecrets(options, secrets, relayContext, relayDeps);
   if (relay) {
     Object.assign(secrets, relay.secrets);
-    if (relay.enrolledInstallationId) console.log(`Enrolled a GitHub relay token for installation ${relay.enrolledInstallationId}.`);
+    if (relay.enrolledInstallationId) log(`Enrolled a GitHub relay token for installation ${relay.enrolledInstallationId}.`);
   }
-  const result = await runFlyDeploy({ plan, secrets, generatedSecrets }, target, (line) => console.log(line));
-  for (const note of notes) console.log(`Note: ${note}`);
-  printSummary({ ...plan, volumeSizeGb: result.volumeSizeGb });
+  return runFlyDeploy({ plan, secrets, generatedSecrets: context.generatedSecrets }, target, log);
 }
 
 export function createDeployCommand(): Command {
@@ -301,11 +353,17 @@ The control plane and Redis run in one Machine; SQLite and Redis persist on a
 volume. Default size: shared-cpu-1x, 1 GB (about $6.70/month always on in
 iad, plus $0.15/GB-month of volume). Agents run on Sprites by default.
 
+Browsers sign in through ProPR Connect (--tunnel-token and --tunnel-url) or a
+GitHub OAuth client in the stack .env (GH_OAUTH_CLIENT_ID and
+GH_OAUTH_CLIENT_SECRET, callback https://<app>.fly.dev/api/auth/github/callback).
+Without either the command stops before creating anything on Fly.
+
 Examples:
-  $ propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"
-  $ propr deploy fly --app my-propr --idle-shutdown 15m
-  $ propr deploy fly --app my-propr --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev
-  $ propr deploy fly --app my-propr --dry-run
+  $ propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN" \\
+      --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev
+  $ propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"   # GitHub OAuth client in the .env
+  $ propr deploy fly --app my-propr --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --idle-shutdown 15m
+  $ propr deploy fly --app my-propr --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --dry-run
 `)
     .action(async (options: DeployFlyOptions) => {
       try {

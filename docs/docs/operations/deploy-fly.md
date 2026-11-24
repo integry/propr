@@ -14,10 +14,28 @@ description: "propr deploy fly runs the slim control plane and Redis on one smal
 The published `propr/app` image from the CLI's launcher manifest is deployed as it is. There is no image build and no Docker-in-Docker. Agents run on **Sprites** by default, or on **Fly Machines**; neither needs Docker on the control-plane Machine.
 
 ```bash
-propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"
+propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN" \
+  --tunnel-token <connector-token> --tunnel-url https://t-<id>.propr.dev
 ```
 
-The UI and API are then at `https://my-propr.fly.dev`. Run `propr remote https://my-propr.fly.dev` to point the CLI at it.
+The API is then at `https://my-propr.fly.dev`, and you sign in from the hosted UI at `https://app.propr.dev` through ProPR Connect (see [Browser sign-in](#browser-sign-in)). Run `propr remote https://my-propr.fly.dev` to point the CLI at it.
+
+## Browser sign-in
+
+The deployed API needs a way to sign browsers in, and the command stops before creating anything on Fly, `--dry-run` included, when it has none:
+
+| Sign-in | What the deploy needs |
+| --- | --- |
+| ProPR Connect, from `https://app.propr.dev` | `--tunnel-token` and `--tunnel-url` (see [GitHub relay and Connect](#github-relay-and-connect)). The command enrolls the relay token Connect needs. |
+| GitHub OAuth, on `https://<app>.fly.dev` | `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET` in the stack `.env`, from a GitHub App or OAuth App whose callback URL is `https://<app>.fly.dev/api/auth/github/callback`. The deploy sets that callback itself and prints it. |
+| None (read-only demo) | `PROPR_DEMO_MODE=true` in the stack `.env`. |
+
+A relay token alone does not sign browsers in on Fly: the automatic Connect sign-in for relay-only stacks works only with a loopback callback, as on a local stack. Fly secret values cannot be read back, so an OAuth client left on the app by an earlier deploy does not count; keep it in the stack `.env`. The summary prints a `Sign-in:` line with the method the deploy chose.
+
+```bash
+# GitHub OAuth instead of Connect: GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET in the stack .env
+propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"
+```
 
 ## How it reaches Fly
 
@@ -28,7 +46,7 @@ The UI and API are then at `https://my-propr.fly.dev`. Run `propr remote https:/
 
 Use `--backend flyctl` or `--backend api` to choose explicitly. Every step can be rerun: an existing app, volume or Machine is reused and updated. A reused volume smaller than `--volume-size` (for example the 1 GB default volume when you later add `--legacy-docker`) is extended to that size before any secret is set, and the deploy stops if Fly does not then report the new size. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
 
-`--dry-run` writes `fly.toml` and `propr-machine.json`, prints the secret **names** it would set and the summary, and contacts nothing.
+`--dry-run` writes `fly.toml` and `propr-machine.json`, prints the secret **names** it would set and the summary, and contacts nothing. It stops on the same configuration errors as a real run, such as missing [browser sign-in](#browser-sign-in).
 
 ## Machine layout
 
@@ -57,7 +75,7 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 
 ## GitHub relay and Connect
 
-**GitHub relay.** When the stack brings neither its own GitHub App (`GH_APP_ID` plus a key) nor a relay token, and you are logged in with `propr login`, the command enrolls a new relay token labelled `fly:<app>@<host>`, just as `propr relay enroll` does. Connect sign-in (below) also needs a relay token, even with your own GitHub App: with the tunnel flags and no relay token, the command enrolls one. If it cannot enroll (not logged in, or `--no-relay`), it stops before creating anything on Fly. With the tunnel flags, your own GitHub App keeps GitHub API calls (`GH_AUTH_MODE=app`) whether the relay token is new or already in the stack `.env`, unless the `.env` sets `GH_AUTH_MODE` itself. `--relay` always enrolls and switches GitHub API calls to the relay, and `--no-relay` never enrolls. The installation id must belong to the shared ProPR App: an own App's `GH_INSTALLATION_ID` is never reused, so the id is discovered when you have exactly one; otherwise pass `--installation <id>`.
+**GitHub relay.** When the stack brings neither its own GitHub App (`GH_APP_ID` plus a key) nor a relay token, and you are logged in with `propr login`, the command enrolls a new relay token labelled `fly:<app>@<host>`, just as `propr relay enroll` does. Connect sign-in (below) also needs a relay token, even with your own GitHub App: with the tunnel flags and no relay token, the command enrolls one. If it cannot enroll (not logged in, or `--no-relay`), it stops before creating anything on Fly. Your own GitHub App keeps GitHub API calls (`GH_AUTH_MODE=app`), with or without the tunnel flags and even next to a relay token, unless the `.env` sets `GH_AUTH_MODE` itself. The App's `GH_INSTALLATION_ID` must then be in the `.env`, or the command stops before creating anything. Relay credentials without an own App set `GH_AUTH_MODE=relay`. The deploy writes the mode on every run because Fly secrets are only added or replaced, never removed: a mode, relay token or installation id from an earlier deploy stays on the app, and an earlier `GH_AUTH_MODE` would otherwise outrank this run's credentials. A run without any GitHub credentials leaves the earlier ones in place. `--relay` always enrolls and switches GitHub API calls to the relay, and `--no-relay` never enrolls. The installation id must belong to the shared ProPR App: an own App's `GH_INSTALLATION_ID` is never reused, so the id is discovered when you have exactly one; otherwise pass `--installation <id>`.
 
 **ProPR Connect.** To drive the Fly instance from the hosted UI at `https://app.propr.dev`, pass the values that ProPR Connect shows for `propr tunnel setup`:
 

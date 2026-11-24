@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Uploads the stack `.env` as Fly secrets and generates `SESSION_SECRET`
     once. Enrolls a GitHub relay token, and ProPR Connect with
     `--tunnel-token`/`--tunnel-url`. Agents default to Sprites.
+  - Needs a browser sign-in: ProPR Connect (the tunnel flags), a GitHub OAuth
+    client in the stack `.env`, or demo mode. Without one it stops before
+    creating anything on Fly, `--dry-run` included.
+  - Writes `GH_AUTH_MODE` on every run that brings GitHub credentials: `app`
+    for an own GitHub App unless `--relay` or the `.env` chooses, `relay` for
+    relay credentials. Fly secrets are never removed, so a redeploy that adds
+    an own App does not keep an earlier deploy's relay mode.
   - `--idle-shutdown [after]` opts in to idle shutdown (#3770): restart
     `on-failure`, proxy autostop off, autostart on, and prints the `/wake` URL.
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it

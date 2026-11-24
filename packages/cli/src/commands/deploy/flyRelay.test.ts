@@ -149,11 +149,12 @@ test("Connect with an existing relay token does not re-enroll; a missing relay U
   const { deps, calls } = stubDeps();
   const relay = await resolveFlyRelaySecrets(options, secrets, { connect: true, label: "l" }, deps);
   assert.equal(calls.enrolled.length, 0);
-  assert.deepEqual(relay, { secrets: { PROPR_GH_RELAY_URL: DEFAULT_PROPR_GH_RELAY_URL } });
+  assert.deepEqual(relay, { secrets: { PROPR_GH_RELAY_URL: DEFAULT_PROPR_GH_RELAY_URL, GH_AUTH_MODE: "relay" } });
   assert.deepEqual(machineAuthModes(secrets, relay?.secrets), ["relay", "relay"]);
 
+  // The relay mode is written even when nothing else is, so an earlier deploy's pin cannot outrank it.
   const withUrl = collect(TUNNEL_FLAGS, { PROPR_GH_RELAY_TOKEN: "existing", PROPR_GH_RELAY_URL: "https://relay.example/v1" });
-  assert.equal(await resolveFlyRelaySecrets(withUrl.options, withUrl.secrets, { connect: true, label: "l" }, deps), undefined);
+  assert.deepEqual(await resolveFlyRelaySecrets(withUrl.options, withUrl.secrets, { connect: true, label: "l" }, deps), { secrets: { GH_AUTH_MODE: "relay" } });
 });
 
 test("own App + Connect with an existing relay token keeps the own App for API auth", async () => {
@@ -190,15 +191,52 @@ test("own App + Connect with an existing relay token: an explicit GH_AUTH_MODE i
   }
 });
 
-test("without Connect an own App still suppresses automatic enrollment", async () => {
+test("without Connect an own App suppresses automatic enrollment and pins app mode", async () => {
   const { plan, secrets, options } = collect({ spritesToken: "sp" }, OWN_APP_ENV);
   assert.equal(plan.tunnel, undefined);
   const { deps, calls } = stubDeps();
-  assert.equal(await resolveFlyRelaySecrets(options, secrets, { connect: false, githubToken: "gh", label: "l" }, deps), undefined);
+  const relay = await resolveFlyRelaySecrets(options, secrets, { connect: false, githubToken: "gh", label: "l" }, deps);
+  assert.deepEqual(relay, { secrets: { GH_AUTH_MODE: "app" } });
+  assert.deepEqual(machineAuthModes(secrets, relay?.secrets), ["app", "app"]);
   assert.equal(calls.enrolled.length, 0);
-  // Without Connect the deploy adds no relay credentials, so the stack's own auth inference stands.
+  // A relay token next to the own App does not take API auth over, Connect or not.
   const withToken = collect({ spritesToken: "sp" }, { ...OWN_APP_ENV, PROPR_GH_RELAY_TOKEN: "existing" });
-  assert.equal(await resolveFlyRelaySecrets(withToken.options, withToken.secrets, { connect: false, label: "l" }, deps), undefined);
+  const pinned = await resolveFlyRelaySecrets(withToken.options, withToken.secrets, { connect: false, label: "l" }, deps);
+  assert.deepEqual(pinned, { secrets: { GH_AUTH_MODE: "app" } });
+  assert.deepEqual(machineAuthModes(withToken.secrets, pinned?.secrets), ["app", "app"]);
+  // --no-relay only stops enrollment.
+  const noRelay = collect({ spritesToken: "sp", relay: false }, OWN_APP_ENV);
+  assert.deepEqual(await resolveFlyRelaySecrets(noRelay.options, noRelay.secrets, { connect: false, githubToken: "gh", label: "l" }, deps), { secrets: { GH_AUTH_MODE: "app" } });
+  assert.equal(calls.enrolled.length, 0);
+});
+
+test("without Connect a stack GH_AUTH_MODE is uploaded as is and nothing is pinned over it", async () => {
+  const { deps } = stubDeps();
+  for (const mode of ["app", "relay"]) {
+    const { secrets, options } = collect({ spritesToken: "sp" }, { ...OWN_APP_ENV, PROPR_GH_RELAY_TOKEN: "existing", GH_AUTH_MODE: mode });
+    assert.equal(secrets.GH_AUTH_MODE, mode);
+    assert.equal(await resolveFlyRelaySecrets(options, secrets, { connect: false, label: "l" }, deps), undefined);
+  }
+});
+
+test("an own App without GH_INSTALLATION_ID keeping API auth fails before provisioning", () => {
+  const { GH_INSTALLATION_ID: _drop, ...noInstallation } = OWN_APP_ENV;
+  for (const flags of [{ spritesToken: "sp" }, TUNNEL_FLAGS]) {
+    const { secrets, options } = collect(flags, noInstallation);
+    assert.throws(() => planFlyRelay(options, secrets, { connect: Boolean(options.tunnelToken), githubToken: "gh" }), /no GH_INSTALLATION_ID.*--relay/s);
+    // --relay or a pinned relay mode hand API auth to the shared App, which needs no own installation.
+    assert.doesNotThrow(() => planFlyRelay({ ...options, relay: true }, secrets, { connect: Boolean(options.tunnelToken), githubToken: "gh" }));
+    assert.doesNotThrow(() => planFlyRelay(options, { ...secrets, GH_AUTH_MODE: "relay" }, { connect: Boolean(options.tunnelToken), githubToken: "gh" }));
+  }
+});
+
+test("shared-App stack with a relay token and no Connect pins relay mode", async () => {
+  const { secrets, options } = collect({ spritesToken: "sp" }, { PROPR_GH_RELAY_TOKEN: "existing", GH_INSTALLATION_ID: "321" });
+  const { deps, calls } = stubDeps();
+  const relay = await resolveFlyRelaySecrets(options, secrets, { connect: false, githubToken: "gh", label: "l" }, deps);
+  assert.equal(calls.enrolled.length, 0);
+  assert.deepEqual(relay, { secrets: { GH_AUTH_MODE: "relay" } });
+  assert.deepEqual(machineAuthModes(secrets, relay?.secrets), ["relay", "relay"]);
 });
 
 test("shared-App stack: automatic enrollment switches to relay auth; no login skips it", async () => {

@@ -11,9 +11,16 @@
  *
  * So own-App credentials suppress automatic enrollment only when Connect is
  * off. With Connect on and no relay token, a token is enrolled, or the deploy
- * stops before anything is provisioned. Either way, a relay URL + token next
- * to an own App would infer relay mode, so Connect pins the own App for API
- * auth (GH_AUTH_MODE=app) unless the stack chose a mode or --relay switches.
+ * stops before anything is provisioned.
+ *
+ * The deploy also writes the GitHub API auth mode it selects, unless the stack
+ * sets GH_AUTH_MODE itself. Fly secrets are only ever added or replaced, so a
+ * mode, relay token or installation id from an earlier deploy stays in the
+ * Machine env, and an earlier GH_AUTH_MODE outranks whatever this run's
+ * credentials would infer. The own App keeps API auth (GH_AUTH_MODE=app)
+ * unless the stack pins relay mode or --relay switches; relay credentials
+ * without an own App pin GH_AUTH_MODE=relay. A run with no GitHub credentials
+ * at all pins nothing and leaves the earlier ones in charge.
  */
 
 import { DEFAULT_PROPR_GH_RELAY_URL, validateRelayUrl } from "@propr/shared";
@@ -46,7 +53,7 @@ export interface FlyRelayResult {
   enrolledInstallationId?: string;
 }
 
-/** keepOwnApp: the own App keeps GitHub API auth next to Connect's relay credentials. */
+/** keepOwnApp: the own App keeps GitHub API auth next to any relay credentials in the Machine env. */
 type RelayPlan =
   | { kind: "none"; keepOwnApp: boolean }
   | { kind: "fill-url"; baseUrl: string; keepOwnApp: boolean }
@@ -73,17 +80,38 @@ function sharedAppInstallation(secrets: Record<string, string>): string | undefi
 }
 
 /**
- * Connect puts a relay URL + token in the Machine env, new or existing, and
- * those infer relay mode ahead of own-App credentials. The own App keeps API
- * auth unless the stack pins relay mode or --relay switches to it.
+ * The own App keeps API auth unless the stack pins relay mode or --relay
+ * switches to it, Connect or not: relay credentials in the Machine env, from
+ * Connect or an earlier deploy, would otherwise take API auth over.
  */
-function keepsOwnApp(options: FlyRelayOptions, secrets: Record<string, string>, context: FlyRelayContext): boolean {
-  return context.connect && options.relay !== true && hasOwnApp(secrets) && explicitAuthMode(secrets) !== "relay";
+function keepsOwnApp(options: FlyRelayOptions, secrets: Record<string, string>): boolean {
+  return options.relay !== true && hasOwnApp(secrets) && explicitAuthMode(secrets) !== "relay";
 }
 
-/** GH_AUTH_MODE=app for a kept own App, unless the stack already sets a mode. */
-function ownAppAuthMode(plan: RelayPlan, secrets: Record<string, string>): Record<string, string> {
-  return plan.keepOwnApp && !explicitAuthMode(secrets) ? { GH_AUTH_MODE: "app" } : {};
+/**
+ * GH_AUTH_MODE for the API auth this run selects, unless the stack sets a mode
+ * (uploaded as is). An enrollment that does not keep the own App writes relay
+ * mode itself, see resolveFlyRelaySecrets.
+ */
+function selectedAuthMode(plan: RelayPlan, secrets: Record<string, string>): Record<string, string> {
+  if (explicitAuthMode(secrets)) return {};
+  if (plan.keepOwnApp) return { GH_AUTH_MODE: "app" };
+  if (secrets.PROPR_GH_RELAY_TOKEN?.trim()) return { GH_AUTH_MODE: "relay" };
+  return {};
+}
+
+/**
+ * App mode needs the own App's installation id from this run: an earlier
+ * relay enrollment leaves the shared App's GH_INSTALLATION_ID on the Fly app,
+ * and the own App would silently mint tokens against it.
+ */
+function assertOwnAppInstallation(secrets: Record<string, string>): void {
+  const mode = explicitAuthMode(secrets);
+  if ((mode === "" || mode === "app") && !secrets.GH_INSTALLATION_ID?.trim()) {
+    throw new Error(
+      "Your own GitHub App (GH_APP_ID and its private key) keeps GitHub API calls, but the stack .env has no GH_INSTALLATION_ID. Add the installation id of that App to the stack .env, or pass --relay to use the shared ProPR App instead.",
+    );
+  }
 }
 
 function relayBaseUrl(options: FlyRelayOptions, secrets: Record<string, string>): string {
@@ -109,7 +137,8 @@ export function planFlyRelay(options: FlyRelayOptions, secrets: Record<string, s
     );
   }
   const enroll = options.relay === true || connectNeedsToken || (auto && !hasRelayToken && !hasOwnApp(secrets));
-  const keepOwnApp = keepsOwnApp(options, secrets, context);
+  const keepOwnApp = keepsOwnApp(options, secrets);
+  if (keepOwnApp) assertOwnAppInstallation(secrets);
   if (!enroll) {
     // Connect reads PROPR_GH_RELAY_URL without the hosted default the GitHub
     // API path applies, so pin it next to an existing token.
@@ -136,7 +165,7 @@ export async function resolveFlyRelaySecrets(
   deps: FlyRelayDeps = { discoverInstallationId, enrollRelayToken },
 ): Promise<FlyRelayResult | undefined> {
   const plan = planFlyRelay(options, secrets, context);
-  const authMode = ownAppAuthMode(plan, secrets);
+  const authMode = selectedAuthMode(plan, secrets);
   if (plan.kind === "none") return authMode.GH_AUTH_MODE ? { secrets: authMode } : undefined;
   if (plan.kind === "fill-url") return { secrets: { PROPR_GH_RELAY_URL: plan.baseUrl, ...authMode } };
 
