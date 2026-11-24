@@ -43,11 +43,20 @@ import {
   selectEnvFileSecrets,
   validateFlyAppName,
   validateFlyVolumeName,
+  legacyRootfsSizeGb,
   vmSizeLabel,
   type FlyAgentRuntime,
   type FlyDeployPlan,
 } from "./deploy/flyMachineConfig.js";
-import { LEGACY_DOCKER_MIN_MEMORY_MB, LEGACY_DOCKER_MIN_VOLUME_GB } from "./deploy/flyLegacyDocker.js";
+import {
+  FLY_ROOTFS_PRICE_PER_GB_MONTH,
+  flyRootfsMonthlyCost,
+  LEGACY_DOCKER_DEFAULT_MEMORY_MB,
+  LEGACY_DOCKER_DEFAULT_ROOTFS_GB,
+  LEGACY_DOCKER_MIN_MEMORY_MB,
+  LEGACY_DOCKER_MIN_ROOTFS_GB,
+} from "./deploy/flyLegacyDocker.js";
+import { exceedsFreePlanVolumeCap, FLY_FREE_PLAN_MAX_VOLUME_GB } from "./deploy/flyOrgPlan.js";
 
 export interface DeployFlyOptions {
   app: string;
@@ -57,6 +66,7 @@ export interface DeployFlyOptions {
   cpus?: string;
   volume?: string;
   volumeSize?: string;
+  rootfsSize?: string;
   image?: string;
   agentRuntime?: string;
   spritesToken?: string;
@@ -117,13 +127,20 @@ export function resolveFlyDeployPlan(options: DeployFlyOptions, images: Record<s
     throw new Error("--legacy-docker runs agents with the Docker runtime; drop --agent-runtime or set it to docker");
   }
 
-  const memoryMb = positiveInt(options.memory, "--memory", legacyDocker ? LEGACY_DOCKER_MIN_MEMORY_MB : FLY_DEFAULTS.memoryMb);
-  const volumeSizeGb = positiveInt(options.volumeSize, "--volume-size", legacyDocker ? 20 : FLY_DEFAULTS.volumeSizeGb);
+  const memoryMb = positiveInt(options.memory, "--memory", legacyDocker ? LEGACY_DOCKER_DEFAULT_MEMORY_MB : FLY_DEFAULTS.memoryMb);
+  // The volume holds only SQLite and Redis in every mode; legacy Docker images
+  // go on a persistent root filesystem, which the Free plan's 5 GB volume cap
+  // does not limit.
+  const volumeSizeGb = positiveInt(options.volumeSize, "--volume-size", FLY_DEFAULTS.volumeSizeGb);
   if (legacyDocker && memoryMb < LEGACY_DOCKER_MIN_MEMORY_MB) {
     throw new Error(`--legacy-docker needs at least ${LEGACY_DOCKER_MIN_MEMORY_MB} MB (--memory)`);
   }
-  if (legacyDocker && volumeSizeGb < LEGACY_DOCKER_MIN_VOLUME_GB) {
-    throw new Error(`--legacy-docker keeps Docker images on the volume; use --volume-size ${LEGACY_DOCKER_MIN_VOLUME_GB} or more`);
+  if (!legacyDocker && options.rootfsSize !== undefined) {
+    throw new Error("--rootfs-size sizes the persistent root filesystem for Docker images; it needs --legacy-docker");
+  }
+  const rootfsSizeGb = legacyDocker ? positiveInt(options.rootfsSize, "--rootfs-size", LEGACY_DOCKER_DEFAULT_ROOTFS_GB) : undefined;
+  if (rootfsSizeGb !== undefined && rootfsSizeGb < LEGACY_DOCKER_MIN_ROOTFS_GB) {
+    throw new Error(`--legacy-docker keeps Docker images on the persistent root filesystem; use --rootfs-size ${LEGACY_DOCKER_MIN_ROOTFS_GB} or more`);
   }
   const app = images.app;
   const redis = images.redis;
@@ -142,6 +159,7 @@ export function resolveFlyDeployPlan(options: DeployFlyOptions, images: Record<s
     agentRuntime,
     idleShutdownAfter: parseIdleShutdownAfter(options.idleShutdown),
     legacyDocker,
+    ...(rootfsSizeGb !== undefined ? { rootfsSizeGb } : {}),
     githubAppKey: false,
   };
 }
@@ -160,7 +178,7 @@ export function assertFlyAgentRuntimeSupported(plan: Pick<FlyDeployPlan, "agentR
   if (FLY_WORKER_AGENT_RUNTIMES.includes(plan.agentRuntime)) return;
   throw new Error(
     `Agents on ${plan.agentRuntime} are not supported by this release: its worker only runs Docker agents and would wait forever for a Docker daemon the Machine does not have, so no task would ever run. `
-      + "Deploy with --legacy-docker (Docker daemon in the Machine; at least 2 GB and a 10 GB volume) until the worker supports Sprites and Fly Machines agents.",
+      + "Deploy with --legacy-docker (Docker daemon in the Machine; 2 GB by default, Docker images on a persistent root filesystem) until the worker supports Sprites and Fly Machines agents.",
   );
 }
 
@@ -272,6 +290,7 @@ function printSummary(plan: FlyDeployPlan, browserAuth: FlyBrowserAuth): void {
   if (plan.tunnel) console.log(`Hosted UI:     https://app.propr.dev (through ${plan.tunnel.publicUrl})`);
   console.log(`Sign-in:       ${describeFlyBrowserAuth(plan, browserAuth)}`);
   console.log(`Machine:       ${vmSizeLabel(plan)}, ${plan.memoryMb} MB, ${plan.region}; volume ${plan.volumeName} (${plan.volumeSizeGb} GB)`);
+  for (const line of describeFlyRootfs(plan)) console.log(line);
   console.log(`Agents:        ${plan.agentRuntime}`);
   if (plan.idleShutdownAfter) {
     console.log(`Idle shutdown: on after ${plan.idleShutdownAfter}; the Machine stops itself when idle, and HTTP starts it again.`);
@@ -281,6 +300,16 @@ function printSummary(plan: FlyDeployPlan, browserAuth: FlyBrowserAuth): void {
   console.log("Next steps:");
   console.log(`  propr remote ${url}     # point this CLI at the Fly control plane`);
   console.log(`  fly logs --app ${plan.app}            # watch the first boot`);
+}
+
+/** Summary lines for a legacy plan's persistent root filesystem: its size and what it costs while stopped. */
+export function describeFlyRootfs(plan: Pick<FlyDeployPlan, "legacyDocker" | "rootfsSizeGb">): string[] {
+  if (!plan.legacyDocker) return [];
+  const size = legacyRootfsSizeGb(plan);
+  return [
+    `Root fs:       ${size} GB, persistent (Docker images; SQLite and Redis stay on the volume)`,
+    `Root fs cost:  ${flyRootfsMonthlyCost(size)}/month while the Machine is stopped ($${FLY_ROOTFS_PRICE_PER_GB_MONTH.toFixed(2)}/GB-month)`,
+  ];
 }
 
 export interface PreparedFlyDeploy extends CollectedSecrets {
@@ -357,6 +386,9 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
     console.log(`Secrets that would be set: ${Object.keys(dryRunSecrets).sort().join(", ") || "(none)"}`);
     if (intake) console.log(intake.summary);
     if (relayPlan.kind === "enroll") console.log("Note: a real run enrolls a GitHub relay token for this Machine.");
+    if (exceedsFreePlanVolumeCap(plan)) {
+      console.log(`Note: the Fly Free plan caps volumes at ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB; a real run checks org ${plan.org}'s plan and stops before creating anything if this ${plan.volumeSizeGb} GB volume does not fit.`);
+    }
     for (const note of notes) console.log(`Note: ${note}`);
     printSummary(plan, browserAuth);
     return;
@@ -401,7 +433,7 @@ export function createDeployCommand(): Command {
     .option("--memory <mb>", `Machine memory in MB (default: ${FLY_DEFAULTS.memoryMb})`)
     .option("--cpus <n>", `Shared vCPUs (default: ${FLY_DEFAULTS.cpus})`)
     .option("--volume <name>", `Volume for SQLite and Redis (default: ${FLY_DEFAULTS.volumeName})`)
-    .option("--volume-size <gb>", `Volume size in GB (default: ${FLY_DEFAULTS.volumeSizeGb})`)
+    .option("--volume-size <gb>", `Volume size in GB (default: ${FLY_DEFAULTS.volumeSizeGb}; the Fly Free plan allows at most ${FLY_FREE_PLAN_MAX_VOLUME_GB})`)
     .option("--image <ref>", "App image (default: the launcher manifest's propr/app tag)")
     .option("--agent-runtime <runtime>", "Agent runtime: sprites (default), fly-machines, or docker with --legacy-docker; only docker works in this release")
     .option("--sprites-token <token>", "Sprites token for agent runs (or SPRITES_TOKEN)")
@@ -422,12 +454,15 @@ export function createDeployCommand(): Command {
     .option("--installation <id>", "GitHub App installation id for relay enrollment")
     .option("--idle-shutdown [after]", "Stop the Machine after it has been idle this long (1m to 24h, default 15m); HTTP starts it again")
     .option("--machine-stop-token <token>", "App-scoped Fly token the Machine stops itself with (default: created with flyctl; required for --backend api)")
-    .option("--legacy-docker", "Run a Docker daemon in the Machine for Docker agents (needs 2 GB and a 10 GB+ volume)")
+    .option("--legacy-docker", "Run a Docker daemon in the Machine for Docker agents (default 2 GB, at least 1 GB; images on a persistent root filesystem)")
+    .option("--rootfs-size <gb>", `With --legacy-docker: persistent root filesystem for Docker images, in GB (default: ${LEGACY_DOCKER_DEFAULT_ROOTFS_GB}, minimum ${LEGACY_DOCKER_MIN_ROOTFS_GB})`)
     .option("--dry-run", "Write fly.toml and the machine config, print the plan, change nothing")
     .addHelpText("after", `
 The control plane and Redis run in one Machine; SQLite and Redis persist on a
 volume. Default size: shared-cpu-1x, 1 GB (about $6.70/month always on in
-iad, plus $0.15/GB-month of volume). Agents run on Sprites by default, but
+iad, plus $0.15/GB-month of volume). --legacy-docker adds a persistent root
+filesystem for Docker images (20 GB: $3.00/month while stopped) and keeps
+the 1 GB volume, so it fits the Fly Free plan's 5 GB volume cap. Agents run on Sprites by default, but
 this release's worker only runs Docker agents: Sprites and Fly Machines are
 refused before anything is created, so pass --legacy-docker for now. The
 Machine runs always on unless --idle-shutdown is given: then it stops itself

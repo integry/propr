@@ -8,6 +8,8 @@
  * sent as a Bearer token. The token is never logged or included in errors.
  */
 
+import { fetchFlyOrgPlan, type FlyOrgPlan } from "./flyOrgPlan.js";
+
 export const FLY_MACHINES_API_URL = "https://api.machines.dev/v1";
 
 export class FlyApiError extends Error {
@@ -100,9 +102,25 @@ export class FlyMachinesApi {
     return status !== 404;
   }
 
+  /**
+   * Whether the app exists (false on 404) and the slug of the org that owns
+   * it (`org` is undefined when the response does not carry one).
+   */
+  async appOwner(app: string): Promise<{ exists: boolean; org?: string }> {
+    const { status, data } = await this.request<{ organization?: { slug?: unknown } }>("GET", this.appPath(app), undefined, [404]);
+    if (status === 404) return { exists: false };
+    const slug = data?.organization?.slug;
+    return { exists: true, org: typeof slug === "string" && slug ? slug : undefined };
+  }
+
   async createApp(app: string, org: string): Promise<void> {
     // The documented request uses `app_name`; fly-go sends `name`. Send both.
     await this.request("POST", "/apps", { app_name: app, name: app, org_slug: org });
+  }
+
+  /** The org's Fly plan from the GraphQL API ("unknown" when it cannot be read). */
+  async orgPlan(org: string): Promise<FlyOrgPlan> {
+    return fetchFlyOrgPlan(this.authorization, org, this.fetchImpl);
   }
 
   async listIpAssignments(app: string): Promise<FlyIpAssignment[]> {
