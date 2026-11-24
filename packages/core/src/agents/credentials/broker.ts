@@ -276,7 +276,10 @@ export class CredentialBroker {
                 if (value && !definedEnv.has(name) && !(name in secretEnv)) secretEnv[name] = value;
             }
         }
-        const apiKeyRun = (manifest.apiKeyEnv ?? []).some(name => definedEnv.has(name));
+        // A key the run defines itself or one the broker extracted above (a
+        // nonempty value in the store's secret file) both make this an API-key
+        // run, so the stored login is withheld either way.
+        const apiKeyRun = (manifest.apiKeyEnv ?? []).some(name => definedEnv.has(name) || Boolean(secretEnv[name]));
         const outputs: string[] = [];
         for (const entry of manifest.entries) {
             const refresh = entry.type === 'file' && entry.refresh === true;
