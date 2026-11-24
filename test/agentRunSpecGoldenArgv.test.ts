@@ -206,4 +206,21 @@ describe('AgentRunSpec is runtime-neutral', () => {
         assert.equal(spec.profile.image, 'propr/claude:golden');
         assert.equal(spec.repoSetup?.providerEntrypoint, '/home/node/claude-entrypoint.sh');
     });
+
+    test('tags each provider credential store; session-resuming goal runs keep the direct mount', () => {
+        const stores = (spec: AgentRunSpec) => spec.mounts.flatMap(mount => mount.type === 'bind' && mount.credentialStore
+            ? [[mount.target, mount.credentialStore.provider, mount.credentialStore.store, mount.credentialStore.perRun]] : []);
+        assert.deepEqual(stores(buildClaudeRunSpec(config('claude'), 30, base)), [['/home/node/.claude', 'claude', 'config', true]]);
+        assert.deepEqual(stores(buildClaudeRunSpec(config('claude'), 30, { ...base, executionMode: 'goal', sessionId: 's' })), [['/home/node/.claude', 'claude', 'config', false]]);
+        assert.deepEqual(stores(buildCodexRunSpec(config('codex'), base)), [['/home/node/.codex', 'codex', 'config', true]]);
+        assert.deepEqual(stores(buildCodexRunSpec(config('codex'), { ...base, executionMode: 'goal', resumeSessionId: 't' })), [['/home/node/.codex', 'codex', 'config', false]]);
+        const openCode = stores(buildOpenCodeRunSpec({ config: config('opencode'), ...base, dataPath: '/tmp/opencode-data' } as Parameters<typeof buildOpenCodeRunSpec>[0]));
+        assert.deepEqual(openCode.map(([, provider, store, perRun]) => [provider, store, perRun]), [['opencode', 'config', true], ['opencode', 'data', true]]);
+        const antigravity = new AntigravityAgent(config('antigravity')) as unknown as { buildRunSpec(input: unknown): AgentRunSpec };
+        assert.deepEqual(stores(antigravity.buildRunSpec(base)).map(([, provider, , perRun]) => [provider, perRun]), [['antigravity', true]]);
+        assert.deepEqual(stores(antigravity.buildRunSpec({ ...base, executionMode: 'goal' })).map(([, , , perRun]) => perRun), [false]);
+        writeFileSync(join(root, 'vibe-config', 'config.toml'), 'active_model = "m"');
+        const vibe = new VibeAgent(config('vibe')) as unknown as { buildRunSpec(input: unknown): AgentRunSpec };
+        assert.deepEqual(stores(vibe.buildRunSpec({ ...base, mistralApiKey: 'mistral-key' })), [['/home/node/.vibe', 'vibe', 'config', true]]);
+    });
 });

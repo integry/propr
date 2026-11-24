@@ -125,7 +125,7 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
         },
     }).workspaceMount();
     if (!repositoryInspection) builder.dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro'), 'git');
-    builder.bind(configPath, CONTAINER_CONFIG_PATH, false, 'credential');
+    builder.credentialBind(configPath, CONTAINER_CONFIG_PATH, false, { provider: 'opencode', store: 'config', perRun: true });
     if (!repositoryInspection) builder.env('GH_TOKEN', githubToken).env('GITHUB_TOKEN', githubToken);
     builder.env('OPENCODE_CONFIG_DIR', '/home/node/.config/opencode');
     if (repositoryInspection) builder.env('OPENCODE_CONFIG_CONTENT', buildOpenCodeRepositoryScoutConfig());
@@ -136,7 +136,7 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
     builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
     if (dataMount) {
         builder
-            .bind(dataMount.hostPath, CONTAINER_SOURCE_DATA_PATH, dataMount.mode === 'ro', 'data')
+            .credentialBind(dataMount.hostPath, CONTAINER_SOURCE_DATA_PATH, dataMount.mode === 'ro', { provider: 'opencode', store: 'data', perRun: true })
             .env('PROPR_OPENCODE_SOURCE_DATA', CONTAINER_SOURCE_DATA_PATH);
     }
     builder.command(...commandArgs);
