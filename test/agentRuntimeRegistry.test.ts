@@ -465,6 +465,11 @@ test('a clone-mode spec renders the transport wrapper outside the setup wrapper 
     assert.deepEqual(renderDockerRunArgs({ ...direct, entrypoint: '/entry' }).slice(-10),
         ['--entrypoint', '/bin/bash', 'propr/agent:test', '-lc', 'TRANSPORT', 'exec "$0" "$@"', '/entry', 'claude', '-p', '-']);
     assert.throws(() => renderDockerRunArgs({ ...spec(), workspace: { ...spec().workspace, mode: 'clone' } }), /was not prepared by it/);
+    // The credential-holding wrapper never shares the agent's user ID.
+    for (const user of [undefined, '1000:1000', 'node']) {
+        assert.throws(() => renderDockerRunArgs({ ...cloneSpec(), user }), /uses the clone workspace transport but does not start as root/);
+    }
+    assert.doesNotThrow(() => renderDockerRunArgs({ ...cloneSpec(), user: 'root' }));
 });
 
 test('docker clone-mode handles remove their kept container on release; bind handles have nothing to release', async () => {
@@ -535,4 +540,99 @@ test('the runtime file API extracts the single file docker cp streams as tar', a
     assert.equal(extractSingleFileFromTar(Buffer.concat([header, body, Buffer.alloc(1024)]))?.toString(), 'pushed abcd\n');
     assert.equal(extractSingleFileFromTar(Buffer.alloc(1024)), null);
     assert.throws(() => extractSingleFileFromTar(Buffer.concat([header, Buffer.alloc(4)])), /Truncated/);
+});
+
+const { UNRELEASED_RUN_REMOVAL_MS } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
+
+function removals(): string[][] {
+    return calls.filter(call => call.args[0] === 'rm').map(call => call.args);
+}
+
+test('an unreleased clone-mode container is removed when its timer expires, unless the run is retained', async t => {
+    respond = async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    calls.length = 0;
+    const expiring = new DockerRuntime().start(cloneSpec());
+    await expiring.wait();
+    await Promise.resolve();
+    t.mock.timers.tick(UNRELEASED_RUN_REMOVAL_MS);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(removals(), [['rm', '-f', 'claude-issue-1-abc']], 'nothing released it, so the timer removes it');
+
+    calls.length = 0;
+    const retained = new DockerRuntime().start(cloneSpec());
+    await retained.wait();
+    await Promise.resolve();
+    retained.retain!();
+    retained.retain!();
+    t.mock.timers.tick(UNRELEASED_RUN_REMOVAL_MS * 3);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(removals(), [], 'a retained run outlives the removal timer');
+    await retained.release!();
+    assert.deepEqual(removals(), [['rm', '-f', 'claude-issue-1-abc']], 'an explicit release still removes it');
+
+    calls.length = 0;
+    const bound = new DockerRuntime().start(spec());
+    await bound.wait();
+    bound.retain!();
+    await bound.release!();
+    assert.deepEqual(removals(), [], 'a --rm run has nothing to retain or remove');
+});
+
+test('a failed bundle retrieval keeps the docker run past its removal timer, so the only result copy survives', async t => {
+    const { execFileSync } = await import('node:child_process');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { CloneWorkspaceTransport } = await import('../packages/core/src/git/workspaceCloneTransport.ts');
+    const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', env: gitEnv }).trim();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-docker-retain-'));
+    const remote = path.join(root, 'remote.git');
+    git(root, 'init', '-q', '--bare', '-b', 'main', remote);
+    const worktree = path.join(root, 'worktree');
+    git(root, 'init', '-q', '-b', 'task-1', worktree);
+    fs.writeFileSync(path.join(worktree, 'a.txt'), 'a\n');
+    git(worktree, 'add', '-A');
+    git(worktree, 'commit', '-q', '-m', 'base');
+    git(worktree, 'remote', 'add', 'origin', 'https://github.com/acme/widgets.git');
+    const revoked: string[] = [];
+    const transport = new CloneWorkspaceTransport({
+        mintToken: async () => 'ghs_retain', revokeToken: async token => { revoked.push(token); },
+        workerToken: async () => undefined, remoteUrl: () => remote, createRunId: () => 'run-1',
+    });
+    const run = new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'propr/agent:test', name: 'claude-issue-1-abc', stdin: true, user: '0:0',
+        network: agentRunNetwork('bridge'), workspace: { hostPath: worktree, containerPath: '/home/node/workspace', readOnly: false },
+    }).workspaceMount().command('claude', '-p', '-').build();
+    run.repoSetup = { agentType: 'claude', shell: '/bin/bash', script: 'SETUP', providerEntrypoint: '/home/node/claude-entrypoint.sh', env: [] };
+    const prepared = await transport.prepare(run);
+
+    respond = async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() });
+    calls.length = 0;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const docker = new DockerRuntime().start(prepared.spec, { extraEnvVars: { ...prepared.launchEnvironment } });
+    const result = await docker.wait();
+    // The sandbox could not push and left a bundle; `docker cp` of that bundle then fails.
+    const handle = {
+        spec: docker.spec, stdout: docker.stdout, stderr: docker.stderr,
+        wait: () => docker.wait(), stop: () => docker.stop(), inspect: () => docker.inspect(), isAlive: () => docker.isAlive(),
+        readFile: async (file: string) => {
+            if (file.endsWith('/status')) return Buffer.from(`bundle ${'b'.repeat(40)}\n`);
+            throw new Error(`docker cp claude-issue-1-abc:${file} failed: connection reset`);
+        },
+        release: () => docker.release!(), retain: () => docker.retain!(),
+    };
+    await assert.rejects(prepared.complete(handle, result), /returned no workspace result.*kept for recovery at the kept run claude-issue-1-abc/);
+    // The removal timer installed when the run settled expires (well past its delay).
+    t.mock.timers.tick(UNRELEASED_RUN_REMOVAL_MS * 3);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(removals(), [], 'the container holding the only bundle outlives its removal timer');
+    // Cleanup's git commands run on real timers.
+    t.mock.timers.reset();
+    await prepared.cleanup(handle).catch(() => undefined);
+    assert.deepEqual(removals(), [], 'cleanup does not release the container holding the only bundle');
+    assert.deepEqual(revoked, ['ghs_retain'], 'the token is still revoked');
+    assert.equal(git(root, 'ls-remote', remote, 'refs/propr/*'), '', 'the base ref is deleted');
+    fs.rmSync(root, { recursive: true, force: true });
 });

@@ -13,7 +13,7 @@ import { assertGitHubRepositoryIdentity } from './repositoryPaths.js';
 import { WorkspaceTransportError, type PreparedWorkspace, type WorkspaceRunOutcome, type WorkspaceTransport } from './workspaceTransport.js';
 import {
     WORKSPACE_RESULT_BUNDLE_FILE, WORKSPACE_RESULT_BUNDLE_REF, WORKSPACE_RESULT_STATUS_FILE, WORKSPACE_TRANSPORT_ENVIRONMENT,
-    WORKSPACE_TRANSPORT_RESULT_DIR, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_TOKEN_ENV,
+    WORKSPACE_TRANSPORT_RESULT_DIR, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_TOKEN_ENV, cloneRunStartsAsRoot,
 } from './workspaceTransportScript.js';
 
 /** Namespace of the temporary refs a clone-mode run uses on the repository. */
@@ -142,6 +142,13 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         if (spec.workspace.readOnly) {
             throw new WorkspaceTransportError(`Clone workspace transport cannot enforce a read-only workspace for ${spec.name}; run it with the bind transport`);
         }
+        // The token's only boundary inside the run is the user ID: a process under the
+        // wrapper's identity can read its initial environment (`/proc/<pid>/environ`) and
+        // memory. The wrapper must start as root so the setup hook, agent and snapshot run as
+        // the separate unprivileged agent user. Refuse before a token exists.
+        if (!cloneRunStartsAsRoot(spec.user)) {
+            throw new WorkspaceTransportError(`Clone workspace transport needs ${spec.name} to start as root so its credential-holding wrapper runs under a different user ID from the setup hook and agent; it starts as ${spec.user ? `"${spec.user}"` : 'the image user'}`);
+        }
         const worktree = spec.workspace.hostPath;
         const local = createHooklessGit(worktree);
         let baseCommit: string;
@@ -234,6 +241,11 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         const status = (await this.readResultFile(handle, WORKSPACE_RESULT_STATUS_FILE))?.toString('utf8').trim();
         const [state, commit] = status?.split(/\s+/) ?? [];
         run.reportedState = state;
+        // A run that left a bundle (or whose status is unknown) may hold the only copy of its
+        // result: cancel the runtime's automatic removal before retrieving it, so neither a slow
+        // retrieval nor a failed one loses it. Cleanup releases it explicitly once the worker
+        // holds the result. A pushed result's copy is the result ref; a failed run has none.
+        if (state !== 'pushed' && state !== 'failed') handle.retain?.();
         if (state === 'failed') throw new WorkspaceTransportError(`The run could not return its workspace (${status}; exit ${result.exitCode})`);
         const git = await this.workerGit(run);
         let via: WorkspaceRunOutcome['via'];

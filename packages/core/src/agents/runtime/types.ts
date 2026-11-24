@@ -227,6 +227,13 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
     readFile?(path: string): Promise<Buffer | null>;
     /** Discards what the runtime kept of a finished run (e.g. the stopped container). Idempotent. */
     release?(): Promise<void>;
+    /**
+     * Keeps what the runtime kept of the run until {@link AgentRunHandle.release} is
+     * called explicitly, cancelling any automatic removal of an unreleased run. A
+     * runtime that removes unreleased runs on its own must offer this, so a caller
+     * holding the only copy of a result there can keep it. Idempotent.
+     */
+    retain?(): void;
 }
 
 export interface AgentRuntime<Options = unknown, Result extends AgentRunResult = AgentRunResult> {

@@ -6,6 +6,17 @@
  *    setup hook nor the agent inherits it, and keeps it only as a git
  *    `http.extraheader` passed through the environment of its own git commands
  *    (never argv, never `.git/config`, never a file).
+ *
+ *    Removing the variable does not erase the process's initial environment
+ *    (`/proc/<pid>/environ`) or its memory, which every process running under
+ *    the same user ID can read. The credential boundary is therefore the user
+ *    ID: the wrapper must start as root and be able to drop to the
+ *    unprivileged `node` user ({@link WORKSPACE_AGENT_USER}). It refuses to
+ *    run anything otherwise, before any credentialed operation. Everything
+ *    agent-controlled runs as `node`: the setup hook (the repository setup and
+ *    workflow wrappers drop to it), the agent (every provider entrypoint drops
+ *    to it when started as root) and the workspace snapshot (this wrapper drops
+ *    to it).
  * 2. Fetches the base ref the worker published into a private, wrapper-owned
  *    bare repository, clones that into the workspace without credentials and
  *    checks out the task branch at exactly the base commit.
@@ -37,6 +48,19 @@ export const WORKSPACE_RESULT_BUNDLE_FILE = 'result.bundle';
 export const WORKSPACE_RESULT_BUNDLE_REF = 'refs/propr/result';
 /** Exit status of a run whose workspace could not be prepared (the agent never started). */
 export const WORKSPACE_BOOTSTRAP_FAILURE_EXIT = 86;
+/** Unprivileged identity the setup hook, agent and snapshot run as; never the credential-holding wrapper's. */
+export const WORKSPACE_AGENT_USER = 'node';
+
+/**
+ * Whether a run's `user` (`uid[:gid]` or `name[:group]`) starts the transport
+ * wrapper as root, the one identity that can drop the setup hook and agent to
+ * {@link WORKSPACE_AGENT_USER} and keep its credential out of their reach.
+ * An unset user is the image's own (`node` for ProPR agent images), so it does not.
+ */
+export function cloneRunStartsAsRoot(user: string | undefined): boolean {
+    const uid = user?.split(':')[0]?.trim();
+    return uid === '0' || uid === 'root';
+}
 
 /** Variables the wrapper reads, besides the token. */
 export const WORKSPACE_TRANSPORT_ENVIRONMENT = {
@@ -92,16 +116,16 @@ transport_git() {
 local_git() {
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"
 }
+# The token's boundary is the user ID: a process under the wrapper's identity can
+# read its initial environment (/proc/<pid>/environ still holds the variable
+# after unset) and its memory. Only a root wrapper with a separate unprivileged
+# agent user keeps it out of the setup hook's and agent's reach.
 drops_privileges() {
-    [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1 && [ "$(id -u node)" != "0" ]
+    [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id ${WORKSPACE_AGENT_USER} >/dev/null 2>&1 && [ "$(id -u ${WORKSPACE_AGENT_USER})" != "0" ]
 }
 # Run a command as the agent's identity (as the repository setup wrapper does).
 as_agent() {
-    if drops_privileges; then
-        su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
-    else
-        "$@"
-    fi
+    su-exec ${WORKSPACE_AGENT_USER} env HOME=/home/${WORKSPACE_AGENT_USER} USER=${WORKSPACE_AGENT_USER} LOGNAME=${WORKSPACE_AGENT_USER} "$@"
 }
 drop_secrets() {
     auth_header=""
@@ -134,6 +158,8 @@ printf "%s\\n" "$snapshot"
 '
 
 mkdir -p "$result_dir" && chmod 700 "$result_dir" || { echo "ProPR workspace transport: cannot create $result_dir" >&2; exit ${WORKSPACE_BOOTSTRAP_FAILURE_EXIT}; }
+# Before any credentialed operation, and before anything agent-controlled starts.
+drops_privileges || bootstrap_failed "the wrapper must start as root with an unprivileged ${WORKSPACE_AGENT_USER} user and su-exec, so the setup hook and agent run under a different user ID from its credential; refusing to run"
 trusted="$(mktemp -d "\${TMPDIR:-/tmp}/propr-workspace-transport.XXXXXX")" && chmod 700 "$trusted" || bootstrap_failed "cannot create the transport repository"
 git init -q --bare "$trusted/repo.git" >/dev/null 2>&1 || bootstrap_failed "cannot create the transport repository"
 transport_git fetch -q --no-tags "$remote" "+$base_ref:refs/propr/base" || bootstrap_failed "cannot fetch the task base"
@@ -146,9 +172,7 @@ local_git remote add origin "$remote" || bootstrap_failed "cannot add origin"
 local_git fetch -q --no-tags "$trusted/repo.git" "+refs/propr/base:refs/propr/base" || bootstrap_failed "cannot copy the task base"
 local_git checkout -q -B "$branch" "$base_commit" || bootstrap_failed "cannot check out $branch"
 local_git update-ref -d refs/propr/base
-if drops_privileges; then
-    chown -R node:node "$workspace" 2>/dev/null || true
-fi
+chown -R ${WORKSPACE_AGENT_USER}:${WORKSPACE_AGENT_USER} "$workspace" 2>/dev/null || true
 echo "ProPR workspace transport: cloned $base_commit into $workspace" >&2
 
 exec 3<&0
@@ -171,7 +195,7 @@ if [ -n "$result_ref" ]; then
     snapshot=""
     stage="$(mktemp -d "\${TMPDIR:-/tmp}/propr-workspace-stage.XXXXXX")" || stage=""
     if [ -n "$stage" ]; then
-        if drops_privileges; then chown node:node "$stage" 2>/dev/null || true; fi
+        chown ${WORKSPACE_AGENT_USER}:${WORKSPACE_AGENT_USER} "$stage" 2>/dev/null || true
         reported="$(cd / && as_agent /bin/bash -c "$snapshot_script" propr-snapshot "$workspace" "$base_commit" "$stage/snapshot.bundle" </dev/null 2>/dev/null)"
         # The bundle is agent-written data; only what it carries crosses into the private repository.
         if [ -n "$reported" ] \\

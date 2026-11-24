@@ -15,8 +15,8 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 const INSPECT_TIMEOUT_MS = 15_000;
 /** How long a run may take to exit after a successful `docker stop` before its launch is cancelled outright. */
 const STOPPED_RUN_SETTLE_MS = 5_000;
-/** A kept clone-mode container nobody released is removed after this long. */
-const UNRELEASED_RUN_REMOVAL_MS = 10 * 60_000;
+/** A kept clone-mode container nobody released or retained is removed after this long. */
+export const UNRELEASED_RUN_REMOVAL_MS = 10 * 60_000;
 const REMOVE_TIMEOUT_MS = 30_000;
 
 export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.freeze({
@@ -145,6 +145,8 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     private readonly kept: boolean;
     private released?: Promise<void>;
     private releaseTimer?: NodeJS.Timeout;
+    /** Set by {@link retain}: the container stays until an explicit {@link release}. */
+    private retained = false;
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions) {
         this.dockerEnvironment = options.extraEnvVars && Object.keys(options.extraEnvVars).length > 0
@@ -174,7 +176,7 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         const settle = (): void => {
             this.settled = true;
             this.output.end();
-            if (this.kept && !this.released) {
+            if (this.kept && !this.released && !this.retained) {
                 this.releaseTimer = setTimeout(() => { void this.release().catch(() => undefined); }, UNRELEASED_RUN_REMOVAL_MS);
                 this.releaseTimer.unref();
             }
@@ -260,6 +262,14 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     async readFile(filePath: string): Promise<Buffer | null> {
         if (!this.kept || !this.settled || this.released) return null;
         return readDockerContainerFile(this.spec.name, filePath, this.dockerEnvironment);
+    }
+
+    /** Cancels the automatic removal of the kept container (installed when the run settles). */
+    retain(): void {
+        if (!this.kept) return;
+        this.retained = true;
+        if (this.releaseTimer) clearTimeout(this.releaseTimer);
+        this.releaseTimer = undefined;
     }
 
     release(): Promise<void> {

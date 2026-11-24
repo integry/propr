@@ -82,11 +82,12 @@ if [ "\${AGENT_COMMITS:-0}" = 1 ]; then git add -A && git -c user.name=a -c user
 exit "\${AGENT_EXIT:-0}"
 `;
 
-function runSpec(f: Fixture, overrides: { readOnly?: boolean; gitWritable?: boolean; env?: Record<string, string> } = {}): AgentRunSpec {
+function runSpec(f: Fixture, overrides: { readOnly?: boolean; gitWritable?: boolean; env?: Record<string, string>; user?: string | null } = {}): AgentRunSpec {
     const agent = path.join(f.root, 'agent.sh');
     write(agent, AGENT_SCRIPT, 0o755);
+    const user = overrides.user === undefined ? '0:0' : overrides.user ?? undefined;
     const builder = new AgentRunSpecBuilder({
-        agentType: 'claude', image: 'propr/agent:test', name: 'claude-issue-1-abc', stdin: true,
+        agentType: 'claude', image: 'propr/agent:test', name: 'claude-issue-1-abc', stdin: true, ...(user ? { user } : {}),
         network: agentRunNetwork('bridge'),
         workspace: { hostPath: f.worktree, containerPath: f.sandbox, readOnly: overrides.readOnly ?? false },
     }).workspaceMount()
@@ -103,24 +104,48 @@ type Result = AgentRunResult;
 interface LocalRuntime extends AgentRuntime<{ extraEnvVars?: Record<string, string>; stdinData?: string; abortAfterMs?: number }, Result> {
     started: Array<{ spec: AgentRunSpec; extraEnvVars?: Record<string, string> }>;
     released: number;
+    retained: number;
+    /** What the simulated privilege drop was asked to run, one line per `su-exec` call. */
+    drops(): string;
+}
+
+/**
+ * The container's identities, simulated: this test container has no root, so
+ * `id` reports the wrapper as root and `node` as a separate unprivileged user,
+ * and `su-exec` records the drop before running the command (under the test's
+ * own UID; no real UID boundary). `agentUid: 0` simulates an image whose `node`
+ * user is root.
+ */
+function simulatedRoot(f: Fixture, { agentUid = 1000 }: { agentUid?: number } = {}): { bin: string; log: string } {
+    const bin = path.join(f.root, 'bin');
+    const log = path.join(f.root, 'su-exec.log');
+    write(path.join(bin, 'id'), `#!/bin/bash\ncase "$*" in\n  -u) echo 0 ;;\n  node) echo "uid=${agentUid}(node)" ;;\n  "-u node") echo ${agentUid} ;;\n  *) exec /usr/bin/id "$@" ;;\nesac\n`, 0o755);
+    write(path.join(bin, 'su-exec'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nshift\nexec "$@"\n`, 0o755);
+    write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
+    return { bin, log };
 }
 
 /**
  * Runs the rendered transport wrapper locally with bash, exactly as the
  * container entrypoint would, mapping the sandbox result directory to a host
- * directory for the runtime file API.
+ * directory for the runtime file API. The wrapper starts as a simulated root
+ * ({@link simulatedRoot}) unless `root` is false, when it runs as the test's
+ * real unprivileged user.
  */
-function localRuntime(f: Fixture, setup: { pathPrefix?: string } = {}): LocalRuntime {
+function localRuntime(f: Fixture, setup: { root?: boolean; agentUid?: number } = {}): LocalRuntime {
     const tmp = path.join(f.root, 'tmp');
     fs.mkdirSync(tmp, { recursive: true });
+    const identities = setup.root === false ? undefined : simulatedRoot(f, { agentUid: setup.agentUid });
+    const pathPrefix = identities?.bin;
     const runtime: LocalRuntime = {
-        kind: 'local', started: [], released: 0,
+        kind: 'local', started: [], released: 0, retained: 0,
+        drops: () => (identities && fs.existsSync(identities.log) ? fs.readFileSync(identities.log, 'utf8') : ''),
         capabilities: { supportsBindMounts: false, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] },
         start(spec, options = {}) {
             runtime.started.push({ spec, extraEnvVars: options.extraEnvVars });
             const clone = spec.workspace.clone!;
             const systemPath = process.env.PATH ?? '/usr/bin:/bin';
-            const env: Record<string, string> = { PATH: setup.pathPrefix ? `${setup.pathPrefix}:${systemPath}` : systemPath, HOME: f.root, TMPDIR: tmp };
+            const env: Record<string, string> = { PATH: pathPrefix ? `${pathPrefix}:${systemPath}` : systemPath, HOME: f.root, TMPDIR: tmp };
             for (const variable of [...spec.env].sort((a, b) => a.order - b.order)) {
                 const value = variable.value ?? options.extraEnvVars?.[variable.name];
                 if (value !== undefined) env[variable.name] = value;
@@ -152,6 +177,7 @@ function localRuntime(f: Fixture, setup: { pathPrefix?: string } = {}): LocalRun
                     return fs.existsSync(local) ? fs.readFileSync(local) : null;
                 },
                 release: async () => { runtime.released++; },
+                retain: () => { runtime.retained++; },
             };
             return handle;
         },
@@ -267,6 +293,7 @@ test('a pushed result whose worker fetch fails keeps the result ref and the kept
     assert.equal(git(f.worktree, 'status', '--porcelain'), '', 'nothing was applied');
     assert.deepEqual(f.revoked, [TOKEN], 'credentials are revoked even though the result is kept');
     assert.equal(runtime.released, 0, 'the kept run is not released while it may hold the only bundle');
+    assert.equal(runtime.retained, 0, 'a pushed result\'s recoverable copy is the result ref; the run is not retained indefinitely');
     assert.equal(remoteRunRefs(f), `${snapshot}\trefs/propr/runs/run-1/result`, 'only the base ref is deleted');
     // The kept ref really recovers the run's work.
     git(f.worktree, 'fetch', '-q', f.remote, 'refs/propr/runs/run-1/result');
@@ -428,17 +455,110 @@ test('agent-controlled git configuration cannot select programs or URLs for cred
 
 test('a privileged wrapper snapshots the workspace as the agent user, so agent filters run unprivileged', async () => {
     const f = fixture();
-    // Simulate a root wrapper with an unprivileged node user: `id` reports root, `su-exec` records the drop.
-    const bin = path.join(f.root, 'bin');
-    const drops = path.join(f.root, 'su-exec.log');
-    write(path.join(bin, 'id'), '#!/bin/bash\ncase "$*" in\n  -u) echo 0 ;;\n  node) echo "uid=1000(node)" ;;\n  "-u node") echo 1000 ;;\n  *) exec /usr/bin/id "$@" ;;\nesac\n', 0o755);
-    write(path.join(bin, 'su-exec'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(drops)}\nshift\nexec "$@"\n`, 0o755);
-    write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
-    const runtime = localRuntime(f, { pathPrefix: bin });
+    const runtime = localRuntime(f);
     const { spec, evidence } = hostileRun(f);
     const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
     assert.equal(result.exitCode, 0, result.stderr);
-    assert.match(fs.readFileSync(drops, 'utf8'), /^node env HOME=\/home\/node USER=node LOGNAME=node \/bin\/bash -c [^]*\n propr-snapshot \//);
+    assert.match(runtime.drops(), /^node env HOME=\/home\/node USER=node LOGNAME=node \/bin\/bash -c [^]*\n propr-snapshot \//);
     assert.match(fs.readFileSync(path.join(evidence, 'clean-filter.env'), 'utf8'), /^USER=node$/m, 'the clean filter ran as the agent user');
     assertCredentialIsolated(f, evidence, runtime);
+});
+
+/**
+ * Setup hook and agent that try to recover the token from the outer transport
+ * wrapper (their parent): its initial environment still holds the variable
+ * after `unset`, and a process under the same user ID can read it.
+ */
+function wrapperEnvironmentThief(f: Fixture): { spec: AgentRunSpec; evidence: string } {
+    const evidence = path.join(f.root, 'evidence');
+    fs.mkdirSync(evidence);
+    const agent = path.join(f.root, 'thief.sh');
+    write(agent, `#!/bin/bash\ntr '\\0' '\\n' < /proc/$PPID/environ > ${JSON.stringify(path.join(evidence, 'agent.env'))} 2>&1\necho stolen > a.txt\n`, 0o755);
+    const spec = runSpec(f);
+    spec.repoSetup!.providerEntrypoint = agent;
+    spec.repoSetup!.script = `tr '\\0' '\\n' < /proc/$PPID/environ > ${JSON.stringify(path.join(evidence, 'setup.env'))} 2>&1\nexec "$0" "$@"`;
+    return { spec, evidence };
+}
+
+function assertRefusedBeforeCredentialUse(f: Fixture, runtime: LocalRuntime, result: AgentRunResult, evidence: string): void {
+    assert.equal(result.exitCode, WORKSPACE_BOOTSTRAP_FAILURE_EXIT);
+    assert.match(result.stderr, /must start as root with an unprivileged node user and su-exec.*refusing to run/);
+    assert.deepEqual(fs.readdirSync(evidence), [], 'neither the setup hook nor the agent ran to read the wrapper environment');
+    assert.equal(grepToken(evidence), '');
+    assert.equal(fs.readFileSync(path.join(f.resultDir, 'status'), 'utf8'), 'failed bootstrap\n');
+    assert.deepEqual(fs.readdirSync(path.join(f.root, 'tmp')), [], 'no private transport repository was created, so nothing was fetched');
+    assert.ok(!fs.existsSync(f.sandbox), 'nothing was cloned');
+    assert.equal(git(f.worktree, 'status', '--porcelain'), '');
+    assert.equal(remoteRunRefs(f), '');
+    assert.deepEqual(f.revoked, [TOKEN]);
+    assert.equal(runtime.retained, 0, 'a run with nothing to recover is left to the runtime\'s automatic removal');
+}
+
+test('a wrapper running as the agent\'s user ID refuses before any credentialed operation, so nothing can read its environment', async () => {
+    const f = fixture();
+    // The real unprivileged test user, like a run whose wrapper and agent share a non-root identity.
+    const runtime = localRuntime(f, { root: false });
+    const { spec, evidence } = wrapperEnvironmentThief(f);
+    const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
+    assertRefusedBeforeCredentialUse(f, runtime, result, evidence);
+});
+
+test('a root wrapper whose agent user is also root refuses to run', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f, { agentUid: 0 });
+    const { spec, evidence } = wrapperEnvironmentThief(f);
+    const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
+    assertRefusedBeforeCredentialUse(f, runtime, result, evidence);
+    assert.equal(runtime.drops(), '', 'nothing was started under the agent identity');
+});
+
+test('a clone-mode run that does not start as root is refused before anything is published, minted or started', async () => {
+    for (const user of ['1000:1000', 'node', null]) {
+        const f = fixture();
+        const runtime = localRuntime(f);
+        await assert.rejects(runWithWorkspaceTransport(runtime, runSpec(f, { user }), {}, { transport: f.transport }),
+            (error: unknown) => error instanceof WorkspaceTransportError
+                && /needs claude-issue-1-abc to start as root so its credential-holding wrapper runs under a different user ID/.test(error.message)
+                && error.message.includes(user ? `"${user}"` : 'the image user'));
+        assert.equal(runtime.started.length, 0, `${user}: no run starts`);
+        assert.deepEqual(f.minted, [], `${user}: no token is minted`);
+        assert.equal(remoteRunRefs(f), '', `${user}: no base ref is published`);
+    }
+    const f = fixture();
+    for (const user of ['0', 'root', 'root:root', '0:1000']) {
+        const prepared = await f.transport.prepare(runSpec(f, { user }));
+        await prepared.cleanup();
+    }
+});
+
+test('a bundle result whose retrieval fails keeps the run retained and unreleased, and names it for recovery', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const prepared = await f.transport.prepare(runSpec(f));
+    const runRefs = path.join(f.remote, 'refs/propr/runs/run-1');
+    fs.chmodSync(runRefs, 0o555);
+    const handle = runtime.start(prepared.spec, { extraEnvVars: { ...prepared.launchEnvironment } });
+    const result = await handle.wait();
+    fs.chmodSync(runRefs, 0o755);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(fs.readFileSync(path.join(f.resultDir, 'status'), 'utf8'), /^bundle [0-9a-f]{40}\n$/, 'the bundle in the run is the only copy');
+    // `docker cp` of the bundle fails (the status file was readable).
+    const failingCopy: AgentRunHandle = {
+        ...handle,
+        readFile: async file => {
+            if (file.endsWith('/result.bundle')) throw new Error('docker cp claude-issue-1-abc:/tmp/propr-workspace-result/result.bundle failed: connection reset');
+            return handle.readFile!(file);
+        },
+    };
+    await assert.rejects(prepared.complete(failingCopy, result), (error: unknown) => {
+        const message = (error as Error).message;
+        return /returned no workspace result.*kept for recovery at the kept run claude-issue-1-abc$/.test(message) && !message.includes('refs/propr/runs/run-1/result');
+    });
+    assert.equal(runtime.retained, 1, 'automatic removal of the kept run is cancelled before the bundle is read');
+    await prepared.cleanup(failingCopy);
+    assert.equal(runtime.released, 0, 'the run holding the only bundle is not released');
+    assert.ok(fs.existsSync(path.join(f.resultDir, 'result.bundle')), 'the bundle is still there to recover');
+    assert.equal(git(f.worktree, 'status', '--porcelain'), '');
+    assert.deepEqual(f.revoked, [TOKEN]);
+    assert.equal(remoteRunRefs(f), '', 'the base ref is deleted; no result ref was ever pushed');
 });

@@ -1,3 +1,4 @@
+import { cloneRunStartsAsRoot } from '../../git/workspaceTransportScript.js';
 import type { AgentRunEnvVar, AgentRunMount, AgentRunResources, AgentRunSpec } from './types.js';
 
 /** A run without a repository setup wrapper: the transport wrapper execs the entrypoint passed as `$0`. */
@@ -58,6 +59,8 @@ function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArg
     const { repoSetup } = spec;
     const clone = spec.workspace.mode === 'clone' ? spec.workspace.clone : undefined;
     if (spec.workspace.mode === 'clone' && !clone) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but was not prepared by it`);
+    // The transport wrapper holds a repository token; it must not share a user ID with the agent.
+    if (clone && !cloneRunStartsAsRoot(spec.user)) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but does not start as root`);
     if (!clone) {
         return { entrypoint: repoSetup ? repoSetup.shell : spec.entrypoint, wrapperArgs: repoSetup ? ['-lc', repoSetup.script, repoSetup.providerEntrypoint] : [] };
     }
