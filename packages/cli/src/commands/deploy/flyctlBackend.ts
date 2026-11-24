@@ -25,6 +25,16 @@ export interface FlyctlRunOptions {
   cwd?: string;
 }
 
+export interface FlyctlMachine {
+  id: string;
+  config?: {
+    metadata?: Record<string, string>;
+    mounts?: Array<{ volume?: string; path?: string }>;
+    volumes?: unknown;
+    containers?: unknown;
+  };
+}
+
 export type FlyctlRunner = (args: string[], options?: FlyctlRunOptions) => FlyctlRunResult;
 
 export function createFlyctlRunner(bin: string, env: NodeJS.ProcessEnv = process.env): FlyctlRunner {
@@ -111,15 +121,38 @@ export class FlyctlBackend {
     check(this.run(["apps", "create", app, "--org", org]), "apps create");
   }
 
-  /** `sizeGb` is NaN when flyctl does not report a size. */
-  listVolumes(app: string): Array<{ id: string; name: string; region: string; sizeGb: number }> {
+  /**
+   * `sizeGb` is NaN when flyctl does not report a size; `attachedMachineId`
+   * is undefined when the volume is not attached to a Machine.
+   */
+  listVolumes(app: string): Array<{ id: string; name: string; region: string; sizeGb: number; attachedMachineId?: string }> {
     const result = check(this.run(["volumes", "list", "--app", app, "--json"]), "volumes list");
-    return parseJsonArray(result.stdout, "volumes list").map((entry) => ({
-      id: String(entry.id ?? entry.ID ?? ""),
-      name: String(entry.name ?? entry.Name ?? ""),
-      region: String(entry.region ?? entry.Region ?? ""),
-      sizeGb: Number(entry.size_gb ?? entry.SizeGb ?? entry.sizeGb ?? Number.NaN),
-    }));
+    return parseJsonArray(result.stdout, "volumes list").map((entry) => {
+      const attached = entry.attached_machine_id ?? entry.AttachedMachine;
+      return {
+        id: String(entry.id ?? entry.ID ?? ""),
+        name: String(entry.name ?? entry.Name ?? ""),
+        region: String(entry.region ?? entry.Region ?? ""),
+        sizeGb: Number(entry.size_gb ?? entry.SizeGb ?? entry.sizeGb ?? Number.NaN),
+        ...(typeof attached === "string" && attached ? { attachedMachineId: attached } : {}),
+      };
+    });
+  }
+
+  /** The app's Machines with their live config, as `fly machine list --json` prints them. */
+  listMachines(app: string): FlyctlMachine[] {
+    const result = check(this.run(["machine", "list", "--app", app, "--json"]), "machine list");
+    return parseJsonArray(result.stdout, "machine list")
+      .map((entry) => ({
+        id: String(entry.id ?? entry.ID ?? ""),
+        config: (entry.config ?? entry.Config) as FlyctlMachine["config"],
+      }))
+      .filter((machine) => machine.id);
+  }
+
+  /** Destroy a Machine (stopping it first). Its volume is kept and becomes unattached. */
+  destroyMachine(app: string, machineId: string): void {
+    check(this.run(["machine", "destroy", machineId, "--app", app, "--force"]), "machine destroy");
   }
 
   /** Grow a volume to `sizeGb`; Fly volumes can only be extended, never shrunk. */

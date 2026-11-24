@@ -437,10 +437,17 @@ export function renderFlyToml(plan: FlyDeployPlan, machineConfigPath: string = F
   return lines.join("\n");
 }
 
-/** The machine_config JSON referenced from fly.toml (root-level `containers`). */
+/**
+ * The machine_config JSON referenced from fly.toml (root-level `containers`).
+ * flyctl merges it into the live Machine config and keeps keys it leaves out,
+ * so the keys this deploy never sets but an earlier layout did (top-level
+ * `volumes`, per-container `mounts`) are sent as `[]`, which clears them
+ * (flyStaleMachineConfig.ts).
+ */
 export function renderFlyMachineConfigJson(plan: FlyDeployPlan): string {
   const doc: JsonObject = {
-    containers: buildContainers(plan),
+    containers: buildContainers(plan).map((container) => ({ ...container, mounts: [] })),
+    volumes: [],
     stop_config: { signal: "SIGTERM", timeout: "60s" },
     metadata: buildMachineMetadata(),
   };

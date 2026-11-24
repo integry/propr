@@ -74,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     its cost while stopped ($0.15/GB-month).
     Legacy mode now accepts `--memory 1024` (default still 2048 MB):
     `dockerd` ran next to the app and Redis on a 1 GB Machine.
+  - A flyctl redeploy removes Machine config an earlier layout left behind.
+    `flyctl deploy` merges `machine_config` into the live Machine and keeps
+    keys it leaves out, so a Machine from the `temp_dir` layout kept its
+    `volumes` and container `mounts` and the `docker` container crash-looped.
+    `propr-machine.json` now sends both as `[]`. After deploying, the command
+    compares the Machine with the plan; if stale keys remain, it destroys the
+    Machine, waits for the data volume to detach and deploys again on the same
+    volume.
 
 ### Changed
 

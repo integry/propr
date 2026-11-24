@@ -17,18 +17,22 @@
  *   4. deploy     the published app image directly (no build, no DinD);
  *                 the app container lists every secret name (set now or
  *                 kept), since a multi-container Machine passes app secrets
- *                 only to the containers that list them
+ *                 only to the containers that list them. With flyctl, config
+ *                 keys an earlier layout left on the Machine are cleared, or
+ *                 the Machine is replaced with the volume kept
+ *                 (flyStaleMachineConfig.ts)
  *
  * Two targets implement the steps: flyctl (when installed) and the Machines
  * API with a user-provided token. Both are idempotent, so re-running the
  * command updates the existing deployment in place.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { FlyctlBackend } from "./flyctlBackend.js";
+import { FlyctlBackend, type FlyctlMachine } from "./flyctlBackend.js";
 import { selectFlyIntakeMode } from "./flyIntake.js";
 import { flyAuthorizationHeader, FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
+import { staleMachineConfigKeys, type LiveMachineConfig } from "./flyStaleMachineConfig.js";
 import { assertVolumeFitsFlyPlan, exceedsFreePlanVolumeCap, fetchFlyOrgPlan, FLY_FREE_PLAN_MAX_VOLUME_GB, type FlyOrgPlan } from "./flyOrgPlan.js";
 import {
   buildMachineConfig,
@@ -56,7 +60,7 @@ export interface FlyDeployTarget {
   extendVolume(app: string, volumeId: string, sizeGb: number): Promise<number>;
   secretNames(app: string): Promise<string[]>;
   setSecrets(app: string, values: Record<string, string>): Promise<void>;
-  deploy(plan: FlyDeployPlan, volume: { id?: string }): Promise<string>;
+  deploy(plan: FlyDeployPlan, volume: { id?: string }, log?: (line: string) => void): Promise<string>;
 }
 
 export interface FlyVolumeRef {
@@ -186,7 +190,7 @@ export async function runFlyDeploy(
   if (secretsSet.length) log(`Set ${secretsSet.length} secret(s): ${secretsSet.join(", ")}.`);
   if (secretsKept.length) log(`Kept existing secret(s): ${secretsKept.sort().join(", ")}.`);
 
-  const deployed = await target.deploy(deployPlan, volume);
+  const deployed = await target.deploy(deployPlan, volume, log);
   log(deployed);
   return { appCreated, volumeCreated: volume.created, secretsSet, secretsKept, volumeSizeGb, deployed };
 }
@@ -207,7 +211,84 @@ export function writeFlyFiles(plan: FlyDeployPlan, outDir: string): { flyToml: s
   return { flyToml, machineConfig };
 }
 
-export function createFlyctlTarget(backend: FlyctlBackend, outDir: string, fetchImpl: typeof fetch = fetch): FlyDeployTarget {
+export interface FlyctlTargetOptions {
+  /** How long to wait for a replaced Machine's volume to detach. */
+  detachTimeoutMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** The control-plane Machine among flyctl's list, if any (see isControlPlane). */
+function flyctlControlPlane(backend: FlyctlBackend, app: string, volumeId?: string): FlyctlMachine | undefined {
+  const machines = backend.listMachines(app).filter((m) => isControlPlane(m, volumeId));
+  if (machines.length > 1) {
+    throw new Error(`app ${app} has ${machines.length} control-plane Machines; one SQLite volume supports exactly one. Destroy the extras first.`);
+  }
+  return machines[0];
+}
+
+/**
+ * `fly deploy`, then make sure the Machine has no `volumes` or container
+ * `mounts` the plan dropped. flyctl merges machine_config into the live
+ * config; the JSON sends `[]` for those keys, which clears them, and if any
+ * survive anyway the Machine is destroyed and deployed again. The volume is
+ * kept: the new Machine is only created once the old one has released it, so
+ * flyctl attaches the existing volume instead of creating an empty one.
+ */
+async function deployFlyctlWithoutStaleKeys(
+  backend: FlyctlBackend,
+  plan: FlyDeployPlan,
+  volume: { id?: string },
+  files: { flyToml: string; machineConfig: string },
+  log: (line: string) => void,
+  options: FlyctlTargetOptions,
+): Promise<boolean> {
+  const planned = JSON.parse(readFileSync(files.machineConfig, "utf-8")) as LiveMachineConfig;
+  const run = () => backend.deploy({ app: plan.app, configPath: files.flyToml, image: plan.images.app, region: plan.region });
+  const before = flyctlControlPlane(backend, plan.app, volume.id);
+  const staleBefore = staleMachineConfigKeys(before?.config, planned);
+  if (before && staleBefore.length) log(`Machine ${before.id} has config the new layout drops: ${staleBefore.join("; ")}. Clearing it.`);
+  run();
+  const after = flyctlControlPlane(backend, plan.app, volume.id);
+  const stale = staleMachineConfigKeys(after?.config, planned);
+  if (!after || !stale.length) return false;
+
+  log(`flyctl kept ${stale.join("; ")} on Machine ${after.id}; replacing the Machine (volume ${plan.volumeName} is kept).`);
+  backend.destroyMachine(plan.app, after.id);
+  await waitForVolumeDetached(backend, plan, volume.id, after.id, options);
+  run();
+  const replaced = flyctlControlPlane(backend, plan.app, volume.id);
+  const left = staleMachineConfigKeys(replaced?.config, planned);
+  if (left.length) {
+    throw new Error(`Machine ${replaced?.id ?? "?"} still has ${left.join("; ")} after being replaced; check \`fly machine status ${replaced?.id ?? "<machine-id>"} --app ${plan.app} --display-config\`.`);
+  }
+  return true;
+}
+
+async function waitForVolumeDetached(
+  backend: FlyctlBackend,
+  plan: FlyDeployPlan,
+  volumeId: string | undefined,
+  machineId: string,
+  options: FlyctlTargetOptions,
+): Promise<void> {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const deadline = Date.now() + (options.detachTimeoutMs ?? 120_000);
+  for (;;) {
+    const found = backend.listVolumes(plan.app).find((v) => (volumeId ? v.id === volumeId : v.name === plan.volumeName && v.region === plan.region));
+    if (found && found.attachedMachineId !== machineId) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`volume ${plan.volumeName} is still ${found ? `attached to destroyed Machine ${machineId}` : "missing"}; check \`fly volumes list --app ${plan.app}\` and rerun.`);
+    }
+    await sleep(2000);
+  }
+}
+
+export function createFlyctlTarget(
+  backend: FlyctlBackend,
+  outDir: string,
+  fetchImpl: typeof fetch = fetch,
+  options: FlyctlTargetOptions = {},
+): FlyDeployTarget {
   return {
     kind: "flyctl",
     async orgPlan(org) {
@@ -240,10 +321,10 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string, fetch
     async setSecrets(app, values) {
       backend.setSecrets(app, values);
     },
-    async deploy(plan) {
+    async deploy(plan, volume, log = () => {}) {
       const files = writeFlyFiles(plan, outDir);
-      backend.deploy({ app: plan.app, configPath: files.flyToml, image: plan.images.app, region: plan.region });
-      return `Deployed ${plan.images.app} with flyctl (config: ${files.flyToml}).`;
+      const replaced = await deployFlyctlWithoutStaleKeys(backend, plan, volume, files, log, options);
+      return `${replaced ? "Replaced the Machine and deployed" : "Deployed"} ${plan.images.app} with flyctl (config: ${files.flyToml}).`;
     },
   };
 }
@@ -253,7 +334,7 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string, fetch
  * or, whatever created it, already has the deployment's data volume attached:
  * a second Machine could never mount that volume, so it must be updated.
  */
-function isControlPlane(machine: FlyMachine, volumeId?: string): boolean {
+function isControlPlane(machine: Pick<FlyMachine, "config">, volumeId?: string): boolean {
   if (machine.config?.metadata?.[FLY_CONTROL_PLANE_ROLE_KEY] === FLY_CONTROL_PLANE_ROLE) return true;
   return !!volumeId && (machine.config?.mounts ?? []).some((m) => m.volume === volumeId);
 }

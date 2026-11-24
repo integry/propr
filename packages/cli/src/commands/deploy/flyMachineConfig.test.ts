@@ -166,12 +166,14 @@ test("legacy Docker mode shares worktrees and egress sockets through the Fly vol
   // live Machine ("cannot stat /upper/dev/vdb/propr_shared"). The shared paths
   // sit on the Machine-level Fly volume mount, which every container sees at
   // FLY_DATA_PATH, so no container-level mount or Machine `volumes` is emitted.
+  // The flyctl JSON sends them as `[]`, which clears what an earlier layout
+  // left on the Machine (flyctl merges machine_config into the live config).
   const plan = basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048 });
   const config = buildMachineConfig(plan);
   const doc = JSON.parse(renderFlyMachineConfigJson(plan)) as JsonObject;
-  for (const shape of [config, doc]) {
-    assert.equal(shape.volumes, undefined);
-    for (const c of shape.containers as JsonObject[]) assert.equal(c.mounts, undefined, `${String(c.name)} has no container mounts`);
+  for (const [shape, empty] of [[config, undefined], [doc, []]] as const) {
+    assert.deepEqual(shape.volumes, empty);
+    for (const c of shape.containers as JsonObject[]) assert.deepEqual(c.mounts, empty, `${String(c.name)} has no container mounts`);
   }
   assert.deepEqual(config.mounts, [{ volume: "propr_data", path: FLY_DATA_PATH }]);
   assert.match(renderFlyToml(plan), /\[\[mounts\]\]\n {2}source = "propr_data"\n {2}destination = "\/usr\/src\/app\/data"/);
