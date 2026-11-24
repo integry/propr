@@ -27,7 +27,7 @@ function flyApp() {
   const target: FlyDeployTarget = {
     kind: "machines-api",
     async ensureApp() { return Object.keys(secrets).length === 0; },
-    async ensureVolume() { return { id: "vol_1", created: false, sizeGb: 1 }; },
+    async ensureVolume(_app, input) { return { id: "vol_1", created: false, sizeGb: input.sizeGb }; },
     async extendVolume() { throw new Error("not expected"); },
     async secretNames() { return Object.keys(secrets); },
     async setSecrets(_app, values) { Object.assign(secrets, values); },
@@ -52,7 +52,7 @@ const relayDeps: FlyRelayDeps = {
 
 /** One run, sequenced as runDeployFly sequences it. */
 async function deploy(app: ReturnType<typeof flyApp>, flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, string>, githubToken?: string, deps: FlyRelayDeps = relayDeps) {
-  const options = { app: "my-propr", spritesToken: "sp", ...flags };
+  const options = { app: "my-propr", legacyDocker: true, ...flags };
   const prepared = prepareFlyDeploy(options, IMAGES, envFile, githubToken, () => "-----BEGIN KEY-----\n");
   const context = { githubToken, label: "fly:my-propr@h", generatedSecrets: { SESSION_SECRET: "s" } };
   await deployPreparedFly(prepared, options, app.target, context, () => {}, deps);
@@ -189,6 +189,23 @@ test("a --no-relay deploy without GitHub credentials stops before uploading secr
   const app = flyApp();
   await assert.rejects(deploy(app, { relay: false }, OAUTH_ENV, "gh"), /no GitHub credentials, so its daemon could not start/);
   assert.deepEqual(app.secrets, {});
+});
+
+test("an explicit GH_AUTH_MODE without its credentials stops before uploading secrets, polling or not", async () => {
+  for (const authMode of ["app", "relay"]) {
+    for (const intake of [{}, { GITHUB_EVENT_INTAKE_MODE: "polling" }]) {
+      const app = flyApp();
+      const envFile = { ...OAUTH_ENV, ...intake, GH_AUTH_MODE: authMode };
+      await assert.rejects(deploy(app, { relay: false }, envFile, "gh"), new RegExp(`GitHub auth mode ${authMode} on the Machine needs`));
+      assert.deepEqual(app.secrets, {}, `${authMode} ${JSON.stringify(intake)}`);
+    }
+  }
+  // The same App credentials left by an earlier deploy count: the redeploy goes ahead.
+  const app = flyApp();
+  await deploy(app, { relay: false }, OWN_APP_ENV);
+  const again = await deploy(app, { relay: false }, { ...OAUTH_ENV, GH_AUTH_MODE: "app", GITHUB_EVENT_INTAKE_MODE: "polling" });
+  assert.equal(again.GITHUB_EVENT_INTAKE_MODE, "polling");
+  assert.deepEqual(authModes(again), ["app", "app"]);
 });
 
 test("an own GitHub App without a relay token polls, or takes direct webhooks with a webhook secret", async () => {

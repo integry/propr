@@ -60,6 +60,16 @@ export function selectFlyIntakeMode(values: Readonly<Record<string, string>>, ex
     );
   }
 
+  // Checked here, apart from the intake: an auth mode without its
+  // credentials makes core GitHub auth exit at boot under any intake mode.
+  const missing = [...new Set(auths.flatMap((authMode) => missingAuthCredentials(authMode, has)))];
+  if (missing.length > 0) {
+    throw new Error(
+      `GitHub auth mode ${auths.join(" or ")} on the Machine needs ${missing.join(", ")}, and neither this deploy nor an earlier one sets it, so its daemon could not start. `
+        + "Add the missing values to the stack .env, or set GH_AUTH_MODE to the mode whose credentials you have.",
+    );
+  }
+
   const explicit = values[FLY_INTAKE_MODE_KEY]?.trim();
   // Several candidates: GH_AUTH_MODE is a secret an earlier deploy left, known
   // by name only, and both relay and App credentials are present. The intake
@@ -99,6 +109,22 @@ export function selectFlyIntakeMode(values: Readonly<Record<string, string>>, ex
 }
 
 /**
+ * What core GitHub auth (packages/core/src/auth/githubAuth.ts) requires for
+ * `authMode` and the Machine would lack, named as the stack .env sets it.
+ * The private key reaches the Machine as FLY_GH_PRIVATE_KEY_SECRET, written to
+ * the file GH_PRIVATE_KEY_PATH points at.
+ */
+function missingAuthCredentials(authMode: IntakeAuthMode, has: (name: string) => boolean): string[] {
+  if (authMode === "relay") return has("PROPR_GH_RELAY_TOKEN") ? [] : ["PROPR_GH_RELAY_TOKEN"];
+  if (authMode !== "app") return [];
+  return [
+    !has("GH_APP_ID") && "GH_APP_ID",
+    !has(FLY_GH_PRIVATE_KEY_SECRET) && "the App private key (HOST_GH_PRIVATE_KEY or --github-app-key)",
+    !has("GH_INSTALLATION_ID") && "GH_INSTALLATION_ID",
+  ].filter((name): name is string => Boolean(name));
+}
+
+/**
  * The GH_AUTH_MODE values the Machine could run with: the one set this run,
  * else what the daemon would infer from the secrets the app holds. A mode left
  * by an earlier deploy outranks inference but cannot be read back, so with
@@ -112,7 +138,9 @@ function authModes(
 ): IntakeAuthMode[] {
   const explicit = values.GH_AUTH_MODE?.trim().toLowerCase();
   if (explicit === "relay" || explicit === "app") return [explicit];
-  const app = has("GH_APP_ID") && has(FLY_GH_PRIVATE_KEY_SECRET);
+  // Inference needs all three, as resolveGithubAuthMode does; a set mode is
+  // taken as is and its credentials checked by missingAuthCredentials.
+  const app = has("GH_APP_ID") && has(FLY_GH_PRIVATE_KEY_SECRET) && has("GH_INSTALLATION_ID");
   if (!("GH_AUTH_MODE" in values) && existing.has("GH_AUTH_MODE") && relayToken && app) return ["relay", "app"];
   if (relayToken) return ["relay"];
   if (app) return ["app"];

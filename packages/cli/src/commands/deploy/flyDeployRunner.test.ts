@@ -56,12 +56,12 @@ test("the GitHub App key is wired in when this run uploads it, when the app alre
   // Uploaded by this run (a base64 key from the stack .env; the plan flag was never set).
   const uploading = fakeTarget([]);
   const lines: string[] = [];
-  await runFlyDeploy({ plan, secrets: { PROPR_GH_PRIVATE_KEY_B64: "a2V5", GH_APP_ID: "42" }, generatedSecrets: {} }, uploading.target, (l) => lines.push(l));
+  await runFlyDeploy({ plan, secrets: { PROPR_GH_PRIVATE_KEY_B64: "a2V5", GH_APP_ID: "42", GH_INSTALLATION_ID: "777" }, generatedSecrets: {} }, uploading.target, (l) => lines.push(l));
   assert.equal(uploading.deployed[0]?.githubAppKey, true);
   assert.equal(lines.some((l) => l.includes("earlier deploy")), false);
 
   // Left by an earlier deploy.
-  const retained = fakeTarget(["PROPR_GH_PRIVATE_KEY_B64", "GH_APP_ID"]);
+  const retained = fakeTarget(["PROPR_GH_PRIVATE_KEY_B64", "GH_APP_ID", "GH_INSTALLATION_ID"]);
   await runFlyDeploy({ plan, secrets: {}, generatedSecrets: {} }, retained.target, (l) => lines.push(l));
   assert.equal(retained.deployed[0]?.githubAppKey, true);
   assert.ok(lines.some((l) => l.includes("Keeping the GitHub App private key from an earlier deploy")));

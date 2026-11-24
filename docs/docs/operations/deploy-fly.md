@@ -11,10 +11,14 @@ description: "propr deploy fly runs the slim control plane and Redis on one smal
 - Redis in the **same Machine**, bound to loopback;
 - SQLite and the Redis append-only file on a Fly **volume**.
 
-The published `propr/app` image from the CLI's launcher manifest is deployed as it is. There is no image build and no Docker-in-Docker. Agents run on **Sprites** by default, or on **Fly Machines**; neither needs Docker on the control-plane Machine.
+The published `propr/app` image from the CLI's launcher manifest is deployed as it is. There is no image build and no Docker-in-Docker. Agents are meant to run on **Sprites** by default, or on **Fly Machines**, neither of which needs Docker on the control-plane Machine.
+
+:::warning Sprites and Fly Machines agents are not available yet
+The worker in this release only runs Docker agents: it waits for the Docker agent image before it takes any task, and the Sprites and Fly Machines runtimes (#3764, #3767) have not landed. On a Machine without a Docker daemon it would never run a task, so the command refuses `--agent-runtime sprites` (the default) and `fly-machines` before creating anything on Fly, `--dry-run` included. Until then, deploy with [`--legacy-docker`](#legacy-mode-docker-in-the-machine).
+:::
 
 ```bash
-propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN" \
+propr deploy fly --app my-propr --legacy-docker \
   --tunnel-token <connector-token> --tunnel-url https://t-<id>.propr.dev
 ```
 
@@ -34,7 +38,7 @@ A relay token alone does not sign browsers in on Fly: the automatic Connect sign
 
 ```bash
 # GitHub OAuth instead of Connect: GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET in the stack .env
-propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"
+propr deploy fly --app my-propr --legacy-docker
 ```
 
 ## How it reaches Fly
@@ -155,7 +159,7 @@ Always on, the default deployment costs about **$6.85/month**. That is more than
 | `--memory <mb>` / `--cpus <n>` | `1024` / `1` | Machine size (shared CPU) |
 | `--volume <name>` / `--volume-size <gb>` | `propr_data` / `1` | Volume for SQLite and Redis |
 | `--image <ref>` | manifest `images.app` | Deploy a different app image |
-| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`) |
+| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`). Only `docker` is accepted in this release, see the warning above |
 | `--sprites-token`, `--agent-fly-token` | — | Agent runtime credentials, stored as secrets |
 | `--root`, `--env-file`, `--no-env-file` | stack `.env` | Where secrets come from |
 | `--github-app-key <path>` | `HOST_GH_PRIVATE_KEY` | Own GitHub App private key |

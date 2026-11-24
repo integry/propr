@@ -143,6 +143,24 @@ export function resolveFlyDeployPlan(options: DeployFlyOptions, images: Record<s
   };
 }
 
+/**
+ * Agent runtimes the worker in the deployed app image can start with. The
+ * worker blocks startup (and never advertises task capacity) until the Docker
+ * agent image is ready, and it has no Sprites or Fly Machines runtime yet
+ * (#3764, #3767): on a Machine without a Docker daemon it would wait forever.
+ * Add a runtime here once the worker initializes it without Docker.
+ */
+export const FLY_WORKER_AGENT_RUNTIMES: readonly FlyAgentRuntime[] = ["docker"];
+
+/** Refuse, before anything is written or sent to Fly, a runtime the worker cannot start. */
+export function assertFlyAgentRuntimeSupported(plan: Pick<FlyDeployPlan, "agentRuntime">): void {
+  if (FLY_WORKER_AGENT_RUNTIMES.includes(plan.agentRuntime)) return;
+  throw new Error(
+    `Agents on ${plan.agentRuntime} are not supported by this release: its worker only runs Docker agents and would wait forever for a Docker daemon the Machine does not have, so no task would ever run. `
+      + "Deploy with --legacy-docker (Docker daemon in the Machine; at least 2 GB and a 10 GB volume) until the worker supports Sprites and Fly Machines agents.",
+  );
+}
+
 /** Keys moved only by explicit flags: a copied tunnel token would split traffic between two connectors. */
 const ENV_FILE_TUNNEL_KEYS = ["PROPR_UI_TUNNEL_TOKEN", "TUNNEL_TOKEN"];
 
@@ -245,8 +263,9 @@ export interface PreparedFlyDeploy extends CollectedSecrets {
 
 /**
  * Everything the deploy decides before contacting Fly, dry run or not. Throws
- * on a deployment that could not work: Connect without a way to get its relay
- * token, or a control plane nobody could sign in to.
+ * on a deployment that could not work: an agent runtime the worker cannot
+ * start, Connect without a way to get its relay token, or a control plane
+ * nobody could sign in to.
  */
 export function prepareFlyDeploy(
   options: DeployFlyOptions,
@@ -256,6 +275,7 @@ export function prepareFlyDeploy(
   readFile?: (path: string) => string,
 ): PreparedFlyDeploy {
   const plan = resolveFlyDeployPlan(options, images);
+  assertFlyAgentRuntimeSupported(plan);
   const { secrets, notes } = collectFlySecrets(plan, options, envFileValues, readFile);
   const relayPlan = planFlyRelay(options, secrets, { connect: Boolean(plan.tunnel), githubToken });
   const browserAuth = planFlyBrowserAuth(plan, secrets);
@@ -338,7 +358,7 @@ export function createDeployCommand(): Command {
     .option("--volume <name>", `Volume for SQLite and Redis (default: ${FLY_DEFAULTS.volumeName})`)
     .option("--volume-size <gb>", `Volume size in GB (default: ${FLY_DEFAULTS.volumeSizeGb})`)
     .option("--image <ref>", "App image (default: the launcher manifest's propr/app tag)")
-    .option("--agent-runtime <runtime>", "Agent runtime: sprites (default), fly-machines, or docker with --legacy-docker")
+    .option("--agent-runtime <runtime>", "Agent runtime: sprites (default), fly-machines, or docker with --legacy-docker; only docker works in this release")
     .option("--sprites-token <token>", "Sprites token for agent runs (or SPRITES_TOKEN)")
     .option("--agent-fly-token <token>", "Fly token the fly-machines agent runtime uses")
     .option("--root <dir>", "Stack root whose .env supplies secrets")
@@ -361,7 +381,9 @@ export function createDeployCommand(): Command {
     .addHelpText("after", `
 The control plane and Redis run in one Machine; SQLite and Redis persist on a
 volume. Default size: shared-cpu-1x, 1 GB (about $6.70/month always on in
-iad, plus $0.15/GB-month of volume). Agents run on Sprites by default.
+iad, plus $0.15/GB-month of volume). Agents run on Sprites by default, but
+this release's worker only runs Docker agents: Sprites and Fly Machines are
+refused before anything is created, so pass --legacy-docker for now.
 
 Browsers sign in through ProPR Connect (--tunnel-token and --tunnel-url) or a
 GitHub OAuth client in the stack .env (GH_OAUTH_CLIENT_ID and
@@ -369,11 +391,11 @@ GH_OAUTH_CLIENT_SECRET, callback https://<app>.fly.dev/api/auth/github/callback)
 Without either the command stops before creating anything on Fly.
 
 Examples:
-  $ propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN" \\
+  $ propr deploy fly --app my-propr --legacy-docker \\
       --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev
-  $ propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"   # GitHub OAuth client in the .env
-  $ propr deploy fly --app my-propr --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --idle-shutdown 15m
-  $ propr deploy fly --app my-propr --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --dry-run
+  $ propr deploy fly --app my-propr --legacy-docker   # GitHub OAuth client in the .env
+  $ propr deploy fly --app my-propr --legacy-docker --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --idle-shutdown 15m
+  $ propr deploy fly --app my-propr --legacy-docker --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --dry-run
 `)
     .action(async (options: DeployFlyOptions) => {
       try {

@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { collectFlySecrets, createDeployCommand, parseIdleShutdownAfter, resolveFlyDeployPlan } from "./deployFly.js";
+import { collectFlySecrets, createDeployCommand, FLY_WORKER_AGENT_RUNTIMES, parseIdleShutdownAfter, prepareFlyDeploy, resolveFlyDeployPlan } from "./deployFly.js";
 import { FLY_GH_PRIVATE_KEY_SECRET } from "./deploy/flyMachineConfig.js";
 
 const IMAGES = { app: "propr/app:0.9.3", redis: "redis:7-alpine", cloudflared: "cloudflare/cloudflared:2024.12.2" };
@@ -34,6 +34,21 @@ test("legacy Docker forces the docker runtime and larger defaults", () => {
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, volumeSize: "3" }, IMAGES), /--volume-size 10/);
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", agentRuntime: "docker" }, IMAGES), /--legacy-docker/);
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, agentRuntime: "sprites" }, IMAGES), /Docker runtime/);
+});
+
+test("agent runtimes the worker cannot start are refused before anything is written or sent to Fly", () => {
+  // The worker waits for the Docker agent image before claiming capacity; without a Docker daemon it never would.
+  assert.deepEqual(FLY_WORKER_AGENT_RUNTIMES, ["docker"]);
+  const oauth = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret", PROPR_GH_RELAY_TOKEN: "rt" };
+  for (const flags of [{}, { agentRuntime: "sprites" }, { agentRuntime: "fly-machines" }, { dryRun: true }]) {
+    assert.throws(
+      () => prepareFlyDeploy({ app: "my-propr", spritesToken: "sp", agentFlyToken: "fly", ...flags }, IMAGES, oauth, "gh"),
+      (error: Error) => /Agents on (sprites|fly-machines) are not supported by this release/.test(error.message) && /--legacy-docker/.test(error.message),
+      JSON.stringify(flags),
+    );
+  }
+  const prepared = prepareFlyDeploy({ app: "my-propr", legacyDocker: true }, IMAGES, oauth, "gh");
+  assert.equal(prepared.plan.agentRuntime, "docker");
 });
 
 test("invalid inputs are rejected before any Fly call", () => {

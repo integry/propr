@@ -22,7 +22,7 @@ test("relay credentials route events; a relay token left by an earlier deploy co
 });
 
 test("an own App polls without a webhook secret and takes direct webhooks with one", () => {
-  const app = { GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "a2V5", GH_AUTH_MODE: "app" };
+  const app = { GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "a2V5", GH_INSTALLATION_ID: "777", GH_AUTH_MODE: "app" };
   assert.equal(mode(app), "polling");
   assert.equal(mode({ ...app, GH_WEBHOOK_SECRET: "whsec" }), "direct_webhook");
   assert.equal(mode(app, new Set(["GH_WEBHOOK_SECRET"])), "direct_webhook");
@@ -33,11 +33,11 @@ test("an own App polls without a webhook secret and takes direct webhooks with o
 test("a mode the stack sets is kept only when the Machine can run it", () => {
   assert.equal(mode({ PROPR_GH_RELAY_TOKEN: "rt", GITHUB_EVENT_INTAKE_MODE: "polling" }), "polling");
   assert.throws(
-    () => selectFlyIntakeMode({ GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "k", GITHUB_EVENT_INTAKE_MODE: "routing_websocket" }, none),
+    () => selectFlyIntakeMode({ GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "k", GH_INSTALLATION_ID: "777", GITHUB_EVENT_INTAKE_MODE: "routing_websocket" }, none),
     /GitHub event intake routing_websocket cannot start on the Machine: routing_websocket intake requires relay auth mode.*Drop --no-relay/,
   );
   assert.throws(
-    () => selectFlyIntakeMode({ GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "k", GITHUB_EVENT_INTAKE_MODE: "direct_webhook" }, none),
+    () => selectFlyIntakeMode({ GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "k", GH_INSTALLATION_ID: "777", GITHUB_EVENT_INTAKE_MODE: "direct_webhook" }, none),
     /GH_WEBHOOK_SECRET must be set for direct_webhook intake/,
   );
   assert.throws(() => selectFlyIntakeMode({ PROPR_GH_RELAY_TOKEN: "rt", GITHUB_EVENT_INTAKE_MODE: "sometimes" }, none), /not a recognized value/);
@@ -46,11 +46,42 @@ test("a mode the stack sets is kept only when the Machine can run it", () => {
 test("no GitHub credentials anywhere is refused before deploy", () => {
   assert.throws(() => selectFlyIntakeMode({ PROPR_DEMO_MODE: "false", GH_OAUTH_CLIENT_ID: "c" }, none), /no GitHub credentials/);
   // Relay auth pinned without any token: the relay WebSocket would throw at boot.
-  assert.throws(() => selectFlyIntakeMode({ GH_AUTH_MODE: "relay" }, none), /PROPR_GH_RELAY_TOKEN must be set/);
+  assert.throws(() => selectFlyIntakeMode({ GH_AUTH_MODE: "relay" }, none), /GitHub auth mode relay on the Machine needs PROPR_GH_RELAY_TOKEN/);
+  // An App without its installation id is not inferred: core auth would resolve no mode.
+  assert.throws(() => selectFlyIntakeMode({ GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "k" }, none), /no GitHub credentials/);
+});
+
+test("an explicit GH_AUTH_MODE needs its own credentials whatever the intake mode", () => {
+  // The --no-relay case: OAuth sign-in only, GH_AUTH_MODE=app, no App. Polling
+  // would pass the intake check, and core auth would exit at boot.
+  const oauth = { GH_OAUTH_CLIENT_ID: "c", GH_OAUTH_CLIENT_SECRET: "s", PROPR_DEMO_MODE: "false" };
+  for (const intake of [{}, { GITHUB_EVENT_INTAKE_MODE: "polling" }]) {
+    assert.throws(
+      () => selectFlyIntakeMode({ ...oauth, ...intake, GH_AUTH_MODE: "app" }, none),
+      /GitHub auth mode app on the Machine needs GH_APP_ID, the App private key \(HOST_GH_PRIVATE_KEY or --github-app-key\), GH_INSTALLATION_ID/,
+    );
+    assert.throws(
+      () => selectFlyIntakeMode({ ...oauth, ...intake, GH_AUTH_MODE: "relay" }, none),
+      /GitHub auth mode relay on the Machine needs PROPR_GH_RELAY_TOKEN/,
+    );
+  }
+  // Only the missing piece is named.
+  assert.throws(
+    () => selectFlyIntakeMode({ GH_AUTH_MODE: "app", GH_APP_ID: "42", PROPR_GH_PRIVATE_KEY_B64: "k", GITHUB_EVENT_INTAKE_MODE: "polling" }, none),
+    (error: Error) => /needs GH_INSTALLATION_ID,/.test(error.message) && !/needs GH_APP_ID/.test(error.message),
+  );
+  // Secrets an earlier deploy left count by name; a value blanked this run does not.
+  const appSecrets = new Set(["GH_APP_ID", "PROPR_GH_PRIVATE_KEY_B64", "GH_INSTALLATION_ID"]);
+  assert.equal(mode({ GH_AUTH_MODE: "app", GITHUB_EVENT_INTAKE_MODE: "polling" }, appSecrets), "polling");
+  assert.equal(mode({ GH_AUTH_MODE: "relay", GITHUB_EVENT_INTAKE_MODE: "polling" }, new Set(["PROPR_GH_RELAY_TOKEN"])), "polling");
+  assert.throws(
+    () => selectFlyIntakeMode({ GH_AUTH_MODE: "app", GH_INSTALLATION_ID: "", GITHUB_EVENT_INTAKE_MODE: "polling" }, appSecrets),
+    /needs GH_INSTALLATION_ID/,
+  );
 });
 
 test("a GH_AUTH_MODE left by an earlier deploy is unreadable: with relay and App credentials the intake must suit both", () => {
-  const earlier = new Set(["GH_AUTH_MODE", "GH_APP_ID", "PROPR_GH_PRIVATE_KEY_B64", "PROPR_GH_RELAY_TOKEN"]);
+  const earlier = new Set(["GH_AUTH_MODE", "GH_APP_ID", "PROPR_GH_PRIVATE_KEY_B64", "GH_INSTALLATION_ID", "PROPR_GH_RELAY_TOKEN"]);
   // The intake that earlier deploy pinned next to its mode is kept (nothing uploaded).
   const kept = selectFlyIntakeMode({ PROPR_DEMO_MODE: "false" }, new Set([...earlier, "GITHUB_EVENT_INTAKE_MODE"]));
   assert.deepEqual(kept.secrets, {});

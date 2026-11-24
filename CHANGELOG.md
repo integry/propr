@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Uploads the stack `.env` as Fly secrets and generates `SESSION_SECRET`
     once. Enrolls a GitHub relay token, and ProPR Connect with
     `--tunnel-token`/`--tunnel-url`. Agents default to Sprites.
+  - Refuses Sprites and Fly Machines agents (the default included) before
+    creating anything on Fly: this release's worker only runs Docker agents
+    and would never take a task without a Docker daemon. Use
+    `--legacy-docker` until those runtimes land.
+  - Refuses an explicit `GH_AUTH_MODE` whose credentials are missing (App id,
+    private key and installation id for `app`, a relay token for `relay`),
+    whatever the intake mode, before any secret is uploaded.
   - Needs a browser sign-in: ProPR Connect (the tunnel flags), a GitHub OAuth
     client in the stack `.env`, or demo mode. Without one it stops before
     creating anything on Fly, `--dry-run` included.
