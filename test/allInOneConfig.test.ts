@@ -235,7 +235,7 @@ test('signal and idle shutdown in all-in-one both go through the bounded exit', 
     assert.match(source, /const closeAndExit = createBoundedExit\(/);
     assert.equal(source.match(/process\.exit\(failed/g), null, 'no unbounded exit after close()');
     assert.match(source, /shutting down gracefully\.\.\.`\);\n\s+closeAndExit\(\);/);
-    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode\);/);
+    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode, options\);/, 'the arranged wake reaches the bounded exit');
 });
 
 test('the all-in-one exit keeps the code its caller asked for (a called-off idle stop exits 1)', async () => {
@@ -245,4 +245,48 @@ test('the all-in-one exit keeps the code its caller asked for (a called-off idle
         await new Promise(resolve => setTimeout(resolve, 60));
         assert.deepEqual(exits, [1], 'whether the close completes or runs past its deadline');
     }
+});
+
+test('an idle exit still closing when the arranged wake comes exits 1 then, not 0 at the later relative deadline', async () => {
+    const exits: Array<[number, number]> = [];
+    const errors: string[] = [];
+    const started = Date.now();
+    const exitBy = started + 40;
+    createBoundedExit({
+        close: () => new Promise<string[]>(() => undefined),
+        exit: code => { exits.push([code, Date.now()]); },
+        pendingStep: () => 'worker',
+        log: { info: () => undefined, error: message => errors.push(message) },
+        deadlineMs: 5_000,
+    })(0, { exitBy });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(exits.length, 1);
+    assert.equal(exits[0][0], 1, 'the wake reached a process still running: the supervisor must start it');
+    assert.ok(exits[0][1] - started < 1_000, 'at the wake, not after the 5 s close deadline');
+    assert.match(errors[0], /still shutting down when the wake arranged for the idle stop came \(still closing: worker\)/);
+});
+
+test('an idle exit that closes before the arranged wake exits 0, flushing only for the time left', async () => {
+    const exits: number[] = [];
+    const flushes: Array<{ timeoutMs: number | undefined; at: number }> = [];
+    const exitBy = Date.now() + 500;
+    createBoundedExit({
+        close: async () => [],
+        exit: code => { exits.push(code); },
+        pendingStep: () => null,
+        log: quietLog,
+        flush: async timeoutMs => { flushes.push({ timeoutMs, at: Date.now() }); },
+        deadlineMs: 5_000,
+    })(0, { exitBy });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(exits, [0]);
+    assert.equal(flushes.length, 1);
+    const [{ timeoutMs, at }] = flushes;
+    assert.ok(timeoutMs !== undefined && timeoutMs <= exitBy - at, 'the flush cannot carry the exit past the wake');
+
+    // A wake that is already due when the close starts: exit 1 at once.
+    const late: number[] = [];
+    createBoundedExit({ close: () => new Promise<string[]>(() => undefined), exit: code => { late.push(code); }, pendingStep: () => null, log: quietLog, deadlineMs: 5_000 })(0, { exitBy: Date.now() - 1 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(late, [1]);
 });

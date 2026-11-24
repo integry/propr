@@ -176,10 +176,31 @@ export async function readIdleAckProgress(
 }
 
 /**
+ * Settle `work` by the absolute `deadline` (epoch ms; null waits for it). The
+ * work is not cancelled when the deadline wins: its result, or failure, is
+ * then ignored. A failure before the deadline is rethrown.
+ */
+export async function beforeIdleDeadline<T>(work: Promise<T>, deadline: number | null): Promise<{ ok: true; value: T } | { ok: false }> {
+    const outcome = work.then(value => ({ ok: true as const, value }), (error: unknown) => ({ ok: 'failed' as const, error }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = deadline === null
+        ? null
+        : new Promise<{ ok: false }>(resolve => { timer = setTimeout(() => resolve({ ok: false }), Math.max(0, deadline - Date.now())); });
+    const result = await (expired ? Promise.race([outcome, expired]) : outcome);
+    clearTimeout(timer);
+    if (result.ok === 'failed') throw result.error;
+    return result;
+}
+
+/**
  * Wait until every registered process in `roles` has acknowledged `intent`
  * (or is confirmed stopped). While waiting the intent is re-stored and
  * re-announced, so a process that reconnects meanwhile still receives it.
  * `timeoutMs: null` waits until confirmed or `isCancelled()`.
+ *
+ * With a timeout, the confirmation must be read by the deadline: a read (or a
+ * re-store) still outstanding then is not waited for, and a read that
+ * completes after it does not count, even when it saw every acknowledgement.
  */
 export async function waitForIdleAcks(
     redis: IntentRedis,
@@ -195,17 +216,27 @@ export async function waitForIdleAcks(
     },
 ): Promise<IdleAckProgress> {
     const pollMs = options.pollMs ?? 1_000;
-    const deadline = options.timeoutMs === null ? Number.POSITIVE_INFINITY : Date.now() + options.timeoutMs;
+    const deadline = options.timeoutMs === null ? null : Date.now() + options.timeoutMs;
     let progress: IdleAckProgress = { confirmed: false, pending: [] };
+    const expired = (): IdleAckProgress => ({
+        confirmed: false,
+        pending: progress.pending.length > 0 ? progress.pending : ['(acknowledgements not read before the deadline)'],
+    });
     for (;;) {
+        let read: { ok: true; value: IdleAckProgress } | { ok: false };
         try {
-            progress = await readIdleAckProgress(redis, intent, options);
+            read = await beforeIdleDeadline(readIdleAckProgress(redis, intent, options), deadline);
         } catch {
-            progress = { confirmed: false, pending: progress.pending.length > 0 ? progress.pending : ['(acknowledgements unreadable)'] };
+            read = { ok: true, value: { confirmed: false, pending: progress.pending.length > 0 ? progress.pending : ['(acknowledgements unreadable)'] } };
         }
-        if (progress.confirmed || options.isCancelled?.() || Date.now() >= deadline) return progress;
+        if (!read.ok) return expired();
+        // Read too late to count: the rest of the stop could no longer end in time.
+        if (deadline !== null && Date.now() > deadline) return read.value.confirmed ? { confirmed: false, pending: ['(acknowledged after the deadline)'] } : read.value;
+        progress = read.value;
+        if (progress.confirmed || options.isCancelled?.()) return progress;
         options.onPending?.(progress.pending);
-        await new Promise(resolve => setTimeout(resolve, pollMs));
-        await issueIdleShutdownIntent(redis, intent).catch(() => undefined);
+        await new Promise(resolve => setTimeout(resolve, deadline === null ? pollMs : Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+        if (deadline !== null && Date.now() >= deadline) return expired();
+        await beforeIdleDeadline(issueIdleShutdownIntent(redis, intent).catch(() => undefined), deadline);
     }
 }

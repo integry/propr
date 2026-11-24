@@ -201,6 +201,7 @@ export const IDLE_SIGNALS = [
     'goals',
     'ultrafix_loops',
     'scheduled_work',
+    'separate_processes',
     'unavailable',
 ] as const;
 export type IdleSignal = typeof IDLE_SIGNALS[number];

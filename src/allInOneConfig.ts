@@ -215,37 +215,51 @@ export const DEFAULT_SHUTDOWN_DEADLINE_MS = 30_000;
  * systemd) and an idle shutdown both expect. A close that completes with
  * failed steps exits 1. The caller may ask for a higher code (an idle stop
  * called off exits 1, so an on-failure supervisor starts the process again).
- * Logs are flushed (bounded) before exiting. Calling the returned function
- * again does nothing.
+ *
+ * `exitBy` (epoch ms; an idle stop's arranged wake) is an absolute limit on
+ * top: the process exits by then, and reaching it before the close is over
+ * exits with at least 1, since that wake reached a process still running and
+ * the supervisor must start it instead. Logs are flushed (bounded, and for an
+ * exit before `exitBy` only for the time left until then) before exiting.
+ * Calling the returned function again does nothing.
  */
 export function createBoundedExit(options: {
     close: () => Promise<string[]>;
     exit: (code: number) => void;
     pendingStep: () => string | null;
     log: { info(message: string): void; error(message: string, error?: unknown): void };
-    flush?: () => Promise<void>;
+    flush?: (timeoutMs?: number) => Promise<void>;
     deadlineMs?: number;
-}): (exitCode?: number) => void {
+}): (exitCode?: number, call?: { exitBy?: number | null }) => void {
     const deadlineMs = options.deadlineMs ?? DEFAULT_SHUTDOWN_DEADLINE_MS;
     let exiting = false;
-    return (exitCode = 0) => {
+    return (exitCode = 0, call = {}) => {
         if (exiting) return;
         exiting = true;
+        const exitBy = call.exitBy ?? null;
+        const untilExitBy = exitBy === null ? Number.POSITIVE_INFINITY : Math.max(0, exitBy - Date.now());
         let done = false;
         const finish = (code: number): void => {
             if (done) return;
             done = true;
             clearTimeout(deadline);
-            void (options.flush?.() ?? Promise.resolve()).catch(() => undefined).finally(() => options.exit(code));
+            const flushFor = code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined;
+            void (options.flush?.(flushFor) ?? Promise.resolve()).catch(() => undefined).finally(() => options.exit(code));
         };
         // Not unref'd: the process exits through here, not when the event loop empties.
         const deadline = setTimeout(() => {
+            if (untilExitBy <= deadlineMs) {
+                options.log.error(`all-in-one: still shutting down when the wake arranged for the idle stop came (still closing: ${options.pendingStep() ?? 'unknown'}); exiting with code 1 so the supervisor starts it again`);
+                finish(Math.max(1, exitCode));
+                return;
+            }
             options.log.error(`all-in-one: shutdown did not finish within ${Math.round(deadlineMs / 1000)}s (still closing: ${options.pendingStep() ?? 'unknown'}); exiting anyway`);
             finish(exitCode);
-        }, deadlineMs);
+        }, Math.min(deadlineMs, untilExitBy));
         options.close().then(
             failed => {
-                const code = Math.max(failed.length > 0 ? 1 : 0, exitCode);
+                const late = exitBy !== null && Date.now() >= exitBy;
+                const code = Math.max(failed.length > 0 || late ? 1 : 0, exitCode);
                 options.log.info(`all-in-one: shutdown complete (exit ${code})`);
                 finish(code);
             },

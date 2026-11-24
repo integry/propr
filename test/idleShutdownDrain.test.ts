@@ -20,9 +20,12 @@ const {
     writeIdleWakeHint,
 } = await import('@propr/core');
 const { drainIdleControlPlane, recoverFromIdleWake } = await import('../src/daemon/idleShutdown.js');
+const { stopDaemonProcess } = await import('../src/daemon/idleStopExit.js');
 const { recordAcceptedReplay } = await import('../src/daemon/idleReplayObligation.js');
 const { createDaemonWorkProducers } = await import('../src/daemon/workProducers.js');
-const { IDLE_LAST_SHUTDOWN_REDIS_KEY, IDLE_LAST_WAKE_REDIS_KEY, IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig } = await import('@propr/shared');
+const {
+    IDLE_LAST_SHUTDOWN_REDIS_KEY, IDLE_LAST_WAKE_REDIS_KEY, IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig,
+} = await import('@propr/shared');
 type IdleSignals = ReturnType<typeof emptyIdleSignals>;
 
 after(async () => {
@@ -643,4 +646,125 @@ test('in a composed process a called-off stop runs the coordinated close with ex
     } finally {
         setIdleShutdownComposedProcess(false);
     }
+});
+
+/** An all-in-one process: its API and worker only acknowledge; `stopProcess` is its one coordinated close. */
+async function composedProcess(hub: Hub, run: (events: string[]) => Promise<void>) {
+    setIdleShutdownComposedProcess(true);
+    const events: string[] = [];
+    const listeners = ['api', 'worker'].map(role => startIdleShutdownListener({
+        role: role as 'api' | 'worker', id: `${role}-composed`, createConnection: hub.connect, pollMs: 10,
+        onQuiesce: async () => { events.push(`${role} quiesced`); },
+        onShutdown: () => { events.push(`${role} acknowledged the stop`); },
+    }));
+    try {
+        await run(events);
+    } finally {
+        await Promise.all(listeners.map(listener => listener.stop()));
+        setIdleShutdownComposedProcess(false);
+    }
+}
+
+test('a process outside the all-in-one process that registered while draining aborts before anything is asked to stop', async () => {
+    const hub = new Hub();
+    await composedProcess(hub, async events => {
+        const routing = new FakeRouting(true);
+        const hints = hintStore();
+        const stops: number[] = [];
+        const { ctx } = context(hub, routing, {
+            ...hints,
+            // A separately run indexing worker starts while the API is quiesced: it would exit 0 on its own.
+            collect: async () => {
+                hub.hashes.get(IDLE_PARTICIPANTS_REDIS_KEY)!.set('indexing_worker:indexer:7', JSON.stringify({
+                    role: 'indexing_worker', id: 'indexer:7', host: 'indexer', pid: 7, pidNamespace: null, bootId: null, startedAt: Date.now(), seenAt: Date.now(),
+                }));
+                return emptyIdleSignals();
+            },
+        });
+        assert.equal(await drainIdleControlPlane(request, { ...ctx, stopProcess: code => { stops.push(code); } }), false);
+        await settle();
+        assert.deepEqual(stops, [], 'nothing is closed');
+        assert.ok(!events.some(event => event.endsWith('acknowledged the stop')), 'no process was asked to stop');
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+        assert.equal(hub.strings.has(IDLE_LAST_SHUTDOWN_REDIS_KEY), false, 'no shutdown is recorded for a stop that never started');
+        assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay'], 'Connect intake resumes');
+        assert.ok(hints.store.current!.wokeAt, 'the next plain start is not counted as a wake');
+    });
+});
+
+/** Scheduled work beyond the idle window, so the drain goes ahead with Connect's wake at `dueAt`. */
+function stopBeforeAutomation(dueInMs: number) {
+    const dueAt = Date.now() + dueInMs;
+    const automation = { kind: 'automation' as const, dueAt, detail: 'scheduled automation' };
+    return {
+        dueAt,
+        request: { ...request, evaluation: { ...request.evaluation, nextDueAt: dueAt, nextDue: [automation] }, config: { ...config, afterMs: 200 } },
+        collect: async () => ({ ...emptyIdleSignals(), scheduled: [automation] }),
+        timings: { ...TIMINGS, stopConfirmTimeoutMs: null, quiesceTimeoutMs: 300, deregisterWaitMs: 300, closeDeadlineMs: 300 },
+    };
+}
+
+test('a stop acknowledgement read only after confirmBy calls the stop off: exit 1 before the wake, not exit 0 after it', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    await composedProcess(hub, async events => {
+        const stop = stopBeforeAutomation(2_000);
+        const confirmBy = stop.dueAt - stop.timings.deregisterWaitMs - stop.timings.closeDeadlineMs;
+        const { ctx } = context(hub, new FakeRouting(true), { collect: stop.collect });
+        // Every process acknowledges at once, but the daemon's read of the acknowledgements answers only after confirmBy.
+        const read = (ctx.redis as unknown as Connection).hgetall.bind(ctx.redis);
+        (ctx.redis as unknown as Connection).hgetall = async (key: string) => {
+            const phase = JSON.parse(hub.strings.get(IDLE_SHUTDOWN_INTENT_REDIS_KEY) ?? '{}').phase;
+            if (key.startsWith(IDLE_SHUTDOWN_ACKS_REDIS_PREFIX) && phase === 'stop') await new Promise(resolve => setTimeout(resolve, confirmBy + 100 - Date.now()));
+            return read(key);
+        };
+        const stops: Array<[number, number | null]> = [];
+        assert.equal(await drainIdleControlPlane(stop.request, { ...ctx, timings: stop.timings, stopProcess: (code, options) => { stops.push([code, options?.exitBy ?? null]); } }), true);
+        assert.ok(events.includes('worker acknowledged the stop'));
+        assert.deepEqual(stops, [[1, null]], 'called off: the supervisor starts the process again for the automation');
+        assert.ok(Date.now() < stop.dueAt, 'decided before the wake');
+    });
+});
+
+test('a last check for work not over in time for the close to end before the wake calls the stop off', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    await composedProcess(hub, async () => {
+        const stop = stopBeforeAutomation(2_000);
+        const { ctx } = context(hub, new FakeRouting(true), { collect: stop.collect });
+        const stops: number[] = [];
+        const collectWork = () => new Promise<IdleSignals>(() => undefined);
+        assert.equal(await drainIdleControlPlane(stop.request, { ...ctx, collectWork, timings: stop.timings, stopProcess: code => { stops.push(code); } }), true);
+        assert.deepEqual(stops, [1]);
+        assert.ok(Date.now() <= stop.dueAt - stop.timings.closeDeadlineMs + 100, 'the close still had its allowance before the wake');
+    });
+});
+
+test('the wake arranged for the stop is the deadline of the all-in-one close', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    await composedProcess(hub, async () => {
+        const stop = stopBeforeAutomation(2_000);
+        const { ctx } = context(hub, new FakeRouting(true), { collect: stop.collect });
+        const stops: Array<[number, number | null]> = [];
+        assert.equal(await drainIdleControlPlane(stop.request, { ...ctx, timings: stop.timings, stopProcess: (code, options) => { stops.push([code, options?.exitBy ?? null]); } }), true);
+        assert.deepEqual(stops, [[0, stop.dueAt]], 'exit 0, but only before the wake; the bounded close exits 1 if it is still running then');
+    });
+    // Without scheduled work nothing bounds it beyond its own deadline.
+    await composedProcess(new Hub(), async () => {
+        const stops: Array<[number, number | null]> = [];
+        const { ctx } = context(new Hub(), new FakeRouting(true));
+        assert.equal(await drainIdleControlPlane(request, { ...ctx, stopProcess: (code, options) => { stops.push([code, options?.exitBy ?? null]); } }), true);
+        assert.deepEqual(stops, [[0, null]]);
+    });
+});
+
+test('a standalone daemon close still running at the arranged wake exits 1, not 0', async () => {
+    const record = { shutdownAt: new Date().toISOString(), reason: 'idle', idleForMs: 0, nextDueAt: null };
+    const exits: number[] = [];
+    const started = Date.now();
+    await stopDaemonProcess({ close: () => new Promise<void>(() => undefined), exit: code => { exits.push(code); } }, record, { closeDeadlineMs: 5_000, exitCode: 0, wakeAt: started + 50 });
+    assert.deepEqual(exits, [1]);
+    assert.ok(Date.now() - started < 2_000, 'at the wake, not at the 5 s close deadline');
+
+    const clean: number[] = [];
+    await stopDaemonProcess({ close: async () => undefined, exit: code => { clean.push(code); } }, record, { closeDeadlineMs: 5_000, exitCode: 0, wakeAt: Date.now() + 5_000 });
+    assert.deepEqual(clean, [0], 'closed before the wake');
 });

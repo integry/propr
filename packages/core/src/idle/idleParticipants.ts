@@ -137,6 +137,19 @@ export interface IdleParticipantRegistration {
     stop: () => Promise<void>;
 }
 
+/** The registrations made in this process (key → `startedAt`), so the daemon can tell its own participants from others. */
+const localRegistrations = new Map<string, number>();
+
+/**
+ * Whether the participant generation `key`/`startedAt` registered in this
+ * process. Exact, unlike a host and pid comparison: an entry another process
+ * wrote under the same key has another `startedAt`, and an unreadable entry
+ * (`startedAt` null) is never this process's.
+ */
+export function isIdleParticipantInThisProcess(key: string, startedAt: number | null): boolean {
+    return startedAt !== null && localRegistrations.get(key) === startedAt;
+}
+
 /** Register this process and keep its entry fresh until `stop`. */
 export function registerIdleParticipant(
     redis: Pick<ParticipantRedis, 'hset' | 'hdel'>,
@@ -155,6 +168,7 @@ export function registerIdleParticipant(
         seenAt: now(),
     };
     const key = idleParticipantKey(options.role, options.id);
+    localRegistrations.set(key, participant.startedAt);
     let stopped = false;
     const refresh = () => {
         if (stopped) return Promise.resolve();
@@ -171,6 +185,7 @@ export function registerIdleParticipant(
         stop: async () => {
             stopped = true;
             clearInterval(timer);
+            if (localRegistrations.get(key) === participant.startedAt) localRegistrations.delete(key);
             await redis.hdel(IDLE_PARTICIPANTS_REDIS_KEY, key).catch(() => undefined);
         },
     };

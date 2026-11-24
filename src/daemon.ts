@@ -193,8 +193,12 @@ export interface DaemonStartOptions extends DaemonOptions {
      * composed process (all-in-one) keeps it open until its worker has drained.
      */
     closeSharedQueue?: boolean;
-    /** Composed process (all-in-one): an idle shutdown ends in this coordinated close of every component, exiting with at least `exitCode`. */
-    idleShutdownStop?: (exitCode?: number) => void;
+    /**
+     * Composed process (all-in-one): an idle shutdown ends in this coordinated close of every component, exiting with
+     * at least `exitCode`, and with at least 1 when it is still running at `exitBy` (the wake arranged for scheduled work).
+     * Given, idle shutdown can stop the instance; a standalone daemon reports that it needs the composed process.
+     */
+    idleShutdownStop?: (exitCode?: number, options?: { exitBy?: number | null }) => void;
 }
 
 async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDaemon> {
@@ -469,7 +473,8 @@ async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDae
         await redisClient.quit();
         if (options.closeSharedQueue !== false) await shutdownQueue();
     };
-    // Standalone, each process exits on its own; composed (all-in-one), the process closes every component together.
+    // Composed (all-in-one), an idle stop closes every component together. Standalone, idle shutdown only reports
+    // its status: separate processes could not all be started again if a stop were called off, so it never stops.
     if (options.installSignalHandlers !== false || options.idleShutdownStop) {
         idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE,
             getRoutingService: () => routingService, producers, close, stopProcess: options.idleShutdownStop });

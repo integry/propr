@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the
     control plane with exit code 0 after it has been idle for the window, so a
     supervisor with an `on-failure` restart policy leaves the host stopped.
+  - Only the single-process control plane (`propr all-in-one`, the `minimal`
+    profile) stops, with the indexing worker inline or off. A standalone
+    daemon, or an API, worker or indexing worker process outside the
+    all-in-one process, keeps the instance awake (blocker
+    `separate_processes`): a called-off stop restarts only the process that
+    exits 1, so a separate process that had already exited 0 would stay
+    stopped.
   - Idle means no queued or running BullMQ job in any queue, no active agent
     run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
     Web UI session or in-flight MCP/HTTP request, no scheduled work due
@@ -24,11 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Connect instances need propr-routing#335. The daemon quiesces Connect, the
     API and its own work-queuing sweeps (schedules, retries, auto-merge, merge
     conflicts) before its last check, aborts (and resumes intake and the
-    sweeps) if the wake hint file cannot be written, and exits only after every
-    registered API and worker process has acknowledged the stop. A stop not
-    acknowledged in time for the wake arranged for the next scheduled work, or
-    one during which work was queued, is called off: the daemon exits with
-    code 1 so the supervisor starts the control plane again. On the next
+    sweeps) if the wake hint file cannot be written, and exits only after the
+    API, worker and inline indexing worker have acknowledged the stop. A stop
+    whose acknowledgements are not read in time for the wake arranged for the
+    next scheduled work, whose last check for work is not over in time, or
+    during which work was queued, is called off: the process exits with code
+    1 so the supervisor starts the control plane again. So does a shutdown
+    still running when that wake comes. On the next
     start it asks Connect to replay deliveries cached since intake
     disconnected for the drain, keeping that obligation in the hint file,
     written before intake disconnects so a crash mid-drain keeps it, until

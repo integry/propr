@@ -107,6 +107,12 @@ test('polling intake always blocks, whatever its interval, and reports no deadli
     assert.equal(result.nextDueAt, null, 'no observation-time deadline that could drift past the real next poll');
 });
 
+test('a control-plane process idle shutdown cannot stop and start again with this one always blocks', () => {
+    const result = evaluate({ separateProcesses: ['worker:host:42 runs outside the all-in-one process'] });
+    assert.equal(result.idle, false);
+    assert.deepEqual(result.blockers, [{ signal: 'separate_processes', detail: 'worker:host:42 runs outside the all-in-one process' }]);
+});
+
 test('IdleClock requires continuous idleness and resets on activity', () => {
     const clock = new IdleClock(NOW);
     assert.equal(clock.observe(true, NOW), NOW);

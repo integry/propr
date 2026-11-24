@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_CHANNEL, IDLE_SHUTDOWN_INTENT_REDIS_KEY } from '@propr/shared';
-import { collectParticipantSignals, registerIdleParticipant } from '../src/idle/idleParticipants.js';
+import { collectParticipantSignals, isIdleParticipantInThisProcess, registerIdleParticipant } from '../src/idle/idleParticipants.js';
 import {
     issueIdleShutdownIntent,
     listIdleShutdownTargets,
@@ -281,4 +281,68 @@ test('in a composed process a stop is only acknowledged: the daemon runs the one
         setIdleShutdownComposedProcess(false);
         process.off('SIGTERM', onSignal);
     }
+});
+
+/** The daemon's connection, with the reads of a stop's acknowledgements held for `delayMs` (or forever) before they are answered. */
+function slowAckReads(hub: FakeRedisHub, delayMs: number | null) {
+    const daemon = hub.connect() as unknown as FakeConnection;
+    const read = daemon.hgetall.bind(daemon);
+    daemon.hgetall = async (key: string) => {
+        if (key.startsWith(IDLE_SHUTDOWN_ACKS_REDIS_PREFIX)) {
+            await new Promise(resolve => { if (delayMs !== null) setTimeout(resolve, delayMs); });
+        }
+        return read(key);
+    };
+    return daemon;
+}
+
+test('an acknowledgement read only after the deadline does not confirm the stop', async () => {
+    const hub = new FakeRedisHub();
+    const registration = registerIdleParticipant(hub.connect(), { role: 'worker', id: 'w-late', intervalMs: 60_000 });
+    await settle();
+    const intent = { ...newIdleShutdownIntent('stop', 'idle'), targets: [{ key: registration.key, startedAt: registration.participant.startedAt }] };
+    await issueIdleShutdownIntent(hub.connect(), intent);
+    // Acknowledged before the deadline, but the read that sees it completes after it.
+    await hub.connect().hset(`${IDLE_SHUTDOWN_ACKS_REDIS_PREFIX}${intent.id}`, `stop:${registration.key}`, '{}');
+    const started = Date.now();
+    const late = await waitForIdleAcks(slowAckReads(hub, 150) as never, intent, { roles: ['worker'], timeoutMs: 50, ...FAST });
+    assert.equal(late.confirmed, false, 'too late for the rest of the stop to end before the wake');
+    assert.ok(Date.now() - started < 150, 'the outstanding read is not waited for');
+
+    // A read that never answers ends the wait at the deadline too.
+    const hanging = await waitForIdleAcks(slowAckReads(hub, null) as never, intent, { roles: ['worker'], timeoutMs: 50, ...FAST });
+    assert.equal(hanging.confirmed, false);
+    assert.deepEqual(hanging.pending, ['(acknowledgements not read before the deadline)']);
+
+    // The read answers before the timer fires, but the clock has passed the deadline meanwhile (a stalled event loop).
+    const realNow = Date.now;
+    const stalled = hub.connect() as unknown as FakeConnection;
+    const read = stalled.hgetall.bind(stalled);
+    let skew = 0;
+    stalled.hgetall = async (key: string) => {
+        if (key.startsWith(IDLE_SHUTDOWN_ACKS_REDIS_PREFIX)) skew = 60_000;
+        return read(key);
+    };
+    Date.now = () => realNow() + skew;
+    try {
+        const stale = await waitForIdleAcks(stalled as never, intent, { roles: ['worker'], timeoutMs: 1_000, ...FAST });
+        assert.deepEqual(stale, { confirmed: false, pending: ['(acknowledged after the deadline)'] }, 'a confirmation received after the deadline is rejected');
+    } finally {
+        Date.now = realNow;
+    }
+
+    // Read in time, the same acknowledgement confirms.
+    assert.equal((await waitForIdleAcks(hub.connect(), intent, { roles: ['worker'], timeoutMs: 1_000, ...FAST })).confirmed, true);
+    await registration.stop();
+});
+
+test('a participant counts as this process\'s only for the generation registered here', async () => {
+    const hub = new FakeRedisHub();
+    const registration = registerIdleParticipant(hub.connect(), { role: 'api', id: 'a-local', intervalMs: 60_000 });
+    assert.equal(isIdleParticipantInThisProcess(registration.key, registration.participant.startedAt), true);
+    assert.equal(isIdleParticipantInThisProcess(registration.key, registration.participant.startedAt - 1), false, 'another process wrote this key');
+    assert.equal(isIdleParticipantInThisProcess(registration.key, null), false, 'an unreadable entry is never ours');
+    assert.equal(isIdleParticipantInThisProcess('api:elsewhere', registration.participant.startedAt), false);
+    await registration.stop();
+    assert.equal(isIdleParticipantInThisProcess(registration.key, registration.participant.startedAt), false, 'deregistered');
 });

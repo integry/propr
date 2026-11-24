@@ -781,7 +781,7 @@ export interface IdleShutdownStatus {
   shutdownAt: string | null;
   /** What keeps the instance awake right now. */
   blockers: Array<{
-    signal: "queue_jobs" | "agent_runs" | "ui_sessions" | "mcp_requests" | "http_requests" | "followup_handoffs" | "connect_deliveries" | "goals" | "ultrafix_loops" | "scheduled_work" | "unavailable";
+    signal: "queue_jobs" | "agent_runs" | "ui_sessions" | "mcp_requests" | "http_requests" | "followup_handoffs" | "connect_deliveries" | "goals" | "ultrafix_loops" | "scheduled_work" | "separate_processes" | "unavailable";
     detail: string;
   }>;
   /** Next due time of scheduled work: the wake hint published before an idle exit. */

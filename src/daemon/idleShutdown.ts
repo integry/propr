@@ -1,4 +1,3 @@
-import { hostname } from 'node:os';
 import type { Redis } from 'ioredis';
 import {
     IDLE_LAST_SHUTDOWN_REDIS_KEY,
@@ -12,15 +11,16 @@ import {
 } from '@propr/shared';
 import {
     IdleShutdownController,
+    beforeIdleDeadline,
     buildIdleWakeHint,
     buildIdleWakeRecord,
     classifyIdleWake,
-    closeConnection,
     collectIdleSignals,
     connectReplaySince,
     db,
     evaluateIdle,
     issueIdleShutdownIntent,
+    isIdleParticipantInThisProcess,
     isPendingIdleWake,
     listIdleParticipants,
     listIdleShutdownTargets,
@@ -41,8 +41,8 @@ import {
     type IntentRedis,
     type RoutingWebSocketIntakeService,
 } from '@propr/core';
-import { flushLogs } from '../shared/flushLogs.js';
 import { createDaemonIdleSources, createDaemonWorkSources } from './idleSignalSources.js';
+import { stopDaemonProcess, type IdleStopProcess } from './idleStopExit.js';
 import type { DaemonWorkProducers } from './workProducers.js';
 import {
     hintFileIo,
@@ -59,8 +59,16 @@ import {
  * owns Connect intake and the schedules, and so decides when the instance
  * may stop. Off by default; see `resolveIdleShutdownConfig`.
  *
- * Drain order once idle (any failure before step 6 restores intake and the
- * daemon's sweeps and keeps the instance running):
+ * Only the composed process (all-in-one) stops: its API, worker and indexing
+ * worker exit with it, so a stop that is called off (exit 1) starts every one
+ * of them again. A process outside it would exit 0 on its own and stay
+ * stopped, so a standalone daemon, or a registration made outside the
+ * process, keeps the instance awake (`separateProcessSignals`), and one that
+ * appears while draining aborts the drain before anything is asked to stop.
+ *
+ * Drain order once idle (any failure before the stop request is stored in
+ * step 5 restores intake and the daemon's sweeps and keeps the instance
+ * running):
  *   1. Connect intake: the relay must acknowledge the wake hint (it will wake
  *      the instance and replay cached deliveries). No acknowledgement, no stop.
  *   2. Quiesce the producers: pause the daemon's own sweeps (schedules,
@@ -75,20 +83,25 @@ import {
  *      other supervisors), replacing the record from step 2. A failed write
  *      aborts. A Connect replay an earlier wake still owes is carried over as
  *      the replay cursor.
- *   5. Record the shutdown.
- *   6. Ask every registered process (by generation: one that starts later is
- *      not asked) to stop, and wait until each has acknowledged (the request
+ *   5. Ask every registered process (by generation: one that starts later is
+ *      not asked) to stop, unless one registered outside this process or the
+ *      time left before the arranged wake shrank below what step 3 allowed
+ *      (both abort), and record the shutdown.
+ *   6. Wait until each process has acknowledged the stop request (the request
  *      is stored, so a process that reconnects still gets it) or is confirmed
  *      stopped. With scheduled work, the stop must be over before the wake
  *      arranged for it (the Connect wake hint, the hint file's `nextDueAt`):
- *      unconfirmed by then, or when the wait ends otherwise, the stop is
- *      called off (see `callOffStop`). Without, the daemon waits.
+ *      unconfirmed by then (an acknowledgement read later does not count), or
+ *      when the wait ends otherwise, the stop is called off (see
+ *      `callOffStop`). Without, the daemon waits.
  *   7. Look for work once more: anything queued while the processes stopped,
  *      or due before the arranged wake, would be stranded, so the stop is
- *      called off instead. Otherwise close the daemon's own resources, flush
- *      logs and exit 0. In a composed process (all-in-one) every component
- *      closes together instead, through the process's one coordinated close
- *      (`stopProcess`).
+ *      called off instead, as it is when that check is not over in time for
+ *      the close to end before the wake. Otherwise close every component
+ *      together, through the process's one coordinated close (`stopProcess`),
+ *      or (standalone) the daemon's own resources, flush logs and exit 0. The
+ *      process must have exited by the arranged wake: a close still running
+ *      then exits 1 instead, so the supervisor starts it for that work.
  */
 
 /** Records kept for `/api/status` and the Web UI. */
@@ -105,7 +118,11 @@ export interface IdleDrainTimings {
     /** How long to wait, after every acknowledgement, for processes to deregister. */
     deregisterWaitMs: number;
     pollMs: number;
-    /** Step 7 (standalone): how long the daemon's own close may take before it exits 0 anyway. */
+    /**
+     * Step 7: the time allowed for the close (the composed close has its own bound, of the same length by default);
+     * standalone, how long the daemon's own close may take before it exits 0 anyway. Either way the exit comes no
+     * later than the arranged wake, and reaching that wake first exits 1.
+     */
     closeDeadlineMs: number;
 }
 
@@ -136,9 +153,10 @@ export interface IdleDrainContext {
      * Composed process (all-in-one): the participants in this process only
      * acknowledged the stop; this runs the process's coordinated close of
      * every component (including the daemon) and exits with at least
-     * `exitCode`. Replaces the daemon's own close and exit.
+     * `exitCode`, and with at least 1 when `exitBy` (epoch ms, the arranged
+     * wake) comes before the exit. Replaces the daemon's own close and exit.
      */
-    stopProcess?: (exitCode: number) => void;
+    stopProcess?: IdleStopProcess;
     timings?: Partial<IdleDrainTimings>;
     /** True once the daemon is shutting down for another reason (SIGTERM): stop waiting, do not exit here. */
     isCancelled?: () => boolean;
@@ -153,8 +171,8 @@ export interface DaemonIdleShutdownDeps {
     /** The daemon's normal graceful close (timers, routing, Redis, queues). */
     close: () => Promise<void>;
     exit?: (code: number) => void;
-    /** See {@link IdleDrainContext.stopProcess}. */
-    stopProcess?: (exitCode: number) => void;
+    /** See {@link IdleDrainContext.stopProcess}. Given, the daemon runs in the composed process. */
+    stopProcess?: IdleStopProcess;
     intervalMs?: number;
     timings?: Partial<IdleDrainTimings>;
 }
@@ -167,18 +185,21 @@ export interface DaemonIdleShutdown {
 const toIso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
 
 /**
- * Wait (bounded) until no participant from `targets` remains registered: each
- * has finished its graceful shutdown. With `skipOwnProcess` (composed) the
- * participants in this process deregister in the coordinated close instead.
+ * Wait (bounded, by the absolute `deadline` too) until no participant from
+ * `targets` remains registered: each has finished its graceful shutdown. With
+ * `skipOwnProcess` (composed) the participants in this process deregister in
+ * the coordinated close instead.
  */
-async function waitForDeregistration(redis: IntentRedis, timings: IdleDrainTimings, targets: Set<string>, skipOwnProcess: boolean): Promise<string[]> {
-    const deadline = Date.now() + timings.deregisterWaitMs;
+async function waitForDeregistration(redis: IntentRedis, targets: Set<string>, options: { skipOwnProcess: boolean; deadline: number; pollMs: number }): Promise<string[]> {
+    const { skipOwnProcess, deadline } = options;
     for (;;) {
-        const remaining = (await listIdleParticipants(redis).catch(() => []))
-            .filter(({ key, participant }) => targets.has(key) && !(skipOwnProcess && participant?.pid === process.pid && participant.host === hostname()))
+        const read = await beforeIdleDeadline(listIdleParticipants(redis).catch(() => []), deadline);
+        if (!read.ok) return [...targets];
+        const remaining = read.value
+            .filter(({ key, participant }) => targets.has(key) && !(skipOwnProcess && isIdleParticipantInThisProcess(key, participant?.startedAt ?? null)))
             .map(entry => entry.key);
         if (remaining.length === 0 || Date.now() >= deadline) return remaining;
-        await new Promise(resolve => setTimeout(resolve, timings.pollMs));
+        await new Promise(resolve => setTimeout(resolve, Math.min(options.pollMs, Math.max(0, deadline - Date.now()))));
     }
 }
 
@@ -289,21 +310,26 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
         return abort('could not write the wake hint file', { error: (error as Error).message, file: resolveIdleWakeHintPath() });
     }
 
-    // 5. Records for /api/status (informational).
+    // 5. Store the stop request (6 waits for it), then the records for /api/status (informational).
     const record: IdleShutdownRecord = { shutdownAt: hint.shutdownAt, reason, idleForMs: request.idleForMs, nextDueAt: hint.nextDueAt };
-    await redis.set(IDLE_LAST_SHUTDOWN_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
-    await redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
-
-    // 6. Stop everything else, and hear back from every process.
     const stopRoles = ['api', 'worker', 'indexing_worker'] as const;
     let stopIntent: IdleShutdownIntent;
     try {
         // Only the generations registered now: a process that starts later is not asked to stop.
         stopIntent = { ...intent, phase: 'stop', issuedAt: new Date().toISOString(), targets: await listIdleShutdownTargets(redis, stopRoles) };
+        // Only this process's: one outside it would exit 0 on its own and stay stopped if the stop were called off.
+        const outside = (stopIntent.targets ?? []).filter(target => !isIdleParticipantInThisProcess(target.key, target.startedAt)).map(target => target.key);
+        if (outside.length > 0) return abort('a process outside this one registered while draining, and a called-off stop would leave it stopped', { outside });
+        // Steps 4 and 5 took time too: the window checked in step 3 must still be there.
+        if (stopWindowTooShort(wake, timings)) return abort('scheduled work is due too soon for the stop to finish before it', { nextDueAt: toIso(wake.wakeAt) });
         await issueIdleShutdownIntent(redis, stopIntent);
     } catch (error) {
         return abort('could not record the stop request', { error: (error as Error).message });
     }
+    await redis.set(IDLE_LAST_SHUTDOWN_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
+    await redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
+
+    // 6. Hear back from every process.
     logger.info({ ...record, file: resolveIdleWakeHintPath() }, 'Idle shutdown: stopping the control plane');
     return finishStop(ctx, { intent: stopIntent, roles: stopRoles, hint, record, wake }, timings);
 }
@@ -330,16 +356,27 @@ async function recheckBeforeStop(request: IdleShutdownRequest, ctx: IdleDrainCon
         return { abort: 'scheduled work is due earlier than the wake hint Connect accepted', details: { nextDueAt: toIso(after.nextDueAt), hinted: toIso(hinted) } };
     }
     const wakeAt = earliest(hinted, after.nextDueAt);
-    const confirmBy = wakeAt === null ? null : wakeAt - timings.deregisterWaitMs - timings.closeDeadlineMs;
-    if (confirmBy !== null && confirmBy - Date.now() < timings.quiesceTimeoutMs) {
+    const wake = { wakeAt, confirmBy: wakeAt === null ? null : wakeAt - timings.deregisterWaitMs - timings.closeDeadlineMs };
+    if (stopWindowTooShort(wake, timings)) {
         return { abort: 'scheduled work is due too soon for the stop to finish before it', details: { nextDueAt: toIso(wakeAt) } };
     }
-    return { after, wake: { wakeAt, confirmBy } };
+    return { after, wake };
 }
 
-/** Steps 6 (after the stop request is stored) and 7. */
+/** Whether the stop would get less time to be confirmed than the quiesce had. */
+function stopWindowTooShort(wake: StopWake, timings: IdleDrainTimings): boolean {
+    return wake.confirmBy !== null && wake.confirmBy - Date.now() < timings.quiesceTimeoutMs;
+}
+
+/**
+ * Steps 6 (after the stop request is stored) and 7. With a wake arranged,
+ * every step works to an absolute deadline before it: the acknowledgements by
+ * `confirmBy`, the last check by `decideBy` (so the close still gets its
+ * allowance), and the exit by the wake itself.
+ */
 async function finishStop(ctx: IdleDrainContext, stop: StopUnderWay & { roles: readonly IdleParticipantRole[] }, timings: IdleDrainTimings): Promise<true> {
     const { wakeAt, confirmBy } = stop.wake;
+    const decideBy = wakeAt === null ? null : wakeAt - timings.closeDeadlineMs;
     const callOff = (message: string, details: object) => callOffStop(ctx, { ...stop, closeDeadlineMs: timings.closeDeadlineMs }, message, details);
     let lastPendingLog = 0;
     const stopped = await waitForIdleAcks(ctx.redis, stop.intent, {
@@ -355,19 +392,26 @@ async function finishStop(ctx: IdleDrainContext, stop: StopUnderWay & { roles: r
         },
     });
     if (ctx.isCancelled?.()) return true;
-    if (!stopped.confirmed) {
-        const late = confirmBy !== null && Date.now() >= confirmBy;
+    // An acknowledgement read after `confirmBy` is too late for the rest of the stop to end before the wake.
+    const late = confirmBy !== null && Date.now() > confirmBy;
+    if (!stopped.confirmed || late) {
         return callOff(`not every process acknowledged the stop ${late ? 'in time for the wake arranged for the scheduled work' : 'within the confirmation timeout'}`, { pending: stopped.pending, wakeAt: toIso(wakeAt) });
     }
-    const remaining = await waitForDeregistration(ctx.redis, timings, new Set(stop.intent.targets?.map(target => target.key)), ctx.stopProcess !== undefined);
+    const remaining = await waitForDeregistration(ctx.redis, new Set(stop.intent.targets?.map(target => target.key)), {
+        skipOwnProcess: ctx.stopProcess !== undefined, deadline: earliest(Date.now() + timings.deregisterWaitMs, decideBy)!, pollMs: timings.pollMs,
+    });
     if (remaining.length > 0) logger.warn({ remaining }, 'Idle shutdown: processes acknowledged the stop but are still shutting down');
 
     // 7. The check in step 3 is older than the stop: work queued since, or due before the wake, would be left behind.
-    const stranded = strandedWork(await (ctx.collectWork ?? ctx.collect)(), wakeAt, Date.now());
+    const work = await beforeIdleDeadline((ctx.collectWork ?? ctx.collect)(), decideBy);
     if (ctx.isCancelled?.()) return true;
+    if (!work.ok || (decideBy !== null && Date.now() > decideBy)) {
+        return callOff('the last check for work did not finish in time for the close to end before the wake arranged for the scheduled work', { wakeAt: toIso(wakeAt) });
+    }
+    const stranded = strandedWork(work.value, wakeAt, Date.now());
     if (stranded.length > 0) return callOff('work arrived while the control plane was stopping', { blockers: stranded, wakeAt: toIso(wakeAt) });
-    await ctx.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined);
-    await stopDaemonProcess(ctx, stop.record, timings.closeDeadlineMs, 0);
+    await beforeIdleDeadline(ctx.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined), decideBy);
+    await stopDaemonProcess(ctx, stop.record, { closeDeadlineMs: timings.closeDeadlineMs, exitCode: 0, wakeAt });
     return true;
 }
 
@@ -401,7 +445,7 @@ async function callOffStop(ctx: IdleDrainContext, stop: StopUnderWay & { closeDe
     await updateHint({ readHint: ctx.readHint, writeHint: ctx.writeHint }, current => (current.shutdownAt === stop.hint.shutdownAt ? { ...current, wokeAt } : null)).catch((error: Error) => {
         logger.warn({ error: error.message, file: resolveIdleWakeHintPath() }, 'Idle shutdown: could not mark the called-off stop in the wake hint file; the next start counts as a wake');
     });
-    if (!ctx.isCancelled?.()) await stopDaemonProcess(ctx, stop.record, stop.closeDeadlineMs, 1);
+    if (!ctx.isCancelled?.()) await stopDaemonProcess(ctx, stop.record, { closeDeadlineMs: stop.closeDeadlineMs, exitCode: 1, wakeAt: null });
     return true;
 }
 
@@ -427,29 +471,6 @@ async function resumeIntakeOwingReplay(ctx: IdleDrainContext, routing: IdleRouti
     void requestOwedReplay(routing, owed, io).catch(() => undefined);
 }
 
-/** Step 7: the daemon itself, or (composed) the process's one coordinated close of every component. */
-async function stopDaemonProcess(ctx: IdleDrainContext, record: IdleShutdownRecord, closeDeadlineMs: number, exitCode: number): Promise<void> {
-    if (ctx.stopProcess) {
-        // Bounded there: the composed close ends in process.exit within its own deadline.
-        logger.info({ ...record }, `Idle shutdown: closing every component of this process (exit ${exitCode})`);
-        ctx.stopProcess(exitCode);
-        return;
-    }
-    logger.info({ ...record }, exitCode === 0 ? 'Idle shutdown: control plane stopped (exit 0)' : `Idle shutdown called off: closing the daemon (exit ${exitCode})`);
-    // The stop is recorded and every process has stopped: a close that hangs or fails must not keep the daemon up.
-    let timer: NodeJS.Timeout | undefined;
-    const closed = (async () => {
-        await ctx.close();
-        await closeConnection();
-    })().then(() => 'closed' as const, (error: unknown) => error);
-    const outcome = await Promise.race([closed, new Promise<'deadline'>(resolve => { timer = setTimeout(() => resolve('deadline'), closeDeadlineMs); })]);
-    clearTimeout(timer);
-    if (outcome === 'deadline') logger.error({ closeDeadlineMs }, 'Idle shutdown: the daemon did not finish closing in time; exiting anyway');
-    else if (outcome !== 'closed') logger.error({ error: (outcome as Error)?.message }, 'Idle shutdown: the daemon close failed; exiting anyway');
-    await flushLogs();
-    ctx.exit(exitCode);
-}
-
 export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdleShutdown {
     // A drain request left by a daemon that died mid-drain must not stop the processes starting now.
     void deps.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined);
@@ -457,6 +478,7 @@ export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdl
         redis: deps.redis,
         database: db,
         intakeMode: deps.intakeMode,
+        composed: deps.stopProcess !== undefined,
         connectInFlight: () => deps.getRoutingService()?.getInFlightCount() ?? 0,
         connectIdleWakeSupport: () => deps.getRoutingService()?.getIdleWakeSupport() ?? null,
     });

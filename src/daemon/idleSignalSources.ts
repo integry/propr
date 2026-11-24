@@ -5,6 +5,9 @@ import {
     collectDatabaseSignals,
     collectParticipantSignals,
     collectQueueSignals,
+    idleParticipantKey,
+    isIdleParticipantInThisProcess,
+    type IdleParticipant,
     type IdleSignalSource,
     type IdleSignals,
     type IdleWakeSupport,
@@ -57,6 +60,8 @@ export interface DaemonIdleSourceDeps {
     redis: Redis;
     database: Knex;
     intakeMode: string;
+    /** The daemon runs in the composed (all-in-one) process, which closes every component together. */
+    composed: boolean;
     connectInFlight: () => number;
     /** Null without Connect intake. */
     connectIdleWakeSupport?: () => IdleWakeSupport | null;
@@ -77,6 +82,20 @@ export function createDaemonWorkSources(deps: Pick<DaemonIdleSourceDeps, 'redis'
     };
 }
 
+/**
+ * Idle shutdown stops only the composed process. Its participants exit with
+ * it, so a stop that is called off (exit 1) restarts every one of them; a
+ * process outside it exits 0 on its own and would stay stopped. So a
+ * standalone daemon, and any live registration made outside this process,
+ * blocks.
+ */
+export function separateProcessSignals(composed: boolean, participants: IdleParticipant[]): string[] {
+    if (!composed) return ['the daemon runs as its own process: idle shutdown needs the single-process control plane (propr all-in-one)'];
+    return participants
+        .filter(participant => !isIdleParticipantInThisProcess(idleParticipantKey(participant.role, participant.id), participant.startedAt))
+        .map(participant => `${idleParticipantKey(participant.role, participant.id)} runs outside the all-in-one process`);
+}
+
 /** Every signal the daemon's idle detector reads, by name (the name shows up when one cannot be read). */
 export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<string, IdleSignalSource> {
     const now = deps.now ?? Date.now;
@@ -84,7 +103,10 @@ export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<stri
     return {
         'BullMQ queues': work['BullMQ queues'],
         // Every registered API/worker process must be observed: a stale entry is unavailable, not idle.
-        'process registrations': async () => ({ unavailable: (await collectParticipantSignals(deps.redis, { now: now() })).unavailable }),
+        'process registrations': async () => {
+            const { unavailable, participants } = await collectParticipantSignals(deps.redis, { now: now() });
+            return { unavailable, separateProcesses: separateProcessSignals(deps.composed, participants) };
+        },
         'API activity': () => collectActivitySignals(deps.redis, { now: now() }),
         'database work': work['database work'],
         'Ultrafix loops': work['Ultrafix loops'],

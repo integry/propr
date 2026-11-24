@@ -11925,6 +11925,7 @@ components:
                   - goals
                   - ultrafix_loops
                   - scheduled_work
+                  - separate_processes
                   - unavailable
               detail:
                 type: string

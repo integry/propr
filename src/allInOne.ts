@@ -60,7 +60,7 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
             info: message => logger.info(message),
             error: (message, error) => logger.error({ error: (error as Error | undefined)?.message }, message),
         },
-        flush: () => flushLogs(),
+        flush: timeoutMs => flushLogs(timeoutMs),
     });
 
     let signalled = false;
@@ -77,11 +77,12 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
     }
     // Idle shutdown: the API, worker and indexing worker in this process only
     // acknowledge the daemon's stop request; the daemon then runs this one close
-    // (exit 1 when it called the stop off, so the supervisor starts it again).
+    // (exit 1 when it called the stop off, or when the close is still running at
+    // `exitBy`, the wake arranged for scheduled work, so the supervisor starts it again).
     setIdleShutdownComposedProcess(true);
-    const idleShutdownStop = (exitCode = 0): void => {
+    const idleShutdownStop = (exitCode = 0, options: { exitBy?: number | null } = {}): void => {
         logger.info('all-in-one: idle shutdown, closing every component');
-        closeAndExit(exitCode);
+        closeAndExit(exitCode, options);
     };
 
     const stages: StartupStage[] = [
