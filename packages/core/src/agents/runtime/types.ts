@@ -273,6 +273,7 @@ export interface AgentRuntimeCapabilities {
 export type AgentRunLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
 
 export interface AgentRunInspection {
+    diagnostics?: readonly string[];
     liveness: AgentRunLiveness;
     id?: string;
     name: string;

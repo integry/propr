@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import type { NetworkPolicy, PolicyRule, Sprite } from '@fly/sprites';
+import { normalizeEgressHost } from '../../../network/egressAllowlist.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy } from '../agentRunNetworkPolicy.js';
 import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../types.js';
 
@@ -11,6 +12,8 @@ export const SPRITES_RESTRICTED_NETWORK_ENFORCEMENT: AgentRuntimeRestrictedNetwo
 /** Sprites' unrestricted state: no rules, no enforcement. */
 export const OPEN_SPRITE_NETWORK_POLICY: NetworkPolicy = Object.freeze({ rules: Object.freeze([]) as unknown as PolicyRule[] });
 
+const privateMcpZones = ['localhost', 'local', 'lan', 'home.arpa', 'svc.cluster.local', 'internal'];
+
 /**
  * The host a Sprite reaches the ProPR MCP endpoint at. A Sprite can never
  * reach a private address, and a restricted Sprite cannot reach a raw IP, so
@@ -20,8 +23,9 @@ export const OPEN_SPRITE_NETWORK_POLICY: NetworkPolicy = Object.freeze({ rules: 
 export function restrictedSpriteMcpEndpoint(endpoint: string): { host: string } | { reason: string } {
     let url: URL;
     try { url = new URL(endpoint); } catch { return { reason: 'Sprites requires a valid ProPR MCP URL' }; }
-    const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
-    if (url.protocol !== 'https:' || isIP(host) !== 0 || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) {
+    const host = normalizeEgressHost(url.hostname);
+    if (url.protocol !== 'https:' || isIP(host) !== 0 || !host.includes('.')
+        || privateMcpZones.some(zone => host === zone || host.endsWith(`.${zone}`))) {
         return { reason: `Sprites cannot reach ProPR MCP at ${url.origin}: set PROPR_SPRITES_MCP_URL (or PROPR_AGENT_MCP_URL/API_PUBLIC_URL) to a public HTTPS URL` };
     }
     return { host };
@@ -53,7 +57,7 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
     const allowed = new Set<string>();
     const zones = new Set<string>();
     for (const rule of restricted.allow) {
-        const host = rule.host.toLowerCase().replace(/\.$/, '');
+        const host = normalizeEgressHost(rule.host);
         if (isIP(host) !== 0) continue;
         if (rule.wildcard) zones.add(host);
         allowed.add(rule.wildcard ? `*.${host}` : host);
@@ -79,8 +83,8 @@ const ruleKey = (rule: PolicyRule) => `${rule.include ?? ''}|${rule.domain ?? ''
 
 /** Whether the Sprite reports exactly `expected` (in any order). */
 export function sameSpriteNetworkPolicy(actual: NetworkPolicy | undefined, expected: NetworkPolicy): boolean {
-    const keys = (policy: NetworkPolicy) => JSON.stringify([...new Set((policy.rules ?? []).map(ruleKey))].sort());
-    if (!actual || (actual.rules != null && !Array.isArray(actual.rules))) return false;
+    const keys = (policy: NetworkPolicy) => JSON.stringify([...new Set(policy.rules.map(ruleKey))].sort());
+    if (!Array.isArray(actual?.rules) || actual.rules.some(rule => !rule || typeof rule !== 'object')) return false;
     return keys(actual) === keys(expected);
 }
 

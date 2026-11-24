@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
 import { admitCostExecution, refuseCostExecution } from '../../claude/docker/dockerCostCap.js';
+import { AGENT_EGRESS_RESTRICTED_ENV } from '../../network/egressAllowlist.js';
+import { currentNetworkEgressDiagnostics } from '../../network/egressExecution.js';
 import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../git/workspaceTransportScript.js';
 import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
@@ -46,9 +48,13 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             this.pools.set(token, pool);
         }
         options = { ...options, extraEnvVars: { ...options.extraEnvVars } };
-        // As on Docker: a restricted Claude run skips the telemetry hosts its allowlist
-        // denies, unless its configuration (env files, spec env) sets the variable.
-        if (networkPolicy && spec.profile.agentType === 'claude') options.extraEnvVars!.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ??= '1';
+        const envDefaults = networkPolicy ? AGENT_EGRESS_RESTRICTED_ENV[spec.profile.agentType] : undefined;
+        const diagnostics: string[] = [];
+        const egressDiagnostics = currentNetworkEgressDiagnostics();
+        const recordDiagnostic = (message: string) => {
+            diagnostics.push(message);
+            egressDiagnostics?.push(message);
+        };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
         const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(options.timeout ?? 300_000),
@@ -71,17 +77,16 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 const acquired = await ready.acquire(signal);
                 try {
                     if (networkPolicy) {
-                        // Marked first, so release clears a policy even if applying it failed halfway.
-                        acquired.restricted = true;
                         await startupStep(signal, () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
+                        acquired.restricted = { policy: networkPolicy, run: spec.name, recordDiagnostic };
                     }
-                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch));
+                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch, envDefaults));
                     signal.throwIfAborted();
                     slot = acquired;
                     commit = writeBack;
                     return acquired.sprite;
                 } catch (error) {
-                    if (signal.aborted) await ready.discard(acquired.sprite);
+                    if (signal.aborted || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
                     else await ready.release(acquired);
                     throw error;
                 }
@@ -92,12 +97,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         const release = () => released ??= (async () => {
             await result.catch(() => {});
             if (!slot) return;
-            try {
-                await Promise.allSettled(reads);
-                await commit?.();
-            } finally {
-                await (await pool).release(slot);
-            }
+            await Promise.allSettled(reads);
+            await (await pool).release(slot, commit);
         })();
         // A rejected run has no result for the caller to retrieve.
         void result.catch(() => release()).catch(() => {});
@@ -105,7 +106,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             get recoveryLocation() { return slot && `Sprite ${slot.sprite.name} at /opt/propr/result`; },
             spec, get stdout() { return output.get('stdout'); }, get stderr() { return output.get('stderr'); },
             wait: () => result, stop: async () => { cancellation.abort(new AgentRunStoppedError(spec.name)); await result.catch(() => {}); },
-            inspect: async () => ({ name: spec.name, id: slot?.sprite.name, liveness: settled ? 'stopped' : 'running' }),
+            inspect: async () => ({ name: spec.name, id: slot?.sprite.name, liveness: settled ? 'stopped' : 'running',
+                ...(diagnostics.length ? { diagnostics: [...diagnostics] } : {}) }),
             isAlive: async () => !settled,
             readFile: async file => {
                 if (!slot || released || !settled) return null;
