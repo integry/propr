@@ -458,6 +458,22 @@ async function startFromUI(issueNumber: number, autoMerge = false, useEpic = tru
   return { status, body };
 }
 
+test('issue implementation waits for plan publication even when the issues are already visible', async () => {
+  await database('task_drafts').where({ draft_id: planId }).update({
+    status: 'executing', context_config: JSON.stringify({ useEpic: true }),
+  });
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+
+  assert.equal((await startFromUI(10, true)).status, 409);
+  assert.equal(await core.getEpicExecutionQueue(planId), null);
+  assert.deepEqual(labelCalls, []);
+
+  await database('task_drafts').where({ draft_id: planId }).update({ status: 'executed' });
+  assert.equal((await startFromUI(10, true)).status, 200);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.ready, true);
+  assert.deepEqual(dispatches, [10]);
+});
+
 test('UI initiated epic runs every remaining issue through the queue and finalizes once', async () => {
   epicPR = { number: 999, labels: [] };
   await database('task_drafts').where({ draft_id: planId }).update({ context_config: JSON.stringify({ useEpic: true }) });
