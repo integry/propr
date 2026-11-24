@@ -3,6 +3,8 @@ import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } f
 import type { AgentConfig } from '../types.js';
 import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
+import { createWorkspaceTransport, runWithWorkspaceTransport } from '../../git/workspaceTransport.js';
+import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } from '../../git/workspaceTransportMode.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime } from './types.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
@@ -63,6 +65,10 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
     if (!capabilities.supportsBindMounts && spec.mounts.some(mount => mount.type === 'bind')) {
         throw new Error(`Agent runtime "${runtime.kind}" cannot bind-mount the workspace or credentials for ${spec.name}`);
     }
+    const transport = spec.workspace.mode;
+    if (transport && !runtimeWorkspaceTransports(capabilities).includes(transport)) {
+        throw new Error(`Agent runtime "${runtime.kind}" cannot run the "${transport}" workspace transport for ${spec.name}`);
+    }
     if (!capabilities.supportsMcpPrivateNetwork && spec.mcpGrant?.network) {
         throw new Error(`Agent runtime "${runtime.kind}" cannot join MCP network "${spec.mcpGrant.network}" for ${spec.name}`);
     }
@@ -96,7 +102,12 @@ export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options
     return { ...spec, network: { ...spec.network, restriction: policy as AgentRunNetworkRestriction } };
 }
 
-/** Start a provider run on the agent's runtime and wait for its outcome. */
+/**
+ * Start a provider run on the agent's runtime and wait for its outcome. The
+ * workspace reaches the run through its transport: bind-mounted (the
+ * default where the runtime can), or cloned in the sandbox with the result
+ * applied back to the worker worktree before this resolves.
+ */
 export async function runAgent(
     config: Pick<AgentConfig, 'runtime'> | null | undefined,
     spec: AgentRunSpec,
@@ -104,19 +115,28 @@ export async function runAgent(
 ): Promise<ExecutionResult> {
     const runtime = getAgentRuntime(config);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
-    // Runtimes that bind host paths get per-run credential copies staged on the host.
-    // Others are refused below while the spec still binds the canonical store; they
-    // carry credentials with the transport-neutral CredentialBroker bundle instead.
+    const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
+    if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {
+        throw new Error(`Agent runtime "${runtime.kind}" cannot run the "${mode}" workspace transport for ${resolved.name}`);
+    }
+    // Workspace transport changes only the checkout and its git mounts. Runtimes
+    // that can bind host credential paths still get per-run copies on the host.
     const staged = runtime.capabilities.supportsBindMounts
         ? stageAgentRunCredentials(resolved, { launchEnvironment: options.extraEnvVars })
         : undefined;
     try {
         const runSpec = staged?.spec ?? resolved;
-        assertAgentRuntimeSupports(runtime, runSpec);
         const runOptions = staged && Object.keys(staged.secretEnv).length > 0
             ? { ...options, extraEnvVars: { ...options.extraEnvVars, ...staged.secretEnv } }
             : options;
-        return await runtime.start(runSpec, runOptions).wait();
+        if (mode === 'bind') {
+            assertAgentRuntimeSupports(runtime, runSpec);
+            return await runtime.start(runSpec, runOptions).wait();
+        }
+        return await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
+            transport: await createWorkspaceTransport(mode),
+            assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
+        });
     } finally {
         await staged?.complete();
     }
@@ -135,5 +155,9 @@ export function assertNativeGoalRuntime(
     const kind = resolveAgentRuntimeKind(config, environment);
     if (kind !== DEFAULT_AGENT_RUNTIME) {
         throw new Error(`Native goal sessions support only the "${DEFAULT_AGENT_RUNTIME}" agent runtime; "${kind}" is selected`);
+    }
+    // They bind-mount the worktree directly; refuse rather than silently ignore a clone transport.
+    if (environment[WORKSPACE_TRANSPORT_ENV]?.trim() && environment[WORKSPACE_TRANSPORT_ENV]!.trim().toLowerCase() !== 'bind') {
+        throw new Error(`Native goal sessions support only the "bind" workspace transport; ${WORKSPACE_TRANSPORT_ENV}=${environment[WORKSPACE_TRANSPORT_ENV]} is set`);
     }
 }

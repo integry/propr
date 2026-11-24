@@ -381,6 +381,11 @@ export {
     registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
 } from './agents/runtime/registry.js';
 export {
+    BindWorkspaceTransport, WORKSPACE_TRANSPORT_ENV, WorkspaceTransportError, createWorkspaceTransport, resolveWorkspaceTransportMode,
+    runWithWorkspaceTransport, runtimeWorkspaceTransports, type PreparedWorkspace, type WorkspaceCompletionOptions, type WorkspaceRunOutcome,
+    type WorkspaceTransport,
+} from './git/workspaceTransport.js';
+export {
     clearAgentRuntimePackageCatalogCache,
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,

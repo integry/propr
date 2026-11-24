@@ -49,10 +49,43 @@ export interface AgentRunProfile {
     alias?: string;
 }
 
+/**
+ * How the task workspace reaches the run:
+ * - `bind`: the worker's worktree is bind-mounted at `containerPath` (identical paths on both sides);
+ * - `clone`: the run clones the repository at the task base commit with a short-lived,
+ *   repository-scoped token and returns its result through a temporary ref (or a bundle
+ *   read back through the runtime file API). The worker applies it to its own worktree.
+ */
+export type WorkspaceTransportMode = 'bind' | 'clone';
+
 export interface AgentRunWorkspace {
+    /** Worker worktree. Bind-mounted in `bind` mode; the result lands here in `clone` mode. */
     hostPath: string;
     containerPath: string;
     readOnly: boolean;
+    /** Resolved at dispatch when omitted: `PROPR_WORKSPACE_TRANSPORT`, else `bind` on runtimes that bind-mount. */
+    mode?: WorkspaceTransportMode;
+    /** Set by the clone transport: what the run clones and where it returns the result. */
+    clone?: AgentRunWorkspaceClone;
+}
+
+export interface AgentRunWorkspaceClone {
+    /** Credential-free fetch URL of the repository. */
+    remote: string;
+    /** Ref the worker published the base commit to; the run fetches it. */
+    baseRef: string;
+    baseCommit: string;
+    /** Branch name checked out in the sandbox (the worker's task branch). */
+    branch: string;
+    /** Ref the run pushes its result snapshot to; absent for read-only workspaces. */
+    resultRef?: string;
+    /** Sandbox directory holding the result status and the bundle fallback (runtime file API). */
+    resultDir: string;
+    /**
+     * Bootstrap/finalize script run as the outermost wrapper: clones, runs the
+     * repository setup wrapper and provider entrypoint, then returns the result.
+     */
+    script: string;
 }
 
 /** A variable without `value` is inherited from the launching process environment. */
@@ -165,6 +198,8 @@ export interface AgentRuntimeCapabilities {
     supportsMcpPrivateNetwork: boolean;
     /** A worker can reattach to a run it did not start (after restart). */
     reattach: boolean;
+    /** Workspace transports the runtime can run; `['bind']` when bind mounts are supported and this is omitted. */
+    workspaceTransports?: readonly WorkspaceTransportMode[];
 }
 
 export type AgentRunLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
@@ -202,6 +237,21 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
     stop(signal?: NodeJS.Signals, timeoutMs?: number): Promise<void>;
     inspect(): Promise<AgentRunInspection>;
     isAlive(): Promise<boolean>;
+    /**
+     * Runtime file API: a file from the run's filesystem after it finished, or
+     * null when it does not exist. Offered by runtimes that keep a finished
+     * clone-mode run until {@link AgentRunHandle.release}.
+     */
+    readFile?(path: string): Promise<Buffer | null>;
+    /** Discards what the runtime kept of a finished run (e.g. the stopped container). Idempotent. */
+    release?(): Promise<void>;
+    /**
+     * Keeps what the runtime kept of the run until {@link AgentRunHandle.release} is
+     * called explicitly, cancelling any automatic removal of an unreleased run. A
+     * runtime that removes unreleased runs on its own must offer this, so a caller
+     * holding the only copy of a result there can keep it. Idempotent.
+     */
+    retain?(): void;
 }
 
 export interface AgentRuntime<Options = unknown, Result extends AgentRunResult = AgentRunResult> {
