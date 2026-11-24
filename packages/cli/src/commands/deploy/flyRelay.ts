@@ -10,8 +10,10 @@
  *     them, own App or not.
  *
  * So own-App credentials suppress automatic enrollment only when Connect is
- * off. With Connect on and no relay token, a token is enrolled (keeping the
- * own App for API auth), or the deploy stops before anything is provisioned.
+ * off. With Connect on and no relay token, a token is enrolled, or the deploy
+ * stops before anything is provisioned. Either way, a relay URL + token next
+ * to an own App would infer relay mode, so Connect pins the own App for API
+ * auth (GH_AUTH_MODE=app) unless the stack chose a mode or --relay switches.
  */
 
 import { DEFAULT_PROPR_GH_RELAY_URL, validateRelayUrl } from "@propr/shared";
@@ -44,13 +46,44 @@ export interface FlyRelayResult {
   enrolledInstallationId?: string;
 }
 
+/** keepOwnApp: the own App keeps GitHub API auth next to Connect's relay credentials. */
 type RelayPlan =
-  | { kind: "none" }
-  | { kind: "fill-url"; baseUrl: string }
+  | { kind: "none"; keepOwnApp: boolean }
+  | { kind: "fill-url"; baseUrl: string; keepOwnApp: boolean }
   | { kind: "enroll"; baseUrl: string; keepOwnApp: boolean };
 
 function hasOwnApp(secrets: Record<string, string>): boolean {
   return Boolean(secrets.GH_APP_ID && secrets[FLY_GH_PRIVATE_KEY_SECRET]);
+}
+
+/** GH_AUTH_MODE as resolveGithubAuthMode reads it; "" means the mode is inferred. */
+function explicitAuthMode(secrets: Record<string, string>): string {
+  return (secrets.GH_AUTH_MODE ?? "").trim().toLowerCase();
+}
+
+/**
+ * GH_INSTALLATION_ID next to a GitHub App id belongs to that App, not to the
+ * shared App the relay binds tokens to, whether or not the own App keeps API
+ * auth. `propr relay enroll` pins GH_AUTH_MODE=relay when it writes a
+ * shared-App installation, so that pin makes the id reusable.
+ */
+function sharedAppInstallation(secrets: Record<string, string>): string | undefined {
+  if (secrets.GH_APP_ID?.trim() && explicitAuthMode(secrets) !== "relay") return undefined;
+  return secrets.GH_INSTALLATION_ID?.trim() || undefined;
+}
+
+/**
+ * Connect puts a relay URL + token in the Machine env, new or existing, and
+ * those infer relay mode ahead of own-App credentials. The own App keeps API
+ * auth unless the stack pins relay mode or --relay switches to it.
+ */
+function keepsOwnApp(options: FlyRelayOptions, secrets: Record<string, string>, context: FlyRelayContext): boolean {
+  return context.connect && options.relay !== true && hasOwnApp(secrets) && explicitAuthMode(secrets) !== "relay";
+}
+
+/** GH_AUTH_MODE=app for a kept own App, unless the stack already sets a mode. */
+function ownAppAuthMode(plan: RelayPlan, secrets: Record<string, string>): Record<string, string> {
+  return plan.keepOwnApp && !explicitAuthMode(secrets) ? { GH_AUTH_MODE: "app" } : {};
 }
 
 function relayBaseUrl(options: FlyRelayOptions, secrets: Record<string, string>): string {
@@ -76,11 +109,12 @@ export function planFlyRelay(options: FlyRelayOptions, secrets: Record<string, s
     );
   }
   const enroll = options.relay === true || connectNeedsToken || (auto && !hasRelayToken && !hasOwnApp(secrets));
+  const keepOwnApp = keepsOwnApp(options, secrets, context);
   if (!enroll) {
     // Connect reads PROPR_GH_RELAY_URL without the hosted default the GitHub
     // API path applies, so pin it next to an existing token.
-    if (context.connect && !secrets.PROPR_GH_RELAY_URL?.trim()) return { kind: "fill-url", baseUrl: relayBaseUrl(options, secrets) };
-    return { kind: "none" };
+    if (context.connect && !secrets.PROPR_GH_RELAY_URL?.trim()) return { kind: "fill-url", baseUrl: relayBaseUrl(options, secrets), keepOwnApp };
+    return { kind: "none", keepOwnApp };
   }
   if (!context.githubToken) {
     if (connectNeedsToken) {
@@ -89,10 +123,9 @@ export function planFlyRelay(options: FlyRelayOptions, secrets: Record<string, s
       );
     }
     if (options.relay === true) throw new Error("--relay needs a GitHub login; run `propr login` first");
-    return { kind: "none" };
+    return { kind: "none", keepOwnApp };
   }
-  // Enrolled only for Connect sign-in: the own App keeps GitHub API auth.
-  return { kind: "enroll", baseUrl: relayBaseUrl(options, secrets), keepOwnApp: auto && hasOwnApp(secrets) };
+  return { kind: "enroll", baseUrl: relayBaseUrl(options, secrets), keepOwnApp };
 }
 
 /** Enroll (or complete) the relay credentials {@link planFlyRelay} calls for. */
@@ -103,19 +136,17 @@ export async function resolveFlyRelaySecrets(
   deps: FlyRelayDeps = { discoverInstallationId, enrollRelayToken },
 ): Promise<FlyRelayResult | undefined> {
   const plan = planFlyRelay(options, secrets, context);
-  if (plan.kind === "none") return undefined;
-  if (plan.kind === "fill-url") return { secrets: { PROPR_GH_RELAY_URL: plan.baseUrl } };
+  const authMode = ownAppAuthMode(plan, secrets);
+  if (plan.kind === "none") return authMode.GH_AUTH_MODE ? { secrets: authMode } : undefined;
+  if (plan.kind === "fill-url") return { secrets: { PROPR_GH_RELAY_URL: plan.baseUrl, ...authMode } };
 
   const client = { baseUrl: plan.baseUrl, githubToken: context.githubToken! };
-  // An own App's GH_INSTALLATION_ID belongs to that App, not to the shared
-  // App installation the relay token is bound to.
-  const knownInstallation = plan.keepOwnApp ? undefined : secrets.GH_INSTALLATION_ID;
-  const installationId = options.installation ?? knownInstallation ?? (await deps.discoverInstallationId(client));
+  const installationId = options.installation ?? sharedAppInstallation(secrets) ?? (await deps.discoverInstallationId(client));
   const enrolled = await deps.enrollRelayToken(client, { installationId, label: context.label });
   const relay = { PROPR_GH_RELAY_URL: plan.baseUrl, PROPR_GH_RELAY_TOKEN: enrolled.token };
   if (plan.keepOwnApp) {
-    // URL + token would otherwise infer relay mode and shadow the own App.
-    return { secrets: { ...relay, GH_AUTH_MODE: secrets.GH_AUTH_MODE || "app" }, enrolledInstallationId: installationId };
+    // GH_INSTALLATION_ID stays the own App's; the token carries the shared one.
+    return { secrets: { ...relay, ...authMode }, enrolledInstallationId: installationId };
   }
   return { secrets: { ...relay, GH_AUTH_MODE: "relay", GH_INSTALLATION_ID: installationId }, enrolledInstallationId: installationId };
 }
