@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { parseFlyStat, type FlyMachinesClient } from './flyMachinesApi.js';
+import { parseFlyStat, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
 import type { AgentRunFileRead } from './types.js';
 
 /** Reading files from a lingering Fly Machine through the exec API (base64 over the exec stdout). */
@@ -38,9 +38,11 @@ const CONFINED_READ_SCRIPT = [
  * file larger than `limit` is refused right after the stat, before any
  * content is transferred. Follows symlinks: not for paths the run controls
  * that must stay inside a directory (see {@link readConfinedMachineFile}).
+ * `signal` aborts the read (it rejects).
  */
-export async function readMachineFile(client: FlyMachinesClient, id: string, filePath: string, bounds: { tail?: number; limit?: number } = {}): Promise<ExecRead> {
-    const sized = await client.exec(id, ['/bin/sh', '-c', '[ -f "$1" ] || exit 3; stat -c "%s %Y %y" "$1"', 'sh', filePath], 30);
+export async function readMachineFile(client: FlyMachinesClient, id: string, filePath: string, bounds: FlyRequestOptions & { tail?: number; limit?: number } = {}): Promise<ExecRead> {
+    const request = { signal: bounds.signal };
+    const sized = await client.exec(id, ['/bin/sh', '-c', '[ -f "$1" ] || exit 3; stat -c "%s %Y %y" "$1"', 'sh', filePath], 30, request);
     if (sized.exit_code === 3) return null;
     const stat = parseFlyStat(sized.stdout);
     if (sized.exit_code !== 0 || !stat) throw new Error(`Could not stat ${filePath} in Fly Machine ${id}: ${sized.stderr.trim() || `exit ${sized.exit_code}`}`);
@@ -50,7 +52,7 @@ export async function readMachineFile(client: FlyMachinesClient, id: string, fil
     let total = 0;
     for (let offset = bounds.tail && size > bounds.tail ? size - bounds.tail : 0; offset < size; offset += EXEC_READ_CHUNK_BYTES) {
         const length = Math.min(EXEC_READ_CHUNK_BYTES, size - offset);
-        const read = await client.exec(id, ['/bin/sh', '-c', 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"', 'sh', filePath, String(offset), String(length)], 60);
+        const read = await client.exec(id, ['/bin/sh', '-c', 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"', 'sh', filePath, String(offset), String(length)], 60, request);
         if (read.exit_code !== 0) throw new Error(`Could not read ${filePath} from Fly Machine ${id}: ${read.stderr.trim() || `exit ${read.exit_code}`}`);
         const chunk = Buffer.from(read.stdout.trim(), 'base64');
         total += chunk.length;

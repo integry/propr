@@ -6,10 +6,13 @@ import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.j
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { collectingHandle, uploadAgentRunFiles, type UploadedAgentRunFiles } from './agentRunFileUpload.js';
+import { AgentRuntimeCapabilityError, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
 import { withComputeCost } from './computeUsage.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { FLY_MACHINES_RUNTIME_KIND, FlyMachinesRuntime } from './flyMachinesRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
+
+export { AgentRuntimeCapabilityError, restrictedNetworkRefusal, type AgentRuntimeCapability } from './agentRuntimeCapabilityError.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
@@ -66,30 +69,9 @@ export function getAgentRuntime(
     return runtime;
 }
 
-export type AgentRuntimeCapability = 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url';
-
-/**
- * A run refused before launch because its runtime cannot provide what the
- * spec requires. Never retried onto weaker isolation: the operator chooses a
- * runtime that can, or changes the policy.
- */
-export class AgentRuntimeCapabilityError extends Error {
-    readonly code = 'AGENT_RUNTIME_CAPABILITY_UNSUPPORTED';
-    constructor(message: string, readonly runtime: string, readonly capability: AgentRuntimeCapability) {
-        super(message);
-        this.name = 'AgentRuntimeCapabilityError';
-    }
-}
-
 /** Absent `supportsMcpReachableUrl` counts as supported. */
 export function runtimeSupportsMcpReachableUrl(capabilities: AgentRuntimeCapabilities): boolean {
     return capabilities.supportsMcpReachableUrl !== false;
-}
-
-/** The refusal a restricted run gets on this runtime, or undefined when it can enforce restricted mode. */
-export function restrictedNetworkRefusal(runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>, source?: string): string | undefined {
-    if (runtime.capabilities.supportsRestrictedNetwork) return undefined;
-    return `Agent runtime "${runtime.kind}" cannot enforce the restricted network policy${source ? ` (${source})` : ''}: it declares no way to confine outbound traffic to the allowlist, so restricted runs are refused instead of running with open networking. Use a runtime that supports restricted networking (docker), or set the network mode to open.`;
 }
 
 /** Refuse a spec the runtime cannot honour instead of running it with weaker isolation. */
@@ -109,7 +91,7 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
     if (grant && grant.transport === 'reachable-url' && !runtimeSupportsMcpReachableUrl(capabilities)) {
         throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot reach the ProPR MCP endpoint at a reachable URL for ${spec.name}`, kind, 'mcp_reachable_url');
     }
-    const restricted = spec.network.restriction ?? (spec.network.policy?.mode === 'restricted' ? spec.network.policy : undefined);
+    const restricted = specNetworkRestriction(spec);
     const refusal = restricted ? restrictedNetworkRefusal(runtime, restricted.source) : undefined;
     if (refusal) throw new AgentRuntimeCapabilityError(`${refusal} (run ${spec.name})`, kind, 'restricted_network');
 }

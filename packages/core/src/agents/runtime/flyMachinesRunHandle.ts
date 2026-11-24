@@ -6,12 +6,14 @@ import { getExecutionAbortError, getExecutionOwnershipContext } from '../../clau
 import { settleTimeoutStop } from '../../claude/docker/dockerExecutionSettlement.js';
 import { startLiveOutputStreaming } from '../../claude/docker/dockerLiveOutputStreaming.js';
 import { inspectSessionMessageLine, type SessionLineInspectionContext } from '../../claude/docker/dockerSessionOutput.js';
+import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
 import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
-import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient } from './flyMachinesApi.js';
+import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
 import { confinedCredentialPath, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
-import { flyForcedStopCommand, FLY_RUN_FILES, parseFlyLogLine, renderFlyMachineRequest } from './flyMachinesLaunch.js';
+import { assertFlyNetworkUnrestricted, flyForcedStopCommand, FLY_RUN_FILES, renderFlyMachineRequest } from './flyMachinesLaunch.js';
+import { FlyLogStream, pause, pollInterrupt, type PollInterrupt } from './flyMachinesLogStream.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
 
 /** How long a Machine create → `started` may take: image pull plus boot. */
@@ -48,15 +50,6 @@ export interface FlyRunDependencies {
     config: FlyMachinesConfig;
     pollIntervalMs: number;
     now: () => number;
-}
-
-/** Resolves after `ms`, or early when `signal` aborts (never rejects). */
-function pause(ms: number, signal?: AbortSignal): Promise<void> {
-    return new Promise(resolve => {
-        const timer = setTimeout(done, ms);
-        function done(): void { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); }
-        signal?.addEventListener('abort', done, { once: true });
-    });
 }
 
 function signalNumber(signal: NodeJS.Signals): number {
@@ -96,14 +89,15 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     private released?: Promise<void>;
     private releaseTimer?: NodeJS.Timeout;
     private retained = false;
-    private logToken?: string;
-    private logWarned = false;
-    private readonly liveStdout = new BoundedProviderRecordBuffer();
-    private readonly liveStderr = new BoundedDiagnosticTail();
+    private readonly logs: FlyLogStream;
     private readonly messageTimestamps = new Map<string, string>();
     readonly timing: FlyRunTiming = {};
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions, private readonly deps: FlyRunDependencies) {
+        this.logs = new FlyLogStream(deps.client, spec.name, {
+            output: (stream, text) => this.output.write(stream, text),
+            exit: code => { this.exitCode ??= code; },
+        });
         const ownership = getExecutionOwnershipContext()?.signal;
         const signals = [this.cancellation.signal, options.signal, ownership].filter((signal): signal is AbortSignal => !!signal);
         const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
@@ -132,10 +126,16 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         const timeoutMs = options.timeout ?? 300_000;
         const startedAt = now();
         const deadline = startedAt + timeoutMs;
+        // A Machine cannot confine egress. Refused before one exists, also when the runtime is used directly:
+        // a restricted spec, and an open one launched under a restricted policy (the run's network policy
+        // scope, else the enforced instance policy; an exemption lifts only that one, as at dispatch).
+        assertFlyNetworkUnrestricted(this.spec);
+        assertFlyNetworkUnrestricted(this.spec, await resolveAgentRunNetworkPolicy(options.networkPolicyExempt));
         const request = renderFlyMachineRequest(this.spec, {
             config, launchEnvironment: { ...process.env, ...options.extraEnvVars }, stdinData: options.stdinData,
         });
         this.throwIfAborted(signal);
+        // Never aborted: a create the API completes after an abort would leave a Machine no one destroys.
         const machine = await client.createMachine(request);
         this.machineId = machine.id;
         this.timing.createMs = now() - startedAt;
@@ -147,7 +147,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             }
             live = startLiveOutputStreaming({
                 ...options, onOverflow: error => logger.warn({ run: this.spec.name, error: error.message }, 'Live output unavailable; continuing agent execution'),
-            }, () => this.liveStdout.output, () => this.liveStderr.value);
+            }, () => this.logs.stdout.output, () => this.logs.stderr.value);
             return await this.execute(machine, options, signal, { startedAt, deadline, timeoutMs, live });
         } catch (error) {
             // Never settle while the agent may still be running: destroy a Machine whose agent was not seen to
@@ -171,21 +171,30 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         };
         if (options.onContainerId) sessionContext.invokeExecutionCallback(() => options.onContainerId!(machine.id, this.spec.name));
         await this.awaitStarted(machine, signal, Math.min(deadline, startedAt + START_TIMEOUT_MS));
-        this.timing.coldStartMs = now() - startedAt;
-        logger.info({ run: this.spec.name, machine: machine.id, region: machine.region, ...this.timing }, 'Fly Machine started for agent run');
+        if (!signal.aborted) {
+            this.timing.coldStartMs = now() - startedAt;
+            logger.info({ run: this.spec.name, machine: machine.id, region: machine.region, ...this.timing }, 'Fly Machine started for agent run');
+        }
         let timedOut = false;
         for (let poll = 0; this.exitCode === undefined; poll++) {
             if (signal.aborted) break;
             if (now() >= deadline) { timedOut = true; break; }
-            await this.pollLogs(sessionContext, live);
-            if (this.exitCode === undefined && poll % STATUS_CHECK_EVERY_POLLS === STATUS_CHECK_EVERY_POLLS - 1) await this.checkStatus();
+            const interrupt = pollInterrupt(signal, deadline, now, this.deps.pollIntervalMs);
+            try {
+                await this.pollLogs(sessionContext, live, interrupt);
+                // At the deadline too: the timeout stop checks the status again before it escalates.
+                if (this.exitCode === undefined && !interrupt.signal.aborted && poll % STATUS_CHECK_EVERY_POLLS === STATUS_CHECK_EVERY_POLLS - 1) await this.checkStatus(interrupt.signal);
+            } finally {
+                interrupt.dispose();
+            }
             if (this.exitCode === undefined) await pause(this.deps.pollIntervalMs, signal);
         }
+        if (timedOut && !signal.aborted) await this.stopAfterTimeout(sessionContext, live, signal);
+        // Cancelled while running, or while the timeout stop waited for the agent: the Machine is destroyed.
         if (signal.aborted) {
             await this.discardMachine('cancelled');
             this.throwIfAborted(signal);
         }
-        if (timedOut) await this.stopAfterTimeout(sessionContext, live);
         const result = await this.collect(sessionContext);
         if (!timedOut) return result;
         return await new Promise<ExecutionResult>((resolve, reject) => settleTimeoutStop(timeoutMs, result, options.preserveOutputOnTimeout ?? false, { resolve, reject }));
@@ -228,9 +237,16 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         while (!signal.aborted) {
             const remainingSeconds = Math.ceil((deadline - now()) / 1000);
             if (remainingSeconds <= 0) throw new Error(`Fly Machine ${machine.id} for ${this.spec.name} did not start in time (image pull and boot)`);
-            const reached = await client.waitForState(machine.id, 'started', Math.min(60, remainingSeconds), machine.instance_id).catch(() => false);
-            if (reached) return;
-            const current = await client.getMachine(machine.id);
+            // Both requests give way to a cancellation, which destroys the Machine instead.
+            const reached = await client.waitForState(machine.id, 'started', Math.min(60, remainingSeconds), { instanceId: machine.instance_id, signal }).catch(() => false);
+            if (reached || signal.aborted) return;
+            let current: FlyMachine | null;
+            try {
+                current = await client.getMachine(machine.id, { signal });
+            } catch (error) {
+                if (signal.aborted) return;
+                throw error;
+            }
             if (current?.state === 'started') return;
             if (!current || ['stopped', 'destroyed', 'destroying', 'failed'].includes(current.state ?? '')) {
                 // It ran and ended before we saw it start (e.g. the launcher could not run): report what Fly recorded.
@@ -241,42 +257,25 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         }
     }
 
-    private async pollLogs(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>): Promise<void> {
-        if (!this.machineId) return;
-        try {
-            for (let pages = 0; pages < 20; pages++) {
-                const page = await this.deps.client.logs(this.machineId, this.logToken);
-                if (page.nextToken) this.logToken = page.nextToken;
-                for (const line of page.lines) {
-                    const parsed = parseFlyLogLine(line.message);
-                    if (!parsed) continue;
-                    if ('exitCode' in parsed) { this.exitCode ??= parsed.exitCode; continue; }
-                    if (parsed.stream === 'stdout') {
-                        this.liveStdout.append(parsed.text);
-                        inspectSessionMessageLine(parsed.text, line.timestamp || new Date().toISOString(), context);
-                        live?.stdout(parsed.text);
-                    } else {
-                        this.liveStderr.append(parsed.text);
-                        live?.stderr(parsed.text);
-                    }
-                    this.output.write(parsed.stream, parsed.text);
-                }
-                if (page.lines.length === 0 || !page.nextToken) return;
-            }
-        } catch (error) {
-            if (!this.logWarned) logger.warn({ run: this.spec.name, machine: this.machineId, error: (error as Error).message }, 'Fly logs unavailable; the run output is read from the Machine when it finishes');
-            this.logWarned = true;
-        }
+    private pollLogs(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, interrupt: PollInterrupt): Promise<void> {
+        return this.machineId ? this.logs.poll(this.machineId, context, live, interrupt) : Promise.resolve();
     }
 
-    /** The exit status file (the launcher writes it before lingering), else whether the Machine ended. */
-    private async checkStatus(): Promise<void> {
-        const status = await this.execRead(FLY_RUN_FILES.exitStatus, { limit: MAX_EXIT_STATUS_BYTES }).catch(() => undefined);
+    /**
+     * The exit status file (the launcher writes it before lingering), else
+     * whether the Machine ended. `signal` aborts the check: the run's
+     * cancellation (the Machine is destroyed instead) or, in the run loop, its
+     * deadline. A stop window does not: this is the evidence its forced stop
+     * or destroy is decided on.
+     */
+    private async checkStatus(signal: AbortSignal): Promise<void> {
+        const status = await this.execRead(FLY_RUN_FILES.exitStatus, { limit: MAX_EXIT_STATUS_BYTES, signal }).catch(() => undefined);
         if (status && status !== 'oversized') {
             const code = Number(status.content.toString('utf8').trim());
             if (Number.isInteger(code)) { this.exitCode ??= code; return; }
         }
-        const machine = await this.deps.client.getMachine(this.machineId!).catch(() => undefined);
+        if (signal.aborted) return;
+        const machine = await this.deps.client.getMachine(this.machineId!, { signal }).catch(() => undefined);
         if (machine === undefined) return;
         if (!machine || !['started', 'starting', 'created', 'replacing'].includes(machine.state ?? '')) {
             this.machineGone = true;
@@ -291,37 +290,49 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * files. A clone transport wrapper is spared and given time to snapshot
      * and publish the workspace first. Failing that, destroy the Machine.
      * Throws when none of these is confirmed: the run must not settle while
-     * its agent may still be running.
+     * its agent may still be running. Returns early when the run is cancelled
+     * meanwhile: the caller then destroys the Machine.
      */
-    private async stopAfterTimeout(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>): Promise<void> {
-        await this.deps.client.signal(this.machineId!, signalNumber('SIGTERM')).catch(() => undefined);
-        await this.awaitExit(context, live, DEFAULT_STOP_TIMEOUT_MS);
-        if (this.exitCode !== undefined) return;
+    private async stopAfterTimeout(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, signal: AbortSignal): Promise<void> {
+        await this.deps.client.signal(this.machineId!, signalNumber('SIGTERM'), { signal }).catch(() => undefined);
+        await this.awaitExit(context, live, DEFAULT_STOP_TIMEOUT_MS, signal);
+        if (this.exitCode !== undefined || signal.aborted) return;
         const clone = Boolean(this.spec.workspace.clone?.resultDir);
-        const killed = await this.deps.client.exec(this.machineId!, flyForcedStopCommand(this.spec), 30)
+        const killed = await this.deps.client.exec(this.machineId!, flyForcedStopCommand(this.spec), 30, { signal })
             .catch(error => ({ exit_code: -1, stdout: '', stderr: (error as Error).message }));
+        if (signal.aborted) return;
         if (killed.exit_code !== 0) logger.warn({ run: this.spec.name, machine: this.machineId, error: killed.stderr.trim() || `exit ${killed.exit_code}` }, 'Could not kill the timed-out agent in its Fly Machine; destroying the Machine');
-        else await this.awaitExit(context, live, clone ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS);
-        if (this.exitCode !== undefined) return;
+        else await this.awaitExit(context, live, clone ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS, signal);
+        if (this.exitCode !== undefined || signal.aborted) return;
         await this.discardMachine('timed-out');
         if (!this.machineGone) throw new Error(`Agent run ${this.spec.name} timed out and its Fly Machine ${this.machineId} could not be stopped`);
         // Destroyed: the streamed output is all that is left of it.
         this.exitCode = null;
     }
 
-    private async awaitExit(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, windowMs: number): Promise<void> {
+    /**
+     * Polls until the agent's exit is known, the window ends or the run is
+     * cancelled. Log polling ends with the window; the status check after it
+     * still runs, so the exit status is looked for before the caller escalates.
+     */
+    private async awaitExit(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, windowMs: number, signal: AbortSignal): Promise<void> {
         const until = this.deps.now() + windowMs;
-        while (this.exitCode === undefined && this.deps.now() < until) {
-            await pause(this.deps.pollIntervalMs);
-            await this.pollLogs(context, live);
-            if (this.exitCode === undefined) await this.checkStatus();
+        while (this.exitCode === undefined && !signal.aborted && this.deps.now() < until) {
+            await pause(this.deps.pollIntervalMs, signal);
+            const interrupt = pollInterrupt(signal, until, this.deps.now, this.deps.pollIntervalMs);
+            try {
+                await this.pollLogs(context, live, interrupt);
+            } finally {
+                interrupt.dispose();
+            }
+            if (this.exitCode === undefined && !signal.aborted) await this.checkStatus(signal);
         }
     }
 
     /** The exact output from the Machine's capture files, falling back to what the logs streamed. */
     private async collect(context: SessionLineInspectionContext): Promise<ExecutionResult> {
-        let stdout = this.liveStdout.output;
-        let stderr = this.liveStderr.value;
+        let stdout = this.logs.stdout.output;
+        let stderr = this.logs.stderr.value;
         if (!this.machineGone && this.machineId) {
             const [capturedRead, capturedErrRead] = await Promise.all([
                 this.execRead(FLY_RUN_FILES.stdout, { tail: MAX_CAPTURE_READ_BYTES }).catch(() => undefined),
@@ -348,7 +359,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         return { stdout, stderr, exitCode: this.exitCode ?? null, messageTimestamps: this.messageTimestamps };
     }
 
-    private execRead(filePath: string, bounds: { tail?: number; limit?: number } = {}): Promise<ExecRead> {
+    private execRead(filePath: string, bounds: FlyRequestOptions & { tail?: number; limit?: number } = {}): Promise<ExecRead> {
         return readMachineFile(this.deps.client, this.machineId!, filePath, bounds);
     }
 

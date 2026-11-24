@@ -1,5 +1,7 @@
 import type { AgentRunResources } from './types.js';
 
+export const FLY_MACHINES_RUNTIME_KIND = 'fly-machines';
+
 /**
  * Operator configuration of the Fly Machines runtime. Every run is an
  * ephemeral Machine in one Fly app, created through the Machines API with a

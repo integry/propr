@@ -74,6 +74,11 @@ export class FlyMachinesApiError extends Error {
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** `signal` aborts the request (on top of its own timeout): the caller no longer waits for it. */
+export interface FlyRequestOptions {
+    signal?: AbortSignal;
+}
+
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /** Deploy tokens (`FlyV1 ...`) are sent as they are; older personal tokens as a bearer token. */
@@ -96,8 +101,9 @@ export class FlyMachinesClient {
         return `${this.config.apiUrl}/apps/${encodeURIComponent(this.config.app)}/machines${suffix}`;
     }
 
-    private async request<T>(method: string, url: string, options: { body?: unknown; allow?: number[]; timeoutMs?: number } = {}): Promise<{ status: number; body: T | undefined }> {
-        const signal = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+    private async request<T>(method: string, url: string, options: FlyRequestOptions & { body?: unknown; allow?: number[]; timeoutMs?: number } = {}): Promise<{ status: number; body: T | undefined }> {
+        const timeout = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+        const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
         const response = await this.fetchImpl(url, {
             method,
             headers: {
@@ -130,24 +136,24 @@ export class FlyMachinesClient {
     }
 
     /** The Machine, or null once it is gone (destroyed Machines eventually return 404). */
-    async getMachine(id: string): Promise<FlyMachine | null> {
-        const { status, body } = await this.request<FlyMachine>('GET', this.machinesUrl(`/${encodeURIComponent(id)}`), { allow: [404] });
+    async getMachine(id: string, options: FlyRequestOptions = {}): Promise<FlyMachine | null> {
+        const { status, body } = await this.request<FlyMachine>('GET', this.machinesUrl(`/${encodeURIComponent(id)}`), { allow: [404], signal: options.signal });
         return status === 404 ? null : body ?? null;
     }
 
-    /** Waits up to `timeoutSeconds` (max 60) for `state`; false when it was not reached in time. */
-    async waitForState(id: string, state: 'started' | 'stopped' | 'destroyed', timeoutSeconds: number, instanceId?: string): Promise<boolean> {
+    /** Waits up to `timeoutSeconds` (max 60) for `state` (of `instanceId`, when given); false when it was not reached in time. */
+    async waitForState(id: string, state: 'started' | 'stopped' | 'destroyed', timeoutSeconds: number, options: FlyRequestOptions & { instanceId?: string } = {}): Promise<boolean> {
         const query = new URLSearchParams({ state, timeout: String(Math.max(1, Math.min(60, Math.ceil(timeoutSeconds)))) });
-        if (instanceId) query.set('instance_id', instanceId);
+        if (options.instanceId) query.set('instance_id', options.instanceId);
         const { status } = await this.request('GET', this.machinesUrl(`/${encodeURIComponent(id)}/wait?${query}`), {
-            allow: [408], timeoutMs: (timeoutSeconds + 15) * 1000,
+            allow: [408], timeoutMs: (timeoutSeconds + 15) * 1000, signal: options.signal,
         });
         return status !== 408;
     }
 
     /** Sends `signal` to the Machine's main process. */
-    async signal(id: string, signal: number): Promise<void> {
-        await this.request('POST', this.machinesUrl(`/${encodeURIComponent(id)}/signal`), { body: { signal } });
+    async signal(id: string, signal: number, options: FlyRequestOptions = {}): Promise<void> {
+        await this.request('POST', this.machinesUrl(`/${encodeURIComponent(id)}/signal`), { body: { signal }, signal: options.signal });
     }
 
     async stopMachine(id: string, options: { signal?: string; timeoutSeconds?: number } = {}): Promise<void> {
@@ -162,20 +168,20 @@ export class FlyMachinesClient {
         await this.request('DELETE', this.machinesUrl(`/${encodeURIComponent(id)}?force=true&kill=true`), { allow: [404] });
     }
 
-    async exec(id: string, command: string[], timeoutSeconds = 60): Promise<FlyExecResult> {
+    async exec(id: string, command: string[], timeoutSeconds = 60, options: FlyRequestOptions = {}): Promise<FlyExecResult> {
         const { body } = await this.request<Partial<FlyExecResult>>('POST', this.machinesUrl(`/${encodeURIComponent(id)}/exec`), {
             body: { command, cmd: command.map(shellQuote).join(' '), timeout: timeoutSeconds },
-            timeoutMs: (timeoutSeconds + 15) * 1000,
+            timeoutMs: (timeoutSeconds + 15) * 1000, signal: options.signal,
         });
         return { exit_code: body?.exit_code ?? 0, stdout: body?.stdout ?? '', stderr: body?.stderr ?? '' };
     }
 
     /** One page of the Machine's logs after `nextToken` (oldest first). */
-    async logs(machineId: string, nextToken?: string): Promise<FlyLogPage> {
+    async logs(machineId: string, nextToken?: string, options: FlyRequestOptions = {}): Promise<FlyLogPage> {
         const query = new URLSearchParams({ instance: machineId });
         if (nextToken) query.set('next_token', nextToken);
         const { body } = await this.request<{ data?: Array<{ attributes?: { timestamp?: string; message?: string } }>; meta?: { next_token?: string } }>(
-            'GET', `${this.config.logsApiUrl}/apps/${encodeURIComponent(this.config.app)}/logs?${query}`,
+            'GET', `${this.config.logsApiUrl}/apps/${encodeURIComponent(this.config.app)}/logs?${query}`, { signal: options.signal },
         );
         const lines = (body?.data ?? [])
             .map(entry => ({ timestamp: entry.attributes?.timestamp ?? '', message: entry.attributes?.message ?? '' }));

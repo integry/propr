@@ -1,8 +1,9 @@
 import { envFileValues } from '../credentials/hostCredentialStaging.js';
 import { WORKSPACE_AGENT_USER, WORKSPACE_RESULT_PHASE_FILE } from '../../git/workspaceTransportScript.js';
+import { AgentRuntimeCapabilityError, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
 import { renderAgentRunCommand } from './dockerRunArgs.js';
 import type { FlyCreateMachineRequest, FlyMachineFile } from './flyMachinesApi.js';
-import { flyMachineGuest, MIN_FLY_RESULT_LINGER_SECONDS, type FlyMachinesConfig } from './flyMachinesConfig.js';
+import { FLY_MACHINES_RUNTIME_KIND, flyMachineGuest, MIN_FLY_RESULT_LINGER_SECONDS, type FlyMachinesConfig } from './flyMachinesConfig.js';
 import type { AgentRunSpec } from './types.js';
 
 /**
@@ -370,12 +371,28 @@ function flyMachineNoNewPrivileges(spec: AgentRunSpec): boolean {
 }
 
 /**
+ * A Machine has no outbound allowlist: refuses (with the registry's typed
+ * error) a run whose network is restricted by its spec (its restriction or
+ * a restricted neutral policy) or by `applicable`, the policy applying at
+ * launch. The runtime checks both before it creates a Machine, so a caller
+ * using it directly, without the registry's capability check, is refused too.
+ */
+export function assertFlyNetworkUnrestricted(spec: AgentRunSpec, applicable?: { source?: string }): void {
+    const restricted = specNetworkRestriction(spec) ?? applicable;
+    if (!restricted) return;
+    const refusal = restrictedNetworkRefusal({ kind: FLY_MACHINES_RUNTIME_KIND, capabilities: { supportsRestrictedNetwork: false } }, restricted.source);
+    throw new AgentRuntimeCapabilityError(`${refusal} (run ${spec.name})`, FLY_MACHINES_RUNTIME_KIND, 'restricted_network');
+}
+
+/**
  * The create request for one run. Throws for a spec the Machine cannot run
- * as declared: no explicit entrypoint (the image's own cannot be chained), a
- * remaining bind mount (the upload step converts every bind it can), a
- * security or mount restriction it cannot enforce, or an unreadable env file.
+ * as declared: a restricted network, no explicit entrypoint (the image's own
+ * cannot be chained), a remaining bind mount (the upload step converts every
+ * bind it can), a security or mount restriction it cannot enforce, or an
+ * unreadable env file.
  */
 export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLaunchInput): FlyCreateMachineRequest {
+    assertFlyNetworkUnrestricted(spec);
     const bind = spec.mounts.find(mount => mount.type === 'bind');
     if (bind) throw new Error(`Agent run ${spec.name} still bind-mounts ${bind.target}; Fly Machines receive files only`);
     const { entrypoint, args } = renderAgentRunCommand(spec);

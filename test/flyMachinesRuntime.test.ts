@@ -26,6 +26,10 @@ const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/
 const { getAgentRuntime, registerAgentRuntime, assertAgentRuntimeSupports, runAgent, registeredAgentRuntimes, AgentRuntimeCapabilityError } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { planAgentRunMcpTransport } = await import('../packages/core/src/agents/runtime/agentRunMcpTransport.ts');
 const { AgentRunStoppedError } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
+const { agentRunNetworkPolicy } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
+const { executeWithNetworkPolicy } = await import('../packages/core/src/network/egressExecution.ts');
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const FLY_ENV = { PROPR_FLY_API_TOKEN: 'FlyV1 fm2_test', PROPR_FLY_APP: 'propr-agents', PROPR_FLY_REGION: 'ams' };
 
@@ -62,7 +66,8 @@ interface FakeMachine {
 /** An in-memory Machines + logs API. `agent` decides what a run prints and how it exits. */
 class FakeFly {
     machines = new Map<string, FakeMachine>();
-    requests: Array<{ method: string; url: string; body?: any; authorization?: string }> = [];
+    /** `at`: {@link now} when the request arrived. */
+    requests: Array<{ method: string; url: string; body?: any; authorization?: string; at: number }> = [];
     destroyed: string[] = [];
     agent: (machine: FakeMachine) => void = machine => this.finish(machine, 'out\n', 'err\n', 0);
     /** Log polls before the agent "runs". */
@@ -85,7 +90,38 @@ class FakeFly {
     guestClock?: number;
     /** Machines that destroyed themselves at the end of their linger. */
     expired: string[] = [];
+    /**
+     * When set, every logs request answers after this long (on {@link now}) with a full page and a
+     * continuation token: a backlog that never drains. An abort by the client rejects it first.
+     */
+    slowLogsMs = 0;
+    /** Added to {@link now} per millisecond a slow logs page is pending: lets a page take minutes of the run's clock. */
+    clockStepMs = 0;
+    /** Logs requests not answered yet, and those the client aborted. */
+    pendingLogPages = 0;
+    abortedLogs = 0;
+    private skew = 0;
     private nextId = 1;
+    private nextLogPage = 1;
+
+    /** The run's clock when a test hands it to the runtime: real time, plus what slow log pages added. */
+    now = (): number => Date.now() + this.skew;
+
+    private async slowLogPage(machine: FakeMachine, signal?: AbortSignal | null): Promise<Response> {
+        this.pendingLogPages++;
+        try {
+            for (const started = this.now(); this.now() - started < this.slowLogsMs;) {
+                if (signal?.aborted) { this.abortedLogs++; throw signal.reason; }
+                await sleep(1);
+                this.skew += this.clockStepMs;
+            }
+        } finally {
+            this.pendingLogPages--;
+        }
+        const lines = [...machine.pendingLogs.splice(0), '[info] health check passed'];
+        const data = lines.map(message => ({ attributes: { timestamp: '2026-11-24T10:00:00Z', message } }));
+        return new Response(JSON.stringify({ data, meta: { next_token: `p${this.nextLogPage++}` } }), { status: 200 });
+    }
 
     /** The launcher's linger loop, observed lazily: true when the Machine is gone by now. */
     private expire(machine: FakeMachine): boolean {
@@ -109,12 +145,13 @@ class FakeFly {
     fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
         const method = init.method ?? 'GET';
         const body = init.body ? JSON.parse(String(init.body)) : undefined;
-        this.requests.push({ method, url, body, authorization: (init.headers as Record<string, string>)?.Authorization });
+        this.requests.push({ method, url, body, authorization: (init.headers as Record<string, string>)?.Authorization, at: this.now() });
         const parsed = new URL(url);
         const json = (status: number, value: unknown) => new Response(value === undefined ? '' : JSON.stringify(value), { status });
         if (parsed.pathname.endsWith('/logs')) {
             const machine = this.machines.get(parsed.searchParams.get('instance')!);
             if (!machine || this.expire(machine)) return json(200, { data: [], meta: {} });
+            if (this.slowLogsMs > 0) return this.slowLogPage(machine, init.signal);
             if (this.delayPolls > 0) { this.delayPolls--; return json(200, { data: [], meta: { next_token: 't0' } }); }
             if (!machine.ran) { machine.ran = true; this.agent(machine); }
             if (machine.finalizeIn !== undefined && --machine.finalizeIn === 0) this.finish(machine, 'partial\n', 'killed\n', 137);
@@ -237,6 +274,27 @@ test('capability checks refuse binds and restricted networking before launch', (
     const restricted = spec();
     restricted.network = { ...restricted.network, policy: { mode: 'restricted', allow: [], privateAddressAllow: [], source: 'instance' } };
     assert.throws(() => assertAgentRuntimeSupports(fly, restricted), (error: unknown) => error instanceof AgentRuntimeCapabilityError && error.capability === 'restricted_network');
+});
+
+test('direct launches refuse restricted networking before any Machine is created', async () => {
+    const fly = new FakeFly();
+    const direct = runtime(fly);
+    const workflowPolicy = { mode: 'restricted' as const, source: 'workflow' as const, allow: ['registry.example.com'], instanceAllow: [] };
+    const refused = (error: unknown) => error instanceof AgentRuntimeCapabilityError && error.capability === 'restricted_network'
+        && error.runtime === FLY_MACHINES_RUNTIME_KIND && /cannot enforce the restricted network policy \(workflow\)/.test(error.message);
+    // Restricted by the spec's neutral policy, by its restriction, or by the policy applying at launch.
+    const byPolicy = spec();
+    byPolicy.network = { ...byPolicy.network, policy: agentRunNetworkPolicy('claude', workflowPolicy) };
+    await assert.rejects(direct.start(byPolicy).wait(), refused);
+    const byRestriction = spec();
+    byRestriction.network = { ...byRestriction.network, restriction: workflowPolicy };
+    await assert.rejects(direct.start(byRestriction, { networkPolicyExempt: 'an exemption does not lift the spec\'s own restriction' }).wait(), refused);
+    await assert.rejects(executeWithNetworkPolicy(workflowPolicy, () => direct.start(spec()).wait()), refused);
+    assert.deepEqual(fly.requests, [], 'no Machine was created');
+    // Rendering a create request refuses the spec's own restriction too.
+    const config = { region: 'ams', size: 'performance-2x', resultLingerSeconds: MIN_FLY_RESULT_LINGER_SECONDS };
+    assert.throws(() => renderFlyMachineRequest(byPolicy, { config, launchEnvironment: {} }), refused);
+    assert.throws(() => renderFlyMachineRequest(byRestriction, { config, launchEnvironment: {} }), refused);
 });
 
 test('machine request: image entrypoint chain, Docker env semantics, uploads, prompt file, auto-destroy and no restart', () => {
@@ -497,6 +555,74 @@ test('timeout: a clone run\'s forced stop spares its wrapper and waits for it to
     assert.equal(result.timedOut, true);
     assert.equal(result.exitCode, 137, 'the exit recorded once the wrapper finished');
     assert.deepEqual(fly.destroyed, [], 'the finalizing Machine was not destroyed');
+    await handle.release!();
+});
+
+/** A run's agent that keeps running and ignores TERM, behind a log backlog whose pages take 20 s each (within the 30 s request timeout). */
+function slowLogsFly(): FakeFly {
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    fly.ignoreSignals = true;
+    fly.slowLogsMs = 20_000;
+    return fly;
+}
+
+const logRequests = (fly: FakeFly) => fly.requests.filter(request => request.url.includes('/logs')).length;
+
+test('cancellation is not held up by log pagination: the page in flight is aborted and the Machine destroyed', async () => {
+    const cancelled = slowLogsFly();
+    const controller = new AbortController();
+    const run = runtime(cancelled).start(spec(), { timeout: 600_000, signal: controller.signal });
+    const outcome = run.wait().then(() => 'resolved', (error: Error) => error.message);
+    while (cancelled.pendingLogPages === 0) await sleep(2);
+    controller.abort(new Error('cancelled by the caller'));
+    assert.equal(await Promise.race([outcome, sleep(3_000).then(() => 'still running')]), 'cancelled by the caller');
+    assert.deepEqual(cancelled.destroyed, ['m1']);
+    assert.equal(cancelled.abortedLogs, 1, 'the page in flight was aborted');
+    const requested = logRequests(cancelled);
+    await sleep(20);
+    assert.equal(logRequests(cancelled), requested, 'no further page is requested');
+
+    // stop(): once its window ends, the cancellation reaches the run in the middle of a page.
+    const stopped = slowLogsFly();
+    const handle = runtime(stopped).start(spec(), { timeout: 600_000 });
+    const pending = handle.wait();
+    while (stopped.pendingLogPages === 0) await sleep(2);
+    await handle.stop('SIGTERM', 0);
+    await assert.rejects(pending, (error: unknown) => error instanceof AgentRunStoppedError);
+    assert.equal(stopped.machines.size, 0);
+    assert.deepEqual(stopped.destroyed, ['m1']);
+    assert.equal(stopped.abortedLogs, 1);
+
+    // Past the deadline, in the TERM window of the timeout stop: the cancellation destroys the Machine, no KILL.
+    const timedOut = slowLogsFly();
+    const late = new AbortController();
+    const expiring = runtime(timedOut).start(spec(), { timeout: 50, signal: late.signal });
+    const expired = expiring.wait().then(() => 'resolved', (error: Error) => error.message);
+    while (!timedOut.machines.get('m1')?.signals.length || timedOut.pendingLogPages === 0) await sleep(2);
+    late.abort(new Error('cancelled during the timeout stop'));
+    assert.equal(await Promise.race([expired, sleep(3_000).then(() => 'still running')]), 'cancelled during the timeout stop');
+    assert.deepEqual(timedOut.destroyed, ['m1']);
+    assert.equal(timedOut.machines.size, 0);
+    assert.ok(!timedOut.requests.some(request => request.url.endsWith('/exec') && String(request.body.command[2]).includes('kill -s KILL')), 'destroyed instead of killed');
+});
+
+test('timeout: log pagination gives way at the run deadline and at the end of each stop window', async () => {
+    const fly = slowLogsFly();
+    // Each page takes 20 s of the run's clock, which passes 250 times faster while a page is pending.
+    fly.clockStepMs = 250;
+    const handle = runtime(fly, FLY_ENV, fly.now).start(spec(), { timeout: 30_000, preserveOutputOnTimeout: true });
+    const result = await handle.wait();
+    const at = (predicate: (request: FakeFly['requests'][number]) => boolean) => fly.requests.find(predicate)!.at;
+    const created = at(request => request.method === 'POST' && request.url.endsWith('/machines'));
+    const term = at(request => request.url.endsWith('/signal'));
+    const kill = at(request => request.url.endsWith('/exec') && String(request.body.command[2]).includes('kill -s KILL'));
+    assert.ok(term - created < 30_000 + 5_000, `TERM at the run deadline, not after the backlog (${term - created} ms)`);
+    assert.ok(kill - term < 10_000 + 5_000, `KILL at the end of the TERM window, not after the backlog (${kill - term} ms)`);
+    assert.ok(fly.abortedLogs >= 2, 'the pages in flight at the deadline and at the end of the TERM window were aborted');
+    assert.equal(result.timedOut, true);
+    assert.equal(result.exitCode, 137, 'the exit status the launcher recorded after the kill');
+    assert.deepEqual(fly.destroyed, [], 'the stopped Machine keeps its result files');
     await handle.release!();
 });
 

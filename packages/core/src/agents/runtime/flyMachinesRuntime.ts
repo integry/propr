@@ -3,11 +3,11 @@ import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import logger from '../../utils/logger.js';
 import type { AgentRunOptions } from './dockerRuntime.js';
 import { FlyMachinesClient, type FetchLike } from './flyMachinesApi.js';
-import { flyPrivateNetworkEnabled, resolveFlyMachinesConfig, type FlyMachinesConfig } from './flyMachinesConfig.js';
+import { FLY_MACHINES_RUNTIME_KIND, flyPrivateNetworkEnabled, resolveFlyMachinesConfig, type FlyMachinesConfig } from './flyMachinesConfig.js';
 import { FlyMachineRunHandle } from './flyMachinesRunHandle.js';
 import type { AgentRunHandle, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
-export const FLY_MACHINES_RUNTIME_KIND = 'fly-machines';
+export { FLY_MACHINES_RUNTIME_KIND };
 
 const DEFAULT_POLL_INTERVAL_MS = 1_500;
 const PREWARM_TIMEOUT_MS = 10 * 60_000;
@@ -15,9 +15,10 @@ const PREWARM_TIMEOUT_MS = 10 * 60_000;
 /**
  * What a Fly Machine run can do. No bind mounts: the workspace arrives through
  * the clone transport and credentials as uploaded per-run copies. No egress
- * allowlist, so restricted runs are refused. ProPR MCP is reached over the
- * org private network (`<app>.internal`) when the control plane runs on Fly,
- * else at a reachable URL with the run's grant token.
+ * allowlist, so restricted runs are refused: by the registry before dispatch,
+ * and again by every launch, which a caller may start directly. ProPR MCP is
+ * reached over the org private network (`<app>.internal`) when the control
+ * plane runs on Fly, else at a reachable URL with the run's grant token.
  */
 export function flyMachinesCapabilities(environment: NodeJS.ProcessEnv = process.env): AgentRuntimeCapabilities {
     return Object.freeze({
@@ -119,7 +120,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             for (const deadline = started + PREWARM_TIMEOUT_MS; now() < deadline;) {
                 const current = await client.getMachine(machine.id);
                 if (!current || !['created', 'starting'].includes(current.state ?? '')) break;
-                await client.waitForState(machine.id, 'started', 30, machine.instance_id).catch(() => false);
+                await client.waitForState(machine.id, 'started', 30, { instanceId: machine.instance_id }).catch(() => false);
             }
             const result = { image, machineId: machine.id, pullMs: now() - started };
             logger.info({ ...result, region: machine.region }, 'Fly Machines image pre-warmed');
