@@ -248,14 +248,16 @@ export function buildRedisContainer(redisImage: string): JsonObject {
 }
 
 function buildAppContainer(plan: FlyDeployPlan, image: string): JsonObject {
-  const dependsOn: JsonObject[] = [{ name: "redis", condition: "healthy" }];
-  if (plan.legacyDocker) dependsOn.push({ name: "docker", condition: "healthy" });
   const container: JsonObject = {
     name: "app",
     image,
     cmd: ["node", "dist/src/allInOne.js"],
     env: buildAppEnv(plan),
-    depends_on: dependsOn,
+    // Never gated on the legacy docker container: dockerd took ~34 s to listen
+    // after a wake from an idle stop, and Fly's proxy fails the waking request
+    // with 503 after ~45 s with nothing on port 4000. The API starts at once;
+    // the worker waits for the Docker API itself (PROPR_DOCKER_STARTUP_WAIT_SECONDS).
+    depends_on: [{ name: "redis", condition: "healthy" }],
     secrets: containerSecrets(plan.secretNames ?? []),
     healthchecks: [{
       name: "api", http: { port: FLY_API_PORT, method: "GET", path: "/health" },

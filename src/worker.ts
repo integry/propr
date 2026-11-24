@@ -1,5 +1,6 @@
 import { preventWithdrawnJob } from '@propr/core';
 import { prepareWorktreeHost } from './gitDirectoryTrust.js';
+import { waitForDockerApiAtStartup } from './workerDockerReadiness.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
@@ -171,6 +172,9 @@ export interface StartedWorker {
 }
 
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
+    // Opt-in (Fly legacy Docker): the API is already serving; only the worker
+    // waits for a Docker daemon that is still booting.
+    await waitForDockerApiAtStartup({ logger, signal: options.signal });
     await prepareWorktreeHost();
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = resolveWorkerConcurrency();

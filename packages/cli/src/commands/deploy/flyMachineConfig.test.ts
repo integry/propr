@@ -158,7 +158,28 @@ test("legacy Docker mode adds the daemon container and shares worktree paths", (
   const env = app.env as Record<string, string>;
   assert.equal(env.DOCKER_HOST, "tcp://127.0.0.1:2375");
   assert.ok(env.GIT_WORKTREES_BASE_PATH.startsWith("/usr/src/app/data/propr-shared/"));
-  assert.deepEqual(app.depends_on, [{ name: "redis", condition: "healthy" }, { name: "docker", condition: "healthy" }]);
+  // Not gated on docker health: after a wake from an idle stop dockerd took
+  // ~34 s to listen and Fly's proxy failed the waking request with 503 at ~45 s.
+  assert.deepEqual(app.depends_on, [{ name: "redis", condition: "healthy" }]);
+  // The worker waits for the Docker API itself instead.
+  assert.equal(env.PROPR_DOCKER_STARTUP_WAIT_SECONDS, "300");
+});
+
+test("legacy Docker mode: no container waits on the docker sidecar, in either config shape", () => {
+  for (const idleShutdownAfter of [undefined, "2m"]) {
+    const plan = basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048, idleShutdownAfter });
+    const doc = JSON.parse(renderFlyMachineConfigJson(plan)) as JsonObject;
+    for (const shape of [buildMachineConfig(plan), doc]) {
+      for (const c of shape.containers as JsonObject[]) {
+        const deps = (c.depends_on ?? []) as Array<{ name: string }>;
+        assert.ok(!deps.some((dep) => dep.name === "docker"), `${String(c.name)} must not depend on docker`);
+      }
+      const app = (shape.containers as JsonObject[]).find((c) => c.name === "app") as JsonObject;
+      assert.deepEqual(app.depends_on, [{ name: "redis", condition: "healthy" }]);
+    }
+  }
+  // Without legacy mode the worker does not wait for Docker at all.
+  assert.equal(buildAppEnv(basePlan()).PROPR_DOCKER_STARTUP_WAIT_SECONDS, undefined);
 });
 
 test("legacy Docker mode shares worktrees and egress sockets through the Fly volume, not a temp_dir", () => {

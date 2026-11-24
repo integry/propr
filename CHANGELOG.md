@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     billed. A stop the API refuses or does not answer within 10 seconds exits
     1, so the app starts again. A Fly Machine without the token never stops
     idle.
+  - With `propr deploy fly --legacy-docker` the app container no longer waits
+    for the `docker` container to be healthy, so the request that wakes a
+    stopped Machine is served while `dockerd` starts (it took ~34 s, past
+    Fly's ~45 s proxy timeout once the app started after it). The worker
+    waits for the Docker API instead (`PROPR_DOCKER_STARTUP_WAIT_SECONDS`).
+    The docker boot script skips `e2fsck` and `resize2fs` for a cleanly
+    unmounted, full-size image and logs the time each step took.
   - Only the single-process control plane (`propr all-in-one`, the `minimal`
     profile) stops, with the indexing worker inline or off. A standalone
     daemon, or an API, worker or indexing worker process outside the

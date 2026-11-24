@@ -17,6 +17,7 @@ import {
   LEGACY_DOCKER_VOLUME_PATH,
   LEGACY_DOCKER_STALE_RUNTIME_PATHS,
   legacyDockerDiskSizeGb,
+  renderLegacyDockerBootLogHelpers,
   renderLegacyDockerBootScript,
   renderLegacyDockerDiskSteps,
 } from "./flyLegacyDocker.js";
@@ -126,15 +127,27 @@ function sh(script: string): { status: number | null; stdout: string; stderr: st
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-function runDiskSteps(dir: string, diskSizeGb: number): void {
+/** Runs the disk steps; returns the e2fsck/resize2fs invocations and the boot log. */
+function runDiskSteps(dir: string, diskSizeGb: number): { repairs: string[]; log: string } {
+  const calls = join(dir, "calls");
+  writeFileSync(calls, "");
   const prelude = [
     "set -eu",
+    ...renderLegacyDockerBootLogHelpers(),
     `IMG=${dir}/docker.ext4`,
     `DOCKER_ROOT=${dir}/root`,
     "mountpoint() { return 1; }",
     `mount() { echo "$@" > ${dir}/mounted; }`,
+    `e2fsck() { echo "e2fsck $*" >> ${calls}; command e2fsck "$@"; }`,
+    `resize2fs() { echo "resize2fs $*" >> ${calls}; command resize2fs "$@"; }`,
   ];
   const result = sh([...prelude, ...renderLegacyDockerDiskSteps(diskSizeGb)].join("\n"));
+  assert.equal(result.status, 0, result.stderr);
+  return { repairs: readFileSync(calls, "utf-8").split("\n").filter(Boolean), log: result.stderr };
+}
+
+function debugfsWrite(img: string, request: string): void {
+  const result = sh(`debugfs -w -R "${request}" ${img}`);
   assert.equal(result.status, 0, result.stderr);
 }
 
@@ -211,4 +224,73 @@ test("a growth interrupted after extending the file finishes on the next boot", 
     assert.equal(fsBytes(img), 2 * GIB);
     assert.equal(readMarker(img), "keep");
   });
+});
+
+test("a wake with a cleanly unmounted, full-size image skips e2fsck and resize2fs", { skip: e2fsSkip }, () => {
+  withScratch((dir, img) => {
+    runDiskSteps(dir, 1);
+    writeMarker(dir, img, "keep");
+    const { repairs, log } = runDiskSteps(dir, 1);
+    assert.deepEqual(repairs, [], "no e2fsck or resize2fs on the fast path");
+    assert.match(log, /read the image superblock \(clean\)/);
+    assert.match(log, /skipping e2fsck and resize2fs/);
+    assert.ok(readFileSync(join(dir, "mounted"), "utf-8").includes(img));
+    assert.equal(readMarker(img), "keep");
+  });
+});
+
+test("an image left not clean by a hard stop is checked before it is mounted", { skip: e2fsSkip }, () => {
+  withScratch((dir, img) => {
+    runDiskSteps(dir, 1);
+    debugfsWrite(img, "ssv state 0");
+    const { repairs, log } = runDiskSteps(dir, 1);
+    assert.deepEqual(repairs, [`e2fsck -p ${img}`]);
+    assert.match(log, /read the image superblock \(state:not_clean\)/);
+    assert.ok(readFileSync(join(dir, "mounted"), "utf-8").includes(img));
+    // The check marked it clean again, so the next wake takes the fast path.
+    assert.deepEqual(runDiskSteps(dir, 1).repairs, []);
+  });
+});
+
+test("a clean image whose journal needs recovery, or a due mount-count check, is not fast-pathed", { skip: e2fsSkip }, () => {
+  withScratch((dir, img) => {
+    runDiskSteps(dir, 1);
+    debugfsWrite(img, "feature needs_recovery");
+    const recovery = runDiskSteps(dir, 1);
+    assert.match(recovery.log, /\(journal-needs-recovery\)/);
+    assert.equal(recovery.repairs[0], `e2fsck -p ${img}`);
+  });
+  withScratch((dir, img) => {
+    runDiskSteps(dir, 1);
+    debugfsWrite(img, "ssv max_mnt_count 2");
+    debugfsWrite(img, "ssv mnt_count 2");
+    const due = runDiskSteps(dir, 1);
+    assert.match(due.log, /\(mount-count-check-due\)/);
+    assert.deepEqual(due.repairs, [`e2fsck -p ${img}`]);
+  });
+});
+
+test("a clean image smaller than wanted still takes the forced check and resize", { skip: e2fsSkip }, () => {
+  withScratch((dir, img) => {
+    runDiskSteps(dir, 1);
+    const { repairs, log } = runDiskSteps(dir, 2);
+    assert.match(log, /read the image superblock \(clean\)/);
+    assert.deepEqual(repairs, [`e2fsck -p ${img}`, `e2fsck -f -p ${img}`, `resize2fs ${img}`]);
+    assert.equal(fsBytes(img), 2 * GIB);
+    assert.match(log, /resize2fs to 2147483648 bytes/);
+  });
+});
+
+test("boot script logs a timed line for each step, from script start to dockerd", () => {
+  const script = renderLegacyDockerBootScript(18);
+  const order = ["boot script started", "read the image superblock", "mounted the image at", "starting dockerd", "exec dockerd"];
+  const positions = order.map((needle) => script.indexOf(needle));
+  for (const [i, pos] of positions.entries()) assert.ok(pos > 0, `has ${order[i]}`);
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions, "in boot order");
+  // boot_log is defined before its first use.
+  assert.ok(script.indexOf("boot_log() {") < script.indexOf("boot_log \"boot script started\""));
+  // Each line carries the step duration and the Machine uptime.
+  const result = sh([...renderLegacyDockerBootLogHelpers(), "boot_log \"step one\""].join("\n"));
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /^propr-dockerd-boot: step one \(\+\d+\.\d{2}s, machine uptime [\d.]+s\)$/m);
 });
