@@ -41,7 +41,7 @@ export function spriteMcpHost(spec: AgentRunSpec): string | undefined {
  * Sprites rules are domains (exact, `*.zone`, or `*`), the most specific match
  * wins and every non-allowed lookup is refused. The translation keeps the
  * run no broader than its allowlist by host: a ProPR `*.zone` never covers the
- * bare zone, so the bare zone is denied explicitly unless it is listed; IP
+ * bare zone, so deny it unless an exact allow or a broader wildcard covers it. IP
  * literal rules are dropped (Sprites denies raw IPs that were not resolved
  * from an allowed domain, and never reaches private addresses).
  */
@@ -62,7 +62,9 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
         allowed.add(rule.wildcard ? `*.${host}` : host);
     }
     if (mcpHost) allowed.add(mcpHost);
-    const denied = [...zones].filter(zone => !allowed.has(zone));
+    const wildcardZones = [...zones];
+    const denied = wildcardZones.filter(zone => !allowed.has(zone)
+        && !wildcardZones.some(parent => zone.endsWith(`.${parent}`)));
     return {
         rules: [
             ...[...allowed].sort().map(domain => ({ domain, action: 'allow' as const })),

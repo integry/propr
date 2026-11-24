@@ -39,6 +39,17 @@ test('the run allowlist becomes a deny-by-default DNS policy that never covers a
     assert.equal(spriteNetworkPolicy(build()), undefined);
 });
 
+test('a broader wildcard allows the bare zone of a nested wildcard', () => {
+    const overlap = { ...restriction, allow: ['*.service.example.com', '*.example.com', '*.otherexample.com'] };
+    const spec = build({ ...agentRunNetwork('bridge'), restriction: overlap, policy: agentRunNetworkPolicy('claude', overlap) });
+    const rules = new Map(spriteNetworkPolicy(spec)!.rules.map(rule => [rule.domain, rule.action]));
+    assert.equal(rules.get('*.example.com'), 'allow');
+    assert.equal(rules.get('*.service.example.com'), 'allow');
+    assert.equal(rules.has('service.example.com'), false, 'the broader wildcard already allows this host');
+    assert.equal(rules.get('example.com'), 'deny');
+    assert.equal(rules.get('otherexample.com'), 'deny', 'wildcards match only at a DNS label boundary');
+});
+
 test('Sprites still refuses what it cannot enforce', () => {
     assert.throws(() => spriteNetworkPolicy(build(agentRunNetwork('propr_default'))), /cannot join network/);
     const malformed = { ...agentRunNetwork('bridge'), policy: { mode: 'restricted' as const, allow: [{ host: 'x.com', wildcard: false, ports: [] }], privateAddressAllow: [] } };
