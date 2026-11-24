@@ -35,7 +35,8 @@ function spec() {
 test('runtime selection: docker by default, PROPR_AGENT_RUNTIME, then per-agent config', () => {
     assert.equal(resolveAgentRuntimeKind(undefined, {}), 'docker');
     assert.equal(resolveAgentRuntimeKind(undefined, { [AGENT_RUNTIME_ENV]: 'Docker' }), 'docker');
-    assert.throws(() => resolveAgentRuntimeKind(undefined, { [AGENT_RUNTIME_ENV]: 'sprites' }), /Unknown agent runtime "sprites".*PROPR_AGENT_RUNTIME/);
+    assert.equal(resolveAgentRuntimeKind(undefined, { [AGENT_RUNTIME_ENV]: 'sprites' }), 'sprites');
+    assert.equal(getAgentRuntime({ runtime: 'sprites' }, {}).kind, 'sprites');
     assert.throws(() => resolveAgentRuntimeKind({ runtime: 'fly' }, {}), /agent configuration/);
     registerAgentRuntime('fake', () => new DockerRuntime());
     assert.equal(resolveAgentRuntimeKind({ runtime: 'fake' }, { [AGENT_RUNTIME_ENV]: 'docker' }), 'fake');
@@ -436,7 +437,7 @@ test('native goals resolve the runtime selection and refuse anything but Docker'
     recordingRuntime('goal-remote', true);
     assert.throws(() => assertNativeGoalRuntime({ runtime: 'goal-remote' }, {}), /support only the "docker" agent runtime; "goal-remote" is selected/);
     assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'goal-remote' }), /"goal-remote" is selected/);
-    assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'sprites' }), /Unknown agent runtime "sprites"/);
+    assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'sprites' }), /support only the "docker" agent runtime/);
 });
 
 function cloneSpec() {

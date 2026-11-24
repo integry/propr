@@ -1,4 +1,4 @@
-import { preventWithdrawnJob } from '@propr/core';
+import { closeAgentRuntimes, preventWithdrawnJob } from '@propr/core';
 import { prepareWorktreeHost } from './gitDirectoryTrust.js';
 import { waitForDockerApiAtStartup } from './workerDockerReadiness.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
@@ -421,6 +421,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await taskStateRecovery.close();
         // Proxies close only after running jobs (and their containers) have drained.
         await worker.close().finally(() => egressProxySweeper.close());
+        await closeAgentRuntimes();
         await attachedTaskStateFinalizers.close();
         await closeStateManager();
         await runtimeBuildWorker.close();

@@ -7,6 +7,8 @@ import {
     ensureAgentDockerImage,
 } from '../claude/docker/dockerExecutor.js';
 import { resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
+import { dockerAgentRuntimeInUse } from './runtime/runtimeSelection.js';
+import logger from '../utils/logger.js';
 import { resolveManagedAgentImage } from './managedAgentImage.js';
 import { readManagedAgentPin } from './managedAgentPin.js';
 import type { AgentConfig } from './types.js';
@@ -44,6 +46,21 @@ async function resolveBundleBaseImage(
     return { imageTag, error: `Unified agent image ${imageTag} has not been prepared by the worker${wait ? `; ${wait}` : ''}` };
 }
 
+let loggedDockerSkip = false;
+
+/**
+ * Without a Docker agent there is no image to build or inspect: the tag is
+ * still computed (agents carry it as their profile image), but Docker is never
+ * called, so a Sprites-only worker needs no Docker daemon.
+ */
+function withoutDocker(imageTag: string): AgentImageResolution {
+    if (!loggedDockerSkip) {
+        loggedDockerSkip = true;
+        logger.info({ imageTag }, 'No agent runs on the Docker runtime; skipping agent image preparation and image checks');
+    }
+    return { image: imageTag, imageTag };
+}
+
 export async function resolveUnifiedAgentImage(
     configs: AgentConfig[],
     prepareImages: boolean,
@@ -51,6 +68,7 @@ export async function resolveUnifiedAgentImage(
     let imageTag: string | undefined;
     try {
         const versions = getAgentCliVersionMatrix(configs);
+        if (!dockerAgentRuntimeInUse(configs)) return withoutDocker(generateAgentBundleImageTag(versions, computeContentHash()));
         // A published Desktop runtime's verified managed pin serves the matching
         // CLI matrix directly; only other matrices need a generated bundle.
         const base = await resolveManagedAgentImage(versions, prepareImages)
@@ -97,7 +115,9 @@ export async function resolveDefaultAgentConfig(
     const usesManagedPin = !!configuredImage && configuredImage === readManagedAgentPin()?.image;
     let resolution: AgentImageResolution;
     try {
-        resolution = configuredImage && !usesManagedPin
+        resolution = !dockerAgentRuntimeInUse([]) && configuredImage
+            ? withoutDocker(configuredImage)
+            : configuredImage && !usesManagedPin
             ? await resolveConfiguredDefaultImage(configuredImage, prepareImages)
             : await resolveUnifiedAgentImage([], prepareImages);
     } catch (error) {

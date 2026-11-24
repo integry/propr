@@ -94,7 +94,7 @@ class BoundedOutputStream extends Readable {
  * never buffered twice, and that buffer at most
  * {@link AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES} each for a slow reader.
  */
-class LazyOutputStreams {
+export class LazyOutputStreams {
     private readonly streams: Partial<Record<StreamName, BoundedOutputStream>> = {};
     private ended = false;
 
