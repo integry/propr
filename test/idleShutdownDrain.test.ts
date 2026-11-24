@@ -257,6 +257,19 @@ test('with every process acknowledging, the control plane stops in order and the
     assert.equal(idleActivity.quiescedIntent, null, 'the process-wide tracker is untouched');
 });
 
+test('a standalone daemon close that hangs or fails still ends in exit 0 within the close deadline', async () => {
+    for (const close of [() => new Promise<void>(() => undefined), async () => { throw new Error('redis quit failed'); }]) {
+        const hub = new Hub();
+        apiProcess(hub, []);
+        workerProcess(hub, []);
+        const { ctx, exits } = context(hub, new FakeRouting(true));
+        const started = Date.now();
+        assert.equal(await drainIdleControlPlane(request, { ...ctx, close, timings: { ...TIMINGS, closeDeadlineMs: 50 } }), true);
+        assert.deepEqual(exits, [0]);
+        assert.ok(Date.now() - started < 5_000, 'bounded');
+    }
+});
+
 test('a stop while an earlier wake still owes its Connect replay keeps that replay\'s cursor', async () => {
     const hub = new Hub();
     const earlierStop = Date.UTC(2026, 10, 24, 2, 0, 0);

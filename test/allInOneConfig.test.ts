@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage } from '../src/allInOneConfig.js';
+import { createBoundedExit, createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage } from '../src/allInOneConfig.js';
 
 test('PROPR_INDEXING defaults to inline and accepts off/inline/separate', () => {
     assert.equal(resolveIndexingMode(undefined), 'inline');
@@ -180,4 +180,60 @@ test('uninterrupted startup closes every component in shutdown order', async () 
     ]), true);
     await supervisor.close();
     assert.deepEqual(events.filter(event => event.startsWith('close:')), ['close:daemon', 'close:indexing worker', 'close:worker', 'close:api']);
+});
+
+test('a component that never finishes starting does not hold the stop: the rest close after a bounded wait', async () => {
+    // Live: the worker stage waits for an agent image that never becomes ready, so SIGTERM never got past it.
+    const events: string[] = [];
+    const infos: string[] = [];
+    const supervisor = createComponentSupervisor({ log: { info: message => infos.push(message), error: () => undefined }, startupWaitMs: 20 });
+    void supervisor.run([
+        componentStage(events, 'api', 'api'),
+        componentStage(events, 'daemon', 'daemon'),
+        componentStage(events, 'worker', 'worker', new Promise<void>(() => undefined)),
+    ]);
+    await new Promise(resolve => setImmediate(resolve));
+    const closing = supervisor.close();
+    assert.equal(supervisor.pendingStep, 'worker (still starting)');
+    assert.deepEqual(await closing, []);
+    assert.deepEqual(events.filter(event => event.startsWith('close:')), ['close:daemon', 'close:api']);
+    assert.ok(infos.includes('all-in-one: worker did not finish starting within 0s; closing the components that started without it'));
+    assert.equal(supervisor.pendingStep, null);
+});
+
+test('the all-in-one exit is bounded: a close that never finishes still ends in exit 0', async () => {
+    const exits: number[] = [];
+    const errors: string[] = [];
+    let flushed = false;
+    const closeAndExit = createBoundedExit({
+        close: () => new Promise<string[]>(() => undefined),
+        exit: code => { exits.push(code); },
+        pendingStep: () => 'api',
+        log: { info: () => undefined, error: message => errors.push(message) },
+        flush: async () => { flushed = true; },
+        deadlineMs: 20,
+    });
+    closeAndExit();
+    closeAndExit();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.deepEqual(exits, [0], 'exits once, with 0');
+    assert.equal(flushed, true, 'logs are flushed before the exit');
+    assert.deepEqual(errors, ['all-in-one: shutdown did not finish within 0s (still closing: api); exiting anyway']);
+});
+
+test('the all-in-one exit reports the close result: 0 when clean, 1 when a step failed', async () => {
+    for (const [failed, code] of [[[], 0], [['worker'], 1]] as const) {
+        const exits: number[] = [];
+        createBoundedExit({ close: async () => [...failed], exit: c => { exits.push(c); }, pendingStep: () => null, log: quietLog, deadlineMs: 1_000 })();
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.deepEqual(exits, [code]);
+    }
+});
+
+test('signal and idle shutdown in all-in-one both go through the bounded exit', () => {
+    const source = readFileSync(new URL('../src/allInOne.ts', import.meta.url), 'utf8');
+    assert.match(source, /const closeAndExit = createBoundedExit\(/);
+    assert.equal(source.match(/process\.exit\(failed/g), null, 'no unbounded exit after close()');
+    assert.match(source, /shutting down gracefully\.\.\.`\);\n\s+closeAndExit\(\);/);
+    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(\);/);
 });

@@ -56,10 +56,12 @@ export interface ShutdownStep {
 export async function runShutdownSequence(
     steps: readonly ShutdownStep[],
     log: { info(message: string): void; error(message: string, error: unknown): void },
+    onStep?: (name: string) => void,
 ): Promise<string[]> {
     const failed: string[] = [];
     for (const step of steps) {
         try {
+            onStep?.(step.name);
             log.info(`all-in-one: closing ${step.name}`);
             await step.close();
         } catch (error) {
@@ -97,6 +99,8 @@ export interface StartupStage {
 export interface ComponentSupervisor {
     /** True once close() was called; no further stage starts after that. */
     readonly closing: boolean;
+    /** What close() is waiting on right now (a stage still starting, or a shutdown step); null before or after. */
+    readonly pendingStep: string | null;
     /**
      * Run stages in order. Stops before the next stage once shutdown began and
      * resolves false; a stage still starting when shutdown begins is awaited by
@@ -105,9 +109,18 @@ export interface ComponentSupervisor {
      * drain. Resolves true when every stage ran.
      */
     run(stages: readonly StartupStage[]): Promise<boolean>;
-    /** Idempotent: waits for in-flight startup, then closes in SHUTDOWN_ORDER followed by `finalSteps`. */
+    /**
+     * Idempotent: waits (at most `startupWaitMs`) for in-flight startup, then
+     * closes in SHUTDOWN_ORDER followed by `finalSteps`. A stage still starting
+     * after that wait is left behind: some never finish (the worker waits for
+     * an agent image that may never become ready), and the stop must not wait
+     * on them.
+     */
     close(): Promise<string[]>;
 }
+
+/** How long close() waits for a component that is still starting. */
+export const DEFAULT_STARTUP_WAIT_MS = 10_000;
 
 type SupervisorLog = { info(message: string): void; error(message: string, error: unknown): void };
 
@@ -120,14 +133,35 @@ export function createComponentSupervisor(options: {
     log: SupervisorLog;
     /** Steps after every component closed (the shared task queue). */
     finalSteps?: () => Promise<readonly ShutdownStep[]> | readonly ShutdownStep[];
+    startupWaitMs?: number;
 }): ComponentSupervisor {
     const handles: Partial<Record<ComponentRole, ShutdownStep>> = {};
-    let inFlight: Promise<unknown> | undefined;
+    let inFlight: { name: string; settled: Promise<unknown> } | undefined;
     let closing: Promise<string[]> | undefined;
+    let pendingStep: string | null = null;
+    const startupWaitMs = options.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS;
+
+    /** Resolves true once the stage still starting settled, false when the wait ran out first. */
+    const waitForInFlight = async (): Promise<boolean> => {
+        if (!inFlight) return true;
+        const { name, settled } = inFlight;
+        pendingStep = `${name} (still starting)`;
+        let timer: NodeJS.Timeout | undefined;
+        const finished = await Promise.race([
+            settled.then(() => true),
+            new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), startupWaitMs); }),
+        ]);
+        clearTimeout(timer);
+        if (!finished) options.log.info(`all-in-one: ${name} did not finish starting within ${Math.round(startupWaitMs / 1000)}s; closing the components that started without it`);
+        return finished;
+    };
 
     const supervisor: ComponentSupervisor = {
         get closing() {
             return closing !== undefined;
+        },
+        get pendingStep() {
+            return pendingStep;
         },
         async run(stages) {
             for (const stage of stages) {
@@ -140,7 +174,7 @@ export function createComponentSupervisor(options: {
                     // this promise before it builds its sequence.
                     if (stage.role && handle) handles[stage.role] = { name: stage.name, close: () => handle.close() };
                 });
-                inFlight = started.catch(() => undefined);
+                inFlight = { name: stage.name, settled: started.catch(() => undefined) };
                 try {
                     await started;
                 } catch (error) {
@@ -155,15 +189,67 @@ export function createComponentSupervisor(options: {
         },
         close() {
             closing ??= (async () => {
-                await inFlight;
+                await waitForInFlight();
                 const steps = SHUTDOWN_ORDER
                     .map(role => handles[role])
                     .filter((step): step is ShutdownStep => step !== undefined);
                 steps.push(...(await options.finalSteps?.() ?? []));
-                return runShutdownSequence(steps, options.log);
+                const failed = await runShutdownSequence(steps, options.log, name => { pendingStep = name; });
+                pendingStep = null;
+                return failed;
             })();
             return closing;
         },
     };
     return supervisor;
+}
+
+/** Hard limit on the whole all-in-one stop (signal or idle shutdown) before the process exits anyway. */
+export const DEFAULT_SHUTDOWN_DEADLINE_MS = 30_000;
+
+/**
+ * The all-in-one exit: close every component, then exit. Bounded: a close
+ * that is still running at `deadlineMs` (a component that never finishes
+ * starting, a connection that never drains) no longer keeps the process up;
+ * it is logged by name and the process exits 0, as a supervisor stop (Fly,
+ * systemd) and an idle shutdown both expect. A close that completes with
+ * failed steps exits 1. Logs are flushed (bounded) before exiting. Calling the
+ * returned function again does nothing.
+ */
+export function createBoundedExit(options: {
+    close: () => Promise<string[]>;
+    exit: (code: number) => void;
+    pendingStep: () => string | null;
+    log: { info(message: string): void; error(message: string, error?: unknown): void };
+    flush?: () => Promise<void>;
+    deadlineMs?: number;
+}): () => void {
+    const deadlineMs = options.deadlineMs ?? DEFAULT_SHUTDOWN_DEADLINE_MS;
+    let exiting = false;
+    return () => {
+        if (exiting) return;
+        exiting = true;
+        let done = false;
+        const finish = (code: number): void => {
+            if (done) return;
+            done = true;
+            clearTimeout(deadline);
+            void (options.flush?.() ?? Promise.resolve()).catch(() => undefined).finally(() => options.exit(code));
+        };
+        // Not unref'd: the process exits through here, not when the event loop empties.
+        const deadline = setTimeout(() => {
+            options.log.error(`all-in-one: shutdown did not finish within ${Math.round(deadlineMs / 1000)}s (still closing: ${options.pendingStep() ?? 'unknown'}); exiting anyway`);
+            finish(0);
+        }, deadlineMs);
+        options.close().then(
+            failed => {
+                options.log.info(`all-in-one: shutdown complete (exit ${failed.length > 0 ? 1 : 0})`);
+                finish(failed.length > 0 ? 1 : 0);
+            },
+            error => {
+                options.log.error('all-in-one: shutdown failed', error);
+                finish(1);
+            },
+        );
+    };
 }

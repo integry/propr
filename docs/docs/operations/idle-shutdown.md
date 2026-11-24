@@ -62,11 +62,11 @@ Once the instance has been idle for the whole window, the daemon checks once mor
 4. Writes the wake hint file, replacing the record from step 2. If it cannot be written (a full or read-only disk), the drain aborts.
 5. Records the shutdown and stores a stop request in Redis.
 6. Waits until every registered API and worker process has acknowledged the stop request. The request stays stored for the whole drain, so a process that was disconnected when it was announced still finds it when it reconnects. Each runs its normal graceful shutdown (close queues, Socket.IO, Redis) and exits with code 0. **The daemon does not exit until every process has acknowledged** or is confirmed stopped; while it waits it logs the processes it is waiting for.
-7. Closes its own timers, Redis and SQLite connections, flushes logs and exits with code 0.
+7. Closes its own timers, Redis and SQLite connections, flushes logs and exits with code 0. This close is bounded: if it has not finished after 30 seconds, the daemon logs that and exits with code 0 anyway. The stop is already recorded at that point.
 
 The stop request names the processes registered when it was issued. A process that starts afterwards (for example one restarted while a daemon that died mid-drain left its request stored) ignores it and keeps running.
 
-In the single-process control plane (`propr all-in-one`, the `minimal` profile) the API, worker and inline indexing worker only acknowledge the stop request; the daemon then runs the process's normal shutdown, which closes every component in order and exits with code 0. An indexing worker run separately (`PROPR_INDEXING=separate`) stops on its own as above.
+In the single-process control plane (`propr all-in-one`, the `minimal` profile) the API, worker and inline indexing worker only acknowledge the stop request; the daemon then runs the process's normal shutdown, which closes every component in order and exits with code 0. That shutdown is the same one SIGTERM runs, and it is bounded. A component still starting (for example a worker waiting for an agent image that is not ready) gets 10 seconds, then the components that did start are closed without it. The whole shutdown gets 30 seconds, after which the process logs the step it was still closing and exits with code 0. An indexing worker run separately (`PROPR_INDEXING=separate`) stops on its own as above.
 
 Because the exit code is 0, use a supervisor that restarts only on failure. A supervisor that always restarts (Docker Compose `restart: unless-stopped`, the default in `docker-compose.yml`) starts the process again right away, so idle shutdown saves nothing there.
 

@@ -19,7 +19,8 @@
  */
 import 'dotenv/config';
 import { logger, setIdleShutdownComposedProcess } from '@propr/core';
-import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, type StartupStage } from './allInOneConfig.js';
+import { createBoundedExit, createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, type StartupStage } from './allInOneConfig.js';
+import { flushLogs } from './shared/flushLogs.js';
 
 export interface StartedAllInOne {
     close(): Promise<string[]>;
@@ -28,8 +29,9 @@ export interface StartedAllInOne {
 /**
  * Start every component in one process. Components register their close
  * handle as soon as they are up. A signal mid-startup stops any further
- * component from starting, waits for the one still starting, and closes it
- * together with whatever already started.
+ * component from starting, waits (bounded) for the one still starting, and
+ * closes it together with whatever already started. The whole stop is
+ * bounded too and ends in process.exit (see `createBoundedExit`).
  */
 export async function startAllInOne(): Promise<StartedAllInOne> {
     const indexingMode = resolveIndexingMode(process.env.PROPR_INDEXING);
@@ -49,12 +51,17 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         },
     });
     const close = (): Promise<string[]> => supervisor.close();
-    let exiting = false;
-    const closeAndExit = (): void => {
-        if (exiting) return;
-        exiting = true;
-        void close().then(failed => process.exit(failed.length > 0 ? 1 : 0));
-    };
+    // Signal and idle shutdown both end here, in a bounded exit.
+    const closeAndExit = createBoundedExit({
+        close,
+        exit: code => process.exit(code),
+        pendingStep: () => supervisor.pendingStep,
+        log: {
+            info: message => logger.info(message),
+            error: (message, error) => logger.error({ error: (error as Error | undefined)?.message }, message),
+        },
+        flush: () => flushLogs(),
+    });
 
     let signalled = false;
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {

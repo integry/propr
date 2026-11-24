@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `GET/PUT /api/admin/idle-shutdown` report what keeps the instance awake,
     the last idle shutdown and the last wake. See
     [Idle shutdown](docs/docs/operations/idle-shutdown.md).
+  - The all-in-one shutdown (SIGTERM and idle stop) now always exits. Before,
+    a component that never finished starting, such as a worker waiting for an
+    agent image, kept it running after "shutting down gracefully". It now
+    waits up to 10 seconds for such a component and exits with code 0 within
+    30 seconds.
 
 ### Changed
 

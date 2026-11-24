@@ -38,6 +38,7 @@ import {
     type IntentRedis,
     type RoutingWebSocketIntakeService,
 } from '@propr/core';
+import { flushLogs } from '../shared/flushLogs.js';
 import { createDaemonIdleSources } from './idleSignalSources.js';
 import {
     hintFileIo,
@@ -89,6 +90,8 @@ export interface IdleDrainTimings {
     /** How long to wait, after every acknowledgement, for processes to deregister. */
     deregisterWaitMs: number;
     pollMs: number;
+    /** Step 7 (standalone): how long the daemon's own close may take before it exits 0 anyway. */
+    closeDeadlineMs: number;
 }
 
 export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
@@ -96,6 +99,7 @@ export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
     stopConfirmTimeoutMs: null,
     deregisterWaitMs: 30_000,
     pollMs: 1_000,
+    closeDeadlineMs: 30_000,
 };
 
 type IdleRoutingIntake = Pick<RoutingWebSocketIntakeService, 'sendWakeHint' | 'stop' | 'start' | 'requestReplay'>;
@@ -136,19 +140,6 @@ export interface DaemonIdleShutdownDeps {
 export interface DaemonIdleShutdown {
     controller: IdleShutdownController;
     stop: () => Promise<void>;
-}
-
-function flushLogs(): Promise<void> {
-    return new Promise(resolve => {
-        const flush = (logger as unknown as { flush?: (cb?: (err?: Error) => void) => void }).flush;
-        if (typeof flush !== 'function') return resolve();
-        try {
-            flush.call(logger, () => resolve());
-        } catch {
-            resolve();
-        }
-        setTimeout(resolve, 1_000).unref();
-    });
 }
 
 const toIso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
@@ -309,7 +300,7 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     const remaining = await waitForDeregistration(redis, timings, new Set(stopIntent.targets?.map(target => target.key)), ctx.stopProcess !== undefined);
     if (remaining.length > 0) logger.warn({ remaining }, 'Idle shutdown: processes acknowledged the stop but are still shutting down');
     await redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined);
-    await stopDaemonProcess(ctx, record);
+    await stopDaemonProcess(ctx, record, timings.closeDeadlineMs);
     return true;
 }
 
@@ -336,15 +327,24 @@ async function resumeIntakeOwingReplay(ctx: IdleDrainContext, routing: IdleRouti
 }
 
 /** Step 7: the daemon itself, or (composed) the process's one coordinated close of every component. */
-async function stopDaemonProcess(ctx: IdleDrainContext, record: IdleShutdownRecord): Promise<void> {
+async function stopDaemonProcess(ctx: IdleDrainContext, record: IdleShutdownRecord, closeDeadlineMs: number): Promise<void> {
     if (ctx.stopProcess) {
+        // Bounded there: the composed close ends in process.exit within its own deadline.
         logger.info({ ...record }, 'Idle shutdown: closing every component of this process (exit 0)');
         ctx.stopProcess();
         return;
     }
     logger.info({ ...record }, 'Idle shutdown: control plane stopped (exit 0)');
-    await ctx.close();
-    await closeConnection();
+    // The stop is recorded and every process has stopped: a close that hangs or fails must not keep the daemon up.
+    let timer: NodeJS.Timeout | undefined;
+    const closed = (async () => {
+        await ctx.close();
+        await closeConnection();
+    })().then(() => 'closed' as const, (error: unknown) => error);
+    const outcome = await Promise.race([closed, new Promise<'deadline'>(resolve => { timer = setTimeout(() => resolve('deadline'), closeDeadlineMs); })]);
+    clearTimeout(timer);
+    if (outcome === 'deadline') logger.error({ closeDeadlineMs }, 'Idle shutdown: the daemon did not finish closing in time; exiting anyway');
+    else if (outcome !== 'closed') logger.error({ error: (outcome as Error)?.message }, 'Idle shutdown: the daemon close failed; exiting anyway');
     await flushLogs();
     ctx.exit(0);
 }
