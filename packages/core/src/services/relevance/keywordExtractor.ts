@@ -248,6 +248,7 @@ export async function extractKeywordsWithLLM(
   let errorMessage: string | undefined;
   let routedMetadata: Record<string, unknown> | undefined;
   let actualModelUsed: string | undefined;
+  let providerCostUsd: number | undefined;
   const cachedSettings = await getCachedSettings();
 
   try {
@@ -270,6 +271,7 @@ export async function extractKeywordsWithLLM(
       : await agent.analyze(llmPrompt, analyzeOptions);
     routedMetadata = routingSession?.routingMetadata;
     actualModelUsed = analysisResult.modelUsed;
+    providerCostUsd = analysisResult.providerCostUsd;
     if (!analysisResult.success) {
       throw new Error(analysisResult.error || 'Context keyword analysis failed');
     }
@@ -326,6 +328,7 @@ export async function extractKeywordsWithLLM(
       modelUsed: logTarget.modelUsed,
       executionTimeMs: durationMs,
       success,
+      ...(providerCostUsd !== undefined && { costUsd: providerCostUsd }),
       error: errorMessage,
       correlationId,
       agentAlias: logTarget.agentAlias,

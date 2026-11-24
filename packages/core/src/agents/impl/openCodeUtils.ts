@@ -57,10 +57,12 @@ export function evaluateOpenCodeAnalysis(options: {
         ? {
             response: analysisText, modelUsed, executionTimeMs, success: true,
             sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage,
+            ...(parsedOutput.cost !== undefined && { providerCostUsd: parsedOutput.cost }),
         }
         : {
             response: analysisText, modelUsed, executionTimeMs, success: false,
             error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage,
+            ...(parsedOutput.cost !== undefined && { providerCostUsd: parsedOutput.cost }),
         };
     return { analysisText, modelUsed, success, errorMsg, result };
 }

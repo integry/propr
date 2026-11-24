@@ -280,6 +280,8 @@ export interface AnalysisResult {
     success: boolean;
     /** Optional token usage metrics */
     tokenUsage?: TokenUsage;
+    /** Actual cost in USD reported by the agent's provider, when reported. */
+    providerCostUsd?: number;
     /** Optional session ID */
     sessionId?: string;
     /** Effective reasoning level passed to the agent runtime, when configured. */

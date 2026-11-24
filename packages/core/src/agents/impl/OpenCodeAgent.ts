@@ -103,28 +103,7 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
-            const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
-            const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
-            const response: AgentExecutionResult = {
-                success,
-                executionTimeMs: executionTime,
-                logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-                exitCode: result.exitCode,
-                rawOutput: result.stdout,
-                modelUsed,
-                sessionId: parsedOutput.sessionId,
-                conversationLog: parsedOutput.conversationLog,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: parsedOutput.summary,
-                prompt,
-                error: errorText,
-                terminationReason,
-                tokenUsage: parsedOutput.tokenUsage,
-                ...(parsedOutput.cost !== undefined && { cost: parsedOutput.cost, providerCostUsd: parsedOutput.cost }),
-                usageMetrics: usageMetrics ?? undefined
-            };
+            const response = this.buildExecutionResponse({ result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics });
 
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata });
 
@@ -243,6 +222,39 @@ export class OpenCodeAgent implements Agent {
             agentAlias: this.config.alias,
             ...formatUsageMetrics(usageMetrics),
         }));
+    }
+
+    private buildExecutionResponse(params: {
+        result: Awaited<ReturnType<typeof executeDockerCommand>>;
+        parsedOutput: ReturnType<typeof parseOpenCodeJsonl>;
+        executionTime: number;
+        modelUsed: string;
+        prompt: string;
+        usageMetrics: UsageTrackingMetrics | null;
+    }): AgentExecutionResult {
+        const { result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics } = params;
+        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
+        const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
+        const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
+        return {
+            success,
+            executionTimeMs: executionTime,
+            logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+            exitCode: result.exitCode,
+            rawOutput: result.stdout,
+            modelUsed,
+            sessionId: parsedOutput.sessionId,
+            conversationLog: parsedOutput.conversationLog,
+            modifiedFiles: [],
+            commitMessage: null,
+            summary: parsedOutput.summary,
+            prompt,
+            error: errorText,
+            terminationReason,
+            tokenUsage: parsedOutput.tokenUsage,
+            ...(parsedOutput.cost !== undefined && { cost: parsedOutput.cost, providerCostUsd: parsedOutput.cost }),
+            usageMetrics: usageMetrics ?? undefined
+        };
     }
 
     private async persistExecutionLogSafely(opts: Parameters<OpenCodeAgent['persistExecutionLog']>[0]): Promise<void> {

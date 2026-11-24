@@ -41,6 +41,8 @@ interface OpenCodeParseState {
     sessionId?: string; modelUsed?: string; error?: string; errorRef?: string; specificError?: boolean; tokenUsage: TokenUsage; lastCumulativeTopLevelUsage?: TokenUsage;
     /** Sum of per-step costs; each step-finish part is counted once. */
     stepCost?: number; seenStepCostIds: Set<string>;
+    /** Billable steps that lacked a valid cost, used to avoid promoting a partial subtotal. */
+    unpricedBillableStepIds: Set<string>; hasAnonymousUnpricedBillableStep: boolean;
     /** Cumulative total from a final summary event; supersedes the step sum. */
     cumulativeCost?: number;
     streamTextParts: string[]; assistantMessages: string[];
@@ -50,7 +52,10 @@ interface ExtractedOpenCodeText { streamParts: string[]; assistantMessage?: stri
 
 export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
     const conversationLog: OpenCodeEvent[] = [];
-    const state: OpenCodeParseState = { streamTextParts: [], assistantMessages: [], tokenUsage: {}, seenStepCostIds: new Set() };
+    const state: OpenCodeParseState = {
+        streamTextParts: [], assistantMessages: [], tokenUsage: {},
+        seenStepCostIds: new Set(), unpricedBillableStepIds: new Set(), hasAnonymousUnpricedBillableStep: false,
+    };
 
     for (const line of output.split('\n')) {
         if (!line.trim()) continue;
@@ -64,7 +69,7 @@ export function parseOpenCodeJsonl(output: string): ParsedOpenCodeOutput {
         }
     }
 
-    return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: buildOpenCodeSummary(state), error: state.error, errorRef: state.errorRef, tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined, cost: state.cumulativeCost ?? state.stepCost, conversationLog };
+    return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: buildOpenCodeSummary(state), error: state.error, errorRef: state.errorRef, tokenUsage: hasOpenCodeTokenUsage(state.tokenUsage) ? state.tokenUsage : undefined, cost: resolveOpenCodeCost(state), conversationLog };
 }
 
 export const parseOpenCodeStreamOutput = parseOpenCodeJsonl;
@@ -173,6 +178,29 @@ function firstOpenCodeCost(source: unknown, keys: string[]): number | undefined 
     return undefined;
 }
 
+function hasOpenCodeStepUsage(event: OpenCodeEvent): boolean {
+    return Boolean(
+        normalizeOpenCodeUsage(event.part?.tokens)
+        || normalizeOpenCodeUsage(event.usage)
+        || normalizeOpenCodeUsage(event.tokens)
+        || normalizeOpenCodeUsage(event.stats)
+    );
+}
+
+function isOpenCodeStepFinishEvent(event: OpenCodeEvent, type: string | undefined): boolean {
+    const partType = event.part?.type?.toLowerCase().replace(/_/g, '-');
+    return type === 'step_finish' || type === 'step-finish' || partType === 'step-finish';
+}
+
+function recordUnpricedOpenCodeStep(event: OpenCodeEvent, state: OpenCodeParseState, id: string | undefined): void {
+    if (!hasOpenCodeStepUsage(event)) return;
+    if (!id) {
+        state.hasAnonymousUnpricedBillableStep = true;
+        return;
+    }
+    if (!state.seenStepCostIds.has(id)) state.unpricedBillableStepIds.add(id);
+}
+
 /**
  * A `step-finish` part carries that step's own cost, so step costs add up; a
  * part id seen again is a repeat of the same step. A `result` event carries a
@@ -185,16 +213,33 @@ function applyOpenCodeCost(event: OpenCodeEvent, state: OpenCodeParseState): voi
         if (total !== undefined) state.cumulativeCost = Math.max(state.cumulativeCost ?? 0, total);
         return;
     }
-    const partType = event.part?.type?.toLowerCase().replace(/_/g, '-');
-    if (type !== 'step_finish' && type !== 'step-finish' && partType !== 'step-finish') return;
+    if (!isOpenCodeStepFinishEvent(event, type)) return;
     const cost = parseOpenCodeCost(event.part?.cost);
-    if (cost === undefined) return;
     const id = event.part?.id;
+    if (cost === undefined) {
+        recordUnpricedOpenCodeStep(event, state, id);
+        return;
+    }
     if (id) {
         if (state.seenStepCostIds.has(id)) return;
         state.seenStepCostIds.add(id);
+        state.unpricedBillableStepIds.delete(id);
     }
     state.stepCost = (state.stepCost ?? 0) + cost;
+}
+
+function resolveOpenCodeCost(state: OpenCodeParseState): number | undefined {
+    const completeStepCost = state.stepCost !== undefined
+        && state.unpricedBillableStepIds.size === 0
+        && !state.hasAnonymousUnpricedBillableStep
+        ? state.stepCost
+        : undefined;
+    if (state.cumulativeCost !== undefined) {
+        // A zero cumulative summary must not erase positive per-step costs.
+        if (state.cumulativeCost === 0 && (state.stepCost ?? 0) > 0) return completeStepCost;
+        return state.cumulativeCost;
+    }
+    return completeStepCost;
 }
 
 export function isOpenCodeJsonlEvent(event: { type?: unknown; sessionID?: unknown; sessionId?: unknown; session_id?: unknown; part?: unknown; parts?: unknown[]; message?: unknown; response?: unknown; text?: unknown; content?: unknown; delta?: unknown; tool?: unknown; tool_name?: unknown; name?: unknown; input?: unknown; parameters?: unknown; args?: unknown; error?: unknown; usage?: OpenCodeUsage; stats?: OpenCodeUsage; tokens?: OpenCodeUsage }): boolean {

@@ -193,6 +193,7 @@ export async function scoreSemanticRelevance(
       const estimatedOutputTokens = 500;
       let routedMetadata: Record<string, unknown> | undefined;
       let actualModelUsed: string | undefined;
+      let providerCostUsd: number | undefined;
       const callRoute = routingSession
         ? (index === 0 ? routingSession : routingSession.fork())
         : undefined;
@@ -213,6 +214,7 @@ export async function scoreSemanticRelevance(
           : await agent.analyze(prompt, analyzeOptions);
         routedMetadata = callRoute?.routingMetadata;
         actualModelUsed = analysisResult.modelUsed;
+        providerCostUsd = analysisResult.providerCostUsd;
         if (!analysisResult.success) {
           throw new Error(analysisResult.error || `Semantic scoring chunk ${index} failed`);
         }
@@ -247,6 +249,7 @@ export async function scoreSemanticRelevance(
             input_tokens: estimatedInputTokens,
             output_tokens: estimatedOutputTokens,
           },
+          ...(providerCostUsd !== undefined && { costUsd: providerCostUsd }),
           correlationId,
           agentAlias: physicalAgentAlias,
           metadata: {
@@ -297,6 +300,7 @@ export async function scoreSemanticRelevance(
             input_tokens: estimatedInputTokens,
             output_tokens: estimatedOutputTokens,
           },
+          ...(providerCostUsd !== undefined && { costUsd: providerCostUsd }),
           error: errorMessage,
           correlationId,
           agentAlias: physicalAgentAlias,

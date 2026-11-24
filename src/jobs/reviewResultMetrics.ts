@@ -32,6 +32,7 @@ export async function recordReviewMetrics(
             executionTime: result.analysisResult.executionTimeMs,
             sessionId: result.analysisResult.sessionId || null,
             tokenUsage: result.analysisResult.tokenUsage,
+            ...(result.analysisResult.providerCostUsd !== undefined && { providerCostUsd: result.analysisResult.providerCostUsd }),
             conversationLog,
             ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
         };

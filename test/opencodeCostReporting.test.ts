@@ -11,6 +11,7 @@ const { toClaudeResult } = await import('../src/jobs/issueJob/agent.js');
 const { agentResultToMetricsResult, failedExecutionResult } = await import('../packages/core/src/agents/impl/utils/failedAgentExecution.js');
 
 const { parseOpenCodeJsonl } = await import('../packages/core/src/agents/impl/openCodeParsing.js');
+const { evaluateOpenCodeAnalysis } = await import('../packages/core/src/agents/impl/openCodeUtils.js');
 const { createLlmLogFromAgentExecution, createLlmLogFromAnalysis } = await import('../packages/core/src/utils/llmLogger.js');
 
 const jsonl = (...events: unknown[]) => events.map(event => JSON.stringify(event)).join('\n');
@@ -65,8 +66,27 @@ describe('OpenCode cost parsing', () => {
             { type: 'result', sessionID: 's1', total_cost_usd: -3 },
         ) + '\n{not json');
         assert.equal(parsed.cost, undefined);
-        const mixed = parseOpenCodeJsonl(jsonl(stepFinish('a', -1), stepFinish('b', 0.4), stepFinish('c', '0.1')));
+        const nonBillableInvalid = { type: 'step_finish', sessionID: 's1', part: { id: 'a', type: 'step-finish', cost: -1 } };
+        const mixed = parseOpenCodeJsonl(jsonl(nonBillableInvalid, stepFinish('b', 0.4), stepFinish('c', '0.1')));
         assert.equal(mixed.cost, 0.5);
+    });
+
+    test('does not promote a partial step subtotal when another billable step has no valid cost', () => {
+        const unpricedStep = { type: 'step_finish', sessionID: 's1', part: { id: 'b', type: 'step-finish', tokens: { input: 20, output: 10 } } };
+        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0), unpricedStep)).cost, undefined);
+        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0.25), stepFinish('b', -1))).cost, undefined);
+        // A later repeat of the same part id with a valid cost completes coverage.
+        assert.equal(parseOpenCodeJsonl(jsonl(unpricedStep, stepFinish('b', 0.25))).cost, 0.25);
+        // A cumulative result total still covers the whole run even if one step omitted cost.
+        assert.equal(parseOpenCodeJsonl(jsonl(stepFinish('a', 0.25), unpricedStep, { type: 'result', sessionID: 's1', total_cost_usd: 0.9 })).cost, 0.9);
+    });
+
+    test('a zero cumulative result does not erase positive step costs', () => {
+        const parsed = parseOpenCodeJsonl(jsonl(
+            stepFinish('a', 0.25), stepFinish('b', 0.5),
+            { type: 'result', sessionID: 's1', cost: 0 },
+        ));
+        assert.equal(parsed.cost, 0.75);
     });
 
     test('does not read costs from other event types', () => {
@@ -107,5 +127,25 @@ describe('OpenCode cost propagation', () => {
         assert.equal(createLlmLogFromAgentExecution({ ...base, costUsd: 3.5 }).costUsd, 3.5);
         assert.equal(createLlmLogFromAnalysis({ ...base, costUsd: 0 }).costUsd, 0);
         assert.equal(createLlmLogFromAnalysis(base).costUsd, undefined);
+    });
+
+    test('evaluateOpenCodeAnalysis carries providerCostUsd on both success and failure', () => {
+        const ok = evaluateOpenCodeAnalysis({
+            parsedOutput: { summary: 'Review ok', cost: 1.25, conversationLog: [] },
+            processResult: { exitCode: 0 },
+            effectiveModel: 'opencode-litellm/custom/unlisted-model',
+            executionTimeMs: 50,
+        });
+        assert.equal(ok.success, true);
+        assert.equal(ok.result.providerCostUsd, 1.25);
+
+        const failedZero = evaluateOpenCodeAnalysis({
+            parsedOutput: { summary: '', error: 'boom', cost: 0, conversationLog: [] },
+            processResult: { exitCode: 1 },
+            effectiveModel: 'opencode-litellm/custom/unlisted-model',
+            executionTimeMs: 50,
+        });
+        assert.equal(failedZero.success, false);
+        assert.equal(failedZero.result.providerCostUsd, 0);
     });
 });
