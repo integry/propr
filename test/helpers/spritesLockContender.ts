@@ -13,12 +13,15 @@ if (mode === 'once') {
     process.stdout.write(lock ? 'held\n' : 'busy\n');
     lock?.release();
 } else {
+    // Referenced for the life of the process: a lock nothing refers to is closed, and so freed, by garbage collection.
+    let held: ReturnType<typeof tryAcquireSpriteLock>;
     const attempt = (): void => {
-        if (!tryAcquireSpriteLock(file)) return;
+        held = tryAcquireSpriteLock(file);
+        if (!held) return;
         clearInterval(timer);
         process.stdout.write('held\n');
         // Holds the lock (and stays alive) until the test kills it.
-        setInterval(() => undefined, 1 << 30);
+        setInterval(() => held, 1 << 30);
     };
     const timer = setInterval(attempt, Number(mode) || 5);
     process.stdout.write('ready\n');
