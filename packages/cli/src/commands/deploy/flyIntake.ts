@@ -14,7 +14,10 @@
  *
  * A mode the stack .env sets is kept, but checked with the same prerequisite
  * rules the daemon applies at boot. Fly secret values cannot be read back, so
- * a secret left by an earlier deploy counts by name only.
+ * a secret left by an earlier deploy counts by name only. That includes
+ * GH_AUTH_MODE: when an earlier one could be either relay or app (both kinds
+ * of credentials are present), the intake the earlier deploy pinned is kept,
+ * or polling (valid under both) is pinned.
  */
 
 import {
@@ -49,8 +52,8 @@ export function selectFlyIntakeMode(values: Readonly<Record<string, string>>, ex
     return { secrets: { [FLY_INTAKE_MODE_KEY]: "direct_webhook" }, summary: "GitHub event intake: off (demo mode)." };
   }
 
-  const auth = authMode(values, has, relayToken);
-  if (!auth) {
+  const auths = authModes(values, existing, has, relayToken);
+  if (auths.length === 0) {
     throw new Error(
       "The Machine would have no GitHub credentials, so its daemon could not start. Run `propr login` so the deploy enrolls a GitHub relay token (drop --no-relay), "
         + "add your own GitHub App (GH_APP_ID, GH_INSTALLATION_ID and HOST_GH_PRIVATE_KEY or --github-app-key) to the stack .env, or set PROPR_DEMO_MODE=true for a read-only demo.",
@@ -58,34 +61,60 @@ export function selectFlyIntakeMode(values: Readonly<Record<string, string>>, ex
   }
 
   const explicit = values[FLY_INTAKE_MODE_KEY]?.trim();
+  // Several candidates: GH_AUTH_MODE is a secret an earlier deploy left, known
+  // by name only, and both relay and App credentials are present. The intake
+  // that earlier deploy pinned next to it is kept; failing that, polling runs
+  // under either mode.
+  if (!explicit && auths.length > 1 && !(FLY_INTAKE_MODE_KEY in values) && existing.has(FLY_INTAKE_MODE_KEY)) {
+    return { secrets: {}, summary: "GitHub event intake: kept from the earlier deploy (GH_AUTH_MODE from that deploy is kept too)." };
+  }
+  const auth = auths[0]!;
   const mode: GithubEventIntakeMode = explicit
     ? resolveGithubEventIntakeMode({ eventIntakeMode: explicit }).mode
-    : auth === "relay" ? "routing_websocket" : has("GH_WEBHOOK_SECRET") ? "direct_webhook" : "polling";
+    : auths.length > 1 ? "polling"
+      : auth === "relay" ? "routing_websocket" : has("GH_WEBHOOK_SECRET") ? "direct_webhook" : "polling";
 
-  const { errors } = validateIntakeModePrerequisites({
+  // The mode must start under every GH_AUTH_MODE the Machine could end up with.
+  const errors = [...new Set(auths.flatMap((authMode) => validateIntakeModePrerequisites({
     intakeMode: mode,
-    authMode: auth,
+    authMode,
     routingUrl: values.PROPR_ROUTING_URL,
     relayUrl: values.PROPR_GH_RELAY_URL,
     // Presence is all that matters here; values are never inspected.
     relayToken: relayToken ? "set" : undefined,
     webhookSecret: has("GH_WEBHOOK_SECRET") ? "set" : undefined,
-  });
+  }).errors))];
   if (errors.length > 0) {
-    const fix = mode === "routing_websocket"
-      ? "Drop --no-relay so a relay token is enrolled, add PROPR_GH_RELAY_TOKEN (`propr relay enroll`) to the stack .env, or set GITHUB_EVENT_INTAKE_MODE=polling."
-      : `Fix ${FLY_INTAKE_MODE_KEY} or the GitHub credentials in the stack .env.`;
+    const fix = auths.length > 1
+      ? "GH_AUTH_MODE from an earlier deploy cannot be read back; set GH_AUTH_MODE (relay or app) in the stack .env so the intake can match it."
+      : mode === "routing_websocket"
+        ? "Drop --no-relay so a relay token is enrolled, add PROPR_GH_RELAY_TOKEN (`propr relay enroll`) to the stack .env, or set GITHUB_EVENT_INTAKE_MODE=polling."
+        : `Fix ${FLY_INTAKE_MODE_KEY} or the GitHub credentials in the stack .env.`;
     throw new Error(`GitHub event intake ${mode} cannot start on the Machine: ${errors.join(" ")} ${fix}`);
   }
-  const why = explicit ? "from the stack .env" : auth === "relay" ? "relay token" : mode === "direct_webhook" ? "own GitHub App with GH_WEBHOOK_SECRET" : "own GitHub App without GH_WEBHOOK_SECRET";
+  const why = explicit ? "from the stack .env"
+    : auths.length > 1 ? "GH_AUTH_MODE from an earlier deploy, relay token and own GitHub App"
+      : auth === "relay" ? "relay token" : mode === "direct_webhook" ? "own GitHub App with GH_WEBHOOK_SECRET" : "own GitHub App without GH_WEBHOOK_SECRET";
   return { secrets: { [FLY_INTAKE_MODE_KEY]: mode }, summary: `GitHub event intake: ${mode} (${why}).` };
 }
 
-/** GH_AUTH_MODE as set this run, else what the daemon would infer from the secrets the app holds. */
-function authMode(values: Readonly<Record<string, string>>, has: (name: string) => boolean, relayToken: boolean): IntakeAuthMode | undefined {
+/**
+ * The GH_AUTH_MODE values the Machine could run with: the one set this run,
+ * else what the daemon would infer from the secrets the app holds. A mode left
+ * by an earlier deploy outranks inference but cannot be read back, so with
+ * both relay and App credentials present either is possible.
+ */
+function authModes(
+  values: Readonly<Record<string, string>>,
+  existing: ReadonlySet<string>,
+  has: (name: string) => boolean,
+  relayToken: boolean,
+): IntakeAuthMode[] {
   const explicit = values.GH_AUTH_MODE?.trim().toLowerCase();
-  if (explicit === "relay" || explicit === "app") return explicit;
-  if (relayToken) return "relay";
-  if (has("GH_APP_ID") && has(FLY_GH_PRIVATE_KEY_SECRET)) return "app";
-  return undefined;
+  if (explicit === "relay" || explicit === "app") return [explicit];
+  const app = has("GH_APP_ID") && has(FLY_GH_PRIVATE_KEY_SECRET);
+  if (!("GH_AUTH_MODE" in values) && existing.has("GH_AUTH_MODE") && relayToken && app) return ["relay", "app"];
+  if (relayToken) return ["relay"];
+  if (app) return ["app"];
+  return [];
 }

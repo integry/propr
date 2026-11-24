@@ -10,7 +10,8 @@
  *     them, own App or not.
  *
  * So own-App credentials suppress automatic enrollment only when Connect is
- * off. With Connect on and no relay token, a token is enrolled, or the deploy
+ * off, and so does PROPR_DEMO_MODE (a read-only demo has no GitHub access).
+ * With Connect on and no relay token, a token is enrolled, or the deploy
  * stops before anything is provisioned.
  *
  * The deploy also writes the GitHub API auth mode it selects, unless the stack
@@ -23,7 +24,7 @@
  * at all pins nothing and leaves the earlier ones in charge.
  */
 
-import { DEFAULT_PROPR_GH_RELAY_URL, validateRelayUrl } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, parseTruthyEnvValue, validateRelayUrl } from "@propr/shared";
 import { enrollRelayToken, type RelayClientOptions } from "../../api/relay.js";
 import { discoverInstallationId } from "../relayCommands.js";
 import { FLY_GH_PRIVATE_KEY_SECRET } from "./flyMachineConfig.js";
@@ -136,7 +137,10 @@ export function planFlyRelay(options: FlyRelayOptions, secrets: Record<string, s
       "ProPR Connect (--tunnel-token/--tunnel-url) signs browsers in with a GitHub relay token, but --no-relay was given and the stack .env has no PROPR_GH_RELAY_TOKEN. Drop --no-relay so one is enrolled, or add PROPR_GH_RELAY_URL and PROPR_GH_RELAY_TOKEN (`propr relay enroll`) to the stack .env.",
     );
   }
-  const enroll = options.relay === true || connectNeedsToken || (auto && !hasRelayToken && !hasOwnApp(secrets));
+  // A read-only demo has no GitHub access and needs no relay token unless
+  // Connect signs browsers in, so it is not enrolled by default.
+  const demo = parseTruthyEnvValue(secrets.PROPR_DEMO_MODE);
+  const enroll = options.relay === true || connectNeedsToken || (auto && !hasRelayToken && !hasOwnApp(secrets) && !demo);
   const keepOwnApp = keepsOwnApp(options, secrets);
   if (keepOwnApp) assertOwnAppInstallation(secrets);
   if (!enroll) {

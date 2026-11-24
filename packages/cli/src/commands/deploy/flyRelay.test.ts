@@ -253,3 +253,10 @@ test("shared-App stack: automatic enrollment switches to relay auth; no login sk
   assert.equal(await resolveFlyRelaySecrets(options, secrets, { connect: false, label: "l" }, deps), undefined);
   assert.throws(() => planFlyRelay({ relay: true }, secrets, { connect: false }), /--relay needs a GitHub login/);
 });
+
+test("demo mode without Connect is not enrolled by default; --relay and Connect still enroll", () => {
+  const { secrets, options } = collect({ spritesToken: "sp" }, { PROPR_DEMO_MODE: "true" });
+  assert.equal(planFlyRelay(options, secrets, { connect: false, githubToken: "gh" }).kind, "none");
+  assert.equal(planFlyRelay({ ...options, relay: true }, secrets, { connect: false, githubToken: "gh" }).kind, "enroll");
+  assert.equal(planFlyRelay(options, secrets, { connect: true, githubToken: "gh" }).kind, "enroll");
+});

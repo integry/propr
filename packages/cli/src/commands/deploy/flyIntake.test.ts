@@ -48,3 +48,23 @@ test("no GitHub credentials anywhere is refused before deploy", () => {
   // Relay auth pinned without any token: the relay WebSocket would throw at boot.
   assert.throws(() => selectFlyIntakeMode({ GH_AUTH_MODE: "relay" }, none), /PROPR_GH_RELAY_TOKEN must be set/);
 });
+
+test("a GH_AUTH_MODE left by an earlier deploy is unreadable: with relay and App credentials the intake must suit both", () => {
+  const earlier = new Set(["GH_AUTH_MODE", "GH_APP_ID", "PROPR_GH_PRIVATE_KEY_B64", "PROPR_GH_RELAY_TOKEN"]);
+  // The intake that earlier deploy pinned next to its mode is kept (nothing uploaded).
+  const kept = selectFlyIntakeMode({ PROPR_DEMO_MODE: "false" }, new Set([...earlier, "GITHUB_EVENT_INTAKE_MODE"]));
+  assert.deepEqual(kept.secrets, {});
+  assert.match(kept.summary, /kept from the earlier deploy/);
+  // No intake to keep: polling runs under relay and app auth alike.
+  assert.equal(mode({ PROPR_DEMO_MODE: "false" }, earlier), "polling");
+  assert.equal(mode({ PROPR_DEMO_MODE: "false" }, new Set([...earlier, "GH_WEBHOOK_SECRET"])), "polling");
+  // A stack intake that only one of the two modes can run is refused.
+  assert.throws(
+    () => selectFlyIntakeMode({ GITHUB_EVENT_INTAKE_MODE: "routing_websocket" }, earlier),
+    /routing_websocket intake requires relay auth mode.*set GH_AUTH_MODE \(relay or app\)/,
+  );
+  // This run's GH_AUTH_MODE settles it.
+  assert.equal(mode({ GH_AUTH_MODE: "relay" }, earlier), "routing_websocket");
+  // Only one kind of credential: the earlier mode can only be that one.
+  assert.equal(mode({}, new Set(["GH_AUTH_MODE", "PROPR_GH_RELAY_TOKEN"])), "routing_websocket");
+});

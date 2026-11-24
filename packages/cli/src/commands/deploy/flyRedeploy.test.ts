@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_PROPR_GH_RELAY_URL, parseTruthyEnvValue, resolveGithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, parseTruthyEnvValue, resolveGithubAuthMode, validateIntakeModePrerequisites, type GithubEventIntakeMode } from "@propr/shared";
 import { deployPreparedFly, prepareFlyDeploy, type DeployFlyOptions } from "../deployFly.js";
 import type { FlyDeployTarget } from "./flyDeployRunner.js";
 import { buildAppEnv, buildMachineConfig, FLY_GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_SECRET } from "./flyMachineConfig.js";
@@ -51,11 +51,11 @@ const relayDeps: FlyRelayDeps = {
 };
 
 /** One run, sequenced as runDeployFly sequences it. */
-async function deploy(app: ReturnType<typeof flyApp>, flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, string>, githubToken?: string) {
+async function deploy(app: ReturnType<typeof flyApp>, flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, string>, githubToken?: string, deps: FlyRelayDeps = relayDeps) {
   const options = { app: "my-propr", spritesToken: "sp", ...flags };
   const prepared = prepareFlyDeploy(options, IMAGES, envFile, githubToken, () => "-----BEGIN KEY-----\n");
   const context = { githubToken, label: "fly:my-propr@h", generatedSecrets: { SESSION_SECRET: "s" } };
-  await deployPreparedFly(prepared, options, app.target, context, () => {}, relayDeps);
+  await deployPreparedFly(prepared, options, app.target, context, () => {}, deps);
   return app.machineEnv();
 }
 
@@ -209,4 +209,48 @@ test("a demo-mode app redeployed with Connect leaves demo mode", async () => {
   assert.equal(second.PROPR_DEMO_MODE, "false");
   assert.equal(parseTruthyEnvValue(second.PROPR_DEMO_MODE), false);
   assert.equal(second.PROPR_WEB_AUTH_MODE, "connect");
+});
+
+/** The daemon's boot check, under the auth mode the Machine env resolves to. */
+function intakeErrors(env: Record<string, string>) {
+  return authModes(env).flatMap((authMode) => validateIntakeModePrerequisites({
+    intakeMode: env.GITHUB_EVENT_INTAKE_MODE as GithubEventIntakeMode,
+    authMode,
+    routingUrl: env.PROPR_ROUTING_URL,
+    relayUrl: env.PROPR_GH_RELAY_URL,
+    relayToken: env.PROPR_GH_RELAY_TOKEN,
+    webhookSecret: env.GH_WEBHOOK_SECRET,
+  }).errors);
+}
+
+test("an own App + Connect app redeployed with only an OAuth client keeps App auth and an intake that starts under it", async () => {
+  for (const extra of [{}, { GH_WEBHOOK_SECRET: "whsec" }]) {
+    const app = flyApp();
+    const first = await deploy(app, TUNNEL_FLAGS, { ...OWN_APP_ENV, ...extra }, "gh");
+    assert.equal(first.GH_AUTH_MODE, "app");
+    assert.equal(first.PROPR_GH_RELAY_TOKEN, "shared-relay-token", "Connect sign-in got a relay token");
+    const intake = first.GITHUB_EVENT_INTAKE_MODE;
+    assert.deepEqual(intakeErrors(first), []);
+
+    // No App, no tunnel flags, no local login: GH_AUTH_MODE=app stays on Fly,
+    // next to the relay token, so routing_websocket would fail the daemon.
+    const second = await deploy(app, {}, OAUTH_ENV);
+    assert.equal(second.GH_AUTH_MODE, "app");
+    assert.deepEqual(authModes(second), ["app", "app"]);
+    assert.equal(second.GITHUB_EVENT_INTAKE_MODE, intake, "the earlier intake is kept");
+    assert.deepEqual(intakeErrors(second), []);
+  }
+});
+
+test("a demo deploy with a GitHub login and no shared-App installation skips relay enrollment", async () => {
+  const noInstallation: FlyRelayDeps = {
+    discoverInstallationId: async () => { throw new Error("no ProPR App installation found"); },
+    enrollRelayToken: async () => { throw new Error("not expected"); },
+  };
+  const env = await deploy(flyApp(), {}, { PROPR_DEMO_MODE: "true" }, "gh", noInstallation);
+  assert.equal(parseTruthyEnvValue(env.PROPR_DEMO_MODE), true);
+  assert.equal(env.PROPR_GH_RELAY_TOKEN, undefined);
+  assert.equal(env.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
+  // An explicit --relay still enrolls, and fails here without an installation.
+  await assert.rejects(deploy(flyApp(), { relay: true }, { PROPR_DEMO_MODE: "true" }, "gh", noInstallation), /no ProPR App installation found/);
 });
