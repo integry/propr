@@ -35,7 +35,7 @@ Agent runs go through the runtime seam described in [Coding Agent Integration](.
 
 ## Fly Sprites
 
-Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport and require open networking. MCP grants need an endpoint reachable from the Sprite.
+Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport. Restricted runs are confined by the Sprite's DNS allowlist network policy, which is applied before the run and cleared after the checkpoint restore completes. See [Restricted mode on Fly Sprites](../features/execution-safety.md#restricted-mode-on-fly-sprites). Restricted runs require a public HTTPS URL for ProPR MCP: `PROPR_SPRITES_MCP_URL`, or else the generic reachable URL (`PROPR_AGENT_MCP_URL` without a pinned network, or `API_PUBLIC_URL`).
 
 ### Runner pool
 

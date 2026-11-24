@@ -1,21 +1,77 @@
 import { randomUUID } from 'node:crypto';
+import type { NetworkPolicy } from '@fly/sprites';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
 import { admitCostExecution, refuseCostExecution } from '../../claude/docker/dockerCostCap.js';
+import { AGENT_EGRESS_RESTRICTED_ENV } from '../../network/egressAllowlist.js';
+import { currentNetworkEgressDiagnostics } from '../../network/egressExecution.js';
 import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../git/workspaceTransportScript.js';
+import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
-import { startupStep, type SpriteClient } from './sprites/spritesProvisioning.js';
+import {
+    applySpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY, sameSpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT,
+} from './sprites/spritesNetwork.js';
+import { afterSpriteRestore, startupStep, type SpriteClient } from './sprites/spritesProvisioning.js';
 import { SpritePool, type Slot } from './sprites/spritesRunnerPool.js';
 import { unsupportedMount, uploadRun } from './sprites/spritesRun.js';
 import { RedisSpritePoolStore, resolveSpritesPoolConfig, spritesPoolScope, spritesWarmCloneKey, type SpritePoolStore } from './spritesPool.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
+async function releaseRunner(pool: SpritePool, slot: Slot, options: {
+    repo?: string;
+    policy?: NetworkPolicy;
+    run: string;
+    recordDiagnostic: (message: string) => void;
+    commit?: () => Promise<void>;
+}): Promise<void> {
+    const { repo, policy, run, recordDiagnostic, commit } = options;
+    const { sprite } = slot;
+    const warn = (step: string, error: unknown) => logger.warn(
+        { sprite: sprite.name, run, step, error: error instanceof Error ? error.message : String(error) },
+        'Sprite release failed, discarding Sprite',
+    );
+    if (policy) {
+        try {
+            if (!sameSpriteNetworkPolicy(await sprite.getNetworkPolicy(), policy)) {
+                const message = `Network policy mismatch at release for run ${run} on Sprite ${sprite.name}`;
+                recordDiagnostic(message);
+                throw new Error(message);
+            }
+        } catch (error) {
+            warn('check applied network policy', error);
+            await pool.discard(slot);
+            return;
+        }
+    }
+    let policyFailure: { step: string; error: unknown } | undefined;
+    const releasing = policy ? { ...slot, sprite: afterSpriteRestore(sprite, async () => {
+        let step = 'clear network policy';
+        try {
+            await sprite.updateNetworkPolicy(OPEN_SPRITE_NETWORK_POLICY);
+            step = 'verify cleared network policy';
+            if (!sameSpriteNetworkPolicy(await sprite.getNetworkPolicy(), OPEN_SPRITE_NETWORK_POLICY)) {
+                throw new Error('Sprite did not verify the cleared network policy');
+            }
+        } catch (error) {
+            policyFailure = { step, error };
+            throw error;
+        }
+    }) } : slot;
+    try {
+        await commit?.();
+    } finally {
+        try { await pool.release(releasing, { repo }); }
+        finally { if (policyFailure) warn(policyFailure.step, policyFailure.error); }
+    }
+}
+
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: false,
-        supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] as const };
+    readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: true,
+        restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
+        supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
     private closing?: Promise<void>;
@@ -62,8 +118,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
         const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
-        if (spec.network.restriction || spec.network.policy?.mode === 'restricted' || spec.network.mode === 'named')
-            throw new Error('Sprites requires open networking');
+        // Named networks, private MCP endpoints and malformed policies stay refused.
+        const networkPolicy = spriteNetworkPolicy(spec);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
         const config = resolveSpritesPoolConfig(this.environment);
@@ -71,6 +127,13 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         const clone = spec.workspace.clone;
         const repo = config.warmClones && clone?.remote ? spritesWarmCloneKey(clone.remote) : undefined;
         options = { ...options, extraEnvVars: { ...options.extraEnvVars } };
+        const envDefaults = networkPolicy ? AGENT_EGRESS_RESTRICTED_ENV[spec.profile.agentType] : undefined;
+        const diagnostics: string[] = [];
+        const egressDiagnostics = currentNetworkEgressDiagnostics();
+        const recordDiagnostic = (message: string) => {
+            diagnostics.push(message);
+            egressDiagnostics?.push(message);
+        };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
         const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(options.timeout ?? 300_000),
@@ -99,15 +162,20 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 // Keep ownership here until upload succeeds. Even a create response arriving
                 // after stop() must dispose of its Sprite before this acquisition ends.
                 const acquired = await ready.acquire(signal, { repo });
+                let appliedPolicy: NetworkPolicy | undefined;
                 try {
-                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch));
+                    if (networkPolicy) {
+                        await startupStep(signal, () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
+                        appliedPolicy = networkPolicy;
+                    }
+                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch, envDefaults));
                     signal.throwIfAborted();
                     slot = acquired;
                     commit = writeBack;
                     return acquired.sprite;
                 } catch (error) {
-                    if (signal.aborted) await ready.discard(acquired);
-                    else await ready.release(acquired);
+                    if (signal.aborted || (networkPolicy && !appliedPolicy)) await ready.discard(acquired);
+                    else await releaseRunner(ready, acquired, { policy: appliedPolicy, run: spec.name, recordDiagnostic });
                     throw error;
                 }
             });
@@ -128,10 +196,9 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             if (!slot) return;
             try {
                 await Promise.allSettled(reads);
-                await commit?.();
+                await releaseRunner(await pool, slot, { repo, policy: networkPolicy, run: spec.name, recordDiagnostic, commit });
             } finally {
-                try { await (await pool).release(slot, { repo }); }
-                finally { doneWithPool(); }
+                doneWithPool();
             }
         })();
         // A rejected run has no result for the caller to retrieve.
@@ -140,7 +207,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             get recoveryLocation() { return slot && `Sprite ${slot.sprite.name} at /opt/propr/result`; },
             spec, get stdout() { return output.get('stdout'); }, get stderr() { return output.get('stderr'); },
             wait: () => result, stop: async () => { cancellation.abort(new AgentRunStoppedError(spec.name)); await result.catch(() => {}); },
-            inspect: async () => ({ name: spec.name, id: slot?.sprite.name, liveness: settled ? 'stopped' : 'running' }),
+            inspect: async () => ({ name: spec.name, id: slot?.sprite.name, liveness: settled ? 'stopped' : 'running',
+                ...(diagnostics.length ? { diagnostics: [...diagnostics] } : {}) }),
             isAlive: async () => !settled,
             readFile: async file => {
                 if (!slot || released || !settled) return null;

@@ -210,7 +210,7 @@ test('a private-network MCP grant is refused on a runtime without private networ
     assert.equal(privateGrant.transport, 'private-network');
     assert.throws(() => assertAgentRuntimeSupports(remote, { ...spec(), mcpGrant: privateGrant }), (error: any) => error.capability === 'mcp_private_network' && /API_PUBLIC_URL/.test(error.message));
     const reachable = agentRunMcpGrant({ mcpServers: [{ name: 'propr', url: 'https://propr.example.com/api/mcp' }] } as any)!;
-    assert.deepEqual(reachable, { servers: ['propr'], transport: 'reachable-url' });
+    assert.deepEqual(reachable, { servers: ['propr'], transport: 'reachable-url', url: 'https://propr.example.com/api/mcp' });
     assert.doesNotThrow(() => assertAgentRuntimeSupports(remote, { ...spec(), mcpGrant: reachable }));
     assert.throws(() => assertAgentRuntimeSupports({ ...remote, capabilities: capabilities({ supportsMcpReachableUrl: false }) }, { ...spec(), mcpGrant: reachable }), /reachable URL/);
 });
@@ -237,6 +237,35 @@ test('the grant client falls back to the reachable URL and per-run token, and ne
 
     await assert.rejects(requestAgentRunMcpGrant('run-9', 'report', { environment, fetchImpl, runtime: 'no-such-runtime' }), /Unknown agent runtime "no-such-runtime"/);
     assert.equal(calls.length, 1);
+});
+
+test('restricted Sprites admission refuses incompatible MCP endpoints before issuing either phase grant', async () => {
+    const { executeWithNetworkPolicy } = await import('@propr/core');
+    const url = 'http://api:4000/api/mcp';
+    let requests = 0;
+    const fetchImpl = async () => {
+        requests++;
+        return Response.json({ grantId: 'g', token: 'test', expiresAt: 5 });
+    };
+    for (const setting of ['PROPR_SPRITES_MCP_URL', 'PROPR_AGENT_MCP_URL', 'API_PUBLIC_URL']) {
+        const environment = { PROPR_AGENT_RUNTIME: 'sprites', SYSTEM_TASK_SECRET: 'test', [setting]: url };
+        const report = await readAgentRuntimeCapabilityReport({ environment, loadPolicy: async () => ({
+            mode: 'restricted', enforced: true, allow: [], ignoreRepositoryAllow: false,
+        }) });
+        assert.equal(report.mcp.transport, 'unavailable', setting);
+        assert.match(report.mcp.reason, /public HTTPS URL/);
+        for (const phase of ['report', 'action'] as const) {
+            await assert.rejects(executeWithNetworkPolicy(workflowPolicy, () =>
+                requestAgentRunMcpGrant('run-1', phase, { environment, fetchImpl })),
+            { code: 'MCP_NETWORK_UNAVAILABLE', message: report.mcp.reason });
+        }
+    }
+    assert.equal(requests, 0);
+    const environment = { SYSTEM_TASK_SECRET: 'test', PROPR_SPRITES_MCP_URL: url };
+    const open = await executeWithNetworkPolicy({ mode: 'open', source: 'workflow', allow: [] }, () =>
+        requestAgentRunMcpGrant('run-1', 'report', { runtime: 'sprites', environment, fetchImpl }));
+    assert.equal(open.result.url, url);
+    assert.equal(requests, 1);
 });
 
 test('an explicit MCP URL without a pinned network: the report and the issued grant both say reachable-url on Docker', async () => {

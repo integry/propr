@@ -43,6 +43,34 @@ export async function completeCheckpointStream(stream: AsyncIterable<StreamMessa
     if (!finished) throw new Error('Sprite checkpoint operation ended before completion');
 }
 
+/** Runs a lease's cleanup after a successful restore and before the pool can reuse the runner. */
+export function afterSpriteRestore(sprite: Sprite, afterRestore: () => Promise<void>): Sprite {
+    return new Proxy(sprite, {
+        get(target, property) {
+            if (property === 'restoreCheckpoint') {
+                return async (checkpoint: string) => {
+                    const stream = await target.restoreCheckpoint(checkpoint);
+                    return new Proxy(stream, {
+                        get(restore, key) {
+                            if (key !== Symbol.asyncIterator) return Reflect.get(restore, key, restore);
+                            return async function* () {
+                                let finished = false;
+                                for await (const message of restore) {
+                                    finished = message.type === 'complete';
+                                    yield message;
+                                }
+                                if (finished) await afterRestore();
+                            };
+                        },
+                    });
+                };
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
+}
+
 /** Creates a checkpoint and returns its ID (found by a unique comment). */
 export async function createNamedCheckpoint(sprite: Sprite, comment: string, step: <T>(operation: () => Promise<T>) => Promise<T> = operation => operation()): Promise<string> {
     await step(async () => completeCheckpointStream(await sprite.createCheckpoint(comment)));

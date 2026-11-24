@@ -25,6 +25,9 @@ export class FakeSprite {
     labels: string[] = [];
     createdAt = new Date();
     checkpoints: Array<{ id: string; comment: string; files: Map<string, Buffer> }> = [];
+    networkPolicy: { rules: unknown[] } = { rules: [] };
+    policies: Array<{ rules: unknown[] }> = [];
+    failPolicy = false;
     constructor(readonly name: string) {}
     filesystem() {
         return {
@@ -35,6 +38,13 @@ export class FakeSprite {
         };
     }
     async restart() { this.events.push('restart'); }
+    async updateNetworkPolicy(policy: { rules: unknown[] }) {
+        if (this.failPolicy) throw new Error('policy update failed');
+        this.events.push(policy.rules.length ? 'restrict' : 'open');
+        this.policies.push(policy);
+        this.networkPolicy = structuredClone(policy);
+    }
+    async getNetworkPolicy() { return structuredClone(this.networkPolicy); }
     async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
         if (cmd === 'sudo' && args[1] === '/usr/bin/python3' && args[3] === '-c') {
             const present = this.resultDirectoryCompleted || [...this.files.keys()].some(file => file.startsWith('/opt/propr/result/'));

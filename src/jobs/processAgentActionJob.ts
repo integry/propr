@@ -471,15 +471,19 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             if (current?.state !== 'acting') return taskFollowsRun(context);
             const stopped = await followCancelledTask(context, 'before its agent started');
             if (stopped) return stopped;
-            mcpGrant = await deps.mcpGrants.request(runId, 'action', ...mcpGrantRuntimeOptions(runtime));
-            const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
-            const prompt = deps.buildPrompt({ definition, run: { id: runId, triggerEvent: run.triggerEvent }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
-            const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
+            const runWorkspace = workspace;
+            const execute = async () => {
+                mcpGrant = await deps.mcpGrants.request(runId, 'action', ...mcpGrantRuntimeOptions(runtime));
+                const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
+                const prompt = deps.buildPrompt({ definition, run: { id: runId, triggerEvent: run.triggerEvent }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
+                const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace: runWorkspace, mcpGrant, phase: 'action' });
+                return asAgentRunAdmissionParent(mcpGrant, () => agent.executeTask(options));
+            };
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent }, options)
-                    ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
-                    : agent.executeTask(options))),
+                () => runWithJobAgentCapacity(agentCapacity, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent })
+                    ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, execute)
+                    : execute()),
             );
 
             // 6. The agent is done, so its grant ends. A task stopped during execution
