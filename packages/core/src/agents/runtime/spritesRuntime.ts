@@ -9,7 +9,7 @@ import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import {
     planSpritesMounts, renderSpritesArgv, resolveSpritesEnvironment, spritesManifest, spritesMountRefusal, spritesRunPaths, spritesRunUser,
-    encodeNulList, spritesRunLeftovers, SPRITES_CREDENTIAL_TARGETS, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_ROOT, SPRITES_SCRUB_SCRIPT, type SpritesRunPaths,
+    encodeNulList, spritesRunLeftovers, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_PURGE_TARGETS, SPRITES_RUN_ROOT, SPRITES_SCRUB_SCRIPT, type SpritesRunPaths,
 } from './sprites/spritesCommand.js';
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
@@ -238,7 +238,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         // Durable before the credentials reach the Sprite and cleared only after their write-back: a worker that stops mid-run leaves the Sprite quarantined.
         if (credentials && !await persistRecoveryObligation(sprite, paths, this.spec.name, { reason: 'pending-write-back' })) throw new Error(`Could not record the credential recovery marker of run ${this.spec.name} on Sprite ${sprite.name}`);
         await credentials?.upload(filesystem, paths);
-        const records: string[][] = SPRITES_CREDENTIAL_TARGETS.map(target => ['purge', target]);
+        const records: string[][] = SPRITES_RUN_PURGE_TARGETS.map(target => ['purge', target]);
         records.push(...(credentials?.records ?? []));
         for (const directory of plan.directories) records.push(['dir', directory]);
         let index = 0;

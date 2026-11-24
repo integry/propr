@@ -5,6 +5,11 @@ import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../../git/workspaceTransportS
 import type { AgentType } from '../../types.js';
 import { renderAgentRunEntrypoint } from '../dockerRunArgs.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
+import { isSafeSpritesTarget, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME } from './spritesCredentialRecords.js';
+
+export {
+    spritesLiveOutputRecord, spritesOutputRecord, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME, SPRITES_LIVE_CREDENTIAL_ROOTS,
+} from './spritesCredentialRecords.js';
 
 /**
  * How an {@link AgentRunSpec} becomes a command on a Sprite.
@@ -21,7 +26,6 @@ import type { AgentRunMount, AgentRunSpec } from '../types.js';
 
 /** Per-run directories on the Sprite, private to the Sprite's own user (never readable by the agent). */
 export const SPRITES_RUN_ROOT = '/tmp/propr-sprite-runs';
-export const SPRITES_AGENT_HOME = '/home/node';
 /**
  * Where setup installs the entrypoint scripts root runs. The image keeps them
  * in `/home/node`, which the agent user owns: the repository setup hook (run as
@@ -47,8 +51,8 @@ export const SPRITES_CREDENTIAL_TARGETS: readonly string[] = Object.freeze([
     '/home/node/.config/opencode', '/home/node/.local/share/opencode', '/home/node/.vibe', '/run/propr-claude',
 ]);
 
-/** Antigravity's disposable HOME (`scripts/antigravity-entrypoint.sh`), which holds the run's OAuth token copy. */
-export const SPRITES_ANTIGRAVITY_HOME = '/tmp/propr-antigravity-home';
+/** Removed before every run (with every credential target): a live copy an earlier run left is never returned as this run's token. */
+export const SPRITES_RUN_PURGE_TARGETS: readonly string[] = Object.freeze([...SPRITES_CREDENTIAL_TARGETS, SPRITES_ANTIGRAVITY_HOME]);
 
 /**
  * Everything a run leaves outside its run directory: the clone workspace
@@ -115,16 +119,14 @@ export function spritesRunPaths(runId: string): SpritesRunPaths {
 
 type BindMount = Extract<AgentRunMount, { type: 'bind' }>;
 
-function isSafeTarget(target: string): boolean {
-    const normalized = path.posix.normalize(target);
-    if (normalized !== target || !path.posix.isAbsolute(target) || target.endsWith('/')) return false;
-    return [`${SPRITES_AGENT_HOME}/`, '/tmp/', '/run/propr-'].some(prefix => target.startsWith(prefix) && target.length > prefix.length)
-        && target !== `${SPRITES_AGENT_HOME}/workspace`;
-}
-
 /** Why the Sprites runtime cannot provide `mount`, or undefined when it can. */
 export function spritesMountRefusal(mount: BindMount): string | undefined {
-    if (!isSafeTarget(mount.target)) return `cannot provide a mount at ${mount.target} (Sprite targets must be under ${SPRITES_AGENT_HOME}/, /tmp/ or /run/propr-)`;
+    if (!isSafeSpritesTarget(mount.target)) return `cannot provide a mount at ${mount.target} (Sprite targets must be under ${SPRITES_AGENT_HOME}/, /tmp/ or /run/propr-)`;
+    if (mount.credentialStore && !mount.credentialStore.perRun) {
+        // The provider session a resumed run continues lives in the store between launches; a Sprite gets only the
+        // manifest's files and is restored to its clean checkpoint before every run, so that session would be gone.
+        return `cannot preserve the ${mount.credentialStore.provider} ${mount.credentialStore.store} store at ${mount.target} between runs, which this run needs for its provider session (goal sessions resumed by id); use the Docker runtime`;
+    }
     if (mount.credentialStore) return undefined;
     if (EMPTY_DIRECTORY_PURPOSES.has(mount.purpose) && !mount.readOnly) return undefined;
     if (mount.purpose === 'workspace' || mount.purpose === 'git') return 'cannot bind-mount the worker worktree; use the clone workspace transport';
@@ -152,7 +154,7 @@ export function planSpritesMounts(spec: AgentRunSpec): SpritesMountPlan {
     const plan: SpritesMountPlan = { credentialStores: [], files: [], directories: [] };
     for (const mount of [...spec.mounts].sort((left, right) => left.order - right.order)) {
         if (mount.type === 'tmpfs') {
-            if (!isSafeTarget(mount.target)) throw new Error(`Agent runtime "sprites" cannot provide a tmpfs at ${mount.target} for ${spec.name}`);
+            if (!isSafeSpritesTarget(mount.target)) throw new Error(`Agent runtime "sprites" cannot provide a tmpfs at ${mount.target} for ${spec.name}`);
             plan.directories.push(mount.target);
             continue;
         }
@@ -243,33 +245,11 @@ export function encodeNulList(values: readonly string[]): Buffer {
  * Launcher manifest records:
  * `purge <target>`, `stamp <run-relative file> <epoch seconds>` (the modification time of an uploaded store file),
  * `store <run-relative dir> <target>`, `dir <target>`, `file <run-relative file> <target> <octal mode>`,
- * `output <boundary> <path below it> <run-relative return path>` (see {@link spritesOutputRecord}).
+ * `output <boundary> <path below it> <run-relative return path>` (see `spritesOutputRecord`),
+ * `live <boundary> <path below it> <run-relative return path>` (see `spritesLiveOutputRecord`).
  */
 export function spritesManifest(records: ReadonlyArray<readonly string[]>): Buffer {
     return encodeNulList(records.flat());
-}
-
-/**
- * Directories above every Sprite target that the agent user cannot replace:
- * its home (in root-owned `/home`), `/tmp` and `/run` themselves.
- */
-const SPRITES_TARGET_BOUNDARIES: readonly string[] = [SPRITES_AGENT_HOME, '/tmp', '/run'];
-
-/**
- * The `output` record of a refreshable credential installed at `target`: the
- * launcher returns `<target>/<output>` only when every component below the
- * target's boundary (the store's own directory and every ancestor the agent
- * user could have replaced, e.g. `/home/node/.codex`) is a real directory and
- * the file a regular file, so a symlink the agent planted never makes root
- * export a file from outside the run's store.
- */
-export function spritesOutputRecord(target: string, output: string, returned: string): string[] {
-    const boundary = SPRITES_TARGET_BOUNDARIES.find(prefix => target.startsWith(`${prefix}/`) && target.length > prefix.length + 1);
-    const file = path.posix.join(target, output);
-    if (!boundary || !isSafeTarget(target) || path.posix.normalize(file) !== file || !file.startsWith(`${target}/`)) {
-        throw new Error(`Agent runtime "sprites" cannot return a credential from ${file}`);
-    }
-    return ['output', boundary, file.slice(boundary.length + 1), returned];
 }
 
 /** Environment variable every process of a run inherits (its value is the run directory). */
@@ -410,6 +390,7 @@ mapfile -d '' -t manifest < "$run_dir/manifest" || fail "cannot read the manifes
 workdir="$(cat "$run_dir/workdir")"
 run_user="$(cat "$run_dir/user")"
 outputs=()
+declare -A live_boundary=() live_below=()
 i=0
 count=\${#manifest[@]}
 while [ "$i" -lt "$count" ]; do
@@ -432,6 +413,10 @@ while [ "$i" -lt "$count" ]; do
             stores+=("$dst")
             mkdir -p -- "$(dirname -- "$dst")" && install -m "$mode" -o node -g node -- "$src" "$dst" || fail "cannot install $dst" ;;
         output) outputs+=("\${manifest[$((i + 1))]}" "\${manifest[$((i + 2))]}" "$run_dir/\${manifest[$((i + 3))]}"); i=$((i + 4)) ;;
+        live)
+            live_boundary["$run_dir/\${manifest[$((i + 3))]}"]="\${manifest[$((i + 1))]}"
+            live_below["$run_dir/\${manifest[$((i + 3))]}"]="\${manifest[$((i + 2))]}"
+            i=$((i + 4)) ;;
         *) fail "unknown manifest record $kind" ;;
     esac
 done
@@ -468,6 +453,18 @@ fi
 j=0
 while [ "$j" -lt "\${#outputs[@]}" ]; do
     boundary="\${outputs[$j]}"; below="\${outputs[$((j + 1))]}"; ret="\${outputs[$((j + 2))]}"; j=$((j + 3))
+    # The entrypoint's live copy, when it made one, is the run's current token: its sync back to the store may never have run (KILL).
+    if [ -n "\${live_below[$ret]+set}" ]; then
+        plain_file "\${live_boundary[$ret]}" "\${live_below[$ret]}"
+        case $? in
+            0) boundary="\${live_boundary[$ret]}"; below="\${live_below[$ret]}" ;;
+            1) ;; # No live copy: the store's copy is the run's token.
+            *)
+                exported=0
+                echo "ProPR Sprites runtime: not returning the live credential \${live_boundary[$ret]}/\${live_below[$ret]}: a symlink or non-regular file is on its path" >> "$run_dir/stderr.log"
+                continue ;;
+        esac
+    fi
     src="$boundary/$below"
     plain_file "$boundary" "$below"
     case $? in

@@ -192,6 +192,8 @@ export class FakeSprite {
         this.files.delete(at('env'));
         const manifest = nulList(this.files.get(at('manifest')));
         const outputs: Array<[string, string]> = [];
+        /** The entrypoint's live copy of each returned file, preferred when present. */
+        const lives = new Map<string, string>();
         const installed: string[] = [];
         for (let index = 0; index < manifest.length;) {
             const kind = manifest[index];
@@ -212,6 +214,7 @@ export class FakeSprite {
             } else if (kind === 'dir') index += 2;
             else if (kind === 'file') { this.files.set(manifest[index + 2], this.files.get(at(manifest[index + 1]))!); installed.push(manifest[index + 2]); index += 4; }
             else if (kind === 'output') { outputs.push([`${manifest[index + 1]}/${manifest[index + 2]}`, at(manifest[index + 3])]); index += 4; }
+            else if (kind === 'live') { lives.set(at(manifest[index + 3]), `${manifest[index + 1]}/${manifest[index + 2]}`); index += 4; }
             else throw new Error(`unknown manifest record ${kind}`);
         }
         const append = (stream: 'stdout' | 'stderr', text: string) => {
@@ -228,7 +231,9 @@ export class FakeSprite {
         // What the agent wrote is modified now.
         for (const [file, content] of this.files) if (before.get(file) !== content) this.mtimes.set(file, Date.now());
         // `cp -p` keeps the modification time.
-        for (const [source, returned] of this.exportFails ? [] : outputs) {
+        for (const [store, returned] of this.exportFails ? [] : outputs) {
+            const live = lives.get(returned);
+            const source = live !== undefined && this.files.has(live) ? live : store;
             if (!this.files.has(source)) continue;
             this.files.set(returned, this.files.get(source)!);
             if (this.mtimes.has(source)) this.mtimes.set(returned, this.mtimes.get(source)!);

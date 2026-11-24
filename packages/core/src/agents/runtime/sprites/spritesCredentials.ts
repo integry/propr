@@ -6,7 +6,7 @@ import {
 } from '../../credentials/broker.js';
 import { credentialRunRoot, definedVariables } from '../../credentials/hostCredentialStaging.js';
 import type { AgentRunSpec } from '../types.js';
-import { spritesOutputRecord, type SpritesMountPlan, type SpritesRunPaths } from './spritesCommand.js';
+import { spritesLiveOutputRecord, spritesOutputRecord, SPRITES_LIVE_CREDENTIAL_ROOTS, type SpritesMountPlan, type SpritesRunPaths } from './spritesCommand.js';
 import type { SpriteFilesystemLike } from './spritesSdk.js';
 
 /**
@@ -28,6 +28,12 @@ export interface SpritesCredentialSync {
     secretEnv: Record<string, string>;
     /** Launcher manifest records for the stores. */
     records: string[][];
+    /**
+     * Where the run's live credential copies are on the Sprite: each store's
+     * target, and the provider entrypoint's own live copy of it (Antigravity's
+     * disposable HOME). They are kept for recovery when the export is not confirmed.
+     */
+    liveCopies: string[];
     /** Persist the baseline, then upload the copy into the run directory. */
     upload(filesystem: SpriteFilesystemLike, paths: SpritesRunPaths): Promise<void>;
     /**
@@ -99,12 +105,19 @@ export function prepareSpritesCredentials(
     });
     const bundle = broker.materialize(requests, { definedEnv: definedVariables(spec, { ...process.env, ...options.launchEnvironment }) });
     const records: string[][] = [];
+    const liveCopies: string[] = [];
     bundle.stores.forEach((store, index) => {
         const target = plan.credentialStores[index].target;
+        const liveRoot = SPRITES_LIVE_CREDENTIAL_ROOTS[plan.credentialStores[index].credentialStore!.provider];
+        liveCopies.push(target, ...(liveRoot ? [liveRoot] : []));
         // The uploaded copy gets its canonical modification time back before the launcher installs it (`cp -a`).
         for (const file of store.files) records.push(['stamp', path.posix.join('store', store.id, file.path), stampSeconds(file.mtimeMs)]);
         records.push(['store', `store/${store.id}`, target]);
-        for (const output of store.outputs) records.push(spritesOutputRecord(target, output, `returned/${store.id}/${output}`));
+        for (const output of store.outputs) {
+            records.push(spritesOutputRecord(target, output, `returned/${store.id}/${output}`));
+            // A run killed before its entrypoint synced the live copy back holds its current token only there.
+            if (liveRoot) records.push(spritesLiveOutputRecord(liveRoot, output, `returned/${store.id}/${output}`));
+        }
         if (store.skipped.length > 0) logger.info({ run: spec.name, store: store.id, skipped: store.skipped }, 'Credential broker skipped store entries');
     });
 
@@ -169,5 +182,5 @@ export function prepareSpritesCredentials(
         }
     };
 
-    return { bundle, secretEnv: bundle.secretEnv, records, upload, recoverBaseline, writeBack };
+    return { bundle, secretEnv: bundle.secretEnv, records, liveCopies: [...new Set(liveCopies)], upload, recoverBaseline, writeBack };
 }

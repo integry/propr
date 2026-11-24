@@ -234,7 +234,7 @@ export async function finishRunCredentials(
     const started = Date.now();
     const finished = await settleLauncher(sprite, paths, settleMs);
     if (!finished || !await credentialExportConfirmed(sprite, paths)) {
-        const liveCopies = credentials.records.filter(record => record[0] === 'store').map(record => record[2]);
+        const { liveCopies } = credentials;
         const reason: SpritesRecoveryReason = finished ? 'export-failed' : 'export-unconfirmed';
         logger.error({ run, sprite: sprite.name, runDirectory: paths.root, liveCopies, reason }, finished
             ? 'The Sprites run could not return its refreshed credentials; kept the live copies on the Sprite. Copy each newer file back to its canonical store, then delete the run directory'

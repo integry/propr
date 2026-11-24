@@ -321,6 +321,92 @@ test('a failed checkpoint restore at release falls back to removing the run data
     assert.equal(sprite.files.has('/tmp/propr-sprite-runs/.clean'), false, 'a Sprite that was not restored is not marked clean');
 });
 
+test('a run that resumes a provider session from its credential store (perRun: false) is refused before it reaches a Sprite', async () => {
+    const sessionBound = <T extends { mounts: Array<{ type: string; credentialStore?: { perRun: boolean } }> }>(spec: T): T => {
+        for (const mount of spec.mounts) if (mount.type === 'bind' && mount.credentialStore) mount.credentialStore.perRun = false;
+        return spec;
+    };
+    const claude = sessionBound(cloneSpec(claudeStore(), { name: 'claude-goal-1' }));
+    const antigravity = sessionBound(antigravitySpec(antigravityStore(), 'antigravity-goal-1'));
+    const codex = new AgentRunSpecBuilder({
+        agentType: 'codex', image: 'propr/agent:test', name: 'codex-goal-1', stdin: true, user: '0:0',
+        network: agentRunNetwork('bridge'), security: {},
+        workspace: { hostPath: '/tmp/worktree', containerPath: '/home/node/workspace', readOnly: false },
+    }).credentialBind(tempDir('propr-sprites-codex-'), '/home/node/.codex', false, { provider: 'codex', store: 'config', perRun: false }).command('codex', 'exec', 'resume', 'session-1').build();
+    for (const spec of [claude, codex, antigravity]) {
+        const store = spec.mounts.find(mount => mount.type === 'bind' && mount.credentialStore)!;
+        assert.match(spritesMountRefusal(store as never)!, /cannot preserve the .* store .* provider session/, spec.name);
+        assert.throws(() => assertAgentRuntimeSupports(getAgentRuntime({ runtime: 'sprites' }), spec), /provider session/, spec.name);
+    }
+    // Even a direct start never acquires, restores or uploads to a Sprite (the checkpoint restore would drop the session).
+    const client = new FakeSpritesClient();
+    await assert.rejects(runtimeFor(client).start(claude, { timeout: 10_000 }).wait(), /provider session/);
+    assert.equal(client.sprites.size, 0);
+    // The per-run copy of the same store is provided as before.
+    assert.equal(spritesMountRefusal(cloneSpec(claudeStore()).mounts.find(mount => mount.type === 'bind' && mount.credentialStore) as never), undefined);
+});
+
+const ANTIGRAVITY_LIVE_TOKEN = '/tmp/propr-antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token';
+
+test('an Antigravity run killed after its CLI refreshed the token writes back the disposable HOME\'s token, not the stale store copy', async () => {
+    const client = new FakeSpritesClient();
+    const store = antigravityStore();
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            // The entrypoint copied the token into its disposable HOME, the CLI rotated it there; KILL stops the
+            // entrypoint before its sync back to /home/node/.gemini-source.
+            assert.equal(context.files.has(ANTIGRAVITY_LIVE_TOKEN), false, 'no earlier run\'s live copy is left for this run');
+            context.files.set(ANTIGRAVITY_LIVE_TOKEN, Buffer.from('{"token":"agy-rotated"}'));
+            await context.terminated;
+            return 137;
+        };
+    };
+    const runtime = runtimeFor(client);
+    const handle = runtime.start(antigravitySpec(store, 'antigravity-issue-30'), { timeout: 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const waited = handle.wait().catch(error => error);
+    await handle.stop('SIGKILL');
+    assert.equal((await waited).name, 'AgentRunStoppedError');
+    assert.equal(fs.readFileSync(path.join(store, 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), '{"token":"agy-rotated"}', 'the rotated token reached the canonical store');
+    const sprite = client.sprites.get('propr-w1-0')!;
+    assert.equal(sprite.files.get('/home/node/.gemini-source/antigravity-cli/antigravity-oauth-token'), undefined, 'the confirmed export removed the store copy');
+    await handle.release();
+    assert.deepEqual(sprite.restored, ['v1'], 'only once the rotated token is safe is the Sprite restored');
+
+    // A live copy an earlier run left (here: planted before the next launch) is purged before the next run starts.
+    sprite.files.set(ANTIGRAVITY_LIVE_TOKEN, Buffer.from('{"token":"earlier-run"}'));
+    const next = runtime.start(antigravitySpec(store, 'antigravity-issue-31'), { timeout: 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const nextWaited = next.wait().catch(error => error);
+    await next.stop('SIGKILL');
+    await nextWaited;
+    assert.equal(fs.readFileSync(path.join(store, 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), '{"token":"agy-rotated"}');
+    await next.release();
+});
+
+test('an Antigravity run whose export cannot be confirmed keeps its disposable HOME with the live token for recovery', async () => {
+    const client = new FakeSpritesClient();
+    const store = antigravityStore();
+    client.configureSprite = sprite => {
+        sprite.exportFails = true;
+        sprite.agent = async context => { context.files.set(ANTIGRAVITY_LIVE_TOKEN, Buffer.from('{"token":"agy-rotated"}')); await context.terminated; return 137; };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_RESTORE_CHECKPOINT: 'false' });
+    const handle = runtime.start(antigravitySpec(store, 'antigravity-issue-32'), { timeout: 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const waited = handle.wait().catch(error => error);
+    await handle.stop('SIGKILL');
+    await waited;
+    await handle.release();
+    const sprite = client.sprites.get('propr-w1-0')!;
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'antigravity-issue-32' })}`;
+    const obligation = JSON.parse(sprite.files.get(`${root}/credentials-retained`)!.toString());
+    assert.equal(obligation.reason, 'export-failed');
+    assert.deepEqual(obligation.liveCopies, ['/home/node/.gemini-source', '/tmp/propr-antigravity-home/.gemini']);
+    assert.equal(sprite.files.get(ANTIGRAVITY_LIVE_TOKEN)?.toString(), '{"token":"agy-rotated"}', 'the only rotated copy is not scrubbed');
+    assert.equal(fs.readFileSync(path.join(store, 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), '{"token":"agy"}');
+});
+
 test('a dropped output connection resumes from the received bytes without losing or repeating output', async () => {
     const client = new FakeSpritesClient();
     client.configureSprite = sprite => {
@@ -1040,6 +1126,72 @@ test('the launcher never exports a credential through a symlink the agent plante
     assert.equal(fs.readFileSync(path.join(innerLink.run, 'result', 'status'), 'utf8'), 'done');
     assert.equal(fs.existsSync(path.join(innerLink.run, 'result', 'result.bundle')), false);
     assert.equal(fs.lstatSync(path.join(innerLink.run, 'result', 'status')).isFile(), true);
+});
+
+test('rotation in Antigravity\'s disposable HOME followed by KILL: the launcher returns the live token (same path checks), not the stale store copy', { skip: !linuxProcesses }, async t => {
+    const { execFileSync, spawn } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SIGNAL_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-agy-kill-');
+    // As the test user (see above); the agent UID is one no process has.
+    const asTestUser = (script: string) => script.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000');
+    const launcher = path.join(dir, 'launch.sh');
+    fs.writeFileSync(launcher, asTestUser(SPRITES_LAUNCHER_SCRIPT).replace('[ "$(id -u)" = "0" ]', 'true')
+        .replace('id node >/dev/null 2>&1', 'true').replaceAll('chown -R node:node --', 'true --').replaceAll('chown node:node --', 'true --'));
+    const signal = asTestUser(SPRITES_SIGNAL_SCRIPT);
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const token = 'antigravity-cli/antigravity-oauth-token';
+    const children: Array<ReturnType<typeof spawn>> = [];
+    t.after(() => { for (const child of children) child.kill('SIGKILL'); });
+    /** `agent` gets the store and the live directory; the boundary (on a Sprite /home/node and /tmp) is the sandbox. */
+    const launch = async (name: string, agent: string, { kill = true } = {}) => {
+        const run = path.join(dir, name);
+        const source = path.join(dir, `${name}-home`, '.gemini-source');
+        const live = path.join(dir, `${name}-tmp`, 'propr-antigravity-home', '.gemini');
+        fs.mkdirSync(path.join(run, 'store', 'antigravity', 'antigravity-cli'), { recursive: true });
+        fs.writeFileSync(path.join(run, 'store', 'antigravity', token), '{"token":"agy"}');
+        // What the entrypoint does: copy the token into the disposable HOME, run the CLI, and only then sync it back.
+        const entrypoint = `mkdir -p "$2/antigravity-cli" && cp -p "$1/${token}" "$2/${token}" && ${agent}; cp -p "$2/${token}" "$1/${token}"`;
+        fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', entrypoint, 'entrypoint', source, live]));
+        fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+        const returned = `returned/antigravity/${token}`;
+        fs.writeFileSync(path.join(run, 'manifest'), nul([
+            'store', 'store/antigravity', source,
+            'output', dir, path.relative(dir, path.join(source, token)), returned,
+            'live', dir, path.relative(dir, path.join(live, token)), returned,
+        ]));
+        fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, `${name}-work`));
+        fs.writeFileSync(path.join(run, 'user'), 'root');
+        const child = spawn('bash', [launcher, run], { stdio: 'ignore' });
+        children.push(child);
+        const exited = new Promise<number | null>(resolve => child.on('exit', resolve));
+        if (kill) {
+            for (let i = 0; i < 200 && !fs.existsSync(path.join(live, 'rotated')); i++) await sleep(25);
+            assert.ok(fs.existsSync(path.join(live, 'rotated')), `${name}: the CLI refreshed its token`);
+            assert.equal(fs.readFileSync(path.join(source, token), 'utf8'), '{"token":"agy"}', `${name}: KILL stops the entrypoint before its sync`);
+            execFileSync('bash', ['-c', signal, 'propr-signal', 'KILL', run]);
+        }
+        const status = await exited;
+        const read = (file: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined;
+        return { status, run, source, live, returned: read(path.join(run, returned)), exported: read(path.join(run, 'credentials-exported')) };
+    };
+    const rotateThenHang = `printf '{"token":"agy-rotated"}' > "$2/${token}" && touch "$2/rotated" && exec sleep 86400`;
+
+    const killed = await launch('killed', rotateThenHang);
+    assert.equal(killed.status, 137);
+    assert.equal(killed.returned, '{"token":"agy-rotated"}', 'the live token is returned');
+    assert.equal(killed.exported, 'ok\n');
+
+    // A symlink on the live copy's path is refused like one on the store's: nothing returned, no export, live copy kept.
+    const linked = await launch('linked', `printf '{"token":"agy-rotated"}' > "$2/${token}" && mv "$2" "$2.real" && ln -s "$2.real" "$2" && touch "$2/rotated" && exec sleep 86400`);
+    assert.equal(linked.returned, undefined);
+    assert.equal(linked.exported, undefined, 'the recovery obligation stays');
+    assert.equal(fs.readFileSync(path.join(`${linked.live}.real`, token), 'utf8'), '{"token":"agy-rotated"}', 'the only rotated copy survives');
+    assert.match(fs.readFileSync(path.join(linked.run, 'stderr.log'), 'utf8'), /not returning the live credential/);
+
+    // No live copy (the entrypoint made none): the store's copy is returned as before.
+    const without = await launch('without-live', `rm -rf "$2"; printf '{"token":"store-rotated"}' > "$1/${token}"; exit 0`, { kill: false });
+    assert.equal(without.returned, '{"token":"store-rotated"}');
+    assert.equal(without.exported, 'ok\n');
 });
 
 test('credential output records name the boundary the agent cannot replace and reject paths that leave the store', async () => {
