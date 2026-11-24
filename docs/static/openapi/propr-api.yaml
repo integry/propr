@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 327
-    documented: 89
+    total: 328
+    documented: 90
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -9369,6 +9369,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
+  /config.js:
+    get:
+      operationId: getServedUiConfig
+      summary: Get the runtime config script of the API-served UI
+      description: Registered only when the API serves the built dashboard UI (`PROPR_SERVE_UI=1` or `PROPR_UI_DIST_DIR`, always on in all-in-one mode). Generated at startup, never cached; sets the browser-visible API base URL. See the Slim Control Plane section of the configuration reference.
+      tags:
+        - System
+      security: []
+      responses:
+        "200":
+          description: A script assigning `window.__PROPR_CONFIG__`.
+          content:
+            application/javascript:
+              schema:
+                type: string
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public

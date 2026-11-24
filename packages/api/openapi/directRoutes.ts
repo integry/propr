@@ -33,6 +33,9 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   // The public OAuth Client ID Metadata Document: ProPR's client name and redirect URI only.
   { method: 'get', path: '/api/instance/extensions/v1/oauth/client-metadata.json', auth: 'public', source: 'server.ts' },
   { method: 'get', path: '/health', auth: 'public', source: 'server.ts' },
+  // Registered only when the API serves the built UI (PROPR_SERVE_UI=1 or PROPR_UI_DIST_DIR):
+  // the UI's runtime config script, generated at startup.
+  { method: 'get', path: '/config.js', auth: 'public', source: 'staticUi.ts' },
   { method: 'post', path: '/webhook', auth: 'webhook', source: 'server.ts' },
   { method: 'get', path: '/api/compatibility', auth: 'public', source: 'server.ts' },
   // Agent run containers authenticate with a request signed by SYSTEM_TASK_SECRET.
