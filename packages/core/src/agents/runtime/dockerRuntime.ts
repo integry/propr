@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream';
 import { executeDockerCommand, type DockerCommandOptions, type ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { ExecutionAbortedError } from '../../claude/docker/dockerExecutionOwnership.js';
-import { executeWithAgentRunNetworkRestriction } from '../../network/agentRunNetworkRestriction.js';
+import { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './dockerNetwork.js';
 import { renderDockerRunArgs } from './dockerRunArgs.js';
 import { readDockerContainerFile } from './dockerContainerFiles.js';
 import { DockerComputeUsageSampler } from './dockerComputeUsage.js';
@@ -23,7 +23,9 @@ const REMOVE_TIMEOUT_MS = 30_000;
 export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.freeze({
     supportsBindMounts: true,
     supportsRestrictedNetwork: true,
+    restrictedNetworkEnforcement: DOCKER_RESTRICTED_NETWORK_ENFORCEMENT,
     supportsMcpPrivateNetwork: true,
+    supportsMcpReachableUrl: true,
     // Runs use `--rm -i` with the worker holding stdin; a restarted worker cannot reattach.
     reattach: false,
     // Clone mode suits a Docker host that cannot see the worker's paths (remote DOCKER_HOST).
@@ -164,7 +166,7 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
         const launchOptions: AgentRunOptions = { ...options, ...(restriction && { networkPolicyExempt: undefined }) };
         // The launch's Docker client gets the handle's snapshot, as stop/inspect do, not the caller's object.
         delete launchOptions.extraEnvVars;
-        this.result = executeWithAgentRunNetworkRestriction(restriction, spec.name, () => executeDockerCommand('docker', args, {
+        this.result = executeDockerRunWithSpecNetwork(spec, () => executeDockerCommand('docker', args, {
             ...launchOptions,
             ...this.dockerClientOptions(),
             signal,

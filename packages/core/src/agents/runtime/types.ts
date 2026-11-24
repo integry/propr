@@ -142,9 +142,41 @@ export interface AgentRunNetwork {
      * this must confine the run to it; one that cannot is refused before launch.
      */
     restriction?: AgentRunNetworkRestriction;
+    /**
+     * The runtime-neutral network policy, attached at dispatch: `open`, or
+     * `restricted` with the complete host/port allowlist (the agent's base
+     * list plus instance and repository additions). Runtimes other than
+     * Docker enforce this; Docker derives the same allowlist from
+     * {@link AgentRunNetwork.restriction} inside its egress proxy.
+     */
+    policy?: AgentRunNetworkPolicy;
 }
 
 export type AgentRunNetworkRestriction = ResolvedNetworkPolicy & { mode: 'restricted' };
+
+export type AgentRunNetworkMode = 'open' | 'restricted';
+
+/** One allowed destination: an exact host, a `*.` wildcard zone or an IP literal, and the ports it may use. */
+export interface AgentRunEgressRule {
+    host: string;
+    /** `*.example.com`: subdomains of `host`, never `host` itself. */
+    wildcard: boolean;
+    ports: number[];
+}
+
+export interface AgentRunNetworkPolicy {
+    mode: AgentRunNetworkMode;
+    /** Every destination a `restricted` run may reach; empty for `open`. */
+    allow: AgentRunEgressRule[];
+    /**
+     * IP literals that may be private, loopback or link-local addresses
+     * (only the instance's own entries); every other rule reaches public
+     * addresses only.
+     */
+    privateAddressAllow: AgentRunEgressRule[];
+    /** Where a restricted policy came from. */
+    source?: ResolvedNetworkPolicy['source'];
+}
 
 export interface AgentRunSecurity {
     noNewPrivileges: boolean;
@@ -155,10 +187,21 @@ export interface AgentRunSecurity {
     readOnlyRootFilesystem: boolean;
 }
 
+/**
+ * How a run reaches its granted ProPR MCP servers:
+ * - `private-network`: it joins a private network (the API-only Compose
+ *   network) where the MCP URL resolves;
+ * - `reachable-url`: the URL is reachable from the runtime's default network
+ *   (a public or explicitly configured endpoint) and the run authenticates
+ *   with its per-run grant token only.
+ */
+export type AgentRunMcpTransport = 'private-network' | 'reachable-url';
+
 export interface AgentRunMcpGrant {
     servers: string[];
     /** Network the run must join to reach the granted servers. */
     network?: string;
+    transport: AgentRunMcpTransport;
 }
 
 export interface AgentRunRepoSetup {
@@ -172,13 +215,32 @@ export interface AgentRunRepoSetup {
     env: Array<Omit<AgentRunEnvVar, 'order'>>;
 }
 
+/** How a runtime confines a restricted run's outbound traffic to its allowlist. */
+export interface AgentRuntimeRestrictedNetworkEnforcement {
+    /** Stable identifier, e.g. `egress-proxy-socket` for Docker. */
+    method: string;
+    /** One sentence for operators: what the run gets and what it cannot reach. */
+    description: string;
+}
+
 export interface AgentRuntimeCapabilities {
     /** Host paths can be bind-mounted (workspace, git metadata, credentials). */
     supportsBindMounts: boolean;
-    /** Outbound traffic can be confined to the ProPR egress proxy. */
+    /**
+     * Outbound traffic can be confined to {@link AgentRunNetwork.policy}. A
+     * runtime without it is refused every restricted run before launch.
+     */
     supportsRestrictedNetwork: boolean;
+    /** How restricted runs are confined; set whenever `supportsRestrictedNetwork` is. */
+    restrictedNetworkEnforcement?: AgentRuntimeRestrictedNetworkEnforcement;
     /** The run can join a private network that reaches ProPR MCP services. */
     supportsMcpPrivateNetwork: boolean;
+    /**
+     * The run can reach an MCP endpoint at a reachable URL with its per-run
+     * grant token: the fallback when private networking is unavailable.
+     * Absent counts as supported (any runtime with outbound HTTP has it).
+     */
+    supportsMcpReachableUrl?: boolean;
     /** A worker can reattach to a run it did not start (after restart). */
     reattach: boolean;
     /** Workspace transports the runtime can run; `['bind']` when bind mounts are supported and this is omitted. */

@@ -373,7 +373,12 @@ export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type 
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,
     registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
+    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
 } from './agents/runtime/registry.js';
+export { OPEN_AGENT_RUN_NETWORK_POLICY, agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agents/runtime/agentRunNetworkPolicy.js';
+export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransport, type AgentRunMcpTransportPlan } from './agents/runtime/agentRunMcpTransport.js';
+export { readAgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReportOptions } from './agents/runtime/agentRuntimeCapabilityReport.js';
+export { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './agents/runtime/dockerNetwork.js';
 export {
     BindWorkspaceTransport, WORKSPACE_TRANSPORT_ENV, WorkspaceTransportError, createWorkspaceTransport, resolveWorkspaceTransportMode,
     runWithWorkspaceTransport, runtimeWorkspaceTransports, type PreparedWorkspace, type WorkspaceCompletionOptions, type WorkspaceRunOutcome,

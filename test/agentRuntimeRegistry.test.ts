@@ -18,6 +18,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 
 const { getAgentRuntime, registerAgentRuntime, resolveAgentRuntimeKind, runAgent, assertAgentRuntimeSupports, assertNativeGoalRuntime, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { DockerRuntime, AgentRunStoppedError, AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
+const { OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
 const { executeWithNetworkPolicy, setUnscopedNetworkPolicyResolver } = await import('../packages/core/src/network/egressExecution.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
@@ -51,7 +52,8 @@ test('docker runtime launches the rendered argv and marks the launch as an agent
     assert.equal(calls[0].command, 'docker');
     assert.deepEqual(calls[0].args, renderDockerRunArgs(run));
     assert.equal(calls[0].options.stdinData, 'prompt');
-    assert.equal(calls[0].options.agentRun.spec, run);
+    assert.deepEqual(calls[0].options.agentRun.spec, { ...run, network: { ...run.network, policy: OPEN_AGENT_RUN_NETWORK_POLICY } }, 'dispatch attaches the open network policy');
+    assert.equal(run.network.policy, undefined, 'the provider spec is not mutated');
     assert.equal(containerLaunchKind('docker', calls[0].args, calls[0].options), 'agent');
     assert.equal(containerLaunchKind('docker', ['run', 'probe'], {}), 'container');
     assert.equal(containerLaunchKind('docker', ['inspect', 'x'], {}), 'command');

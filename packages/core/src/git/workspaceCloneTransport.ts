@@ -62,7 +62,15 @@ export const defaultCloneWorkspaceTransportDependencies: CloneWorkspaceTransport
     revokeToken: revokeInstallationToken,
     workerToken: () => getGitHubInstallationToken(),
     remoteUrl: ({ owner, repo }) => `https://github.com/${owner}/${repo}.git`,
-    createRunId: spec => `${spec.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'run'}-${randomBytes(4).toString('hex')}`,
+    createRunId: spec => {
+        const normalizedName = spec.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+        let start = 0;
+        let end = normalizedName.length;
+        while (start < end && normalizedName[start] === '-') start++;
+        while (end > start && normalizedName[end - 1] === '-') end--;
+        const prefix = normalizedName.slice(start, Math.min(end, start + 64)) || 'run';
+        return `${prefix}-${randomBytes(4).toString('hex')}`;
+    },
 };
 
 /** `owner/repo` of a GitHub remote URL (https or ssh, with or without credentials). */
