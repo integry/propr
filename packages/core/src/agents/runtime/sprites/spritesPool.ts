@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import logger from '../../../utils/logger.js';
 import { redactSpritesToken, spriteNameForSlot, type SpritesRuntimeConfig } from './spritesConfig.js';
+import { tryAcquireSpriteLock, type SpriteLock } from './spritesLock.js';
 import { execOnSprite, spritesErrorStatus, type SpriteLike, type SpritesClientLike } from './spritesSdk.js';
 import {
     createAgentSprite, provisionSprite, restoreCleanCheckpoint, SPRITES_LAUNCHER, type SpriteCleanState, type SpritesSetupBundle,
@@ -18,6 +20,14 @@ import {
  * {@link SpritePool.recycle} (restore, else destroy and provision anew) makes
  * it clean again. Nothing else does: there is no flag, marker on the Sprite or
  * option that lets a run start on what another run left.
+ *
+ * What this process knows about a Sprite is only good while it holds the
+ * Sprite's lock ({@link tryAcquireSpriteLock}). The lock is given up between
+ * runs, so another worker process with the same identity may take the Sprite,
+ * replace it or leave a run on it. Each holder therefore leaves its mark in
+ * the state directory, and a pool that finds another's mark when it takes the
+ * lock again forgets what it knew and checks the Sprite as a restarted worker
+ * would.
  *
  * Which checkpoint is the clean one is remembered on the worker
  * ({@link SpriteCleanState}), never looked up by its comment on a Sprite a run
@@ -63,16 +73,36 @@ interface Slot {
     clean: boolean;
     sprite?: SpriteLike;
     state?: SpriteCleanState;
+    /** Held from the moment the slot is taken until it is freed. */
+    lock?: SpriteLock;
 }
 
 const SIGNAL_TIMEOUT_MS = 60_000;
 const DEFAULT_LOCK_POLL_MS = 2_000;
-/** Lock files this process holds, whichever pool took them. */
-const heldLocks = new Set<string>();
+const noop = (): void => undefined;
+
+/**
+ * `promise`, unless `signal` aborts first: then it rejects with the signal's
+ * reason at once. The work behind `promise` is not cancelled, only no longer
+ * waited for; whoever abandons it must not reuse what it works on before it settled.
+ */
+export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) {
+        promise.catch(noop);
+        return Promise.reject(signal.reason);
+    }
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = (): void => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+}
 
 export class SpritePool {
     private readonly slots = new Map<number, Slot>();
     private readonly waiters: Array<() => void> = [];
+    /** This pool's mark on the Sprites it holds; another pool (another process, or a restart) has another. */
+    private readonly owner = randomUUID();
 
     constructor(private readonly deps: SpritePoolDependencies) {}
 
@@ -88,37 +118,44 @@ export class SpritePool {
     private lockPath(slot: Slot): string { return path.join(this.deps.config().stateDir, `${slot.name}.lock`); }
     private statePath(slot: Slot): string { return path.join(this.deps.config().stateDir, `${slot.name}.json`); }
 
+    private ownerPath(slot: Slot): string { return path.join(this.deps.config().stateDir, `${slot.name}.owner`); }
+
     /**
-     * Keeps another worker process that shares this worker id off the Sprite:
-     * an exclusive lock file holding the owner's PID. A lock whose owner is no
-     * longer running is taken over.
+     * Takes the Sprite's lock, which keeps another worker process that shares
+     * this worker id off it. When another holder had the Sprite since this
+     * pool last did, what this pool remembers of it (that it is clean, which
+     * Sprite it is, its checkpoint) is dropped: only the lock made it true.
      */
     private tryLock(slot: Slot): boolean {
-        const file = this.lockPath(slot);
-        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-        for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-                fs.writeFileSync(file, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
-                heldLocks.add(file);
-                return true;
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const lock = tryAcquireSpriteLock(this.lockPath(slot));
+        if (!lock) return false;
+        try {
+            const file = this.ownerPath(slot);
+            let previous: string | undefined;
+            try { previous = fs.readFileSync(file, 'utf8').trim(); } catch { /* never held */ }
+            if (previous !== this.owner) {
+                slot.clean = false;
+                slot.sprite = undefined;
+                slot.state = undefined;
+                // Marked before anything is done to the Sprite, so the mark stands even if this process dies mid-run.
+                fs.writeFileSync(`${file}.${this.owner}.tmp`, `${this.owner}\n`, { mode: 0o600 });
+                fs.renameSync(`${file}.${this.owner}.tmp`, file);
             }
-            let owner = Number.NaN;
-            try { owner = Number(fs.readFileSync(file, 'utf8').trim()); } catch { /* removed meanwhile: try again */ }
-            // Its own PID in a lock this process does not hold is a predecessor's (the PID was reused).
-            const alive = Number.isInteger(owner) && owner > 0 && (owner === process.pid ? heldLocks.has(file) : processIsAlive(owner));
-            if (alive) return false;
-            fs.rmSync(file, { force: true });
+        } catch (error) {
+            lock.release();
+            throw error;
         }
-        return false;
+        slot.lock = lock;
+        return true;
     }
 
     private free(slot: Slot): void {
-        const file = this.lockPath(slot);
-        if (heldLocks.delete(file)) fs.rmSync(file, { force: true });
-        slot.busy = false;
-        this.waiters.splice(0).forEach(wake => wake());
+        const lock = slot.lock;
+        slot.lock = undefined;
+        try { lock?.release(); } finally {
+            slot.busy = false;
+            this.waiters.splice(0).forEach(wake => wake());
+        }
     }
 
     /** A free slot, preferring one whose Sprite is clean already; waits while every Sprite is in use. */
@@ -134,7 +171,8 @@ export class SpritePool {
                 if (locked) return slot;
             }
             // Every free slot is held by another process: check again shortly. Otherwise wait for a release.
-            if (free.length > 0) await delay(this.deps.lockPollMs ?? DEFAULT_LOCK_POLL_MS, undefined, { signal });
+            // Either wait ends with the signal's own reason, so the caller can tell a deadline from a cancellation.
+            if (free.length > 0) await untilAborted(delay(this.deps.lockPollMs ?? DEFAULT_LOCK_POLL_MS, undefined, { signal }), signal);
             else await this.untilReleased(signal);
         }
     }
@@ -192,9 +230,14 @@ export class SpritePool {
         logger.info({ sprite: slot.name, setup: bundle.hash, pins: bundle.pins, checkpoint: state.checkpointId }, 'Provisioned Sprite for agent runs');
     }
 
-    /** Brings the slot's Sprite to its clean checkpoint when this process does not know it to be there. */
+    /**
+     * Brings the slot's Sprite to its clean checkpoint when this pool does not
+     * know it to be there. It knows only for a Sprite it has held without
+     * another holder in between ({@link tryLock}) and that was provisioned by
+     * the setup it would provision today.
+     */
     private async ensureClean(slot: Slot, timings: SpriteAcquisitionTimings): Promise<void> {
-        if (slot.clean && slot.sprite) return;
+        if (slot.clean && slot.sprite && slot.state?.setupHash === this.deps.bundle().hash) return;
         const client = await this.deps.client();
         const started = Date.now();
         let sprite: SpriteLike | undefined;
@@ -226,17 +269,23 @@ export class SpritePool {
         timings.provisionMs = Date.now() - provisionStarted;
     }
 
-    /** A Sprite at its clean checkpoint, for one run. It must be given back through {@link recycle}. */
+    /**
+     * A Sprite at its clean checkpoint, for one run. It must be given back
+     * through {@link recycle}. `signal` (a cancellation, or the run's deadline)
+     * ends the wait for a free Sprite and the wait for its preparation alike.
+     */
     async acquire(signal: AbortSignal, timings: SpriteAcquisitionTimings = {}): Promise<SpriteLease> {
         const queued = Date.now();
         const slot = await this.takeSlot(signal);
         timings.queueMs = Date.now() - queued;
+        const preparing = this.ensureClean(slot, timings);
         try {
-            await this.ensureClean(slot, timings);
+            await untilAborted(preparing, signal);
             signal.throwIfAborted();
         } catch (error) {
-            // Not handed to a run: a Sprite that reached its clean checkpoint stays clean.
-            this.free(slot);
+            // Not handed to a run: a Sprite that reached its clean checkpoint stays clean. A preparation the caller
+            // no longer waits for keeps the Sprite (and its lock) until it settled, so nothing else touches it meanwhile.
+            void preparing.then(noop, noop).then(() => this.free(slot));
             throw error;
         }
         // From here the Sprite is the run's: nothing but recycle() makes it clean again.
@@ -275,14 +324,5 @@ export class SpritePool {
         } finally {
             this.free(slot);
         }
-    }
-}
-
-function processIsAlive(pid: number): boolean {
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch (error) {
-        return (error as NodeJS.ErrnoException).code === 'EPERM';
     }
 }

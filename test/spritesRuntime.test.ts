@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mock, test } from 'node:test';
 import { FAKE_RUN_DIR, type FakeSprite } from './helpers/fakeSprites.ts';
 import { cloneSpec, createCredentialStore, createHarness, liveTokenPath, ORG_TOKEN, TEST_BUNDLE } from './helpers/spritesHarness.ts';
@@ -10,7 +13,10 @@ const { SpritesRunInterruptedError } = await import('../packages/core/src/agents
 const { SPRITES_CLIENT_SIGNALS_ENV } = await import('../packages/core/src/agents/runtime/sprites/spritesConfig.ts');
 const { default: logger } = await import('../packages/core/src/utils/logger.ts');
 
+const { tryAcquireSpriteLock } = await import('../packages/core/src/agents/runtime/sprites/spritesLock.ts');
+
 const SPRITE = 'propr-w1-0';
+const CONTENDER = fileURLToPath(new URL('./helpers/spritesLockContender.ts', import.meta.url));
 const CLEAN_PATHS = ['/', '/home', '/home/node', '/home/node/workspace', '/opt', '/opt/propr', '/opt/propr/bin', '/opt/propr/entrypoints', '/opt/propr/launcher.sh', '/opt/propr/run', '/opt/propr/sprites-setup.hash', '/tmp'];
 
 /** What a run leaves behind: the #3786 findings were each of these reaching the next run. */
@@ -254,19 +260,253 @@ test('with several Sprites, concurrent runs each get their own', async () => {
     await Promise.all(handles.map(handle => handle.release()));
 });
 
-test('a Sprite locked by another live worker process is not used', async () => {
+/** A separate worker process competing for a Sprite's lock; `said(word)` resolves once it printed that line. */
+function contender(lockFile: string, mode = '5'): { child: ChildProcess; said(word: string): Promise<void>; exited: Promise<void>; output(): string } {
+    const child = spawn(process.execPath, [...process.execArgv, CONTENDER, lockFile, mode], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let output = '';
+    const waiting: Array<() => void> = [];
+    child.stdout!.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); waiting.splice(0).forEach(check => check()); });
+    const exited = new Promise<void>(resolve => child.once('exit', () => { resolve(); waiting.splice(0).forEach(check => check()); }));
+    const said = (word: string): Promise<void> => new Promise((resolve, reject) => {
+        const check = (): void => {
+            if (output.split('\n').includes(word)) resolve();
+            else if (child.exitCode !== null || child.signalCode !== null) reject(new Error(`the contender exited without saying "${word}" (said: ${JSON.stringify(output)})`));
+            else waiting.push(check);
+        };
+        check();
+    });
+    return { child, said, exited, output: () => output };
+}
+
+async function kill(...contenders: Array<{ child: ChildProcess; exited: Promise<void> }>): Promise<void> {
+    for (const { child } of contenders) child.kill('SIGKILL');
+    await Promise.all(contenders.map(({ exited }) => exited));
+}
+
+test('a Sprite locked by another live worker process is not used, and is taken once that process is gone', async () => {
     const harness = createHarness({ maxSprites: 1 });
     fs.mkdirSync(harness.stateDir, { recursive: true });
     const lock = path.join(harness.stateDir, `${SPRITE}.lock`);
-    fs.writeFileSync(lock, `${process.ppid}\n`);
-    const handle = harness.runtime.start(cloneSpec('waiting'), { timeout: 5000 });
-    for (let turn = 0; turn < 50; turn++) await new Promise(resolve => setImmediate(resolve));
-    assert.equal(harness.client.operations.length, 0, 'the Sprite of the other process is left alone');
-    // A lock whose owner is gone is taken over.
-    fs.writeFileSync(lock, '2147483646\n');
-    await handle.wait();
+    const other = contender(lock);
+    try {
+        await other.said('held');
+        const handle = harness.runtime.start(cloneSpec('waiting'), { timeout: 30_000 });
+        for (let turn = 0; turn < 50; turn++) await new Promise(resolve => setImmediate(resolve));
+        assert.equal(harness.client.operations.length, 0, 'the Sprite of the other process is left alone');
+        // The lock is the other process's only while it lives: no file content has to be judged stale.
+        await kill(other);
+        await handle.wait();
+        await handle.release();
+        assert.equal(harness.client.sprites.get(SPRITE)!.runs.length, 1);
+    } finally {
+        await kill(other);
+    }
+});
+
+test('worker processes competing for the lock of a dead owner: exactly one takes it, every time', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-sprites-lock-'));
+    const lock = path.join(root, 'state', `${SPRITE}.lock`);
+    const contenders = Array.from({ length: 6 }, () => contender(lock, '1'));
+    const alive = new Set(contenders);
+    try {
+        await Promise.all(contenders.map(each => each.said('ready')));
+        // Each round the owner dies holding the lock and every surviving process races to take it over.
+        while (alive.size > 0) {
+            await Promise.race([...alive].map(each => each.said('held')));
+            // Long enough for a second process to (wrongly) get in: each tries every millisecond.
+            await new Promise(resolve => setTimeout(resolve, 150));
+            const holders = [...alive].filter(each => each.output().includes('held'));
+            assert.equal(holders.length, 1, `${holders.length} live processes hold the lock at once`);
+            // While it is held, neither this process nor a new one gets it.
+            assert.equal(tryAcquireSpriteLock(lock), undefined);
+            const late = contender(lock, 'once');
+            await late.said('busy');
+            await late.exited;
+            alive.delete(holders[0]);
+            await kill(holders[0]);
+        }
+        // Nobody is left: the lock of the last dead owner is free, and one process cannot take it twice.
+        const mine = tryAcquireSpriteLock(lock);
+        assert.ok(mine);
+        assert.equal(tryAcquireSpriteLock(lock), undefined);
+        mine.release();
+        const again = tryAcquireSpriteLock(lock);
+        assert.ok(again);
+        again.release();
+    } finally {
+        await kill(...contenders);
+    }
+});
+
+test('what a worker knew of a Sprite ends with its lock: after another holder, the Sprite is checked again before a run', async () => {
+    // Two worker processes sharing the worker id and state directory, the second on a newer setup.
+    const harness = createHarness();
+    const upgraded = createHarness({ root: harness.root, client: harness.client, bundle: { ...TEST_BUNDLE, hash: 'setuphash0000002' } });
+    const run = async (runtime: typeof harness.runtime, name: string) => {
+        const handle = runtime.start(cloneSpec(name), { timeout: 5000 });
+        await handle.wait();
+        await handle.release();
+        const sprite = harness.client.sprites.get(SPRITE)!;
+        return { handle, sprite, launchedOn: sprite.setupEnvironment.PROPR_SPRITES_SETUP_HASH };
+    };
+    const first = await run(harness.runtime, 'old-1');
+    assert.equal(first.launchedOn, TEST_BUNDLE.hash);
+    const second = await run(upgraded.runtime, 'new-1');
+    assert.equal(second.launchedOn, 'setuphash0000002');
+    assert.notEqual(second.sprite.id, first.sprite.id);
+
+    // The first worker left its Sprite clean, but that Sprite is gone: it must not launch on the other setup's CLIs.
+    const third = await run(harness.runtime, 'old-2');
+    assert.equal(third.launchedOn, TEST_BUNDLE.hash, 'the run started on a Sprite set up for the bundle its worker validated');
+    assert.notEqual(third.sprite.id, second.sprite.id);
+    assert.equal(second.sprite.runs.length, 1, 'nothing more ran on the Sprite of the other setup');
+    assert.equal(typeof third.handle.timings.provisionMs, 'number');
+    const fourth = await run(upgraded.runtime, 'new-2');
+    assert.equal(fourth.launchedOn, 'setuphash0000002');
+    assert.equal(third.sprite.runs.length, 1);
+
+    // Uninterrupted ownership is still trusted: the same worker's next run needs neither a restore nor a provision.
+    const fifth = await run(upgraded.runtime, 'new-3');
+    assert.equal(fifth.sprite.id, fourth.sprite.id);
+    assert.equal(fifth.handle.timings.provisionMs, undefined);
+    assert.equal(fifth.handle.timings.restoreMs, undefined);
+});
+
+test('a Sprite another worker with the same setup held meanwhile is restored before the next run, not trusted', async () => {
+    const harness = createHarness();
+    const run = async (runtime: typeof harness.runtime, name: string) => {
+        const handle = runtime.start(cloneSpec(name), { timeout: 5000 });
+        await handle.wait();
+        await handle.release();
+        return handle;
+    };
+    await run(harness.runtime, 'a-1');
+    const sprite = harness.client.sprites.get(SPRITE)!;
+    await run(harness.restart(), 'b-1');
+    // The other worker died mid-run after that: its files are on the Sprite, whose identity and setup are unchanged.
+    sprite.putFile('/home/node/workspace/abandoned.txt', 'left by the other worker');
+    const next = await run(harness.runtime, 'a-2');
+    assert.equal(harness.client.sprites.get(SPRITE)!.id, sprite.id);
+    assert.deepEqual(sprite.runs[2].pathsAtLaunch, [...CLEAN_PATHS, `${FAKE_RUN_DIR}/payload.tar`].sort());
+    assert.equal(typeof next.timings.restoreMs, 'number');
+});
+
+test('a run whose launcher saw agent processes survive gets its Sprite destroyed, even though the launcher exited', async () => {
+    const harness = createHarness();
+    let original!: FakeSprite;
+    harness.client.behaviors.push({ act: context => { original = context.sprite; leaveEverything()(context); }, exportState: 'unsafe', stdout: 'done\n' }, {});
+    const handle = harness.runtime.start(cloneSpec('survivors'), { timeout: 5000 });
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0);
     await handle.release();
-    assert.ok(!fs.existsSync(lock));
+    // The launcher's exit status alone was not taken for "everything is gone": a kill was still attempted.
+    assert.ok(harness.client.operations.includes(`signal-KILL:${SPRITE}`));
+    assert.equal(handle.timings.recycleAction, 'replaced');
+    assert.ok(harness.client.operations.includes(`delete:${SPRITE}`));
+    assert.ok(!harness.client.operations.some(operation => operation.startsWith('restore:')), 'the Sprite was not restored for reuse');
+    const next = harness.runtime.start(cloneSpec('after'), { timeout: 5000 });
+    await next.wait();
+    await next.release();
+    assert.notEqual(harness.client.sprites.get(SPRITE)!.id, original.id);
+    assert.equal(original.runs.length, 1);
+});
+
+test('the deadline covers the wait for a free Sprite: a queued run times out and is never launched', async () => {
+    const harness = createHarness({ maxSprites: 1 });
+    harness.client.behaviors.push({ hang: true }, {});
+    const first = harness.runtime.start(cloneSpec('busy'), { timeout: 30_000 });
+    const firstOutcome = first.wait().catch(error => error);
+    while (!harness.client.sprites.get(SPRITE)?.runs.length) await new Promise(resolve => setImmediate(resolve));
+    const started = Date.now();
+    const preserved = harness.runtime.start(cloneSpec('queued-preserved'), { timeout: 80, preserveOutputOnTimeout: true });
+    const rejected = harness.runtime.start(cloneSpec('queued'), { timeout: 80 });
+    const result = await preserved.wait();
+    assert.equal(result.timedOut, true);
+    assert.equal(result.timeoutMs, 80);
+    assert.equal(result.exitCode, null);
+    await assert.rejects(rejected.wait(), /Command timed out after 80ms/);
+    assert.ok(Date.now() - started < 5000, 'the queued runs did not wait for the Sprite');
+    await Promise.all([preserved.release(), rejected.release()]);
+    assert.equal(harness.client.sprites.get(SPRITE)!.runs.length, 1, 'neither expired run reached the Sprite');
+    await first.stop();
+    await firstOutcome;
+    await first.release();
+});
+
+test('the deadline covers a Sprite held by another worker process', async () => {
+    const harness = createHarness({ maxSprites: 1 });
+    const other = contender(path.join(harness.stateDir, `${SPRITE}.lock`));
+    try {
+        await other.said('held');
+        const handle = harness.runtime.start(cloneSpec('locked-out'), { timeout: 80 });
+        await assert.rejects(handle.wait(), /Command timed out after 80ms/);
+        await handle.release();
+        assert.equal(harness.client.operations.length, 0);
+    } finally {
+        await kill(other);
+    }
+});
+
+test('the deadline covers preparation: a run that expires while its Sprite is provisioned is not launched, and the Sprite is not shared meanwhile', async () => {
+    const harness = createHarness({ maxSprites: 1 });
+    let provisioned!: () => void;
+    const slowSetup = new Promise<void>(resolve => { provisioned = resolve; });
+    const createSprite = harness.client.createSprite.bind(harness.client);
+    let creations = 0;
+    harness.client.createSprite = async (name, options) => {
+        if (creations++ === 0) await slowSetup;
+        return createSprite(name, options);
+    };
+    const expired = harness.runtime.start(cloneSpec('expires-in-setup'), { timeout: 400, preserveOutputOnTimeout: true });
+    assert.equal((await expired.wait()).timedOut, true);
+    await expired.release();
+    // The provisioning nobody waits for still owns the Sprite: the next run queues behind it instead of provisioning alongside.
+    const next = harness.runtime.start(cloneSpec('next'), { timeout: 30_000 });
+    for (let turn = 0; turn < 50; turn++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(creations, 1);
+    provisioned();
+    await next.wait();
+    await next.release();
+    const sprite = harness.client.sprites.get(SPRITE)!;
+    assert.equal(creations, 1, 'the Sprite provisioned for the expired run serves the next one');
+    assert.deepEqual(sprite.runs.map(run => run.env.PROPR_TEST_RUN), ['next']);
+});
+
+test('the deadline covers the payload upload: no session starts after it, and the Sprite is restored once the upload settled', async () => {
+    const harness = createHarness({ maxSprites: 1 });
+    const warm = harness.runtime.start(cloneSpec('warm'), { timeout: 5000 });
+    await warm.wait();
+    await warm.release();
+    const sprite = harness.client.sprites.get(SPRITE)!;
+    let finishUpload!: () => void;
+    const held = new Promise<void>(resolve => { finishUpload = resolve; });
+    const filesystem = sprite.filesystem.bind(sprite);
+    let uploads = 0;
+    sprite.filesystem = () => {
+        const real = filesystem();
+        return { ...real, writeFile: async (file: string, data: string | Buffer, options?: { mode?: number }) => { if (uploads++ === 0) await held; return real.writeFile(file, data, options); } };
+    };
+    const store = createCredentialStore(harness.root, 'claude');
+    const handle = harness.runtime.start(cloneSpec('expires-in-upload', { credentialStore: store.directory }), { timeout: 400 });
+    await assert.rejects(handle.wait(), /Command timed out after 400ms/);
+    const sessions = () => sprite.commands.filter(command => command.includes('run')).length;
+    const before = sessions();
+    let released = false;
+    const release = handle.release().then(() => { released = true; });
+    const next = harness.runtime.start(cloneSpec('next'), { timeout: 30_000 });
+    for (let turn = 0; turn < 50; turn++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(released, false, 'the Sprite is not given back while the upload is in flight');
+    assert.equal(sprite.runs.length, 1, 'the next run does not start on a Sprite an upload may still land on');
+    finishUpload();
+    await release;
+    assert.equal(handle.timings.recycleAction, 'restored');
+    await next.wait();
+    await next.release();
+    assert.equal(sessions(), before + 1, 'only the next run started a session');
+    // The expired run's payload (its credentials) landed late and was wiped by the restore before the next run.
+    assert.deepEqual(sprite.runs.map(run => run.env.PROPR_TEST_RUN), ['warm', 'next']);
+    assert.deepEqual(sprite.runs[1].pathsAtLaunch, [...CLEAN_PATHS, `${FAKE_RUN_DIR}/payload.tar`].sort());
+    assert.deepEqual(sprite.paths(), CLEAN_PATHS);
 });
 
 test('refreshed credentials return only through the export; the reader refuses symlinks, special files and oversize files', async () => {

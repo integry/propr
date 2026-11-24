@@ -49,7 +49,7 @@ export interface SpritesRunSupervision {
     options: AgentRunOptions;
     sprite: SpriteLike;
     signal: AbortSignal;
-    /** What is left of the run's deadline (queueing and preparation counted against it). */
+    /** What is left of the run's deadline. The runtime times queueing and preparation itself and launches no run past it. */
     remainingMs: number;
     reconnectDelayMs?: number;
     stopGraceMs?: number;
@@ -64,7 +64,12 @@ export interface SpritesRunSupervised {
     exitCode?: number;
     /** `ok`: the launcher exported the refreshable credentials after every agent process was gone. */
     exportState?: SpritesExportState;
-    /** Whether the launcher and every process of the run are known to be gone. When false the Sprite is destroyed, not restored. */
+    /**
+     * Whether the launcher and every process of the run are known to be gone:
+     * the launcher exited having found no process of the agent user left
+     * (`export=ok`), or a kill reported no survivors. That the launcher exited
+     * is not enough. When false the Sprite is destroyed, not restored.
+     */
     terminated: boolean;
     /** The run's outcome as the executor reports it: resolves with the result, or rejects (cancelled, interrupted). */
     settle(): Promise<ExecutionResult>;
@@ -261,7 +266,9 @@ export async function superviseSpritesRun(input: SpritesRunSupervision): Promise
             if (terminated) status = await readRunStatus(sprite).catch(() => undefined);
         }
         ({ exitCode, exportState } = status ?? {});
-        terminated = !!status && !status.running && exitCode !== undefined;
+        // The launcher exits with a status even when processes of the agent user outlived its kill (`unsafe`) or
+        // were there before it (`none`): only its `ok` export says it left none behind.
+        terminated = !!status && !status.running && exitCode !== undefined && exportState === 'ok';
         if (!run.interruption && exitCode === undefined) {
             interrupt(new SpritesRunInterruptedError(outcomes.includes('no-launcher')
                 ? `The launcher of agent run ${spec.name} did not start on Sprite ${sprite.name} (passwordless sudo and the ProPR setup are required)`

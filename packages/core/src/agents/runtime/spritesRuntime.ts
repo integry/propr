@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { admitCostExecution, refuseCostExecution } from '../../claude/docker/dockerCostCap.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
+import { settleTimeoutStop } from '../../claude/docker/dockerExecutionSettlement.js';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import {
     WORKSPACE_RESULT_BUNDLE_FILE, WORKSPACE_RESULT_STATUS_FILE, WORKSPACE_TRANSPORT_RESULT_DIR,
@@ -18,7 +19,7 @@ import {
     applySpritesClientSignalsDefault, redactSpritesToken, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig,
 } from './sprites/spritesConfig.js';
 import { readSpriteCredentialExport, readSpriteExportFile } from './sprites/spritesExport.js';
-import { SpritePool, type SpriteAcquisitionTimings, type SpriteLease, type SpriteRecycleOutcome } from './sprites/spritesPool.js';
+import { SpritePool, untilAborted, type SpriteAcquisitionTimings, type SpriteLease, type SpriteRecycleOutcome } from './sprites/spritesPool.js';
 import {
     buildSpritesPayload, materializeSpritesCredentials, planSpritesRun, spritesCliVersionRefusal, spritesMountRefusal,
     SPRITES_EXPORT_DIR, SPRITES_PAYLOAD, SPRITES_RESULT_DIR, type SpritesRunCredentials,
@@ -86,6 +87,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     /** The Sprite's return to its clean checkpoint: begun when the run ends, whatever its outcome. */
     private recycled?: Promise<void>;
     private released?: Promise<void>;
+    /** A payload upload the run stopped waiting for; the Sprite is not restored until it settled. */
+    private abandonedUpload?: Promise<void>;
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions, private readonly runtime: SpritesRuntime) {
         const ownership = getExecutionOwnershipContext()?.signal;
@@ -106,9 +109,29 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         return this.cancellation.signal.aborted ? new AgentRunStoppedError(this.spec.name) : error;
     }
 
+    /**
+     * The run's deadline starts here, not when the agent starts: waiting for a
+     * free Sprite, preparing it and uploading the payload all count against
+     * it, and a run whose deadline passed before its launch is never launched.
+     */
     private async run(options: AgentRunOptions, signal: AbortSignal): Promise<ExecutionResult> {
         const requested = Date.now();
         const timeoutMs = options.timeout ?? 300_000;
+        const deadline = new AbortController();
+        const expired = new Error(`Agent run ${this.spec.name} passed its deadline of ${timeoutMs}ms before it was launched`);
+        // Not unref'd: a run in progress keeps its worker alive.
+        const timer = setTimeout(() => deadline.abort(expired), timeoutMs);
+        try {
+            return await this.runUntil({ requested, timeoutMs, expired, preparing: AbortSignal.any([signal, deadline.signal]) }, options, signal);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    private async runUntil(
+        { requested, timeoutMs, expired, preparing }: { requested: number; timeoutMs: number; expired: Error; preparing: AbortSignal },
+        options: AgentRunOptions, signal: AbortSignal,
+    ): Promise<ExecutionResult> {
         const { spec } = this;
         const config = this.runtime.config();
         if (options.extraMounts?.length) throw new Error(`Agent runtime "sprites" cannot provide extra host mounts for ${spec.name}`);
@@ -123,9 +146,9 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         let credentials: SpritesRunCredentials | undefined;
         try {
             try {
-                this.lease = await this.runtime.pool.acquire(signal, this.timings);
+                this.lease = await this.runtime.pool.acquire(preparing, this.timings);
             } catch (error) {
-                throw this.stoppedOr(error);
+                throw error === expired ? error : this.stoppedOr(error);
             }
             const { sprite } = this.lease;
             const uploadStarted = Date.now();
@@ -134,10 +157,10 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
                 if (store.skipped.length > 0) logger.info({ run: spec.name, store: store.id, skipped: store.skipped }, 'Credential broker skipped store entries');
             }
             const payload = buildSpritesPayload(plan, { credentials, stdinData: options.stdinData, stdin: spec.stdin });
-            signal.throwIfAborted();
-            await sprite.filesystem().writeFile(SPRITES_PAYLOAD, payload, { mode: 0o600 });
+            await this.uploadPayload(sprite, payload, preparing);
             this.timings.credentialSyncMs = Date.now() - uploadStarted;
-            signal.throwIfAborted();
+            // The last point a cancelled or expired run can be refused: from here the launcher starts.
+            preparing.throwIfAborted();
             this.started = true;
             supervised = await superviseSpritesRun({
                 spec, options, sprite, signal,
@@ -157,12 +180,32 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
             if (credentials && supervised.launched) await this.writeBackCredentials(credentials, supervised).catch(returned('credentials'));
             if (supervised.launched) await this.readWorkspaceResult(supervised).catch(returned('workspace result'));
         } catch (error) {
+            // Expired before its launch: settled as a run that timed out, with nothing to show for it.
+            if (error === expired) return this.timedOutBeforeLaunch(timeoutMs, options.preserveOutputOnTimeout ?? false);
             if (!supervised) throw this.stoppedOr(this.redacted(error));
             throw error;
         } finally {
             this.recycle(supervised);
         }
         return supervised!.settle();
+    }
+
+    /** Uploads the run's one archive. A cancellation or the deadline ends the wait, not the upload: see {@link abandonedUpload}. */
+    private async uploadPayload(sprite: SpriteLease['sprite'], payload: Buffer, preparing: AbortSignal): Promise<void> {
+        preparing.throwIfAborted();
+        const upload = sprite.filesystem().writeFile(SPRITES_PAYLOAD, payload, { mode: 0o600 });
+        try {
+            await untilAborted(upload, preparing);
+        } catch (error) {
+            if (preparing.aborted) this.abandonedUpload = upload.then(() => undefined, () => undefined);
+            throw error;
+        }
+    }
+
+    private timedOutBeforeLaunch(timeoutMs: number, preserveOutput: boolean): Promise<ExecutionResult> {
+        logger.warn({ run: this.spec.name, sprite: this.lease?.name, timeoutMs, timings: { ...this.timings } }, 'Sprites run passed its deadline before it was launched');
+        const result: ExecutionResult = { exitCode: null, stdout: '', stderr: '', messageTimestamps: new Map() };
+        return new Promise<ExecutionResult>((resolve, reject) => settleTimeoutStop(timeoutMs, result, preserveOutput, { resolve, reject }));
     }
 
     private message(error: unknown): string {
@@ -253,16 +296,22 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
 
     /**
      * Gives the Sprite back: always through the pool's restore (or, when the
-     * run's processes are not known to be gone or the launcher found the
-     * Sprite unclean, its destroy-and-provision). Runs once, as soon as the
-     * run ends, so the next run's startup does not pay for it.
+     * run's processes are not known to be gone, the launcher saw processes of
+     * the agent user survive, or it found the Sprite unclean, its
+     * destroy-and-provision). Runs once, as soon as the run ends, so the next
+     * run's startup does not pay for it.
      */
     private recycle(supervised?: SpritesRunSupervised): void {
         const lease = this.lease;
         if (!lease || this.recycled) return;
         // `none`: the launcher refused the Sprite (it was not at its clean checkpoint) or could not install the run.
-        const unclean = this.started && (!supervised || (supervised.launched && (!supervised.terminated || supervised.exportState === 'none')));
-        this.recycled = this.runtime.pool.recycle(lease, unclean ? { destroy: true, reason: 'the run could not be confirmed stopped, or the launcher refused the Sprite' } : {})
+        // `unsafe`: the launcher itself saw processes of the agent user survive its kill. A later kill that finds
+        // none does not undo that: the Sprite is replaced, not restored.
+        const refused = supervised?.exportState === 'none' || supervised?.exportState === 'unsafe';
+        const unclean = this.started && (!supervised || (supervised.launched && (!supervised.terminated || refused)));
+        const how = unclean ? { destroy: true, reason: 'the run could not be confirmed stopped, or the launcher refused the Sprite' } : {};
+        // An upload still in flight could land after a restore: the Sprite stays this run's until it settled.
+        this.recycled = (this.abandonedUpload ?? Promise.resolve()).then(() => this.runtime.pool.recycle(lease, how))
             .then(outcome => {
                 this.timings.recycleMs = outcome.durationMs;
                 this.timings.recycleAction = outcome.action;
