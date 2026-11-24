@@ -43,7 +43,7 @@ The daemon checks every 30 seconds. The instance is idle only when all of these 
 - Ultrafix loops waiting for CI or holding a claimed step;
 - scheduled work due **within the idle window**: scheduled automations (including a claimed slot), deferred automation runs, delayed jobs, Ultrafix retries, and GitHub polling.
 
-A signal that cannot be read keeps the instance awake. `/health` and `/wake` requests are not activity, so platform health checks do not keep it awake; any other request does, including an uptime monitor polling `/api/status`.
+A signal that cannot be read keeps the instance awake. That includes the API and worker processes themselves: each one registers with the daemon and refreshes its entry every 15 seconds, and each API process publishes its sessions and requests. A registered process whose heartbeat or activity record is missing, older than 45 seconds or malformed blocks idle shutdown (`could not read api:<host>:<pid> …`) until it is confirmed stopped: it removed its entry on a clean shutdown, or the daemon sees on the same host and pid namespace that the pid is gone. `/health` and `/wake` requests are not activity, so platform health checks do not keep it awake; any other request does, including an uptime monitor polling `/api/status`.
 
 Things that wait for a person (an automation run awaiting approval, a follow-up held for an operator) do not keep the instance awake: the person's next action reaches it through the Web UI, MCP or GitHub and wakes it.
 
@@ -53,14 +53,15 @@ In `polling` intake mode the next poll is always less than one window away, so t
 
 ## How it stops
 
-Once the instance has been idle for the whole window, the daemon checks once more and then drains:
+Once the instance has been idle for the whole window, the daemon checks once more and then drains. Every step up to 5 can abort: the daemon then withdraws its request, the API admits requests again, Connect intake reconnects and the idle period starts over.
 
-1. Sends the **wake hint** to Connect (`wake_hint` frame, see below) while the socket is still open.
-2. Stops Connect intake: deliveries in flight finish and are acknowledged, then the socket closes normally (code 1000).
-3. Checks again. If a delivery that arrived meanwhile queued work, it reconnects and stays up.
-4. Writes the wake hint file and the shutdown record.
-5. Tells the API and workers to shut down; each runs its normal graceful shutdown (stop accepting work, close queues, Socket.IO, Redis) and exits with code 0.
-6. Closes its own timers, Redis and SQLite connections, flushes logs and exits with code 0.
+1. With Connect intake, sends the **wake hint** (`wake_hint` frame, see below) and waits up to 10 seconds for Connect to acknowledge it. Without an acknowledgement nothing is stopped.
+2. Quiesces every producer: stops Connect intake (deliveries in flight finish and are acknowledged, then the socket closes with code 1000) and asks each API process to stop admitting requests. A request that arrives now gets `503` with `Retry-After: 5`; each API process waits for its requests in flight and confirms.
+3. Checks again. Any blocker, or any request since the idle period began (including one turned away in step 2), aborts.
+4. Writes the wake hint file. If it cannot be written (a full or read-only disk), the drain aborts.
+5. Records the shutdown and stores a stop request in Redis.
+6. Waits until every registered API and worker process has acknowledged the stop request. The request stays stored for the whole drain, so a process that was disconnected when it was announced still finds it when it reconnects. Each runs its normal graceful shutdown (close queues, Socket.IO, Redis) and exits with code 0. **The daemon does not exit until every process has acknowledged** or is confirmed stopped; while it waits it logs the processes it is waiting for.
+7. Closes its own timers, Redis and SQLite connections, flushes logs and exits with code 0.
 
 Because the exit code is 0, use a supervisor that restarts only on failure. A supervisor that always restarts (Docker Compose `restart: unless-stopped`, the default in `docker-compose.yml`) starts the process again right away, so idle shutdown saves nothing there.
 
@@ -68,7 +69,7 @@ Because the exit code is 0, use a supervisor that restarts only on failure. A su
 
 Before exiting, the daemon publishes the next due time of scheduled work:
 
-- to **Connect**, as `{ "type": "wake_hint", "reason": "idle_shutdown", "nextDueAt": "<ISO-8601 or null>" }`, so Connect can wake the instance when it is due ([propr-routing#335](https://github.com/integry/propr-routing/issues/335));
+- to **Connect**, as `{ "type": "wake_hint", "reason": "idle_shutdown", "nextDueAt": "<ISO-8601 or null>" }`. Connect must answer `{ "type": "wake_hint_ack" }` on the same connection. That answer is the commitment that Connect will wake the instance when `nextDueAt` is reached or a delivery arrives, and will replay cached deliveries when asked. A relay without this support (the current relay answers unknown frames with an `error` frame) never acknowledges, so **an instance on Connect intake does not stop until the relay supports idle wake** ([propr-routing#335](https://github.com/integry/propr-routing/issues/335)). The blocker reads `could not read Connect idle wake support`; it clears when the relay reconnects;
 - to the **wake hint file**, for other supervisors (a systemd timer, a cron job, a wake-on-LAN script):
 
 ```json
@@ -78,11 +79,12 @@ Before exiting, the daemon publishes the next due time of scheduled work:
   "reason": "idle for 900s",
   "idleForMs": 900000,
   "nextDueAt": "2026-11-24T14:00:00.000Z",
-  "nextDue": [{ "kind": "automation", "dueAt": 1795010400000, "detail": "scheduled automation" }]
+  "nextDue": [{ "kind": "automation", "dueAt": 1795010400000, "detail": "scheduled automation" }],
+  "connectReplay": "pending"
 }
 ```
 
-`nextDueAt` is `null` when nothing is scheduled; only a request or a delivery needs to wake the instance then. The next start adds `wokeAt` to mark the hint as consumed.
+`nextDueAt` is `null` when nothing is scheduled; only a request or a delivery needs to wake the instance then. The next start adds `wokeAt` to mark the hint as consumed. `connectReplay` is present only after a stop with Connect intake: `pending` until Connect has acknowledged the replay request, then `accepted`.
 
 ## How it wakes
 
@@ -98,7 +100,7 @@ Expect a cold start of about 5–10 seconds (host start plus Node boot) before w
 
 On start the daemon reads the wake hint file and, when it records an idle stop:
 
-- reconnects to Connect and asks once for the deliveries cached while it was stopped (`{ "type": "replay", "reason": "idle_wake", "since": "<shutdownAt>" }`). Connect keeps deliveries for a disconnected instance: on the free tier the newest 25 for one hour, on paid plans 500 for 24 hours. The current relay replays cached deliveries through `POST /v1/replay` one at a time; automatic replay on reconnect is added by propr-routing#335. ProPR handles both: it asks for the replay, and delivery IDs are de-duplicated, so a delivery that arrives twice is processed once;
+- when `connectReplay` is `pending`, asks Connect for the deliveries cached while it was stopped (`{ "type": "replay", "reason": "idle_wake", "since": "<shutdownAt>" }`) and waits for `{ "type": "replay_ack" }`. Only then does it set `connectReplay` to `accepted`. If Connect does not acknowledge (or Connect intake is not running), the obligation stays `pending` and the next start asks again. A connection that drops before the answer is retried on the next connection. Connect keeps deliveries for a disconnected instance: on the free tier the newest 25 for one hour, on paid plans 500 for 24 hours. Delivery IDs are de-duplicated, so a delivery that arrives twice is processed once;
 - resumes scheduled work that became due while stopped: the schedule sweeps run at startup, and missed automation slots coalesce into **one** run for the latest slot;
 - records the wake: its source (`http`, `connect_ping`, `schedule` or `unknown`) and the cold-start duration (process start to daemon ready).
 
@@ -108,9 +110,10 @@ Delayed jobs whose time passed run as soon as a worker is up; Ultrafix retries a
 
 | Where | What |
 |---|---|
-| Daemon log `Idle shutdown: stopping the control plane (exit 0)` | shutdown time, reason, idle duration, `nextDueAt`, wake hint file |
+| Daemon log `Idle shutdown: stopping the control plane`, then `Idle shutdown: control plane stopped (exit 0)` | shutdown time, reason, idle duration, `nextDueAt`, wake hint file |
+| Daemon log `Idle shutdown: waiting for processes to acknowledge the stop request` | processes that have not confirmed the stop yet (the daemon stays up) |
 | Daemon log `Woke from idle shutdown` | wake source, cold-start duration, time stopped, scheduled work that became due while stopped |
-| Daemon log `Idle shutdown aborted: work arrived while draining` | what arrived during the drain |
+| Daemon log `Idle shutdown aborted: …` | why the drain stopped: Connect did not acknowledge the wake hint, an API process did not confirm it quiesced, work arrived while draining, or the wake hint file could not be written |
 | `GET /api/status` → `idleShutdown`, `GET /api/admin/idle-shutdown`, `propr check`, Settings | live blockers, `idleSince`, `shutdownAt`, `nextDueAt`, `lastShutdown`, `lastWake` |
 
 ## Fly
@@ -151,4 +154,7 @@ Restart=on-failure
 
 - **It never stops.** Open Settings → Maintenance → Idle shutdown or run `propr check`; the blocker list names what keeps it awake. Common causes are polling intake, an open browser tab, an uptime monitor calling the API, or a stuck follow-up handoff (see [Maintenance](./maintenance.md)).
 - **It restarts right after stopping.** The supervisor restarts on success. Use `on-failure`.
+- **It never stops on Connect intake, with `could not read Connect idle wake support`.** The relay did not acknowledge the wake hint. Stopping would leave nothing to wake the instance or replay its deliveries, so it stays up until the relay supports idle wake.
+- **It never stops, with `could not read api:… (no heartbeat …)` or `API activity from … (no current record)`.** A registered process is not reporting. Find out whether it is hung, or restart it. A clean stop removes its entry.
+- **The daemon stays up after `Idle shutdown: stopping the control plane`.** A process has not acknowledged the stop request; the log names it.
 - **It does not wake for GitHub events.** Connect needs a wake target for the instance; without one, deliveries wait in the Connect cache (within its limits) until something else starts the instance.

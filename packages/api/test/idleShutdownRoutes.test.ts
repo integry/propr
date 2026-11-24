@@ -13,7 +13,9 @@ function response() {
   const res = {
     statusCode: 200,
     body: undefined as unknown,
+    headers: {} as Record<string, string>,
     status(code: number) { this.statusCode = code; return this; },
+    setHeader(name: string, value: string) { this.headers[name] = value; return this; },
     json(value: unknown) { this.body = value; return this; },
     once(event: string, listener: () => void) { (listeners[event] ||= []).push(listener); return this; },
     emit(event: string) { for (const listener of listeners[event] ?? []) listener(); },
@@ -110,6 +112,34 @@ test('the middleware counts a request until its response closes and records the 
   middleware({ path: '/api/tasks' } as Request, response() as unknown as Response, () => undefined);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(writes, [[IDLE_WAKE_SIGNAL_REDIS_KEY, 'http']]);
+});
+
+test('while the daemon drains, a quiesced API turns requests away and records them as activity', async () => {
+  const middleware = createIdleActivityMiddleware(() => null);
+  const before = idleActivity.snapshot();
+  idleActivity.quiesce('intent-1');
+  try {
+    const res = response();
+    let nexted = false;
+    await new Promise(resolve => setTimeout(resolve, 2));
+    middleware({ path: '/api/tasks' } as Request, res as unknown as Response, () => { nexted = true; });
+    assert.equal(nexted, false, 'no new request can produce work during the drain');
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.headers['Retry-After'], '5');
+    const during = idleActivity.snapshot();
+    assert.equal(during.httpRequests, before.httpRequests, 'a refused request is not in flight');
+    assert.ok(during.lastRequestAt > before.lastRequestAt, 'but it is activity, so the daemon aborts the drain');
+    let probed = false;
+    middleware({ path: '/health' } as Request, response() as unknown as Response, () => { probed = true; });
+    assert.equal(probed, true, 'health probes still pass');
+  } finally {
+    idleActivity.resume();
+  }
+  let resumed = false;
+  const res = response();
+  middleware({ path: '/api/tasks' } as Request, res as unknown as Response, () => { resumed = true; });
+  res.emit('close');
+  assert.equal(resumed, true);
 });
 
 test('/wake answers at once and records a Connect wake ping', async () => {

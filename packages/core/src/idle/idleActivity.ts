@@ -20,17 +20,20 @@ export interface IdleActivity {
 export const IDLE_ACTIVITY_TTL_SECONDS = 60;
 export const IDLE_ACTIVITY_PUBLISH_INTERVAL_MS = 15_000;
 
+/** A record with any missing or invalid field is malformed (null): it is not evidence of idleness. */
 export function parseIdleActivity(raw: string | null): IdleActivity | null {
     if (!raw) return null;
     try {
-        const value = JSON.parse(raw) as Partial<IdleActivity>;
-        const count = (field: unknown) => (typeof field === 'number' && Number.isFinite(field) && field > 0 ? Math.floor(field) : 0);
+        const value = JSON.parse(raw) as Partial<IdleActivity> | null;
+        if (!value || typeof value !== 'object') return null;
+        const fields = [value.uiSessions, value.mcpRequests, value.httpRequests, value.lastRequestAt, value.publishedAt];
+        if (!fields.every(field => typeof field === 'number' && Number.isFinite(field) && field >= 0)) return null;
         return {
-            uiSessions: count(value.uiSessions),
-            mcpRequests: count(value.mcpRequests),
-            httpRequests: count(value.httpRequests),
-            lastRequestAt: count(value.lastRequestAt),
-            publishedAt: typeof value.publishedAt === 'number' ? value.publishedAt : 0,
+            uiSessions: Math.floor(value.uiSessions!),
+            mcpRequests: Math.floor(value.mcpRequests!),
+            httpRequests: Math.floor(value.httpRequests!),
+            lastRequestAt: value.lastRequestAt!,
+            publishedAt: value.publishedAt!,
         };
     } catch {
         return null;
@@ -44,6 +47,8 @@ export class IdleActivityTracker {
     private lastRequestAt = 0;
     private sessions: () => number = () => 0;
     private changeListener: (() => void) | null = null;
+    private quiescedFor: string | null = null;
+    private readonly drainWaiters = new Set<() => void>();
 
     /** Called when a request starts or a session opens, so the publisher can refresh at once. */
     onChange(listener: (() => void) | null): void {
@@ -75,7 +80,47 @@ export class IdleActivityTracker {
             if (ended) return;
             ended = true;
             if (kind === 'mcp') this.mcp = Math.max(0, this.mcp - 1); else this.http = Math.max(0, this.http - 1);
+            if (this.mcp + this.http === 0) for (const waiter of [...this.drainWaiters]) waiter();
         };
+    }
+
+    /** A request that was turned away still shows someone wants the instance. */
+    touch(): void {
+        this.lastRequestAt = Date.now();
+        this.notify();
+    }
+
+    /**
+     * Idle drain, first phase: stop admitting requests (the middleware answers
+     * 503) so nothing new can produce work while the daemon re-checks.
+     */
+    quiesce(intentId: string): void {
+        this.quiescedFor = intentId;
+    }
+
+    /** Admit requests again (the drain was aborted). */
+    resume(): void {
+        this.quiescedFor = null;
+    }
+
+    get quiescedIntent(): string | null {
+        return this.quiescedFor;
+    }
+
+    /** Resolves true once no request is in flight, or false after `timeoutMs`. */
+    waitForDrain(timeoutMs: number): Promise<boolean> {
+        if (this.mcp + this.http === 0) return Promise.resolve(true);
+        return new Promise(resolve => {
+            const done = (drained: boolean) => {
+                clearTimeout(timer);
+                this.drainWaiters.delete(onDrained);
+                resolve(drained);
+            };
+            const onDrained = () => done(true);
+            const timer = setTimeout(() => done(false), timeoutMs);
+            timer.unref?.();
+            this.drainWaiters.add(onDrained);
+        });
     }
 
     snapshot(now: number = Date.now()): IdleActivity {
@@ -101,24 +146,34 @@ export function idleActivityKey(role: string, id: string): string {
     return `${IDLE_ACTIVITY_REDIS_PREFIX}${role}:${id}`;
 }
 
+export interface IdleActivityPublisher {
+    /** Publish now; resolves false when the record could not be written. */
+    publish: () => Promise<boolean>;
+    stop: () => Promise<void>;
+}
+
 /**
- * Publish the tracker on an interval. Returns a stop function that removes
- * the key, so a cleanly stopped process does not linger as activity.
+ * Publish the tracker on an interval. `stop` removes the key, so a cleanly
+ * stopped process does not linger as activity. A failed write is not hidden:
+ * the record goes stale and the daemon reads that as unavailable.
  */
 export function startIdleActivityPublisher(
     redis: ActivityRedis,
     options: { role: string; id: string; tracker?: IdleActivityTracker; intervalMs?: number },
-): () => Promise<void> {
+): IdleActivityPublisher {
     const tracker = options.tracker ?? idleActivity;
     const key = idleActivityKey(options.role, options.id);
-    const publish = () => redis.set(key, JSON.stringify(tracker.snapshot()), 'EX', IDLE_ACTIVITY_TTL_SECONDS).catch(() => undefined);
+    const publish = () => redis.set(key, JSON.stringify(tracker.snapshot()), 'EX', IDLE_ACTIVITY_TTL_SECONDS).then(() => true, () => false);
     void publish();
     tracker.onChange(() => { void publish(); });
     const timer = setInterval(() => { void publish(); }, options.intervalMs ?? IDLE_ACTIVITY_PUBLISH_INTERVAL_MS);
     timer.unref?.();
-    return async () => {
-        clearInterval(timer);
-        tracker.onChange(null);
-        await redis.del(key).catch(() => undefined);
+    return {
+        publish,
+        stop: async () => {
+            clearInterval(timer);
+            tracker.onChange(null);
+            await redis.del(key).catch(() => undefined);
+        },
     };
 }

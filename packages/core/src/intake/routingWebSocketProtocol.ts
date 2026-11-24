@@ -745,6 +745,8 @@ export interface RoutingWebSocketIntakeServiceOptions extends DeliveryInterestSe
      * SIGINT/SIGTERM handler forever.
      */
     shutdownDrainTimeoutMs?: number;
+    /** How long a `wake_hint`/`replay` frame waits for the relay's acknowledgement (default 10 s). */
+    idleFrameAckTimeoutMs?: number;
     /**
      * WebSocket constructor to use. Defaults to a lazy import of the `ws`
      * package; primarily a seam for tests to inject a fake transport.

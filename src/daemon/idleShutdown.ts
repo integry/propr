@@ -2,9 +2,10 @@ import type { Redis } from 'ioredis';
 import {
     IDLE_LAST_SHUTDOWN_REDIS_KEY,
     IDLE_LAST_WAKE_REDIS_KEY,
-    IDLE_SHUTDOWN_CHANNEL,
+    IDLE_SHUTDOWN_INTENT_REDIS_KEY,
     IDLE_WAKE_SIGNAL_REDIS_KEY,
     type IdleShutdownRecord,
+    type IdleWakeHint,
     type IdleWakeSource,
 } from '@propr/shared';
 import {
@@ -16,13 +17,22 @@ import {
     collectIdleSignals,
     db,
     evaluateIdle,
+    issueIdleShutdownIntent,
     isPendingIdleWake,
+    listIdleParticipants,
     loadIdleShutdownConfig,
     logger,
+    needsConnectReplay,
+    newIdleShutdownIntent,
     readIdleWakeHint,
     resolveIdleWakeHintPath,
+    waitForIdleAcks,
+    withdrawIdleShutdownIntent,
     writeIdleWakeHint,
+    type IdleShutdownIntent,
     type IdleShutdownRequest,
+    type IdleSignals,
+    type IntentRedis,
     type RoutingWebSocketIntakeService,
 } from '@propr/core';
 import { createDaemonIdleSources } from './idleSignalSources.js';
@@ -32,15 +42,57 @@ import { createDaemonIdleSources } from './idleSignalSources.js';
  * owns Connect intake and the schedules, and so decides when the instance
  * may stop. Off by default; see `resolveIdleShutdownConfig`.
  *
- * Drain order once idle: send the wake hint to Connect while the socket is
- * open, stop intake (in-flight deliveries finish and ACK, the socket closes
- * with 1000), check once more that nothing arrived meanwhile, write the wake
- * hint file and shutdown record, tell the API and workers to exit, close the
- * daemon's own resources (queues, Redis, SQLite), flush logs and exit 0.
+ * Drain order once idle (any failure before step 6 restores intake and keeps
+ * the instance running):
+ *   1. Connect intake: the relay must acknowledge the wake hint (it will wake
+ *      the instance and replay cached deliveries). No acknowledgement, no stop.
+ *   2. Quiesce the producers: stop Connect intake (in-flight deliveries finish
+ *      and ACK) and ask every API process to stop admitting requests; each one
+ *      waits for its requests in flight and acknowledges.
+ *   3. Check again, now that nothing can add work.
+ *   4. Write the wake hint file (the recovery marker and the wake schedule for
+ *      other supervisors). A failed write aborts.
+ *   5. Record the shutdown.
+ *   6. Ask every registered process to stop, and wait until each has
+ *      acknowledged (the request is stored, so a process that reconnects still
+ *      gets it) or is confirmed stopped. Unconfirmed, the daemon does not exit.
+ *   7. Close the daemon's own resources, flush logs and exit 0.
  */
 
 /** Records kept for `/api/status` and the Web UI. */
 const RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+export interface IdleDrainTimings {
+    /** How long API processes get to confirm they are quiesced. */
+    quiesceTimeoutMs: number;
+    /** How long to wait for stop acknowledgements; null waits until confirmed (or the daemon is stopped). */
+    stopConfirmTimeoutMs: number | null;
+    /** How long to wait, after every acknowledgement, for processes to deregister. */
+    deregisterWaitMs: number;
+    pollMs: number;
+}
+
+export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
+    quiesceTimeoutMs: 30_000,
+    stopConfirmTimeoutMs: null,
+    deregisterWaitMs: 30_000,
+    pollMs: 1_000,
+};
+
+type IdleRoutingIntake = Pick<RoutingWebSocketIntakeService, 'sendWakeHint' | 'stop' | 'start'>;
+
+export interface IdleDrainContext {
+    redis: IntentRedis;
+    routing: IdleRoutingIntake | null;
+    collect: () => Promise<IdleSignals>;
+    writeHint?: (hint: IdleWakeHint) => Promise<void>;
+    /** The daemon's normal graceful close (timers, routing, Redis, queues). */
+    close: () => Promise<void>;
+    exit: (code: number) => void;
+    timings?: Partial<IdleDrainTimings>;
+    /** True once the daemon is shutting down for another reason (SIGTERM): stop waiting, do not exit here. */
+    isCancelled?: () => boolean;
+}
 
 export interface DaemonIdleShutdownDeps {
     redis: Redis;
@@ -51,6 +103,7 @@ export interface DaemonIdleShutdownDeps {
     close: () => Promise<void>;
     exit?: (code: number) => void;
     intervalMs?: number;
+    timings?: Partial<IdleDrainTimings>;
 }
 
 export interface DaemonIdleShutdown {
@@ -71,61 +124,163 @@ function flushLogs(): Promise<void> {
     });
 }
 
-async function drainAndExit(request: IdleShutdownRequest, deps: DaemonIdleShutdownDeps, collect: () => ReturnType<typeof collectIdleSignals>): Promise<boolean> {
-    const nextDueAt = request.evaluation.nextDueAt === null ? null : new Date(request.evaluation.nextDueAt).toISOString();
-    const routing = deps.getRoutingService();
-    const reason = `idle for ${Math.round(request.idleForMs / 1000)}s`;
-    if (routing) {
-        const sent = routing.sendWakeHint(nextDueAt);
-        logger.info({ nextDueAt, sent }, 'Idle shutdown: wake hint sent to Connect');
-        await routing.stop();
+const toIso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+
+/** Wait (bounded) until no participant remains registered: each has finished its graceful shutdown. */
+async function waitForDeregistration(redis: IntentRedis, timings: IdleDrainTimings): Promise<string[]> {
+    const deadline = Date.now() + timings.deregisterWaitMs;
+    for (;;) {
+        const remaining = (await listIdleParticipants(redis).catch(() => [])).map(entry => entry.key);
+        if (remaining.length === 0 || Date.now() >= deadline) return remaining;
+        await new Promise(resolve => setTimeout(resolve, timings.pollMs));
     }
-    // Deliveries ACKed during the drain may have queued work: look once more.
-    const signals = await collect();
+}
+
+/**
+ * Drain and exit (see the module comment for the order). Resolves false when
+ * the instance keeps running; true once the stop is under way.
+ */
+export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: IdleDrainContext): Promise<boolean> {
+    const timings = { ...DEFAULT_IDLE_DRAIN_TIMINGS, ...ctx.timings };
+    const { redis, routing } = ctx;
+    const nextDueAt = toIso(request.evaluation.nextDueAt);
+    const reason = `idle for ${Math.round(request.idleForMs / 1000)}s`;
+
+    // 1. With Connect intake the relay is the wake arrangement and the replay source: it must accept.
+    if (routing) {
+        const accepted = await routing.sendWakeHint(nextDueAt);
+        if (!accepted) {
+            logger.warn({ nextDueAt }, 'Idle shutdown aborted: Connect did not acknowledge the wake hint, so nothing would wake the instance or replay its deliveries; staying up');
+            return false;
+        }
+        logger.info({ nextDueAt }, 'Idle shutdown: Connect accepted the wake hint');
+    }
+
+    const intent: IdleShutdownIntent = newIdleShutdownIntent('quiesce', reason);
+    let routingStopped = false;
+    let hintWritten: IdleWakeHint | null = null;
+    const abort = async (message: string, details: object = {}): Promise<false> => {
+        logger.info({ ...details, intentId: intent.id }, `Idle shutdown aborted: ${message}; staying up`);
+        await withdrawIdleShutdownIntent(redis, intent.id).catch(() => undefined);
+        if (routingStopped && routing) await routing.start();
+        // The hint file must not make the next plain start look like a wake.
+        if (hintWritten) await (ctx.writeHint ?? writeIdleWakeHint)({ ...hintWritten, wokeAt: new Date().toISOString() }).catch(() => undefined);
+        return false;
+    };
+
+    // 2. Quiesce every producer before the last check.
+    try {
+        await issueIdleShutdownIntent(redis, intent);
+    } catch (error) {
+        return abort('could not record the drain request', { error: (error as Error).message });
+    }
+    if (routing) {
+        await routing.stop();
+        routingStopped = true;
+    }
+    const quiesced = await waitForIdleAcks(redis, intent, { roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs });
+    if (!quiesced.confirmed) return abort('API processes did not confirm they stopped admitting requests', { pending: quiesced.pending });
+
+    // 3. Nothing can add work now: look once more.
+    const signals = await ctx.collect();
     const after = evaluateIdle(signals, { now: Date.now(), windowMs: request.config.afterMs });
     if (!after.idle || (signals.lastActivityAt ?? 0) > request.idleSince) {
-        logger.info({ blockers: after.blockers }, 'Idle shutdown aborted: work arrived while draining');
-        if (routing) await routing.start();
-        return false;
+        return abort('work arrived while draining', { blockers: after.blockers, lastActivityAt: toIso(signals.lastActivityAt) });
     }
+    if (routing && after.nextDueAt !== null && (request.evaluation.nextDueAt === null || after.nextDueAt < request.evaluation.nextDueAt)) {
+        return abort('scheduled work is due earlier than the wake hint Connect accepted', { nextDueAt: toIso(after.nextDueAt), hinted: nextDueAt });
+    }
+
+    // 4. The hint file is the recovery marker (and the wake schedule for other supervisors): no file, no stop.
     const shutdownAt = Date.now();
-    const hint = buildIdleWakeHint({ shutdownAt, reason, idleForMs: request.idleForMs, nextDue: after.nextDue });
-    const record: IdleShutdownRecord = { shutdownAt: hint.shutdownAt, reason, idleForMs: request.idleForMs, nextDueAt: hint.nextDueAt };
+    const hint = buildIdleWakeHint({ shutdownAt, reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: routing !== null });
     try {
-        await writeIdleWakeHint(hint);
+        await (ctx.writeHint ?? writeIdleWakeHint)(hint);
+        hintWritten = hint;
     } catch (error) {
-        logger.warn({ error: (error as Error).message, file: resolveIdleWakeHintPath() }, 'Idle shutdown: could not write the wake hint file');
+        return abort('could not write the wake hint file', { error: (error as Error).message, file: resolveIdleWakeHintPath() });
     }
-    await deps.redis.set(IDLE_LAST_SHUTDOWN_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
-    await deps.redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
-    await deps.redis.publish(IDLE_SHUTDOWN_CHANNEL, JSON.stringify({ shutdownAt: hint.shutdownAt, reason })).catch(() => undefined);
-    logger.info({ ...record, file: resolveIdleWakeHintPath() }, 'Idle shutdown: stopping the control plane (exit 0)');
-    await deps.close();
+
+    // 5. Records for /api/status (informational).
+    const record: IdleShutdownRecord = { shutdownAt: hint.shutdownAt, reason, idleForMs: request.idleForMs, nextDueAt: hint.nextDueAt };
+    await redis.set(IDLE_LAST_SHUTDOWN_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
+    await redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
+
+    // 6. Stop everything else, and hear back from every process.
+    const stopIntent: IdleShutdownIntent = { ...intent, phase: 'stop', issuedAt: new Date().toISOString() };
+    try {
+        await issueIdleShutdownIntent(redis, stopIntent);
+    } catch (error) {
+        return abort('could not record the stop request', { error: (error as Error).message });
+    }
+    logger.info({ ...record, file: resolveIdleWakeHintPath() }, 'Idle shutdown: stopping the control plane');
+    let lastPendingLog = 0;
+    const stopped = await waitForIdleAcks(redis, stopIntent, {
+        roles: ['api', 'worker', 'indexing_worker'],
+        timeoutMs: timings.stopConfirmTimeoutMs,
+        pollMs: timings.pollMs,
+        isCancelled: ctx.isCancelled,
+        onPending: pending => {
+            if (Date.now() - lastPendingLog < 60_000) return;
+            lastPendingLog = Date.now();
+            logger.warn({ pending }, 'Idle shutdown: waiting for processes to acknowledge the stop request; the daemon stays up until they do');
+        },
+    });
+    if (ctx.isCancelled?.()) return true;
+    if (!stopped.confirmed) {
+        logger.error({ pending: stopped.pending }, 'Idle shutdown: the stop request was not confirmed by every process; the daemon is not exiting');
+        return true;
+    }
+    const remaining = await waitForDeregistration(redis, timings);
+    if (remaining.length > 0) logger.warn({ remaining }, 'Idle shutdown: processes acknowledged the stop but are still shutting down');
+    await redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined);
+
+    // 7. The daemon itself.
+    logger.info({ ...record }, 'Idle shutdown: control plane stopped (exit 0)');
+    await ctx.close();
     await closeConnection();
     await flushLogs();
-    (deps.exit ?? process.exit)(0);
+    ctx.exit(0);
     return true;
 }
 
 export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdleShutdown {
+    // A drain request left by a daemon that died mid-drain must not stop the processes starting now.
+    void deps.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined);
     const sources = createDaemonIdleSources({
         redis: deps.redis,
         database: db,
         intakeMode: deps.intakeMode,
         pollingIntervalMs: deps.pollingIntervalMs,
         connectInFlight: () => deps.getRoutingService()?.getInFlightCount() ?? 0,
+        connectIdleWakeSupport: () => deps.getRoutingService()?.getIdleWakeSupport() ?? null,
     });
     const collect = () => collectIdleSignals(sources);
+    let cancelled = false;
     const controller = new IdleShutdownController({
         redis: deps.redis,
         resolveConfig: () => loadIdleShutdownConfig(),
         collect,
-        onIdle: request => drainAndExit(request, deps, collect),
+        onIdle: request => drainIdleControlPlane(request, {
+            redis: deps.redis as unknown as IntentRedis,
+            routing: deps.getRoutingService(),
+            collect,
+            close: deps.close,
+            exit: deps.exit ?? process.exit,
+            timings: deps.timings,
+            isCancelled: () => cancelled,
+        }),
         intervalMs: deps.intervalMs,
         log: logger,
     });
     controller.start();
-    return { controller, stop: () => controller.stop() };
+    return {
+        controller,
+        stop: () => {
+            cancelled = true;
+            return controller.stop();
+        },
+    };
 }
 
 /** How long a wake waits for the API to report the request that woke the instance. */
@@ -143,30 +298,49 @@ async function waitForWakeSignal(redis: Redis, waitMs: number): Promise<IdleWake
 }
 
 /**
- * On start after an idle stop: ask Connect for deliveries cached while
- * stopped, name the wake source, record the cold start and mark the hint
- * consumed. Scheduled work that became due while stopped needs nothing extra:
- * the schedule sweeps run at startup and coalesce missed slots into one run.
+ * On start after an idle stop: name the wake source, record the cold start
+ * and mark the hint consumed; when the stop was made with Connect intake, get
+ * the relay to accept the replay of deliveries cached while stopped. The
+ * replay obligation stays in the hint file until the relay acknowledges it,
+ * so a start where it does not (or without Connect intake) asks again on the
+ * next start. Scheduled work that became due while stopped needs nothing
+ * extra: the schedule sweeps run at startup and coalesce missed slots.
  */
 export async function recoverFromIdleWake(deps: {
     redis: Redis;
-    routingService: RoutingWebSocketIntakeService | null;
+    routingService: Pick<RoutingWebSocketIntakeService, 'requestReplay'> | null;
     processStartedAt: number;
     waitMs?: number;
 }): Promise<void> {
     const file = resolveIdleWakeHintPath();
-    const hint = await readIdleWakeHint(file);
-    if (!isPendingIdleWake(hint)) return;
-    deps.routingService?.requestReplayOnConnect(hint.shutdownAt);
-    const readyAt = Date.now();
-    const apiSignal = await waitForWakeSignal(deps.redis, deps.waitMs ?? WAKE_SIGNAL_WAIT_MS);
-    const source = classifyIdleWake({ hint, now: readyAt, apiSignal });
-    const record = buildIdleWakeRecord({ hint, source, now: readyAt, processStartedAt: deps.processStartedAt });
-    await deps.redis.set(IDLE_LAST_WAKE_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
-    await deps.redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
-    const due = hint.nextDue.filter(item => item.dueAt <= readyAt);
-    logger.info({ ...record, dueWhileStopped: due.map(item => item.detail) }, 'Woke from idle shutdown');
-    await writeIdleWakeHint({ ...hint, wokeAt: record.wokeAt }, file).catch((error: Error) => {
-        logger.warn({ error: error.message, file }, 'Could not mark the idle wake hint consumed');
+    let hint = await readIdleWakeHint(file);
+    if (!hint) return;
+    const replay = needsConnectReplay(hint) && deps.routingService ? deps.routingService.requestReplay(hint.shutdownAt) : null;
+    if (isPendingIdleWake(hint)) {
+        const readyAt = Date.now();
+        const apiSignal = await waitForWakeSignal(deps.redis, deps.waitMs ?? WAKE_SIGNAL_WAIT_MS);
+        const source = classifyIdleWake({ hint, now: readyAt, apiSignal });
+        const record = buildIdleWakeRecord({ hint, source, now: readyAt, processStartedAt: deps.processStartedAt });
+        await deps.redis.set(IDLE_LAST_WAKE_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
+        await deps.redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
+        const due = hint.nextDue.filter(item => item.dueAt <= readyAt);
+        logger.info({ ...record, dueWhileStopped: due.map(item => item.detail) }, 'Woke from idle shutdown');
+        hint = { ...hint, wokeAt: record.wokeAt };
+        await writeIdleWakeHint(hint, file).catch((error: Error) => {
+            logger.warn({ error: error.message, file }, 'Could not mark the idle wake hint consumed');
+        });
+    }
+    if (!needsConnectReplay(hint)) return;
+    if (!replay) {
+        logger.warn({ file }, 'Stopped idle with Connect intake, but Connect intake is not running: the replay of cached deliveries stays pending');
+        return;
+    }
+    if (!(await replay)) {
+        logger.warn({ since: hint.shutdownAt }, 'Connect did not accept the replay of deliveries cached while stopped; it stays pending and is requested again on the next start');
+        return;
+    }
+    logger.info({ since: hint.shutdownAt }, 'Connect accepted the replay of deliveries cached while stopped');
+    await writeIdleWakeHint({ ...hint, connectReplay: 'accepted' }, file).catch((error: Error) => {
+        logger.warn({ error: error.message, file }, 'Could not record the accepted replay in the idle wake hint');
     });
 }

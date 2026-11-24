@@ -13,6 +13,14 @@ import type { Knex } from 'knex';
 import { IDLE_ACTIVITY_REDIS_PREFIX, type ScheduledItem } from '@propr/shared';
 import { emptyIdleSignals, type IdleQueueCounts, type IdleSignals } from './idleDetector.js';
 import { parseIdleActivity } from './idleActivity.js';
+import {
+    IDLE_PARTICIPANT_STALE_MS,
+    idleParticipantKey,
+    isIdleParticipantConfirmedGone,
+    listIdleParticipants,
+    localProcessIdentity,
+    type LocalProcessIdentity,
+} from './idleParticipants.js';
 
 /** The slice of ioredis the collectors use. */
 export interface IdleRedis {
@@ -21,6 +29,7 @@ export interface IdleRedis {
     zcard(key: string): Promise<number>;
     zrange(key: string, start: number, stop: number, withScores: 'WITHSCORES'): Promise<string[]>;
     get(key: string): Promise<string | null>;
+    hgetall(key: string): Promise<Record<string, string>>;
 }
 
 /** BullMQ's default key prefix. */
@@ -78,18 +87,36 @@ export async function collectQueueSignals(redis: IdleRedis, prefix = BULLMQ_PREF
     };
 }
 
-/** Sum the live activity heartbeats every API process publishes. */
+/**
+ * Sum the activity every API process publishes. Each registered API process
+ * must have a current, well-formed record: a missing, stale or malformed one
+ * is unavailable evidence (it may hold open sessions or requests), not zero,
+ * until the process is confirmed stopped.
+ */
 export async function collectActivitySignals(
     redis: IdleRedis,
-): Promise<Pick<IdleSignals, 'uiSessions' | 'mcpRequests' | 'httpRequests' | 'lastActivityAt'>> {
-    const totals = { uiSessions: 0, mcpRequests: 0, httpRequests: 0, lastActivityAt: null as number | null };
+    options: { now?: number; local?: LocalProcessIdentity; isGone?: (pid: number) => boolean } = {},
+): Promise<Pick<IdleSignals, 'uiSessions' | 'mcpRequests' | 'httpRequests' | 'lastActivityAt' | 'unavailable'>> {
+    const now = options.now ?? Date.now();
+    const totals = { uiSessions: 0, mcpRequests: 0, httpRequests: 0, lastActivityAt: null as number | null, unavailable: [] as string[] };
+    const local = options.local ?? localProcessIdentity();
+    const expected = new Set<string>();
+    for (const { participant } of await listIdleParticipants(redis)) {
+        if (participant?.role !== 'api' || isIdleParticipantConfirmedGone(participant, local, options.isGone)) continue;
+        expected.add(idleParticipantKey(participant.role, participant.id));
+    }
+    const observed = new Set<string>();
     for (const key of await scanKeys(redis, `${IDLE_ACTIVITY_REDIS_PREFIX}*`)) {
         const activity = parseIdleActivity(await redis.get(key));
-        if (!activity) continue;
+        if (!activity || now - activity.publishedAt > IDLE_PARTICIPANT_STALE_MS) continue;
+        observed.add(key.slice(IDLE_ACTIVITY_REDIS_PREFIX.length));
         totals.uiSessions += activity.uiSessions;
         totals.mcpRequests += activity.mcpRequests;
         totals.httpRequests += activity.httpRequests;
         if (activity.lastRequestAt > 0) totals.lastActivityAt = Math.max(totals.lastActivityAt ?? 0, activity.lastRequestAt);
+    }
+    for (const key of expected) {
+        if (!observed.has(key)) totals.unavailable.push(`API activity from ${key} (no current record)`);
     }
     return totals;
 }

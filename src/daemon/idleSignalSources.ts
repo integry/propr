@@ -3,9 +3,11 @@ import type { Knex } from 'knex';
 import {
     collectActivitySignals,
     collectDatabaseSignals,
+    collectParticipantSignals,
     collectQueueSignals,
     type IdleSignalSource,
     type IdleSignals,
+    type IdleWakeSupport,
 } from '@propr/core';
 import type { ScheduledItem } from '@propr/shared';
 import { listIndexedUltrafixResumeCandidates, type UltrafixPrRef } from '../jobs/ultrafixResumeIndex.js';
@@ -57,6 +59,8 @@ export interface DaemonIdleSourceDeps {
     intakeMode: string;
     pollingIntervalMs: number;
     connectInFlight: () => number;
+    /** Null without Connect intake. */
+    connectIdleWakeSupport?: () => IdleWakeSupport | null;
     now?: () => number;
 }
 
@@ -65,10 +69,16 @@ export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<stri
     const now = deps.now ?? Date.now;
     return {
         'BullMQ queues': () => collectQueueSignals(deps.redis),
-        'API activity': () => collectActivitySignals(deps.redis),
+        // Every registered API/worker process must be observed: a stale entry is unavailable, not idle.
+        'process registrations': async () => ({ unavailable: (await collectParticipantSignals(deps.redis, { now: now() })).unavailable }),
+        'API activity': () => collectActivitySignals(deps.redis, { now: now() }),
         'database work': () => collectDatabaseSignals(deps.database),
         'Ultrafix loops': () => collectUltrafixSignals(deps.redis, now()),
         'Connect deliveries': async () => ({ connectDeliveries: deps.connectInFlight() }),
+        // Retried after a reconnect: the relay may have gained idle wake support.
+        'Connect idle wake': async () => (deps.connectIdleWakeSupport?.() === 'rejected'
+            ? { unavailable: ['Connect idle wake support (the relay did not acknowledge the wake hint)'] }
+            : {}),
         // Polling is scheduled work: the next poll is always one interval away.
         'polling': async () => (deps.intakeMode === 'polling'
             ? { scheduled: [{ kind: 'polling' as const, dueAt: now() + deps.pollingIntervalMs, detail: 'GitHub polling' }] }

@@ -33,11 +33,27 @@ async function recordWakeSignal(redis: Pick<Redis, 'set'>, source: IdleWakeSourc
   await redis.set(IDLE_WAKE_SIGNAL_REDIS_KEY, source, 'EX', WAKE_SIGNAL_TTL_SECONDS, 'NX').catch(() => undefined);
 }
 
-/** Counts every non-probe request until its response closes; the first one may be the wake. */
+/** How long a quiesced API tells clients to wait before retrying. */
+const QUIESCED_RETRY_AFTER_SECONDS = 5;
+/** How long the quiesce phase waits for in-flight requests before acknowledging (the daemon then sees them and aborts). */
+export const API_QUIESCE_DRAIN_TIMEOUT_MS = 10_000;
+
+/**
+ * Counts every non-probe request until its response closes; the first one
+ * may be the wake. While the daemon's idle drain has quiesced the API, a new
+ * request is turned away with 503 (and recorded as activity, so the daemon
+ * aborts the drain and the client's retry is served).
+ */
 export function createIdleActivityMiddleware(getRedis: () => Pick<Redis, 'set'> | null): RequestHandler {
   let firstRequestSeen = false;
   return (req: Request, res: Response, next: NextFunction) => {
     const kind = classifyIdleRequest(req.path);
+    if (kind && idleActivity.quiescedIntent !== null) {
+      idleActivity.touch();
+      res.setHeader('Retry-After', String(QUIESCED_RETRY_AFTER_SECONDS));
+      res.status(503).json({ error: 'ProPR is checking whether it can stop while idle; retry shortly.' });
+      return;
+    }
     if (kind) {
       const end = idleActivity.begin(kind);
       res.once('close', end);
@@ -65,18 +81,40 @@ export function createWakeHandler(getRedis: () => Pick<Redis, 'set'> | null): Re
   };
 }
 
-/** Start publishing activity and listening for the daemon's shutdown request. */
+/**
+ * Start publishing activity and follow the daemon's drain requests: quiesce
+ * (stop admitting requests, wait for the ones in flight, publish a current
+ * record), resume, or stop.
+ */
 export function startApiIdleShutdown(options: {
   redis: Redis;
   countSessions: () => number;
-  log?: { info(obj: object, msg: string): void };
+  log?: { info(obj: object, msg: string): void; warn?(obj: object, msg: string): void };
 }): () => Promise<void> {
   idleActivity.setSessionCounter(options.countSessions);
-  const stopPublisher = startIdleActivityPublisher(options.redis, { role: 'api', id: `${hostname()}:${process.pid}` });
-  // A duplicate keeps the API's Redis URL and credentials for the subscriber connection.
-  const stopListener = startIdleShutdownListener({ redis: options.redis.duplicate(), log: options.log });
+  const id = `${hostname()}:${process.pid}`;
+  const publisher = startIdleActivityPublisher(options.redis, { role: 'api', id });
+  // Duplicates keep the API's Redis URL and credentials for the listener's connections.
+  const listener = startIdleShutdownListener({
+    role: 'api',
+    id,
+    createConnection: () => options.redis.duplicate() as never,
+    onQuiesce: async intent => {
+      idleActivity.quiesce(intent.id);
+      const drained = await idleActivity.waitForDrain(API_QUIESCE_DRAIN_TIMEOUT_MS);
+      // The daemon re-checks this record next; a failed write leaves it stale, which aborts the drain.
+      const published = await publisher.publish();
+      options.log?.info({ drained, published }, 'Idle shutdown: API quiesced');
+    },
+    onResume: () => {
+      idleActivity.resume();
+      void publisher.publish();
+    },
+    log: options.log,
+  });
   return async () => {
-    await stopPublisher();
-    await stopListener();
+    idleActivity.resume();
+    await publisher.stop();
+    await listener.stop();
   };
 }

@@ -41,6 +41,20 @@ export const IDLE_WAKE_SIGNAL_REDIS_KEY = 'system:idle:wake_signal';
 export const IDLE_ACTIVITY_REDIS_PREFIX = 'system:idle:activity:';
 /** Pub/sub channel on which the daemon tells the API and workers to drain and exit. */
 export const IDLE_SHUTDOWN_CHANNEL = 'system:idle:shutdown';
+/**
+ * Every API and worker process that takes part in idle shutdown registers
+ * here (hash field `<role>:<id>`), refreshes its entry while it runs and
+ * removes it on a clean stop. The daemon expects a fresh heartbeat (and, for
+ * the API, a fresh activity record) from every entry before it may stop.
+ */
+export const IDLE_PARTICIPANTS_REDIS_KEY = 'system:idle:participants';
+/**
+ * The daemon's drain request, kept for as long as the drain runs so a process
+ * that missed the pub/sub message (or reconnected) still finds it.
+ */
+export const IDLE_SHUTDOWN_INTENT_REDIS_KEY = 'system:idle:shutdown_intent';
+/** Acknowledgements of one drain request: hash `<prefix><intentId>`, field `<phase>:<role>:<id>`. */
+export const IDLE_SHUTDOWN_ACKS_REDIS_PREFIX = 'system:idle:shutdown_acks:';
 
 export type IdleShutdownSource = 'environment' | 'settings' | 'default';
 
@@ -203,6 +217,12 @@ export interface IdleWakeHint {
     nextDue: ScheduledItem[];
     /** Set once a start has consumed this hint, so a later plain restart is not counted as a wake. */
     wokeAt?: string;
+    /**
+     * Stopped with Connect intake: `pending` until the relay has accepted the
+     * replay of deliveries cached while stopped, then `accepted`. A start
+     * keeps asking (and leaves the hint pending) until the relay accepts.
+     */
+    connectReplay?: 'pending' | 'accepted';
 }
 
 export interface IdleWakeRecord {

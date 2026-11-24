@@ -5,3 +5,5 @@ export * from './idleWakeHint.js';
 export * from './idleShutdownController.js';
 export * from './idleShutdownSetting.js';
 export * from './idleShutdownListener.js';
+export * from './idleParticipants.js';
+export * from './idleShutdownIntent.js';

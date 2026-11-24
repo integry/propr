@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { after } from 'node:test';
 import knex from 'knex';
-import { IDLE_STATUS_REDIS_KEY, resolveIdleShutdownConfig, type IdleShutdownConfig, type IdleShutdownStatus } from '@propr/shared';
-import { emptyIdleSignals, type IdleSignals } from '../src/idle/idleDetector.js';
+import { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_STATUS_REDIS_KEY, resolveIdleShutdownConfig, type IdleShutdownConfig, type IdleShutdownStatus } from '@propr/shared';
+import { emptyIdleSignals, evaluateIdle, type IdleSignals } from '../src/idle/idleDetector.js';
 import { IdleShutdownController, type IdleShutdownRequest } from '../src/idle/idleShutdownController.js';
 import {
     collectActivitySignals,
@@ -36,8 +36,12 @@ class FakeRedis implements IdleRedis {
         const entries = [...(this.zsets.get(key) ?? [])].sort((a, b) => a[1] - b[1]).slice(start, stop + 1);
         return entries.flatMap(([member, score]) => [member, String(score)]);
     }
+    hashes = new Map<string, Map<string, string>>();
     async get(key: string) { return this.strings.get(key) ?? null; }
     async set(key: string, value: string) { this.strings.set(key, value); return 'OK'; }
+    async hgetall(key: string) { return Object.fromEntries(this.hashes.get(key) ?? []); }
+    async hset(key: string, field: string, value: string) { if (!this.hashes.has(key)) this.hashes.set(key, new Map()); this.hashes.get(key)!.set(field, value); return 1; }
+    async hdel(key: string, field: string) { return this.hashes.get(key)?.delete(field) ? 1 : 0; }
 }
 
 function controllerHarness(options: { signals: () => IdleSignals; config?: IdleShutdownConfig; onIdle?: (request: IdleShutdownRequest) => Promise<boolean> }) {
@@ -163,12 +167,47 @@ test('queue collector finds every queue and the earliest delayed job', async () 
     assert.deepEqual(result.scheduled, [{ kind: 'delayed_job', dueAt: due, detail: 'delayed job in github-issue-processor' }]);
 });
 
-test('activity collector sums every API process and ignores malformed keys', async () => {
+function registerApi(redis: FakeRedis, id: string, seenAt: number) {
+    const participant = { role: 'api', id, host: 'elsewhere', pid: 1, pidNamespace: null, bootId: null, startedAt: START - MINUTE, seenAt };
+    return redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, `api:${id}`, JSON.stringify(participant));
+}
+
+test('activity collector sums every API process with a current record', async () => {
     const redis = new FakeRedis();
+    await registerApi(redis, 'a', START);
+    await registerApi(redis, 'b', START);
     redis.strings.set(idleActivityKey('api', 'a'), JSON.stringify({ uiSessions: 1, mcpRequests: 0, httpRequests: 2, lastRequestAt: START, publishedAt: START }));
     redis.strings.set(idleActivityKey('api', 'b'), JSON.stringify({ uiSessions: 2, mcpRequests: 1, httpRequests: 0, lastRequestAt: START + 5, publishedAt: START }));
-    redis.strings.set(idleActivityKey('api', 'c'), 'garbage');
-    assert.deepEqual(await collectActivitySignals(redis), { uiSessions: 3, mcpRequests: 1, httpRequests: 2, lastActivityAt: START + 5 });
+    assert.deepEqual(await collectActivitySignals(redis, { now: START + 1_000 }), { uiSessions: 3, mcpRequests: 1, httpRequests: 2, lastActivityAt: START + 5, unavailable: [] });
+});
+
+test('a registered API process without a current, well-formed record is unavailable, not idle', async () => {
+    const redis = new FakeRedis();
+    for (const id of ['expired', 'stale', 'garbage', 'partial']) await registerApi(redis, id, START);
+    // `expired`: the key is gone (TTL ran out while the process was stalled).
+    redis.strings.set(idleActivityKey('api', 'stale'), JSON.stringify({ uiSessions: 0, mcpRequests: 0, httpRequests: 0, lastRequestAt: 0, publishedAt: START - 2 * MINUTE }));
+    redis.strings.set(idleActivityKey('api', 'garbage'), 'garbage');
+    redis.strings.set(idleActivityKey('api', 'partial'), JSON.stringify({ uiSessions: 0, publishedAt: START }));
+    const result = await collectActivitySignals(redis, { now: START });
+    assert.deepEqual(result.unavailable.sort(), [
+        'API activity from api:expired (no current record)',
+        'API activity from api:garbage (no current record)',
+        'API activity from api:partial (no current record)',
+        'API activity from api:stale (no current record)',
+    ]);
+    const merged = await collectIdleSignals({ activity: async () => result });
+    assert.equal(evaluateIdle(merged, { now: START, windowMs: 15 * MINUTE }).idle, false);
+});
+
+test('an API process confirmed stopped on this host is no longer expected', async () => {
+    const redis = new FakeRedis();
+    const local = { host: 'here', pidNamespace: 'pid:[1]', bootId: 'boot' };
+    const participant = { role: 'api', id: 'gone', host: 'here', pid: 4242, pidNamespace: 'pid:[1]', bootId: 'boot', startedAt: START - MINUTE, seenAt: START - 5 * MINUTE };
+    await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'api:gone', JSON.stringify(participant));
+    assert.deepEqual((await collectActivitySignals(redis, { now: START, local, isGone: () => false })).unavailable, ['API activity from api:gone (no current record)']);
+    assert.deepEqual((await collectActivitySignals(redis, { now: START, local, isGone: pid => pid === 4242 })).unavailable, []);
+    // Another pid namespace (another container): a pid lookup proves nothing.
+    assert.deepEqual((await collectActivitySignals(redis, { now: START, local: { ...local, pidNamespace: 'pid:[2]' }, isGone: () => true })).unavailable.length, 1);
 });
 
 test('a failing source is reported as unavailable', async () => {

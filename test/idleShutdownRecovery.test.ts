@@ -17,6 +17,13 @@ const {
 } = await import('@propr/core');
 const { recoverFromIdleWake } = await import('../src/daemon/idleShutdown.js');
 const { IDLE_LAST_WAKE_REDIS_KEY, IDLE_WAKE_SIGNAL_REDIS_KEY } = await import('@propr/shared');
+/** Wait until the fake relay has received `count` frames of `type`. */
+async function sentFrames(type: string, count: number) {
+    for (let attempt = 0; attempt < 200 && (FakeSocket.last?.frames(type).length ?? 0) < count; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(FakeSocket.last!.frames(type).length, count);
+}
 
 after(async () => {
     await closeConnection();
@@ -52,44 +59,64 @@ function routingService() {
         installationId: 42,
         webSocketFactory: FakeSocket as never,
         dispatch: async () => undefined,
+        idleFrameAckTimeoutMs: 50,
     });
+}
+
+/** Answer the next frame of `type` the way a relay with idle wake support would. */
+function acknowledge(type: 'wake_hint' | 'replay') {
+    const socket = FakeSocket.last!;
+    socket.emit('message', Buffer.from(JSON.stringify({ type: `${type}_ack` })));
 }
 
 const SHUTDOWN_AT = Date.UTC(2026, 10, 24, 2, 0, 0);
 
-async function writeHint(nextDueAt: number | null) {
+async function writeHint(nextDueAt: number | null, connect = false) {
     const hint = buildIdleWakeHint({
         shutdownAt: SHUTDOWN_AT,
         reason: 'idle for 900s',
         idleForMs: 900_000,
         nextDue: nextDueAt === null ? [] : [{ kind: 'automation', dueAt: nextDueAt, detail: 'scheduled automation' }],
+        connect,
     });
     await writeIdleWakeHint(hint, hintFile);
     return hint;
 }
 
-test('the wake hint is sent to Connect before the socket closes', async () => {
+test('the wake hint counts only when Connect acknowledges it', async () => {
     const service = routingService();
     await service.start();
     FakeSocket.last!.emit('open');
-    assert.equal(service.sendWakeHint('2026-11-24T14:00:00.000Z'), true);
+    // Today's relay answers an unknown frame with an error (or nothing): not accepted.
+    FakeSocket.last!.emit('message', Buffer.from(JSON.stringify({ type: 'error', code: 'unknown_frame', message: 'unknown frame type' })));
+    assert.equal(await service.sendWakeHint('2026-11-24T14:00:00.000Z'), false);
+    assert.equal(service.getIdleWakeSupport(), 'rejected');
     assert.deepEqual(FakeSocket.last!.frames('wake_hint'), [{ type: 'wake_hint', reason: 'idle_shutdown', nextDueAt: '2026-11-24T14:00:00.000Z' }]);
+
+    const accepted = service.sendWakeHint(null);
+    acknowledge('wake_hint');
+    assert.equal(await accepted, true);
+    assert.equal(service.getIdleWakeSupport(), 'accepted');
     assert.equal(service.getInFlightCount(), 0);
     await service.stop();
-    assert.equal(service.sendWakeHint(null), false, 'no socket after stop');
+    assert.equal(await service.sendWakeHint(null), false, 'no socket after stop');
 });
 
-test('a wake from an HTTP request asks Connect for the replay, records the wake and consumes the hint', async () => {
-    await writeHint(SHUTDOWN_AT + 6 * 3_600_000);
+test('a wake from an HTTP request records the wake, and the replay obligation is released only once Connect accepts it', async () => {
+    await writeHint(SHUTDOWN_AT + 6 * 3_600_000, true);
     const redis = new FakeRedis();
     redis.values.set(IDLE_WAKE_SIGNAL_REDIS_KEY, 'http');
     const service = routingService();
     await service.start();
     const processStartedAt = Date.now() - 4_000;
-    // Recovery runs before the socket opens; the replay request waits for it.
-    await recoverFromIdleWake({ redis: redis as never, routingService: service, processStartedAt, waitMs: 0 });
+    // Recovery starts before the socket opens; the replay request waits for it.
+    const recovery = recoverFromIdleWake({ redis: redis as never, routingService: service, processStartedAt, waitMs: 0 });
+    await new Promise(resolve => setTimeout(resolve, 0));
     FakeSocket.last!.emit('open');
+    await sentFrames('replay', 1);
     assert.deepEqual(FakeSocket.last!.frames('replay'), [{ type: 'replay', reason: 'idle_wake', since: new Date(SHUTDOWN_AT).toISOString() }]);
+    acknowledge('replay');
+    await recovery;
 
     const wake = JSON.parse(redis.values.get(IDLE_LAST_WAKE_REDIS_KEY)!);
     assert.equal(wake.source, 'http');
@@ -99,13 +126,43 @@ test('a wake from an HTTP request asks Connect for the replay, records the wake 
 
     const consumed = await readIdleWakeHint(hintFile);
     assert.equal(consumed?.wokeAt, wake.wokeAt);
+    assert.equal(consumed?.connectReplay, 'accepted');
 
-    // A plain restart afterwards is not another wake.
+    // A plain restart afterwards is neither another wake nor another replay.
     redis.values.delete(IDLE_LAST_WAKE_REDIS_KEY);
     await recoverFromIdleWake({ redis: redis as never, routingService: service, processStartedAt, waitMs: 0 });
     assert.equal(redis.values.has(IDLE_LAST_WAKE_REDIS_KEY), false);
     assert.equal(FakeSocket.last!.frames('replay').length, 1);
     await service.stop();
+});
+
+test('a relay that does not accept the replay leaves it pending for the next start', async () => {
+    await writeHint(null, true);
+    const redis = new FakeRedis();
+    const service = routingService();
+    await service.start();
+    FakeSocket.last!.emit('open');
+    // No replay_ack: the frame reached the socket, which proves nothing.
+    await recoverFromIdleWake({ redis: redis as never, routingService: service, processStartedAt: Date.now(), waitMs: 0 });
+    assert.equal(FakeSocket.last!.frames('replay').length, 1);
+    const afterFirst = await readIdleWakeHint(hintFile);
+    assert.equal(typeof afterFirst?.wokeAt, 'string', 'the wake itself is recorded once');
+    assert.equal(afterFirst?.connectReplay, 'pending');
+    await service.stop();
+
+    // Without Connect intake at all the obligation also stays.
+    await recoverFromIdleWake({ redis: redis as never, routingService: null, processStartedAt: Date.now(), waitMs: 0 });
+    assert.equal((await readIdleWakeHint(hintFile))?.connectReplay, 'pending');
+
+    const next = routingService();
+    await next.start();
+    FakeSocket.last!.emit('open');
+    const retry = recoverFromIdleWake({ redis: redis as never, routingService: next, processStartedAt: Date.now(), waitMs: 0 });
+    await sentFrames('replay', 1);
+    acknowledge('replay');
+    await retry;
+    assert.equal((await readIdleWakeHint(hintFile))?.connectReplay, 'accepted');
+    await next.stop();
 });
 
 test('a start at the hinted due time is a scheduled wake; the hint file stays readable', async () => {

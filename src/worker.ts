@@ -320,8 +320,12 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         }
     });
 
-    // Opt-in idle shutdown: the daemon asks every process to drain and exit 0.
-    startIdleShutdownListener({ redis: subscriberRedis, log: logger });
+    // Opt-in idle shutdown: register with the daemon and follow its drain request (exit 0).
+    const idleShutdownListener = startIdleShutdownListener({
+        role: 'worker',
+        createConnection: () => subscriberRedis.duplicate() as never,
+        log: logger,
+    });
 
     // Handle incoming config update messages
     subscriberRedis.on('message', async (channel, message) => {
@@ -409,6 +413,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await closeAgentImageBuildLock();
         await heartbeatRedis.srem('system:status:workers', workerId);
         await heartbeatRedis.hdel('system:status:worker-capacity', workerId);
+        // Deregistering tells an idle-shutdown daemon this worker has stopped.
+        await idleShutdownListener.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
     };

@@ -18,10 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
     Web UI session or in-flight MCP/HTTP request, and no scheduled work due
     within the window.
-  - Before exiting, the daemon sends a wake hint (next due time) to Connect and
-    writes it to `<DATA_DIR>/idle-wake-hint.json`. On the next start it asks
-    Connect to replay deliveries cached while stopped and records the wake
-    source and cold-start duration. `POST /wake` is the Connect wake ping.
+  - With Connect intake the relay must acknowledge the wake hint
+    (`wake_hint_ack`) or the instance stays up; the current relay does not, so
+    Connect instances need propr-routing#335. The daemon quiesces Connect and
+    the API before its last check, aborts (and resumes intake) if the wake hint
+    file cannot be written, and exits only after every registered API and
+    worker process has acknowledged the stop. On the next start it asks Connect
+    to replay deliveries cached while stopped, keeping that obligation in the
+    hint file until the relay acknowledges it (`replay_ack`), and records the
+    wake source and cold-start duration. `POST /wake` is the Connect wake ping.
+  - An API or worker process whose heartbeat or activity record is missing,
+    stale or malformed keeps the instance awake until it is confirmed stopped.
   - `propr check`, `GET /api/status` (`idleShutdown`) and
     `GET/PUT /api/admin/idle-shutdown` report what keeps the instance awake,
     the last idle shutdown and the last wake. See

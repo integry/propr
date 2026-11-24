@@ -389,15 +389,16 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
     // Summarization agents run under the instance network policy, with per-run proxies like the worker's.
     const egressProxySweeper = startEgressProxySweeper();
     enforceInstanceNetworkPolicyOutsideRuns();
-    // Opt-in idle shutdown: the daemon asks every process to drain and exit 0.
-    const stopIdleShutdownListener = startIdleShutdownListener({ log: logger });
+    // Opt-in idle shutdown: register with the daemon and follow its drain request (exit 0).
+    const idleShutdownListener = startIdleShutdownListener({ role: 'indexing_worker', log: logger });
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.on(signal, async () => {
-            void stopIdleShutdownListener();
             logger.info(`Indexing Worker received ${signal}, shutting down gracefully...`);
             clearInterval(scanInterval);
             // Proxies close only after running jobs (and their containers) have drained.
             await worker.close().finally(() => egressProxySweeper.close());
+            // Deregistering tells an idle-shutdown daemon this worker has stopped.
+            await idleShutdownListener.stop();
             process.exit(0);
         });
     }

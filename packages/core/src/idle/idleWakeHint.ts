@@ -9,6 +9,7 @@
  * marks it consumed so a later restart is not counted as a wake again.
  */
 
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -32,6 +33,8 @@ export function buildIdleWakeHint(input: {
     reason: string;
     idleForMs: number;
     nextDue: ScheduledItem[];
+    /** Stopped with Connect intake: the next start must get the relay to accept a replay. */
+    connect?: boolean;
 }): IdleWakeHint {
     const first = [...input.nextDue].sort((a, b) => a.dueAt - b.dueAt)[0];
     return {
@@ -41,13 +44,15 @@ export function buildIdleWakeHint(input: {
         idleForMs: input.idleForMs,
         nextDueAt: first ? new Date(first.dueAt).toISOString() : null,
         nextDue: input.nextDue,
+        ...(input.connect ? { connectReplay: 'pending' as const } : {}),
     };
 }
 
 /** Write atomically (temp file + rename) so a supervisor never reads a torn file. */
 export async function writeIdleWakeHint(hint: IdleWakeHint, file: string = resolveIdleWakeHintPath()): Promise<void> {
     await mkdir(path.dirname(file), { recursive: true });
-    const temporary = `${file}.${process.pid}.tmp`;
+    // Unique per write: two writes in one process must not rename each other's temp file.
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(hint, null, 2)}\n`, { encoding: 'utf8', mode: 0o644 });
     await rename(temporary, file);
 }
@@ -70,6 +75,7 @@ export async function readIdleWakeHint(file: string = resolveIdleWakeHintPath())
             nextDueAt: typeof value.nextDueAt === 'string' ? value.nextDueAt : null,
             nextDue: Array.isArray(value.nextDue) ? value.nextDue : [],
             ...(typeof value.wokeAt === 'string' ? { wokeAt: value.wokeAt } : {}),
+            ...(value.connectReplay === 'pending' || value.connectReplay === 'accepted' ? { connectReplay: value.connectReplay } : {}),
         };
     } catch {
         return null;
@@ -109,6 +115,11 @@ export function buildIdleWakeRecord(input: {
         sleptMs: Number.isFinite(shutdownAt) ? Math.max(0, input.processStartedAt - shutdownAt) : null,
         shutdownAt: input.hint.shutdownAt,
     };
+}
+
+/** Whether the relay has yet to accept the replay of deliveries cached during the stop in `hint`. */
+export function needsConnectReplay(hint: IdleWakeHint | null): hint is IdleWakeHint {
+    return hint !== null && hint.connectReplay === 'pending';
 }
 
 /** Whether a start is waking from an idle stop recorded in `hint`. */

@@ -188,7 +188,11 @@ test('the activity tracker counts requests until they end, once', () => {
 test('published activity is parsed defensively', () => {
     assert.equal(parseIdleActivity(null), null);
     assert.equal(parseIdleActivity('not json'), null);
-    assert.deepEqual(parseIdleActivity('{"uiSessions":2,"mcpRequests":-1,"httpRequests":"3"}'), {
-        uiSessions: 2, mcpRequests: 0, httpRequests: 0, lastRequestAt: 0, publishedAt: 0,
+    // A record with a missing or invalid field is malformed, not "zero activity".
+    assert.equal(parseIdleActivity('{"uiSessions":2,"mcpRequests":-1,"httpRequests":"3"}'), null);
+    assert.equal(parseIdleActivity('{"uiSessions":2,"mcpRequests":0,"httpRequests":0,"lastRequestAt":0}'), null);
+    assert.equal(parseIdleActivity('null'), null);
+    assert.deepEqual(parseIdleActivity('{"uiSessions":2.5,"mcpRequests":0,"httpRequests":1,"lastRequestAt":5,"publishedAt":9}'), {
+        uiSessions: 2, mcpRequests: 0, httpRequests: 1, lastRequestAt: 5, publishedAt: 9,
     });
 });
