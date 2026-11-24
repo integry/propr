@@ -17,12 +17,14 @@ import {
 import { ExtensionPackageCache, ExtensionPackageError } from './packageCache.js';
 import { PACKAGE_MOUNT_ROOT, isPackageServer, packageBridgeConfig, packageMount, preparePackageServers } from './packageLaunch.js';
 
+import { startsContainer, type AgentRunLaunch } from '../agents/runtime/agentRunLaunch.js';
+
 interface LaunchContext { taskId: string; secrets: string[]; mounts: string[]; beforeLaunch: (window?: object, validateResources?: boolean) => Promise<void> }
 const launchContext = new AsyncLocalStorage<LaunchContext>();
 export const currentExtensionLaunch = () => launchContext.getStore();
-export function extensionLaunchForDockerRun(command: string, args: string[], options: { taskId?: string; costCapExempt?: boolean; extensionAgentLaunch?: boolean }) {
+export function extensionLaunchForDockerRun(command: string, args: string[], options: { taskId?: string; costCapExempt?: boolean; extensionAgentLaunch?: boolean; agentRun?: AgentRunLaunch }) {
   const context = currentExtensionLaunch();
-  return context && command === 'docker' && args[0] === 'run' && options.extensionAgentLaunch === true && options.taskId === context.taskId && !options.costCapExempt ? context : undefined;
+  return context && startsContainer(command, args, options) && options.extensionAgentLaunch === true && options.taskId === context.taskId && !options.costCapExempt ? context : undefined;
 }
 /** Reuse the existing container-reachable Core MCP URL, including a reverse
  * proxy path prefix. Operator URLs never put authentication values in args. */

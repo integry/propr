@@ -12,7 +12,7 @@ import {
     AnalysisResult,
     AnalyzeOptions
 } from '../types.js';
-import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { runAgent } from '../runtime/registry.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import {
     verifyWorktreeStructure,
@@ -39,7 +39,7 @@ import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { failedExecutionResult, usageLimitExecutionResult, recordUnreturnedFailedExecution, persistFailedExecutionLog } from './utils/failedAgentExecution.js';
-import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, analysisReasoningLevelField, type PersistLogsParams } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, buildClaudeRunSpec, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, analysisReasoningLevelField, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { assertToolPolicySupported, claudeToolPolicyArgs } from '../agentToolPolicy.js';
 import {
@@ -154,7 +154,7 @@ export class ClaudeAgent implements Agent {
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
+            const runSpec = buildClaudeRunSpec(this.config, options.maxTurns ?? this.maxTurns, {
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId, toolPolicy,
                 reasoningLevel: effectiveReasoningLevel
@@ -162,7 +162,7 @@ export class ClaudeAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
-                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
                     streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
@@ -325,7 +325,7 @@ export class ClaudeAgent implements Agent {
                 effectiveModel,
                 useConfiguredReasoningLevel
             );
-            const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
+            const runSpec = buildClaudeRunSpec(this.config, this.maxTurns, {
                 worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path),
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: analysisWorkspace.tools, taskId, executionType,
@@ -336,7 +336,7 @@ export class ClaudeAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
-                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, model: effectiveModel
                 }),
                 { timeoutMs: ANALYSIS_AGENT_TANK_TIMEOUT_MS, alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking }

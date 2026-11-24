@@ -1,0 +1,316 @@
+// Pre-runtime-seam argv builder, kept verbatim as the golden reference for AgentRunSpec rendering.
+// @ts-nocheck
+/* eslint-disable */
+import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../../packages/core/src/agents/agentGitAccess.js';
+/**
+ * Docker arguments builder for Claude agent execution.
+ *
+ * This module handles the construction of Docker command-line arguments
+ * for running Claude in a container with proper configuration.
+ */
+
+import { currentClaudeModel } from '@propr/shared';
+import logger from '../../../packages/core/src/utils/logger.js';
+import type { AgentConfig, AgentToolPolicy } from '../../../packages/core/src/agents/types.js';
+import { claudeToolPolicyArgs } from '../../../packages/core/src/agents/agentToolPolicy.js';
+import { agentContainerNetwork } from '../../../packages/core/src/agents/agentContainerNetwork.js';
+import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../packages/core/src/config/configManager.js';
+import { wrapDockerRunArgsWithRepoSetup } from './repoSetupWrapper.js';
+import { claudeConfigDockerArgs } from './claudeConfigSeed.js';
+import { createContainerExecutionId } from '../../../packages/core/src/agents/impl/utils/containerExecutionId.js';
+import {
+    buildRepositoryScoutMcpConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+    REPOSITORY_SCOUT_MCP_TOOLS,
+} from '../../../packages/core/src/agents/impl/utils/repositoryScoutMcpServer.js';
+import { buildOperatorQuestionMcpConfig, type OperatorQuestionLaunch } from '../../../packages/core/src/agents/impl/utils/operatorQuestionMcpServer.js';
+
+const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
+const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+
+function isGitHubCredentialEnvironmentVariable(name: string): boolean {
+    const normalizedName = name.toUpperCase();
+    return GITHUB_CREDENTIAL_ENV_NAMES.has(normalizedName)
+        || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
+}
+
+function buildEnvironmentVariableArgs(
+    sources: Array<Record<string, string> | undefined>,
+    omitGitHubCredentials: boolean
+): string[] {
+    const args: string[] = [];
+    for (const source of sources) {
+        if (!source) continue;
+        for (const [key, value] of Object.entries(source)) {
+            if (omitGitHubCredentials && isGitHubCredentialEnvironmentVariable(key)) continue;
+            args.push('-e', `${key}=${value}`);
+        }
+    }
+    return args;
+}
+
+/**
+ * Parameters for building Docker arguments.
+ */
+export interface DockerArgsParams {
+    /** Path to the git worktree */
+    worktreePath: string;
+    /** GitHub token for API access */
+    githubToken: string;
+    gitMountArgs?: string[];
+    /** Optional model name to use */
+    modelName?: string;
+    /** Issue number (for logging) */
+    issueNumber: number;
+    /** Optional custom system prompt */
+    systemPrompt?: string;
+    /** Optional tools configuration */
+    tools?: string;
+    /** Per-run web/MCP policy; its tokens must reach the docker process through `extraEnvVars`. */
+    toolPolicy?: AgentToolPolicy;
+    /** Per-execution environment variables to inject into the agent container. */
+    environment?: Record<string, string>;
+    /** Optional task ID for container naming */
+    taskId?: string;
+    /** Optional execution type for container naming (e.g., 'plan-generation', 'context-analysis') */
+    executionType?: string;
+    /** Optional reasoning effort for Claude Code. Empty or omitted means CLI default. */
+    reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
+    /** Mount the repository workspace read-only and skip repository setup hooks. */
+    readOnlyWorkspace?: boolean;
+    /** Expose only the root-confined repository scout MCP tools. */
+    repositoryInspection?: boolean;
+    /** Preserve provider state and use native session resume semantics. */
+    executionMode?: 'task' | 'goal';
+    resumeSessionId?: string;
+    /** Identity to assign a fresh goal session so it is durable before any work starts. */
+    sessionId?: string;
+    /**
+     * Inject the `ask_operator` MCP tool. Goal sessions only: ordinary task
+     * runs are one-shot and never receive it, whatever the caller passes.
+     */
+    operatorQuestions?: OperatorQuestionLaunch;
+}
+
+function operatorQuestionArgs(executionMode: 'task' | 'goal', launch: OperatorQuestionLaunch | undefined): string[] {
+    if (executionMode !== 'goal' || !launch) return [];
+    return ['--mcp-config', buildOperatorQuestionMcpConfig(launch)];
+}
+
+function repositoryInspectionArgs(enabled: boolean): string[] {
+    if (!enabled) return [];
+    return [
+        '--mcp-config', buildRepositoryScoutMcpConfig(),
+        '--strict-mcp-config',
+        '--allowedTools', REPOSITORY_SCOUT_MCP_TOOLS.join(','),
+        '--setting-sources', '',
+        '--disable-slash-commands',
+    ];
+}
+
+function buildClaudeContainerName(
+    config: AgentConfig,
+    issueNumber: number,
+    taskId: string | undefined,
+    executionType: string | undefined
+): string {
+    const shortTaskId = createContainerExecutionId(taskId);
+    const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+    return `${config.alias || config.type}-${taskType}-${shortTaskId}`;
+}
+
+function buildBaseDockerArgs(options: {
+    config: AgentConfig;
+    maxTurns: number;
+    worktreePath: string;
+    workspaceMountTarget: string;
+    configPath: string;
+    containerName: string;
+    githubToken: string;
+    gitMountArgs?: string[];
+    envVars: string[];
+    claudeConfigArgs: string[];
+    inspectionArgs: string[];
+    reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
+    readOnlyWorkspace: boolean;
+    repositoryInspection: boolean;
+    workerOwnedGit: boolean;
+    executionMode: 'task' | 'goal';
+    resumeSessionId?: string;
+    sessionId?: string;
+    /** Docker network to join; the default bridge unless the tool policy needs a Compose service. */
+    network?: string;
+}): string[] {
+    const {
+        config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
+        githubToken, envVars, claudeConfigArgs, inspectionArgs, reasoningLevel, readOnlyWorkspace, repositoryInspection,
+        workerOwnedGit, executionMode, resumeSessionId, sessionId, network = agentContainerNetwork(),
+    } = options;
+    const goal = executionMode === 'goal';
+    return [
+        'run', '--rm', '-i',
+        '--name', containerName,
+        '--security-opt', 'no-new-privileges',
+        '--cap-add', 'CHOWN',
+        '--network', network,
+        '--user', '0:0',
+        '-v', `${worktreePath}:${workspaceMountTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+        ...(repositoryInspection ? [] : options.gitMountArgs ?? (readOnlyWorkspace ? [] : buildAgentGitMountArgs(worktreePath, !workerOwnedGit))),
+        '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
+        '-v', `${configPath}:/home/node/.claude:rw`,
+        ...claudeConfigArgs,
+        ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
+        ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
+        ...envVars,
+        ...buildAgentGitCredentialArgs(),
+        '-w', '/home/node/workspace',
+        config.dockerImage,
+        // Goal sessions keep stdin open as a stream-json control channel, so
+        // `/goal` and later steering arrive as real user messages.
+        'claude', '-p', ...(goal ? ['--input-format', 'stream-json'] : ['-']),
+        ...(goal ? [] : ['--no-session-persistence']),
+        ...(goal && resumeSessionId ? ['--resume', resumeSessionId] : []),
+        ...(goal && !resumeSessionId && sessionId ? ['--session-id', sessionId] : []),
+        ...(goal ? [] : ['--max-turns', maxTurns.toString()]),
+        '--output-format', 'stream-json',
+        '--verbose',
+        ...inspectionArgs,
+        ...(reasoningLevel ? ['--effort', reasoningLevel] : []),
+        '--dangerously-skip-permissions'
+    ];
+}
+
+/**
+ * Turns the per-run tool policy into Claude CLI switches plus name-only `-e`
+ * flags; docker copies the token values from its own environment.
+ */
+function resolveClaudeToolPolicy(
+    toolPolicy: AgentToolPolicy | undefined,
+    issueNumber: DockerArgsParams['issueNumber'],
+    agentAlias: string,
+): { cliArgs: string[]; envArgs: string[] } {
+    if (!toolPolicy) return { cliArgs: [], envArgs: [] };
+    const { cliArgs, env } = claudeToolPolicyArgs(toolPolicy);
+    logger.info({
+        issueNumber,
+        allowWeb: toolPolicy.allowWeb,
+        mcpServers: toolPolicy.mcpServers?.map(server => server.name) ?? [],
+        agentAlias
+    }, 'Applying tool policy to Claude agent');
+    return { cliArgs, envArgs: Object.keys(env).flatMap(name => ['-e', name]) };
+}
+
+/**
+ * Builds Docker arguments for running Claude in a container.
+ *
+ * This function constructs the full `docker run` command arguments including:
+ * - Security options (no-new-privileges, limited capabilities)
+ * - Volume mounts (worktree, config, logs)
+ * - Environment variables
+ * - Claude CLI options (model, max-turns, output format)
+ *
+ * @param config - Agent configuration containing Docker image and env vars
+ * @param maxTurns - Maximum number of conversation turns
+ * @param params - Parameters for Docker execution
+ * @returns Array of Docker command-line arguments
+ */
+export function buildDockerArgs(
+    config: AgentConfig,
+    maxTurns: number,
+    params: DockerArgsParams
+): string[] {
+    const {
+        worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
+        taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
+        executionMode = 'task', resumeSessionId, sessionId, toolPolicy,
+    } = params;
+    const configPath = resolveConfigPath(config.configPath);
+    if (repositoryInspection && !readOnlyWorkspace) {
+        throw new Error('Repository inspection requires a read-only workspace');
+    }
+    // Native file tools can read mounted provider configuration, so read-only runs disable them.
+    const effectiveTools = readOnlyWorkspace ? '' : tools;
+    const inspectionArgs = repositoryInspectionArgs(repositoryInspection);
+    const workspaceMountTarget = repositoryInspection
+        ? REPOSITORY_SCOUT_CONTAINER_ROOT
+        : '/home/node/workspace';
+    const workerOwnedGit = !agentOwnsGit(params);
+    const policyArgs = resolveClaudeToolPolicy(toolPolicy, issueNumber, config.alias);
+    const envVars = [...buildEnvironmentVariableArgs([config.envVars, environment], true), ...policyArgs.envArgs];
+    const dockerArgs = buildBaseDockerArgs({
+        config,
+        maxTurns,
+        worktreePath,
+        workspaceMountTarget,
+        configPath,
+        containerName: buildClaudeContainerName(config, issueNumber, taskId, executionMode === 'goal' ? 'goal' : executionType),
+        githubToken,
+        gitMountArgs: params.gitMountArgs,
+        envVars,
+        claudeConfigArgs: claudeConfigDockerArgs(),
+        inspectionArgs,
+        reasoningLevel,
+        readOnlyWorkspace,
+        repositoryInspection,
+        workerOwnedGit,
+        executionMode,
+        resumeSessionId,
+        sessionId,
+        network: agentContainerNetwork(toolPolicy),
+    });
+
+    // Add model parameter if specified
+    if (modelName) {
+        // Strip agent prefix if present (e.g., "claude:claude-opus-4-6" -> "claude-opus-4-6")
+        const savedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
+        // A saved selection of a model Anthropic has retired runs on its successor.
+        const cleanModelName = currentClaudeModel(savedModelName);
+        const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
+        const modelIndex = maxTurnsIndex >= 0 ? maxTurnsIndex : dockerArgs.indexOf('--output-format');
+        dockerArgs.splice(modelIndex, 0, '--model', cleanModelName);
+        logger.info({
+            issueNumber,
+            requestedModel: cleanModelName,
+            ...(cleanModelName !== savedModelName ? { retiredModel: savedModelName } : {}),
+            agentAlias: config.alias
+        }, 'Using specific model for Claude agent execution');
+    } else {
+        logger.debug({
+            issueNumber,
+            agentAlias: config.alias
+        }, 'No model specified, Claude agent will use default');
+    }
+
+    // Add optional system prompt
+    if (systemPrompt !== undefined) {
+        dockerArgs.push('--system-prompt', systemPrompt);
+        logger.info({
+            issueNumber,
+            systemPromptLength: systemPrompt.length,
+            agentAlias: config.alias
+        }, 'Using custom system prompt');
+    }
+
+    // Add optional tools configuration
+    if (effectiveTools !== undefined) {
+        dockerArgs.push('--tools', effectiveTools);
+        logger.info({
+            issueNumber,
+            tools: effectiveTools,
+            agentAlias: config.alias
+        }, 'Using custom tools configuration');
+    }
+
+    dockerArgs.push(...policyArgs.cliArgs);
+    dockerArgs.push(...operatorQuestionArgs(executionMode, params.operatorQuestions));
+
+    logger.info({
+        issueNumber,
+        hasSystemPrompt: systemPrompt !== undefined,
+        hasTools: effectiveTools !== undefined,
+        hasReasoningLevel: !!reasoningLevel,
+        agentAlias: config.alias
+    }, 'Docker args built for Claude agent');
+
+    return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, config.type);
+}

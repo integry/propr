@@ -17,6 +17,7 @@ export {
 
 export {
     buildDockerArgs,
+    buildClaudeRunSpec,
     type DockerArgsParams
 } from './dockerArgsBuilder.js';
 

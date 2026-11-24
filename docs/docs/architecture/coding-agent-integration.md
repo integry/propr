@@ -53,6 +53,14 @@ Every supported coding agent uses the same containerized runtime shape: the unif
 
 The runtime receives GitHub credentials, selected model settings, timeout settings, and any agent-specific environment variables. Containers run independently so concurrent jobs can use different agents and models without sharing mutable checkouts.
 
+### Runtime Seam
+
+Providers do not build `docker run` argv. Each implementation describes its run as an `AgentRunSpec` (`packages/core/src/agents/runtime/types.ts`): the image and agent type, entrypoint and CLI arguments, environment variables, the workspace, credential and git mounts, resources (memory, CPUs, PIDs, init process), network mode, the MCP grant from the run's tool policy, labels, and the repository setup wrapper. The spec builders are `buildClaudeRunSpec`, `buildCodexRunSpec`, `buildAntigravityRunSpec`, `buildOpenCodeRunSpec`, and the Vibe agent's `buildRunSpec`.
+
+An `AgentRuntime` starts a spec and returns a handle with `stdout`/`stderr` streams, `wait()`, `stop(signal, timeout)`, `inspect()`, and `isAlive()`. Runtimes declare capability flags (`supportsBindMounts`, `supportsRestrictedNetwork`, `supportsMcpPrivateNetwork`, `reattach`), and a spec that needs a missing capability is refused before launch. `runtime/registry.ts` selects the runtime from the agent's `runtime` setting, then `PROPR_AGENT_RUNTIME`, then `docker`. An unknown name fails the run.
+
+`DockerRuntime` is the default runtime. It renders a spec to the same argv ProPR used before the seam (`renderDockerRunArgs`), and golden tests compare that argv with the earlier builders for every provider. The Docker executor recognizes agent runs by the spec they carry, not by matching argv, for admission, the spend cap, the native-log gate, container detection, and extension launches. Helper containers that still pass raw `docker run` argv (capability probes, package verification) are admitted as containers, as before. Native goal transports still spawn the rendered argv directly because they need an interactive stdin channel.
+
 See [Isolated And Safe Execution](../features/execution-safety.md) for the execution boundary and [Agent Runtime Reference](./agent-runtime.md) for concrete runtime configuration and debugging details across all agent entrypoints.
 
 ## Prompt Boundary
