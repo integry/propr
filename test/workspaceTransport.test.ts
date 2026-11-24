@@ -247,6 +247,50 @@ test('clone mode falls back to a bundle read through the runtime file API when t
     assert.equal(grepToken(f.resultDir), '');
 });
 
+test('a pushed result whose worker fetch fails keeps the result ref and the kept run, and still revokes the token', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const prepared = await f.transport.prepare(runSpec(f));
+    const handle = runtime.start(prepared.spec, { extraEnvVars: { ...prepared.launchEnvironment } });
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0, result.stderr);
+    const [state, snapshot] = fs.readFileSync(path.join(f.resultDir, 'status'), 'utf8').trim().split(' ');
+    assert.equal(state, 'pushed', 'the sandbox pushed its result, so no bundle fallback exists');
+    // A transient outage: the remote is unreachable for the worker's fetch, then recovers before cleanup.
+    const away = `${f.remote}.away`;
+    fs.renameSync(f.remote, away);
+    await assert.rejects(prepared.complete(handle, result),
+        /returned no workspace result.*kept for recovery at refs\/propr\/runs\/run-1\/result on .* and the kept run/);
+    fs.renameSync(away, f.remote);
+    await prepared.cleanup(handle);
+
+    assert.equal(git(f.worktree, 'status', '--porcelain'), '', 'nothing was applied');
+    assert.deepEqual(f.revoked, [TOKEN], 'credentials are revoked even though the result is kept');
+    assert.equal(runtime.released, 0, 'the kept run is not released while it may hold the only bundle');
+    assert.equal(remoteRunRefs(f), `${snapshot}\trefs/propr/runs/run-1/result`, 'only the base ref is deleted');
+    // The kept ref really recovers the run's work.
+    git(f.worktree, 'fetch', '-q', f.remote, 'refs/propr/runs/run-1/result');
+    assert.equal(git(f.worktree, 'show', 'FETCH_HEAD:new.txt'), 'new');
+});
+
+test('a retrieved result that cannot be applied stays on the worker\'s local ref', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const prepared = await f.transport.prepare(runSpec(f));
+    const handle = runtime.start(prepared.spec, { extraEnvVars: { ...prepared.launchEnvironment } });
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0, result.stderr);
+    // The worktree moves during the run, so the fetched result must not be laid over it.
+    git(f.worktree, 'commit', '-q', '--allow-empty', '-m', 'moved');
+    await assert.rejects(prepared.complete(handle, result), /moved from .* kept for recovery at refs\/propr\/runs\/run-1 in /);
+    await prepared.cleanup(handle);
+
+    assert.equal(git(f.worktree, 'show', 'refs/propr/runs/run-1:new.txt'), 'new', 'the local ref keeps the snapshot');
+    assert.equal(remoteRunRefs(f), '', 'sandbox copies are discarded once the worker holds the result');
+    assert.deepEqual(f.revoked, [TOKEN]);
+    assert.equal(runtime.released, 1);
+});
+
 test('clone mode keeps a failed run\'s partial work and returns its exit status', async () => {
     const f = fixture();
     const runtime = localRuntime(f);

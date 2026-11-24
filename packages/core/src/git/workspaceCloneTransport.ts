@@ -101,6 +101,15 @@ interface CloneRun {
     ownsCommits: boolean;
     token?: string;
     bundlePath?: string;
+    /**
+     * Where the run's result stands once {@link CloneWorkspaceTransport.complete} started:
+     * `pending` until the snapshot is verified in the worker's local ref, `retrieved`
+     * while only that local ref holds it, `applied` once it is in the worktree.
+     * Cleanup deletes only copies that are no longer the last recoverable one.
+     */
+    result?: 'pending' | 'retrieved' | 'applied';
+    /** What the sandbox reported in its status file (`pushed`, `bundle`, `failed`), when it was readable. */
+    reportedState?: string;
 }
 
 /**
@@ -195,8 +204,30 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
 
     private async complete(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult): Promise<WorkspaceRunOutcome> {
         if (!run.clone.resultRef) return { applied: false, reason: 'read-only workspace' };
+        run.result = 'pending';
+        try {
+            const outcome = await this.retrieveAndApply(run, handle, result);
+            run.result = 'applied';
+            return outcome;
+        } catch (error) {
+            const kept = this.preservedLocations(run, handle);
+            const recovery = kept.length ? `the run's result is kept for recovery at ${kept.join(' and ')}` : 'no recoverable copy of the run\'s result remains';
+            throw new WorkspaceTransportError(`${(error as Error).message}; ${recovery}`, { cause: error });
+        }
+    }
+
+    /** Where an unapplied result stays: the worker's local ref once retrieved, otherwise the run's result ref and the kept run. */
+    private preservedLocations(run: CloneRun, handle?: AgentRunHandle): string[] {
+        if (run.result === 'retrieved') return [`${run.localRef} in ${run.worktree}`];
+        // A sandbox that reported a bundle or a failure pushed no result ref.
+        const pushed = run.reportedState !== 'bundle' && run.reportedState !== 'failed';
+        return [...(pushed ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
+    }
+
+    private async retrieveAndApply(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult): Promise<WorkspaceRunOutcome> {
         const status = (await this.readResultFile(handle, WORKSPACE_RESULT_STATUS_FILE))?.toString('utf8').trim();
         const [state, commit] = status?.split(/\s+/) ?? [];
+        run.reportedState = state;
         if (state === 'failed') throw new WorkspaceTransportError(`The run could not return its workspace (${status}; exit ${result.exitCode})`);
         const git = await this.workerGit(run);
         let via: WorkspaceRunOutcome['via'];
@@ -212,6 +243,8 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         if (!via) throw new WorkspaceTransportError(`The run returned no workspace result (exit ${result.exitCode})`);
         const snapshot = await rev(git, run.localRef);
         if (commit && snapshot !== commit) throw new WorkspaceTransportError(`Run result ${snapshot} does not match the reported snapshot ${commit}`);
+        // The verified snapshot is now on the worker: the sandbox copies are no longer the only ones.
+        run.result = 'retrieved';
         await this.apply(run, git, snapshot);
         return { applied: true, via, commit: snapshot };
     }
@@ -244,18 +277,34 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         const attempt = async (step: string, action: () => Promise<unknown>) => {
             try { await action(); } catch (error) { failures.push(`${step}: ${redactAuthenticatedGitUrl((error as Error).message)}`); }
         };
+        // Credentials go whatever happened to the result.
         if (run.token) await attempt('revoke token', () => this.deps.revokeToken(run.token!));
         run.token = undefined;
-        if (handle?.release) await attempt('release run', () => handle.release!());
+        // A result that was returned but never applied keeps its last recoverable copy:
+        // the worker's local ref once retrieved, otherwise the run's result ref and kept run.
+        const keepSandboxResult = run.result === 'pending';
+        const keepLocalResult = run.result === 'retrieved';
+        if (handle?.release && !keepSandboxResult) await attempt('release run', () => handle.release!());
         const git = createHooklessGit(run.worktree);
-        await attempt('local ref', () => git.raw(['update-ref', '-d', run.localRef]).catch(() => undefined));
+        if (!keepLocalResult) await attempt('local ref', () => git.raw(['update-ref', '-d', run.localRef]).catch(() => undefined));
+        // Unless the listing shows otherwise, an undeleted result ref may still be there.
+        let keptRemoteResult = keepSandboxResult;
         await attempt('remote refs', async () => {
             const authenticated = await this.workerGit(run);
             const listed = await authenticated.raw(['ls-remote', run.remote, `${run.localRef}/*`]);
-            const refs = listed.split('\n').map(line => line.split('\t')[1]?.trim()).filter((ref): ref is string => !!ref);
+            const listedRefs = listed.split('\n').map(line => line.split('\t')[1]?.trim()).filter((ref): ref is string => !!ref);
+            keptRemoteResult = keepSandboxResult && listedRefs.includes(run.clone.resultRef!);
+            const refs = keptRemoteResult ? listedRefs.filter(ref => ref !== run.clone.resultRef) : listedRefs;
             if (refs.length) await authenticated.raw(['push', '--no-verify', '--quiet', run.remote, ...refs.map(ref => `:${ref}`)]);
         });
         if (run.bundlePath) await attempt('bundle', () => fs.rm(path.dirname(run.bundlePath!), { recursive: true, force: true }));
+        if (keepSandboxResult || keepLocalResult) {
+            const kept = keepLocalResult ? this.preservedLocations(run, handle)
+                : [...(keptRemoteResult ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
+            logger.warn({ runId: run.runId, kept }, kept.length
+                ? 'Run result was not applied; kept its recoverable copies'
+                : 'Run result was not applied and no recoverable copy of it was found');
+        }
         if (failures.length) throw new WorkspaceTransportError(`Clone workspace cleanup for ${run.runId} incomplete: ${failures.join('; ')}`);
     }
 }
