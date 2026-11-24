@@ -32,7 +32,10 @@ await mock.module('../packages/core/src/db/connection.js', { namedExports: {
         insert(value: Record<string, unknown>) {
             if (table === 'llm_executions') executions.push(value);
             if (table === 'llm_logs') llmLogs.push(value);
-            return Object.assign(Promise.resolve(), { returning: async () => [{ execution_id: `row-${executions.length}` }] });
+            return Object.assign(Promise.resolve(), {
+                returning: async () => [{ execution_id: `row-${executions.length}` }],
+                onConflict: () => ({ ignore: async () => undefined }),
+            });
         },
     }),
 } });

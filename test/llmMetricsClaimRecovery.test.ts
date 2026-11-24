@@ -55,10 +55,14 @@ await mock.module('../packages/core/src/db/connection.js', { namedExports: {
                 }
                 executions.push(value as Record<string, unknown>);
             }
-            if (table === 'llm_execution_details') details.push(value);
-            if (table === 'llm_execution_details' && failNext.detailsInsert > 0) {
-                failNext.detailsInsert--;
-                return Promise.reject(new Error('details insert failed'));
+            if (table === 'llm_execution_details') {
+                details.push(value);
+                const conflictIgnore = (outcome: () => Promise<void>) => ({ onConflict: () => ({ ignore: outcome }) });
+                if (failNext.detailsInsert > 0) {
+                    failNext.detailsInsert--;
+                    return conflictIgnore(() => Promise.reject(new Error('details insert failed')));
+                }
+                return conflictIgnore(async () => undefined);
             }
             return Object.assign(Promise.resolve(), { returning: async () => [{ execution_id: `row-${executions.length}` }] });
         },

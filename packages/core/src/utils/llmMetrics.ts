@@ -191,6 +191,37 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
         metadata: getStepMetadata(step, hasClaudeMessage)
     };
 }
+/**
+ * SQLite caps a multi-row insert: knex compiles it to a compound SELECT (500 terms
+ * at most) and the bound variables are capped too, so one insert of every event
+ * fails for a long run. 100 rows of 14 columns stays far below both limits.
+ */
+const DETAIL_INSERT_BATCH_SIZE = 100;
+const DETAIL_PERSIST_ATTEMPTS = 3;
+
+/**
+ * Inserts the details in order, in batches. A row already stored under its
+ * (execution_id, sequence_number) is skipped, so repeating the call after a
+ * partial failure stores only what is missing and never duplicates a row.
+ */
+export async function insertConversationDetails(details: ConversationDetail[], batchSize = DETAIL_INSERT_BATCH_SIZE): Promise<void> {
+    for (let start = 0; start < details.length; start += batchSize) {
+        await db('llm_execution_details').insert(details.slice(start, start + batchSize)).onConflict(['execution_id', 'sequence_number']).ignore();
+    }
+}
+
+async function insertDetailsWithRetry(details: ConversationDetail[], context: { correlationId?: string; taskId?: string | null; executionId: number | string }): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            await insertConversationDetails(details);
+            return;
+        } catch (error) {
+            if (attempt >= DETAIL_PERSIST_ATTEMPTS) throw error;
+            logger.warn({ ...context, attempt, error: (error as Error).message }, 'Retrying conversation detail insert; already stored rows are skipped');
+        }
+    }
+}
+
 interface ProcessConversationLogParams { claudeResult: ClaudeResult; executionId: string; costUsd: number; correlationId?: string; taskId?: string | null; }
 
 async function processConversationLog(params: ProcessConversationLogParams): Promise<void> {
@@ -224,17 +255,17 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
                 toolName: detailsArray[0].tool_name
             }
         }, 'DEBUG: Sample detail before insert');
-        await db('llm_execution_details').insert(detailsArray);
+        await insertDetailsWithRetry(detailsArray, { correlationId, taskId, executionId });
     }
 }
 /** The level exactly as the agent ran it (`auto` included); blank or absent is unknown. */
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
-interface PersistedExecution { executionId: number | string; taskId: string | null; }
+interface PersistedExecution { executionId: number | string; taskId: string | null; /** False when the execution row exists but its conversation details could not all be stored. */ detailsPersisted: boolean; }
 /**
  * Writes the execution row and its details; the row once inserted, even if its
- * details then fail, `already_persisted` when the execution id already has a
+ * details then fail (`detailsPersisted` is false and the failure is logged), `already_persisted` when the execution id already has a
  * row, else null.
  */
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
@@ -266,12 +297,18 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         };
         const executionId = await insertExecutionRow(db, executionData, claudeResult.executionId, { correlationId, taskId });
         if (executionId === ALREADY_PERSISTED) return executionId;
-        persisted = { executionId, taskId: effectiveTaskId };
+        persisted = { executionId, taskId: effectiveTaskId, detailsPersisted: true };
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
     } catch (error) {
-        logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
+        if (persisted) {
+            persisted.detailsPersisted = false;
+            logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId, executionId: persisted.executionId, detailCount: claudeResult.conversationLog?.length ?? 0 },
+                'LLM execution row persisted but its conversation details are incomplete');
+        } else {
+            logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
+        }
     }
     return persisted;
 }
