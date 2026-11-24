@@ -16,26 +16,30 @@ export interface ComputeUsageSample {
  * Folds periodic samples of a run into its {@link AgentRunComputeUsage}.
  *
  * Memory is averaged over time (each sample stands for the interval before it)
- * and its peak is the highest sample or kernel-recorded peak. CPU is the last
- * cumulative reading, extended to the end of the run at the rate of the last
- * interval since the sandbox cannot be read once it has exited; without a
- * cumulative reading, percentages are integrated over their intervals.
+ * and its peak is the highest sample or kernel-recorded peak. CPU is one
+ * running total whatever measured it: a cumulative reading replaces the total
+ * (it is exact from the start), a percentage adds its interval on top of the
+ * latest reading. The total is extended to the end of the run at the latest
+ * observed rate since the sandbox cannot be read once it has exited.
  */
 export class ComputeUsageAccumulator {
     private lastAtMs: number;
     private memoryWeightedSum = 0;
     private memoryWeightMs = 0;
     private peakMemory: number | null = null;
+    /** Latest cumulative reading, the baseline for the rate of the next one. */
     private cumulativeCpu: { atMs: number; seconds: number } | null = null;
+    /** CPU-seconds used up to `atMs`, from whichever measurement came last. */
+    private cpuTotal: { atMs: number; seconds: number } | null = null;
+    /** CPU-seconds per second observed most recently, used for the unsampled tail. */
     private cpuRate: number | null = null;
-    private integratedCpu: number | null = null;
 
     constructor(private readonly startMs: number) {
         this.lastAtMs = startMs;
     }
 
     get sampled(): boolean {
-        return this.peakMemory !== null || this.cumulativeCpu !== null || this.integratedCpu !== null;
+        return this.peakMemory !== null || this.cpuTotal !== null;
     }
 
     record(sample: ComputeUsageSample): void {
@@ -56,18 +60,25 @@ export class ComputeUsageAccumulator {
                     this.cpuRate = sample.cpuSeconds / ((sample.atMs - this.startMs) / 1000);
                 }
                 this.cumulativeCpu = { atMs: sample.atMs, seconds: sample.cpuSeconds };
+                // Exact from the start, so it supersedes percentages integrated since the last reading.
+                this.cpuTotal = { atMs: sample.atMs, seconds: sample.cpuSeconds };
             }
         } else if (sample.cpuPercent !== undefined) {
-            this.integratedCpu = (this.integratedCpu ?? 0) + (sample.cpuPercent / 100) * (intervalMs / 1000);
+            // The percentage stands for the interval since the last CPU measurement of either kind.
+            const rate = sample.cpuPercent / 100;
+            const previous = this.cpuTotal ?? { atMs: this.startMs, seconds: 0 };
+            const atMs = Math.max(previous.atMs, sample.atMs);
+            this.cpuTotal = { atMs, seconds: previous.seconds + rate * ((atMs - previous.atMs) / 1000) };
+            this.cpuRate = rate;
         }
     }
 
     finish(endMs: number, runtime: string): AgentRunComputeUsage {
         const wallTimeMs = Math.max(0, endMs - this.startMs);
-        let cpuSeconds: number | null = this.integratedCpu;
-        if (this.cumulativeCpu) {
-            const tailSeconds = Math.max(0, (endMs - this.cumulativeCpu.atMs) / 1000);
-            cpuSeconds = this.cumulativeCpu.seconds + (this.cpuRate ?? 0) * tailSeconds;
+        let cpuSeconds: number | null = null;
+        if (this.cpuTotal) {
+            const tailSeconds = Math.max(0, (endMs - this.cpuTotal.atMs) / 1000);
+            cpuSeconds = this.cpuTotal.seconds + (this.cpuRate ?? 0) * tailSeconds;
         }
         const avgMemoryBytes = this.memoryWeightMs > 0
             ? this.memoryWeightedSum / this.memoryWeightMs

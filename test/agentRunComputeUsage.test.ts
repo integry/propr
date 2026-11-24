@@ -104,6 +104,29 @@ test('accumulator: CPU percentages are integrated when no cumulative reading exi
     });
 });
 
+test('accumulator: the last CPU percentage is extended to the exit like a cumulative rate', () => {
+    // Steady 100% CPU: one stats sample at 2 s, exit at 16 s before the next sample.
+    const accumulator = new ComputeUsageAccumulator(0);
+    accumulator.record({ atMs: 2_000, cpuPercent: 100, memoryBytes: 10 });
+    assert.equal(accumulator.finish(16_000, 'docker').cpuSeconds, 16);
+});
+
+test('accumulator: percentages after a cumulative reading add to it at their own rate; a later reading supersedes them', () => {
+    const accumulator = new ComputeUsageAccumulator(0);
+    accumulator.record({ atMs: 10_000, cpuSeconds: 10 });
+    // The cgroup becomes unreadable; docker stats reports half a core from here on.
+    accumulator.record({ atMs: 20_000, cpuPercent: 50 });
+    accumulator.record({ atMs: 30_000, cpuPercent: 50 });
+    // 10 s exact, 5 s per 10 s of stats, then 0.5 CPU-s/s for the 10 s unsampled tail.
+    assert.equal(accumulator.finish(40_000, 'docker').cpuSeconds, 25);
+
+    // A cumulative reading after the fallback replaces the estimate without double counting.
+    accumulator.record({ atMs: 40_000, cpuSeconds: 24 });
+    assert.equal(accumulator.finish(40_000, 'docker').cpuSeconds, 24);
+    // Rate from the two exact readings: 14 CPU-s over 30 s.
+    assert.equal(accumulator.finish(50_000, 'docker').cpuSeconds, 28.667);
+});
+
 test('cgroup and docker stats parsing', () => {
     assert.deepEqual(parseCgroupReport('memory.current 1048576\nmemory.peak 2097152\nusage_usec 2500000\nuser_usec 2000000\n', 5), {
         atMs: 5, memoryBytes: 1048576, memoryPeakBytes: 2097152, cpuSeconds: 2.5,
@@ -176,7 +199,8 @@ test('docker runtime falls back to docker stats when the cgroup cannot be read',
         const result = await handle.wait();
         const usage = result.computeUsage!;
         assert.equal(usage.peakMemoryBytes, GIB);
-        assert.ok(usage.cpuSeconds! > 0, `cpu ${usage.cpuSeconds}`);
+        // A steady 100% workload is measured as one CPU-second per second of the run, tail included.
+        assert.ok(Math.abs(usage.cpuSeconds! - usage.wallTimeMs / 1000) <= 0.002, `cpu ${usage.cpuSeconds} wall ${usage.wallTimeMs}`);
         assert.equal(usage.costUsd, null, 'priced only when dispatched through runAgent');
         const exec = calls.filter(call => call.args[0] === 'exec').length;
         const stats = calls.filter(call => call.args[0] === 'stats').length;
