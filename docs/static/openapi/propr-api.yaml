@@ -9996,6 +9996,13 @@ components:
             - label
             - repositories
           additionalProperties: false
+        runtime:
+          anyOf:
+            - $ref: "#/components/schemas/AgentRunAdmissionRuntime"
+            - type: "null"
+          description: Null when the runtime selection could not be resolved; see `runtimeUnavailable`.
+        runtimeUnavailable:
+          type: string
         subscriptionUsage:
           type: string
           description: Subscription usage is reported elsewhere; this says where.
@@ -10005,9 +10012,124 @@ components:
         - agents
         - queueWorkers
         - repositoryWorkflowSlots
+        - runtime
         - subscriptionUsage
       additionalProperties: false
       description: What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.
+    AgentRunAdmissionRuntime:
+      type: object
+      properties:
+        runtime:
+          type: string
+          description: Default agent runtime (an agent's own `runtime` setting can select another, checked the same way at launch).
+        selectedBy:
+          type: string
+          enum:
+            - PROPR_AGENT_RUNTIME
+            - default
+        registered:
+          type: array
+          items:
+            type: string
+          description: Runtimes this process can launch.
+        capabilities:
+          type: object
+          properties:
+            bindMounts:
+              type: boolean
+            restrictedNetwork:
+              type: boolean
+              description: Outbound traffic can be confined to the run's host/port allowlist.
+            mcpPrivateNetwork:
+              type: boolean
+              description: Runs can join the private network that reaches ProPR MCP.
+            mcpReachableUrl:
+              type: boolean
+              description: Runs can reach ProPR MCP at a reachable URL with a per-run token (the fallback without private networking).
+            reattach:
+              type: boolean
+          required:
+            - bindMounts
+            - restrictedNetwork
+            - mcpPrivateNetwork
+            - mcpReachableUrl
+            - reattach
+          additionalProperties: false
+        network:
+          type: object
+          properties:
+            instanceMode:
+              anyOf:
+                - type: string
+                  enum:
+                    - open
+                    - restricted
+                - type: "null"
+              description: Instance network mode; null when the policy could not be read (runs then fail closed).
+            enforced:
+              type:
+                - boolean
+                - "null"
+            restrictedRuns:
+              type: string
+              enum:
+                - enforced
+                - refused
+              description: "enforced: restricted runs are confined; refused: admission refuses them before launch instead of running them open."
+            enforcement:
+              anyOf:
+                - type: object
+                  properties:
+                    method:
+                      type: string
+                    description:
+                      type: string
+                  required:
+                    - method
+                    - description
+                  additionalProperties: false
+                - type: "null"
+              description: How the runtime confines restricted runs.
+            refusal:
+              description: The error a restricted run gets on this runtime.
+              type: string
+            refusingRuns:
+              type: boolean
+              description: "The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused."
+            unavailable:
+              type: string
+          required:
+            - instanceMode
+            - enforced
+            - restrictedRuns
+            - enforcement
+            - refusingRuns
+          additionalProperties: false
+        mcp:
+          type: object
+          properties:
+            transport:
+              type: string
+              enum:
+                - private-network
+                - reachable-url
+                - unavailable
+              description: How runs granted ProPR MCP reach it on this runtime.
+            reason:
+              type: string
+          required:
+            - transport
+            - reason
+          additionalProperties: false
+      required:
+        - runtime
+        - selectedBy
+        - registered
+        - capabilities
+        - network
+        - mcp
+      additionalProperties: false
+      description: What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks.
     AgentRunAdmissionStateCounts:
       type: object
       properties:

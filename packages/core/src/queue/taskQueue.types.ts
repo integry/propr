@@ -2,6 +2,7 @@
 import type { Job } from 'bullmq';
 import type { ConversationStep, TokenUsage } from '../utils/llmMetrics.types.js';
 import type { SubscriptionUsageMetrics } from '../utils/github/formatSubscriptionUsage.js';
+import type { AgentRunComputeUsage } from '../agents/runtime/computeUsage.js';
 import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandParser.js';
 import type { ReasoningLevel } from '@propr/shared';
 import type { ResolvedRepositoryWorkflow } from '../workflow/repositoryWorkflow.js';
@@ -318,6 +319,8 @@ export interface ClaudeResult {
     terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
+    /** What the agent's sandbox consumed (wall time, CPU, memory, compute cost). */
+    computeUsage?: AgentRunComputeUsage | null;
 }
 
 export interface JobResult {

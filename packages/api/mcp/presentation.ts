@@ -132,6 +132,23 @@ const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
 
 /** One line per limit the report labels; admission first, then each capped agent. */
 function admissionSummary(result: Args): string {
+  return `${admissionLimitSummary(result)}${runtimeSummary(result)}`;
+}
+
+/** Appended when the default runtime refuses restricted runs, or its capabilities are unknown. */
+function runtimeSummary(result: Args): string {
+  if (result.runtimeUnavailable) return ` Agent runtime unavailable: ${result.runtimeUnavailable}`;
+  const network = result.runtime?.network;
+  if (!network || network.restrictedRuns !== 'refused') return '';
+  const runtime = result.runtime.runtime;
+  if (network.refusingRuns) return ` Restricted networking is enforced, but agent runtime "${runtime}" cannot enforce it: runs are refused.`;
+  if (network.instanceMode === 'restricted') {
+    return ` Restricted networking is the default (not enforced), but agent runtime "${runtime}" cannot enforce it: runs whose effective policy remains restricted will be refused.`;
+  }
+  return ` Agent runtime "${runtime}" cannot enforce restricted networking; restricted runs would be refused.`;
+}
+
+function admissionLimitSummary(result: Args): string {
   const { admission, agents = [] } = result;
   if (!admission?.enabled) return 'Agent-run admission is off; queue worker and repository limits still apply.';
   if (!admission.global) return `Agent-run admission is on, but its state is unavailable: ${admission.unavailable ?? 'unknown reason'}.`;

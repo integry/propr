@@ -78,18 +78,28 @@ export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefi
     }
 }
 
-export function getAnalysisSandboxArgs(mode?: 'execute' | 'analysis'): string[] {
+const ANALYSIS_SANDBOX_TMPFS: ReadonlyArray<readonly [string, string]> = [
+    ['/tmp', 'rw,nosuid,size=512m'],
+    ['/home/node/bin', 'rw,nosuid,size=16m'],
+    ['/home/node/.cache', 'rw,nosuid,size=256m'],
+    ['/home/node/.config', 'rw,nosuid,size=64m'],
+    ['/home/node/.local', 'rw,nosuid,size=128m'],
+];
+
+/** Analysis runs get a read-only root filesystem, no capabilities and private scratch space. */
+export function vibeAnalysisSandbox(mode?: 'execute' | 'analysis'): { readOnlyRootFilesystem: boolean; capDrop: string[]; tmpfs: ReadonlyArray<readonly [string, string]> } {
     return mode === 'analysis'
-        ? [
-            '--read-only',
-            '--cap-drop=ALL',
-            '--tmpfs', '/tmp:rw,nosuid,size=512m',
-            '--tmpfs', '/home/node/bin:rw,nosuid,size=16m',
-            '--tmpfs', '/home/node/.cache:rw,nosuid,size=256m',
-            '--tmpfs', '/home/node/.config:rw,nosuid,size=64m',
-            '--tmpfs', '/home/node/.local:rw,nosuid,size=128m'
-        ]
-        : [];
+        ? { readOnlyRootFilesystem: true, capDrop: ['ALL'], tmpfs: ANALYSIS_SANDBOX_TMPFS }
+        : { readOnlyRootFilesystem: false, capDrop: [], tmpfs: [] };
+}
+
+export function getAnalysisSandboxArgs(mode?: 'execute' | 'analysis'): string[] {
+    const sandbox = vibeAnalysisSandbox(mode);
+    return [
+        ...(sandbox.readOnlyRootFilesystem ? ['--read-only'] : []),
+        ...sandbox.capDrop.map(capability => `--cap-drop=${capability}`),
+        ...sandbox.tmpfs.flatMap(([target, options]) => ['--tmpfs', `${target}:${options}`]),
+    ];
 }
 
 export function getParsedVibeError(parsedOutput: ReturnType<typeof parseVibeOutput>): string | undefined {
