@@ -31,6 +31,8 @@ const { agentRunNetworkPolicy } = await import('../packages/core/src/agents/runt
 const { executeWithNetworkPolicy } = await import('../packages/core/src/network/egressExecution.ts');
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** stop()'s settle allowance past its timeout (STOPPED_RUN_SETTLE_MS). */
+const STOP_SETTLE_WINDOW_MS = 5_000;
 
 const FLY_ENV = { PROPR_FLY_API_TOKEN: 'FlyV1 fm2_test', PROPR_FLY_APP: 'propr-agents', PROPR_FLY_REGION: 'ams' };
 
@@ -84,6 +86,8 @@ class FakeFly {
     createGate?: Promise<void>;
     /** Exec requests wait for this before the API answers. */
     execGate?: Promise<void>;
+    /** Logs requests wait for this before the API answers (a page still pending); an abort by the client rejects it first. */
+    logsGate?: Promise<void>;
     /**
      * The next create is accepted but its response is lost: the connection fails (`'network'`) or a proxy
      * answers with this status. `deferred`: the Machine appears only on {@link completeDeferredCreate}.
@@ -172,6 +176,17 @@ class FakeFly {
         if (parsed.pathname.endsWith('/logs')) {
             const machine = this.machines.get(parsed.searchParams.get('instance')!);
             if (!machine || this.expire(machine)) return json(200, { data: [], meta: {} });
+            if (this.logsGate) {
+                this.pendingLogPages++;
+                try {
+                    await new Promise<void>((resolve, reject) => {
+                        init.signal?.addEventListener('abort', () => { this.abortedLogs++; reject(init.signal!.reason); }, { once: true });
+                        void this.logsGate!.then(resolve);
+                    });
+                } finally {
+                    this.pendingLogPages--;
+                }
+            }
             if (this.slowLogsMs > 0) return this.slowLogPage(machine, init.signal);
             if (this.delayPolls > 0) { this.delayPolls--; return json(200, { data: [], meta: { next_token: 't0' } }); }
             if (!machine.ran) { machine.ran = true; this.agent(machine); }
@@ -744,6 +759,68 @@ test('an exit not yet seen when the deadline or stop() signals: the lingering Ma
     assert.deepEqual(stopped.destroyed, [], 'stop() of a finished run keeps its Machine');
     assert.equal((await handle.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle');
     await handle.release!();
+});
+
+test('stop() of a finished run whose logs page or capture reads outlast the settle window keeps its Machine', async () => {
+    const finished = (fly: FakeFly) => (machine: FakeMachine) => {
+        fly.finish(machine, 'result\n', 'warn\n', 0);
+        machine.files.set('/tmp/r/result.bundle', Buffer.from('bundle'));
+    };
+    const execsOf = (fly: FakeFly, file: string) => fly.requests.filter(request => request.url.endsWith('/exec') && request.body.command.includes(file)).length;
+
+    // The agent finished, but the logs page that would carry its exit is still pending (within the 30 s
+    // request timeout) after stop()'s signal and its settle window: the recorded exit status keeps the Machine.
+    const delayedLogs = new FakeFly();
+    delayedLogs.delayPolls = 0;
+    let deliverLogs!: () => void;
+    delayedLogs.agent = machine => {
+        finished(delayedLogs)(machine);
+        machine.pendingLogs.length = 0;
+        delayedLogs.logsGate = new Promise(resolve => { deliverLogs = resolve; });
+    };
+    const handle = runtime(delayedLogs).start(spec(), { timeout: 600_000 });
+    while (delayedLogs.pendingLogPages === 0) await sleep(2);
+    let stopSettled = false;
+    const stopping = handle.stop('SIGTERM', 0).then(() => { stopSettled = true; });
+    await sleep(STOP_SETTLE_WINDOW_MS + 500);
+    assert.deepEqual(delayedLogs.machines.get('m1')!.signals, [15]);
+    assert.ok(execsOf(delayedLogs, FLY_RUN_FILES.exitStatus) > 0, 'stop() looked for the recorded exit status');
+    assert.equal(stopSettled, false, 'stop() waits for the collection');
+    assert.deepEqual(delayedLogs.destroyed, [], 'no destroy of a finished run');
+    assert.equal(delayedLogs.abortedLogs, 0, 'the pending page was not cancelled');
+    deliverLogs();
+    await stopping;
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'result\n');
+    assert.deepEqual(delayedLogs.destroyed, []);
+    assert.equal((await handle.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle', 'the workspace result is still collectable');
+    await handle.release!();
+
+    // The exit was seen and the run is reading the capture files back when stop() arrives: no signal, no
+    // cancellation, and stop() does not give up while the reads are pending.
+    const delayedReads = new FakeFly();
+    delayedReads.delayPolls = 0;
+    delayedReads.agent = machine => {
+        finished(delayedReads)(machine);
+        delayedReads.execGate = new Promise(resolve => { deliverReads = resolve; });
+    };
+    let deliverReads!: () => void;
+    const collecting = runtime(delayedReads).start(spec(), { timeout: 600_000 });
+    while (execsOf(delayedReads, FLY_RUN_FILES.stdout) === 0) await sleep(2);
+    let collectStopSettled = false;
+    const stoppingCollect = collecting.stop('SIGTERM', 0).then(() => { collectStopSettled = true; });
+    await sleep(STOP_SETTLE_WINDOW_MS + 500);
+    assert.equal(collectStopSettled, false, 'stop() waits for the capture reads');
+    assert.deepEqual(delayedReads.machines.get('m1')!.signals, [], 'an exited agent is not signalled');
+    deliverReads();
+    await stoppingCollect;
+    const collected = await collecting.wait();
+    assert.equal(collected.exitCode, 0);
+    assert.equal(collected.stdout, 'result\n');
+    assert.deepEqual(delayedReads.destroyed, [], 'stop() during collection keeps the Machine');
+    assert.equal((await collecting.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle');
+    await collecting.release!();
 });
 
 test('timeout: when the kill cannot be confirmed the Machine is destroyed before settling, or the run fails', async () => {

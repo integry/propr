@@ -274,15 +274,16 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * whether the Machine ended. `signal` aborts the check: the run's
      * cancellation (the Machine is destroyed instead) or, in the run loop, its
      * deadline. A stop window does not: this is the evidence its forced stop
-     * or destroy is decided on.
+     * or destroy is decided on. `stop()` checks without a signal: the check
+     * decides whether it may cancel the run.
      */
-    private async checkStatus(signal: AbortSignal): Promise<void> {
+    private async checkStatus(signal?: AbortSignal): Promise<void> {
         const status = await this.execRead(FLY_RUN_FILES.exitStatus, { limit: MAX_EXIT_STATUS_BYTES, signal }).catch(() => undefined);
         if (status && status !== 'oversized') {
             const code = Number(status.content.toString('utf8').trim());
             if (Number.isInteger(code)) { this.exitCode ??= code; return; }
         }
-        if (signal.aborted) return;
+        if (signal?.aborted) return;
         const machine = await this.deps.client.getMachine(this.machineId!, { signal }).catch(() => undefined);
         if (machine === undefined) return;
         if (!machine || !['started', 'starting', 'created', 'replacing'].includes(machine.state ?? '')) {
@@ -386,10 +387,13 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
 
     /**
      * A started agent gets `signal` (forwarded by the launcher, which spares
-     * a clone transport wrapper) and settles with its exit status. A launch
-     * still creating its Machine, or an agent that does not exit within
-     * `timeoutMs`, is cancelled: its Machine is destroyed and `wait()`
-     * rejects with {@link AgentRunStoppedError}.
+     * a clone transport wrapper) and settles with its exit status. An agent
+     * that already exited (its exit status recorded, also when the run has
+     * not seen it yet) is never cancelled: `stop()` waits for the run to
+     * collect its result from the Machine. A launch still creating its
+     * Machine, or an agent that does not exit within `timeoutMs`, is
+     * cancelled: its Machine is destroyed and `wait()` rejects with
+     * {@link AgentRunStoppedError}.
      */
     async stop(signal: NodeJS.Signals = 'SIGTERM', timeoutMs = DEFAULT_STOP_TIMEOUT_MS): Promise<void> {
         if (this.settled) return;
@@ -400,11 +404,16 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             } catch (error) {
                 logger.warn({ run: this.spec.name, machine: this.machineId, error: (error as Error).message }, 'Could not signal the Fly Machine; cancelling the run');
             }
+            // Not settled is not "still running": the run may only be waiting on a logs page. The recorded
+            // exit status (or the Machine's end) decides, before a cancellation destroys the Machine.
+            if (this.exitCode === undefined && !this.settled && !this.discarding && !this.cancellation.signal.aborted) await this.checkStatus();
         }
+        // The agent exited: the run is collecting its output and result from the Machine. It settles once its
+        // pending requests (each bounded by its request timeout) answer; cancelling it would destroy the
+        // completed workspace and the refreshed credentials.
+        if (this.exitCode !== undefined && !this.discarding && !this.cancellation.signal.aborted) { await this.result.catch(() => undefined); return; }
         if (!this.cancellation.signal.aborted) this.cancellation.abort(new AgentRunStoppedError(this.spec.name));
-        if (!await this.settlesWithin(timeoutMs + STOPPED_RUN_SETTLE_MS)) {
-            throw new Error(`Agent run ${this.spec.name} did not settle after it was stopped`);
-        }
+        if (!await this.settlesWithin(timeoutMs + STOPPED_RUN_SETTLE_MS)) throw new Error(`Agent run ${this.spec.name} did not settle after it was stopped`);
     }
 
     async inspect(): Promise<AgentRunInspection> {
