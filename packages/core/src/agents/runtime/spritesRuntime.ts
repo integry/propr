@@ -24,6 +24,7 @@ import {
     buildSpritesPayload, materializeSpritesCredentials, planSpritesRun, spritesCliVersionRefusal, spritesMountRefusal,
     SPRITES_EXPORT_DIR, SPRITES_PAYLOAD, SPRITES_RESULT_DIR, type SpritesRunCredentials,
 } from './sprites/spritesRunPlan.js';
+import { SpritesResultStore } from './sprites/spritesResultStore.js';
 import { defaultSpritesClientFactory, type SpritesClientFactory, type SpritesClientLike } from './sprites/spritesSdk.js';
 import { readSpritesSetupBundle, type SpritesSetupBundle } from './sprites/spritesSetup.js';
 import { superviseSpritesRun, type SpritesRunSupervised } from './sprites/spritesSupervisor.js';
@@ -46,7 +47,7 @@ export const SPRITES_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.fre
     workspaceTransports: Object.freeze(['clone'] as const),
 });
 
-/** The clone transport's bundle fallback is held in memory until the run is released. */
+/** The largest bundle fallback of the clone transport the worker takes off a Sprite. */
 export const MAX_SPRITES_RESULT_BUNDLE_BYTES = 512 * 1024 * 1024;
 const MAX_RESULT_STATUS_BYTES = 4096;
 
@@ -82,8 +83,10 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     private lease?: SpriteLease;
     private started = false;
     private settled = false;
-    /** The workspace result files, read before the Sprite is restored and kept until release. */
+    /** The workspace result's status, read before the Sprite is restored and kept until release. */
     private readonly resultFiles = new Map<string, Buffer>();
+    /** The worker's durable copy of the result bundle, written before the Sprite is restored. */
+    private resultStore?: SpritesResultStore;
     /** The Sprite's return to its clean checkpoint: begun when the run ends, whatever its outcome. */
     private recycled?: Promise<void>;
     private released?: Promise<void>;
@@ -280,7 +283,13 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         }
     }
 
-    /** Reads the clone transport's result (its status, and the bundle fallback when it left one) off the Sprite. */
+    /**
+     * Reads the clone transport's result (its status, and the bundle fallback
+     * when it left one) off the Sprite. The bundle may be the only copy of the
+     * run's changes and the Sprite is restored next, so it is written to the
+     * worker's disk here: it then outlives this handle, a failed retrieval and
+     * a worker restart, until {@link release}.
+     */
     private async readWorkspaceResult(supervised: SpritesRunSupervised): Promise<void> {
         if (!supervised.terminated) return;
         const filesystem = this.lease!.sprite.filesystem();
@@ -290,8 +299,24 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         // A pushed result is on the repository; a failed run left none.
         if (state === 'pushed' || state === 'failed') return;
         const bundle = await readSpriteExportFile(filesystem, SPRITES_RESULT_DIR, WORKSPACE_RESULT_BUNDLE_FILE, MAX_SPRITES_RESULT_BUNDLE_BYTES);
-        if (bundle.ok) this.resultFiles.set(WORKSPACE_RESULT_BUNDLE_FILE, bundle.content);
+        if (bundle.ok) await this.keepResultBundle(bundle.content, status.ok ? status.content.toString('utf8').trim() : undefined);
         else if (bundle.reason !== 'missing') logger.error({ run: this.spec.name, sprite: this.lease!.name, reason: bundle.reason }, 'Refused the workspace result bundle of the Sprites run');
+    }
+
+    private async keepResultBundle(bundle: Buffer, status: string | undefined): Promise<void> {
+        const { spec } = this;
+        const sprite = this.lease!.name;
+        const store = new SpritesResultStore(this.runtime.config().stateDir, spec);
+        try {
+            const directory = await store.save(bundle, { sprite, status });
+            this.resultStore = store;
+            logger.info({ run: spec.name, sprite, directory, bytes: bundle.length }, 'Kept the workspace result bundle of the Sprites run on the worker until the run is released');
+        } catch (error) {
+            // Still better than nothing: this process can apply it, but nothing survives the handle.
+            this.resultFiles.set(WORKSPACE_RESULT_BUNDLE_FILE, bundle);
+            logger.error({ run: spec.name, sprite, error: this.message(error) },
+                'Could not write the workspace result bundle of the Sprites run to the worker\'s disk; it is held in memory only and is lost if it is not applied');
+        }
     }
 
     /**
@@ -347,16 +372,28 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     async readFile(filePath: string): Promise<Buffer | null> {
         if (!this.settled || this.released) return null;
         const relative = path.posix.relative(WORKSPACE_TRANSPORT_RESULT_DIR, filePath);
+        if (relative === WORKSPACE_RESULT_BUNDLE_FILE && this.resultStore) return this.resultStore.readBundle();
         return this.resultFiles.get(relative) ?? null;
     }
 
-    /** The result files are the worker's own copy and stay until {@link release}; the Sprite is restored regardless. */
+    /**
+     * Nothing removes the worker's copy of the result before {@link release}:
+     * no timer, not the Sprite's restore, not this handle going away. The
+     * bundle is on the worker's disk (see {@link resultRecoveryLocation}).
+     */
     retain(): void { /* nothing is removed before release */ }
+
+    /** The worker directory holding the result bundle and its recovery file, while one is kept. */
+    resultRecoveryLocation(): string | undefined {
+        return this.resultStore?.location;
+    }
 
     /**
      * Stops the run if it is still going, waits until its Sprite is back at
      * its clean checkpoint (restored, or destroyed and provisioned anew) and
-     * drops the result files. The restore itself never depends on this call.
+     * removes the worker's copy of the result, the bundle on disk included: a
+     * caller that has not secured the result elsewhere must not call it. The
+     * restore itself never depends on this call.
      */
     release(): Promise<void> {
         this.released ??= (async () => {
@@ -364,8 +401,12 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
                 await this.stop().catch(error => logger.warn({ run: this.spec.name, error: (error as Error).message }, 'Sprites run is still settling after its stop'));
                 await this.result.then(() => undefined, () => undefined);
             }
-            await this.recycled;
-            this.resultFiles.clear();
+            try {
+                await this.recycled;
+            } finally {
+                this.resultFiles.clear();
+                await this.resultStore?.discard();
+            }
         })();
         return this.released;
     }

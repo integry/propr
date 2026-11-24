@@ -97,7 +97,7 @@ A Sprite cannot bind-mount worker paths, so a Sprites run always uses the [clone
 | `PROPR_SPRITES_NAME_PREFIX` | `propr` | Sprites are named `<prefix>-<worker id>-<slot>`. |
 | `PROPR_SPRITES_WORKER_ID` | hash of the Fly Machine id or host name | Keeps one worker's Sprites apart from another's. Set it when two workers share a host name. |
 | `PROPR_SPRITES_REGION`, `PROPR_SPRITES_RAM_MB`, `PROPR_SPRITES_CPUS` | Sprites defaults | Applied when a Sprite is created. |
-| `PROPR_SPRITES_STATE_DIR` | `<managed credentials dir>/.propr-sprites` | Where the worker records each Sprite's clean checkpoint and holds its per-Sprite lock. Keep it on persistent storage. The lock is an operating-system file lock on `<sprite>.lock` (taken through SQLite), released by the kernel when the worker process exits; the lock files themselves stay in place and must not be removed or opened by other tools while a worker runs. |
+| `PROPR_SPRITES_STATE_DIR` | `<managed credentials dir>/.propr-sprites` | Where the worker records each Sprite's clean checkpoint and holds its per-Sprite lock, and where it keeps result bundles (`results/`, see [Kept result bundles](#kept-result-bundles)). Keep it on persistent storage. The lock is an operating-system file lock on `<sprite>.lock` (taken through SQLite), released by the kernel when the worker process exits; the lock files themselves stay in place and must not be removed or opened by other tools while a worker runs. |
 | `PROPR_SPRITES_API_URL` | Sprites API | Alternative API endpoint. |
 | `SPRITES_CLIENT_SIGNALS` | `0` | The SDK's usage-attribution headers. ProPR switches them off unless you set this variable yourself. |
 
@@ -118,6 +118,24 @@ A Sprite's checkpoint does not cover `/tmp`: it is a separate disk, and a restor
 - Before every restore, once no process of the `node` user is left, the launcher (`launcher.sh scrub`) deletes everything under `/tmp` as root without following symlinks or crossing into another filesystem. A Sprite whose `/tmp` could not be emptied is destroyed instead of restored.
 
 There is no setting that skips the scrub or the restore. The workspace, the result bundle, logs, scratch directories, provider tokens and the agent's HOME (including Antigravity's disposable HOME) therefore cannot reach the next run. A worker that restarts does not trust what it finds: it restores each Sprite from the recorded checkpoint before the first run, and it destroys a Sprite it has no matching record for (a new setup revision, a lost state directory). It never picks a checkpoint by its comment on a Sprite that has run an agent.
+
+### Kept Result Bundles
+
+A run that cannot push its result leaves a git bundle, the only copy of its changes. Because the Sprite is restored as soon as the run ends, the worker first writes that bundle to its own disk:
+
+- It goes to `<PROPR_SPRITES_STATE_DIR>/results/<run name>-<id>/result.bundle` (directory mode `0700`, files `0600`), flushed to disk before the restore starts.
+- `recovery.json` beside it records the run, the Sprite, the repository URL, branch and base commit, the worker worktree, the bundle's size and SHA-256, and the `git fetch` command that recovers it.
+- The directory is removed when the worker holds the result (applied to the worktree, or fetched into its local `refs/propr/runs/<id>` ref).
+- If retrieval fails, it stays. The error and the worker log name the directory, and it survives a worker restart. Nothing removes it automatically: delete it after recovering the result.
+
+To recover, run in a clone of the repository:
+
+```bash
+git bundle verify <directory>/result.bundle
+git fetch <directory>/result.bundle refs/propr/result:refs/heads/recovered-run
+```
+
+The fetched commit is a snapshot of the run's workspace on top of the agent's own commits. If the bundle cannot be written (for example a full disk), the worker logs an error and holds it in memory for the current attempt only.
 
 ### Privilege And Credential Boundary
 

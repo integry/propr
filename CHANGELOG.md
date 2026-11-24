@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Provider entrypoints run entirely as the unprivileged `node` user on a
     Sprite, and refreshed tokens return only through the launcher's export
     directory. See `docs/docs/architecture/agent-runtime.md#sprites-runtime`.
+  - A run that could not push its result leaves a bundle. The worker writes it
+    to `<PROPR_SPRITES_STATE_DIR>/results/<run>-<id>/` with a `recovery.json`
+    before the Sprite is restored. It is removed once the result is on the
+    worker; if retrieval fails it stays, the error names the directory, and it
+    survives a worker restart.
 
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`

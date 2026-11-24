@@ -317,6 +317,13 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
      * holding the only copy of a result there can keep it. Idempotent.
      */
     retain?(): void;
+    /**
+     * Where the runtime keeps the run's result for recovery, when that is not the
+     * kept run itself (a runtime that copies the result out of a sandbox it then
+     * recycles): a private worker-side path that stays until
+     * {@link AgentRunHandle.release}. Undefined when it holds no such copy.
+     */
+    resultRecoveryLocation?(): string | undefined;
 }
 
 /** What a launch knows of the agent's configuration: its runtime and CLI version selection. */

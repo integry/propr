@@ -96,6 +96,18 @@ function agentOwnsCommits(spec: AgentRunSpec): boolean {
     return spec.mounts.some(mount => mount.type === 'bind' && mount.purpose === 'git' && !mount.readOnly);
 }
 
+/**
+ * What the runtime still holds of an unreleased run: the kept run itself, or, for a
+ * runtime that recycles its sandbox, the worker-side copy of the result (none when the
+ * run left no bundle).
+ */
+function keptRunLocations(handle?: AgentRunHandle): string[] {
+    if (!handle?.release) return [];
+    if (!handle.resultRecoveryLocation) return [`the kept run ${handle.spec.name}`];
+    const location = handle.resultRecoveryLocation();
+    return location ? [`${location} on the worker (the result bundle of run ${handle.spec.name})`] : [];
+}
+
 async function rev(git: SimpleGit, ref: string): Promise<string> {
     return (await git.raw(['rev-parse', '--verify', '-q', ref])).trim();
 }
@@ -246,7 +258,7 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         if (run.result === 'retrieved') return [`${run.localRef} in ${run.worktree}`];
         // A sandbox that reported a bundle or a failure pushed no result ref.
         const pushed = run.reportedState !== 'bundle' && run.reportedState !== 'failed';
-        return [...(pushed ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
+        return [...(pushed ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...keptRunLocations(handle)];
     }
 
     private async retrieveAndApply(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult, signal?: AbortSignal): Promise<WorkspaceRunOutcome> {
@@ -335,7 +347,7 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         if (run.bundlePath) await attempt('bundle', () => fs.rm(path.dirname(run.bundlePath!), { recursive: true, force: true }));
         if (keepSandboxResult || keepLocalResult) {
             const kept = keepLocalResult ? this.preservedLocations(run, handle)
-                : [...(keptRemoteResult ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
+                : [...(keptRemoteResult ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...keptRunLocations(handle)];
             logger.warn({ runId: run.runId, kept }, kept.length
                 ? 'Run result was not applied; kept its recoverable copies'
                 : 'Run result was not applied and no recoverable copy of it was found');
