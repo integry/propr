@@ -481,9 +481,7 @@ async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDae
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the
         // routing path as down in Redis while it is still actively draining.
-        if (routingService) {
-            await routingService.stop();
-        }
+        if (routingService) await routingService.stop();
         if (routingStatusPublisher) await routingStatusPublisher.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
