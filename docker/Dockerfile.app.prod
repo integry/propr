@@ -180,6 +180,9 @@ COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
 COPY scripts/extension-stdio-bridge.mjs ./scripts/extension-stdio-bridge.mjs
 COPY NOTICE ./NOTICE
 COPY THIRD_PARTY_LICENSES.md ./THIRD_PARTY_LICENSES.md
+# The Sprites agent runtime provisions Sprites with these and the entrypoint scripts above.
+COPY scripts/sprites-agent-setup.sh ./scripts/sprites-agent-setup.sh
+COPY scripts/sprites-launcher.sh ./scripts/sprites-launcher.sh
 
 # Third-party notices (required by bundled Apache-2.0 and proprietary components).
 COPY NOTICE /usr/share/licenses/propr/NOTICE

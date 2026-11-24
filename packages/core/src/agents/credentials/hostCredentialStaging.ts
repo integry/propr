@@ -89,7 +89,7 @@ function perRunCredentialMounts(spec: AgentRunSpec): CredentialBindMount[] {
  * `NAME` inherited from the client environment (omitted when unset there).
  * An unreadable file defines nothing here; Docker refuses to start the run.
  */
-function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
+export function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
     const values = new Map<string, string>();
     let content: string;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch { return values; }

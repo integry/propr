@@ -43,6 +43,8 @@ export interface AgentConfig {
     cliVersionType?: CliVersionType;
     cliVersion?: string;
     cliVersionResolved?: string;
+    /** Agent runtime the runs use (`docker`, `sprites`); unset follows PROPR_AGENT_RUNTIME. */
+    runtime?: string;
 }
 
 /**

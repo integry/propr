@@ -381,7 +381,11 @@ export {
 } from './agents/credentials/hostCredentialStaging.js';
 export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
-    AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,
+    SpritesRuntime, SPRITES_RUNTIME_CAPABILITIES, SpritesRunInterruptedError, SpritesConfigurationError,
+    type SpritesRunTimings, type SpritesRuntimeDependencies,
+} from './agents/runtime/spritesRuntime.js';
+export {
+    AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,
     registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
     AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
 } from './agents/runtime/registry.js';

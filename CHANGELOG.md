@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sprites agent runtime** (#3790)
+  - `PROPR_AGENT_RUNTIME=sprites`, or `"runtime": "sprites"` on one agent, runs
+    Claude Code, Codex and Antigravity runs on Fly Sprites (`PROPR_SPRITES_TOKEN`)
+    with the clone workspace transport and per-run credential copies.
+  - One run per Sprite at a time. Every run starts on the Sprite's clean
+    post-setup checkpoint, and the checkpoint is restored when the run ends
+    (a Sprite that cannot be restored is destroyed and provisioned anew), so
+    nothing of one run reaches the next. There is no setting that skips it.
+  - Provider entrypoints run entirely as the unprivileged `node` user on a
+    Sprite, and refreshed tokens return only through the launcher's export
+    directory. See `docs/docs/architecture/agent-runtime.md#sprites-runtime`.
+
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
     (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the

@@ -31,7 +31,7 @@ This table maps each agent type to the unified image, its type-specific entrypoi
 | OpenCode | `propr/agent` | `Dockerfile.agent` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
 | Mistral Vibe | `propr/agent` | `Dockerfile.agent` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
 
-Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default and currently the only built-in runtime (`PROPR_AGENT_RUNTIME=docker`). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
+Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default runtime (`PROPR_AGENT_RUNTIME=docker`); [Fly Sprites](#sprites-runtime) is the other built-in one (`PROPR_AGENT_RUNTIME=sprites`, or `runtime: sprites` on one agent). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
 
 ## Container Configuration
 
@@ -83,6 +83,53 @@ Containers run on Docker's default bridge network with `--security-opt no-new-pr
 In `restricted` mode (instance setting `agent_network_mode`, or `network.mode` in `.propr/workflow.yml`), the Docker executor starts a per-container allowlist proxy in the worker process on a Unix socket under `PROPR_EGRESS_SOCKET_DIR`, replaces the container's network (whatever `docker run` named, or the default bridge) with `--network none`, mounts the socket directory read-only at `/run/propr-egress`, and sets `HTTP_PROXY`/`HTTPS_PROXY`, `NO_PROXY` and Git's `http.proxy`. A bridge started by the container wrapper exposes the socket as `127.0.0.1:3128` before setup hooks and the agent run. The proxy resolves DNS on the worker and refuses hosts outside the allowlist with `403`, and chains allowed connections through the worker's own `HTTPS_PROXY`/`HTTP_PROXY` when set; it closes when the container's `docker run` exits. Native goal sessions, which spawn `docker run` directly, get the same proxy for the life of that process. No privileged flag or extra capability is used. See [Restricted network mode](../features/execution-safety.md#restricted-network-mode).
 
 Provider connectivity failures in open mode usually come from the host network, DNS, proxy settings, provider availability, or an external firewall. In restricted mode, check the task timeline's **Restricted Network** event for denied hosts first.
+
+## Sprites Runtime
+
+`PROPR_AGENT_RUNTIME=sprites` runs Claude Code, Codex and Antigravity task and analysis runs on [Fly Sprites](https://sprites.dev) instead of local containers. An agent can also select it alone with `"runtime": "sprites"` in its configuration (`docker` and `sprites` are the accepted values; unset follows `PROPR_AGENT_RUNTIME`). OpenCode and Mistral Vibe agents, native goal sessions, runs that resume a provider session from the credential store, restricted network mode and private-network MCP grants are refused on Sprites before anything is launched; they need the Docker runtime.
+
+A Sprite cannot bind-mount worker paths, so a Sprites run always uses the [clone workspace transport](./coding-agent-integration.md#workspace-transport) and the credential broker's per-run copies. The worker needs `PROPR_SPRITES_TOKEN` (an org-scoped Sprites token), `Dockerfile.agent` and `scripts/` at `PROPR_ROOT`, and the `@fly/sprites` package.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PROPR_SPRITES_TOKEN` | required | Org-scoped Sprites API token. `SPRITES_TOKEN` is accepted as a fallback. |
+| `PROPR_SPRITES_MAX_SPRITES` | `4` | Sprites this worker keeps, which is also how many Sprites runs it has at once. |
+| `PROPR_SPRITES_NAME_PREFIX` | `propr` | Sprites are named `<prefix>-<worker id>-<slot>`. |
+| `PROPR_SPRITES_WORKER_ID` | hash of the Fly Machine id or host name | Keeps one worker's Sprites apart from another's. Set it when two workers share a host name. |
+| `PROPR_SPRITES_REGION`, `PROPR_SPRITES_RAM_MB`, `PROPR_SPRITES_CPUS` | Sprites defaults | Applied when a Sprite is created. |
+| `PROPR_SPRITES_STATE_DIR` | `<managed credentials dir>/.propr-sprites` | Where the worker records each Sprite's clean checkpoint and holds its per-Sprite lock. Keep it on persistent storage. |
+| `PROPR_SPRITES_API_URL` | Sprites API | Alternative API endpoint. |
+| `SPRITES_CLIENT_SIGNALS` | `0` | The SDK's usage-attribution headers. ProPR switches them off unless you set this variable yourself. |
+
+### One Run Per Sprite, From A Clean Checkpoint
+
+A Sprite is persistent, so isolation between runs comes from its checkpoint, not from cleaning up:
+
+1. On first use the worker creates the Sprite, uploads `scripts/sprites-agent-setup.sh` with the provider entrypoints and the launcher, and runs it as root. Setup creates the unprivileged `node` user (no sudo), links `node`, `npm` and `npx` onto root's `PATH`, and installs the CLIs at exactly the versions `Dockerfile.agent` pins (`CLAUDE_CLI_VERSION`, `CODEX_CLI_VERSION`, `ANTIGRAVITY_CLI_VERSION` with its `ANTIGRAVITY_CLI_RELEASE_ID` and `ANTIGRAVITY_CLI_SHA512`). An agent configured for another CLI version is refused on Sprites.
+2. The worker takes a checkpoint and records its id in `PROPR_SPRITES_STATE_DIR`. This is the only state a run ever starts on.
+3. A Sprite runs one agent run at a time. When the run ends, however it ended (success, failure, timeout, cancellation), the worker writes refreshed credentials back, reads the workspace result, and restores the checkpoint. The restore starts as soon as the run ends and does not wait for the caller.
+4. If the restore fails, or the run's processes cannot be confirmed dead, the Sprite is destroyed and a new one is created and provisioned. A Sprite that could be neither restored nor replaced is replaced before its next run.
+
+There is no setting that skips the restore. The workspace, the result bundle, logs, scratch directories, provider tokens and the agent's HOME (including Antigravity's disposable HOME) therefore cannot reach the next run. A worker that restarts does not trust what it finds: it restores each Sprite from the recorded checkpoint before the first run, and it destroys a Sprite it has no matching record for (a new setup revision, a lost state directory). It never picks a checkpoint by its comment on a Sprite that has run an agent.
+
+### Privilege And Credential Boundary
+
+- The launcher (`scripts/sprites-launcher.sh`, installed root-owned at `/opt/propr/launcher.sh`) is root only to install the run's files, which it does before anything of the run starts, and to start the clone wrapper. It refuses a Sprite that is not at its clean checkpoint.
+- The provider entrypoint never runs as root on a Sprite. The setup wrapper execs an `<agent>-as-agent` shim that drops to `node` first, so the entrypoint's own `chown`, `mkdir` and copy steps run unprivileged. Antigravity's root-side sync of its state files back to the source directory does not happen on Sprites.
+- Everything that runs as root resolves commands through root-owned directories only; the `node` user gets its own `PATH` from the shim.
+- A credential store the CLI refreshes in place (`/home/node/.claude`, `/home/node/.codex`) is owned by `node`. A store the entrypoint only copies from (Antigravity's `/home/node/.gemini-source`) is readable but not writable by `node`, like a read-only bind.
+- Refreshed tokens leave the Sprite only through the launcher's export directory. After every process of the `node` user is gone, the launcher reads each refreshable file as `node` (a planted symlink can only yield what `node` may read) into a root-owned directory. The worker then accepts plain regular files only, never follows a symlink, refuses anything over 1 MiB, and passes the files to `CredentialBroker.commit()`. A write-back that fails keeps the tokens in a retained directory under the credential run root on the worker, as on Docker.
+- The Sprites org token is never part of a run: variables that name it, and any variable whose value contains it, are withheld from the run's environment, and it is removed from error messages before they are logged.
+- The run's payload (command, environment, prompt, credential copies) is uploaded as one archive into `/opt/propr/run`, which `node` can neither read nor enter.
+
+### What Differs From Docker
+
+- Log binds (`/tmp/claude-logs`) and tmpfs mounts become empty directories on the Sprite; nothing in them returns to the worker. Read-only file binds up to 1 MiB (the `.claude.json` seed) are copied in. Any other host mount refuses the run.
+- Antigravity's transient transcript is not returned, as in Docker's clone mode.
+- Memory, CPU and PID limits come from the Sprite's size, not from `AGENT_CONTAINER_*`. Agent-run admission limits do not apply; `PROPR_SPRITES_MAX_SPRITES` bounds concurrency instead.
+- The worker still prepares the `propr/agent` image for agents on Docker; a Sprites agent does not use it.
+
+Startup time is logged per run (`Sprites run started`, with `queueMs`, `wakeMs`, `provisionMs`, `restoreMs`, `credentialSyncMs` and `totalMs`), and the restore after the run as `Sprite returned to its clean checkpoint after the run`. A first run that provisions takes about 30 seconds; a warm run pays only the wake and the single payload upload, because the restore already ran when the previous run ended.
 
 ## Monitoring And Debugging
 

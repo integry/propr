@@ -315,6 +315,8 @@ below is bundled in the propr/app image under the stated license.
 "@dnd-kit/core@6.3.1","MIT","https://github.com/clauderic/dnd-kit"
 "@dnd-kit/sortable@10.0.0","MIT","https://github.com/clauderic/dnd-kit"
 "@dnd-kit/utilities@3.2.2","MIT","https://github.com/clauderic/dnd-kit"
+"@fly/client-signals@0.4.4","Apache-2.0","https://github.com/superfly/sprites-js"
+"@fly/sprites@0.2.5","MIT","https://github.com/superfly/sprites-js"
 "@img/sharp-libvips-linux-x64@1.3.4","LGPL-3.0-or-later","https://github.com/lovell/sharp-libvips"
 "@img/sharp-libvips-linuxmusl-x64@1.3.4","LGPL-3.0-or-later","https://github.com/lovell/sharp-libvips"
 "@img/sharp-linux-x64@0.35.5","Apache-2.0","https://github.com/lovell/sharp"
