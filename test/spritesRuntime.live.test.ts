@@ -60,6 +60,7 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
         const spec = builder.command('/bin/bash', '-ec', `
             test "$(id -un)" = node
             test -z "$SPRITES_TOKEN$PROPR_SPRITES_TOKEN"
+            test /tmp -ef /opt/propr/run/tmp
             test ! -e /tmp/previous-run
             test ! -e previous-run
             touch /tmp/previous-run previous-run
@@ -74,9 +75,11 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
         try {
             const result = await run.wait();
             assert.equal(result.exitCode, 0, result.stderr);
+            await sprite.execFile('sh', ['-ec', 'test ! -e /tmp/previous-run; touch /tmp/previous-run']);
             assert.ok(result.stdout.includes(version), 'provider CLI version');
             assert.match((await run.readFile!(WORKSPACE_TRANSPORT_RESULT_DIR + '/status'))!.toString(), /^pushed /);
         } finally { await run.release!(); }
+        await sprite.execFile('test', ['!', '-e', '/tmp/previous-run']);
     }
     assert.equal(fs.readFileSync(path.join(agyStore, oauth), 'utf8'), 'synthetic-after');
 });

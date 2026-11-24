@@ -9,7 +9,8 @@ import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
 
 const PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-const stores = { claude: '/home/node/.claude', codex: '/home/node/.codex', antigravity: '/tmp/propr-antigravity-home/.gemini' };
+const antigravityHome = '/opt/propr/run/tmp/propr-antigravity-home';
+const stores = { claude: '/home/node/.claude', codex: '/home/node/.codex', antigravity: antigravityHome + '/.gemini' };
 export const spriteLauncher = '/opt/propr/launcher.py';
 const python = ['/usr/bin/python3', '-I', spriteLauncher];
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
@@ -71,7 +72,7 @@ export async function uploadRun(sprite: Sprite, { spec, options, token, inputPat
     if (!(provider in stores)) throw new Error(`Unsupported Sprites provider: ${provider}`);
     const binds = supportedBinds(spec);
     const { env, transportToken } = runEnvironment(spec, options, token);
-    const home = provider === 'antigravity' ? '/tmp/propr-antigravity-home' : '/home/node';
+    const home = provider === 'antigravity' ? antigravityHome : '/home/node';
     Object.entries({ PATH, HOME: home, USER: 'node', LOGNAME: 'node', LANG: 'C.UTF-8', DISABLE_AUTOUPDATER: '1', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
         .forEach(([key, value]) => env.set(key, value));
     const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });

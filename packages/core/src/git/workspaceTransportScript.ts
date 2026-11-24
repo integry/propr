@@ -108,21 +108,23 @@ trusted=""
 git_isolation=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_SSH -u GIT_SSH_COMMAND
     -u GIT_SSH_VARIANT -u GIT_ASKPASS -u SSH_ASKPASS -u GIT_PROXY_COMMAND -u GIT_EXEC_PATH -u GIT_EXTERNAL_DIFF
-    -u GIT_TEMPLATE_DIR -u GIT_ALLOW_PROTOCOL GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0)
+    -u GIT_TEMPLATE_DIR -u GIT_ALLOW_PROTOCOL GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
+    GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$workspace")
 trusted_git() {
-    "\${git_isolation[@]}" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+    "\${git_isolation[@]}" GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null \\
         git --git-dir="$trusted/repo.git" "$@"
 }
 # The only credentialed shape: private repository, fixed remote URL, trusted configuration.
 transport_git() {
-    "\${git_isolation[@]}" GIT_CONFIG_COUNT=3 \\
-        GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
-        GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= \\
-        GIT_CONFIG_KEY_2=http.https://github.com/.extraheader GIT_CONFIG_VALUE_2="$auth_header" \\
+    "\${git_isolation[@]}" GIT_CONFIG_COUNT=4 \\
+        GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null \\
+        GIT_CONFIG_KEY_2=credential.helper GIT_CONFIG_VALUE_2= \\
+        GIT_CONFIG_KEY_3=http.https://github.com/.extraheader GIT_CONFIG_VALUE_3="$auth_header" \\
         git --git-dir="$trusted/repo.git" "$@"
 }
 local_git() {
-    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"
+    GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+        GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1="$workspace" git "$@"
 }
 # The token's boundary is the user ID: a process under the wrapper's identity can
 # read its initial environment (/proc/<pid>/environ still holds the variable
@@ -153,8 +155,10 @@ bootstrap_failed() {
 # Snapshot as the agent. Only the bundle bytes cross back through stdout.
 snapshot_script='
 set -u
-cd "$1" || exit 1
-g() { GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"; }
+workspace="$1"
+cd "$workspace" || exit 1
+g() { GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+        GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1="$workspace" git "$@"; }
 g add -A . >/dev/null 2>&1 || exit 1
 if [ -d .propr/previews ]; then g add -A -f -- .propr/previews >/dev/null 2>&1 || exit 1; fi
 tree="$(g write-tree 2>/dev/null)" && [ -n "$tree" ] || exit 1

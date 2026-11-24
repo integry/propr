@@ -29,6 +29,12 @@ def install_and_launch(upload):
     upload.unlink()
     ROOT.mkdir(mode=0o755)
     ROOT.chmod(0o711)
+    # The launch has its own private mount namespace. Even tools with hardcoded
+    # /tmp paths write to the checkpointed root, including detached children.
+    scratch = ROOT / 'tmp'
+    scratch.mkdir()
+    scratch.chmod(0o1777)
+    subprocess.run(['mount', '--bind', str(scratch), '/tmp'], cwd='/', check=True)
     node = pwd.getpwnam('node')
     source = ROOT / 'source'
     source.mkdir()

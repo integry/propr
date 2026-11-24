@@ -67,6 +67,17 @@ configure_agent_git() {
     su-exec "$user" env HOME="$home" git config --global --replace-all safe.directory '*'
 }
 
+verify_node_sudo() {
+    local sudo_listing
+    # Some sudo versions return success even for an explicit denial.
+    sudo_listing="$(LC_ALL=C sudo -l -U node 2>&1)" || true
+    case "$sudo_listing" in
+        *"may run the following"*) die "node has sudo privileges" ;;
+        *"User node is not allowed to run sudo"*) ;;
+        *) die "could not verify sudo privileges for node: $sudo_listing" ;;
+    esac
+}
+
 # Sourcing the script (the unit tests do) only defines the functions above.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -77,7 +88,7 @@ source_dir="${1:?usage: sprites-agent-setup.sh <directory with the entrypoint sc
 
 [ "$(id -u)" = "0" ] || die "must run as root (sudo -n)"
 link_sprite_node /.sprite/bin/node /usr/local/bin
-for tool in node npm git curl tar sha512sum mkfifo tee stat install useradd sed readlink; do
+for tool in node npm git curl tar sha512sum mkfifo tee stat install useradd sed readlink unshare mount find; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool $tool is missing on this Sprite"
 done
 
@@ -97,7 +108,7 @@ fi
 [ "$(getent passwd node | cut -d: -f6)" = "/home/node" ] || die "the node user's home must be /home/node"
 for group in sudo wheel admin; do gpasswd -d node "$group" >/dev/null 2>&1 || true; done
 rm -f /etc/sudoers.d/node
-if sudo -l -U node >/dev/null 2>&1; then die "node has sudo privileges"; fi
+verify_node_sudo
 mkdir -p /home/node/workspace /home/node/.local/bin
 chown node:node /home/node /home/node/workspace /home/node/.local /home/node/.local/bin
 chmod 755 /home/node

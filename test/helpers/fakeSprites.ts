@@ -11,6 +11,7 @@ export class FakeSprite {
     launches: string[] = [];
     events: string[] = [];
     failRestore = false;
+    failWipe = false;
     failExport = false;
     exitCode = 0;
     hold = false;
@@ -26,7 +27,13 @@ export class FakeSprite {
             readFile: async (p: string) => this.files.get(p) ?? null,
         };
     }
-    async execFile(_cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
+    async restart() { this.events.push('restart'); }
+    async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
+        if (cmd === 'sudo' && args.join(' ') === '-n find /tmp -xdev -mindepth 1 -delete') {
+            this.events.push('wipe');
+            if (this.failWipe) throw new Error('wipe failed');
+            for (const file of this.files.keys()) if (file.startsWith('/tmp/')) this.files.delete(file);
+        }
         const action = args.includes('read-export') ? 'read-export' : args.at(-1);
         if (action === 'export' || action === 'read-export') this.events.push(action);
         if (action === 'export' && this.failExport) throw new Error('invalid export');
@@ -35,14 +42,14 @@ export class FakeSprite {
     }
     async createCheckpoint() {
         this.events.push('checkpoint');
-        this.baseline = new Map(this.files);
+        this.baseline = new Map([...this.files].filter(([file]) => !file.startsWith('/tmp/')));
         return completed();
     }
     async listCheckpoints() { return [{ id: 'v1', comment: 'propr clean setup' }]; }
     async restoreCheckpoint(id: string) {
         if (id !== 'v1' || this.failRestore) throw new Error('restore failed');
         this.events.push('restore');
-        this.files = new Map(this.baseline);
+        this.files = new Map([...this.baseline, ...[...this.files].filter(([file]) => file.startsWith('/tmp/'))]);
         return completed();
     }
     spawn(_cmd: string, args: string[]) {

@@ -59,7 +59,7 @@ export class SpritePool {
         try {
             const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
             const fs = sprite.filesystem();
-            const dir = '/tmp/propr-setup';
+            const dir = '/var/tmp/propr-setup';
             await step(() => fs.mkdir(dir, { mode: 0o700 }));
             for (const file of setupFiles) {
                 await step(() => fs.writeFile(dir + '/' + file, readFileSync(path.join(projectRoot(), 'scripts', file))));
@@ -73,10 +73,17 @@ export class SpritePool {
             if (!checkpoint) throw new Error('Missing clean Sprite checkpoint');
             await step(async () => complete(await sprite.restoreCheckpoint(checkpoint.id)));
             return { sprite, checkpoint: checkpoint.id };
-        } catch {
-            await this.discard(sprite);
+        } catch (cause) {
+            const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
+            const detail = stderr || (cause instanceof Error ? cause.message : String(cause));
+            const failure = new Error(`Failed to provision the clean Sprite checkpoint: ${detail}`, { cause });
+            try {
+                await this.discard(sprite);
+            } catch (cleanupError) {
+                throw new AggregateError([failure, cleanupError], `${failure.message} (also failed to delete Sprite ${sprite.name})`);
+            }
             signal.throwIfAborted();
-            throw new Error('Failed to provision the clean Sprite checkpoint');
+            throw failure;
         }
     }
 
@@ -96,6 +103,9 @@ export class SpritePool {
 
     async release(slot: Slot): Promise<void> {
         try {
+            // Stop descendants that outlived the launcher, including detached processes.
+            await slot.sprite.restart();
+            await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
             await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
             this.idle.push(slot);
         } catch {

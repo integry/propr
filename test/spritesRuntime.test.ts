@@ -25,14 +25,14 @@ function fixture() {
     return { runtime, client, builder };
 }
 
-test('a lease lasts through result retrieval and release restores the entire filesystem once', async () => {
+test('a lease lasts through result retrieval and release wipes the separate tmp disk before restoring the checkpoint once', async () => {
     const { runtime, client, builder } = fixture();
     const run = runtime.start(builder.build());
     assert.equal((await run.wait()).exitCode, 0);
     const sprite = client.created[0];
     assert.deepEqual(sprite.events, ['checkpoint', 'restore', 'launch']);
     for (const name of ['/home/node/workspace/change', '/opt/propr/result/result.bundle',
-        '/tmp/propr-antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token', '/tmp/claude-logs/run', '/tmp/scratch/run']) {
+        '/opt/propr/run/tmp/propr-antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token', '/tmp/claude-logs/run', '/tmp/scratch/run']) {
         sprite.files.set(name, Buffer.from('private'));
     }
     assert.equal((await run.readFile!('/tmp/propr-workspace-result/result.bundle'))?.toString(), 'private');
@@ -41,7 +41,7 @@ test('a lease lasts through result retrieval and release restores the entire fil
     assert.equal(client.created.length, 2);
     await Promise.all([run.release!(), run.release!()]);
     assert.deepEqual(sprite.files, sprite.baseline);
-    assert.deepEqual(sprite.events.slice(-2), ['launch', 'restore']);
+    assert.deepEqual(sprite.events.slice(-4), ['launch', 'restart', 'wipe', 'restore']);
     const next = runtime.start(builder.build());
     await next.wait();
     assert.equal(sprite.launches.length, 2);
@@ -76,6 +76,42 @@ test('a failed or killed run restores before reuse and a failed restore destroys
     assert.equal(client.created[1].launches.length, 1);
 });
 
+test('a failed tmp wipe discards the Sprite before another lease', async () => {
+    const { runtime, client, builder } = fixture();
+    const run = runtime.start(builder.build());
+    await run.wait();
+    const sprite = client.created[0];
+    sprite.failWipe = true;
+    await run.release!();
+    assert.deepEqual(sprite.events.slice(-2), ['restart', 'wipe']);
+    assert.deepEqual(client.deleted, [sprite.name]);
+    const next = runtime.start(builder.build());
+    await next.wait();
+    assert.equal(client.created[1].launches.length, 1);
+    await next.release!();
+});
+
+test('Sprite setup accepts an explicit sudo denial and refuses grants or unknown output', () => {
+    const check = (listing: string, status: number) => spawnSync('bash', ['-c',
+        'source scripts/sprites-agent-setup.sh; sudo() { echo "$listing"; return "$status"; }; verify_node_sudo',
+    ], { env: { ...process.env, listing, status: String(status) }, encoding: 'utf8' });
+    for (const status of [0, 1]) assert.equal(check('User node is not allowed to run sudo on sprite.', status).status, 0);
+    assert.match(check('User node may run the following commands on sprite:', 0).stderr, /node has sudo privileges/);
+    assert.match(check('unable to read sudoers', 1).stderr, /could not verify sudo privileges/);
+});
+
+test('setup failure reports the stderr tail and retains the SDK error', async () => {
+    const { runtime, client, builder } = fixture();
+    const cause = Object.assign(new Error('Command failed with exit code 1'), {
+        stderr: Buffer.from('old setup output' + ' '.repeat(5000) + 'ProPR Sprite setup: missing node'),
+    });
+    client.setup = sprite => { sprite.execFile = async () => { throw cause; }; };
+    await assert.rejects(runtime.start(builder.build()).wait(), {
+        message: 'Failed to provision the clean Sprite checkpoint: ProPR Sprite setup: missing node', cause,
+    });
+    assert.deepEqual(client.deleted, [client.created[0].name]);
+});
+
 test('credentials use one upload and only checked exports reach the broker. The org token stays off the Sprite and out of output', async t => {
     const { runtime, client, builder } = fixture();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-store-'));
@@ -100,11 +136,11 @@ test('credentials use one upload and only checked exports reach the broker. The 
     assert.ok(input.agent.argv.includes('/opt/propr/entrypoints/antigravity-entrypoint.sh'));
     assert.ok(!sprite.launches[0].includes('.gemini-source'));
     assert.equal(input.agent.env.PROPR_ANTIGRAVITY_SOURCE_CONFIG, undefined);
-    assert.equal(input.agent.env.HOME, '/tmp/propr-antigravity-home');
+    assert.equal(input.agent.env.HOME, '/opt/propr/run/tmp/propr-antigravity-home');
     assert.deepEqual(input.files, [[relative, Buffer.from('baseline').toString('base64'), false]]);
     await run.release!();
     assert.equal(fs.readFileSync(path.join(root, relative), 'utf8'), 'refreshed');
-    assert.deepEqual(sprite.events.slice(-3), ['export', 'read-export', 'restore']);
+    assert.deepEqual(sprite.events.slice(-5), ['export', 'read-export', 'restart', 'wipe', 'restore']);
 });
 
 test('launcher reader accepts only bounded regular files without following any component', t => {

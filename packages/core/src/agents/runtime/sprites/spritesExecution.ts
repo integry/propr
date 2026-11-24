@@ -39,7 +39,7 @@ export async function execute(sprite: Sprite, { spec, options, token, inputPath 
     let exitCode: number | null = null;
     try {
         cancellation.throwIfAborted();
-        const command = sprite.spawn('sudo', ['-n', 'setpriv', '--no-new-privs', '/usr/bin/python3', '-I', spriteLauncher, 'launch', inputPath], { cwd: '/' });
+        const command = sprite.spawn('sudo', ['-n', 'unshare', '--mount', '--propagation', 'private', 'setpriv', '--no-new-privs', '/usr/bin/python3', '-I', spriteLauncher, 'launch', inputPath], { cwd: '/' });
         const captureStdout = (chunk: string) => {
             stdout.append(chunk);
             output.write('stdout', chunk);
