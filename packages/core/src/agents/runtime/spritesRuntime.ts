@@ -67,6 +67,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     readonly timings: SpritesStartupTimings = {};
     private readonly paths: SpritesRunPaths;
     private lease?: SpriteRunLease;
+    /** The run's credential copy: materialized once the run holds its Sprite, finished after the run. */
+    private credentials?: SpritesCredentialSync;
     private started = false;
     private settled = false;
     private retainedCredentials = false;
@@ -116,7 +118,6 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         const deadlineTimer = setTimeout(() => deadline.abort(new SpritesStartDeadlineError(this.spec.name, timeoutMs)), timeoutMs);
         deadlineTimer.unref();
         const startup = AbortSignal.any([signal, deadline.signal]);
-        let credentials: SpritesCredentialSync | undefined;
         try {
             const config = this.runtime.config();
             const argv = renderSpritesArgv(this.spec);
@@ -125,10 +126,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
             const refusal = admitted ? await admitted : null;
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
             const launchEnvironment = { ...process.env, ...options.extraEnvVars };
-            credentials = prepareSpritesCredentials(this.spec, plan, { launchEnvironment: options.extraEnvVars, environment: this.runtime.environment });
             const environment = resolveSpritesEnvironment(this.spec, launchEnvironment);
-            for (const [name, value] of Object.entries(credentials?.secretEnv ?? {})) environment.set(name, value);
-            const preparation = this.prepare(config, startup, { argv, environment, plan, credentials, stdinData: options.stdinData });
+            const preparation = this.prepare(config, startup, { argv, environment, plan, extraEnvVars: options.extraEnvVars, stdinData: options.stdinData });
             this.preparationSettled = false;
             // Registered before the race below, so a failed preparation is known as settled when the race sees it.
             const settle = () => { this.preparationSettled = true; };
@@ -160,12 +159,12 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         try {
             return await this.supervise({ options, signal, session: command, remainingMs: timeoutMs - (Date.now() - requested), sessionStarted, requested });
         } finally {
-            await this.finishCredentials(credentials);
+            await this.finishCredentials();
         }
     }
 
     /** Acquires a Sprite and prepares it for the run, stopping at the next step once `signal` aborts. */
-    private async prepare(config: SpritesRuntimeConfig, signal: AbortSignal, run: Parameters<SpritesRunHandle['uploadRun']>[1]): Promise<void> {
+    private async prepare(config: SpritesRuntimeConfig, signal: AbortSignal, run: Omit<Parameters<SpritesRunHandle['uploadRun']>[1], 'credentials'> & { extraEnvVars?: Record<string, string> }): Promise<void> {
         const client = await this.runtime.client();
         signal.throwIfAborted();
         this.lease = await this.runtime.acquire(client, config, signal, this.timings);
@@ -178,7 +177,11 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         this.timings.wakeMs = (this.timings.wakeMs ?? 0) + Math.max(0, Date.now() - wakeStarted - (provisioning.setupMs ?? 0) - (provisioning.restoreMs ?? 0));
         signal.throwIfAborted();
         const uploadStarted = Date.now();
-        await this.uploadRun(this.lease.sprite, run);
+        // Read from the canonical stores only now that the run holds its Sprite: a copy taken before
+        // queueing would go stale while another run on the same account refreshes the token.
+        this.credentials = prepareSpritesCredentials(this.spec, run.plan, { launchEnvironment: run.extraEnvVars, environment: this.runtime.environment });
+        for (const [name, value] of Object.entries(this.credentials?.secretEnv ?? {})) run.environment.set(name, value);
+        await this.uploadRun(this.lease.sprite, { ...run, credentials: this.credentials });
         this.timings.credentialSyncMs = Date.now() - uploadStarted;
     }
 
@@ -186,13 +189,14 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         this.lease = lease;
         this.started = true;
         const plan = planSpritesMounts(this.spec);
-        const credentials = prepareSpritesCredentials(this.spec, plan, { launchEnvironment: options.extraEnvVars, environment: this.runtime.environment });
-        // The original baseline was lost with the worker: write a refreshed token back only when it is newer than the canonical one.
-        for (const store of credentials?.bundle.stores ?? []) for (const output of store.outputs) store.baseline[output] = 'reattached';
         try {
+            this.credentials = prepareSpritesCredentials(this.spec, plan, { launchEnvironment: options.extraEnvVars, environment: this.runtime.environment });
+            // What the run received, as persisted at launch (the canonical store may have moved on since).
+            // When it cannot be recovered, the write-back keeps the returned tokens for recovery instead.
+            await this.credentials?.recoverBaseline(lease.sprite.filesystem(), this.paths);
             return await this.supervise({ options, signal, remainingMs: options.timeout ?? 300_000, sessionStarted: Date.now(), requested: Date.now() });
         } finally {
-            await this.finishCredentials(credentials);
+            await this.finishCredentials();
         }
     }
 
@@ -254,9 +258,9 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         await filesystem.writeFile(paths.launcher, SPRITES_LAUNCHER_SCRIPT, { mode: 0o700 });
     }
 
-    private async finishCredentials(credentials?: SpritesCredentialSync): Promise<void> {
-        if (!credentials || !this.lease) return;
-        const outcome = await finishRunCredentials(this.lease.sprite, this.paths, this.spec.name, { credentials, settleMs: this.runtime.launcherSettleMs });
+    private async finishCredentials(): Promise<void> {
+        if (!this.credentials || !this.lease) return;
+        const outcome = await finishRunCredentials(this.lease.sprite, this.paths, this.spec.name, { credentials: this.credentials, settleMs: this.runtime.launcherSettleMs });
         ({ retained: this.retainedCredentials, liveCopiesRetained: this.liveCredentialsRetained } = outcome);
         this.holdSprite ||= outcome.holdSprite;
         if (outcome.writeBackMs !== undefined) this.timings.credentialWriteBackMs = outcome.writeBackMs;

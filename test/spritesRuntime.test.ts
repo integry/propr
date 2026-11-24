@@ -465,6 +465,115 @@ test('a restarted worker reattaches to the run on its Sprite and recovers the fu
     await Promise.all([first.release(), attached.release()]);
 });
 
+test('a queued run copies the credentials current when it gets its Sprite, not the ones from before it waited', async () => {
+    const client = new FakeSpritesClient();
+    const credentials = claudeStore();
+    let finishFirst!: () => void;
+    const firstMayFinish = new Promise<void>(resolve => { finishFirst = resolve; });
+    const received: string[] = [];
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            received.push(context.files.get('/home/node/.claude/.credentials.json')!.toString());
+            if (received.length === 1) {
+                await firstMayFinish;
+                context.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"token":"refreshed-by-first"}'));
+            }
+            return 0;
+        };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const first = runtime.start(cloneSpec(credentials, { name: 'claude-issue-90' }), { timeout: 10_000 });
+    for (let i = 0; i < 200 && received.length === 0; i++) await sleep(5);
+    const second = runtime.start(cloneSpec(credentials, { name: 'claude-issue-91' }), { timeout: 10_000 });
+    await sleep(30); // queued for the only Sprite
+    finishFirst();
+    assert.equal((await first.wait()).exitCode, 0);
+    assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"refreshed-by-first"}');
+    await first.release();
+    assert.equal((await second.wait()).exitCode, 0);
+    assert.deepEqual(received, ['{"token":"old"}', '{"token":"refreshed-by-first"}']);
+    assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"refreshed-by-first"}');
+    await second.release();
+});
+
+/** A run whose worker restarts mid-run: the original handle is gone (it writes nothing back), a new runtime reattaches. */
+async function reattachedRun(client: FakeSpritesClient, credentials: string, name: string, { onRunning, agentWrites }: { onRunning?: (sprite: ReturnType<FakeSpritesClient['sprite']>, root: string) => void; agentWrites?: string } = {}) {
+    let finish!: () => void;
+    const released = new Promise<void>(resolve => { finish = resolve; });
+    let running = false;
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            running = true;
+            await released;
+            if (agentWrites) context.files.set('/home/node/.claude/.credentials.json', Buffer.from(agentWrites));
+            return 0;
+        };
+    };
+    const spec = cloneSpec(credentials, { name });
+    const first = runtimeFor(client).start(spec, { timeout: 60_000 });
+    for (let i = 0; i < 200 && !running; i++) await sleep(5);
+    // The interrupted worker's in-memory state (its baseline among it) is lost with it.
+    Reflect.set(first, 'credentials', undefined);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name })}`;
+    onRunning?.(sprite, root);
+    const attached = await runtimeFor(client).attach(spec, { timeout: 60_000 });
+    assert.ok(attached);
+    finish();
+    assert.equal((await attached.wait()).exitCode, 0);
+    await first.wait();
+    return { first, attached, sprite, root };
+}
+
+test('a reattached run recovers the baseline it was launched with: an unchanged stale token never replaces a newer canonical one', async () => {
+    const client = new FakeSpritesClient();
+    const credentials = claudeStore();
+    const canonical = path.join(credentials, '.credentials.json');
+    const receivedAt = new Date(Date.now() - 60_000);
+    fs.utimesSync(canonical, receivedAt, receivedAt);
+    const receivedMtimeMs = Math.floor(fs.statSync(canonical).mtimeMs);
+    const { first, attached, sprite, root } = await reattachedRun(client, credentials, 'claude-issue-92', {
+        onRunning: (running, runRoot) => {
+            // The copy keeps the canonical modification time, not the upload's.
+            assert.equal(running.mtimes.get('/home/node/.claude/.credentials.json'), receivedMtimeMs);
+            assert.ok(running.files.has(`${runRoot}/credential-baseline.json`), 'the baseline is persisted with the run');
+            // Another run on the account refreshed the canonical token meanwhile; its time even reads older (clock skew between hosts).
+            fs.writeFileSync(canonical, '{"token":"newer-canonical"}');
+            const skewed = new Date(receivedAt.getTime() - 30_000);
+            fs.utimesSync(canonical, skewed, skewed);
+        },
+    });
+    assert.equal(fs.readFileSync(canonical, 'utf8'), '{"token":"newer-canonical"}', 'the unchanged stale copy is recognised as unchanged');
+    assert.equal(sprite.files.has(`${root}/credentials-retained`), false, 'nothing is left to recover');
+    await Promise.all([first.release(), attached.release()]);
+
+    // A token the run did refresh is still written back after reattachment.
+    const refreshedStore = claudeStore();
+    const refreshed = await reattachedRun(new FakeSpritesClient(), refreshedStore, 'claude-issue-93', { agentWrites: '{"token":"refreshed-on-sprite"}' });
+    assert.equal(fs.readFileSync(path.join(refreshedStore, '.credentials.json'), 'utf8'), '{"token":"refreshed-on-sprite"}');
+    await Promise.all([refreshed.first.release(), refreshed.attached.release()]);
+});
+
+test('a reattached run whose baseline cannot be recovered keeps its returned tokens for recovery instead of guessing', async () => {
+    const client = new FakeSpritesClient();
+    const credentials = claudeStore();
+    const canonical = path.join(credentials, '.credentials.json');
+    const { first, attached, sprite, root } = await reattachedRun(client, credentials, 'claude-issue-94', {
+        agentWrites: '{"token":"refreshed-on-sprite"}',
+        onRunning: (running, runRoot) => {
+            running.files.delete(`${runRoot}/credential-baseline.json`);
+            fs.writeFileSync(canonical, '{"token":"newer-canonical"}');
+        },
+    });
+    assert.equal(fs.readFileSync(canonical, 'utf8'), '{"token":"newer-canonical"}');
+    assert.equal(sprite.files.get(`${root}/returned/claude-config/.credentials.json`)?.toString(), '{"token":"refreshed-on-sprite"}', 'the returned token stays in the run directory');
+    assert.equal(JSON.parse(sprite.files.get(`${root}/credentials-retained`)!.toString()).reason, 'baseline-unknown');
+    first.retain(); // the interrupted worker never releases its run
+    await attached.release();
+    assert.ok(sprite.files.has(`${root}/credentials-retained`), 'the Sprite stays quarantined');
+    assert.ok(sprite.files.has(`${root}/returned/claude-config/.credentials.json`));
+});
+
 test('a Sprite running another process\'s launcher is skipped for the next slot', async () => {
     const client = new FakeSpritesClient();
     let finish!: () => void;
@@ -488,11 +597,37 @@ test('Docker-only preparation and sweeps are skipped when no agent runs on Docke
     assert.equal(dockerAgentRuntimeInUse([{ enabled: true, runtime: 'docker' }], { PROPR_AGENT_RUNTIME: 'sprites' }), true);
     assert.equal(dockerAgentRuntimeInUse([{ enabled: true }, { enabled: false, runtime: 'docker' }], { PROPR_AGENT_RUNTIME: 'sprites' }), false);
     const missingDocker = async () => { throw Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' }); };
-    assert.deepEqual(await runningContainerMountSources(missingDocker, { PROPR_AGENT_RUNTIME: 'sprites' }), []);
-    await assert.rejects(runningContainerMountSources(missingDocker, {}), /ENOENT/);
+    const noAgents = async () => [];
+    assert.deepEqual(await runningContainerMountSources(missingDocker, { PROPR_AGENT_RUNTIME: 'sprites' }, noAgents), []);
+    await assert.rejects(runningContainerMountSources(missingDocker, {}, noAgents), /ENOENT/);
     const unreachable = async () => ({ exitCode: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' });
-    assert.deepEqual(await runningContainerMountSources(unreachable, { PROPR_AGENT_RUNTIME: 'sprites' }), []);
-    await assert.rejects(runningContainerMountSources(unreachable, {}), /docker ps failed/);
+    assert.deepEqual(await runningContainerMountSources(unreachable, { PROPR_AGENT_RUNTIME: 'sprites' }, noAgents), []);
+    await assert.rejects(runningContainerMountSources(unreachable, {}, noAgents), /docker ps failed/);
+});
+
+test('worktree reclamation honours per-agent runtimes: Sprites selected by every enabled agent needs no Docker', async () => {
+    const missingDocker = async () => { throw Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' }); };
+    const unreachable = async () => ({ exitCode: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' });
+    // PROPR_AGENT_RUNTIME unset (Docker), but each enabled agent selects Sprites itself, as image preparation sees it.
+    const perAgentSprites = async () => [{ enabled: true, runtime: 'sprites' }, { enabled: true, runtime: ' Sprites ' }, { enabled: false, runtime: 'docker' }];
+    assert.equal(dockerAgentRuntimeInUse(await perAgentSprites(), {}), false);
+    assert.deepEqual(await runningContainerMountSources(missingDocker, {}, perAgentSprites), []);
+    assert.deepEqual(await runningContainerMountSources(unreachable, {}, perAgentSprites), []);
+    // Docker keeps its authority when any enabled agent selects it (itself or through the default), or the agents cannot be read.
+    const oneDocker = async () => [{ enabled: true, runtime: 'sprites' }, { enabled: true, runtime: 'docker' }];
+    await assert.rejects(runningContainerMountSources(unreachable, { PROPR_AGENT_RUNTIME: 'sprites' }, oneDocker), /docker ps failed/);
+    const oneDefault = async () => [{ enabled: true, runtime: 'sprites' }, { enabled: true }];
+    await assert.rejects(runningContainerMountSources(missingDocker, {}, oneDefault), /ENOENT/);
+    const unreadable = async () => { throw new Error('database unavailable'); };
+    await assert.rejects(runningContainerMountSources(unreachable, { PROPR_AGENT_RUNTIME: 'sprites' }, unreadable), /docker ps failed/);
+    const malformed = async () => [null] as never;
+    await assert.rejects(runningContainerMountSources(missingDocker, { PROPR_AGENT_RUNTIME: 'sprites' }, malformed), /ENOENT/);
+    // Any other Docker failure still disables reclamation, and a reachable Docker never needs the agents.
+    await assert.rejects(runningContainerMountSources(async () => ({ exitCode: 1, stdout: '', stderr: 'permission denied' }), {}, perAgentSprites), /docker ps failed/);
+    let loads = 0;
+    const counted = async () => { loads++; return []; };
+    assert.deepEqual(await runningContainerMountSources(async () => ({ exitCode: 0, stdout: '', stderr: '' }), {}, counted), []);
+    assert.equal(loads, 0);
 });
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -815,7 +950,7 @@ test('a launcher that cannot return a refreshed credential keeps the live copy a
         fs.writeFileSync(path.join(run, 'store', 'claude', '.credentials.json'), '{"token":"old"}');
         fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', 'printf \'{"token":"rotated"}\' > "$1/.credentials.json"', 'agent', live]));
         fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
-        fs.writeFileSync(path.join(run, 'manifest'), nul(['store', 'store/claude', live, 'output', path.join(live, '.credentials.json'), 'returned/claude/.credentials.json']));
+        fs.writeFileSync(path.join(run, 'manifest'), nul(['store', 'store/claude', live, 'output', dir, path.relative(dir, path.join(live, '.credentials.json')), 'returned/claude/.credentials.json']));
         fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, `${name}-work`));
         fs.writeFileSync(path.join(run, 'user'), 'root');
         return { run, live };
@@ -833,6 +968,89 @@ test('a launcher that cannot return a refreshed credential keeps the live copy a
     assert.equal(fs.readFileSync(path.join(exported.run, 'credentials-exported'), 'utf8'), 'ok\n');
     assert.equal(fs.readFileSync(path.join(exported.run, 'returned', 'claude', '.credentials.json'), 'utf8'), '{"token":"rotated"}');
     assert.equal(fs.existsSync(exported.live), false, 'a confirmed export removes the live copy');
+});
+
+test('the launcher never exports a credential through a symlink the agent planted on its path, and keeps the recovery obligation', { skip: !linuxProcesses }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-symlink-');
+    const resultDir = path.join(dir, 'workspace-result');
+    const launcher = path.join(dir, 'launch.sh');
+    // As the test user (see above), with the result directory moved into the sandbox.
+    const script = SPRITES_LAUNCHER_SCRIPT.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000').replace('[ "$(id -u)" = "0" ]', 'true')
+        .replace('id node >/dev/null 2>&1', 'true').replaceAll('chown -R node:node --', 'true --').replaceAll('chown node:node --', 'true --')
+        .replaceAll(WORKSPACE_TRANSPORT_RESULT_DIR, resultDir);
+    fs.writeFileSync(launcher, script);
+    // The Sprite user's own credentials, which no run may receive.
+    const privateHome = path.join(dir, 'sprite');
+    fs.mkdirSync(path.join(privateHome, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(privateHome, '.codex', 'auth.json'), '{"token":"sprite-account"}');
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const runDir = (name: string, agent: string, launcherScript = launcher) => {
+        const run = path.join(dir, name);
+        const home = path.join(dir, `${name}-home`);
+        const live = path.join(home, '.codex');
+        fs.mkdirSync(path.join(run, 'store', 'codex'), { recursive: true });
+        fs.writeFileSync(path.join(run, 'store', 'codex', 'auth.json'), '{"token":"run-copy"}');
+        fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', agent, 'agent', home, privateHome, resultDir]));
+        fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+        // The boundary is the directory the agent cannot replace (on a Sprite, /home/node); here the sandbox.
+        fs.writeFileSync(path.join(run, 'manifest'), nul(['store', 'store/codex', live, 'output', dir, path.relative(dir, path.join(live, 'auth.json')), 'returned/codex/auth.json']));
+        fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, `${name}-work`));
+        fs.writeFileSync(path.join(run, 'user'), 'root');
+        execFileSync('bash', [launcherScript, run]);
+        return { run, live };
+    };
+    const refused = (run: string, why: string) => {
+        assert.equal(fs.existsSync(path.join(run, 'returned', 'codex', 'auth.json')), false, `${why}: nothing is returned`);
+        assert.equal(fs.existsSync(path.join(run, 'credentials-exported')), false, `${why}: no export is recorded, so the recovery obligation stays`);
+        assert.match(fs.readFileSync(path.join(run, 'stderr.log'), 'utf8'), /a symlink or non-regular file is on its path/);
+    };
+
+    // The store directory itself replaced by a link to the Sprite user's store.
+    const store = runDir('store-link', 'rm -rf "$1/.codex" && ln -s "$2/.codex" "$1/.codex"');
+    refused(store.run, 'a symlinked store directory');
+    assert.equal(fs.readlinkSync(store.live), path.join(privateHome, '.codex'), 'the live copies are kept as they are for recovery');
+    // An ancestor above the store replaced: the run's home now leads to the Sprite user's home.
+    const ancestor = runDir('ancestor-link', 'mv "$1" "$1.moved" && ln -s "$2" "$1"');
+    refused(ancestor.run, 'a symlinked ancestor');
+    // The token file itself.
+    refused(runDir('file-link', 'rm -f "$1/.codex/auth.json" && ln -s "$2/.codex/auth.json" "$1/.codex/auth.json"').run, 'a symlinked token');
+    assert.equal(fs.readFileSync(path.join(privateHome, '.codex', 'auth.json'), 'utf8'), '{"token":"sprite-account"}', 'the Sprite user\'s credentials are untouched');
+
+    // A deleted token is no refresh (never propagated); an untouched one is returned as usual.
+    const deleted = runDir('deleted', 'rm -rf "$1/.codex"');
+    assert.equal(fs.readFileSync(path.join(deleted.run, 'credentials-exported'), 'utf8'), 'ok\n');
+    const plain = runDir('plain', 'printf \'{"token":"rotated"}\' > "$1/.codex/auth.json"');
+    assert.equal(fs.readFileSync(path.join(plain.run, 'returned', 'codex', 'auth.json'), 'utf8'), '{"token":"rotated"}');
+    assert.equal(fs.readFileSync(path.join(plain.run, 'credentials-exported'), 'utf8'), 'ok\n');
+
+    // A run process that survived SIGKILL could swap a checked path: nothing is returned.
+    const survivorLauncher = path.join(dir, 'launch-survivor.sh');
+    fs.writeFileSync(survivorLauncher, script.replace('if ! kill_run_members "$run_dir" "$child"; then', 'if ! false; then'));
+    const survived = runDir('survivor', 'printf \'{"token":"rotated"}\' > "$1/.codex/auth.json"', survivorLauncher);
+    assert.equal(fs.existsSync(path.join(survived.run, 'returned', 'codex', 'auth.json')), false);
+    assert.equal(fs.existsSync(path.join(survived.run, 'credentials-exported')), false);
+    assert.equal(fs.readFileSync(path.join(survived.live, 'auth.json'), 'utf8'), '{"token":"rotated"}', 'the only rotated copy survives');
+
+    // The workspace result: a symlinked result directory is not followed, nor are symlinks inside a real one kept.
+    const linkedResult = runDir('result-link', 'ln -s "$2/.codex" "$3"');
+    assert.equal(fs.existsSync(path.join(linkedResult.run, 'result')), false);
+    const innerLink = runDir('result-inner-link', 'mkdir -p "$3" && printf done > "$3/status" && ln -s "$2/.codex/auth.json" "$3/result.bundle"');
+    assert.equal(fs.readFileSync(path.join(innerLink.run, 'result', 'status'), 'utf8'), 'done');
+    assert.equal(fs.existsSync(path.join(innerLink.run, 'result', 'result.bundle')), false);
+    assert.equal(fs.lstatSync(path.join(innerLink.run, 'result', 'status')).isFile(), true);
+});
+
+test('credential output records name the boundary the agent cannot replace and reject paths that leave the store', async () => {
+    const { spritesOutputRecord } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    assert.deepEqual(spritesOutputRecord('/home/node/.codex', 'auth.json', 'returned/codex/auth.json'), ['output', '/home/node', '.codex/auth.json', 'returned/codex/auth.json']);
+    assert.deepEqual(spritesOutputRecord('/home/node/.config/opencode', 'auth/token.json', 'returned/o/auth/token.json'), ['output', '/home/node', '.config/opencode/auth/token.json', 'returned/o/auth/token.json']);
+    assert.deepEqual(spritesOutputRecord('/run/propr-claude', '.credentials.json', 'returned/c/.credentials.json'), ['output', '/run', 'propr-claude/.credentials.json', 'returned/c/.credentials.json']);
+    assert.deepEqual(spritesOutputRecord('/tmp/propr-x', 'token', 'returned/x/token'), ['output', '/tmp', 'propr-x/token', 'returned/x/token']);
+    for (const [target, output] of [['/home/node/.codex', '../.claude/x'], ['/home/node/.codex', ''], ['/etc', 'shadow'], ['/home/node/workspace', 'x']]) {
+        assert.throws(() => spritesOutputRecord(target, output, 'returned/x'), /cannot return a credential/);
+    }
 });
 
 test('a failed credential export keeps the rotated token and the recovery obligation instead of trusting the exit status', async () => {

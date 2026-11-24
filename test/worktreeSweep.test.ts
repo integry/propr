@@ -146,7 +146,8 @@ test('Docker inspection preserves service classification without exempting task 
     const mounts = await inspectMounts(async (_command, args) => ({ exitCode: 0, stderr: '', stdout: args[0] === 'ps' ? 'containers' : rows }));
     assert.deepEqual(mounts, [true, true, false, false].map(service => ({ source: '/tmp/git-processor', service })));
     await assert.rejects(inspectMounts(async (_command, args) => ({ exitCode: 0, stderr: '', stdout: args[0] === 'ps' ? 'container' : '{broken' })));
-    await assert.rejects(inspectMounts(async () => { throw Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' }); }), /ENOENT/);
+    // A missing Docker consults the agents' runtime selections (here: none, so the Docker default applies).
+    await assert.rejects(inspectMounts(async () => { throw Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' }); }, {}, async () => []), /ENOENT/);
 });
 
 test('blocked-repository diagnostics are bounded while authority remains fresh', async () => {

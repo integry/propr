@@ -57,6 +57,8 @@ function enoent(file: string): Error {
 export class FakeSprite {
     readonly files = new Map<string, Buffer>();
     readonly modes = new Map<string, number>();
+    /** Modification times (ms) of files written through the API or stamped by the launcher; others read as now. */
+    readonly mtimes = new Map<string, number>();
     readonly calls: Array<{ file: string; args: string[] }> = [];
     readonly checkpoints: Array<{ id: string; comment?: string }> = [];
     /** Filesystem contents per checkpoint id: restoring one brings back exactly these files. */
@@ -93,6 +95,7 @@ export class FakeSprite {
             },
             writeFile: async (file: string, data: string | Buffer, options?: { mode?: number }) => {
                 files.set(file, Buffer.from(data));
+                this.mtimes.set(file, Date.now());
                 if (options?.mode !== undefined) this.modes.set(file, options.mode);
             },
             mkdir: async () => undefined,
@@ -102,7 +105,7 @@ export class FakeSprite {
             stat: async (file: string) => {
                 const content = files.get(file);
                 if (!content) throw enoent(file);
-                return { size: content.length, mtime: new Date(), isFile: () => true };
+                return { size: content.length, mtime: new Date(this.mtimes.get(file) ?? Date.now()), isFile: () => true };
             },
         };
     }
@@ -193,28 +196,43 @@ export class FakeSprite {
         for (let index = 0; index < manifest.length;) {
             const kind = manifest[index];
             if (kind === 'purge') { this.filesystem().rm(manifest[index + 1]); index += 2; }
+            else if (kind === 'stamp') { this.mtimes.set(at(manifest[index + 1]), Number(manifest[index + 2]) * 1000); index += 3; }
             else if (kind === 'store') {
                 const source = at(manifest[index + 1]);
                 const target = manifest[index + 2];
-                for (const [file, content] of [...this.files]) if (file.startsWith(`${source}/`)) this.files.set(target + file.slice(source.length), content);
+                // `cp -a` keeps modification times.
+                for (const [file, content] of [...this.files]) {
+                    if (!file.startsWith(`${source}/`)) continue;
+                    this.files.set(target + file.slice(source.length), content);
+                    const mtime = this.mtimes.get(file);
+                    if (mtime !== undefined) this.mtimes.set(target + file.slice(source.length), mtime);
+                }
                 installed.push(target);
                 index += 3;
             } else if (kind === 'dir') index += 2;
             else if (kind === 'file') { this.files.set(manifest[index + 2], this.files.get(at(manifest[index + 1]))!); installed.push(manifest[index + 2]); index += 4; }
-            else if (kind === 'output') { outputs.push([manifest[index + 1], at(manifest[index + 2])]); index += 3; }
+            else if (kind === 'output') { outputs.push([`${manifest[index + 1]}/${manifest[index + 2]}`, at(manifest[index + 3])]); index += 4; }
             else throw new Error(`unknown manifest record ${kind}`);
         }
         const append = (stream: 'stdout' | 'stderr', text: string) => {
             const file = at(`${stream}.log`);
             this.files.set(file, Buffer.concat([this.files.get(file) ?? Buffer.alloc(0), Buffer.from(text)]));
         };
+        const before = new Map(this.files);
         let status: number;
         try {
             status = await this.agent({ argv, env, stdin: this.files.get(at('stdin'))?.toString() ?? '', write: append, files: this.files, terminated });
         } catch {
             status = 1;
         }
-        if (!this.exportFails) for (const [source, returned] of outputs) if (this.files.has(source)) this.files.set(returned, this.files.get(source)!);
+        // What the agent wrote is modified now.
+        for (const [file, content] of this.files) if (before.get(file) !== content) this.mtimes.set(file, Date.now());
+        // `cp -p` keeps the modification time.
+        for (const [source, returned] of this.exportFails ? [] : outputs) {
+            if (!this.files.has(source)) continue;
+            this.files.set(returned, this.files.get(source)!);
+            if (this.mtimes.has(source)) this.mtimes.set(returned, this.mtimes.get(source)!);
+        }
         for (const [file, content] of [...this.files]) {
             if (file.startsWith('/tmp/propr-workspace-result/')) this.files.set(`${at('result')}/${file.slice('/tmp/propr-workspace-result/'.length)}`, content);
         }

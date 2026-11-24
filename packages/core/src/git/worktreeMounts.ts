@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import logger from '../utils/logger.js';
-import { dockerAgentRuntimeInUse } from '../agents/runtime/runtimeSelection.js';
+import { configuredDockerAgentRuntimeInUse, loadConfiguredAgentRuntimes, type AgentRuntimeSelections } from '../agents/runtime/runtimeSelection.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,21 +28,25 @@ function dockerUnreachable(failure: { exitCode: number | null; stderr: string } 
 
 /**
  * Host paths mounted into running containers. Throws when Docker can't be read,
- * except on a worker whose agents run on another runtime (Sprites) and has
- * no reachable Docker: no container can mount anything there.
+ * except on a worker with no reachable Docker whose enabled agents (or, with
+ * none, the instance default) all run on another runtime (Sprites): no
+ * container can mount anything there. The agents' selections are read only
+ * then, and an unreadable configuration keeps Docker's authority.
  */
 export async function runningContainerMountSources(
     executeDockerCommand: DockerQuery = queryDocker,
     environment: NodeJS.ProcessEnv = process.env,
+    loadAgents: () => Promise<AgentRuntimeSelections> = loadConfiguredAgentRuntimes,
 ): Promise<WorktreeMount[]> {
+    const withoutDocker = async () => !await configuredDockerAgentRuntimeInUse(environment, loadAgents);
     let listed: Awaited<ReturnType<DockerQuery>>;
     try {
         listed = await executeDockerCommand('docker', ['ps', '-q', '--no-trunc'], { timeout: 15_000 });
     } catch (error) {
-        if (!dockerAgentRuntimeInUse([], environment) && dockerUnreachable(error as Error)) return [];
+        if (dockerUnreachable(error as Error) && await withoutDocker()) return [];
         throw error;
     }
-    if (listed.exitCode !== 0 && !dockerAgentRuntimeInUse([], environment) && dockerUnreachable(listed)) return [];
+    if (listed.exitCode !== 0 && dockerUnreachable(listed) && await withoutDocker()) return [];
     if (listed.exitCode !== 0) throw new Error(`docker ps failed: ${listed.stderr.trim()}`);
     const ids = listed.stdout.split('\n').map(id => id.trim()).filter(Boolean);
     if (ids.length === 0) return [];
@@ -73,9 +77,11 @@ export async function runningContainerMountSources(
 
 
 let startupProbe: Promise<void> | undefined;
-/** A process-level diagnostic; each removal still refreshes Docker authority. */
+/**
+ * A process-level diagnostic; each removal still refreshes Docker authority.
+ * A worker whose agents all run elsewhere and has no Docker passes it.
+ */
 export function probeWorktreeReclamationDocker(): Promise<void> {
-    if (!dockerAgentRuntimeInUse()) return Promise.resolve();
     return startupProbe ??= runningContainerMountSources().then(() => undefined).catch(error => {
         logger.warn({ error: (error as Error).message }, 'Worktree reclamation disabled: Docker unavailable; provide the Docker CLI on PATH and access to its socket');
     });

@@ -122,6 +122,8 @@ export type SpritesRecoveryReason =
     | 'pending-write-back'
     /** The canonical store did not take the returned tokens: the run directory's `returned/` holds them. */
     | 'write-back-failed'
+    /** A reattached run's baseline (what it received) could not be recovered: its returned tokens are kept in `returned/` rather than guessed at. */
+    | 'baseline-unknown'
     /** The launcher's export could not be confirmed: the live copies in the agent home are kept as they are. */
     | 'export-unconfirmed'
     /** The launcher finished but could not return every refreshed credential: it kept the live copies in the agent home. */
@@ -242,7 +244,10 @@ export async function finishRunCredentials(
     }
     const outcome = await credentials.writeBack(sprite.filesystem(), paths);
     const writeBackMs = Date.now() - started;
-    if (outcome.retained) return { retained: true, liveCopiesRetained: false, holdSprite: !await persistRecoveryObligation(sprite, paths, run), writeBackMs };
+    if (outcome.retained) {
+        const reason: SpritesRecoveryReason = outcome.baselineUnknown ? 'baseline-unknown' : 'write-back-failed';
+        return { retained: true, liveCopiesRetained: false, holdSprite: !await persistRecoveryObligation(sprite, paths, run, { reason }), writeBackMs };
+    }
     // A marker that cannot be removed keeps the Sprite quarantined: safe, if needlessly.
     await clearRecoveryObligation(sprite, paths, run);
     return { retained: false, liveCopiesRetained: false, holdSprite: false, writeBackMs };

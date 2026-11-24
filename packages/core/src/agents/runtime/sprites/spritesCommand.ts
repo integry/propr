@@ -97,6 +97,8 @@ export interface SpritesRunPaths {
     exitStatus: string;
     /** Written by the launcher only once every refreshed credential was returned to `returned/`. */
     credentialsExported: string;
+    /** What each refreshable credential was when the run received it (written before the copy is uploaded), so a reattached worker can tell an unchanged return. */
+    credentialBaseline: string;
     result: string;
 }
 
@@ -106,7 +108,8 @@ export function spritesRunPaths(runId: string): SpritesRunPaths {
     const at = (name: string) => path.posix.join(root, name);
     return {
         root, argv: at('argv'), env: at('env'), manifest: at('manifest'), workdir: at('workdir'), user: at('user'), stdin: at('stdin'), pid: at('pid'),
-        launcher: at('launch.sh'), stdoutLog: at('stdout.log'), stderrLog: at('stderr.log'), exitStatus: at('exit-status'), credentialsExported: at('credentials-exported'), result: at('result'),
+        launcher: at('launch.sh'), stdoutLog: at('stdout.log'), stderrLog: at('stderr.log'), exitStatus: at('exit-status'), credentialsExported: at('credentials-exported'),
+        credentialBaseline: at('credential-baseline.json'), result: at('result'),
     };
 }
 
@@ -238,11 +241,35 @@ export function encodeNulList(values: readonly string[]): Buffer {
 
 /**
  * Launcher manifest records:
- * `purge <target>`, `store <run-relative dir> <target>`, `dir <target>`,
- * `file <run-relative file> <target> <octal mode>`, `output <sprite path> <run-relative return path>`.
+ * `purge <target>`, `stamp <run-relative file> <epoch seconds>` (the modification time of an uploaded store file),
+ * `store <run-relative dir> <target>`, `dir <target>`, `file <run-relative file> <target> <octal mode>`,
+ * `output <boundary> <path below it> <run-relative return path>` (see {@link spritesOutputRecord}).
  */
 export function spritesManifest(records: ReadonlyArray<readonly string[]>): Buffer {
     return encodeNulList(records.flat());
+}
+
+/**
+ * Directories above every Sprite target that the agent user cannot replace:
+ * its home (in root-owned `/home`), `/tmp` and `/run` themselves.
+ */
+const SPRITES_TARGET_BOUNDARIES: readonly string[] = [SPRITES_AGENT_HOME, '/tmp', '/run'];
+
+/**
+ * The `output` record of a refreshable credential installed at `target`: the
+ * launcher returns `<target>/<output>` only when every component below the
+ * target's boundary (the store's own directory and every ancestor the agent
+ * user could have replaced, e.g. `/home/node/.codex`) is a real directory and
+ * the file a regular file, so a symlink the agent planted never makes root
+ * export a file from outside the run's store.
+ */
+export function spritesOutputRecord(target: string, output: string, returned: string): string[] {
+    const boundary = SPRITES_TARGET_BOUNDARIES.find(prefix => target.startsWith(`${prefix}/`) && target.length > prefix.length + 1);
+    const file = path.posix.join(target, output);
+    if (!boundary || !isSafeTarget(target) || path.posix.normalize(file) !== file || !file.startsWith(`${target}/`)) {
+        throw new Error(`Agent runtime "sprites" cannot return a credential from ${file}`);
+    }
+    return ['output', boundary, file.slice(boundary.length + 1), returned];
 }
 
 /** Environment variable every process of a run inherits (its value is the run directory). */
@@ -338,6 +365,23 @@ record_status() {
     printf '%s\\n' "$1" > "$run_dir/exit-status.tmp" && chown "$owner" -- "$run_dir/exit-status.tmp" && mv -f -- "$run_dir/exit-status.tmp" "$run_dir/exit-status"
 }
 remove_credentials() { for dst in "\${stores[@]}"; do rm -rf -- "$dst"; done; }
+# plain_file <boundary> <path below it>: 0 when it is a regular file reached only through real directories,
+# 1 when a component is absent, 2 when one is a symlink or another file type (or the path is not plain).
+plain_file() {
+    local current="$1" index last
+    local -a parts
+    [ -d "$current" ] || return 2
+    case "$2" in ''|/*|*/|*$'\n'*) return 2 ;; esac
+    IFS=/ read -r -a parts <<< "$2"
+    last=$((\${#parts[@]} - 1))
+    for index in "\${!parts[@]}"; do
+        case "\${parts[$index]}" in ''|.|..) return 2 ;; esac
+        current="$current/\${parts[$index]}"
+        [ ! -L "$current" ] || return 2
+        [ -e "$current" ] || return 1
+        if [ "$index" -lt "$last" ]; then [ -d "$current" ] || return 2; else [ -f "$current" ] || return 2; fi
+    done
+}
 # Confirms that every refreshed credential is in returned/ (or that none can have refreshed).
 record_export() {
     printf 'ok\n' > "$run_dir/credentials-exported.tmp" && chown "$owner" -- "$run_dir/credentials-exported.tmp" && mv -f -- "$run_dir/credentials-exported.tmp" "$run_dir/credentials-exported"
@@ -372,6 +416,9 @@ while [ "$i" -lt "$count" ]; do
     kind="\${manifest[$i]}"
     case "$kind" in
         purge) rm -rf -- "\${manifest[$((i + 1))]}"; i=$((i + 2)) ;;
+        stamp)
+            touch -m -d "@\${manifest[$((i + 2))]}" -- "$run_dir/\${manifest[$((i + 1))]}" || fail "cannot keep the modification time of \${manifest[$((i + 1))]}"
+            i=$((i + 3)) ;;
         store)
             src="$run_dir/\${manifest[$((i + 1))]}"; dst="\${manifest[$((i + 2))]}"; i=$((i + 3))
             stores+=("$dst")
@@ -384,7 +431,7 @@ while [ "$i" -lt "$count" ]; do
             src="$run_dir/\${manifest[$((i + 1))]}"; dst="\${manifest[$((i + 2))]}"; mode="\${manifest[$((i + 3))]}"; i=$((i + 4))
             stores+=("$dst")
             mkdir -p -- "$(dirname -- "$dst")" && install -m "$mode" -o node -g node -- "$src" "$dst" || fail "cannot install $dst" ;;
-        output) outputs+=("\${manifest[$((i + 1))]}" "$run_dir/\${manifest[$((i + 2))]}"); i=$((i + 3)) ;;
+        output) outputs+=("\${manifest[$((i + 1))]}" "\${manifest[$((i + 2))]}" "$run_dir/\${manifest[$((i + 3))]}"); i=$((i + 4)) ;;
         *) fail "unknown manifest record $kind" ;;
     esac
 done
@@ -410,25 +457,39 @@ while :; do
     kill -0 "$child" 2>/dev/null || break
 done
 trap - TERM INT HUP
-# Nothing the run started outlives it (background jobs, daemons that left the session).
-kill_run_members "$run_dir" "$child" || echo "ProPR Sprites runtime: processes of the run survived SIGKILL" >> "$run_dir/stderr.log"
 exported=1
+# Nothing the run started outlives it (background jobs, daemons that left the session). A survivor could
+# still swap the paths checked below, so nothing is returned (the live copies stay for recovery).
+if ! kill_run_members "$run_dir" "$child"; then
+    echo "ProPR Sprites runtime: processes of the run survived SIGKILL" >> "$run_dir/stderr.log"
+    exported=0
+    outputs=()
+fi
 j=0
 while [ "$j" -lt "\${#outputs[@]}" ]; do
-    src="\${outputs[$j]}"; ret="\${outputs[$((j + 1))]}"; j=$((j + 2))
-    if [ -f "$src" ] && [ ! -L "$src" ]; then
-        if ! { mkdir -p -- "$(dirname -- "$ret")" && cp -p -- "$src" "$ret" && chmod 600 -- "$ret"; }; then
+    boundary="\${outputs[$j]}"; below="\${outputs[$((j + 1))]}"; ret="\${outputs[$((j + 2))]}"; j=$((j + 3))
+    src="$boundary/$below"
+    plain_file "$boundary" "$below"
+    case $? in
+        0)
+            if ! { mkdir -p -- "$(dirname -- "$ret")" && cp -p -- "$src" "$ret" && chmod 600 -- "$ret"; }; then
+                exported=0
+                echo "ProPR Sprites runtime: cannot return the refreshed credential $src" >> "$run_dir/stderr.log"
+            fi ;;
+        1) ;; # Deleted by the run: a deletion is never propagated.
+        *)
             exported=0
-            echo "ProPR Sprites runtime: cannot return the refreshed credential $src" >> "$run_dir/stderr.log"
-        fi
-    fi
+            echo "ProPR Sprites runtime: not returning the credential $src: a symlink or non-regular file is on its path" >> "$run_dir/stderr.log" ;;
+    esac
 done
 if [ -d "$run_dir/returned" ] && ! chown -R "$owner" -- "$run_dir/returned"; then
     exported=0
     echo "ProPR Sprites runtime: cannot hand the returned credentials to the worker" >> "$run_dir/stderr.log"
 fi
-if [ -d "${RESULT_DIR}" ]; then
-    mkdir -p -- "$run_dir/result" && cp -a -- "${RESULT_DIR}/." "$run_dir/result/" && chown -R "$owner" -- "$run_dir/result"
+# The agent user can create the result directory: a symlink there is not followed, nor kept inside it.
+if [ -d "${RESULT_DIR}" ] && [ ! -L "${RESULT_DIR}" ]; then
+    mkdir -p -- "$run_dir/result" && cp -a -- "${RESULT_DIR}/." "$run_dir/result/" \
+        && find "$run_dir/result" -mindepth 1 ! -type f ! -type d -delete && chown -R "$owner" -- "$run_dir/result"
 fi
 if [ "$exported" = 1 ] && record_export; then
     remove_credentials
