@@ -45,7 +45,7 @@ test('a Claude agent can be switched to the Fly Sprites runtime', async ({ page 
   }
   await page.getByRole('button', { name: /^vibe$/i }).click();
   await expect(page.getByRole('radio', { name: 'Fly Sprites' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByText('Fly Sprites runs Claude Code and Codex agents only.')).toBeVisible();
+  await expect(page.getByText('Fly Sprites runs Claude Code, Codex and Antigravity agents only.')).toBeVisible();
   await page.getByRole('button', { name: /^claude$/i }).click();
   await page.getByRole('button', { name: 'Add Agent & Log In', exact: true }).click();
   await expect.poll(() => saved?.agents[0]?.runtime).toBe('sprites');

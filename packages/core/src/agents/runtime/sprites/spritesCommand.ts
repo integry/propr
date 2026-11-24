@@ -25,14 +25,33 @@ export const SPRITES_DEFAULT_ENTRYPOINT = '/home/node/agent-entrypoint.sh';
 export const SPRITES_AGENT_HOME = '/home/node';
 export const SPRITES_LAUNCHER_EXIT_FAILURE = 125;
 
-/** Providers the runtime maps today; others follow the same entrypoint contract once their CLI is pinned on the Sprite. */
-export const SPRITES_SUPPORTED_AGENTS: ReadonlySet<AgentType> = new Set<AgentType>(['claude', 'codex']);
+/** Providers whose CLI the setup script pins; others follow the same entrypoint contract once their CLI is pinned on the Sprite. */
+export const SPRITES_SUPPORTED_AGENTS: ReadonlySet<AgentType> = new Set<AgentType>(['claude', 'codex', 'antigravity']);
 
 /** Where each provider's credential copy goes; removed before and after every run so no account outlives its run. */
 export const SPRITES_CREDENTIAL_TARGETS: readonly string[] = Object.freeze([
     '/home/node/.claude', '/home/node/.claude.json', '/home/node/.codex', '/home/node/.gemini', '/home/node/.gemini-source',
     '/home/node/.config/opencode', '/home/node/.local/share/opencode', '/home/node/.vibe', '/run/propr-claude',
 ]);
+
+/** Antigravity's disposable HOME (`scripts/antigravity-entrypoint.sh`), which holds the run's OAuth token copy. */
+export const SPRITES_ANTIGRAVITY_HOME = '/tmp/propr-antigravity-home';
+
+/**
+ * Everything a run leaves outside its run directory: the clone workspace
+ * (with `.git`), the workspace result (`result.bundle`), Antigravity's
+ * disposable HOME and every credential target. Removed when the run is
+ * released and the Sprite cannot be restored to its clean checkpoint.
+ */
+export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>): string[] {
+    const workdir = path.posix.normalize(spec.workdir);
+    const safeWorkdir = path.posix.isAbsolute(workdir) && [`${SPRITES_AGENT_HOME}/`, '/tmp/'].some(prefix => workdir.startsWith(prefix) && workdir.length > prefix.length);
+    if (!safeWorkdir) throw new Error(`Agent runtime "sprites" cannot run ${spec.name} in ${spec.workdir} (the workdir must be under ${SPRITES_AGENT_HOME}/ or /tmp/)`);
+    return [workdir, WORKSPACE_TRANSPORT_RESULT_DIR, SPRITES_ANTIGRAVITY_HOME, ...SPRITES_CREDENTIAL_TARGETS];
+}
+
+/** Removes the given paths as root: `bash -c <script> propr-scrub <path>...`. */
+export const SPRITES_SCRUB_SCRIPT = 'rm -rf -- "$@"';
 
 const BASE_PATH = '/opt/propr/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 /** Host binds whose content the run never needs back: an empty directory stands in. */
@@ -124,6 +143,7 @@ export function renderSpritesArgv(spec: AgentRunSpec): string[] {
         throw new Error(`Agent runtime "sprites" does not run ${spec.profile.agentType} agents yet; supported: ${[...SPRITES_SUPPORTED_AGENTS].join(', ')}`);
     }
     if (spec.workspace.mode !== 'clone') throw new Error(`Agent runtime "sprites" runs only the clone workspace transport (run ${spec.name})`);
+    spritesRunLeftovers(spec);
     const { entrypoint, wrapperArgs } = renderAgentRunEntrypoint(spec);
     return [entrypoint ?? SPRITES_DEFAULT_ENTRYPOINT, ...wrapperArgs, ...spec.args];
 }

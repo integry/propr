@@ -59,6 +59,8 @@ export class FakeSprite {
     readonly modes = new Map<string, number>();
     readonly calls: Array<{ file: string; args: string[] }> = [];
     readonly checkpoints: Array<{ id: string; comment?: string }> = [];
+    /** Filesystem contents per checkpoint id: restoring one brings back exactly these files. */
+    readonly snapshots = new Map<string, Map<string, Buffer>>();
     readonly restored: string[] = [];
     readonly signals: string[] = [];
     status = 'warm';
@@ -116,6 +118,10 @@ export class FakeSprite {
             this.launchers.get(path.posix.dirname(args[args.indexOf('propr-signal') + 2]))?.terminate();
             return { stdout: '', stderr: '', exitCode: 0 };
         }
+        if (file === 'sudo' && args.includes('propr-scrub')) {
+            for (const target of args.slice(args.indexOf('propr-scrub') + 1)) await this.filesystem().rm(target);
+            return { stdout: '', stderr: '', exitCode: 0 };
+        }
         if (file === 'sudo' && args.includes('propr-busy')) {
             return { stdout: '', stderr: '', exitCode: [...this.launchers.values()].some(launcher => launcher.running) ? 0 : 1 };
         }
@@ -129,11 +135,17 @@ export class FakeSprite {
     async listSessions() { return []; }
     async listCheckpoints() { return [...this.checkpoints]; }
     async createCheckpoint(comment?: string) {
-        this.checkpoints.push({ id: `v${this.checkpoints.length + 1}`, comment });
+        const id = `v${this.checkpoints.length + 1}`;
+        this.checkpoints.push({ id, comment });
+        this.snapshots.set(id, new Map(this.files));
         return (async function* () { yield { type: 'complete' }; })();
     }
     async restoreCheckpoint(id: string) {
         this.restored.push(id);
+        const snapshot = this.snapshots.get(id);
+        if (!snapshot) throw new Error(`no checkpoint ${id}`);
+        this.files.clear();
+        for (const [file, content] of snapshot) this.files.set(file, content);
         return (async function* () { yield { type: 'complete' }; })();
     }
 

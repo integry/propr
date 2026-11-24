@@ -9,12 +9,12 @@ import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import {
     planSpritesMounts, renderSpritesArgv, resolveSpritesEnvironment, spritesManifest, spritesMountRefusal, spritesRunPaths, spritesRunUser,
-    encodeNulList, SPRITES_CREDENTIAL_TARGETS, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_ROOT, type SpritesRunPaths,
+    encodeNulList, spritesRunLeftovers, SPRITES_CREDENTIAL_TARGETS, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_ROOT, SPRITES_SCRUB_SCRIPT, type SpritesRunPaths,
 } from './sprites/spritesCommand.js';
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
 import { prepareSpritesCredentials, type SpritesCredentialSync } from './sprites/spritesCredentials.js';
 import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession } from './sprites/spritesExecution.js';
-import { prepareSprite, readSpritesSetupBundle, spriteName, SpritePool, spriteRunInProgress, wakeSprite, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
+import { clearCleanMarker, prepareSprite, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, spriteRunInProgress, wakeSprite, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
 import { defaultSpritesClientFactory, type SpriteCommandLike, type SpriteLike, type SpritesClientFactory, type SpritesClientLike } from './sprites/spritesSdk.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
@@ -140,7 +140,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
             this.timings.credentialSyncMs = Date.now() - provisioned;
             signal.throwIfAborted();
         } catch (error) {
-            await this.discardRunDirectory();
+            await this.cleanSprite();
             this.lease.release();
             throw signal.aborted && this.cancellation.signal.aborted ? new AgentRunStoppedError(this.spec.name) : error;
         }
@@ -234,11 +234,43 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         this.timings.credentialWriteBackMs = Date.now() - started;
     }
 
+    /**
+     * Leaves nothing of the run at rest on the Sprite: restores the clean
+     * checkpoint (which also spares the next run its restore), or, without
+     * one, removes the run directory and everything the run left outside it.
+     */
+    private async cleanSprite(): Promise<void> {
+        if (!this.lease) return;
+        const { sprite, name } = this.lease;
+        // A run directory holding the only copy of a rotated token must survive.
+        if (!this.retainedCredentials && this.runtime.config().restoreCheckpoint) {
+            try {
+                const restoreMs = await restoreCleanCheckpoint(sprite, this.runtime.setupBundle());
+                if (restoreMs !== undefined) {
+                    logger.info({ run: this.spec.name, sprite: name, restoreMs }, 'Restored the Sprite to its clean checkpoint after the run');
+                    return;
+                }
+            } catch (error) {
+                logger.warn({ run: this.spec.name, sprite: name, error: (error as Error).message }, 'Could not restore the Sprite after the run; removing the run data instead');
+            }
+        }
+        await this.discardRunDirectory();
+    }
+
     private async discardRunDirectory(): Promise<void> {
-        if (!this.lease || this.retainedCredentials) return;
-        await this.lease.sprite.filesystem().rm(this.paths.root, { recursive: true, force: true }).catch(error => {
-            logger.warn({ run: this.spec.name, sprite: this.lease?.name, error: (error as Error).message }, 'Could not remove the Sprite run directory');
-        });
+        if (!this.lease) return;
+        const { sprite, name } = this.lease;
+        const warn = (what: string) => (error: unknown) => {
+            logger.warn({ run: this.spec.name, sprite: name, error: (error as Error).message }, what);
+        };
+        await clearCleanMarker(sprite).catch(warn('Could not remove the Sprite clean marker'));
+        // Root-owned: the clone workspace, the workspace result and Antigravity's disposable HOME.
+        await Promise.resolve()
+            .then(() => sprite.execFile('sudo', ['-n', 'bash', '-c', SPRITES_SCRUB_SCRIPT, 'propr-scrub', ...spritesRunLeftovers(this.spec)], { timeout: 120_000 }))
+            .then(result => { if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}: ${String(result.stderr).trim()}`); })
+            .catch(warn('Could not remove the run data the run left on the Sprite'));
+        if (this.retainedCredentials) return;
+        await sprite.filesystem().rm(this.paths.root, { recursive: true, force: true }).catch(warn('Could not remove the Sprite run directory'));
     }
 
     private async settlesWithin(ms: number): Promise<boolean> {
@@ -295,12 +327,16 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         this.releaseTimer = undefined;
     }
 
-    /** Removes the run directory (unless it holds unreturned credentials) and frees the Sprite for the next run. */
+    /**
+     * Restores the Sprite to its clean checkpoint (or removes everything the run
+     * left, keeping only a run directory with unreturned credentials) and frees
+     * the Sprite for the next run.
+     */
     release(): Promise<void> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
         this.released ??= (async () => {
             if (!this.settled) await this.stop();
-            await this.discardRunDirectory();
+            await this.cleanSprite();
             this.lease?.release();
         })();
         return this.released;

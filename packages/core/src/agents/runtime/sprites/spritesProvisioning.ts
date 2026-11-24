@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import logger from '../../../utils/logger.js';
 import { AGENT_DEFAULT_VERSIONS } from '../../version/types.js';
+import { SPRITES_RUN_ROOT } from './spritesCommand.js';
 import { spriteNameForSlot, type SpritesRuntimeConfig } from './spritesConfig.js';
 import { spritesErrorStatus, type SpriteLike, type SpriteProgressStream, type SpritesClientLike } from './spritesSdk.js';
 
@@ -11,7 +12,8 @@ import { spritesErrorStatus, type SpriteLike, type SpriteProgressStream, type Sp
  * (`<prefix>-<worker>-<slot>`, one run at a time each). A Sprite is created
  * on first use, provisioned once per setup revision by
  * `scripts/sprites-agent-setup.sh`, checkpointed, and restored to that clean
- * checkpoint before every later run. An idle Sprite goes cold and stops billing.
+ * checkpoint when each run is released (or, when that did not happen, before
+ * the next run). An idle Sprite goes cold and stops billing.
  */
 
 export const SPRITES_SETUP_SCRIPT = 'scripts/sprites-agent-setup.sh';
@@ -211,9 +213,61 @@ async function runSetup(sprite: SpriteLike, bundle: SpritesSetupBundle): Promise
     await filesystem.rm(SPRITES_SETUP_UPLOAD_DIR, { recursive: true, force: true }).catch(() => undefined);
 }
 
+/**
+ * Written (only by the worker, in the run root the agent cannot write to)
+ * right after a release restored the clean checkpoint, and consumed by the
+ * next run: a Sprite carrying it needs no restore before that run.
+ */
+export const SPRITES_CLEAN_MARKER = path.posix.join(SPRITES_RUN_ROOT, '.clean');
+
+/** Reads and removes the clean marker; undefined when there is none or it cannot be removed. */
+async function takeCleanMarker(sprite: SpriteLike): Promise<string | undefined> {
+    const filesystem = sprite.filesystem();
+    let marker: string;
+    try {
+        marker = (await filesystem.readFile(SPRITES_CLEAN_MARKER, null)).toString('utf8').trim();
+    } catch {
+        return undefined;
+    }
+    try {
+        await filesystem.rm(SPRITES_CLEAN_MARKER, { force: true });
+    } catch (error) {
+        logger.warn({ sprite: sprite.name, error: (error as Error).message }, 'Could not remove the Sprite clean marker; restoring the checkpoint');
+        return undefined;
+    }
+    return marker;
+}
+
+/** Drops the clean marker (a released run that could not restore the Sprite). */
+export async function clearCleanMarker(sprite: SpriteLike): Promise<void> {
+    await sprite.filesystem().rm(SPRITES_CLEAN_MARKER, { force: true });
+}
+
+/**
+ * Restores the clean post-setup checkpoint of this setup revision after a run,
+ * so nothing the run left (workspace, result bundle, credential copies) stays
+ * at rest on the Sprite, and marks the Sprite clean for its next run.
+ * Resolves with the restore time, or undefined when there is no such checkpoint.
+ */
+export async function restoreCleanCheckpoint(sprite: SpriteLike, bundle: SpritesSetupBundle): Promise<number | undefined> {
+    const comment = `${SETUP_CHECKPOINT_PREFIX}${bundle.hash}`;
+    const checkpoint = (await sprite.listCheckpoints()).find(candidate => candidate.comment === comment);
+    if (!checkpoint) return undefined;
+    const started = Date.now();
+    await drain(await sprite.restoreCheckpoint(checkpoint.id), `Restoring Sprite ${sprite.name} to checkpoint ${checkpoint.id}`);
+    const restoreMs = Date.now() - started;
+    const filesystem = sprite.filesystem();
+    await filesystem.mkdir(SPRITES_RUN_ROOT, { recursive: true, mode: 0o711 });
+    await filesystem.writeFile(SPRITES_CLEAN_MARKER, `${comment}\n`, { mode: 0o600 });
+    return restoreMs;
+}
+
 export interface SpriteProvisioning {
-    /** `setup`: provisioned now (and checkpointed); `restore`: rolled back to the clean checkpoint; `ready`: used as is. */
-    action: 'setup' | 'restore' | 'ready';
+    /**
+     * `setup`: provisioned now (and checkpointed); `restore`: rolled back to the clean checkpoint;
+     * `clean`: already restored when the previous run was released; `ready`: used as is.
+     */
+    action: 'setup' | 'restore' | 'clean' | 'ready';
     setupMs?: number;
     restoreMs?: number;
 }
@@ -221,8 +275,11 @@ export interface SpriteProvisioning {
 /** Bring the Sprite to the clean, provisioned state of this setup revision. */
 export async function prepareSprite(sprite: SpriteLike, bundle: SpritesSetupBundle, config: Pick<SpritesRuntimeConfig, 'restoreCheckpoint'>): Promise<SpriteProvisioning> {
     const comment = `${SETUP_CHECKPOINT_PREFIX}${bundle.hash}`;
+    // Consumed whatever happens next, so a marker never outlives the run that follows it.
+    const marker = await takeCleanMarker(sprite);
     if (await readStamp(sprite) === bundle.hash) {
         if (!config.restoreCheckpoint) return { action: 'ready' };
+        if (marker === comment) return { action: 'clean' };
         const checkpoint = (await sprite.listCheckpoints()).find(candidate => candidate.comment === comment);
         if (checkpoint) {
             const started = Date.now();

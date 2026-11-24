@@ -187,13 +187,126 @@ test('a run creates, provisions and checkpoints its Sprite, syncs credentials bo
     await handle.release();
     assert.equal([...sprite.files.keys()].some(file => file.startsWith(`${root}/`)), false, 'release removes the run directory');
 
-    // The next run on the same Sprite restores its clean checkpoint instead of provisioning again.
+    assert.deepEqual(sprite.restored, ['v1'], 'release restores the clean checkpoint');
+
+    // The next run on the same Sprite is already clean: no restore at startup, no new provisioning.
     const next = runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-8-def' }), { timeout: 10_000 });
     assert.equal((await next.wait()).exitCode, 0);
     assert.deepEqual(sprite.restored, ['v1']);
-    assert.equal(typeof next.timings.restoreMs, 'number');
+    assert.equal(next.timings.restoreMs, undefined);
     assert.equal(sprite.calls.filter(call => call.file === 'sudo' && call.args.includes('env')).length, 1);
     await next.release();
+    assert.deepEqual(sprite.restored, ['v1', 'v1']);
+});
+
+function antigravitySpec(source: string, name: string) {
+    const spec = new AgentRunSpecBuilder({
+        agentType: 'antigravity', image: 'propr/agent:test', name, stdin: true, user: '0:0',
+        network: agentRunNetwork('bridge'), security: {},
+        workspace: { hostPath: '/tmp/worktree', containerPath: '/home/node/workspace', readOnly: false },
+    })
+        .credentialBind(source, '/home/node/.gemini-source', true, { provider: 'antigravity', store: 'config', perRun: true })
+        .env('PROPR_EPHEMERAL_STATE', '1')
+        .env('PROPR_ANTIGRAVITY_SOURCE_CONFIG', '/home/node/.gemini-source')
+        .command('agy', '--print', '-')
+        .build();
+    spec.repoSetup = { agentType: 'antigravity', shell: '/bin/bash', script: 'setup-wrapper', providerEntrypoint: '/home/node/antigravity-entrypoint.sh', env: [] };
+    spec.workspace = {
+        ...spec.workspace, mode: 'clone',
+        clone: { remote: 'https://github.com/o/r.git', baseRef: 'refs/propr/runs/x/base', baseCommit: 'abc', branch: 'b', resultRef: 'refs/propr/runs/x/result', resultDir: WORKSPACE_TRANSPORT_RESULT_DIR, script: CLONE_SCRIPT },
+    };
+    return spec;
+}
+
+function antigravityStore(): string {
+    const dir = tempDir('propr-sprites-antigravity-');
+    fs.mkdirSync(path.join(dir, 'antigravity-cli'));
+    fs.writeFileSync(path.join(dir, 'antigravity-cli', 'antigravity-oauth-token'), '{"token":"agy"}', { mode: 0o600 });
+    return dir;
+}
+
+/** What an Antigravity run leaves behind like the real one: the clone (with .git), the result bundle and the disposable HOME's token. */
+const leaveRunData: FakeAgent = async context => {
+    context.files.set('/home/node/workspace/.git/HEAD', Buffer.from('ref: refs/heads/b\n'));
+    context.files.set('/home/node/workspace/hello-antigravity.txt', Buffer.from('hello\n'));
+    context.files.set(`${WORKSPACE_TRANSPORT_RESULT_DIR}/result.bundle`, Buffer.from('bundle'));
+    context.files.set(`${WORKSPACE_TRANSPORT_RESULT_DIR}/status`, Buffer.from('bundled\n'));
+    context.files.set('/tmp/propr-antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token', Buffer.from('{"token":"agy"}'));
+    context.write('stdout', 'done\n');
+    return 0;
+};
+
+const RUN_DATA = ['/home/node/workspace/', `${WORKSPACE_TRANSPORT_RESULT_DIR}/`, '/tmp/propr-antigravity-home/', '/tmp/propr-sprite-runs/claude', '/tmp/propr-sprite-runs/antigravity', '/home/node/.gemini-source/'];
+const runDataOn = (files: Iterable<string>) => [...files].filter(file => RUN_DATA.some(prefix => file.startsWith(prefix)));
+
+test('Antigravity runs on a Sprite, and release() restores the clean checkpoint so no run data survives', async () => {
+    const client = new FakeSpritesClient();
+    let argv: string[] = [];
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            argv = context.argv;
+            assert.equal(context.files.get('/home/node/.gemini-source/antigravity-cli/antigravity-oauth-token')?.toString(), '{"token":"agy"}');
+            return leaveRunData(context);
+        };
+    };
+    const runtime = runtimeFor(client);
+    const handle = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-20'), { timeout: 10_000, stdinData: 'prompt' });
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'done\n');
+    assert.deepEqual(argv.slice(-5), ['setup-wrapper', '/home/node/antigravity-entrypoint.sh', 'agy', '--print', '-']);
+    assert.equal((await handle.readFile(`${WORKSPACE_TRANSPORT_RESULT_DIR}/result.bundle`))?.toString(), 'bundle');
+
+    const sprite = client.sprites.get('propr-w1-0')!;
+    assert.ok(runDataOn(sprite.files.keys()).length > 0, 'the run left data on the Sprite before release');
+    await handle.release();
+    const checkpoint = sprite.snapshots.get('v1')!;
+    const survivors = [...sprite.files.keys()].filter(file => !checkpoint.has(file));
+    assert.deepEqual(survivors, ['/tmp/propr-sprite-runs/.clean'], 'nothing outside the checkpoint survives release() except the clean marker');
+    assert.deepEqual(runDataOn(sprite.files.keys()), []);
+    assert.equal(await handle.readFile(`${WORKSPACE_TRANSPORT_RESULT_DIR}/result.bundle`), null);
+
+    // The marker is single-use: the next run starts without a restore and consumes it.
+    client.configureSprite = () => undefined;
+    sprite.agent = async context => {
+        assert.equal(context.files.has('/tmp/propr-sprite-runs/.clean'), false);
+        return leaveRunData(context);
+    };
+    const next = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-21'), { timeout: 10_000 });
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.equal(next.timings.restoreMs, undefined);
+    await next.release();
+    assert.deepEqual(sprite.restored, ['v1', 'v1']);
+    assert.deepEqual(runDataOn(sprite.files.keys()), []);
+});
+
+test('without checkpoint restore, release() removes the workspace, the result and the Antigravity HOME', async () => {
+    const client = new FakeSpritesClient();
+    client.configureSprite = sprite => { sprite.agent = leaveRunData; };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_RESTORE_CHECKPOINT: 'false' });
+    const handle = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-22'), { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    await handle.release();
+    assert.deepEqual(sprite.restored, []);
+    assert.deepEqual(runDataOn(sprite.files.keys()), [], 'no repository code, bundle or OAuth token stays on the Sprite');
+    const scrub = sprite.calls.find(call => call.args.includes('propr-scrub'))!;
+    for (const target of ['/home/node/workspace', WORKSPACE_TRANSPORT_RESULT_DIR, '/tmp/propr-antigravity-home']) assert.ok(scrub.args.includes(target), target);
+});
+
+test('a failed checkpoint restore at release falls back to removing the run data', async () => {
+    const client = new FakeSpritesClient();
+    client.configureSprite = sprite => {
+        sprite.agent = leaveRunData;
+    };
+    const runtime = runtimeFor(client);
+    const handle = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-23'), { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    sprite.restoreCheckpoint = async () => { throw new Error('restore unavailable'); };
+    await handle.release();
+    assert.deepEqual(runDataOn(sprite.files.keys()), []);
+    assert.equal(sprite.files.has('/tmp/propr-sprite-runs/.clean'), false, 'a Sprite that was not restored is not marked clean');
 });
 
 test('a dropped output connection resumes from the received bytes without losing or repeating output', async () => {

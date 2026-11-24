@@ -36,7 +36,7 @@ const AgentRuntimeSelector: React.FC<AgentRuntimeSelectorProps> = ({ agentType, 
               aria-checked={selected === option.value}
               disabled={disabled}
               onClick={() => onChange(option.value || undefined)}
-              title={disabled ? 'Fly Sprites runs Claude Code and Codex agents' : undefined}
+              title={disabled ? 'Fly Sprites runs Claude Code, Codex and Antigravity agents' : undefined}
               className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all disabled:cursor-not-allowed disabled:text-gray-400 ${
                 selected === option.value
                   ? 'bg-white text-gray-900 shadow-sm'
@@ -50,7 +50,7 @@ const AgentRuntimeSelector: React.FC<AgentRuntimeSelectorProps> = ({ agentType, 
       </div>
       {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
       {selected === 'sprites' && !spritesSupported && (
-        <p className="mt-1 text-xs text-red-600">Fly Sprites runs Claude Code and Codex agents only.</p>
+        <p className="mt-1 text-xs text-red-600">Fly Sprites runs Claude Code, Codex and Antigravity agents only.</p>
       )}
     </div>
   );

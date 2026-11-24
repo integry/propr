@@ -38,6 +38,8 @@ describe('AgentConfigModal', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Instance default' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     expect(onSave.mock.calls[1][0].runtime).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: /^antigravity$/i }));
+    expect(screen.getByRole('radio', { name: 'Fly Sprites' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: /^vibe$/i }));
     expect(screen.getByRole('radio', { name: 'Fly Sprites' })).toBeDisabled();
   });
