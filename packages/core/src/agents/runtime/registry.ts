@@ -2,6 +2,7 @@ import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { createWorkspaceTransport, runWithWorkspaceTransport } from '../../git/workspaceTransport.js';
 import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } from '../../git/workspaceTransportMode.js';
 import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } from '../../network/egressExecution.js';
+import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.js';
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { withComputeCost } from './computeUsage.js';
@@ -170,19 +171,31 @@ export async function runAgent(
     const runtime = getAgentRuntime(config);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
-    const startedAt = Date.now();
-    if (mode === 'bind') {
-        const bound = resolved.workspace.mode ? resolved : { ...resolved, workspace: { ...resolved.workspace, mode } };
-        assertAgentRuntimeSupports(runtime, bound);
-        return withRunComputeUsage(runtime.kind, startedAt, await runtime.start(resolved, options).wait());
-    }
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {
         throw new Error(`Agent runtime "${runtime.kind}" cannot run the "${mode}" workspace transport for ${resolved.name}`);
     }
-    return withRunComputeUsage(runtime.kind, startedAt, await runWithWorkspaceTransport(runtime, resolved, options, {
-        transport: await createWorkspaceTransport(mode),
-        assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
-    }));
+    // Workspace transport changes only the checkout and its git mounts. Runtimes
+    // that can bind host credential paths still get per-run copies on the host.
+    const staged = runtime.capabilities.supportsBindMounts
+        ? stageAgentRunCredentials(resolved, { launchEnvironment: options.extraEnvVars })
+        : undefined;
+    try {
+        const runSpec = staged?.spec ?? resolved;
+        const runOptions = staged && Object.keys(staged.secretEnv).length > 0
+            ? { ...options, extraEnvVars: { ...options.extraEnvVars, ...staged.secretEnv } }
+            : options;
+        const startedAt = Date.now();
+        if (mode === 'bind') {
+            assertAgentRuntimeSupports(runtime, runSpec);
+            return withRunComputeUsage(runtime.kind, startedAt, await runtime.start(runSpec, runOptions).wait());
+        }
+        return withRunComputeUsage(runtime.kind, startedAt, await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
+            transport: await createWorkspaceTransport(mode),
+            assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
+        }));
+    } finally {
+        await staged?.complete();
+    }
 }
 
 /**

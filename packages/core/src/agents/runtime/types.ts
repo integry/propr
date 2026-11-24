@@ -114,6 +114,8 @@ export type AgentRunMount =
         order: number;
         /** Docker spelling: `-v src:dst:mode` (default) or `--mount type=bind,...`. */
         syntax?: 'volume' | 'mount';
+        /** Set when the source is a provider's canonical credential store (see the credential broker). */
+        credentialStore?: AgentRunCredentialStore;
     }
     | {
         type: 'tmpfs';
@@ -122,6 +124,22 @@ export type AgentRunMount =
         purpose: AgentRunMountPurpose;
         order: number;
     };
+
+/**
+ * Marks a bind of a provider's host credential store. With per-run
+ * credentials enabled, the runtime layer replaces the source with a per-run
+ * copy holding only the provider manifest's files and writes refreshed tokens
+ * back afterwards; the legacy mode binds the canonical store directly.
+ */
+export interface AgentRunCredentialStore {
+    provider: AgentType;
+    store: 'config' | 'data';
+    /**
+     * `false` for runs that rely on provider state persisting in the store
+     * between launches (goal sessions resumed by id): they keep the direct mount.
+     */
+    perRun: boolean;
+}
 
 export interface AgentRunResources {
     /** Run an init process as PID 1 that reaps zombies. */

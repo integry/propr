@@ -369,6 +369,15 @@ export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
 export * from './agents/runtime/computeUsage.js';
 export { ComputeUsageAccumulator, parseCgroupReport, parseDockerSize, parseDockerStatsLine, type ComputeUsageSample } from './agents/runtime/computeUsageSampler.js';
 export { COMPUTE_USAGE_SAMPLE_MS_ENV, DEFAULT_COMPUTE_USAGE_SAMPLE_MS, DockerComputeUsageSampler, resolveComputeUsageSampleMs } from './agents/runtime/dockerComputeUsage.js';
+export * from './agents/credentials/broker.js';
+export * from './agents/credentials/providerManifests.js';
+export {
+    withCredentialStoreLock, CredentialStoreLockTimeoutError, CredentialStoreLeaseRevokedError, type CredentialStoreLease, type CredentialStoreLockOptions,
+} from './agents/credentials/credentialStoreLock.js';
+export {
+    AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV, collectStagedCredentials, credentialRunRoot, resolveCredentialBrokerMode, stageAgentRunCredentials,
+    type CredentialBrokerMode, type StagedAgentRunCredentials,
+} from './agents/credentials/hostCredentialStaging.js';
 export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,

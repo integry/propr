@@ -207,7 +207,8 @@ export function buildCodexRunSpec(config: AgentConfig, params: CodexDockerArgsPa
     if (!repositoryInspection) {
         builder.dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace), 'git');
     }
-    builder.bind(configPath, CONTAINER_CONFIG_PATH, false, 'credential');
+    // Goal runs resume their session from the store, so they keep the direct mount.
+    builder.credentialBind(configPath, CONTAINER_CONFIG_PATH, false, { provider: 'codex', store: 'config', perRun: params.executionMode !== 'goal' });
     if (!repositoryInspection) builder.env('GH_TOKEN', githubToken).env('GITHUB_TOKEN', githubToken);
     if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
     addEnvironmentVariables(builder, [config.envVars, environment], true);

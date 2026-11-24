@@ -1,6 +1,6 @@
 import type { AgentToolPolicy, AgentType } from '../types.js';
 import type {
-    AgentRunMcpGrant, AgentRunMount, AgentRunMountPurpose, AgentRunNetwork, AgentRunSecurity, AgentRunSpec, AgentRunWorkspace,
+    AgentRunCredentialStore, AgentRunMcpGrant, AgentRunMount, AgentRunMountPurpose, AgentRunNetwork, AgentRunSecurity, AgentRunSpec, AgentRunWorkspace,
 } from './types.js';
 
 export interface AgentRunSpecInit {
@@ -80,6 +80,21 @@ export class AgentRunSpecBuilder {
 
     bind(source: string, target: string, readOnly: boolean, purpose: AgentRunMountPurpose): this {
         this.spec.mounts.push({ type: 'bind', source, target, readOnly, purpose, order: this.order() });
+        return this;
+    }
+
+    /** A bind of a provider credential store; the runtime may substitute a per-run copy. */
+    credentialBind(source: string, target: string, readOnly: boolean, credentialStore: AgentRunCredentialStore): this {
+        const purpose: AgentRunMountPurpose = credentialStore.store === 'data' ? 'data' : 'credential';
+        this.spec.mounts.push({ type: 'bind', source, target, readOnly, purpose, order: this.order(), credentialStore });
+        return this;
+    }
+
+    /** Tag an already-declared bind (e.g. one adopted from Docker argv) as a credential store. */
+    markCredentialStore(target: string, credentialStore: AgentRunCredentialStore): this {
+        for (const mount of this.spec.mounts) {
+            if (mount.type === 'bind' && mount.target === target) mount.credentialStore = credentialStore;
+        }
         return this;
     }
 

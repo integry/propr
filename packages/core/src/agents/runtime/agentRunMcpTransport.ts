@@ -22,8 +22,11 @@ export type AgentRunMcpTransportPlan =
 export function agentRunMcpReachableUrl(environment: NodeJS.ProcessEnv = process.env): string | undefined {
     const explicit = agentRunMcpUnpinnedEndpoint(environment);
     if (explicit) return explicit;
-    const origin = environment.API_PUBLIC_URL?.trim().replace(/\/+$/, '');
-    return origin ? `${origin}/api/mcp` : undefined;
+    const origin = environment.API_PUBLIC_URL?.trim();
+    if (!origin) return undefined;
+    let end = origin.length;
+    while (end > 0 && origin[end - 1] === '/') end--;
+    return end > 0 ? `${origin.slice(0, end)}/api/mcp` : undefined;
 }
 
 /**

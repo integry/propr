@@ -26,7 +26,7 @@ export function buildClaudeServiceRunSpec(params: DockerArgsParams): AgentRunSpe
         .dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath), 'git')
         .dockerOptions(buildAgentGitCredentialArgs(), 'credential')
         .bind('/tmp/claude-logs', '/tmp/claude-logs', false, 'logs')
-        .bind(CLAUDE_CONFIG_PATH, '/home/node/.claude', false, 'credential');
+        .credentialBind(CLAUDE_CONFIG_PATH, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
     addClaudeConfigSeed(builder)
         .env('GH_TOKEN', githubToken)
         .command(

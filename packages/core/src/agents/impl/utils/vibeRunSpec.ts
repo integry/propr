@@ -38,8 +38,12 @@ export function assembleVibeRunSpec(input: VibeRunSpecInput): AgentRunSpec {
     for (const [target, options] of sandbox.tmpfs) builder.tmpfs(target, options);
     builder.workspaceMount();
     if (!repositoryInspection) builder.dockerOptions(input.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, mode === 'analysis'), 'git');
+    const configMountsFrom = builder.spec.mounts.length;
+    builder.dockerOptions(input.configMountArgs, 'credential');
+    for (const mount of builder.spec.mounts.slice(configMountsFrom)) {
+        if (mount.type === 'bind') builder.markCredentialStore(mount.target, { provider: 'vibe', store: 'config', perRun: true });
+    }
     builder
-        .dockerOptions(input.configMountArgs, 'credential')
         .dockerOptions(input.promptMountArgs, 'prompt')
         .dockerOptions(input.runtimeHomeMountArgs, 'runtime-home');
     if (input.envFilePath) builder.envFile(input.envFilePath);

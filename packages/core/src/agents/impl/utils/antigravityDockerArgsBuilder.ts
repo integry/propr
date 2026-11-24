@@ -87,7 +87,7 @@ export function buildAntigravityRunSpec(params: AntigravityDockerArgsParams): Ag
     if (!repositoryInspection) {
         builder.dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace), 'git');
     }
-    builder.bind(configPath, configMountTarget, false, 'credential');
+    builder.credentialBind(configPath, configMountTarget, false, { provider: 'antigravity', store: 'config', perRun: executionMode === 'task' });
     if (!repositoryInspection) builder.env('GH_TOKEN', githubToken).env('GITHUB_TOKEN', githubToken);
     builder.env('ANTIGRAVITY_CLI', '1').env('ANTIGRAVITY_CLI_TRUST_WORKSPACE', 'true');
     if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
