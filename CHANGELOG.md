@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Writes `GH_AUTH_MODE` on every run that brings GitHub credentials: `app`
     for an own GitHub App unless `--relay` or the `.env` chooses, `relay` for
     relay credentials. Fly secrets are never removed, so a redeploy that adds
-    an own App does not keep an earlier deploy's relay mode.
+    an own App does not keep an earlier deploy's relay mode, and a redeploy
+    without a key keeps an earlier deploy's GitHub App key wired into the
+    Machine.
   - `--idle-shutdown [after]` opts in to idle shutdown (#3770): restart
     `on-failure`, proxy autostop off, autostart on, and prints the `/wake` URL.
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it

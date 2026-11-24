@@ -7,7 +7,9 @@
  *                 size confirmed, and the deploy is sized from that capacity
  *   3. secrets    upload the given secrets; generated ones (SESSION_SECRET)
  *                 only when the app does not already have them, so a redeploy
- *                 never logs everybody out or rotates encryption keys
+ *                 never logs everybody out or rotates encryption keys; a
+ *                 GitHub App key left by an earlier deploy stays wired into
+ *                 the Machine (key file + GH_PRIVATE_KEY_PATH)
  *   4. deploy     the published app image directly (no build, no DinD)
  *
  * Two targets implement the steps: flyctl (when installed) and the Machines
@@ -23,6 +25,7 @@ import {
   buildMachineConfig,
   FLY_CONTROL_PLANE_ROLE,
   FLY_CONTROL_PLANE_ROLE_KEY,
+  FLY_GH_PRIVATE_KEY_SECRET,
   FLY_MACHINE_CONFIG_FILE,
   renderFlyMachineConfigJson,
   renderFlyToml,
@@ -109,11 +112,16 @@ export async function runFlyDeploy(
     ? `Created ${plan.volumeSizeGb} GB volume ${plan.volumeName} in ${plan.region}.`
     : `Reusing volume ${plan.volumeName} in ${plan.region}.`);
   const volumeSizeGb = await confirmVolumeCapacity(plan, volume, target, log);
-  // Size everything carved out of the volume (the legacy Docker filesystem) from its confirmed capacity.
-  const deployPlan: FlyDeployPlan = { ...plan, volumeSizeGb };
 
   const existing = new Set(await target.secretNames(plan.app));
   const toSet: Record<string, string> = { ...input.secrets };
+  // Fly secrets are never removed, so a GitHub App key from an earlier deploy
+  // is still on the app; the container must keep writing it and pointing
+  // GH_PRIVATE_KEY_PATH at it, or GH_AUTH_MODE=app has no key to sign with.
+  const githubAppKey = plan.githubAppKey || existing.has(FLY_GH_PRIVATE_KEY_SECRET);
+  if (githubAppKey && !plan.githubAppKey) log("Keeping the GitHub App private key from an earlier deploy.");
+  // Size everything carved out of the volume (the legacy Docker filesystem) from its confirmed capacity.
+  const deployPlan: FlyDeployPlan = { ...plan, volumeSizeGb, githubAppKey };
   const secretsKept: string[] = [];
   for (const [name, value] of Object.entries(input.generatedSecrets)) {
     if (existing.has(name) || name in toSet) secretsKept.push(name);

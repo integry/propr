@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { DEFAULT_PROPR_GH_RELAY_URL, resolveGithubAuthMode } from "@propr/shared";
 import { deployPreparedFly, prepareFlyDeploy, type DeployFlyOptions } from "../deployFly.js";
 import type { FlyDeployTarget } from "./flyDeployRunner.js";
-import { buildAppEnv } from "./flyMachineConfig.js";
+import { buildAppEnv, buildMachineConfig, FLY_GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_SECRET } from "./flyMachineConfig.js";
 import type { FlyRelayDeps } from "./flyRelay.js";
 
 const IMAGES = { app: "propr/app:0.9.3", redis: "redis:7-alpine", cloudflared: "cloudflare/cloudflared:2024.12.2" };
@@ -21,6 +21,7 @@ const OWN_APP_ENV = { ...OAUTH_ENV, GH_APP_ID: "42", GH_INSTALLATION_ID: "777", 
 function flyApp() {
   const secrets: Record<string, string> = {};
   let machineEnv: Record<string, string> = {};
+  let appFiles: unknown;
   const target: FlyDeployTarget = {
     kind: "machines-api",
     async ensureApp() { return Object.keys(secrets).length === 0; },
@@ -31,10 +32,12 @@ function flyApp() {
     async deploy(plan) {
       // The Machine sees every app secret plus the generated plain env.
       machineEnv = { ...secrets, ...buildAppEnv(plan) };
+      const containers = buildMachineConfig(plan, "vol_1").containers as Array<{ name: string; files?: unknown }>;
+      appFiles = containers.find((c) => c.name === "app")?.files;
       return "deployed";
     },
   };
-  return { target, secrets, machineEnv: () => machineEnv };
+  return { target, secrets, machineEnv: () => machineEnv, appFiles: () => appFiles };
 }
 
 const relayDeps: FlyRelayDeps = {
@@ -111,4 +114,21 @@ test("a run without GitHub credentials leaves the earlier relay enrollment in ch
   const second = await deploy(app, {}, OAUTH_ENV);
   assert.equal(second.GH_AUTH_MODE, "relay");
   assert.deepEqual(authModes(second), ["relay", "relay"]);
+});
+
+test("redeploying an own-App app without new GitHub credentials keeps the App key wired into the Machine", async () => {
+  const app = flyApp();
+  const first = await deploy(app, {}, OWN_APP_ENV);
+  assert.equal(first.GH_AUTH_MODE, "app");
+  assert.equal(first.GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH);
+  assert.deepEqual(authModes(first), ["app", "app"]);
+
+  // OAuth browser sign-in only, no key file, no `propr login`: the earlier App stays in charge.
+  const second = await deploy(app, {}, OAUTH_ENV);
+  assert.equal(second.GH_AUTH_MODE, "app");
+  assert.equal(second.GH_APP_ID, "42");
+  assert.equal(second.GH_INSTALLATION_ID, "777");
+  assert.equal(second.GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH, "the env still points at the key file");
+  assert.deepEqual(app.appFiles(), [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }], "the key file is still declared");
+  assert.deepEqual(authModes(second), ["app", "app"]);
 });

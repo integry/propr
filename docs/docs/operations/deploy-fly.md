@@ -67,7 +67,7 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 | --- | --- |
 | Stack `.env` entries | `<stack root>/.env` when present, or `--env-file <path>`. Skipped: empty values, host paths (`HOST_*`), and every key the deploy sets itself (ports, Redis, database path, URLs, `NODE_ENV`, `PROPR_INDEXING`, the agent runtime and, with `--legacy-docker`, the clone, worktree and egress paths on the shared volume). Turn this off with `--no-env-file`. |
 | `SESSION_SECRET` | Generated only when the app does not have one yet, so a redeploy does not sign everyone out. A `SESSION_SECRET` in the `.env` is uploaded as is. |
-| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. |
+| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. A redeploy without a key keeps the earlier one wired in the same way. |
 | `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
 | `SPRITES_TOKEN` | `--sprites-token` or `SPRITES_TOKEN`. Without it agent runs on Sprites fail, and the command says so. |
 | `FLY_API_TOKEN` | `--agent-fly-token`, for the Fly Machines agent runtime. The deploy token is never reused for agents. |
