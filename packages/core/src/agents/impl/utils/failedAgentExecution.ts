@@ -97,7 +97,7 @@ export function failedExecutionResult(
     return {
         ...(completed && {
             sessionId: completed.sessionId, conversationId: completed.conversationId,
-            conversationLog: completed.conversationLog, tokenUsage: completed.tokenUsage, cost: completed.cost,
+            conversationLog: completed.conversationLog, tokenUsage: completed.tokenUsage, cost: completed.cost, providerCostUsd: completed.providerCostUsd,
             providerModel: completed.providerModel, prompt: completed.prompt,
         }),
         executionId: completed?.executionId ?? assignExecutionId({}),
@@ -123,6 +123,7 @@ export async function persistFailedExecutionLog(
         executionTimeMs: result.executionTimeMs,
         success: false,
         tokenUsage: result.tokenUsage,
+        costUsd: result.providerCostUsd,
         error: result.error ?? 'Execution failed',
         sessionId: result.sessionId,
         draftId: taskId,
@@ -144,6 +145,7 @@ export function agentResultToMetricsResult(result: AgentExecutionResult): Claude
         conversationLog: result.conversationLog,
         error: result.error,
         tokenUsage: result.tokenUsage,
+        ...(result.providerCostUsd !== undefined && { providerCostUsd: result.providerCostUsd }),
         finalResult: result.cost ? { total_cost_usd: result.cost } : null,
     };
 }

@@ -344,6 +344,12 @@ export interface AgentExecutionResult {
     summary?: string;       // Extracted summary of work
     modifiedFiles: string[];
     cost?: number;          // Estimated cost in USD
+    /**
+     * Actual cost in USD reported by the agent's provider. Unlike `cost` it is
+     * absent when none was reported, and a reported 0 is kept: metrics prefer it
+     * to a pricing-catalog estimate.
+     */
+    providerCostUsd?: number;
 
     // Metadata
     modelUsed: string;

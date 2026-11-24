@@ -122,6 +122,7 @@ export class OpenCodeAgent implements Agent {
                 error: errorText,
                 terminationReason,
                 tokenUsage: parsedOutput.tokenUsage,
+                ...(parsedOutput.cost !== undefined && { cost: parsedOutput.cost, providerCostUsd: parsedOutput.cost }),
                 usageMetrics: usageMetrics ?? undefined
             };
 
@@ -183,7 +184,7 @@ export class OpenCodeAgent implements Agent {
                 executionTimeMs,
             });
             if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed: analysis.modelUsed, executionTimeMs, success: analysis.success, error: analysis.success ? undefined : analysis.errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
+                await this.persistAnalysisLogSafely({ executionType, modelUsed: analysis.modelUsed, executionTimeMs, success: analysis.success, error: analysis.success ? undefined : analysis.errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, costUsd: parsedOutput.cost, usageMetrics });
             }
             return analysis.result;
         } catch (error) {
@@ -234,6 +235,7 @@ export class OpenCodeAgent implements Agent {
             executionTimeMs: executionTime,
             success: response.success,
             tokenUsage: response.tokenUsage,
+            costUsd: response.providerCostUsd,
             error: response.success ? undefined : (response.error || 'Execution failed'),
             sessionId: response.sessionId,
             draftId: taskId,
@@ -265,6 +267,7 @@ export class OpenCodeAgent implements Agent {
         taskNumber?: number;
         prNumber?: number;
         tokenUsage?: AgentExecutionResult['tokenUsage'];
+        costUsd?: number;
         usageMetrics?: UsageTrackingMetrics | null;
     }): Promise<void> {
         try {
@@ -274,6 +277,7 @@ export class OpenCodeAgent implements Agent {
                 executionTimeMs: opts.executionTimeMs,
                 success: opts.success,
                 tokenUsage: opts.tokenUsage,
+                costUsd: opts.costUsd,
                 error: opts.success ? undefined : opts.error,
                 sessionId: opts.sessionId,
                 draftId: opts.taskId,

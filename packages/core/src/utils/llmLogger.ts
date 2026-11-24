@@ -344,6 +344,8 @@ export function createLlmLogFromAnalysis(params: {
     /** Informational subset of output_tokens; never bill separately. */
     reasoning_output_tokens?: number;
   };
+  /** Actual cost in USD reported by the provider; skips the catalog estimate, and 0 is kept. */
+  costUsd?: number;
   /** Calculated token count from prompt - more reliable than agent-reported for single-turn */
   estimatedInputTokens?: number;
   error?: string;
@@ -381,6 +383,7 @@ export function createLlmLogFromAnalysis(params: {
     inputTokens: params.tokenUsage?.input_tokens,
     outputTokens: params.tokenUsage?.output_tokens,
     estimatedInputTokens: params.estimatedInputTokens,
+    costUsd: params.costUsd,
     cacheCreationInputTokens: params.tokenUsage?.cache_creation_input_tokens,
     cacheReadInputTokens: params.tokenUsage?.cache_read_input_tokens,
     errorMessage: params.error,

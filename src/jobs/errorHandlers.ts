@@ -62,7 +62,8 @@ function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         finalResult: response.finalResult,
         conversationLog: response.conversationLog as ClaudeResult['conversationLog'],
         error: response.error,
-        tokenUsage: response.tokenUsage
+        tokenUsage: response.tokenUsage,
+        ...(response.providerCostUsd !== undefined && { providerCostUsd: response.providerCostUsd })
     };
 }
 

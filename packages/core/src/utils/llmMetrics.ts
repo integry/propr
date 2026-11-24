@@ -92,7 +92,18 @@ function toPersistedTokenUsage(tokens: CumulativeTokenUsage): TokenUsage {
     return usage;
 }
 
+/** A provider-reported cost is a finite non-negative number; anything else counts as not reported. */
+function reportedProviderCost(claudeResult: ClaudeResult | null): number | undefined {
+    const cost = claudeResult?.providerCostUsd;
+    return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
+}
+
 async function calculateCost(model: string, tokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
+    const providerCost = reportedProviderCost(claudeResult);
+    if (providerCost !== undefined) {
+        logger.info({ model, providerCostUsd: providerCost }, 'Using provider-reported cost');
+        return providerCost;
+    }
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
     const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = tokens;
