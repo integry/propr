@@ -19,6 +19,8 @@ export class FakeSprite {
     exitBeforeOutputEnds = false;
     launched = Promise.withResolvers<void>();
     output = 'agent output';
+    attachedOutput?: string;
+    attachedStderr?: string;
     credential = '';
     stderr = '';
     constructor(readonly name: string) {}
@@ -74,17 +76,19 @@ export class FakeSprite {
                 return;
             }
             cmd.emit('spawn');
-            cmd.stdout.write(this.output.slice(0, 4));
+            const output = options?.sessionId ? this.attachedOutput ?? this.output : this.output;
+            const stderr = options?.sessionId ? this.attachedStderr ?? this.stderr : this.stderr;
+            cmd.stdout.write(output.slice(0, 4));
             if (this.exitBeforeOutputEnds) {
                 cmd.emit('exit', this.exitCode);
                 setImmediate(() => {
-                    cmd.stdout.end(this.output.slice(4));
-                    setImmediate(() => cmd.stderr.end(this.stderr));
+                    cmd.stdout.end(output.slice(4));
+                    setImmediate(() => cmd.stderr.end(stderr));
                 });
                 return;
             }
-            cmd.stdout.end(this.output.slice(4));
-            cmd.stderr.end(this.stderr);
+            cmd.stdout.end(output.slice(4));
+            cmd.stderr.end(stderr);
             if (!this.hold) cmd.emit('exit', options?.sessionId ? 0 : this.exitCode);
         });
         return cmd;

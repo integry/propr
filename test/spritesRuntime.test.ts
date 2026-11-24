@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { text } from 'node:stream/consumers';
 import { after, test } from 'node:test';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 after(closeConnection);
@@ -446,14 +447,68 @@ test('stdout and failing workflow markers arriving after exit are drained throug
     await runtime.close();
 });
 
-test('a disconnected launch attaches once to the same non-TTY session', async () => {
+test('reattach drains replay without joining it to a partial provider record', async t => {
     const { runtime, builder, client } = fixture();
-    client.setup = sprite => { sprite.exitCode = -1; };
-    const run = runtime.start(builder.build());
-    assert.equal((await run.wait()).exitCode, 0);
+    t.after(() => runtime.close());
+    const partial = '{"type":"assistant","message":';
+    const first = '{"type":"user","message":{"id":"original"}}\n' + partial;
+    client.setup = sprite => {
+        sprite.exitCode = -1;
+        sprite.output = first;
+        sprite.attachedOutput = first + '{"id":"replay"},"session_id":"replayed"}\n';
+        sprite.stderr = 'first connection';
+        sprite.attachedStderr = 'replayed diagnostics';
+    };
+    const sessions: string[] = [];
+    const run = runtime.start(builder.build(), { onSessionId: id => { sessions.push(id); } });
+    const stdout = text(run.stdout);
+    const stderr = text(run.stderr);
+    const result = await run.wait();
+    assert.equal(await stdout, first);
+    assert.equal(result.stdout, first);
+    assert.equal(await stderr, 'first connection');
+    assert.doesNotMatch(result.stderr, /replayed/);
+    assert.deepEqual([...result.messageTimestamps.keys()], ['original']);
+    assert.deepEqual(sessions, []);
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.outputIncomplete!, /may be incomplete/);
     assert.deepEqual(client.created[0].events.filter(e => e === 'launch' || e === 'attach'), ['launch', 'attach']);
     await run.release!();
-    await runtime.close();
+});
+
+test('dispatch returns the workspace before reporting incomplete output and unobserved workflow markers', async t => {
+    const { registerAgentRuntime, runAgent } = await import('../packages/core/src/agents/runtime/registry.ts');
+    const { executeWithRepositoryWorkflow, repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
+    const { runtime, builder, client } = fixture();
+    t.after(() => runtime.close());
+    registerAgentRuntime('test-replay', () => runtime);
+    let retrieved = false;
+    t.mock.method(CloneWorkspaceTransport.prototype, 'prepare', async (spec: ReturnType<typeof builder.build>) => ({
+        spec, launchEnvironment: {},
+        complete: async (handle: ReturnType<typeof runtime.start>) => {
+            const status = await handle.readFile!('/tmp/propr-workspace-result/status');
+            retrieved = status?.toString() === 'unchanged';
+            return { applied: false };
+        },
+        cleanup: async (handle: ReturnType<typeof runtime.start>) => handle.release!(),
+    }));
+    const result = await executeWithRepositoryWorkflow({ revision: 'base', fileRevision: 'blob', baseBranch: 'main',
+        config: { hooks: { before_run: 'exit 7' }, validation: ['true'] }, timeoutMs: 1000, maxParallelTasks: 1 }, async () => {
+        const marker = repositoryWorkflowExecution.getStore()!.marker;
+        client.setup = sprite => {
+            sprite.exitCode = -1;
+            // The connection drops inside a hook report.
+            sprite.stderr = `\n${marker}:hook:before_run:`;
+            sprite.files.set('/opt/propr/result/status', Buffer.from('unchanged'));
+            sprite.attachedStderr = `\n${marker}:validation:0:0\n`;
+        };
+        builder.spec.repoSetup = buildAgentRunRepoSetup('antigravity');
+        const run = runAgent({ runtime: 'test-replay' }, builder.build(), {});
+        await assert.rejects(run, /Provider output and workflow reports may be incomplete/);
+        assert.equal(retrieved, true);
+        return { success: false, modifiedFiles: [], logs: '', modelUsed: 'test', executionTimeMs: 0 };
+    });
+    assert.equal(result.repositoryValidationResult?.commands[0].status, 'not_observed');
 });
 
 test('failed pool initialization can be retried and cannot interrupt shutdown', async () => {

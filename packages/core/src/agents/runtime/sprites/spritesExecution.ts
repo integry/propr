@@ -27,11 +27,11 @@ async function drainOutput(command: SpriteCommand) {
     });
 }
 
-function waitForConnection(command: SpriteCommand, signal: AbortSignal, pipeline: RunPipeline, onSpawn: () => void) {
+function waitForConnection(command: SpriteCommand, signal: AbortSignal, write: RunPipeline['write'], onSpawn: () => void) {
     let force: ReturnType<typeof setTimeout> | undefined;
     let abort: () => void;
-    const stdout = (data: Buffer) => pipeline.write('stdout', data);
-    const stderr = (data: Buffer) => pipeline.write('stderr', data);
+    const stdout = (data: Buffer) => write('stdout', data);
+    const stderr = (data: Buffer) => write('stderr', data);
     command.stdout.on('data', stdout);
     command.stderr.on('data', stderr);
     const spawned = () => { onSpawn(); command.stdin.end(); };
@@ -89,6 +89,7 @@ export async function execute(sprite: Sprite, launch: SpriteLaunch, { output, si
     if (started.refusal) return started.refusal;
     const { pipeline } = started;
     let exitCode: number | null = null;
+    let outputIncomplete: string | undefined;
     try {
         cancellation.throwIfAborted();
         // Keep the non-TTY streams separate for workflow reports. Only this launch
@@ -96,21 +97,23 @@ export async function execute(sprite: Sprite, launch: SpriteLaunch, { output, si
         const cwd = '/opt/propr/inbox';
         const command = sprite.spawn('sudo', ['-n', 'unshare', '--mount', '--propagation', 'private', 'setpriv', '--no-new-privs', '/usr/bin/python3', '-I', spriteLauncher, 'launch', inputPath],
             { cwd, detachable: true, maxRunAfterDisconnect: '60s' });
-        exitCode = await waitForConnection(command, cancellation, pipeline, onSpawn);
+        exitCode = await waitForConnection(command, cancellation, pipeline.write, onSpawn);
         if (exitCode < 0 && !cancellation.aborted) {
+            outputIncomplete = 'Sprite execution disconnected. Provider output and workflow reports may be incomplete.';
             const sessions = await startupStep(cancellation, () => sprite.listSessions());
             const matching = sessions.filter(session => session.workdir === cwd && !session.tty);
             if (matching.length === 1 && !cancellation.aborted) {
-                // The SDK switches to the session endpoint when sessionId is set.
+                // @fly/sprites 0.2.5 attaches by session ID and emits unnumbered output
+                // frames. Drain this connection only to observe exit.
                 const attached = sprite.spawn('', [], { sessionId: matching[0].id });
-                exitCode = await waitForConnection(attached, cancellation, pipeline, onSpawn);
+                exitCode = await waitForConnection(attached, cancellation, pipeline.watchdog.recordActivity, onSpawn);
             }
             if (exitCode < 0 && !cancellation.aborted) throw new Error('Sprite execution disconnected before exit');
         }
     } catch (error) {
         if (!cancellation.aborted) throw error;
     } finally {
-        pipeline.finishOutput();
+        pipeline.finishOutput({ disconnected: !!outputIncomplete });
         const finalCost = await pipeline.finishCost();
         costMessage ??= finalCost ?? undefined;
         await Promise.all(callbacks);
@@ -118,7 +121,12 @@ export async function execute(sprite: Sprite, launch: SpriteLaunch, { output, si
         await pipeline.closeLive();
     }
     if (callbackError) throw callbackError;
-    const result = pipeline.result(exitCode);
+    const result: ExecutionResult = pipeline.result(exitCode);
+    if (outputIncomplete) {
+        result.outputIncomplete = outputIncomplete;
+        result.stderr += '\n' + outputIncomplete;
+        if (result.exitCode === 0) result.exitCode = -1;
+    }
     return new Promise((resolve, reject) => {
         if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput: preserve, resolve, reject });
         else if (pipeline.watchdog.trip) settleWatchdogStop(pipeline.watchdog.trip, result, preserve, { resolve, reject });

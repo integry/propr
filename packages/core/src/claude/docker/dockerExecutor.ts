@@ -38,6 +38,8 @@ export interface ExecutionResult {
     stderr: string;
     exitCode: number | null;
     messageTimestamps: Map<string, string>;
+    /** Transport failure surfaced after the workspace has been retrieved. */
+    outputIncomplete?: string;
     /** Set when ProPR stopped the process after its configured execution deadline. */
     timedOut?: boolean;
     timeoutMs?: number;

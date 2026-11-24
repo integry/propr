@@ -2,7 +2,7 @@ import { registerCostExecution, refuseCostExecution } from '../../claude/docker/
 import { StringDecoder } from 'node:string_decoder';
 import { currentExtensionLaunch } from '../../extensions/extensionLaunchContext.js';
 import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
-import { captureWorkflowMarkers } from '../../workflow/workflowExecution.js';
+import { captureWorkflowMarkers, repositoryWorkflowExecution } from '../../workflow/workflowExecution.js';
 import { finishDiagnosticOutput, prepareCommandCapture, scheduleProviderCapture } from '../../diagnostics/managedLogRuntime.js';
 import { startExecutionWatchdog } from '../../claude/docker/dockerExecutionWatchdog.js';
 import { startLiveOutputStreaming } from '../../claude/docker/dockerLiveOutputStreaming.js';
@@ -81,15 +81,20 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
             if (stream === 'stderr') markers?.append(decoded);
             publish(stream, redactors[stream].push(decoded));
         },
-        finishOutput() {
+        finishOutput({ disconnected = false } = {}) {
+            const workflow = markers && repositoryWorkflowExecution.getStore();
+            if (disconnected && workflow) {
+                workflow.wrapped = true;
+                workflow.observed = undefined;
+            }
             clearInterval(timer);
             capture?.snapshot();
             for (const stream of ['stdout', 'stderr'] as const) {
                 const tail = decoders[stream].end();
-                if (stream === 'stderr') markers?.finish(tail);
+                if (stream === 'stderr' && !disconnected) markers?.finish(tail);
                 publish(stream, redactors[stream].push(tail) + redactors[stream].finish());
             }
-            if (pending) inspect(pending, new Date().toISOString());
+            if (pending && !disconnected) inspect(pending, new Date().toISOString());
             finishDiagnosticOutput(capture, '', '');
             watchdog.stop();
         },

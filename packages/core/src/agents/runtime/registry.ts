@@ -224,9 +224,9 @@ export async function runAgent(
         const startedAt = Date.now();
         if (mode === 'bind') {
             assertAgentRuntimeSupports(runtime, runSpec);
-            return withRunComputeUsage(runtime.kind, startedAt, await runtime.start(runSpec, runOptions).wait());
+            return finalizeRunResult(runtime.kind, startedAt, await runtime.start(runSpec, runOptions).wait());
         }
-        return withRunComputeUsage(runtime.kind, startedAt, await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
+        return finalizeRunResult(runtime.kind, startedAt, await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
             transport: await createWorkspaceTransport(mode),
             assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
         }));
@@ -240,7 +240,8 @@ export async function runAgent(
  * runtime that reports none, the wall time the dispatcher observed. The cost is
  * the runtime's, else the `PROPR_COMPUTE_RATES` rate for its kind, else unknown.
  */
-function withRunComputeUsage(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+function finalizeRunResult(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+    if (result.outputIncomplete) throw new Error(result.outputIncomplete);
     const usage = result.computeUsage ?? {
         runtime: kind, wallTimeMs: Date.now() - startedAt,
         cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null,
