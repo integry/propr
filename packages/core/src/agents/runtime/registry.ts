@@ -1,7 +1,8 @@
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
+import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
 import type { AgentConfig } from '../types.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
-import type { AgentRunSpec, AgentRuntime } from './types.js';
+import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime } from './types.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
@@ -64,15 +65,46 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
     if (!capabilities.supportsMcpPrivateNetwork && spec.mcpGrant?.network) {
         throw new Error(`Agent runtime "${runtime.kind}" cannot join MCP network "${spec.mcpGrant.network}" for ${spec.name}`);
     }
+    if (!capabilities.supportsRestrictedNetwork && spec.network.restriction) {
+        throw new Error(`Agent runtime "${runtime.kind}" cannot enforce the restricted network policy (${spec.network.restriction.source}) for ${spec.name}`);
+    }
+}
+
+/**
+ * The spec with the effective network requirement attached: the run's
+ * restricted policy, or the enforced instance policy outside any run. Resolved
+ * before dispatch so every runtime sees it, not only the Docker executor.
+ */
+export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options: Pick<AgentRunOptions, 'networkPolicyExempt'> = {}): Promise<AgentRunSpec> {
+    const policy = await resolveAgentRunNetworkPolicy(options.networkPolicyExempt);
+    if (!policy) return spec;
+    return { ...spec, network: { ...spec.network, restriction: policy as AgentRunNetworkRestriction } };
 }
 
 /** Start a provider run on the agent's runtime and wait for its outcome. */
-export function runAgent(
+export async function runAgent(
     config: Pick<AgentConfig, 'runtime'> | null | undefined,
     spec: AgentRunSpec,
     options: AgentRunOptions,
 ): Promise<ExecutionResult> {
     const runtime = getAgentRuntime(config);
-    assertAgentRuntimeSupports(runtime, spec);
-    return runtime.start(spec, options).wait();
+    const resolved = await withAgentRunNetworkRequirement(spec, options);
+    assertAgentRuntimeSupports(runtime, resolved);
+    return runtime.start(resolved, options).wait();
+}
+
+/**
+ * Native goal sessions keep stdin open for steering and still launch Docker
+ * directly from rendered argv. Until runtimes offer an interactive handle,
+ * resolve the selection before every launch (unknown names fail here too) and
+ * refuse any runtime other than Docker rather than silently using Docker.
+ */
+export function assertNativeGoalRuntime(
+    config?: Pick<AgentConfig, 'runtime'> | null,
+    environment: NodeJS.ProcessEnv = process.env,
+): void {
+    const kind = resolveAgentRuntimeKind(config, environment);
+    if (kind !== DEFAULT_AGENT_RUNTIME) {
+        throw new Error(`Native goal sessions support only the "${DEFAULT_AGENT_RUNTIME}" agent runtime; "${kind}" is selected`);
+    }
 }

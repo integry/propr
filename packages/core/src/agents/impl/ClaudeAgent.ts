@@ -12,7 +12,7 @@ import {
     AnalysisResult,
     AnalyzeOptions
 } from '../types.js';
-import { runAgent } from '../runtime/registry.js';
+import { assertNativeGoalRuntime, runAgent } from '../runtime/registry.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import {
     verifyWorktreeStructure,
@@ -256,6 +256,7 @@ export class ClaudeAgent implements Agent {
         } = options;
         const startTime = Date.now();
         try {
+            assertNativeGoalRuntime(this.config);
             await setWorktreeOwnership(worktreePath, issueRef.number, {
                 protectGitMetadata: environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
             });
@@ -269,6 +270,7 @@ export class ClaudeAgent implements Agent {
             const operatorQuestions = await this.prepareOperatorQuestions(options);
             // The attempt binds the question launch to its own deadline before building the container.
             const buildGoalDockerArgs = async (boundQuestions?: OperatorQuestionLaunch) => {
+                assertNativeGoalRuntime(this.config);
                 const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
                 return buildDockerArgs(this.config, this.maxTurns, {
                     worktreePath, githubToken, gitMountArgs, modelName: model, issueNumber: issueRef.number,

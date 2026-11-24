@@ -303,6 +303,7 @@ function runDockerCommand(
             void costExecution?.finish().catch(() => null);
             throw error;
         }
+        options.agentRun?.onSpawn?.();
 
         let sessionLineBuffer = '';
         const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);

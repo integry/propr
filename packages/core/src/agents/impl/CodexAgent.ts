@@ -5,7 +5,7 @@ import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
-import { runAgent } from '../runtime/registry.js';
+import { assertNativeGoalRuntime, runAgent } from '../runtime/registry.js';
 import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
 import type { AgentRunSpec } from '../runtime/types.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
@@ -146,6 +146,7 @@ export class CodexAgent implements Agent {
     }
 
     private async executeNativeGoal(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        assertNativeGoalRuntime(this.config);
         await setWorktreeOwnership(options.worktreePath, options.issueRef.number, {
             protectGitMetadata: options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
         });

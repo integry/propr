@@ -1,4 +1,5 @@
 import type { Readable } from 'node:stream';
+import type { ResolvedNetworkPolicy } from '../../network/networkPolicy.js';
 import type { AgentType } from '../types.js';
 
 /**
@@ -101,7 +102,15 @@ export interface AgentRunNetwork {
     /** `bridge`: the runtime's default outbound network; `named`: a specific network (e.g. a Compose network for an MCP grant). */
     mode: 'bridge' | 'named';
     name: string;
+    /**
+     * Set at dispatch when the effective network policy (the run's, or the
+     * enforced instance policy) restricts outbound traffic. A runtime given
+     * this must confine the run to it; one that cannot is refused before launch.
+     */
+    restriction?: AgentRunNetworkRestriction;
 }
+
+export type AgentRunNetworkRestriction = ResolvedNetworkPolicy & { mode: 'restricted' };
 
 export interface AgentRunSecurity {
     noNewPrivileges: boolean;

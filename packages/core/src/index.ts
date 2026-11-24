@@ -366,10 +366,10 @@ export * from './agents/runtime/agentRuntimePackageVerification.js';
 export type * from './agents/runtime/types.js';
 export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
 export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
-export { DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
+export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
-    AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, getAgentRuntime, registerAgentRuntime,
-    registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, type AgentRuntimeFactory, type ProviderAgentRuntime,
+    AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,
+    registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
 } from './agents/runtime/registry.js';
 export {
     clearAgentRuntimePackageCatalogCache,

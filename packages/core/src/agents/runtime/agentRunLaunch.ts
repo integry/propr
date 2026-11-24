@@ -5,6 +5,12 @@ export interface AgentRunLaunch {
     spec: AgentRunSpec;
     /** Decoded (and redacted) output chunks, forwarded to the run handle's streams. */
     onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
+    /**
+     * Called synchronously once the run's `docker` process is spawned. Every
+     * cancellation check before it is final: a launch aborted before this
+     * point never starts the agent.
+     */
+    onSpawn?: () => void;
 }
 
 /**

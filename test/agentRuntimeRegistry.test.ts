@@ -15,8 +15,9 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     },
 });
 
-const { getAgentRuntime, registerAgentRuntime, resolveAgentRuntimeKind, runAgent, assertAgentRuntimeSupports, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.ts');
-const { DockerRuntime } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
+const { getAgentRuntime, registerAgentRuntime, resolveAgentRuntimeKind, runAgent, assertAgentRuntimeSupports, assertNativeGoalRuntime, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.ts');
+const { DockerRuntime, AgentRunStoppedError } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
+const { executeWithNetworkPolicy, setUnscopedNetworkPolicyResolver } = await import('../packages/core/src/network/egressExecution.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
 const { containerLaunchKind } = await import('../packages/core/src/agents/runtime/agentRunLaunch.ts');
@@ -61,6 +62,7 @@ test('handle streams forward output once read; stop and inspect address the run 
     let release!: () => void;
     respond = async call => {
         if (call.args[0] === 'run') {
+            call.options.agentRun.onSpawn();
             call.options.agentRun.onOutput('stdout', 'hello ');
             await new Promise<void>(resolve => { release = resolve; });
             call.options.agentRun.onOutput('stdout', 'world');
@@ -77,9 +79,13 @@ test('handle streams forward output once read; stop and inspect address the run 
     handle.stderr.on('data', chunk => stderr.push(String(chunk)));
     assert.deepEqual(await handle.inspect(), { liveness: 'running', id: 'abc123', name: 'claude-issue-1-abc' });
     assert.equal(await handle.isAlive(), true);
-    await handle.stop('SIGINT', 5000);
+    let stopped = false;
+    const stopping = handle.stop('SIGINT', 5000).then(() => { stopped = true; });
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(calls.at(-1)!.args, ['stop', '--signal', 'SIGINT', '--time', '5', 'claude-issue-1-abc']);
+    assert.equal(stopped, false, 'stop resolves only once the run has exited');
     release();
+    await stopping;
     assert.equal((await handle.wait()).stdout, 'hello world');
     await new Promise(resolve => handle.stdout.once('end', resolve));
     assert.equal(chunks.join(''), 'world', 'output emitted before the stream was first read is not buffered');
@@ -87,7 +93,80 @@ test('handle streams forward output once read; stop and inspect address the run 
 
     respond = async () => ({ stdout: '', stderr: 'Error: No such container: claude-issue-1-abc', exitCode: 1, messageTimestamps: new Map() });
     assert.equal((await handle.inspect()).liveness, 'not_found');
+    const before = calls.length;
     await handle.stop();
+    assert.equal(calls.length, before, 'a settled run needs no docker stop');
+});
+
+/** A run whose launch preparation (network policy, admission) is pending until released, and which honours the executor's pre-spawn check. */
+function pendingLaunch() {
+    const state = { spawned: false, release: (): void => undefined, signal: undefined as AbortSignal | undefined };
+    respond = async call => {
+        if (call.args[0] !== 'run') return { stdout: '', stderr: 'Error: No such container: claude-issue-1-abc', exitCode: 1, messageTimestamps: new Map() };
+        state.signal = call.options.signal;
+        await new Promise<void>(resolve => { state.release = resolve; });
+        if (call.options.signal?.aborted) throw call.options.signal.reason;
+        state.spawned = true;
+        call.options.agentRun.onSpawn();
+        return { stdout: 'worked', stderr: '', exitCode: 0, messageTimestamps: new Map() };
+    };
+    return state;
+}
+
+test('stop during pending launch preparation cancels the launch instead of trusting container absence', async () => {
+    calls.length = 0;
+    const launch = pendingLaunch();
+    const handle = new DockerRuntime().start(spec(), { timeout: 1000 });
+    const outcome = handle.wait().then(() => 'resolved', error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    let stopped = false;
+    const stopping = handle.stop().then(() => { stopped = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(launch.signal?.aborted, true, 'the cancellation reaches launch preparation');
+    assert.equal(stopped, false, 'stop does not succeed while the launch could still start');
+    launch.release();
+    await stopping;
+    assert.equal(launch.spawned, false, 'the pending launch never starts the agent');
+    assert.ok(await outcome instanceof AgentRunStoppedError);
+    assert.equal(calls.filter(call => call.args[0] === 'stop').length, 0);
+});
+
+test('stop after spawn whose container Docker does not know yet also cancels the launch', async () => {
+    calls.length = 0;
+    let release!: () => void;
+    let signal: AbortSignal | undefined;
+    respond = async call => {
+        if (call.args[0] !== 'run') return { stdout: '', stderr: 'Error: No such container: claude-issue-1-abc', exitCode: 1, messageTimestamps: new Map() };
+        signal = call.options.signal;
+        call.options.agentRun.onSpawn();
+        await new Promise<void>(resolve => { release = resolve; });
+        if (signal?.aborted) throw signal.reason;
+        return { stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() };
+    };
+    const handle = new DockerRuntime().start(spec(), { timeout: 1000 });
+    const outcome = handle.wait().then(() => 'resolved', error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    const stopping = handle.stop('SIGTERM', 1000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls.at(-1)!.args.slice(0, 1), ['stop']);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signal?.aborted, true);
+    release();
+    await stopping;
+    assert.ok(await outcome instanceof AgentRunStoppedError);
+});
+
+test('a caller signal still reaches the launch alongside the handle cancellation', async () => {
+    calls.length = 0;
+    const launch = pendingLaunch();
+    const caller = new AbortController();
+    const handle = new DockerRuntime().start(spec(), { timeout: 1000, signal: caller.signal });
+    const outcome = handle.wait().then(() => 'resolved', error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    caller.abort(new Error('caller cancelled'));
+    assert.equal(launch.signal?.aborted, true);
+    launch.release();
+    assert.match(String(await outcome), /caller cancelled/);
 });
 
 test('specs needing capabilities a runtime lacks are refused', () => {
@@ -97,4 +176,75 @@ test('specs needing capabilities a runtime lacks are refused', () => {
     const noMcp = { ...noBinds, capabilities: { ...noBinds.capabilities, supportsBindMounts: true, supportsMcpPrivateNetwork: false } };
     assert.doesNotThrow(() => assertAgentRuntimeSupports(noMcp as any, run));
     assert.throws(() => assertAgentRuntimeSupports(noMcp as any, { ...run, mcpGrant: { servers: ['propr'], network: 'propr_default' } }), /cannot join MCP network/);
+    const noRestriction = { ...noBinds, capabilities: { ...noBinds.capabilities, supportsBindMounts: true, supportsRestrictedNetwork: false } };
+    assert.doesNotThrow(() => assertAgentRuntimeSupports(noRestriction as any, run));
+    const restricted = { ...run, network: { ...run.network, restriction: { mode: 'restricted' as const, source: 'instance_enforced' as const, allow: [] } } };
+    assert.throws(() => assertAgentRuntimeSupports(noRestriction as any, restricted), /cannot enforce the restricted network policy \(instance_enforced\)/);
+});
+
+/** A runtime with bind mounts but chosen restricted-network support, recording what it was asked to start. */
+function recordingRuntime(kind: string, supportsRestrictedNetwork: boolean) {
+    const started: any[] = [];
+    registerAgentRuntime(kind, () => ({
+        kind,
+        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork, supportsMcpPrivateNetwork: true, reattach: false },
+        start: (runSpec: any) => {
+            started.push(runSpec);
+            return { wait: async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() }) } as any;
+        },
+    }));
+    return started;
+}
+
+const restrictedPolicy = { mode: 'restricted' as const, source: 'workflow' as const, allow: ['registry.npmjs.org'] };
+const enforcedPolicy = { mode: 'restricted' as const, source: 'instance_enforced' as const, allow: [] };
+
+test('a runtime without restricted networking is refused before launch under a restricted run policy', async () => {
+    const started = recordingRuntime('open-only', false);
+    await assert.rejects(executeWithNetworkPolicy(restrictedPolicy, () => runAgent({ runtime: 'open-only' }, spec(), {})), /"open-only" cannot enforce the restricted network policy/);
+    assert.equal(started.length, 0);
+    await executeWithNetworkPolicy({ mode: 'open', source: 'instance', allow: [] }, () => runAgent({ runtime: 'open-only' }, spec(), {}));
+    assert.equal(started.length, 1, 'open runs are unaffected');
+    assert.equal(started[0].network.restriction, undefined);
+});
+
+test('the enforced instance policy applies to runs started outside any run policy', async () => {
+    const started = recordingRuntime('open-only-unscoped', false);
+    setUnscopedNetworkPolicyResolver(async () => enforcedPolicy);
+    try {
+        await assert.rejects(runAgent({ runtime: 'open-only-unscoped' }, spec(), {}), /cannot enforce the restricted network policy \(instance_enforced\)/);
+        assert.equal(started.length, 0);
+        setUnscopedNetworkPolicyResolver(async () => { throw new Error('settings unreadable'); });
+        await assert.rejects(runAgent({ runtime: 'open-only-unscoped' }, spec(), {}), /settings unreadable/, 'an unreadable policy fails closed');
+        setUnscopedNetworkPolicyResolver(async () => ({ mode: 'restricted', source: 'instance', allow: [] }));
+        await runAgent({ runtime: 'open-only-unscoped' }, spec(), {});
+        assert.equal(started.length, 1, 'a non-enforced instance default does not bind unscoped runs');
+    } finally {
+        setUnscopedNetworkPolicyResolver(undefined);
+    }
+});
+
+test('supporting runtimes receive the resolved restriction; Docker argv is unchanged', async () => {
+    const started = recordingRuntime('restricting', true);
+    await executeWithNetworkPolicy(restrictedPolicy, () => runAgent({ runtime: 'restricting' }, spec(), {}));
+    assert.deepEqual(started[0].network.restriction, restrictedPolicy);
+    calls.length = 0;
+    respond = async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() });
+    const run = spec();
+    await executeWithNetworkPolicy(restrictedPolicy, () => runAgent(null, run, {}));
+    assert.deepEqual(calls[0].options.agentRun.spec.network.restriction, restrictedPolicy);
+    assert.deepEqual(calls[0].args, renderDockerRunArgs(run));
+    assert.equal(run.network.restriction, undefined, 'the provider spec is not mutated');
+    calls.length = 0;
+    await executeWithNetworkPolicy(restrictedPolicy, () => runAgent(null, spec(), { networkPolicyExempt: 'ProPR-owned probe' }));
+    assert.equal(calls[0].options.agentRun.spec.network.restriction, undefined);
+});
+
+test('native goals resolve the runtime selection and refuse anything but Docker', () => {
+    assert.doesNotThrow(() => assertNativeGoalRuntime(undefined, {}));
+    assert.doesNotThrow(() => assertNativeGoalRuntime({ runtime: 'docker' }, { [AGENT_RUNTIME_ENV]: 'docker' }));
+    recordingRuntime('goal-remote', true);
+    assert.throws(() => assertNativeGoalRuntime({ runtime: 'goal-remote' }, {}), /support only the "docker" agent runtime; "goal-remote" is selected/);
+    assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'goal-remote' }), /"goal-remote" is selected/);
+    assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'sprites' }), /Unknown agent runtime "sprites"/);
 });
