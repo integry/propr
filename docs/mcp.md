@@ -1015,7 +1015,9 @@ For spend rather than progress, `get_cost_breakdown` returns the same rows as
 `GET /api/stats/cost`: recorded agent executions grouped by any of `day`,
 `repository`, `agent`, `model`, `reasoning_level`, `execution_type` and
 `outcome`, each with `executions`, `tasks`, input/output/cache tokens and
-`cost_usd`, plus `totals`:
+`cost_usd`, the compute usage agent runtimes reported (`compute_runs`,
+`compute_wall_time_ms`, `compute_cpu_seconds` and `compute_cost_usd`), plus
+`totals`:
 
 ```json
 { "period": "30d", "groupBy": ["repository", "model", "outcome"] }
@@ -1024,7 +1026,9 @@ For spend rather than progress, `get_cost_breakdown` returns the same rows as
 Without `repository` it covers the repositories in the grant (`repositories`
 lists them); executions with no task have no repository and are left out. A
 dimension that was never recorded, or a group with no recorded cost, is
-`null` rather than a guess or `0`.
+`null` rather than a guess or `0`; so are the CPU and compute cost of a group
+no runtime measured or priced. `get_task` reports the same compute usage for
+one task under `computeUsage`.
 
 For what already finished, `get_recent_activity` merges one newest-first
 timeline — terminal tasks, opened and merged pull requests, finished goals,

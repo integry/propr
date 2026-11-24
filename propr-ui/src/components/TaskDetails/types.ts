@@ -105,6 +105,8 @@ export interface HistoryItemMetadata {
   description?: string;
   commitResult?: { commitHash?: string; commitMessage?: string };
   tokenUsage?: TokenUsage;
+  /** What the run's sandbox consumed, reported by its agent runtime when the run finished. */
+  computeUsage?: ComputeUsage;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
   consumedReviewCommentIds?: number[];
   /** Legacy entries store `true`; current entries store the 1-based cycle number. */
@@ -253,6 +255,17 @@ export interface LiveDetails {
   historyTruncated?: boolean;
   /** Where in the live output log this state was read (see `LiveOutputPosition`). */
   liveOutputPosition?: LiveOutputPosition;
+}
+
+/** Compute usage of one agent run; unmeasured figures are null. */
+export interface ComputeUsage {
+  runtime: string;
+  wallTimeMs: number;
+  cpuSeconds: number | null;
+  peakMemoryBytes: number | null;
+  avgMemoryBytes: number | null;
+  costUsd: number | null;
+  costSource: 'runtime' | 'rate_table' | null;
 }
 
 export interface AgentRuntimeSummary {
