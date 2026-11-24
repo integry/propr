@@ -39,7 +39,7 @@ Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an
 
 The worker creates a privately named Sprite for each concurrent run and reuses restored Sprites within its process. Provisioning installs the versions pinned in `Dockerfile.agent` and takes a clean checkpoint before uploading any run data. The clone transport holds its repository token separately while the setup hook and provider entrypoint run as the unprivileged `node` user. Provider credentials arrive in one batch from the broker. Each CLI uses a writable copy of its read-only source. The worker collects only declared refreshable files through the launcher export and commits them through the broker.
 
-Release restores the entire checkpoint after credential write-back and workspace result retrieval, including failed and stopped runs. A restore failure causes the worker to destroy the Sprite and provision a replacement. A restarted worker creates its own Sprites. Operators can remove abandoned `propr-<uuid>` Sprites from a stopped worker in the Fly organization.
+Release restores the entire checkpoint after credential write-back and workspace result retrieval, including failed and stopped runs. If result retrieval fails before the worker verifies a local Git ref, cleanup keeps the Sprite out of the pool and reports its name and result directory for recovery. A restore failure causes the worker to destroy the Sprite and provision a replacement. A restarted worker creates its own Sprites. Operators can remove abandoned `propr-<uuid>` Sprites from a stopped worker in the Fly organization.
 
 ## Container Configuration
 

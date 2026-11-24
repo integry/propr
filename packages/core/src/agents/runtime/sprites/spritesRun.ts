@@ -32,7 +32,7 @@ function supportedBinds(spec: AgentRunSpec) {
 
 function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: string) {
     const inherited = { ...process.env, ...options.extraEnvVars };
-    const env = new Map<string, string>();
+    const env = new Map(Object.entries(options.extraEnvVars ?? {}));
     for (const file of [...spec.envFiles].sort((a, b) => a.order - b.order)) {
         fs.accessSync(file.path, fs.constants.R_OK);
         for (const [name, value] of envFileValues(file.path, inherited)) env.set(name, value);

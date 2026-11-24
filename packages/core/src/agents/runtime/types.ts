@@ -317,8 +317,8 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
      * holding the only copy of a result there can keep it. Idempotent.
      */
     retain?(): void;
-    /** Cleanup must release this sandbox even when workspace result retrieval fails. */
-    readonly releaseAfterResultRead?: boolean;
+    /** Location of the retained sandbox result when the runtime uses a generated machine name. */
+    readonly recoveryLocation?: string;
 }
 
 /** What a launch knows of the agent's configuration: its runtime and CLI version selection. */

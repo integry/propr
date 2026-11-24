@@ -9,7 +9,8 @@ after(closeConnection);
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRuntime.ts';
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
-import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
+import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../packages/core/src/git/workspaceTransportScript.ts';
+import { CloneWorkspaceTransport } from '../packages/core/src/git/workspaceCloneTransport.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
 
 const token = 'test-org-secret';
@@ -139,3 +140,150 @@ test('an invalid credential export still restores the checkpoint and releases th
     await next.release!();
     assert.equal(client.created.length, 1);
 });
+
+for (const failure of ['read', 'verification'] as const) {
+    test(`clone cleanup keeps the named Sprite when bundle ${failure} fails`, async t => {
+        const { runtime, client, builder } = fixture();
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-recovery-'));
+        t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+        const remote = path.join(root, 'remote.git');
+        const worktree = path.join(root, 'worker');
+        const git = (...args: string[]) => execFileSync('git', args, { cwd: root });
+        git('init', '-q', '--bare', remote);
+        git('init', '-q', worktree);
+        git('-C', worktree, '-c', 'user.name=test', '-c', 'user.email=test@example.org', 'commit', '-q', '--allow-empty', '-m', 'base');
+        git('-C', worktree, 'remote', 'add', 'origin', 'https://github.com/example/recovery.git');
+        const revoked: string[] = [];
+        const transport = new CloneWorkspaceTransport({
+            remoteUrl: () => remote, createRunId: () => 'test', workerToken: async () => undefined,
+            mintToken: async () => 'repo-token', revokeToken: async value => { revoked.push(value); },
+        });
+        const spec = builder.build();
+        spec.workspace = { ...spec.workspace, hostPath: worktree };
+        const prepared = await transport.prepare(spec);
+        const run = runtime.start(prepared.spec, { extraEnvVars: prepared.launchEnvironment });
+        const result = await run.wait();
+        const sprite = client.created[0];
+        sprite.files.set('/opt/propr/result/status', Buffer.from('bundle abc'));
+        sprite.files.set('/opt/propr/result/result.bundle', Buffer.from('only copy'));
+        const handle = failure === 'verification' ? run : { ...run, readFile: async (file: string) => {
+            if (file.endsWith('.bundle')) throw new Error('connection lost');
+            return run.readFile!(file);
+        } };
+        await assert.rejects(prepared.complete(handle, result), new RegExp('kept for recovery at Sprite ' + sprite.name));
+        await prepared.cleanup(handle);
+        const next = runtime.start(builder.build());
+        await next.wait();
+        assert.equal(client.created.length, 2);
+        assert.deepEqual(sprite.events, ['checkpoint', 'restore', 'launch']);
+        assert.deepEqual(client.deleted, []);
+        assert.deepEqual(revoked, ['repo-token']);
+        assert.equal((await run.readFile!('/tmp/propr-workspace-result/result.bundle'))?.toString(), 'only copy');
+        await next.release!();
+    });
+}
+
+test('launch delivers explicit extras with file and spec precedence and keeps transport credentials separate', async t => {
+    const { runtime, client, builder } = fixture();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-env-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const file = path.join(dir, 'agent.env');
+    fs.writeFileSync(file, 'FROM_FILE=file\nOVERRIDE=file\n');
+    builder.envFile(file).env('OVERRIDE', 'spec');
+    const extraEnvVars = { TOOL_POLICY: 'enabled', FROM_FILE: 'extra', OVERRIDE: 'extra',
+        SECRET_ALIAS: token, SPRITES_TOKEN: 'filtered', [WORKSPACE_TRANSPORT_TOKEN_ENV]: 'repo-token' };
+    const run = runtime.start(builder.build(), { extraEnvVars });
+    extraEnvVars.TOOL_POLICY = 'changed';
+    await run.wait();
+    const { agent, transportEnv } = JSON.parse(client.created[0].launches[0]);
+    assert.equal(agent.env.TOOL_POLICY, 'enabled');
+    assert.equal(agent.env.FROM_FILE, 'file');
+    assert.equal(agent.env.OVERRIDE, 'spec');
+    assert.equal(agent.env.SECRET_ALIAS, undefined);
+    assert.equal(agent.env.SPRITES_TOKEN, undefined);
+    assert.equal(agent.env[WORKSPACE_TRANSPORT_TOKEN_ENV], undefined);
+    assert.equal(transportEnv[WORKSPACE_TRANSPORT_TOKEN_ENV], 'repo-token');
+    await run.release!();
+});
+
+test('stop settles during creation and a late create response deletes only its own Sprite', { timeout: 3000 }, async () => {
+    const { runtime, client, builder } = fixture();
+    const started = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const create = client.createSprite.bind(client);
+    client.createSprite = async name => {
+        const sprite = await create(name);
+        started.resolve();
+        await resume.promise;
+        return sprite;
+    };
+    const run = runtime.start(builder.build());
+    await started.promise;
+    await run.stop();
+    await assert.rejects(run.wait());
+    client.createSprite = create;
+    const next = runtime.start(builder.build());
+    await next.wait();
+    resume.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(client.deleted, [client.created[0].name]);
+    assert.deepEqual(client.created[0].events, []);
+    await next.release!();
+});
+
+test('the deadline aborts an active setup command before checkpoint or launch', { timeout: 3000 }, async () => {
+    const { runtime, client, builder } = fixture();
+    const started = Promise.withResolvers<AbortSignal>();
+    const resume = Promise.withResolvers<void>();
+    client.setup = sprite => {
+        const exec = sprite.execFile.bind(sprite);
+        sprite.execFile = async (cmd, args, options) => {
+            started.resolve(options!.signal!);
+            await resume.promise;
+            return exec(cmd, args, options);
+        };
+    };
+    const run = runtime.start(builder.build(), { timeout: 50 });
+    const signal = await started.promise;
+    // Keep the event loop alive while the runtime's unref'ed deadline fires.
+    const timer = setTimeout(() => {}, 2000);
+    try {
+        await assert.rejects(run.wait(), { name: 'TimeoutError' });
+        assert.equal(signal.aborted, true);
+        resume.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(client.deleted, [client.created[0].name]);
+        assert.deepEqual(client.created[0].events, []);
+    } finally { clearTimeout(timer); }
+});
+
+for (const stage of ['list checkpoints', 'upload'] as const) {
+    test(`cancellation during ${stage} disposes of the Sprite and prevents later startup steps`, { timeout: 3000 }, async () => {
+        const { runtime, client, builder } = fixture();
+        const started = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        const hold = async () => { started.resolve(); await resume.promise; };
+        client.setup = sprite => {
+            if (stage === 'list checkpoints') {
+                const list = sprite.listCheckpoints.bind(sprite);
+                sprite.listCheckpoints = async () => { await hold(); return list(); };
+            } else {
+                const fs = sprite.filesystem();
+                sprite.filesystem = () => ({ ...fs, writeFile: async (file, data) => {
+                    if (file.startsWith('/opt/propr/inbox/')) await hold();
+                    await fs.writeFile(file, data);
+                } });
+            }
+        };
+        const controller = new AbortController();
+        const run = runtime.start(builder.build(), { signal: controller.signal });
+        await started.promise;
+        controller.abort();
+        await assert.rejects(run.wait(), { name: 'AbortError' });
+        await run.release!();
+        assert.deepEqual(client.deleted, [client.created[0].name]);
+        resume.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(client.created[0].events, stage === 'upload' ? ['checkpoint', 'restore'] : ['checkpoint']);
+    });
+}

@@ -6,7 +6,7 @@ import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../git/workspaceTransportScri
 import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
-import { SpritePool, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
+import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
 import { unsupportedMount, uploadRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -37,6 +37,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             this.pool = { token, ready };
         }
         const pool = this.pool.ready;
+        options = { ...options, extraEnvVars: { ...options.extraEnvVars } };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
         const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(options.timeout ?? 300_000),
@@ -48,17 +49,29 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         let commit: (() => Promise<void>) | undefined;
         let settled = false;
         const result = (async () => {
-            const refusal = await admitCostExecution('sprites', [], { ...options, agentRun: { spec } });
+            const refusal = await startupStep(signal, () => admitCostExecution('sprites', [], { ...options, agentRun: { spec } }));
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
-            signal.throwIfAborted();
-            slot = await (await pool).acquire();
-            signal.throwIfAborted();
             const inputPath = `/opt/propr/inbox/${randomUUID()}.json`;
             const launch = { spec, options, token, inputPath };
-            const writeBack = await uploadRun(slot.sprite, launch);
+            const ready = await startupStep(signal, () => pool);
+            const sprite = await startupStep(signal, async () => {
+                // Keep ownership here until upload succeeds. Even a create response arriving
+                // after stop() must dispose of its Sprite before this acquisition ends.
+                const acquired = await ready.acquire(signal);
+                try {
+                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch));
+                    signal.throwIfAborted();
+                    slot = acquired;
+                    commit = writeBack;
+                    return acquired.sprite;
+                } catch (error) {
+                    if (signal.aborted) await ready.discard(acquired.sprite);
+                    else await ready.release(acquired);
+                    throw error;
+                }
+            });
             signal.throwIfAborted();
-            commit = writeBack;
-            return execute(slot.sprite, launch, output, signal);
+            return execute(sprite, launch, output, signal);
         })().finally(() => { settled = true; output.end(); });
         const release = () => released ??= (async () => {
             await result.catch(() => {});
@@ -73,7 +86,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         // A rejected run has no result for the caller to retrieve.
         void result.catch(() => release()).catch(() => {});
         return {
-            releaseAfterResultRead: true, spec, get stdout() { return output.get('stdout'); }, get stderr() { return output.get('stderr'); },
+            get recoveryLocation() { return slot && `Sprite ${slot.sprite.name} at /opt/propr/result`; },
+            spec, get stdout() { return output.get('stdout'); }, get stderr() { return output.get('stderr'); },
             wait: () => result, stop: async () => { cancellation.abort(new AgentRunStoppedError(spec.name)); await result.catch(() => {}); },
             inspect: async () => ({ name: spec.name, id: slot?.sprite.name, liveness: settled ? 'stopped' : 'running' }),
             isAlive: async () => !settled,

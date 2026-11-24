@@ -26,7 +26,7 @@ export class FakeSprite {
             readFile: async (p: string) => this.files.get(p) ?? null,
         };
     }
-    async execFile(_cmd: string, args: string[]) {
+    async execFile(_cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
         const action = args.includes('read-export') ? 'read-export' : args.at(-1);
         if (action === 'export' || action === 'read-export') this.events.push(action);
         if (action === 'export' && this.failExport) throw new Error('invalid export');
