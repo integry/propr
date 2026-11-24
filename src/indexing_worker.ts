@@ -328,7 +328,29 @@ async function scanAndQueueRepositories(): Promise<void> {
     }
 }
 
-async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingResult>> {
+export interface IndexingWorkerOptions {
+    /** Install the standalone SIGINT/SIGTERM handlers that close and exit (default true). */
+    installSignalHandlers?: boolean;
+    /**
+     * Run this process's egress proxy sweeper and network policy (default true).
+     * When the indexing worker shares a process with the main worker (all-in-one
+     * inline mode), the main worker owns both: its sweeper closes every proxy in
+     * the process, so a second owner could tear down proxies of a running job.
+     */
+    ownEgressProxies?: boolean;
+}
+
+export interface StartedIndexingWorker {
+    worker: Worker<IndexingJobData, IndexingResult>;
+    /** Stops scanning and drains the BullMQ worker. Never exits the process. */
+    close(): Promise<void>;
+}
+
+async function startIndexingWorker(options: IndexingWorkerOptions = {}): Promise<Worker<IndexingJobData, IndexingResult>> {
+    return (await startIndexingWorkerService(options)).worker;
+}
+
+async function startIndexingWorkerService(options: IndexingWorkerOptions = {}): Promise<StartedIndexingWorker> {
     const workerId = `indexing-worker:${generateCorrelationId()}`;
 
     // Do not scan or claim indexing work until the shared schema is current.
@@ -377,7 +399,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
     }, SCAN_INTERVAL_MS);
 
     // Run initial scan after a short delay to allow worker to fully start
-    setTimeout(async () => {
+    const initialScanTimer = setTimeout(async () => {
         try {
             logger.info('Running initial repository scan...');
             await scanAndQueueRepositories();
@@ -387,26 +409,33 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
     }, 5000);
 
     // Summarization agents run under the instance network policy, with per-run proxies like the worker's.
-    const egressProxySweeper = startEgressProxySweeper();
-    enforceInstanceNetworkPolicyOutsideRuns();
+    const ownEgressProxies = options.ownEgressProxies !== false;
+    const egressProxySweeper = ownEgressProxies ? startEgressProxySweeper() : undefined;
+    if (ownEgressProxies) enforceInstanceNetworkPolicyOutsideRuns();
     // Opt-in idle shutdown: register with the daemon and follow its drain request (exit 0).
     const idleShutdownListener = startIdleShutdownListener({ role: 'indexing_worker', log: logger });
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-        process.on(signal, async () => {
-            logger.info(`Indexing Worker received ${signal}, shutting down gracefully...`);
-            clearInterval(scanInterval);
-            // Proxies close only after running jobs (and their containers) have drained.
-            await worker.close().finally(() => egressProxySweeper.close());
-            // Deregistering tells an idle-shutdown daemon this worker has stopped.
-            await idleShutdownListener.stop();
-            process.exit(0);
-        });
+    const close = async (): Promise<void> => {
+        clearInterval(scanInterval);
+        clearTimeout(initialScanTimer);
+        // Proxies close only after running jobs (and their containers) have drained.
+        await worker.close().finally(() => egressProxySweeper?.close());
+        // Deregister after draining so the daemon can confirm the worker has stopped.
+        await idleShutdownListener.stop();
+    };
+    if (options.installSignalHandlers !== false) {
+        for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+            process.on(signal, async () => {
+                logger.info(`Indexing Worker received ${signal}, shutting down gracefully...`);
+                await close();
+                process.exit(0);
+            });
+        }
     }
 
-    return worker;
+    return { worker, close };
 }
 
-export { processIndexingJob, startIndexingWorker, scanAndQueueRepositories };
+export { processIndexingJob, startIndexingWorker, startIndexingWorkerService, scanAndQueueRepositories };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     startIndexingWorker().catch(err => {

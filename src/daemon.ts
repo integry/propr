@@ -201,7 +201,22 @@ function schedulePushRescueSweep(): NodeJS.Timeout {
     return setInterval(() => { void sweepPushRescues(); }, PUSH_RESCUE_SWEEP_INTERVAL_MS);
 }
 
-async function startDaemon(options: DaemonOptions = {}): Promise<void> {
+export interface StartedDaemon {
+    /** Stops intake, sweeps and the daemon's Redis clients. Never exits the process. */
+    close(): Promise<void>;
+}
+
+export interface DaemonStartOptions extends DaemonOptions {
+    /** Install the standalone SIGINT/SIGTERM handlers that close and exit (default true). */
+    installSignalHandlers?: boolean;
+    /**
+     * Close the process-wide task queue connection on close (default true). A
+     * composed process (all-in-one) keeps it open until its worker has drained.
+     */
+    closeSharedQueue?: boolean;
+}
+
+async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDaemon> {
     // No config, queue, or event intake may start against a partially migrated schema.
     await runMigrations();
 
@@ -449,8 +464,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
-    // Opt-in idle shutdown (PROPR_IDLE_SHUTDOWN / Settings). The detector always
-    // runs so its status is visible, but only stops the instance when enabled.
     // After an idle stop, recover Connect replay and record the wake source.
     void recoverFromIdleWake({ redis: redisClient, routingService, processStartedAt: performance.timeOrigin })
         .catch((error: unknown) => logger.warn({ error: (error as Error).message }, 'Idle wake recovery failed'));
@@ -475,22 +488,28 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
-        await shutdownQueue();
+        if (options.closeSharedQueue !== false) await shutdownQueue();
     };
-    const shutdown = async (signal: string): Promise<void> => {
-        logger.info(`Received ${signal}, shutting down gracefully...`);
-        await close();
-        process.exit(0);
-    };
-    process.on('SIGINT', () => { void shutdown('SIGINT'); });
-    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
-    idleShutdown = startDaemonIdleShutdown({
-        redis: redisClient,
-        intakeMode: EVENT_INTAKE_MODE,
-        pollingIntervalMs: POLLING_INTERVAL_MS,
-        getRoutingService: () => routingService,
-        close,
-    });
+    if (options.installSignalHandlers !== false) {
+        // Idle drain assumes participants can signal and exit independently.
+        // In all-in-one mode their SIGTERMs would target the same supervisor,
+        // which treats a second signal as a request to exit immediately.
+        idleShutdown = startDaemonIdleShutdown({
+            redis: redisClient,
+            intakeMode: EVENT_INTAKE_MODE,
+            pollingIntervalMs: POLLING_INTERVAL_MS,
+            getRoutingService: () => routingService,
+            close,
+        });
+        const shutdown = async (signal: string): Promise<void> => {
+            logger.info(`Received ${signal}, shutting down gracefully...`);
+            await close();
+            process.exit(0);
+        };
+        process.on('SIGINT', () => { void shutdown('SIGINT'); });
+        process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+    }
+    return { close };
 }
 
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>

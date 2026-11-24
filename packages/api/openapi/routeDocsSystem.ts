@@ -160,6 +160,11 @@ export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
     tags: ['System'],
     responses: { 200: { description: 'The API process is serving requests.', schema: Health } },
   },
+  'GET /config.js': {
+    operationId: 'getServedUiConfig', summary: 'Get the runtime config script of the API-served UI',
+    description: 'Registered only when the API serves the built dashboard UI (`PROPR_SERVE_UI=1` or `PROPR_UI_DIST_DIR`, always on in all-in-one mode). Generated at startup, never cached; sets the browser-visible API base URL. See the Slim Control Plane section of the configuration reference.',
+    tags: ['System'], responses: { 200: { description: 'A script assigning `window.__PROPR_CONFIG__`.', contentType: 'application/javascript' } },
+  },
   'GET /api/compatibility': {
     operationId: 'getCompatibility',
     summary: 'Get version and compatibility metadata',

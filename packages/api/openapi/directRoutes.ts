@@ -35,6 +35,9 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'get', path: '/health', auth: 'public', source: 'server.ts' },
   // The Connect wake ping for opt-in idle shutdown; records the wake source and nothing else.
   { method: 'post', path: '/wake', auth: 'public', source: 'server.ts' },
+  // Registered only when the API serves the built UI (PROPR_SERVE_UI=1 or PROPR_UI_DIST_DIR):
+  // the UI's runtime config script, generated at startup.
+  { method: 'get', path: '/config.js', auth: 'public', source: 'staticUi.ts' },
   { method: 'post', path: '/webhook', auth: 'webhook', source: 'server.ts' },
   { method: 'get', path: '/api/compatibility', auth: 'public', source: 'server.ts' },
   // Agent run containers authenticate with a request signed by SYSTEM_TASK_SECRET.
