@@ -131,6 +131,19 @@ export function parseStoredIdleShutdownSetting(raw: unknown): StoredIdleShutdown
     return { enabled, afterMs: after };
 }
 
+/**
+ * Read a stored instance setting: null when there is none, the setting when
+ * it is well formed, and an error when a setting is present but malformed.
+ * A malformed setting is not "no setting": falling back to the default would
+ * let the environment switch stop the instance after a window nobody chose.
+ */
+export function readStoredIdleShutdownSetting(raw: unknown): StoredIdleShutdownSetting | null {
+    if (raw === null || raw === undefined) return null;
+    const setting = parseStoredIdleShutdownSetting(raw);
+    if (!setting) throw new Error(`The stored ${IDLE_SHUTDOWN_SETTING} setting is malformed; expected { enabled: boolean, afterMs: 1m to 24h }`);
+    return setting;
+}
+
 function hasValue(value: string | undefined): value is string {
     return value !== undefined && value.trim() !== '';
 }
@@ -140,14 +153,15 @@ function hasValue(value: string | undefined): value is string {
  * environment wins (and is shown read-only in the Web UI), then the instance
  * setting saved from the Web UI, then the default (off, 15 minutes). An
  * invalid environment value is reported and ignored, so a typo never turns
- * idle shutdown on.
+ * idle shutdown on. A present but malformed instance setting throws (see
+ * `readStoredIdleShutdownSetting`).
  */
 export function resolveIdleShutdownConfig(
     env: Record<string, string | undefined>,
     stored: unknown = null,
 ): IdleShutdownConfig {
     const warnings: string[] = [];
-    const setting = parseStoredIdleShutdownSetting(stored);
+    const setting = readStoredIdleShutdownSetting(stored);
     const rawSwitch = env[IDLE_SHUTDOWN_ENV];
     const rawAfter = env[IDLE_SHUTDOWN_AFTER_ENV];
     let enabled = setting?.enabled ?? false;

@@ -95,6 +95,26 @@ test('the environment pins the setting', async () => {
   assert.equal(stored(), null);
 });
 
+test('a malformed stored setting is reported as unavailable, and a full update replaces it', async () => {
+  let stored: StoredIdleShutdownSetting | null = null;
+  let malformed = true;
+  const handlers = createIdleShutdownRoutes({
+    env: {},
+    redisClient: { get: async () => null },
+    loadStored: async () => { if (malformed) throw new Error('The stored idle_shutdown setting is malformed'); return stored; },
+    saveStored: async setting => { stored = setting; malformed = false; return true; },
+  });
+  const get = await call(handlers.getSettings);
+  assert.equal(get.statusCode, 503);
+  assert.equal((get.body as { code: string }).code, 'SETTINGS_UNAVAILABLE');
+  // Keeping the stored window needs the stored window.
+  assert.equal((await call(handlers.putSettings, { enabled: true })).statusCode, 503);
+  assert.equal(stored, null);
+  const put = await call(handlers.putSettings, { enabled: true, after: '20m' });
+  assert.equal(put.statusCode, 200);
+  assert.deepEqual(stored, { enabled: true, afterMs: 1_200_000 });
+});
+
 test('GET includes the daemon status when published', async () => {
   const status = { enabled: true, afterMs: 900_000, source: 'environment', idle: false, idleSince: null, shutdownAt: null,
     blockers: [{ signal: 'ui_sessions', detail: '1 open Web UI session' }], nextDueAt: null, checkedAt: new Date().toISOString(), lastShutdown: null, lastWake: null };

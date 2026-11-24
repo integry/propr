@@ -97,8 +97,10 @@ export function createIdleShutdownRoutes(deps: IdleShutdownRouteDeps) {
       return;
     }
     try {
-      const current = await loadStored();
-      const afterMs = body.after === undefined ? current?.afterMs ?? resolveIdleShutdownConfig({}).afterMs : parseIdleShutdownDuration(body.after);
+      // Read the stored window only when the request keeps it, so a full update can replace a malformed setting.
+      const afterMs = body.after === undefined
+        ? (await loadStored())?.afterMs ?? resolveIdleShutdownConfig({}).afterMs
+        : parseIdleShutdownDuration(body.after);
       if (afterMs === null) {
         res.status(400).json({ error: 'after must be a duration between 1m and 24h, such as "15m" or "1h30m"', code: 'INVALID_INPUT' });
         return;

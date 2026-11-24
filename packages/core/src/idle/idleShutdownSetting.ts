@@ -6,15 +6,16 @@
 
 import {
     IDLE_SHUTDOWN_SETTING,
-    parseStoredIdleShutdownSetting,
+    readStoredIdleShutdownSetting,
     resolveIdleShutdownConfig,
     type IdleShutdownConfig,
     type StoredIdleShutdownSetting,
 } from '@propr/shared';
 import { getConfigStrict, saveConfig } from '../config/configStore.js';
 
+/** The stored setting, or null when none is stored; throws when it cannot be read or is malformed. */
 export async function loadStoredIdleShutdownSetting(): Promise<StoredIdleShutdownSetting | null> {
-    return parseStoredIdleShutdownSetting(await getConfigStrict<unknown>(IDLE_SHUTDOWN_SETTING, null));
+    return readStoredIdleShutdownSetting(await getConfigStrict<unknown>(IDLE_SHUTDOWN_SETTING, null));
 }
 
 export async function saveStoredIdleShutdownSetting(setting: StoredIdleShutdownSetting): Promise<boolean> {

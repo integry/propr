@@ -6,6 +6,7 @@ import {
     isIdleShutdownEnvironmentManaged,
     parseIdleShutdownDuration,
     parseIdleShutdownSwitch,
+    readStoredIdleShutdownSetting,
     resolveIdleShutdownConfig,
 } from '@propr/shared';
 import { IdleClock, emptyIdleSignals, evaluateIdle, type IdleSignals } from '../src/idle/idleDetector.js';
@@ -168,6 +169,17 @@ test('an invalid environment value never turns idle shutdown on', () => {
     assert.equal(config.enabled, false);
     assert.equal(config.afterMs, 60_000);
     assert.equal(config.warnings.length, 2);
+});
+
+test('a present but malformed instance setting is an error, not the default', () => {
+    assert.equal(readStoredIdleShutdownSetting(null), null);
+    assert.equal(readStoredIdleShutdownSetting(undefined), null);
+    assert.deepEqual(readStoredIdleShutdownSetting({ enabled: false, afterMs: 60_000 }), { enabled: false, afterMs: 60_000 });
+    const malformed = { enabled: true, afterMs: 'invalid' };
+    assert.throws(() => readStoredIdleShutdownSetting(malformed), /malformed/);
+    // The environment switch alone must not turn a malformed window into the default 15 minutes.
+    assert.throws(() => resolveIdleShutdownConfig({ PROPR_IDLE_SHUTDOWN: 'on' }, malformed), /malformed/);
+    assert.throws(() => resolveIdleShutdownConfig({}, { enabled: true }), /malformed/);
 });
 
 test('the activity tracker counts requests until they end, once', () => {
