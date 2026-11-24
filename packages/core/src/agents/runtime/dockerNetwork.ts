@@ -1,6 +1,7 @@
 import { executeWithAgentRunNetworkRestriction } from '../../network/agentRunNetworkRestriction.js';
 import { NetworkPolicyError } from '../../network/egressExecution.js';
 import type { AgentToolPolicy } from '../types.js';
+import { assertAgentRunNetworkRepresentationsAgree } from './agentRunNetworkPolicy.js';
 import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from './types.js';
 
 /**
@@ -50,11 +51,13 @@ export function agentContainerNetwork(policy?: Pick<AgentToolPolicy, 'dockerNetw
  * for `--network none` plus the egress proxy. A spec without a restriction
  * launches unchanged on its named network. A spec whose neutral policy is
  * restricted but which carries no restriction for the proxy to enforce is
- * refused rather than launched open.
+ * refused rather than launched open, and so is one whose restricted policy
+ * differs from the restriction the proxy would enforce.
  */
 export async function executeDockerRunWithSpecNetwork<T>(spec: AgentRunSpec, execute: () => Promise<T>): Promise<T> {
     if (spec.network.policy?.mode === 'restricted' && !spec.network.restriction) {
         throw new NetworkPolicyError(`Agent run ${spec.name} has a restricted network policy but no restriction the Docker egress proxy can enforce`);
     }
+    assertAgentRunNetworkRepresentationsAgree(spec);
     return executeWithAgentRunNetworkRestriction(spec.network.restriction, spec.name, execute);
 }

@@ -3,7 +3,7 @@ import { createWorkspaceTransport, runWithWorkspaceTransport } from '../../git/w
 import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } from '../../git/workspaceTransportMode.js';
 import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } from '../../network/egressExecution.js';
 import type { AgentConfig } from '../types.js';
-import { agentRunNetworkPolicy, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
+import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
@@ -114,7 +114,9 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
  * host/port allowlist) derived from it. Resolved
  * before dispatch so every runtime sees it, not only the Docker executor.
  *
- * A restriction the spec already carries stays binding: it is kept as is when
+ * A restriction the spec already carries stays binding: a restricted
+ * `network.policy` beside it must be the policy derived from it, or the run is
+ * refused. The restriction is kept as is when
  * no policy applies or the applying policy is the same, and a different
  * applying policy refuses the run rather than replacing either allowlist. As
  * at launch, an exemption reason does not lift a spec's own restriction, so
@@ -129,6 +131,7 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
 export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options: Pick<AgentRunOptions, 'networkPolicyExempt'> = {}): Promise<AgentRunSpec> {
     const explicit = spec.network.restriction;
     if (explicit) {
+        assertAgentRunNetworkRepresentationsAgree(spec);
         const applicable = await resolveAgentRunNetworkPolicy();
         if (applicable && !sameNetworkPolicy(applicable, explicit)) {
             throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy (${explicit.source}) that differs from the policy applying at launch (${applicable.source})`);

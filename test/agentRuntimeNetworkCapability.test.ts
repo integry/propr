@@ -141,6 +141,39 @@ test('dispatch keeps a spec restricted only through its neutral policy: enforced
     assert.equal(enforcing.length, 3);
 });
 
+test('a spec whose restriction and restricted neutral policy disagree is refused before either launch path runs', async () => {
+    // The restriction permits extra.example.com; the supplied neutral policy does not.
+    const neutralPolicy = agentRunNetworkPolicy('claude', workflowPolicy);
+    const broader = { ...workflowPolicy, allow: [...workflowPolicy.allow, 'extra.example.com'] };
+    const conflicting = () => ({ ...spec(), network: { ...spec().network, restriction: broader, policy: neutralPolicy } });
+    assert.ok(!neutralPolicy.allow.some(rule => rule.host === 'extra.example.com'));
+
+    assert.throws(() => withAgentRunNetworkPolicy(conflicting()), /differs from its network restriction \(workflow\)/, 'normalization never replaces the supplied policy');
+
+    const started = standIn('conflict-enforcing', capabilities({ supportsRestrictedNetwork: true, restrictedNetworkEnforcement: { method: 'firewall', description: 'test' } }));
+    await assert.rejects(runAgent({ runtime: 'conflict-enforcing' }, conflicting(), {}), /differs from its network restriction/);
+    await assert.rejects(runAgent({ runtime: 'conflict-enforcing' }, conflicting(), { networkPolicyExempt: 'test exemption' }), /differs from its network restriction/);
+    await assert.rejects(executeWithNetworkPolicy(broader, () => runAgent({ runtime: 'conflict-enforcing' }, conflicting(), {})), /differs from its network restriction/,
+        'an applying policy equal to the restriction does not settle the conflict');
+    // The reverse: a supplied policy broader than the restriction is refused too.
+    const widened = { ...spec(), network: { ...spec().network, restriction: workflowPolicy, policy: agentRunNetworkPolicy('claude', broader) } };
+    await assert.rejects(runAgent({ runtime: 'conflict-enforcing' }, widened, {}), /differs from its network restriction/);
+    assert.equal(started.length, 0, 'the runtime never starts a conflicting spec');
+
+    let launched = 0;
+    await assert.rejects(executeDockerRunWithSpecNetwork(conflicting(), async () => { launched++; }), /differs from its network restriction/);
+    await assert.rejects(executeDockerRunWithSpecNetwork(widened, async () => { launched++; }), /differs from its network restriction/);
+    assert.equal(launched, 0, 'direct Docker execution never launches a conflicting spec');
+
+    // Agreeing representations still dispatch and launch.
+    const agreeing = () => ({ ...spec(), network: { ...spec().network, restriction: workflowPolicy, policy: neutralPolicy } });
+    await runAgent({ runtime: 'conflict-enforcing' }, agreeing(), {});
+    assert.deepEqual(started[0].network.policy, neutralPolicy);
+    assert.equal(started[0].network.restriction, workflowPolicy);
+    await executeDockerRunWithSpecNetwork(agreeing(), async () => { launched++; });
+    assert.equal(launched, 1);
+});
+
 test('Docker declares how it enforces restricted mode and refuses a restricted policy it cannot enforce', async () => {
     assert.equal(DOCKER_RUNTIME_CAPABILITIES.supportsRestrictedNetwork, true);
     assert.equal(DOCKER_RUNTIME_CAPABILITIES.restrictedNetworkEnforcement, DOCKER_RESTRICTED_NETWORK_ENFORCEMENT);

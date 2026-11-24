@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { baseEgressAllowlist, DEFAULT_EGRESS_PORTS, parseEgressAllowEntry } from '../../network/egressAllowlist.js';
+import { NetworkPolicyError } from '../../network/egressExecution.js';
 import type { AgentType } from '../types.js';
 import type { AgentRunEgressRule, AgentRunNetworkPolicy, AgentRunNetworkRestriction, AgentRunSpec } from './types.js';
 
@@ -85,12 +86,29 @@ export function isValidRestrictedAgentRunNetworkPolicy(policy: AgentRunNetworkPo
 }
 
 /**
+ * Refuse a spec whose two representations of its restricted network
+ * disagree: a {@link AgentRunNetwork.restriction} (what Docker's proxy
+ * enforces) beside a restricted {@link AgentRunNetwork.policy} (what other
+ * runtimes enforce) that is not the policy derived from it. Neither is
+ * allowed to silently replace the other, since either could be the broader
+ * one.
+ */
+export function assertAgentRunNetworkRepresentationsAgree(spec: AgentRunSpec): void {
+    const { restriction, policy } = spec.network;
+    if (!restriction || policy?.mode !== 'restricted') return;
+    if (sameAgentRunNetworkPolicy(agentRunNetworkPolicy(spec.profile.agentType, restriction), policy)) return;
+    throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy${policy.source ? ` (${policy.source})` : ''} that differs from its network restriction (${restriction.source})`);
+}
+
+/**
  * The spec with {@link AgentRunNetwork.policy} derived from its restriction
  * (or open). A spec that already carries a restricted policy but no
  * restriction keeps that policy: an explicit restriction is never replaced by
- * the open default.
+ * the open default. A spec carrying both is refused unless they agree
+ * ({@link assertAgentRunNetworkRepresentationsAgree}).
  */
 export function withAgentRunNetworkPolicy(spec: AgentRunSpec): AgentRunSpec {
     if (!spec.network.restriction && spec.network.policy?.mode === 'restricted') return spec;
+    assertAgentRunNetworkRepresentationsAgree(spec);
     return { ...spec, network: { ...spec.network, policy: agentRunNetworkPolicy(spec.profile.agentType, spec.network.restriction) } };
 }
