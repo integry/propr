@@ -13,7 +13,7 @@ import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwners
 import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { attachComputeUsage, buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { aggregateDeltaMessages, convertEventToClaudeFormat, parseAntigravityJsonl, filterAntigravityAnalysisEvents, normalizeAntigravityModelId, type AntigravityOutputEvent } from './utils/antigravityOutputParser.js';
@@ -123,7 +123,7 @@ export class AntigravityAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, requestedCliModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath, metadata });
+            return attachComputeUsage(await this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, requestedCliModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath, metadata }), result);
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         } finally {

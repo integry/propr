@@ -14,6 +14,7 @@ import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { attachComputeUsage } from '../runtime/computeUsage.js';
 import { resolveOpenCodeFailureReason } from './openCodeParsing.js';
 import { buildOpenCodeRunSpec, buildOpenCodePrompt, evaluateOpenCodeAnalysis, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -108,7 +109,7 @@ export class OpenCodeAgent implements Agent {
             const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
             const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
             const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
-            const response: AgentExecutionResult = {
+            const response = attachComputeUsage<AgentExecutionResult>({
                 success,
                 executionTimeMs: executionTime,
                 logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
@@ -125,7 +126,7 @@ export class OpenCodeAgent implements Agent {
                 terminationReason,
                 tokenUsage: parsedOutput.tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
-            };
+            }, result);
 
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata });
 

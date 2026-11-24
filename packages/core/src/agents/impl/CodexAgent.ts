@@ -21,7 +21,7 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
+import { analysisReasoningLevelField, attachComputeUsage, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexRunSpec, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
@@ -173,7 +173,7 @@ export class CodexAgent implements Agent {
             watchdogTrip: result.watchdogTrip,
             error: parsedOutput.error || result.stderr
         });
-        return {
+        return attachComputeUsage<AgentExecutionResult>({
             success: parsedOutput.success && result.exitCode === 0 && !terminationReason,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
@@ -192,7 +192,7 @@ export class CodexAgent implements Agent {
             terminationReason,
             tokenUsage: parsedOutput.tokenUsage,
             usageMetrics: usageMetrics ?? undefined
-        };
+        }, result);
     }
 
     private async persistTaskLog(params: {

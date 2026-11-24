@@ -366,6 +366,9 @@ export * from './agents/runtime/agentRuntimePackageVerification.js';
 export type * from './agents/runtime/types.js';
 export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
 export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
+export * from './agents/runtime/computeUsage.js';
+export { ComputeUsageAccumulator, parseCgroupReport, parseDockerSize, parseDockerStatsLine, type ComputeUsageSample } from './agents/runtime/computeUsageSampler.js';
+export { COMPUTE_USAGE_SAMPLE_MS_ENV, DEFAULT_COMPUTE_USAGE_SAMPLE_MS, DockerComputeUsageSampler, resolveComputeUsageSampleMs } from './agents/runtime/dockerComputeUsage.js';
 export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,

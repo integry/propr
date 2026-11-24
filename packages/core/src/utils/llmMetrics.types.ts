@@ -1,4 +1,5 @@
 import type { SubscriptionUsageMetrics } from './github/formatSubscriptionUsage.js';
+import type { AgentRunComputeUsage } from '../agents/runtime/computeUsage.js';
 
 export interface Usage {
     input_tokens?: number;
@@ -65,6 +66,8 @@ export interface ClaudeResult {
     error?: string;
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
+    /** What the agent's sandbox consumed; stored on the execution row beside the token cost. */
+    computeUsage?: AgentRunComputeUsage | null;
 }
 
 export interface IssueRef {

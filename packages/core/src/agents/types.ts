@@ -1,6 +1,7 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
+import type { AgentRunComputeUsage } from './runtime/computeUsage.js';
 import type { AgentType as SharedAgentType, ReasoningLevel } from '@propr/shared';
 import type { RepositoryValidationResult } from '../workflow/repositoryValidationResult.js';
 
@@ -368,6 +369,9 @@ export interface AgentExecutionResult {
 
     // Agent Tank subscription usage metrics (for tracking session/weekly usage)
     usageMetrics?: UsageTrackingMetrics;
+
+    /** What the agent's sandbox consumed (wall time, CPU, memory, compute cost), reported by its runtime. */
+    computeUsage?: AgentRunComputeUsage;
 
     // Additional fields for compatibility with existing ClaudeCodeResponse
     rawOutput?: string;

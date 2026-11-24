@@ -1,0 +1,128 @@
+import type { AgentRunComputeUsage } from './computeUsage.js';
+
+/** One observation of a running sandbox. Cumulative CPU is exact; a CPU percentage is integrated. */
+export interface ComputeUsageSample {
+    atMs: number;
+    /** Cumulative CPU time of the sandbox so far (cgroup `cpu.stat` `usage_usec`). */
+    cpuSeconds?: number;
+    /** Instantaneous CPU use in percent of one core (`docker stats`), when no cumulative figure is available. */
+    cpuPercent?: number;
+    memoryBytes?: number;
+    /** Highest memory the kernel recorded so far (cgroup `memory.peak`). */
+    memoryPeakBytes?: number;
+}
+
+/**
+ * Folds periodic samples of a run into its {@link AgentRunComputeUsage}.
+ *
+ * Memory is averaged over time (each sample stands for the interval before it)
+ * and its peak is the highest sample or kernel-recorded peak. CPU is the last
+ * cumulative reading, extended to the end of the run at the rate of the last
+ * interval since the sandbox cannot be read once it has exited; without a
+ * cumulative reading, percentages are integrated over their intervals.
+ */
+export class ComputeUsageAccumulator {
+    private lastAtMs: number;
+    private memoryWeightedSum = 0;
+    private memoryWeightMs = 0;
+    private peakMemory: number | null = null;
+    private cumulativeCpu: { atMs: number; seconds: number } | null = null;
+    private cpuRate: number | null = null;
+    private integratedCpu: number | null = null;
+
+    constructor(private readonly startMs: number) {
+        this.lastAtMs = startMs;
+    }
+
+    get sampled(): boolean {
+        return this.peakMemory !== null || this.cumulativeCpu !== null || this.integratedCpu !== null;
+    }
+
+    record(sample: ComputeUsageSample): void {
+        const intervalMs = Math.max(0, sample.atMs - this.lastAtMs);
+        this.lastAtMs = Math.max(this.lastAtMs, sample.atMs);
+        if (sample.memoryBytes !== undefined) {
+            this.memoryWeightedSum += sample.memoryBytes * intervalMs;
+            this.memoryWeightMs += intervalMs;
+            this.peakMemory = Math.max(this.peakMemory ?? 0, sample.memoryBytes);
+        }
+        if (sample.memoryPeakBytes !== undefined) this.peakMemory = Math.max(this.peakMemory ?? 0, sample.memoryPeakBytes);
+        if (sample.cpuSeconds !== undefined) {
+            const previous = this.cumulativeCpu;
+            if (!previous || sample.cpuSeconds >= previous.seconds) {
+                if (previous && sample.atMs > previous.atMs) {
+                    this.cpuRate = (sample.cpuSeconds - previous.seconds) / ((sample.atMs - previous.atMs) / 1000);
+                } else if (!previous && sample.atMs > this.startMs) {
+                    this.cpuRate = sample.cpuSeconds / ((sample.atMs - this.startMs) / 1000);
+                }
+                this.cumulativeCpu = { atMs: sample.atMs, seconds: sample.cpuSeconds };
+            }
+        } else if (sample.cpuPercent !== undefined) {
+            this.integratedCpu = (this.integratedCpu ?? 0) + (sample.cpuPercent / 100) * (intervalMs / 1000);
+        }
+    }
+
+    finish(endMs: number, runtime: string): AgentRunComputeUsage {
+        const wallTimeMs = Math.max(0, endMs - this.startMs);
+        let cpuSeconds: number | null = this.integratedCpu;
+        if (this.cumulativeCpu) {
+            const tailSeconds = Math.max(0, (endMs - this.cumulativeCpu.atMs) / 1000);
+            cpuSeconds = this.cumulativeCpu.seconds + (this.cpuRate ?? 0) * tailSeconds;
+        }
+        const avgMemoryBytes = this.memoryWeightMs > 0
+            ? this.memoryWeightedSum / this.memoryWeightMs
+            : this.peakMemory;
+        return {
+            runtime,
+            wallTimeMs,
+            cpuSeconds: cpuSeconds === null ? null : Math.round(cpuSeconds * 1000) / 1000,
+            peakMemoryBytes: this.peakMemory === null ? null : Math.round(this.peakMemory),
+            avgMemoryBytes: avgMemoryBytes === null ? null : Math.round(avgMemoryBytes),
+            costUsd: null,
+            costSource: null,
+        };
+    }
+}
+
+/**
+ * Parses the cgroup v2 report the sampler prints inside the sandbox: lines
+ * `memory.current <bytes>`, `memory.peak <bytes>` and the `cpu.stat` lines
+ * (`usage_usec <microseconds>`). Missing files leave their figure out.
+ */
+export function parseCgroupReport(output: string, atMs: number): ComputeUsageSample | null {
+    const sample: ComputeUsageSample = { atMs };
+    for (const line of output.split('\n')) {
+        const [key, value] = line.trim().split(/\s+/);
+        const number = Number(value);
+        if (!key || value === undefined || !Number.isFinite(number) || number < 0) continue;
+        if (key === 'memory.current') sample.memoryBytes = number;
+        else if (key === 'memory.peak') sample.memoryPeakBytes = number;
+        else if (key === 'usage_usec') sample.cpuSeconds = number / 1e6;
+    }
+    return sample.memoryBytes !== undefined || sample.cpuSeconds !== undefined ? sample : null;
+}
+
+const SIZE_UNITS: Record<string, number> = {
+    b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4,
+};
+
+/** `512.3MiB` → bytes; null when unparseable. */
+export function parseDockerSize(value: string): number | null {
+    const match = /^\s*([\d.]+)\s*([a-z]+)?\s*$/i.exec(value);
+    if (!match) return null;
+    const factor = SIZE_UNITS[(match[2] ?? 'b').toLowerCase()];
+    const amount = Number(match[1]);
+    return factor === undefined || !Number.isFinite(amount) ? null : amount * factor;
+}
+
+/** Parses `docker stats --format '{{.CPUPerc}}\t{{.MemUsage}}'` output (`12.34%\t512.3MiB / 2GiB`). */
+export function parseDockerStatsLine(output: string, atMs: number): ComputeUsageSample | null {
+    const [cpu, memory] = output.trim().split('\t');
+    if (cpu === undefined || memory === undefined) return null;
+    const cpuPercent = Number(cpu.replace('%', '').trim());
+    const memoryBytes = parseDockerSize(memory.split('/')[0] ?? '');
+    const sample: ComputeUsageSample = { atMs };
+    if (Number.isFinite(cpuPercent) && cpuPercent >= 0) sample.cpuPercent = cpuPercent;
+    if (memoryBytes !== null) sample.memoryBytes = memoryBytes;
+    return sample.cpuPercent !== undefined || sample.memoryBytes !== undefined ? sample : null;
+}

@@ -20,6 +20,7 @@ import { admitCostExecution, refuseCostExecution, registerCostExecution, settleC
 import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
 import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
+import type { AgentRunComputeUsage } from '../../agents/runtime/computeUsage.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
 import { startWithNetworkPolicy, type NetworkPolicyOptions } from './dockerNetworkPolicy.js';
@@ -49,6 +50,8 @@ export interface ExecutionResult {
     costCapExceeded?: boolean;
     /** Set when the stall/degenerate-output watchdog stopped the process. */
     watchdogTrip?: AgentWatchdogTrip;
+    /** What the agent's sandbox consumed; set by the agent runtime for agent runs only. */
+    computeUsage?: AgentRunComputeUsage;
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type TaskContainerLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';

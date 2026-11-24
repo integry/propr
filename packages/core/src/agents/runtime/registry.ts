@@ -5,6 +5,7 @@ import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { createWorkspaceTransport, runWithWorkspaceTransport } from '../../git/workspaceTransport.js';
 import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } from '../../git/workspaceTransportMode.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime } from './types.js';
+import { withComputeCost } from './computeUsage.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
@@ -115,18 +116,32 @@ export async function runAgent(
     const runtime = getAgentRuntime(config);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
+    const startedAt = Date.now();
     if (mode === 'bind') {
         const bound = resolved.workspace.mode ? resolved : { ...resolved, workspace: { ...resolved.workspace, mode } };
         assertAgentRuntimeSupports(runtime, bound);
-        return runtime.start(resolved, options).wait();
+        return withRunComputeUsage(runtime.kind, startedAt, await runtime.start(resolved, options).wait());
     }
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {
         throw new Error(`Agent runtime "${runtime.kind}" cannot run the "${mode}" workspace transport for ${resolved.name}`);
     }
-    return runWithWorkspaceTransport(runtime, resolved, options, {
+    return withRunComputeUsage(runtime.kind, startedAt, await runWithWorkspaceTransport(runtime, resolved, options, {
         transport: await createWorkspaceTransport(mode),
         assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
-    });
+    }));
+}
+
+/**
+ * The result with its compute usage priced: the runtime's own report, or for a
+ * runtime that reports none, the wall time the dispatcher observed. The cost is
+ * the runtime's, else the `PROPR_COMPUTE_RATES` rate for its kind, else unknown.
+ */
+function withRunComputeUsage(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+    const usage = result.computeUsage ?? {
+        runtime: kind, wallTimeMs: Date.now() - startedAt,
+        cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null,
+    };
+    return { ...result, computeUsage: withComputeCost({ ...usage, runtime: usage.runtime || kind }) };
 }
 
 /**
