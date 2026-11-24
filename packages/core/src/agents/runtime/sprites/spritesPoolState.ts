@@ -40,6 +40,8 @@ export interface SpriteRunnerRecord {
     heartbeatAt: number;
     /** When it entered its current state. */
     since: number;
+    /** Whether an orphan may hold an unreleased execution result. Older orphan records need inspection. */
+    inspectResultOnReap?: boolean;
     setupFingerprint?: string;
     /** The clean setup checkpoint. */
     checkpoint?: string;
@@ -82,6 +84,7 @@ export function expireSpritePool(state: SpritePoolState, now: number, ttlMs: num
     for (const record of state.runners.values()) {
         const effective = effectiveRunnerState(record, now, ttlMs);
         if (effective === record.state) continue;
+        if (effective === 'orphaned' && record.state !== 'reaping') record.inspectResultOnReap = record.state === 'leased';
         record.state = effective;
         record.since = now;
         delete record.leaseId;
@@ -174,6 +177,9 @@ export interface SpriteRunnerLease { name: string; leaseId: string; now: number 
 export function updateSpriteRunner(state: SpritePoolState, { name, leaseId, now }: SpriteRunnerLease, patch: Partial<SpriteRunnerRecord>): boolean {
     const record = state.runners.get(name);
     if (!record || record.leaseId !== leaseId) return false;
+    // A holder starting an authorized deletion has no outstanding result obligation.
+    // A reaper renewing its claim keeps the original inspection requirement on retry.
+    if (patch.state === 'reaping' && record.state !== 'reaping') record.inspectResultOnReap = false;
     Object.assign(record, patch, { heartbeatAt: now });
     if (patch.state) record.since = now;
     return true;
@@ -202,7 +208,7 @@ export function releaseSpriteRunner(state: SpritePoolState, { name, leaseId, now
     // Concurrent releases may already be deleting enough runners to reach the new bound.
     const remaining = [...state.runners.values()].filter(runner => runner.state !== 'reaping').length;
     if (remaining > max) {
-        Object.assign(record, { state: 'reaping', heartbeatAt: now, since: now });
+        Object.assign(record, { state: 'reaping', inspectResultOnReap: false, heartbeatAt: now, since: now });
         return 'discard';
     }
     Object.assign(record, patch, { state: 'idle', heartbeatAt: now, since: now });
@@ -231,6 +237,7 @@ export function claimSpriteRunners(state: SpritePoolState, request: { leaseId: s
     for (const [name, record] of state.runners) {
         if (!request.states.includes(record.state)) continue;
         if (request.lastOwner && record.lastOwner !== request.lastOwner) continue;
+        if (record.state === 'idle') record.inspectResultOnReap = false;
         claim(record, 'reaping', request);
         claimed.push([name, structuredClone(record)]);
     }
@@ -241,6 +248,7 @@ export function claimSpriteRunners(state: SpritePoolState, request: { leaseId: s
 export function abandonSpriteRunner(state: SpritePoolState, name: string, leaseId: string, now: number): void {
     const record = state.runners.get(name);
     if (!record || record.leaseId !== leaseId) return;
+    if (record.state === 'provisioning') record.inspectResultOnReap = false;
     record.state = 'orphaned';
     record.since = now;
     delete record.leaseId;

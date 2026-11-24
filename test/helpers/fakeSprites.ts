@@ -20,6 +20,7 @@ export class FakeSprite {
     output = 'agent output';
     credential = '';
     failHealth = false;
+    resultDirectoryCompleted = false;
     healthChecks = 0;
     labels: string[] = [];
     createdAt = new Date();
@@ -35,6 +36,10 @@ export class FakeSprite {
     }
     async restart() { this.events.push('restart'); }
     async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
+        if (cmd === 'sudo' && args[1] === '/usr/bin/python3' && args[3] === '-c') {
+            const present = this.resultDirectoryCompleted || [...this.files.keys()].some(file => file.startsWith('/opt/propr/result/'));
+            return { exitCode: 0, stdout: present ? 'keep' : 'absent', stderr: '' };
+        }
         if (cmd === '/bin/true') {
             this.healthChecks += 1;
             if (this.failHealth) throw new Error('Sprite unreachable');

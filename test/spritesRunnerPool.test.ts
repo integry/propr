@@ -618,3 +618,72 @@ test('completion retries leave a resetting runner and a successor lease alone', 
     await runtime.release(next);
     assert.equal((await record()).leaseId, 'successor');
 });
+
+for (const reaper of ['startup', 'acquisition']) {
+    test(`${reaper} retains the only bundle when the worker dies before completion repair`, { timeout: 5000 }, async t => {
+        t.mock.timers.enable({ apis: ['setInterval'] });
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const peer = pool(client, store);
+        const signal = new AbortController().signal;
+        // Initialize the acquiring peer before the lease expires, to bypass startup reaping.
+        if (reaper === 'acquisition') await peer.discard(await peer.acquire(signal));
+        const runtime = worker(client, store);
+        const launched = Promise.withResolvers<void>();
+        client.setup = sprite => { void sprite.launched.promise.then(launched.resolve); };
+        const run = runtime.start(spec());
+        await launched.promise;
+        const sprite = client.created.at(-1)!;
+        sprite.files.set('/opt/propr/result/result.bundle', Buffer.from('only copy'));
+        const outage = t.mock.method(store, 'transact', async () => { throw new Error('Redis unavailable'); });
+        await run.wait();
+        outage.mock.restore();
+        assert.equal((await store.read(scope)).runners.get(sprite.name)?.state, 'leased');
+        const disconnected = t.mock.method(sprite, 'filesystem', () => { throw new Error('connection lost'); });
+        await assert.rejects(run.readFile!('/tmp/propr-workspace-result/result.bundle'), /connection lost/);
+        disconnected.mock.restore();
+        // No further heartbeats or release from the original worker.
+        await store.transact(scope, state => { state.runners.get(sprite.name)!.heartbeatAt = 0; });
+        if (reaper === 'startup') await peer.reconcile();
+        else {
+            const controller = new AbortController();
+            // A full pool polls the retained Sprite while the acquisition waits.
+            t.mock.method(client, 'getSprite', async () => { controller.abort(); return sprite; }, { times: 1 });
+            await assert.rejects(peer.acquire(controller.signal), /abort/i);
+        }
+        const retained = (await store.read(scope)).runners.get(sprite.name)!;
+        assert.equal(retained.state, 'retained');
+        assert.equal(retained.leaseId, undefined);
+        assert.ok(!client.deleted.includes(sprite.name));
+        const recovered = await client.getSprite(sprite.name);
+        assert.equal((await recovered.filesystem().readFile('/opt/propr/result/result.bundle', null)).toString(), 'only copy');
+        await run.release!();
+        await runtime.close();
+    });
+}
+
+for (const probe of ['completed directory', 'inspection failure', 'stale negative', 'stale positive']) {
+    test(`expired execution result inspection handles ${probe}`, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const sprite = new FakeSprite('propr-expired');
+        client.foreign.push(sprite);
+        await store.transact(scope, state => state.runners.set(sprite.name, {
+            state: 'leased', leaseId: 'dead', heartbeatAt: 0, since: 0, runs: 1,
+        }));
+        sprite.resultDirectoryCompleted = probe === 'completed directory' || probe === 'stale positive';
+        const exec = sprite.execFile.bind(sprite);
+        t.mock.method(sprite, 'execFile', async (...args: Parameters<typeof exec>) => {
+            if (probe === 'inspection failure') throw new Error('provider unavailable');
+            if (probe.startsWith('stale')) {
+                await store.transact(scope, state => Object.assign(state.runners.get(sprite.name)!, { state: 'leased', leaseId: 'successor' }));
+            }
+            return exec(...args);
+        });
+        await pool(client, store).reconcile();
+        const record = (await store.read(scope)).runners.get(sprite.name)!;
+        assert.equal(record.state, probe.startsWith('stale') ? 'leased' : 'retained');
+        assert.equal(record.leaseId, probe.startsWith('stale') ? 'successor' : undefined);
+        assert.deepEqual(client.deleted, []);
+    });
+}

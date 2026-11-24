@@ -42,6 +42,19 @@ type PoolLease = { name: string; leaseId: string; waitMs: number; runs: number }
 
 const LEGACY_NAME = /^propr-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+// The launcher changes the root-owned result directory from 0700 to 0711 after
+// the transport exits. Files can also be durable before that final chmod.
+const INSPECT_RESULT = `import os, stat
+directory = "/opt/propr/result"
+try:
+    entries = os.listdir(directory)
+except FileNotFoundError:
+    print("absent")
+else:
+    active = stat.S_IMODE(os.stat(directory).st_mode) == 0o700
+    print("absent" if active and not entries else "keep")
+`;
+
 /** Deletes a Sprite; one that is already gone counts as deleted. */
 export async function deleteSprite(client: SpriteClient, name: string): Promise<void> {
     try { await client.deleteSprite(name); }
@@ -67,7 +80,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * a runner that fails either is destroyed and re-provisioned.
  *
  * Lease holders heartbeat. A runner whose holder stopped heartbeating is
- * orphaned and deleted before its slot is reused, and on startup a worker
+ * inspected for unreleased results before its slot is reclaimed. On startup a worker
  * deletes this pool's Sprites that have no record at all.
  */
 export class SpritePool {
@@ -191,7 +204,27 @@ export class SpritePool {
     private async deleteClaimed(claim: { states: SpriteRunnerRecord['state'][]; lastOwner?: string }): Promise<void> {
         const leaseId = randomUUID();
         const claimed = await this.transact(state => claimSpriteRunners(state, { ...claim, leaseId, owner: this.owner, now: this.now(), ttlMs: this.ttlMs }));
-        await Promise.allSettled(claimed.map(([name]) => this.deleteRunner(name, leaseId)));
+        await Promise.allSettled(claimed.map(([name, record]) => this.reapRunner(name, leaseId, record)));
+    }
+
+    private async reapRunner(name: string, leaseId: string, record: SpriteRunnerRecord): Promise<void> {
+        if (record.inspectResultOnReap !== false) {
+            let absent = false;
+            try {
+                const inspection = await this.client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
+                    { cwd: '/', timeout: 30_000 });
+                absent = inspection.exitCode === 0 && inspection.stdout.toString().trim() === 'absent';
+            } catch (error) {
+                logger.warn({ sprite: name, error: String(error) }, 'Could not inspect expired Sprite for a result');
+            }
+            if (!absent) {
+                await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() },
+                    { state: 'retained', leaseId: undefined, owner: undefined }));
+                return;
+            }
+        }
+        // Revalidate the claim after the provider inspection, immediately before deletion.
+        await this.deleteRunner(name, leaseId);
     }
 
     /** Deletes a held runner's Sprite and its record; on failure the runner stays counted, orphaned. */
@@ -241,7 +274,7 @@ export class SpritePool {
                     continue;
                 }
                 if (decision.action === 'reap') {
-                    await this.deleteRunner(decision.name, leaseId).catch(() => sleep(this.options.pollMs ?? 2000, signal));
+                    await this.reapRunner(decision.name, leaseId, decision.record).catch(() => sleep(this.options.pollMs ?? 2000, signal));
                     signal.throwIfAborted();
                     continue;
                 }
