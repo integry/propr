@@ -768,3 +768,52 @@ test('a standalone daemon close still running at the arranged wake exits 1, not 
     await stopDaemonProcess({ close: async () => undefined, exit: code => { clean.push(code); } }, record, { closeDeadlineMs: 5_000, exitCode: 0, wakeAt: Date.now() + 5_000 });
     assert.deepEqual(clean, [0], 'closed before the wake');
 });
+
+test('a standalone daemon whose log flush runs through the arranged wake exits 1, not the 0 chosen before the flush', async () => {
+    const record = { shutdownAt: new Date().toISOString(), reason: 'idle', idleForMs: 0, nextDueAt: null };
+    const exits: number[] = [];
+    const flushes: Array<number | undefined> = [];
+    const wakeAt = Date.now() + 60;
+    // The close ends in time, so exit 0 is chosen; the flush then ignores the time it was given and resolves after the wake.
+    const flush = (timeoutMs?: number) => { flushes.push(timeoutMs); return new Promise<void>(resolve => setTimeout(resolve, 150)); };
+    await stopDaemonProcess({ close: async () => undefined, exit: code => { exits.push(code); } }, record, { closeDeadlineMs: 5_000, exitCode: 0, wakeAt, flush });
+    assert.deepEqual(exits, [1], 'the wake reached a running daemon: the supervisor must start it again');
+    assert.equal(flushes.length, 1);
+    assert.ok(flushes[0] !== undefined && flushes[0] <= 60, 'the flush was only given the time left until the wake');
+
+    // A called-off stop (exit 1, no wake) is not re-coded by a slow flush, nor is an exit 0 with no wake arranged.
+    const codes: number[] = [];
+    await stopDaemonProcess({ close: async () => undefined, exit: code => { codes.push(code); } }, record, { closeDeadlineMs: 5_000, exitCode: 1, wakeAt: null, flush });
+    await stopDaemonProcess({ close: async () => undefined, exit: code => { codes.push(code); } }, record, { closeDeadlineMs: 5_000, exitCode: 0, wakeAt: null, flush });
+    assert.deepEqual(codes, [1, 0]);
+});
+
+test('a stop called off while Redis stays unresponsive still reaches the bounded exit 1 instead of staying quiesced', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    workerProcess(hub, events, { acknowledges: false });
+    const { ctx, exits } = context(hub, null);
+    // From the first read of the stop acknowledgements on, the daemon's Redis connection stops answering: that read,
+    // and every command after it (the withdrawal's get, del and publish included), stays pending.
+    const connection = ctx.redis as unknown as Connection;
+    const stopStored = () => JSON.parse(hub.strings.get(IDLE_SHUTDOWN_INTENT_REDIS_KEY) ?? '{}').phase === 'stop';
+    let down = false;
+    const hang = <T extends (...args: never[]) => Promise<unknown>>(method: T, ackRead = false): T => ((...args: never[]) => {
+        if (ackRead && stopStored() && String(args[0]).startsWith(IDLE_SHUTDOWN_ACKS_REDIS_PREFIX)) down = true;
+        return down ? new Promise(() => undefined) : method.apply(connection, args);
+    }) as T;
+    for (const name of ['get', 'set', 'del', 'publish', 'hgetall', 'hdel'] as const) {
+        (connection as unknown as Record<string, unknown>)[name] = hang(connection[name].bind(connection) as never, name === 'hgetall');
+    }
+    const stopConfirmTimeoutMs = 300;
+    const closeDeadlineMs = 300;
+    const started = Date.now();
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, timings: { ...TIMINGS, stopConfirmTimeoutMs, closeDeadlineMs } }), true);
+    assert.deepEqual(exits, [1], 'the supervisor starts the control plane again');
+    assert.ok(Date.now() - started < stopConfirmTimeoutMs + 2 * closeDeadlineMs + 1_000, `exited within the acknowledgement timeout plus the bounded clean-up and close, not never (took ${Date.now() - started}ms)`);
+    assert.ok(events.includes('api stopping'));
+    assert.equal(down, true, 'Redis went away at the acknowledgement read');
+    assert.equal(stopStored(), true, 'the withdrawal never completed: the request is left to expire on its own');
+    await api.stop();
+});

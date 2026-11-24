@@ -18,9 +18,9 @@ const toIso = (ms: number | null): string | null => (ms === null ? null : new Da
 export async function stopDaemonProcess(
     ctx: Pick<IdleDrainContext, 'stopProcess' | 'close' | 'exit'>,
     record: IdleShutdownRecord,
-    options: { closeDeadlineMs: number; exitCode: number; wakeAt: number | null },
+    options: { closeDeadlineMs: number; exitCode: number; wakeAt: number | null; flush?: (timeoutMs?: number) => Promise<void> },
 ): Promise<void> {
-    const { closeDeadlineMs, exitCode } = options;
+    const { closeDeadlineMs, exitCode, flush = flushLogs } = options;
     const exitBy = exitCode === 0 ? options.wakeAt : null;
     if (ctx.stopProcess) {
         // Bounded there: the composed close ends in process.exit within its own deadline, and exits 1 at `exitBy`.
@@ -43,6 +43,12 @@ export async function stopDaemonProcess(
     } else if (outcome === 'deadline') logger.error({ closeDeadlineMs }, 'Idle shutdown: the daemon did not finish closing in time; exiting anyway');
     else if (outcome !== 'closed') logger.error({ error: (outcome as Error)?.message }, 'Idle shutdown: the daemon close failed; exiting anyway');
     // An idle exit still comes before the wake: the flush gets only the time left until then.
-    await flushLogs(code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined);
+    await flush(code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined).catch(() => undefined);
+    // The flush may have used all of that time: checked once more right before the exit, since an exit 0 at or
+    // after the wake would leave the daemon stopped for good.
+    if (code === 0 && exitBy !== null && Date.now() >= exitBy) {
+        code = 1;
+        logger.error({ wakeAt: toIso(exitBy) }, 'Idle shutdown: the wake arranged for the scheduled work came while the logs were flushed; exiting with code 1 so the supervisor starts the daemon again');
+    }
     ctx.exit(code);
 }

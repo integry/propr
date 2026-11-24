@@ -267,7 +267,9 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     let producersPaused = false;
     const abort = async (message: string, details: object = {}): Promise<false> => {
         logger.info({ ...details, intentId: intent.id }, `Idle shutdown aborted: ${message}; staying up`);
-        await withdrawIdleShutdownIntent(redis, intent.id).catch(() => undefined);
+        // Bounded: Redis going away must not keep intake disconnected and the sweeps paused (the request expires on its own).
+        const withdrawn = await beforeIdleDeadline(withdrawIdleShutdownIntent(redis, intent.id).catch(() => undefined), Date.now() + timings.closeDeadlineMs);
+        if (!withdrawn.ok) logger.warn({ intentId: intent.id }, 'Idle shutdown: withdrawing the drain request did not finish in time; resuming anyway');
         if (intakeStoppedAt !== null && routing) await resumeIntakeOwingReplay(ctx, routing, intakeStoppedAt, hintWritten);
         // The hint file must not make the next plain start look like a wake.
         else if (hintWritten) await (ctx.writeHint ?? writeIdleWakeHint)({ ...hintWritten, wokeAt: new Date().toISOString() }).catch(() => undefined);
@@ -326,8 +328,10 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     } catch (error) {
         return abort('could not record the stop request', { error: (error as Error).message });
     }
-    await redis.set(IDLE_LAST_SHUTDOWN_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
-    await redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
+    // Informational, and bounded: Redis going away now must not keep the quiesced control plane up.
+    const recordBy = Date.now() + timings.closeDeadlineMs;
+    await beforeIdleDeadline(redis.set(IDLE_LAST_SHUTDOWN_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined), recordBy);
+    await beforeIdleDeadline(redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined), recordBy);
 
     // 6. Hear back from every process.
     logger.info({ ...record, file: resolveIdleWakeHintPath() }, 'Idle shutdown: stopping the control plane');
@@ -410,7 +414,8 @@ async function finishStop(ctx: IdleDrainContext, stop: StopUnderWay & { roles: r
     }
     const stranded = strandedWork(work.value, wakeAt, Date.now());
     if (stranded.length > 0) return callOff('work arrived while the control plane was stopping', { blockers: stranded, wakeAt: toIso(wakeAt) });
-    await beforeIdleDeadline(ctx.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined), decideBy);
+    // Bounded even with no wake arranged: Redis going away now must not keep the stopped control plane up.
+    await beforeIdleDeadline(ctx.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined), earliest(Date.now() + timings.closeDeadlineMs, decideBy));
     await stopDaemonProcess(ctx, stop.record, { closeDeadlineMs: timings.closeDeadlineMs, exitCode: 0, wakeAt });
     return true;
 }
@@ -440,11 +445,20 @@ function strandedWork(signals: IdleSignals, wakeAt: number | null, now: number):
  */
 async function callOffStop(ctx: IdleDrainContext, stop: StopUnderWay & { closeDeadlineMs: number }, message: string, details: object): Promise<true> {
     logger.error({ ...details, intentId: stop.intent.id }, `Idle shutdown called off: ${message}; exiting with code 1 so the supervisor starts the control plane again`);
-    await withdrawIdleShutdownIntent(ctx.redis, stop.intent.id).catch(() => undefined);
+    // The clean-up talks to Redis and the disk, either of which may be the reason the stop is being called off. It
+    // gets a bounded chance (the close's allowance), then the exit 1 goes ahead with it still outstanding: a stop
+    // that cannot finish must reach the supervisor's restart, not stay quiesced with intake disconnected.
+    const cleanUpBy = Date.now() + stop.closeDeadlineMs;
+    const withdrawn = await beforeIdleDeadline(withdrawIdleShutdownIntent(ctx.redis, stop.intent.id).catch(() => undefined), cleanUpBy);
+    if (!withdrawn.ok) logger.warn({ intentId: stop.intent.id, closeDeadlineMs: stop.closeDeadlineMs }, 'Idle shutdown: withdrawing the stop request did not finish in time; exiting anyway (the request expires on its own)');
     const wokeAt = new Date().toISOString();
-    await updateHint({ readHint: ctx.readHint, writeHint: ctx.writeHint }, current => (current.shutdownAt === stop.hint.shutdownAt ? { ...current, wokeAt } : null)).catch((error: Error) => {
-        logger.warn({ error: error.message, file: resolveIdleWakeHintPath() }, 'Idle shutdown: could not mark the called-off stop in the wake hint file; the next start counts as a wake');
-    });
+    const marked = await beforeIdleDeadline(
+        updateHint({ readHint: ctx.readHint, writeHint: ctx.writeHint }, current => (current.shutdownAt === stop.hint.shutdownAt ? { ...current, wokeAt } : null)).catch((error: Error) => {
+            logger.warn({ error: error.message, file: resolveIdleWakeHintPath() }, 'Idle shutdown: could not mark the called-off stop in the wake hint file; the next start counts as a wake');
+        }),
+        cleanUpBy,
+    );
+    if (!marked.ok) logger.warn({ file: resolveIdleWakeHintPath() }, 'Idle shutdown: marking the called-off stop in the wake hint file did not finish in time; the next start counts as a wake');
     if (!ctx.isCancelled?.()) await stopDaemonProcess(ctx, stop.record, { closeDeadlineMs: stop.closeDeadlineMs, exitCode: 1, wakeAt: null });
     return true;
 }

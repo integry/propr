@@ -244,7 +244,16 @@ export function createBoundedExit(options: {
             done = true;
             clearTimeout(deadline);
             const flushFor = code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined;
-            void (options.flush?.(flushFor) ?? Promise.resolve()).catch(() => undefined).finally(() => options.exit(code));
+            void (options.flush?.(flushFor) ?? Promise.resolve()).catch(() => undefined).finally(() => {
+                // The flush got the time left until the wake, and may have used all of it: an exit 0 at or after the wake
+                // would leave the process stopped for good, so the wake is checked once more right before the exit.
+                if (code === 0 && exitBy !== null && Date.now() >= exitBy) {
+                    options.log.error('all-in-one: the wake arranged for the idle stop came while the logs were flushed; exiting with code 1 so the supervisor starts it again');
+                    options.exit(1);
+                    return;
+                }
+                options.exit(code);
+            });
         };
         // Not unref'd: the process exits through here, not when the event loop empties.
         const deadline = setTimeout(() => {

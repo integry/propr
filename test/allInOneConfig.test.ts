@@ -290,3 +290,28 @@ test('an idle exit that closes before the arranged wake exits 0, flushing only f
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(late, [1]);
 });
+
+test('an idle exit whose log flush runs through the arranged wake exits 1, not the 0 chosen before the flush', async () => {
+    const exits: number[] = [];
+    const errors: string[] = [];
+    const exitBy = Date.now() + 40;
+    createBoundedExit({
+        close: async () => [],
+        exit: code => { exits.push(code); },
+        pendingStep: () => null,
+        log: { info: () => undefined, error: message => errors.push(message) },
+        // A flush that ignores the time it was given: it resolves only after the wake.
+        flush: () => new Promise<void>(resolve => setTimeout(resolve, 120)),
+        deadlineMs: 5_000,
+    })(0, { exitBy });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.deepEqual(exits, [1], 'the wake reached a running process: the supervisor must start it again');
+    assert.match(errors[0], /wake arranged for the idle stop came while the logs were flushed/);
+
+    // A called-off stop's exit 1 and an unbounded (no wake) exit 0 are not changed by a slow flush.
+    const codes: number[] = [];
+    createBoundedExit({ close: async () => [], exit: code => { codes.push(code); }, pendingStep: () => null, log: quietLog, flush: () => new Promise<void>(resolve => setTimeout(resolve, 30)), deadlineMs: 5_000 })(1, { exitBy: null });
+    createBoundedExit({ close: async () => [], exit: code => { codes.push(code); }, pendingStep: () => null, log: quietLog, flush: () => new Promise<void>(resolve => setTimeout(resolve, 30)), deadlineMs: 5_000 })(0);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(codes.sort(), [0, 1]);
+});
