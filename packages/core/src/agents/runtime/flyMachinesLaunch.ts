@@ -2,7 +2,7 @@ import { envFileValues } from '../credentials/hostCredentialStaging.js';
 import { WORKSPACE_AGENT_USER, WORKSPACE_RESULT_PHASE_FILE } from '../../git/workspaceTransportScript.js';
 import { renderAgentRunCommand } from './dockerRunArgs.js';
 import type { FlyCreateMachineRequest, FlyMachineFile } from './flyMachinesApi.js';
-import { flyMachineGuest, type FlyMachinesConfig } from './flyMachinesConfig.js';
+import { flyMachineGuest, MIN_FLY_RESULT_LINGER_SECONDS, type FlyMachinesConfig } from './flyMachinesConfig.js';
 import type { AgentRunSpec } from './types.js';
 
 /**
@@ -22,7 +22,10 @@ import type { AgentRunSpec } from './types.js';
  * - forwards termination signals to the agent and records its exit status;
  * - then waits, up to the configured linger, for the worker to read the
  *   result files and destroy the Machine (`auto_destroy` removes it if the
- *   worker never does). A run the worker retained (its {@link FLY_RUN_FILES.retain}
+ *   worker never does). The linger is never shorter than
+ *   {@link MIN_FLY_RESULT_LINGER_SECONDS}, which outlasts the worker's whole
+ *   collection, so the Machine holds its result for the worker from its
+ *   creation. A run the worker retained (its {@link FLY_RUN_FILES.retain}
  *   marker exists) keeps waiting until the Machine is destroyed.
  */
 
@@ -387,7 +390,8 @@ export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLau
             image: config.image ?? spec.profile.image,
             init: {
                 entrypoint: ['/bin/bash', '-c', LAUNCHER_SCRIPT, 'propr-fly-run'],
-                cmd: [FLY_RUN_DIR, String(config.resultLingerSeconds), spec.workdir, spec.user ?? '', noNewPrivileges ? '1' : '0', entrypoint, ...args],
+                // Never below the minimum, however the config was built: the worker cannot extend the linger once it runs.
+                cmd: [FLY_RUN_DIR, String(Math.max(config.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS)), spec.workdir, spec.user ?? '', noNewPrivileges ? '1' : '0', entrypoint, ...args],
             },
             env: flyMachineEnvironment(spec, input.launchEnvironment),
             guest: flyMachineGuest(config, spec.resources),

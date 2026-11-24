@@ -23,14 +23,28 @@ export const FLY_MACHINES_ENV = {
     privateNetwork: 'PROPR_FLY_PRIVATE_NETWORK',
     /** Pre-pull the image in the region when the runtime starts: `1` / `true`. */
     prewarm: 'PROPR_FLY_PREWARM',
-    /** How long a finished Machine waits for the worker to read its result before it exits on its own. */
+    /** How long a finished Machine waits for the worker before it exits on its own (at least {@link MIN_FLY_RESULT_LINGER_SECONDS}). */
     resultLingerSeconds: 'PROPR_FLY_RESULT_LINGER_SECONDS',
 } as const;
 
 export const DEFAULT_FLY_MACHINES_API_URL = 'https://api.machines.dev/v1';
 export const DEFAULT_FLY_LOGS_API_URL = 'https://api.fly.io/api/v1';
 export const DEFAULT_FLY_MACHINE_SIZE = 'performance-2x';
-export const DEFAULT_FLY_RESULT_LINGER_SECONDS = 15 * 60;
+/**
+ * The shortest wait of a finished Machine for its worker. The launcher counts
+ * it from the agent's exit and the worker cannot extend it, so it must outlast
+ * everything the worker does with the Machine between that exit and either
+ * marking it retained (acknowledged) or destroying it. Every step is bounded
+ * by its request timeout; at worst (a logs API answering each page just
+ * inside its timeout): five log polls of 20 pages at 30 s before the exit
+ * status is checked (~50 min), the status read (2 min), the stdout and stderr
+ * reads (4.5 min), then the credential collection's retain mark (2.5 min) or
+ * the worker's own removal of an unreleased run (10 min): about 67 minutes.
+ * A shorter linger would let the Machine destroy itself while the worker is
+ * still reading its output, refreshed credentials or workspace result.
+ */
+export const MIN_FLY_RESULT_LINGER_SECONDS = 2 * 60 * 60;
+export const DEFAULT_FLY_RESULT_LINGER_SECONDS = MIN_FLY_RESULT_LINGER_SECONDS;
 
 export interface FlyMachineGuest {
     cpu_kind: 'shared' | 'performance';
@@ -128,7 +142,7 @@ export function resolveFlyMachinesConfig(environment: Environment = process.env)
     const size = (trimmed(environment, FLY_MACHINES_ENV.size) ?? DEFAULT_FLY_MACHINE_SIZE).toLowerCase();
     if (!SIZE_PATTERN.test(size)) throw new FlyMachinesConfigError(`${FLY_MACHINES_ENV.size} must be shared-cpu-<n>x or performance-<n>x, not "${size}"`);
     const memoryMb = wholeNumber(environment, FLY_MACHINES_ENV.memoryMb, 256, 'MB');
-    const resultLingerSeconds = wholeNumber(environment, FLY_MACHINES_ENV.resultLingerSeconds, 30, 'seconds') ?? DEFAULT_FLY_RESULT_LINGER_SECONDS;
+    const resultLingerSeconds = wholeNumber(environment, FLY_MACHINES_ENV.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS, 'seconds') ?? DEFAULT_FLY_RESULT_LINGER_SECONDS;
     const image = trimmed(environment, FLY_MACHINES_ENV.image);
     return {
         token: token!, app: app!, ...(region ? { region } : {}), size, ...(memoryMb !== undefined ? { memoryMb } : {}),

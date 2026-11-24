@@ -17,7 +17,7 @@ after(async () => {
 });
 
 const { FlyMachinesRuntime, flyMachinesCapabilities, FLY_MACHINES_RUNTIME_KIND } = await import('../packages/core/src/agents/runtime/flyMachinesRuntime.ts');
-const { resolveFlyMachinesConfig, flyMachineGuest, flyInternalMcpUrl, dockerMemoryToMb, FlyMachinesConfigError } = await import('../packages/core/src/agents/runtime/flyMachinesConfig.ts');
+const { resolveFlyMachinesConfig, flyMachineGuest, flyInternalMcpUrl, dockerMemoryToMb, FlyMachinesConfigError, MIN_FLY_RESULT_LINGER_SECONDS } = await import('../packages/core/src/agents/runtime/flyMachinesConfig.ts');
 const { renderFlyMachineRequest, parseFlyLogLine, flyMachineName, FLY_LOG_MARKERS, FLY_RUN_FILES } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
 const { flyAuthorization, flyMachineExitCode } = await import('../packages/core/src/agents/runtime/flyMachinesApi.ts');
 const { uploadAgentRunFiles } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
@@ -55,6 +55,8 @@ interface FakeMachine {
     /** Log polls until the clone wrapper, spared by the forced stop, finishes publishing and the launcher records the exit. */
     finalizeIn?: number;
     lastKill?: string[];
+    /** Guest-clock time the launcher recorded the exit (with {@link FakeFly.guestClock}). */
+    exitedAt?: number;
 }
 
 /** An in-memory Machines + logs API. `agent` decides what a run prints and how it exits. */
@@ -76,12 +78,29 @@ class FakeFly {
     createGate?: Promise<void>;
     /** Content read requests (not stats) per file. */
     contentReads = new Map<string, number>();
+    /**
+     * When set, the launcher's linger runs on this clock (ms): a finished Machine destroys itself
+     * (auto_destroy) once its linger (the rendered launcher argument) passed, unless retained.
+     */
+    guestClock?: number;
+    /** Machines that destroyed themselves at the end of their linger. */
+    expired: string[] = [];
     private nextId = 1;
+
+    /** The launcher's linger loop, observed lazily: true when the Machine is gone by now. */
+    private expire(machine: FakeMachine): boolean {
+        if (this.guestClock === undefined || machine.exitedAt === undefined || machine.files.has(FLY_RUN_FILES.retain)) return false;
+        if (this.guestClock < machine.exitedAt + Number(machine.request.config.init.cmd[1]) * 1000) return false;
+        this.machines.delete(machine.id);
+        this.expired.push(machine.id);
+        return true;
+    }
 
     finish(machine: FakeMachine, stdout: string, stderr: string, exitCode: number): void {
         machine.files.set(FLY_RUN_FILES.stdout, Buffer.from(stdout));
         machine.files.set(FLY_RUN_FILES.stderr, Buffer.from(stderr));
         machine.files.set(FLY_RUN_FILES.exitStatus, Buffer.from(`${exitCode}\n`));
+        if (this.guestClock !== undefined) machine.exitedAt ??= this.guestClock;
         for (const line of stdout.split('\n').filter(Boolean)) machine.pendingLogs.push(`${FLY_LOG_MARKERS.stdout}${line}`);
         for (const line of stderr.split('\n').filter(Boolean)) machine.pendingLogs.push(`${FLY_LOG_MARKERS.stderr}${line}`);
         machine.pendingLogs.push('[info] Main child exited normally', `${FLY_LOG_MARKERS.exit}${exitCode}`);
@@ -95,7 +114,7 @@ class FakeFly {
         const json = (status: number, value: unknown) => new Response(value === undefined ? '' : JSON.stringify(value), { status });
         if (parsed.pathname.endsWith('/logs')) {
             const machine = this.machines.get(parsed.searchParams.get('instance')!);
-            if (!machine) return json(200, { data: [], meta: {} });
+            if (!machine || this.expire(machine)) return json(200, { data: [], meta: {} });
             if (this.delayPolls > 0) { this.delayPolls--; return json(200, { data: [], meta: { next_token: 't0' } }); }
             if (!machine.ran) { machine.ran = true; this.agent(machine); }
             if (machine.finalizeIn !== undefined && --machine.finalizeIn === 0) this.finish(machine, 'partial\n', 'killed\n', 137);
@@ -112,7 +131,7 @@ class FakeFly {
             return json(200, { id: machine.id, state: 'created', region: body.region, instance_id: 'i1' });
         }
         const machine = this.machines.get(id!);
-        if (!machine) return json(404, { error: 'machine not found' });
+        if (!machine || this.expire(machine)) return json(404, { error: 'machine not found' });
         if (action === 'wait') { machine.state = 'started'; return json(200, { ok: true }); }
         if (action === 'signal') {
             machine.signals.push(body.signal);
@@ -173,6 +192,10 @@ test('config: token and app are required; size, memory, region and private netwo
     assert.equal(config.apiUrl, 'http://flaps.internal:4280/v1');
     assert.equal(config.size, 'performance-2x');
     assert.equal(config.privateNetwork, false);
+    assert.equal(config.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS, 'a finished Machine waits for its worker the minimum by default');
+    // A linger shorter than the worker's collection would let the Machine destroy itself mid-read.
+    assert.throws(() => resolveFlyMachinesConfig({ ...FLY_ENV, PROPR_FLY_RESULT_LINGER_SECONDS: '30' }), /PROPR_FLY_RESULT_LINGER_SECONDS must be a whole number of seconds \(7200 or more\)/);
+    assert.equal(resolveFlyMachinesConfig({ ...FLY_ENV, PROPR_FLY_RESULT_LINGER_SECONDS: '9000' }).resultLingerSeconds, 9000);
     assert.equal(resolveFlyMachinesConfig({ ...FLY_ENV, FLY_APP_NAME: 'propr', FLY_PRIVATE_IP: 'fdaa::3' }).privateNetwork, true);
     assert.equal(resolveFlyMachinesConfig({ ...FLY_ENV, FLY_APP_NAME: 'propr', FLY_PRIVATE_IP: 'fdaa::3', PROPR_FLY_PRIVATE_NETWORK: 'off' }).privateNetwork, false);
     assert.equal(flyInternalMcpUrl({ FLY_APP_NAME: 'propr' }), 'http://propr.internal:4000/api/mcp');
@@ -229,7 +252,7 @@ test('machine request: image entrypoint chain, Docker env semantics, uploads, pr
     ];
     run.resources = { init: true, memory: '6g', memorySwap: '6g', cpus: '4', pidsLimit: '512' };
     const request = renderFlyMachineRequest(run, {
-        config: { region: 'ams', size: 'performance-2x', resultLingerSeconds: 600 }, launchEnvironment: { INHERITED: 'yes', BARE: 'bare' }, stdinData: 'the prompt',
+        config: { region: 'ams', size: 'performance-2x', resultLingerSeconds: 9000 }, launchEnvironment: { INHERITED: 'yes', BARE: 'bare' }, stdinData: 'the prompt',
     });
     assert.equal(request.name, 'claude-issue-7-abc');
     assert.equal(request.region, 'ams');
@@ -239,11 +262,13 @@ test('machine request: image entrypoint chain, Docker env semantics, uploads, pr
     assert.deepEqual(request.config.guest, { cpu_kind: 'performance', cpus: 2, memory_mb: 6144 });
     assert.deepEqual(request.config.init.entrypoint!.slice(0, 2), ['/bin/bash', '-c']);
     assert.deepEqual(request.config.init.cmd, [
-        '/tmp/propr-fly-run', '600', '/home/node/workspace', '0:0', '1',
+        '/tmp/propr-fly-run', '9000', '/home/node/workspace', '0:0', '1',
         '/bin/bash', '-lc', 'clone-script', 'setup', '/home/node/claude-entrypoint.sh', 'claude', '-p',
     ]);
     // -e wins over the env file; a bare name inherits from the launch environment.
     assert.deepEqual(request.config.env, { FROM_FILE: '1', A: '1', BARE: 'bare', SETUP: 's', INHERITED: 'yes' });
+    const short = renderFlyMachineRequest(spec(), { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} });
+    assert.equal(short.config.init.cmd![1], String(MIN_FLY_RESULT_LINGER_SECONDS), 'the launcher never lingers less than the minimum');
     const files = new Map(request.config.files!.map(file => [file.guest_path, Buffer.from(file.raw_value, 'base64').toString()]));
     assert.equal(files.get('/home/node/.claude/.credentials.json'), '{"t":1}');
     assert.equal(files.get(FLY_RUN_FILES.stdin), 'the prompt');
@@ -885,4 +910,71 @@ test('credential collection reports a retention it could not establish instead o
     assert.equal(await flyHandle.retain!(), true);
     assert.ok(fly.machines.get('m1')!.files.has(FLY_RUN_FILES.retain));
     await flyHandle.release!();
+});
+
+/**
+ * The worst case between the agent's exit and the worker's last read: the exit is noticed only
+ * after five log polls of 20 pages, each answered just inside its timeout, and every exec reaches
+ * the Machine as late as its request timeout allows (exec timeout + 15 s). The launcher's linger
+ * runs on the guest clock all along.
+ */
+function slowCollectionFly(): FakeFly {
+    const fly = new FakeFly();
+    fly.guestClock = 0;
+    fly.agent = machine => {
+        machine.files.set('/tmp/r/status', Buffer.from('bundle abc\n'));
+        fly.finish(machine, 'out\n', 'err\n', 0);
+        // Only the capture file has this line: the result must come from the Machine, not the logs.
+        machine.files.set(FLY_RUN_FILES.stdout, Buffer.from('out\nexact-only\n'));
+    };
+    const fetch = fly.fetch;
+    let noticed = false;
+    fly.fetch = async (url, init) => {
+        const script: string | undefined = init?.body ? JSON.parse(String(init.body)).command?.[2] : undefined;
+        if (script !== undefined && fly.machines.get('m1')?.exitedAt !== undefined) {
+            if (!noticed) { noticed = true; fly.guestClock! += 5 * 20 * 30_000; }
+            fly.guestClock! += script.includes('base64') ? 75_000 : 45_000;
+        }
+        return fetch(url, init);
+    };
+    return fly;
+}
+
+test('slow collection: the Machine keeps its output, refreshed credentials and result until the worker retained or released it', async () => {
+    const { collectingHandle } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+    const store = credentialStore();
+    const guestRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-guest-store-')));
+    fs.writeFileSync(path.join(guestRoot, '.credentials.json'), '{"token":"refreshed"}');
+    const uploaded = uploadAgentRunFiles(guestCredentialRun(store, guestRoot, 'slow-collection'));
+    const fly = slowCollectionFly();
+    const environment = { ...FLY_ENV, PROPR_FLY_RESULT_LINGER_SECONDS: String(MIN_FLY_RESULT_LINGER_SECONDS) };
+    const handle = collectingHandle(runtime(fly, environment).start(uploaded.spec, { timeout: 10_000 }), candidate => uploaded.collect(candidate));
+    const result = await handle.wait();
+    assert.ok(fly.guestClock! > 30 * 1000 + 15 * 60_000, 'collection outlasted the old minimum and default lingers');
+    assert.equal(result.stdout, 'out\nexact-only\n', 'the exact output was read from the Machine');
+    const collected = await uploaded.collect(handle);
+    assert.equal(collected.retained, true, 'retention was established before the Machine could expire');
+    assert.equal(collected.keepRun, false);
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"refreshed"}', 'the refreshed credential was written back');
+    assert.equal((await handle.readFile!('/tmp/r/status'))?.toString(), 'bundle abc\n', 'the workspace result is still there for the transport');
+    assert.deepEqual(fly.expired, [], 'the Machine never destroyed itself');
+    await handle.release!();
+    assert.deepEqual(fly.destroyed, ['m1'], 'release() destroys it as usual');
+    fs.rmSync(guestRoot, { recursive: true, force: true });
+});
+
+test('slow collection: an unretained run keeps its result for the workspace transport, and the launcher still ends an abandoned one', async () => {
+    const fly = slowCollectionFly();
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    assert.equal((await handle.wait()).stdout, 'out\nexact-only\n');
+    // Nothing retained it: the transport reads the result status, then the worker's own removal is due.
+    assert.equal((await handle.readFile!('/tmp/r/status'))?.toString(), 'bundle abc\n');
+    fly.guestClock! += 10 * 60_000;
+    assert.deepEqual(fly.expired, []);
+    assert.equal((await handle.inspect()).liveness, 'stopped', 'the finished Machine is still there when the worker would remove it');
+    // A worker that never comes back: the Machine destroys itself once its linger passed.
+    fly.guestClock = fly.machines.get('m1')!.exitedAt! + MIN_FLY_RESULT_LINGER_SECONDS * 1000;
+    assert.equal((await handle.inspect()).liveness, 'not_found');
+    assert.deepEqual(fly.expired, ['m1']);
+    await handle.release!();
 });
