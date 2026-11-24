@@ -5,13 +5,15 @@ import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../../git/workspaceTransportS
 import type { AgentType } from '../../types.js';
 import { renderAgentRunEntrypoint } from '../dockerRunArgs.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
-import { isSafeSpritesTarget, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME } from './spritesCredentialRecords.js';
+import { isSafeSpritesTarget, SPRITES_AGENT_HOME } from './spritesCredentialRecords.js';
 import { SPRITES_SECURE_PATH_FUNCTION } from './spritesPathSafety.js';
+import { spritesProvidesEmptyDirectory, spritesRunLeftovers } from './spritesRunCleanup.js';
 
 export {
     spritesLiveOutputRecord, spritesOutputRecord, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME, SPRITES_LIVE_CREDENTIAL_ROOTS,
 } from './spritesCredentialRecords.js';
 export { SPRITES_SCRUB_SCRIPT, SPRITES_SECURE_PATH_FUNCTION } from './spritesPathSafety.js';
+export { spritesPurgeRecords, spritesRunLeftovers, SPRITES_CREDENTIAL_TARGETS, SPRITES_RUN_PURGE_TARGETS } from './spritesRunCleanup.js';
 
 /**
  * How an {@link AgentRunSpec} becomes a command on a Sprite.
@@ -47,29 +49,20 @@ export const SPRITES_LAUNCHER_EXIT_FAILURE = 125;
 /** Providers whose CLI the setup script pins; others follow the same entrypoint contract once their CLI is pinned on the Sprite. */
 export const SPRITES_SUPPORTED_AGENTS: ReadonlySet<AgentType> = new Set<AgentType>(['claude', 'codex', 'antigravity']);
 
-/** Where each provider's credential copy goes; removed before and after every run so no account outlives its run. */
-export const SPRITES_CREDENTIAL_TARGETS: readonly string[] = Object.freeze([
-    '/home/node/.claude', '/home/node/.claude.json', '/home/node/.codex', '/home/node/.gemini', '/home/node/.gemini-source',
-    '/home/node/.config/opencode', '/home/node/.local/share/opencode', '/home/node/.vibe', '/run/propr-claude',
-]);
-
-/** Removed before every run (with every credential target): a live copy an earlier run left is never returned as this run's token. */
-export const SPRITES_RUN_PURGE_TARGETS: readonly string[] = Object.freeze([...SPRITES_CREDENTIAL_TARGETS, SPRITES_ANTIGRAVITY_HOME]);
-
 /**
- * Everything a run leaves outside its run directory: the clone workspace
- * (with `.git`), the workspace result (`result.bundle`), Antigravity's
- * disposable HOME and every credential target. Removed when the run is
- * released and the Sprite cannot be restored to its clean checkpoint. With
- * `keepLiveCredentials` (their export was not confirmed, so they may hold the
- * only valid token) the credential targets and Antigravity's HOME stay.
+ * Variables a Sprite run never receives. With them, Antigravity's entrypoint
+ * copies its state files between the store and its disposable HOME and its
+ * transcript to a worker path, as root, through directories the agent user
+ * can create or replace, after the repository setup hook ran as that user
+ * and while its processes may still be running: a symlink planted at a
+ * destination would make root write agent-chosen content over any file. On a
+ * Sprite the launcher installs the state into the disposable HOME before
+ * anything of the run starts (see `prepareSpritesCredentials`) and returns
+ * the refreshed token through its checked live-copy export once every
+ * process of the run is gone; the transcript path is a worker path no Sprite
+ * file reaches.
  */
-export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>, { keepLiveCredentials = false } = {}): string[] {
-    const workdir = path.posix.normalize(spec.workdir);
-    const safeWorkdir = path.posix.isAbsolute(workdir) && [`${SPRITES_AGENT_HOME}/`, '/tmp/'].some(prefix => workdir.startsWith(prefix) && workdir.length > prefix.length);
-    if (!safeWorkdir) throw new Error(`Agent runtime "sprites" cannot run ${spec.name} in ${spec.workdir} (the workdir must be under ${SPRITES_AGENT_HOME}/ or /tmp/)`);
-    return keepLiveCredentials ? [workdir, WORKSPACE_TRANSPORT_RESULT_DIR] : [workdir, WORKSPACE_TRANSPORT_RESULT_DIR, SPRITES_ANTIGRAVITY_HOME, ...SPRITES_CREDENTIAL_TARGETS];
-}
+export const SPRITES_WITHHELD_VARIABLES: readonly string[] = Object.freeze(['PROPR_ANTIGRAVITY_SOURCE_CONFIG', 'PROPR_ANTIGRAVITY_TRANSCRIPT_PATH']);
 
 /**
  * A root-started run's PATH has only root-owned directories: root resolves the
@@ -80,8 +73,6 @@ export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>
 const ROOT_PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 /** A run started as `node` also gets the agent's own `~/.local/bin`, as in the image. */
 const AGENT_PATH = '/opt/propr/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-/** Host binds whose content the run never needs back: an empty directory stands in. */
-const EMPTY_DIRECTORY_PURPOSES = new Set<AgentRunMount['purpose']>(['logs', 'scratch']);
 /** Read-only files copied into the run (e.g. Claude's `.claude.json` seed). */
 export const MAX_SPRITES_UPLOAD_BYTES = 1024 * 1024;
 
@@ -127,7 +118,7 @@ export function spritesMountRefusal(mount: BindMount): string | undefined {
         return `cannot preserve the ${mount.credentialStore.provider} ${mount.credentialStore.store} store at ${mount.target} between runs, which this run needs for its provider session (goal sessions resumed by id); use the Docker runtime`;
     }
     if (mount.credentialStore) return undefined;
-    if (EMPTY_DIRECTORY_PURPOSES.has(mount.purpose) && !mount.readOnly) return undefined;
+    if (spritesProvidesEmptyDirectory(mount)) return undefined;
     if (mount.purpose === 'workspace' || mount.purpose === 'git') return 'cannot bind-mount the worker worktree; use the clone workspace transport';
     if (mount.readOnly) {
         try {
@@ -160,7 +151,7 @@ export function planSpritesMounts(spec: AgentRunSpec): SpritesMountPlan {
         const refusal = spritesMountRefusal(mount);
         if (refusal) throw new Error(`Agent runtime "sprites" ${refusal} for ${spec.name}`);
         if (mount.credentialStore) plan.credentialStores.push(mount);
-        else if (EMPTY_DIRECTORY_PURPOSES.has(mount.purpose) && !mount.readOnly) plan.directories.push(mount.target);
+        else if (spritesProvidesEmptyDirectory(mount)) plan.directories.push(mount.target);
         else if (fs.existsSync(mount.source)) plan.files.push({ source: mount.source, target: mount.target, mode: fs.statSync(mount.source).mode & 0o444 });
     }
     return plan;
@@ -228,6 +219,8 @@ export function resolveSpritesEnvironment(spec: AgentRunSpec, launchEnvironment:
         if (value === undefined) environment.delete(variable.name);
         else environment.set(variable.name, value);
     }
+    // Whichever source set them (the spec, an env file or the agent configuration).
+    for (const name of SPRITES_WITHHELD_VARIABLES) environment.delete(name);
     for (const name of environment.keys()) {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Agent run ${spec.name} has an invalid environment variable name: ${name}`);
     }
@@ -409,7 +402,8 @@ while [ "$i" -lt "$count" ]; do
                 && chown -R node:node -- "$dst" && chmod 700 -- "$dst" || fail "cannot install credentials at $dst" ;;
         dir)
             dst="\${manifest[$((i + 1))]}"; i=$((i + 2))
-            # An empty directory stands in for the host bind: what an earlier run left there may be a planted symlink.
+            # An empty directory stands in for the host bind or tmpfs: its purge record removed what an earlier run left
+            # there (files, or a planted symlink); a real directory is kept only for what this manifest installed below it.
             secure_path "$dst" && { [ -d "$dst" ] || rm -f -- "$dst"; } && mkdir -p -- "$dst" && chown node:node -- "$dst" || fail "cannot create $dst" ;;
         file)
             src="$run_dir/\${manifest[$((i + 1))]}"; dst="\${manifest[$((i + 2))]}"; mode="\${manifest[$((i + 3))]}"; i=$((i + 4))
@@ -457,7 +451,7 @@ fi
 j=0
 while [ "$j" -lt "\${#outputs[@]}" ]; do
     boundary="\${outputs[$j]}"; below="\${outputs[$((j + 1))]}"; ret="\${outputs[$((j + 2))]}"; j=$((j + 3))
-    # The entrypoint's live copy, when it made one, is the run's current token: its sync back to the store may never have run (KILL).
+    # The CLI's live copy, when there is one, is the run's current token: nothing syncs it back to the store.
     if [ -n "\${live_below[$ret]+set}" ]; then
         plain_file "\${live_boundary[$ret]}" "\${live_below[$ret]}"
         case $? in

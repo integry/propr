@@ -113,9 +113,12 @@ export function prepareSpritesCredentials(
         // The uploaded copy gets its canonical modification time back before the launcher installs it (`cp -a`).
         for (const file of store.files) records.push(['stamp', path.posix.join('store', store.id, file.path), stampSeconds(file.mtimeMs)]);
         records.push(['store', `store/${store.id}`, target]);
+        // The entrypoint's own copy into it runs as root after the repository setup hook (see SPRITES_WITHHELD_VARIABLES):
+        // root installs it here instead, while no process of the run exists yet.
+        if (liveRoot) records.push(['store', `store/${store.id}`, liveRoot]);
         for (const output of store.outputs) {
             records.push(spritesOutputRecord(target, output, `returned/${store.id}/${output}`));
-            // A run killed before its entrypoint synced the live copy back holds its current token only there.
+            // The CLI refreshes the token in the live copy, and nothing syncs it back to the store.
             if (liveRoot) records.push(spritesLiveOutputRecord(liveRoot, output, `returned/${store.id}/${output}`));
         }
         if (store.skipped.length > 0) logger.info({ run: spec.name, store: store.id, skipped: store.skipped }, 'Credential broker skipped store entries');

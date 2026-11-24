@@ -12,12 +12,13 @@ export const SPRITES_AGENT_HOME = '/home/node';
 export const SPRITES_ANTIGRAVITY_HOME = '/tmp/propr-antigravity-home';
 
 /**
- * Where a provider's entrypoint keeps the run's live copy of its credential
- * store, when that is not the store's own target: Antigravity copies the token
- * into its disposable HOME, the CLI refreshes it there, and only the
- * entrypoint's exit syncs it back to the store. A run killed before that sync
- * holds its only current token in the live copy, so the launcher returns that
- * one when present (see {@link spritesOutputRecord}).
+ * Where a provider's CLI uses the run's live copy of its credential store,
+ * when that is not the store's own target: Antigravity's CLI runs in its
+ * disposable HOME and refreshes the token there. In the image its entrypoint
+ * copies the store in and syncs it back on exit; on a Sprite, where those
+ * root-side copies are withheld (`SPRITES_WITHHELD_VARIABLES`), the launcher
+ * installs the store's copy there and returns the live copy whenever it is
+ * present (see {@link spritesLiveOutputRecord}).
  */
 export const SPRITES_LIVE_CREDENTIAL_ROOTS: Readonly<Partial<Record<AgentType, string>>> = Object.freeze({
     antigravity: `${SPRITES_ANTIGRAVITY_HOME}/.gemini`,
@@ -50,12 +51,11 @@ export function spritesOutputRecord(target: string, output: string, returned: st
 }
 
 /**
- * The `live` record of the output returned to `returned`: the provider
- * entrypoint's live copy of it below `liveRoot` (see
- * {@link SPRITES_LIVE_CREDENTIAL_ROOTS}). With the same checks as the store's
- * copy, the launcher returns the live copy instead of the store's whenever it
- * exists (the store's copy is current only when the entrypoint's sync ran), and
- * records no export when a symlink or another file type is on its path.
+ * The `live` record of the output returned to `returned`: the CLI's live
+ * copy of it below `liveRoot` (see {@link SPRITES_LIVE_CREDENTIAL_ROOTS}).
+ * With the same checks as the store's copy, the launcher returns the live copy
+ * instead of the store's whenever it exists (nothing syncs it back to the
+ * store), and records no export when a symlink or another file type is on its path.
  */
 export function spritesLiveOutputRecord(liveRoot: string, output: string, returned: string): string[] {
     return credentialReturnRecord('live', liveRoot, output, returned);

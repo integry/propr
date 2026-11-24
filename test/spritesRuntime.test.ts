@@ -15,7 +15,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 const { SpritesRuntime, SPRITES_RUNTIME_CAPABILITIES, SpritesRunInterruptedError, spritesRunId } = await import('../packages/core/src/agents/runtime/spritesRuntime.ts');
 const { resolveSpritesRuntimeConfig, SpritesConfigurationError } = await import('../packages/core/src/agents/runtime/sprites/spritesConfig.ts');
 const { readSpritesCliPins, readSpritesSetupBundle } = await import('../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts');
-const { spritesMountRefusal, resolveSpritesEnvironment, renderSpritesArgv } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+const { spritesMountRefusal, resolveSpritesEnvironment, renderSpritesArgv, spritesRunLeftovers } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { assertAgentRuntimeSupports, resolveAgentRuntimeKind, getAgentRuntime } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { dockerAgentRuntimeInUse } = await import('../packages/core/src/agents/runtime/runtimeSelection.ts');
@@ -211,17 +211,17 @@ test('a run creates, provisions and checkpoints its Sprite, syncs credentials bo
     assert.deepEqual(sprite.restored, ['v1', 'v1']);
 });
 
-function antigravitySpec(source: string, name: string) {
-    const spec = new AgentRunSpecBuilder({
+function antigravitySpec(source: string, name: string, variables: Record<string, string> = {}) {
+    const builder = new AgentRunSpecBuilder({
         agentType: 'antigravity', image: 'propr/agent:test', name, stdin: true, user: '0:0',
         network: agentRunNetwork('bridge'), security: {},
         workspace: { hostPath: '/tmp/worktree', containerPath: '/home/node/workspace', readOnly: false },
     })
         .credentialBind(source, '/home/node/.gemini-source', true, { provider: 'antigravity', store: 'config', perRun: true })
         .env('PROPR_EPHEMERAL_STATE', '1')
-        .env('PROPR_ANTIGRAVITY_SOURCE_CONFIG', '/home/node/.gemini-source')
-        .command('agy', '--print', '-')
-        .build();
+        .env('PROPR_ANTIGRAVITY_SOURCE_CONFIG', '/home/node/.gemini-source');
+    for (const [variable, value] of Object.entries(variables)) builder.env(variable, value);
+    const spec = builder.command('agy', '--print', '-').build();
     spec.repoSetup = { agentType: 'antigravity', shell: '/bin/bash', script: 'setup-wrapper', providerEntrypoint: '/home/node/antigravity-entrypoint.sh', env: [] };
     spec.workspace = {
         ...spec.workspace, mode: 'clone',
@@ -306,6 +306,56 @@ test('without checkpoint restore, release() removes the workspace, the result an
     for (const target of ['/home/node/workspace', WORKSPACE_TRANSPORT_RESULT_DIR, '/tmp/propr-antigravity-home']) assert.ok(scrub.args.includes(target), target);
 });
 
+/** A Claude run with the image's log bind and backups tmpfs (see cloneSpec) and a scratch bind. */
+function scratchSpec(name: string) {
+    const spec = cloneSpec(claudeStore(), { name });
+    spec.mounts.push({ type: 'bind', source: tempDir('propr-sprites-scratch-'), target: '/tmp/propr-scratch', readOnly: false, purpose: 'scratch', order: 1_000 });
+    return spec;
+}
+const EMPTY_DIRECTORIES = ['/tmp/claude-logs', '/home/node/.claude/backups', '/tmp/propr-scratch'];
+const inEmptyDirectories = (files: Iterable<string>) => [...files].filter(file => EMPTY_DIRECTORIES.some(directory => file.startsWith(`${directory}/`)));
+
+test('without checkpoint restore, release() removes the run\'s log, scratch and tmpfs directories, and the next run gets them empty', async () => {
+    const client = new FakeSpritesClient();
+    const seen: string[][] = [];
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            seen.push(inEmptyDirectories(context.files.keys()));
+            for (const directory of EMPTY_DIRECTORIES) context.files.set(`${directory}/run-${seen.length}.log`, Buffer.from('this repository\'s logs'));
+            return 0;
+        };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_RESTORE_CHECKPOINT: 'false' });
+    const first = runtime.start(scratchSpec('claude-issue-70'), { timeout: 10_000 });
+    assert.equal((await first.wait()).exitCode, 0);
+    const sprite = client.sprites.get('propr-w1-0')!;
+    // The backups tmpfs went with the Claude store copy, which the confirmed export removed.
+    assert.deepEqual(inEmptyDirectories(sprite.files.keys()).sort(), ['/tmp/claude-logs/run-1.log', '/tmp/propr-scratch/run-1.log'], 'the run\'s files outlive the run until its release');
+    await first.release();
+    assert.deepEqual(sprite.restored, []);
+    assert.deepEqual(inEmptyDirectories(sprite.files.keys()), [], 'release removed what the run wrote');
+    const scrub = sprite.calls.findLast(call => call.args.includes('propr-scrub'))!;
+    for (const directory of EMPTY_DIRECTORIES) assert.ok(scrub.args.includes(directory), `${directory} is scrubbed`);
+
+    // A release that never happened (the worker stopped) leaves an earlier run's files: the launcher removes them before installing anything.
+    for (const directory of EMPTY_DIRECTORIES) sprite.files.set(`${directory}/other-repository.log`, Buffer.from('another run\'s data'));
+    const next = runtime.start(scratchSpec('claude-issue-71'), { timeout: 10_000 });
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.deepEqual(seen, [[], []], 'every run starts with empty directories');
+    const manifest = sprite.files.get(`/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-71' })}/manifest`)!.toString('utf8').split('\0');
+    const firstInstall = manifest.findIndex(field => field === 'store' || field === 'dir' || field === 'file');
+    for (const directory of EMPTY_DIRECTORIES) {
+        const purge = manifest.findIndex((field, index) => field === 'purge' && manifest[index + 1] === directory);
+        assert.ok(purge >= 0 && purge < firstInstall, `${directory} is purged before anything is installed`);
+    }
+    await next.release();
+
+    // Live copies kept for recovery stay as the run left them, with any directory inside them.
+    const leftovers = spritesRunLeftovers(scratchSpec('claude-issue-72'), { keepLiveCredentials: true });
+    assert.ok(leftovers.includes('/tmp/claude-logs') && leftovers.includes('/tmp/propr-scratch'));
+    assert.equal(leftovers.some(target => target.startsWith('/home/node/.claude')), false);
+});
+
 test('a failed checkpoint restore at release falls back to removing the run data', async () => {
     const client = new FakeSpritesClient();
     client.configureSprite = sprite => {
@@ -351,11 +401,12 @@ const ANTIGRAVITY_LIVE_TOKEN = '/tmp/propr-antigravity-home/.gemini/antigravity-
 test('an Antigravity run killed after its CLI refreshed the token writes back the disposable HOME\'s token, not the stale store copy', async () => {
     const client = new FakeSpritesClient();
     const store = antigravityStore();
+    const received: Array<string | undefined> = [];
     client.configureSprite = sprite => {
         sprite.agent = async context => {
-            // The entrypoint copied the token into its disposable HOME, the CLI rotated it there; KILL stops the
-            // entrypoint before its sync back to /home/node/.gemini-source.
-            assert.equal(context.files.has(ANTIGRAVITY_LIVE_TOKEN), false, 'no earlier run\'s live copy is left for this run');
+            // The launcher installed the store's copy into the disposable HOME, the CLI rotated it there; nothing
+            // syncs it back to /home/node/.gemini-source.
+            received.push(context.files.get(ANTIGRAVITY_LIVE_TOKEN)?.toString());
             context.files.set(ANTIGRAVITY_LIVE_TOKEN, Buffer.from('{"token":"agy-rotated"}'));
             await context.terminated;
             return 137;
@@ -381,6 +432,7 @@ test('an Antigravity run killed after its CLI refreshed the token writes back th
     await next.stop('SIGKILL');
     await nextWaited;
     assert.equal(fs.readFileSync(path.join(store, 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), '{"token":"agy-rotated"}');
+    assert.deepEqual(received, ['{"token":"agy"}', '{"token":"agy-rotated"}'], 'each run\'s disposable HOME holds the store\'s current token, never an earlier run\'s copy');
     await next.release();
 });
 
@@ -405,6 +457,33 @@ test('an Antigravity run whose export cannot be confirmed keeps its disposable H
     assert.deepEqual(obligation.liveCopies, ['/home/node/.gemini-source', '/tmp/propr-antigravity-home/.gemini']);
     assert.equal(sprite.files.get(ANTIGRAVITY_LIVE_TOKEN)?.toString(), '{"token":"agy-rotated"}', 'the only rotated copy is not scrubbed');
     assert.equal(fs.readFileSync(path.join(store, 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), '{"token":"agy"}');
+});
+
+test('an Antigravity run gets its token in the disposable HOME from the launcher, and none of the variables that make its entrypoint copy as root', async () => {
+    const client = new FakeSpritesClient();
+    const store = antigravityStore();
+    let seen: { env: Map<string, string>; live?: string } | undefined;
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            seen = { env: new Map(context.env), live: context.files.get(ANTIGRAVITY_LIVE_TOKEN)?.toString() };
+            context.files.set(ANTIGRAVITY_LIVE_TOKEN, Buffer.from('{"token":"agy-rotated"}'));
+            return 0;
+        };
+    };
+    // Set by the spec and, for the transcript, by an env file as well.
+    const envFile = path.join(tempDir('propr-sprites-agy-env-'), 'agent.env');
+    fs.writeFileSync(envFile, 'PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=/tmp/git-processor/propr-cache/transcripts/antigravity/from-file.jsonl\n');
+    const spec = antigravitySpec(store, 'antigravity-issue-40', { PROPR_ANTIGRAVITY_TRANSCRIPT_PATH: '/tmp/git-processor/propr-cache/transcripts/antigravity/issue-40.jsonl' });
+    spec.envFiles.push({ path: envFile, order: 0 });
+    const handle = runtimeFor(client).start(spec, { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    assert.ok(seen);
+    for (const name of ['PROPR_ANTIGRAVITY_SOURCE_CONFIG', 'PROPR_ANTIGRAVITY_TRANSCRIPT_PATH']) assert.equal(seen.env.has(name), false, `${name} is withheld`);
+    assert.equal(seen.env.get('PROPR_EPHEMERAL_STATE'), '1', 'the CLI still runs in the disposable HOME');
+    assert.equal(seen.live, '{"token":"agy"}', 'the launcher installed the store\'s token where the CLI reads it');
+    assert.equal(fs.readFileSync(path.join(store, 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), '{"token":"agy-rotated"}', 'the live copy is returned without a sync back to the store');
+    assert.equal(client.sprites.get('propr-w1-0')!.files.has(ANTIGRAVITY_LIVE_TOKEN), false, 'the confirmed export removed the live copy');
+    await handle.release();
 });
 
 test('a dropped output connection resumes from the received bytes without losing or repeating output', async () => {
@@ -1209,6 +1288,40 @@ test('with the checkpoint restore disabled, a symlink one run planted never redi
     protectedUntouched('a path with ..');
 });
 
+test('a log or scratch directory an earlier run filled starts empty: its purge record removes the files without following a link among them', { skip: !linuxProcesses }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_AGENT_UID_LINE, SPRITES_RUN_PURGE_TARGETS, spritesPurgeRecords } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-empty-dirs-');
+    const launcher = path.join(dir, 'launch.sh');
+    // As the test user (see above).
+    fs.writeFileSync(launcher, SPRITES_LAUNCHER_SCRIPT.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000').replace('[ "$(id -u)" = "0" ]', 'true')
+        .replace('id node >/dev/null 2>&1', 'true').replaceAll('chown -R node:node --', 'true --').replaceAll('chown node:node --', 'true --'));
+    const protectedFile = path.join(dir, 'protected');
+    fs.writeFileSync(protectedFile, 'root-only');
+    const logs = path.join(dir, 'home', 'claude-logs');
+    fs.mkdirSync(path.dirname(logs));
+    // The worker's records for the directory (the fixed Sprite paths are left out: this runs on the host).
+    const purge = spritesPurgeRecords({ directories: [logs] }).filter(([, target]) => !SPRITES_RUN_PURGE_TARGETS.includes(target));
+    assert.deepEqual(purge, [['purge', logs]]);
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const launch = (name: string, agent: string) => {
+        const run = path.join(dir, name);
+        fs.mkdirSync(run);
+        fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', agent, 'agent', logs, protectedFile]));
+        fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+        fs.writeFileSync(path.join(run, 'manifest'), nul([...purge.flat(), 'dir', logs]));
+        fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, `${name}-work`));
+        fs.writeFileSync(path.join(run, 'user'), 'root');
+        execFileSync('bash', [launcher, run]);
+        assert.equal(fs.readFileSync(path.join(run, 'exit-status'), 'utf8'), '0\n', fs.readFileSync(path.join(run, 'stderr.log'), 'utf8'));
+        return fs.readFileSync(path.join(run, 'stdout.log'), 'utf8');
+    };
+    assert.equal(launch('first', 'ls -A "$1"; printf secret > "$1/run.log" && mkdir "$1/nested" && printf account > "$1/nested/state" && ln -s "$2" "$1/link"'), '');
+    assert.equal(launch('second', 'ls -A "$1"'), '', 'the next run sees nothing the first one left');
+    assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'root-only', 'the link was removed, not followed');
+    assert.equal(fs.lstatSync(logs).isDirectory(), true);
+});
+
 test('rotation in Antigravity\'s disposable HOME followed by KILL: the launcher returns the live token (same path checks), not the stale store copy', { skip: !linuxProcesses }, async t => {
     const { execFileSync, spawn } = await import('node:child_process');
     const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SIGNAL_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
@@ -1273,6 +1386,96 @@ test('rotation in Antigravity\'s disposable HOME followed by KILL: the launcher 
     const without = await launch('without-live', `rm -rf "$2"; printf '{"token":"store-rotated"}' > "$1/${token}"; exit 0`, { kill: false });
     assert.equal(without.returned, '{"token":"store-rotated"}');
     assert.equal(without.exported, 'ok\n');
+});
+
+test('Antigravity\'s installed entrypoint copies nothing as root on a Sprite: links the agent planted at its copy destinations are never written through', { skip: !linuxProcesses }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_AGENT_UID_LINE, SPRITES_WITHHELD_VARIABLES } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-agy-root-');
+    // The Sprite's installed entrypoint with its fixed paths moved into the sandbox, run as "root" (id -u says 0,
+    // su-exec only runs the command, chown does nothing): every copy it makes as root is a copy root makes on a Sprite.
+    const relocate = (value: string) => value.replace(/\/tmp\/propr-antigravity-home|\/tmp\/git-processor|\/home\/node/g, match => `${dir}${match}`);
+    const setup = path.resolve('scripts/sprites-agent-setup.sh');
+    execFileSync('bash', ['-c', 'source "$1"; install_root_entrypoints "$2" "$3" "$4"', 'propr-test', setup, path.resolve('scripts'), path.join(dir, 'entrypoints'), path.join(dir, 'gh-bin')]);
+    const entrypoint = path.join(dir, 'antigravity-entrypoint.sh');
+    fs.writeFileSync(entrypoint, relocate(fs.readFileSync(path.join(dir, 'entrypoints', 'antigravity-entrypoint.sh'), 'utf8')), { mode: 0o755 });
+    const shims = path.join(dir, 'shims');
+    fs.mkdirSync(shims);
+    const realId = execFileSync('bash', ['-c', 'command -v id'], { encoding: 'utf8' }).trim();
+    fs.writeFileSync(path.join(shims, 'id'), `#!/bin/sh\nif [ "$*" = "-u" ]; then echo 0; else exec ${realId} "$@"; fi\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(shims, 'su-exec'), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(shims, 'chown'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const rootHome = path.join(dir, 'root');
+    fs.mkdirSync(path.join(dir, 'home', 'node', 'workspace'), { recursive: true });
+    fs.mkdirSync(rootHome);
+    fs.mkdirSync(path.join(dir, 'tmp'));
+    // Files only root may change (on a Sprite e.g. /etc/sudoers).
+    const protectedDir = path.join(dir, 'protected');
+    const resetProtected = () => {
+        fs.mkdirSync(protectedDir, { recursive: true });
+        for (const name of ['sudoers', 'passwd']) fs.writeFileSync(path.join(protectedDir, name), 'root-only');
+    };
+    const protectedContent = () => ['sudoers', 'passwd'].map(name => fs.readFileSync(path.join(protectedDir, name), 'utf8'));
+    const token = 'antigravity-cli/antigravity-oauth-token';
+    const source = relocate('/home/node/.gemini-source');
+    const transcript = '/tmp/git-processor/propr-cache/transcripts/antigravity/issue-50.jsonl';
+    // The agent finds the store's token in its HOME and rotates it, writes the state and transcript files root copies, and plants
+    // links at the destinations of those copies: the sync's temporary file (named after the entrypoint, its parent) and the transcript path.
+    const agent = [
+        `[ "$(cat "$HOME/.gemini/${token}")" = '{"token":"agy"}' ]`,
+        'cli="$HOME/.gemini/antigravity-cli" && mkdir -p "$cli/brain/c/.system_generated/logs"',
+        `printf '{"token":"agy-rotated"}' > "$HOME/.gemini/${token}"`,
+        'printf agent-chosen > "$cli/settings.json"',
+        'printf agent-chosen-transcript > "$cli/brain/c/.system_generated/logs/transcript.jsonl"',
+        'mkdir -p "$1/antigravity-cli" && ln -s "$2/sudoers" "$1/antigravity-cli/settings.json.propr-tmp-$PPID"',
+        'mkdir -p "$(dirname "$3")" && ln -s "$2/passwd" "$3"',
+    ].join(' && ');
+    const argv = [entrypoint, 'bash', '-c', agent, 'agent', source, protectedDir, relocate(transcript)];
+    // The run's environment on a Sprite, and what the image's entrypoint would get from the same spec.
+    const spec = antigravitySpec(antigravityStore(), 'antigravity-issue-50', { PROPR_ANTIGRAVITY_TRANSCRIPT_PATH: transcript });
+    const sprites = new Map([...resolveSpritesEnvironment(spec, {})].map(([name, value]) => [name, relocate(value)]));
+    for (const name of SPRITES_WITHHELD_VARIABLES) assert.equal(sprites.has(name), false, `${name} is withheld`);
+    sprites.set('PATH', `${shims}:${process.env.PATH}`);
+    sprites.set('HOME', rootHome);
+    const image = new Map(sprites);
+    for (const variable of spec.env) if (SPRITES_WITHHELD_VARIABLES.includes(variable.name)) image.set(variable.name, relocate(variable.value!));
+    assert.equal(image.size, sprites.size + SPRITES_WITHHELD_VARIABLES.length);
+
+    // With the image's variables the entrypoint copies the store in and syncs it back, and exports the transcript, as root: it writes through both links.
+    resetProtected();
+    fs.mkdirSync(path.join(source, 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(path.join(source, token), '{"token":"agy"}');
+    execFileSync(argv[0], argv.slice(1), { env: Object.fromEntries(image), stdio: 'pipe' });
+    assert.deepEqual(protectedContent(), ['agent-chosen', 'agent-chosen-transcript'], 'the planted links redirect root\'s copies when the variables are given');
+
+    // On a Sprite: the launcher installs the store in the disposable HOME, the entrypoint copies nothing, and the launcher returns the live token.
+    resetProtected();
+    for (const leftover of [path.join(dir, 'home', 'node', '.gemini-source'), relocate('/tmp/git-processor'), relocate('/tmp/propr-antigravity-home')]) fs.rmSync(leftover, { recursive: true, force: true });
+    const launcher = path.join(dir, 'launch.sh');
+    fs.writeFileSync(launcher, SPRITES_LAUNCHER_SCRIPT.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000').replace('[ "$(id -u)" = "0" ]', 'true')
+        .replace('id node >/dev/null 2>&1', 'true').replaceAll('chown -R node:node --', 'true --').replaceAll('chown node:node --', 'true --'));
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const run = path.join(dir, 'run');
+    fs.mkdirSync(path.join(run, 'store', 'antigravity', 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(path.join(run, 'store', 'antigravity', token), '{"token":"agy"}');
+    const returned = `returned/antigravity/${token}`;
+    fs.writeFileSync(path.join(run, 'argv'), nul(argv));
+    fs.writeFileSync(path.join(run, 'env'), nul([...sprites].map(([name, value]) => `${name}=${value}`)));
+    fs.writeFileSync(path.join(run, 'manifest'), nul([
+        'purge', relocate('/tmp/propr-antigravity-home'),
+        'store', 'store/antigravity', source,
+        'store', 'store/antigravity', relocate('/tmp/propr-antigravity-home/.gemini'),
+        'output', relocate('/home/node'), `.gemini-source/${token}`, returned,
+        'live', path.join(dir, 'tmp'), `propr-antigravity-home/.gemini/${token}`, returned,
+    ]));
+    fs.writeFileSync(path.join(run, 'workdir'), relocate('/home/node/workspace'));
+    fs.writeFileSync(path.join(run, 'user'), 'root');
+    execFileSync('bash', [launcher, run]);
+    assert.equal(fs.readFileSync(path.join(run, 'exit-status'), 'utf8'), '0\n', fs.readFileSync(path.join(run, 'stderr.log'), 'utf8'));
+    assert.deepEqual(protectedContent(), ['root-only', 'root-only'], 'root wrote through neither link');
+    assert.equal(fs.lstatSync(relocate(transcript)).isSymbolicLink(), true, 'no transcript is exported');
+    assert.equal(fs.readFileSync(path.join(run, returned), 'utf8'), '{"token":"agy-rotated"}', 'the CLI got the token from the launcher, and its rotation is returned');
+    assert.equal(fs.readFileSync(path.join(run, 'credentials-exported'), 'utf8'), 'ok\n');
 });
 
 test('credential output records name the boundary the agent cannot replace and reject paths that leave the store', async () => {

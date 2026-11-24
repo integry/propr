@@ -9,7 +9,7 @@ import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import {
     planSpritesMounts, renderSpritesArgv, resolveSpritesEnvironment, spritesManifest, spritesMountRefusal, spritesRunPaths, spritesRunUser,
-    encodeNulList, spritesRunLeftovers, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_PURGE_TARGETS, SPRITES_RUN_ROOT, SPRITES_SCRUB_SCRIPT, type SpritesRunPaths,
+    encodeNulList, spritesPurgeRecords, spritesRunLeftovers, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_ROOT, SPRITES_SCRUB_SCRIPT, type SpritesRunPaths,
 } from './sprites/spritesCommand.js';
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
@@ -238,7 +238,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         // Durable before the credentials reach the Sprite and cleared only after their write-back: a worker that stops mid-run leaves the Sprite quarantined.
         if (credentials && !await persistRecoveryObligation(sprite, paths, this.spec.name, { reason: 'pending-write-back' })) throw new Error(`Could not record the credential recovery marker of run ${this.spec.name} on Sprite ${sprite.name}`);
         await credentials?.upload(filesystem, paths);
-        const records: string[][] = SPRITES_RUN_PURGE_TARGETS.map(target => ['purge', target]);
+        const records = spritesPurgeRecords(plan);
         records.push(...(credentials?.records ?? []));
         for (const directory of plan.directories) records.push(['dir', directory]);
         let index = 0;
@@ -297,7 +297,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
             logger.warn({ run: this.spec.name, sprite: name, error: (error as Error).message }, what);
         };
         await clearCleanMarker(sprite).catch(warn('Could not remove the Sprite clean marker'));
-        // Root-owned: the clone workspace, the workspace result and Antigravity's disposable HOME.
+        // As root (the clone workspace, the workspace result and Antigravity's disposable HOME are root-owned), with the run's log, scratch and tmpfs directories.
         const leftovers = spritesRunLeftovers(this.spec, { keepLiveCredentials: this.liveCredentialsRetained });
         await Promise.resolve()
             .then(() => sprite.execFile('sudo', ['-n', 'bash', '-c', SPRITES_SCRUB_SCRIPT, 'propr-scrub', ...leftovers], { timeout: 120_000 }))
