@@ -161,6 +161,18 @@ export function planFlyRelay(options: FlyRelayOptions, secrets: Record<string, s
   return { kind: "enroll", baseUrl: relayBaseUrl(options, secrets), keepOwnApp };
 }
 
+/**
+ * The secrets a plan without enrollment adds: the GitHub API auth mode it
+ * selects and, for Connect, the relay URL. Side-effect free, so --dry-run
+ * applies exactly what a real run would before it checks the intake mode.
+ * Undefined for an enrollment, whose token only a real run can get.
+ */
+export function plannedFlyRelaySecrets(plan: RelayPlan, secrets: Record<string, string>): Record<string, string> | undefined {
+  if (plan.kind === "enroll") return undefined;
+  const authMode = selectedAuthMode(plan, secrets);
+  return plan.kind === "fill-url" ? { PROPR_GH_RELAY_URL: plan.baseUrl, ...authMode } : authMode;
+}
+
 /** Enroll (or complete) the relay credentials {@link planFlyRelay} calls for. */
 export async function resolveFlyRelaySecrets(
   options: FlyRelayOptions,
@@ -169,9 +181,11 @@ export async function resolveFlyRelaySecrets(
   deps: FlyRelayDeps = { discoverInstallationId, enrollRelayToken },
 ): Promise<FlyRelayResult | undefined> {
   const plan = planFlyRelay(options, secrets, context);
+  if (plan.kind !== "enroll") {
+    const planned = plannedFlyRelaySecrets(plan, secrets) ?? {};
+    return Object.keys(planned).length > 0 ? { secrets: planned } : undefined;
+  }
   const authMode = selectedAuthMode(plan, secrets);
-  if (plan.kind === "none") return authMode.GH_AUTH_MODE ? { secrets: authMode } : undefined;
-  if (plan.kind === "fill-url") return { secrets: { PROPR_GH_RELAY_URL: plan.baseUrl, ...authMode } };
 
   const client = { baseUrl: plan.baseUrl, githubToken: context.githubToken! };
   const installationId = options.installation ?? sharedAppInstallation(secrets) ?? (await deps.discoverInstallationId(client));

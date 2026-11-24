@@ -23,7 +23,7 @@ import { loadLauncherManifest, resolveStackRoot } from "../orchestrator/index.js
 import { buildTunnelSetupEnv } from "./tunnelCommand.js";
 import { createFlyctlRunner, detectFlyctl, FlyctlBackend } from "./deploy/flyctlBackend.js";
 import { FlyMachinesApi } from "./deploy/flyMachinesApi.js";
-import { planFlyRelay, resolveFlyRelaySecrets, type FlyRelayDeps } from "./deploy/flyRelay.js";
+import { planFlyRelay, plannedFlyRelaySecrets, resolveFlyRelaySecrets, type FlyRelayDeps } from "./deploy/flyRelay.js";
 import { selectFlyIntakeMode } from "./deploy/flyIntake.js";
 import { describeFlyBrowserAuth, flyOAuthCallbackUrl, planFlyBrowserAuth, type FlyBrowserAuth } from "./deploy/flyBrowserAuth.js";
 import {
@@ -289,6 +289,23 @@ export function prepareFlyDeploy(
   return { plan, secrets, notes, relayPlan, browserAuth };
 }
 
+/**
+ * The secrets a dry run reports, and the intake it selects: the relay auth
+ * mode and URL a real run adds (no enrollment, so no network call), then the
+ * intake check on the result, as a real run sequences them. Fly is not asked
+ * for the secrets an earlier deploy left, so only this run's count. An
+ * enrollment's token is unknown here, so its intake is not checked.
+ */
+export function planFlyDryRunSecrets(
+  prepared: Pick<PreparedFlyDeploy, "secrets" | "relayPlan">,
+  generatedSecrets: Record<string, string>,
+): { secrets: Record<string, string>; intake?: ReturnType<typeof selectFlyIntakeMode> } {
+  const relay = plannedFlyRelaySecrets(prepared.relayPlan, prepared.secrets);
+  const secrets = { ...prepared.secrets, ...relay };
+  const intake = relay ? selectFlyIntakeMode(secrets, new Set()) : undefined;
+  return { secrets: { ...secrets, ...intake?.secrets, ...generatedSecrets }, intake };
+}
+
 export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   const configManager = await createConfigManager();
   const rootDir = resolveStackRoot(configManager, options.root);
@@ -298,15 +315,12 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   const githubToken = configManager.getGithubToken();
   // Fails before any Fly call when the Machine could not work (see prepareFlyDeploy).
   const prepared = prepareFlyDeploy(options, manifest.images, envFile.values, githubToken);
-  const { plan, secrets, notes, relayPlan, browserAuth } = prepared;
+  const { plan, notes, relayPlan, browserAuth } = prepared;
   const outDir = resolve(options.out ?? "propr-fly");
   const generatedSecrets = { SESSION_SECRET: randomBytes(32).toString("hex") };
 
   if (options.dryRun) {
-    // Fly is not asked for the secrets an earlier deploy left, so the files
-    // list (and the intake check sees) only the ones this run would set.
-    const intake = relayPlan.kind === "enroll" ? undefined : selectFlyIntakeMode(secrets, new Set());
-    const dryRunSecrets = { ...secrets, ...intake?.secrets, ...generatedSecrets };
+    const { secrets: dryRunSecrets, intake } = planFlyDryRunSecrets(prepared, generatedSecrets);
     const files = writeFlyFiles({ ...plan, secretNames: Object.keys(dryRunSecrets) }, outDir);
     console.log(`Dry run: wrote ${files.flyToml} and ${files.machineConfig}; nothing was sent to Fly.`);
     console.log(`Secrets that would be set: ${Object.keys(dryRunSecrets).sort().join(", ") || "(none)"}`);

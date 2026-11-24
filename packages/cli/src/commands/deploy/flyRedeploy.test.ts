@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DEFAULT_PROPR_GH_RELAY_URL, parseTruthyEnvValue, resolveGithubAuthMode, validateIntakeModePrerequisites, type GithubEventIntakeMode } from "@propr/shared";
-import { deployPreparedFly, prepareFlyDeploy, type DeployFlyOptions } from "../deployFly.js";
+import { deployPreparedFly, planFlyDryRunSecrets, prepareFlyDeploy, type DeployFlyOptions } from "../deployFly.js";
 import type { FlyDeployTarget } from "./flyDeployRunner.js";
 import { buildAppEnv, buildMachineConfig, FLY_GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_SECRET } from "./flyMachineConfig.js";
 import type { FlyRelayDeps } from "./flyRelay.js";
@@ -297,4 +297,29 @@ test("a demo deploy with a GitHub login and no shared-App installation skips rel
   assert.equal(env.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
   // An explicit --relay still enrolls, and fails here without an installation.
   await assert.rejects(deploy(flyApp(), { relay: true }, { PROPR_DEMO_MODE: "true" }, "gh", noInstallation), /no ProPR App installation found/);
+});
+
+test("a dry run selects the GitHub auth and intake a real first deploy sets, own App next to a relay token", async () => {
+  const ownAppWithRelay = { ...OWN_APP_ENV, PROPR_GH_RELAY_TOKEN: "relay-token", GH_WEBHOOK_SECRET: "whsec" };
+  const cases: Array<[string, Omit<DeployFlyOptions, "app">, Record<string, string>]> = [
+    ["inferred intake", {}, ownAppWithRelay],
+    ["explicit direct_webhook", {}, { ...ownAppWithRelay, GITHUB_EVENT_INTAKE_MODE: "direct_webhook" }],
+    // Connect pins the relay URL next to the existing token.
+    ["Connect", TUNNEL_FLAGS, ownAppWithRelay],
+  ];
+  for (const [label, flags, envFile] of cases) {
+    const options = { app: "my-propr", legacyDocker: true, ...flags };
+    const prepared = prepareFlyDeploy(options, IMAGES, envFile, "gh", () => "-----BEGIN KEY-----\n");
+    assert.equal(prepared.relayPlan.kind === "enroll", false, label);
+    const generatedSecrets = { SESSION_SECRET: "s" };
+    const dryRun = planFlyDryRunSecrets(prepared, generatedSecrets);
+
+    const app = flyApp();
+    const context = { githubToken: "gh", label: "fly:my-propr@h", generatedSecrets };
+    await deployPreparedFly(prepared, options, app.target, context, () => {}, relayDeps);
+    assert.deepEqual(dryRun.secrets, app.secrets, label);
+    assert.equal(dryRun.secrets.GH_AUTH_MODE, "app", label);
+    assert.equal(dryRun.secrets.GITHUB_EVENT_INTAKE_MODE, "direct_webhook", label);
+    assert.deepEqual(intakeErrors(app.machineEnv()), [], label);
+  }
 });
