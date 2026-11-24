@@ -147,6 +147,10 @@ export function StartApp({ orch, cfg, configManager, onResult }: Props): React.R
     }
     if (input === "u") {
       if (busy) return;
+      if (cfg.profile === "minimal") {
+        setMessage("The minimal profile serves the UI from the all-in-one API; there is no UI container to toggle");
+        return;
+      }
       const ui = services.find((s) => s.service === "ui");
       const shouldStop = Boolean(ui?.running);
       setBusy(true);

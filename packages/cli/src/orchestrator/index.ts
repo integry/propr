@@ -127,6 +127,8 @@ export function resolveStackRoot(
 export async function getHostConfig(opts: {
   configManager?: ConfigManager;
   root?: string;
+  /** Explicit stack profile (`propr start --profile`); wins over PROPR_PROFILE. */
+  profile?: string;
 }): Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig; rootDir: string }> {
   const orch = await loadOrchestrator();
   const rootDir = resolveStackRoot(opts.configManager, opts.root);
@@ -148,6 +150,7 @@ export async function getHostConfig(opts: {
       cliOverrides.uiTunnelEnabled = tunnelExplicit;
     }
   }
+  if (opts.profile !== undefined) cliOverrides.profile = opts.profile;
   const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
 }

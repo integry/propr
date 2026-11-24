@@ -165,6 +165,20 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `GIT_DEFAULT_BRANCH` | `main` | Default base branch for PRs. Per-repo overrides use `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` — see [Branch Configuration](../features/branch-config.md). | Optional. |
 | `GIT_SHALLOW_CLONE_DEPTH` | Empty (full clones) | Depth for shallow clones; leave empty to clone full history. | Optional. |
 
+## Slim Control Plane (All-in-One)
+
+The default stack runs one container per control-plane component (daemon, worker, indexing worker, API) plus a static UI container. The `minimal` profile runs Redis and a single all-in-one app container instead: one Node process hosts the daemon, worker and API, shares their SQLite and queue connections, and serves the Web UI from the API on the same origin. See [Setup → Control-plane footprint](../tutorials/setup.md#control-plane-footprint) for measured memory. The multi-container stack remains the default.
+
+| Variable | Default (shipped / code) | What it does | Required when |
+|---|---|---|---|
+| `PROPR_PROFILE` | `full` | `full` (one container per component + UI container) or `minimal` (Redis + one all-in-one container). `propr start --profile minimal` overrides it for one start. Any other value fails `propr check`. | Optional. |
+| `PROPR_INDEXING` | `inline` | Where the all-in-one process runs repository indexing: `inline` (same process), `separate` (the launcher also starts the `indexing-worker` container), or `off` (no repository context indexing). | Optional; `minimal` profile / `npm run all-in-one` only. |
+| `PROPR_SERVE_UI` | Unset (`1` in all-in-one) | `1` makes the API serve the built UI (`propr-ui/dist`, bundled in the app image) with SPA fallback; server paths (`/api`, `/socket.io`, `/webhook`, MCP/OAuth) are never shadowed. | Optional. |
+| `PROPR_UI_DIST_DIR` | `propr-ui/dist` under the working directory | Explicit UI bundle directory; setting it also enables UI serving. | Override only. |
+| `PROPR_SERVED_UI_API_URL` | Empty (same origin) | API base URL written into the served UI's runtime `config.js`. Keep it empty: the served UI and the API share an origin. | Override only. |
+
+In the `minimal` profile `FRONTEND_URL` defaults to `API_PUBLIC_URL` (the UI is the API origin), so open `http://localhost:4000` rather than port 5173. Outside the launcher, run the same entry with `npm run all-in-one` (built) / `npm run all-in-one:dev` (source), or `node dist/src/allInOne.js` as the app image command.
+
 ## Hosted UI Tunnel
 
 Optional: expose a local stack's API to the hosted control plane at `https://app.propr.dev` through a Cloudflare Tunnel. Setup is CLI-first — [ProPR Connect](./propr-connect.md) shows a one-time `propr tunnel setup --token ... --url ... --start` command that writes these values and restarts the stack. The tunnel publishes only `/api/*` and `/socket.io/*` on the API container; the UI bundle is served by `app.propr.dev`. `FRONTEND_URL`, `API_PUBLIC_URL`, and `GH_OAUTH_CALLBACK_URL` are derived automatically in tunnel mode (see [Core & GitHub Auth](#core--github-auth)).

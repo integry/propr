@@ -30,6 +30,7 @@ async function main() {
     console.log(`  stack: ${cfg.stack}`);
     console.log(`  network: ${cfg.network}`);
     console.log(`  env file: ${cfg.envFileHost}`);
+    console.log(`  profile: ${cfg.profile}${cfg.profile === 'minimal' ? ' (redis + all-in-one; the API serves the UI)' : ''}`);
 
     const validation = validateEnv(cfg);
     for (const w of validation.warnings) console.warn(`WARNING: ${w}`);

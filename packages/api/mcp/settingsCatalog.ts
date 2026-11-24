@@ -216,6 +216,8 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
   environment('tunnel.connection', 'Hosted UI tunnel credential and enablement', ['PROPR_UI_TUNNEL_TOKEN', 'PROPR_UI_TUNNEL_ENABLED'], ['Cloudflare tunnel token']),
   environment('tunnel.public_identity', 'Hosted UI tunnel identity and URL', ['PROPR_INSTANCE_ID', 'PROPR_UI_PUBLIC_API_URL'], ['tunnel instance id']),
   environment('tunnel.cloudflared_image', 'Cloudflared image', ['PROPR_CLOUDFLARED_IMAGE'], ['tunnel image']),
+  environment('runtime.control_plane_profile', 'Control-plane profile (all-in-one)', ['PROPR_PROFILE', 'PROPR_INDEXING'], ['minimal profile', 'all-in-one', 'slim control plane', 'single process', 'indexing placement']),
+  environment('runtime.served_ui', 'Web UI served by the API', ['PROPR_SERVE_UI', 'PROPR_UI_DIST_DIR', 'PROPR_SERVED_UI_API_URL'], ['same-origin UI', 'UI bundle directory']),
   environment('providers.agent_tank_fallback', 'Agent Tank environment fallback', ['AGENT_TANK_URL'], ['provider service URL']),
   environment('providers.agent_tank_timeout', 'Agent Tank request timeout', ['ANALYSIS_AGENT_TANK_TIMEOUT_MS'], ['provider status timeout']),
   environment('advanced.deprecated_webhooks', 'Deprecated webhook switch', ['ENABLE_GITHUB_WEBHOOKS'], ['legacy webhook setting'], 'This deprecated variable should be removed; use GITHUB_EVENT_INTAKE_MODE instead.'),

@@ -69,6 +69,14 @@ export interface OrchestratorConfig {
    */
   readonly frontendUrl: string;
   readonly ghOauthCallbackUrl: string;
+  /**
+   * Stack profile: `full` (default, one container per component plus the UI
+   * container) or `minimal` (redis + one all-in-one app container whose API
+   * serves the UI). Unknown values are rejected by validateEnv.
+   */
+  readonly profile: string;
+  /** All-in-one indexing placement: `inline` (default), `separate`, or `off`. */
+  readonly indexingMode: string;
   readonly mistralApiKey?: string;
   readonly vibeConfigPath?: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
@@ -193,6 +201,13 @@ export interface OrchestratorModule {
   readonly SERVICES: readonly string[];
   readonly CORE_SERVICES: readonly string[];
   readonly TOGGLE_SERVICES: readonly string[];
+  readonly ALL_IN_ONE_SERVICE: string;
+  readonly STACK_PROFILES: readonly string[];
+  /** Services a stack start brings up for cfg.profile, in dependency order. */
+  stackServicesToStart(
+    cfg: OrchestratorConfig,
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean }
+  ): string[];
 
   isStackRunning(cfg: OrchestratorConfig): boolean;
   isStackRunningAsync(cfg: OrchestratorConfig, signal?: AbortSignal): Promise<boolean>;
