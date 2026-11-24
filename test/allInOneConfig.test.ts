@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { test } from 'node:test';
-import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage } from '../src/allInOneConfig.js';
+import { fileURLToPath } from 'node:url';
+import {
+    createComponentSupervisor, DEFAULT_SHUTDOWN_TIMEOUT_MS, installShutdownSignalHandlers, prepareAllInOneEnvironment, resolveIndexingMode,
+    resolveShutdownTimeoutMs, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage,
+} from '../src/allInOneConfig.js';
 
 test('PROPR_INDEXING defaults to inline and accepts off/inline/separate', () => {
     assert.equal(resolveIndexingMode(undefined), 'inline');
@@ -67,7 +73,8 @@ test('all-in-one closes intake before workers, the worker after indexing, and th
     assert.match(source, /supervisor\.run\(stages\)/);
     assert.match(source, /startIndexingWorkerService\(\{ installSignalHandlers: false, ownEgressProxies: false \}\)/);
     assert.match(source, /startDaemon\(\{ installSignalHandlers: false, closeSharedQueue: false \}\)/);
-    assert.match(source, /startWorker\(\{ installSignalHandlers: false \}\)/);
+    assert.match(source, /startWorker\(\{ installSignalHandlers: false, signal \}\)/);
+    assert.match(source, /installShutdownSignalHandlers\(/);
     assert.match(source, /startApiServer\(\{ installSignalHandlers: false \}\)/);
 });
 
@@ -180,4 +187,94 @@ test('uninterrupted startup closes every component in shutdown order', async () 
     ]), true);
     await supervisor.close();
     assert.deepEqual(events.filter(event => event.startsWith('close:')), ['close:daemon', 'close:indexing worker', 'close:worker', 'close:api']);
+});
+
+test('shutdown aborts the signal of the stage still starting, so a stuck startup cannot hold the drain', async () => {
+    const events: string[] = [];
+    const supervisor = createComponentSupervisor({ log: quietLog });
+    const startup = supervisor.run([
+        componentStage(events, 'api', 'api'),
+        {
+            // Like the worker's wait for an agent image that never becomes ready.
+            name: 'worker',
+            role: 'worker',
+            run: signal => new Promise((_resolve, reject) => {
+                events.push('start:worker');
+                signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            }),
+        },
+    ]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(await supervisor.close(), []);
+    assert.equal(await startup, false);
+    assert.deepEqual(events, ['start:api', 'started:api', 'start:worker', 'close:api']);
+});
+
+test('PROPR_SHUTDOWN_TIMEOUT_MS defaults below the Fly stop timeout and is bounded', () => {
+    assert.equal(resolveShutdownTimeoutMs(undefined), DEFAULT_SHUTDOWN_TIMEOUT_MS);
+    assert.ok(DEFAULT_SHUTDOWN_TIMEOUT_MS < 60_000);
+    assert.equal(resolveShutdownTimeoutMs(' 5000 '), 5000);
+    for (const bad of ['0', '999', 'soon', '1.5e3x']) assert.throws(() => resolveShutdownTimeoutMs(bad), /PROPR_SHUTDOWN_TIMEOUT_MS/);
+});
+
+function fakeSignals(): { emit(signal: 'SIGINT' | 'SIGTERM'): void; on(signal: 'SIGINT' | 'SIGTERM', handler: () => void): void } {
+    const handlers = new Map<string, () => void>();
+    return { emit: signal => handlers.get(signal)?.(), on: (signal, handler) => { handlers.set(signal, handler); } };
+}
+
+const quietSignalLog = { info: () => undefined, warn: () => undefined, error: () => undefined };
+
+test('a finished drain exits 0, a failed close exits 1, a second signal exits 1 at once', async () => {
+    for (const [failed, code] of [[[], 0], [['worker'], 1]] as const) {
+        const signals = fakeSignals();
+        const exits: number[] = [];
+        let finish!: (value: string[]) => void;
+        installShutdownSignalHandlers({ close: () => new Promise(resolve => { finish = resolve; }), timeoutMs: 60_000, log: quietSignalLog, exit: c => exits.push(c), on: signals.on });
+        signals.emit('SIGTERM');
+        signals.emit('SIGINT');
+        assert.deepEqual(exits, [1]);
+        finish([...failed]);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(exits, [1, code]);
+    }
+});
+
+test('a drain that never finishes exits 0 at the deadline', async () => {
+    const signals = fakeSignals();
+    const exits: number[] = [];
+    const errors: string[] = [];
+    installShutdownSignalHandlers({
+        close: () => new Promise(() => undefined), timeoutMs: 20,
+        log: { ...quietSignalLog, error: message => errors.push(message) }, exit: c => exits.push(c), on: signals.on,
+    });
+    signals.emit('SIGTERM');
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.deepEqual(exits, [0]);
+    assert.match(errors[0], /did not finish within 20 ms/);
+});
+
+test('SIGTERM ends a real process whose drain hangs within the shutdown timeout', { timeout: 30_000 }, async () => {
+    const tsx = createRequire(import.meta.url).resolve('tsx/cli');
+    const fixture = fileURLToPath(new URL('./fixtures/allInOneShutdownHang.ts', import.meta.url));
+    const child = spawn(process.execPath, [tsx, fixture], {
+        env: { ...process.env, PROPR_SHUTDOWN_TIMEOUT_MS: '1000' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stderr.on('data', chunk => { output += String(chunk); });
+    const exited = new Promise<number | null>(resolve => child.on('exit', code => resolve(code)));
+    await new Promise<void>((resolve, reject) => {
+        child.stdout.on('data', chunk => { output += String(chunk); if (output.includes('ready')) resolve(); });
+        child.on('exit', () => reject(new Error(`fixture exited before it was ready:\n${output}`)));
+    });
+    const sentAt = Date.now();
+    child.kill('SIGTERM');
+    const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    const code = await exited;
+    clearTimeout(kill);
+    const elapsed = Date.now() - sentAt;
+    assert.equal(code, 0, output);
+    assert.ok(elapsed >= 900 && elapsed < 5_000, `exited ${elapsed} ms after SIGTERM`);
+    assert.match(output, /received SIGTERM, shutting down gracefully/);
+    assert.match(output, /did not finish within 1000 ms; exiting/);
 });

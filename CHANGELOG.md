@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`propr deploy fly`: the control plane on one Fly Machine** (#3768)
+  - Runs the all-in-one app container and Redis in one Machine
+    (multi-container), with SQLite and the Redis AOF on an encrypted Fly
+    volume. Deploys the launcher manifest's `propr/app` image directly, with
+    no build and no Docker-in-Docker. Default size: shared-cpu-1x, 1 GB.
+  - Uses flyctl when installed, otherwise the Machines API with `--token` or
+    `FLY_API_TOKEN`. Every step can be rerun; `--dry-run` writes `fly.toml` and
+    the machine config only.
+  - Uploads the stack `.env` as Fly secrets and generates `SESSION_SECRET`
+    once. Enrolls a GitHub relay token, and ProPR Connect with
+    `--tunnel-token`/`--tunnel-url`. Agents default to Sprites.
+  - Refuses Sprites and Fly Machines agents (the default included) before
+    creating anything on Fly: this release's worker only runs Docker agents
+    and would never take a task without a Docker daemon. Use
+    `--legacy-docker` until those runtimes land.
+  - Refuses an explicit `GH_AUTH_MODE` whose credentials are missing (App id,
+    private key and installation id for `app`, a relay token for `relay`),
+    whatever the intake mode, before any secret is uploaded.
+  - Needs a browser sign-in: ProPR Connect (the tunnel flags), a GitHub OAuth
+    client in the stack `.env`, or demo mode. Without one it stops before
+    creating anything on Fly, `--dry-run` included.
+  - Writes `GH_AUTH_MODE` on every run that brings GitHub credentials: `app`
+    for an own GitHub App unless `--relay` or the `.env` chooses, `relay` for
+    relay credentials. Fly secrets are never removed, so a redeploy that adds
+    an own App does not keep an earlier deploy's relay mode, and a redeploy
+    without a key keeps an earlier deploy's GitHub App key wired into the
+    Machine.
+  - Writes `GITHUB_EVENT_INTAKE_MODE` on every run: `direct_webhook` in
+    demo mode, `routing_websocket` with a relay token, and `direct_webhook`
+    or `polling` for an own GitHub App, and `polling` when the app holds both
+    kinds of credentials next to an earlier, unreadable `GH_AUTH_MODE` (an
+    earlier intake, such as a demo deploy's, is not kept). Demo and `--no-relay` deploys
+    therefore no longer crash-loop on the relay WebSocket. A deploy with no
+    GitHub credentials stops before it sets secrets.
+  - The app container lists every Fly secret name (including ones left by
+    earlier deploys), and the tunnel container lists `TUNNEL_TOKEN`, because
+    a multi-container Machine passes secrets only to containers that list
+    them. `fly.toml` points at `propr-machine.json` by absolute path, and
+    flyctl runs from the `--out` directory, so the command works from any
+    working directory.
+  - Runs the Machine always on and refuses `--idle-shutdown` before creating
+    anything on Fly, `--dry-run` included: the app image has no idle detector
+    or `/wake` endpoint yet (#3770), so nothing would stop an idle Machine.
+  - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
+    loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
+    stale `/var/run/docker*` and `/run/containerd` PID files.
+    A larger `--volume-size` grows the existing image in place on the next
+    boot, keeping pulled images.
+
 ### Changed
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
@@ -75,6 +126,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/model` beside Gemini 4 Neon and Argon.
 
 ### Fixed
+
+- **The all-in-one process exits on SIGTERM** (#3768). Shutdown waited
+  for the worker to finish starting, and without a Docker daemon (for example
+  with Sprites agents) the worker waits for the agent image forever. Shutdown
+  now aborts that wait. Draining is also capped by `PROPR_SHUTDOWN_TIMEOUT_MS`
+  (default 50 s, below Fly's 60 s stop timeout), after which the process exits
+  0, so an `on-failure` restart policy leaves a stopped Machine stopped.
 
 - **Release Rollout runtime images**: a Release Rollout run that publishes the
   app, UI or managed agent image itself now passes the image references on to
