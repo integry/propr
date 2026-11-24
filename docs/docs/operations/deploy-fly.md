@@ -1,0 +1,141 @@
+---
+sidebar_label: "Deploy to Fly"
+title: "Run the control plane on a Fly Machine with propr deploy fly"
+description: "propr deploy fly runs the slim control plane and Redis on one small Fly Machine, keeps SQLite and Redis on a volume, sets secrets, enrolls Connect and the GitHub relay, and runs agents on Sprites or Fly Machines."
+---
+# Deploy to Fly
+
+`propr deploy fly` runs the ProPR control plane on **one small Fly Machine**:
+
+- the all-in-one app container (daemon, worker and API in one Node process, with the API serving the Web UI) — see [Slim Control Plane](./configuration-reference.md#slim-control-plane-all-in-one);
+- Redis in the **same Machine**, bound to loopback;
+- SQLite and the Redis append-only file on a Fly **volume**.
+
+The published `propr/app` image from the CLI's launcher manifest is deployed as it is. There is no image build and no Docker-in-Docker. Agents run on **Sprites** by default, or on **Fly Machines**; neither needs Docker on the control-plane Machine.
+
+```bash
+propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"
+```
+
+The UI and API are then at `https://my-propr.fly.dev`. Run `propr remote https://my-propr.fly.dev` to point the CLI at it.
+
+## How it reaches Fly
+
+| Fly access | What the command does |
+| --- | --- |
+| `flyctl` (or `fly`) on `PATH` | Uses your `fly auth login` session. Writes `fly.toml` and `propr-machine.json` to `--out` (default `./propr-fly`), creates the app and volume, stages secrets with `fly secrets import --stage` (values go over stdin, never argv), then runs `fly deploy --image <manifest image> --ha=false`. |
+| No flyctl | Uses the Machines API (`https://api.machines.dev/v1`) with `--token` or `FLY_API_TOKEN`, for example from `fly tokens create org`. It creates the app, allocates a shared IPv4 and an IPv6, creates the volume, sets secrets, then creates the Machine, or updates it in place on a later run, and waits until it starts. |
+
+Use `--backend flyctl` or `--backend api` to choose explicitly. Every step can be rerun: an existing app, volume or Machine is reused and updated. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
+
+`--dry-run` writes `fly.toml` and `propr-machine.json`, prints the secret **names** it would set and the summary, and contacts nothing.
+
+## Machine layout
+
+| Container | Image | Role |
+| --- | --- | --- |
+| `redis` | `redis:7-alpine` (manifest) | `--bind 127.0.0.1`, AOF and RDB in `/usr/src/app/data/redis`, `noeviction` so BullMQ keys are never evicted |
+| `app` | `propr/app:<version>` (manifest) | `node dist/src/allInOne.js`, listening on `0.0.0.0:4000`; starts after Redis is healthy; health check `GET /health` |
+| `tunnel` | `cloudflare/cloudflared` (manifest) | Only with Connect enrolled (see below) |
+| `docker` | `docker:27-dind` | Only with `--legacy-docker` |
+
+The volume (`propr_data`, 1 GB, encrypted) is mounted at `/usr/src/app/data`, the same path the local stack uses, and `DB_FILENAME=/usr/src/app/data/propr.sqlite`. The app container gets `PROPR_CONTAINERIZED=1`, `NODE_ENV=production`, `REDIS_HOST=127.0.0.1`, `PROPR_AGENT_RUNTIME`, and `API_PUBLIC_URL`, `FRONTEND_URL` and `GH_OAUTH_CALLBACK_URL` set to the public URL. `PROPR_TRUSTED_PROXY_PEERS=172.16.0.0/12` trusts the Fly proxy's forwarded client address and HTTPS scheme.
+
+These values are plain Machine env. Everything secret is a Fly **app secret** and never appears in `fly.toml`, `propr-machine.json` or the output.
+
+## Secrets
+
+| Secret | Source |
+| --- | --- |
+| Stack `.env` entries | `<stack root>/.env` when present, or `--env-file <path>`. Skipped: empty values, host paths (`HOST_*`), and the keys the deploy sets itself (ports, Redis, database path, URLs, `NODE_ENV`). Turn this off with `--no-env-file`. |
+| `SESSION_SECRET` | Generated only when the app does not have one yet, so a redeploy does not sign everyone out. A `SESSION_SECRET` in the `.env` is uploaded as is. |
+| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. |
+| `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
+| `SPRITES_TOKEN` | `--sprites-token` or `SPRITES_TOKEN`. Without it agent runs on Sprites fail, and the command says so. |
+| `FLY_API_TOKEN` | `--agent-fly-token`, for the Fly Machines agent runtime. The deploy token is never reused for agents. |
+| `PROPR_UI_TUNNEL_TOKEN`, `TUNNEL_TOKEN` | `--tunnel-token`. A tunnel token in the stack `.env` is **not** copied: two connectors on one tunnel would split traffic, so moving the tunnel to Fly is explicit. |
+
+## GitHub relay and Connect
+
+**GitHub relay.** When the stack brings neither its own GitHub App (`GH_APP_ID` plus a key) nor a relay token, and you are logged in with `propr login`, the command enrolls a new relay token labelled `fly:<app>@<host>`, just as `propr relay enroll` does. `--relay` always enrolls, and `--no-relay` never does. The installation id is discovered when you have exactly one; otherwise pass `--installation <id>`.
+
+**ProPR Connect.** To drive the Fly instance from the hosted UI at `https://app.propr.dev`, pass the values that ProPR Connect shows for `propr tunnel setup`:
+
+```bash
+propr deploy fly --app my-propr --tunnel-token <connector-token> --tunnel-url https://t-<id>.propr.dev
+```
+
+This adds the `cloudflared` container, which reads `TUNNEL_TOKEN` so the token stays off argv, and maps `api` to loopback so Connect's `http://api:4000` ingress reaches the app. It also sets the same env as `propr tunnel setup`: `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, the hosted `FRONTEND_URL`, `PROPR_WEB_AUTH_MODE=connect`, and `loopback` as a trusted proxy peer. Stop the local stack's tunnel first if the same instance was running locally.
+
+## Idle shutdown (opt-in)
+
+By default the Machine runs continuously. The restart policy is `always`, Fly proxy autostop is off, and `min_machines_running = 1`.
+
+`--idle-shutdown [after]` (default `15m`, from `1m` to `24h`) opts in to idle shutdown (`PROPR_IDLE_SHUTDOWN`, added by #3770):
+
+- `PROPR_IDLE_SHUTDOWN=on` and `PROPR_IDLE_SHUTDOWN_AFTER=<after>`;
+- restart policy `on-failure`, because exit code 0 is an idle stop and the Machine stays stopped;
+- `auto_stop_machines = "off"`. Fly's autostop is traffic-based and would stop the Machine during an agent run with no HTTP traffic, so ProPR decides when to stop;
+- `auto_start_machines = true` and `min_machines_running = 0`, so a request to the UI, API, MCP or webhook URL starts the Machine.
+
+The command prints the wake URL, `https://<app>.fly.dev/wake`. Register it as the instance's Connect wake target, so that a delivery for a stopped instance starts it.
+
+## Legacy mode: Docker in the Machine
+
+`--legacy-docker` keeps the Docker agent runtime by running a Docker daemon in a `docker` container of the same Machine. The app container reaches it at `DOCKER_HOST=tcp://127.0.0.1:2375`, which is loopback only. Clones, worktrees and egress sockets move to a scratch directory, `/propr-shared`, that both containers mount at the same path, so agent bind mounts resolve inside the daemon. Every boot applies two fixes learned on Fly:
+
+1. **ext4 loop mount for overlay2.** overlay2 cannot run on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/usr/src/app/data/docker.ext4`, the volume size minus 2 GB) on the Fly volume, checked with `e2fsck -p` and loop-mounted before `dockerd` starts. Pulled images survive restarts.
+2. **Stale PID cleanup.** After an unclean stop, `/var/run/docker*` and `/run/containerd` PID files and sockets make `dockerd` refuse to start. They are removed first.
+
+Legacy mode needs at least 2 GB of memory and a 10 GB volume (defaults: 2048 MB, 20 GB), so it does not fit the Free plan. The `docker` container must be allowed to create loop devices and mount filesystems. Prefer Sprites or Fly Machines agents where you can.
+
+## Size, memory and cost
+
+The default Machine is **shared-cpu-1x with 1 GB**.
+
+| Measurement | Value | Source |
+| --- | --- | --- |
+| Multi-container (`full`) stack, idle on a 1 GB Fly Machine | ~450 MB (api ~170, worker ~115, indexing-worker ~90, ui ~35 MB, plus the daemon); ~366 MB free | [Setup → control-plane memory](../tutorials/setup.md) |
+| All-in-one module-load baseline (what this deploy runs), x86_64, Node 22 | ~254 MB, versus ~800 MB summed over the four separate processes | same table |
+
+The all-in-one process plus Redis fits comfortably in 1 GB. 512 MB is the stretch target and is not the default: steady-state usage grows with active tasks, open UI sessions and indexing. These numbers have not yet been re-measured on a live `propr deploy fly` Machine.
+
+Fly prices for Ashburn (`iad`), from Fly's pricing page as of November 2026:
+
+| Item | Price |
+| --- | --- |
+| shared-cpu-1x, 1 GB, running all month | $6.70/month |
+| shared-cpu-1x, 512 MB, running all month | $3.69/month |
+| Volume | $0.15/GB-month (1 GB default: $0.15/month) |
+| Stopped Machine | $0.15/GB-month of root filesystem |
+| Shared IPv4, IPv6, inbound transfer | free (a dedicated IPv4 is $2/month and is not allocated) |
+
+Always on, the default deployment costs about **$6.85/month**. That is more than the Free plan's $5 of monthly usage, so on a Free-plan org use `--idle-shutdown`. At about 4 hours awake a day, the Machine costs roughly $1.12/month plus the volume, which leaves most of the allowance for agent runs on Sprites. The Free plan allows up to 3 Machines; this deployment uses one.
+
+## Options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--app <name>` | required | Fly app name; URL `https://<name>.fly.dev` |
+| `--org <slug>` | `personal` | Organization to create the app in |
+| `--region <code>` | `iad` | Region for the Machine and volume |
+| `--memory <mb>` / `--cpus <n>` | `1024` / `1` | Machine size (shared CPU) |
+| `--volume <name>` / `--volume-size <gb>` | `propr_data` / `1` | Volume for SQLite and Redis |
+| `--image <ref>` | manifest `images.app` | Deploy a different app image |
+| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`) |
+| `--sprites-token`, `--agent-fly-token` | — | Agent runtime credentials, stored as secrets |
+| `--root`, `--env-file`, `--no-env-file` | stack `.env` | Where secrets come from |
+| `--github-app-key <path>` | `HOST_GH_PRIVATE_KEY` | Own GitHub App private key |
+| `--relay`, `--no-relay`, `--relay-url`, `--installation` | auto | GitHub relay enrollment |
+| `--tunnel-token`, `--tunnel-url`, `--instance-id` | — | ProPR Connect hosted UI tunnel |
+| `--idle-shutdown [after]` | off | Opt-in idle shutdown |
+| `--legacy-docker` | off | Docker daemon in the Machine |
+| `--token <token>`, `--backend auto\|flyctl\|api` | `auto` | How to reach Fly |
+| `--out <dir>` | `./propr-fly` | Where generated files go |
+| `--dry-run` | — | Write the files and print the plan only |
+
+## Troubleshooting
+
+- **First boot is slow.** The first start pulls the app image, which can take a few minutes; the Machines API backend waits up to 5 minutes. Watch it with `fly logs --app <app>`.
+- **Agent runs fail at once.** Check the agent runtime credential: `SPRITES_TOKEN` for Sprites, `FLY_API_TOKEN` for Fly Machines.
+- **Sign-in redirects to the wrong host.** The URLs follow the deploy: `https://<app>.fly.dev` without a tunnel, or `https://t-<id>.propr.dev` with Connect. Redeploy after you add or remove the tunnel flags.

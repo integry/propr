@@ -148,6 +148,7 @@ const sidebars: SidebarsConfig = {
         'operations/propr-connect',
         'operations/connect-dashboard',
         'operations/hosted-ui-tunnel',
+        'operations/deploy-fly',
         'operations/hosted-ui-release',
         'operations/desktop-application',
         'operations/linux-release-key',

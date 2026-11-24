@@ -60,6 +60,7 @@ The module-load figures come from importing each compiled entry with startup dis
 | Your Linux laptop or workstation | [Local Setup](./setup-local.md) | The shortest path: localhost URLs, no proxy, no public endpoint. |
 | A shared or production Linux server | [Server Setup](./setup-server.md) | Adds stable paths, public URLs, TLS behind a reverse proxy, and the advanced intake options (polling, own-App webhook). |
 | A brand-new Linux VPS | [Secure VPS Deployment](./setup-vps.md) | Start-to-finish host hardening plus the install: SSH lockdown, firewall, localhost port binding, TLS. [Advanced VPS Hardening](./setup-vps-hardening.md) optionally removes all public inbound traffic with a Cloudflare Tunnel and an SSO gate. |
+| A small Fly.io Machine, agents on Sprites or Fly Machines | [Deploy to Fly](../operations/deploy-fly.md) | `propr deploy fly` runs the all-in-one control plane and Redis on one 1 GB Machine with SQLite on a volume. The host needs no Docker. |
 | Apple Silicon Mac with Docker Desktop | [Local Setup](./setup-local.md) | Runs the published Linux `amd64` images under emulation for local evaluation; native `arm64` images are not yet available. |
 | A source checkout, changing ProPR itself | [Source Development Setup](./setup-source.md) | Development Compose, direct service commands, tests, docs validation, and image builds. |
 

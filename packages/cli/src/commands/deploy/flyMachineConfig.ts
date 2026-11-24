@@ -1,0 +1,359 @@
+/**
+ * Pure builders for `propr deploy fly`: the Fly Machine configuration that
+ * runs the slim control plane (the all-in-one app container plus Redis in the
+ * SAME Machine), rendered either as a Machines API `config` object or as the
+ * `fly.toml` + `machine_config` JSON pair that `flyctl deploy` consumes.
+ *
+ * Nothing here talks to Fly; the API and flyctl backends only ship what these
+ * functions return, so the whole layout is pinned by unit tests.
+ *
+ * Layout (one Machine, multi-container):
+ *   app      propr/app running `node dist/src/allInOne.js` (daemon + worker +
+ *            API + same-origin UI). Listens on 0.0.0.0:4000 for the Fly proxy.
+ *   redis    redis:7-alpine bound to 127.0.0.1, AOF on the volume.
+ *   tunnel   optional cloudflared sidecar when ProPR Connect is enrolled.
+ *   docker   optional legacy Docker daemon (see flyLegacyDocker.ts).
+ *
+ * The Fly volume is mounted at /usr/src/app/data, the same path the local
+ * stack bind-mounts, so SQLite and the Redis append-only file both persist.
+ */
+
+import { Buffer } from "node:buffer";
+import {
+  buildLegacyDockerContainer,
+  legacyDockerDiskSizeGb,
+  LEGACY_DOCKER_SHARED_DIR,
+  LEGACY_DOCKER_SHARED_ENV,
+  LEGACY_DOCKER_SHARED_VOLUME,
+} from "./flyLegacyDocker.js";
+
+export const FLY_DATA_PATH = "/usr/src/app/data";
+export const FLY_DB_FILENAME = `${FLY_DATA_PATH}/propr.sqlite`;
+export const FLY_REDIS_DIR = `${FLY_DATA_PATH}/redis`;
+export const FLY_API_PORT = 4000;
+export const FLY_GH_PRIVATE_KEY_PATH = "/run/propr/github-app.pem";
+/** Secret holding the base64 GitHub App private key, written to FLY_GH_PRIVATE_KEY_PATH. */
+export const FLY_GH_PRIVATE_KEY_SECRET = "PROPR_GH_PRIVATE_KEY_B64";
+
+/**
+ * Fly proxy connections reach the Machine from its private 172.16.0.0/12
+ * gateway range; trusting it lets the API read the real client IP and HTTPS
+ * scheme. Public traffic can only arrive through that proxy.
+ */
+export const FLY_PROXY_PEERS = "172.16.0.0/12";
+
+export const FLY_DEFAULTS = {
+  org: "personal",
+  region: "iad",
+  cpuKind: "shared",
+  cpus: 1,
+  memoryMb: 1024,
+  volumeName: "propr_data",
+  volumeSizeGb: 1,
+  idleShutdownAfter: "15m",
+} as const;
+
+export type FlyAgentRuntime = "sprites" | "fly-machines" | "docker";
+export const FLY_AGENT_RUNTIMES: readonly FlyAgentRuntime[] = ["sprites", "fly-machines", "docker"];
+
+export interface FlyTunnelSettings {
+  instanceId: string;
+  publicUrl: string;
+}
+
+export interface FlyDeployPlan {
+  app: string;
+  org: string;
+  region: string;
+  images: { app: string; redis: string; cloudflared: string };
+  cpuKind: string;
+  cpus: number;
+  memoryMb: number;
+  volumeName: string;
+  volumeSizeGb: number;
+  agentRuntime: FlyAgentRuntime;
+  /** Opt-in idle shutdown (#3770); undefined keeps the Machine always on. */
+  idleShutdownAfter?: string;
+  /** Hosted UI tunnel through ProPR Connect; undefined serves on <app>.fly.dev only. */
+  tunnel?: FlyTunnelSettings;
+  /** Run a Docker daemon in the Machine for Docker agents (legacy mode). */
+  legacyDocker: boolean;
+  /** A GitHub App private key was supplied (as the FLY_GH_PRIVATE_KEY_SECRET secret). */
+  githubAppKey: boolean;
+  /** Extra plain (non-secret) env for the app container. */
+  extraEnv?: Record<string, string>;
+}
+
+/** The Machine's public origin through the Fly proxy. */
+export function flyPublicUrl(app: string): string {
+  return `https://${app}.fly.dev`;
+}
+
+/** Fly app names: lowercase letters, digits and dashes, 2–63 chars, not starting/ending with a dash. */
+export function validateFlyAppName(name: string): string | null {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/.test(name)) {
+    return `Fly app name "${name}" must be 2-63 lowercase letters, digits or dashes, and must not start or end with a dash`;
+  }
+  return null;
+}
+
+/** Fly volume names: lowercase letters, digits and underscores, at most 30 chars. */
+export function validateFlyVolumeName(name: string): string | null {
+  if (!/^[a-z0-9_]{1,30}$/.test(name)) {
+    return `Fly volume name "${name}" must be 1-30 lowercase letters, digits or underscores`;
+  }
+  return null;
+}
+
+/**
+ * Plain environment for the app container. Secrets (session secret, GitHub
+ * credentials, agent keys, tunnel token) are set as Fly app secrets instead
+ * and never appear here or in generated files.
+ */
+export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
+  const publicUrl = plan.tunnel?.publicUrl ?? flyPublicUrl(plan.app);
+  const env: Record<string, string> = {
+    NODE_ENV: "production",
+    PROPR_CONTAINERIZED: "1",
+    PROPR_PROFILE: "minimal",
+    PROPR_INDEXING: "inline",
+    PROPR_SERVE_UI: "1",
+    PROPR_SERVED_UI_API_URL: "",
+    DASHBOARD_API_PORT: String(FLY_API_PORT),
+    REDIS_HOST: "127.0.0.1",
+    REDIS_PORT: "6379",
+    SESSION_REDIS_HOST: "127.0.0.1",
+    DB_FILENAME: FLY_DB_FILENAME,
+    DATA_DIR: FLY_DATA_PATH,
+    CONFIG_REPO_PATH: "/tmp/config_repo",
+    API_PUBLIC_URL: publicUrl,
+    FRONTEND_URL: publicUrl,
+    GH_OAUTH_CALLBACK_URL: `${publicUrl}/api/auth/github/callback`,
+    PROPR_TRUSTED_PROXY_PEERS: FLY_PROXY_PEERS,
+    PROPR_AGENT_RUNTIME: plan.agentRuntime,
+  };
+  if (plan.agentRuntime === "sprites") env.SPRITES_CLIENT_SIGNALS = "0";
+  if (plan.tunnel) {
+    // Same derivation as `propr tunnel setup`: the hosted UI drives this
+    // instance through https://t-<id>.propr.dev. cloudflared reaches the API
+    // over loopback, so loopback joins the trusted proxy peers.
+    env.PROPR_UI_TUNNEL_ENABLED = "true";
+    env.PROPR_INSTANCE_ID = plan.tunnel.instanceId;
+    env.PROPR_UI_PUBLIC_API_URL = plan.tunnel.publicUrl;
+    env.FRONTEND_URL = "https://app.propr.dev";
+    env.PROPR_WEB_AUTH_MODE = "connect";
+    env.PROPR_TRUSTED_PROXY_PEERS = `loopback,${FLY_PROXY_PEERS}`;
+  }
+  if (plan.githubAppKey) env.GH_PRIVATE_KEY_PATH = FLY_GH_PRIVATE_KEY_PATH;
+  if (plan.idleShutdownAfter) {
+    env.PROPR_IDLE_SHUTDOWN = "on";
+    env.PROPR_IDLE_SHUTDOWN_AFTER = plan.idleShutdownAfter;
+  }
+  if (plan.legacyDocker) Object.assign(env, LEGACY_DOCKER_SHARED_ENV);
+  return { ...env, ...(plan.extraEnv ?? {}) };
+}
+
+/** Keys the deploy owns; a stack .env value for one of these is never uploaded. */
+export const FLY_MANAGED_ENV_KEYS: ReadonlySet<string> = new Set([
+  "NODE_ENV", "PROPR_CONTAINERIZED", "PROPR_PROFILE", "PROPR_SERVE_UI", "PROPR_SERVED_UI_API_URL",
+  "PROPR_UI_DIST_DIR", "DASHBOARD_API_PORT", "DASHBOARD_API_HOST", "API_PORT", "UI_PORT", "DOCS_PORT",
+  "REDIS_HOST", "REDIS_PORT", "REDIS_EXTERNAL_PORT", "SESSION_REDIS_HOST", "DB_FILENAME", "DATA_DIR",
+  "PROPR_DATA_DIR", "PROPR_DATA_MOUNT", "PROPR_LOGS_DIR", "PROPR_REPOS_DIR", "PROPR_ENV_FILE", "PROPR_ROOT",
+  "PROPR_STACK", "CONFIG_REPO_PATH", "API_PUBLIC_URL", "FRONTEND_URL", "GH_OAUTH_CALLBACK_URL",
+  "PROPR_TRUSTED_PROXY_PEERS", "PROPR_UI_TUNNEL_ENABLED", "PROPR_UI_PUBLIC_API_URL", "PROPR_INSTANCE_ID",
+  "PROPR_WEB_AUTH_MODE", "GH_PRIVATE_KEY_PATH", "PROPR_AGENT_RUNTIME", "PROPR_IDLE_SHUTDOWN",
+  "PROPR_IDLE_SHUTDOWN_AFTER", "DOCKER_HOST", "PROPR_CLOUDFLARED_IMAGE", "STAGING_ENV_FILE",
+]);
+
+/**
+ * Select the stack .env entries to upload as Fly secrets: everything that is
+ * set, except host-only paths (HOST_*) and the keys the deploy manages itself.
+ */
+export function selectEnvFileSecrets(values: Readonly<Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value === "" || key.startsWith("HOST_") || FLY_MANAGED_ENV_KEYS.has(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+export type JsonObject = Record<string, unknown>;
+
+/** Redis: loopback only, append-only file on the volume, never evict BullMQ keys. */
+export function buildRedisContainer(redisImage: string): JsonObject {
+  return {
+    name: "redis",
+    image: redisImage,
+    cmd: [
+      "sh", "-c",
+      `mkdir -p ${FLY_REDIS_DIR} && exec redis-server --bind 127.0.0.1 --port 6379 --dir ${FLY_REDIS_DIR} `
+        + "--appendonly yes --save 300 1 --maxmemory-policy noeviction",
+    ],
+    healthchecks: [{ name: "redis", exec: { command: ["redis-cli", "-h", "127.0.0.1", "ping"] }, interval: 10, timeout: 5, grace_period: 5 }],
+    restart: { policy: "always" },
+  };
+}
+
+function buildAppContainer(plan: FlyDeployPlan, image: string): JsonObject {
+  const dependsOn: JsonObject[] = [{ name: "redis", condition: "healthy" }];
+  if (plan.legacyDocker) dependsOn.push({ name: "docker", condition: "healthy" });
+  const container: JsonObject = {
+    name: "app",
+    image,
+    cmd: ["node", "dist/src/allInOne.js"],
+    env: buildAppEnv(plan),
+    depends_on: dependsOn,
+    healthchecks: [{
+      name: "api", http: { port: FLY_API_PORT, method: "GET", path: "/health" },
+      interval: 15, timeout: 5, grace_period: 60,
+    }],
+  };
+  if (plan.githubAppKey) {
+    container.files = [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }];
+  }
+  if (plan.legacyDocker) container.mounts = [{ name: LEGACY_DOCKER_SHARED_VOLUME, path: LEGACY_DOCKER_SHARED_DIR }];
+  return container;
+}
+
+/**
+ * cloudflared dials out to Cloudflare with TUNNEL_TOKEN (a Fly secret). The
+ * Connect-managed ingress targets http://api:4000, so `api` resolves to the
+ * Machine's shared loopback where the app container listens.
+ */
+function buildTunnelContainer(image: string): JsonObject {
+  const hosts = "127.0.0.1 localhost api\n::1 localhost\n";
+  return {
+    name: "tunnel",
+    image,
+    cmd: ["tunnel", "--no-autoupdate", "run"],
+    files: [{ guest_path: "/etc/hosts", raw_value: Buffer.from(hosts).toString("base64") }],
+    depends_on: [{ name: "app", condition: "started" }],
+    restart: { policy: "always" },
+  };
+}
+
+/** Multi-container list. `appImage` lets flyctl substitute the image it deploys. */
+export function buildContainers(plan: FlyDeployPlan, appImage: string = plan.images.app): JsonObject[] {
+  const containers = [buildRedisContainer(plan.images.redis)];
+  if (plan.legacyDocker) containers.push(buildLegacyDockerContainer(legacyDockerDiskSizeGb(plan.volumeSizeGb)));
+  containers.push(buildAppContainer(plan, appImage));
+  if (plan.tunnel) containers.push(buildTunnelContainer(plan.images.cloudflared));
+  return containers;
+}
+
+/**
+ * Always on: restart always, never stopped by the proxy. Idle shutdown (#3770):
+ * ProPR exits 0 when idle, so restart only on failure and let an HTTP request
+ * (UI, API, MCP, webhook or the Connect `/wake` ping) start the Machine again.
+ * Fly's traffic-based autostop stays off either way: it would stop the Machine
+ * in the middle of an agent run that has no HTTP traffic.
+ */
+export function restartPolicy(plan: FlyDeployPlan): "always" | "on-failure" {
+  return plan.idleShutdownAfter ? "on-failure" : "always";
+}
+
+export function buildHttpService(plan: FlyDeployPlan): JsonObject {
+  return {
+    protocol: "tcp",
+    internal_port: FLY_API_PORT,
+    autostop: "off",
+    autostart: true,
+    min_machines_running: plan.idleShutdownAfter ? 0 : 1,
+    ports: [
+      { port: 80, handlers: ["http"], force_https: true },
+      { port: 443, handlers: ["tls", "http"] },
+    ],
+    checks: [{ type: "http", port: FLY_API_PORT, method: "GET", path: "/health", interval: "30s", timeout: "5s", grace_period: "60s" }],
+  };
+}
+
+/** The Machines API `config` (POST /v1/apps/{app}/machines). */
+export function buildMachineConfig(plan: FlyDeployPlan, volume: string = plan.volumeName): JsonObject {
+  const config: JsonObject = {
+    guest: { cpu_kind: plan.cpuKind, cpus: plan.cpus, memory_mb: plan.memoryMb },
+    containers: buildContainers(plan),
+    mounts: [{ volume, path: FLY_DATA_PATH }],
+    services: [buildHttpService(plan)],
+    restart: { policy: restartPolicy(plan), ...(plan.idleShutdownAfter ? { max_retries: 10 } : {}) },
+    // allInOne drains on SIGTERM; give it time to finish acks and close SQLite.
+    stop_config: { signal: "SIGTERM", timeout: "60s" },
+    metadata: { "propr-role": "control-plane" },
+  };
+  if (plan.legacyDocker) config.volumes = [buildLegacyDockerSharedVolume()];
+  return config;
+}
+
+function buildLegacyDockerSharedVolume(): JsonObject {
+  return { name: LEGACY_DOCKER_SHARED_VOLUME, temp_dir: { storage_type: "disk", size_mb: 8192 } };
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+/** Size label for `[[vm]]`, e.g. shared-cpu-1x. */
+export function vmSizeLabel(plan: FlyDeployPlan): string {
+  return `${plan.cpuKind === "performance" ? "performance" : "shared"}-cpu-${plan.cpus}x`;
+}
+
+export const FLY_MACHINE_CONFIG_FILE = "propr-machine.json";
+
+/**
+ * fly.toml for `flyctl deploy`. The containers live in the machine_config JSON
+ * (flyctl >= 0.3.147); `container = "app"` tells flyctl which one receives the
+ * deployed image. Only non-secret values are written.
+ */
+export function renderFlyToml(plan: FlyDeployPlan): string {
+  const lines = [
+    "# Generated by `propr deploy fly`. Secrets are Fly app secrets, never in this file.",
+    `app = ${tomlString(plan.app)}`,
+    `primary_region = ${tomlString(plan.region)}`,
+    "",
+    "[build]",
+    `  image = ${tomlString(plan.images.app)}`,
+    "",
+    "[experimental]",
+    `  machine_config = ${tomlString(FLY_MACHINE_CONFIG_FILE)}`,
+    "  container = \"app\"",
+    "",
+    "[[mounts]]",
+    `  source = ${tomlString(plan.volumeName)}`,
+    `  destination = ${tomlString(FLY_DATA_PATH)}`,
+    `  initial_size = ${tomlString(`${plan.volumeSizeGb}gb`)}`,
+    "",
+    "[http_service]",
+    `  internal_port = ${FLY_API_PORT}`,
+    "  force_https = true",
+    "  # Fly proxy autostop is traffic-based and would stop the Machine during an",
+    "  # agent run that has no HTTP traffic. ProPR decides when to stop instead.",
+    "  auto_stop_machines = \"off\"",
+    "  auto_start_machines = true",
+    `  min_machines_running = ${plan.idleShutdownAfter ? 0 : 1}`,
+    "",
+    "[[http_service.checks]]",
+    "  method = \"GET\"",
+    "  path = \"/health\"",
+    "  interval = \"30s\"",
+    "  timeout = \"5s\"",
+    "  grace_period = \"60s\"",
+    "",
+    "[[restart]]",
+    plan.idleShutdownAfter
+      ? "  # Exit code 0 is an idle stop: leave the Machine stopped.\n  policy = \"on-failure\"\n  retries = 10"
+      : "  policy = \"always\"",
+    "",
+    "[[vm]]",
+    `  size = ${tomlString(vmSizeLabel(plan))}`,
+    `  memory = ${tomlString(`${plan.memoryMb}mb`)}`,
+    "",
+  ];
+  return lines.join("\n");
+}
+
+/** The machine_config JSON referenced from fly.toml (root-level `containers`). */
+export function renderFlyMachineConfigJson(plan: FlyDeployPlan): string {
+  const doc: JsonObject = { containers: buildContainers(plan), stop_config: { signal: "SIGTERM", timeout: "60s" } };
+  if (plan.legacyDocker) doc.volumes = [buildLegacyDockerSharedVolume()];
+  return `${JSON.stringify(doc, null, 2)}\n`;
+}

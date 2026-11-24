@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`propr deploy fly`: the control plane on one Fly Machine** (#3768)
+  - Runs the all-in-one app container and Redis in one Machine
+    (multi-container), with SQLite and the Redis AOF on an encrypted Fly
+    volume. Deploys the launcher manifest's `propr/app` image directly, with
+    no build and no Docker-in-Docker. Default size: shared-cpu-1x, 1 GB.
+  - Uses flyctl when installed, otherwise the Machines API with `--token` or
+    `FLY_API_TOKEN`. Every step can be rerun; `--dry-run` writes `fly.toml` and
+    the machine config only.
+  - Uploads the stack `.env` as Fly secrets and generates `SESSION_SECRET`
+    once. Enrolls a GitHub relay token, and ProPR Connect with
+    `--tunnel-token`/`--tunnel-url`. Agents default to Sprites.
+  - `--idle-shutdown [after]` opts in to idle shutdown (#3770): restart
+    `on-failure`, proxy autostop off, autostart on, and prints the `/wake` URL.
+  - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
+    loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
+    stale `/var/run/docker*` and `/run/containerd` PID files.
+
 ### Changed
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
