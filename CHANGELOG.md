@@ -26,8 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     file cannot be written, and exits only after every registered API and
     worker process has acknowledged the stop. On the next start it asks Connect
     to replay deliveries cached since intake disconnected for the drain,
-    keeping that obligation in the hint file until the relay acknowledges it
-    (`replay_ack`); an aborted drain asks for the same replay once it
+    keeping that obligation in the hint file, written before intake
+    disconnects so a crash mid-drain keeps it, until the relay acknowledges
+    it (`replay_ack`); an aborted drain asks for the same replay once it
     reconnects. It also records the wake source and cold-start duration. `POST /wake` is the Connect wake ping.
   - An API or worker process whose heartbeat or activity record is missing,
     stale or malformed keeps the instance awake until it is confirmed stopped.

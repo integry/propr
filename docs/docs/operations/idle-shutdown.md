@@ -54,12 +54,12 @@ In `polling` intake mode the poll timer keeps its own schedule, which a stop wou
 
 ## How it stops
 
-Once the instance has been idle for the whole window, the daemon checks once more and then drains. Every step up to 5 can abort: the daemon then withdraws its request, the API admits requests again, Connect intake reconnects and the idle period starts over. Connect only replays on request, so an abort after intake was stopped first records a pending replay in the wake hint file (since `intakeStoppedAt`, with `wokeAt` set so the next start is not counted as a wake), then reconnects and asks for the deliveries cached while it was disconnected. The replay stays `pending` until Connect acknowledges it. If it is never acknowledged, the next drain carries its cursor and the next start asks again.
+Once the instance has been idle for the whole window, the daemon checks once more and then drains. Every step up to 5 can abort: the daemon then withdraws its request, the API admits requests again, Connect intake reconnects and the idle period starts over. Connect only replays on request, so before it stops Connect intake the daemon records a pending replay in the wake hint file (since `intakeStoppedAt`, with `wokeAt` set so a start is not counted as a wake, and keeping the cursor of a replay still owed). If that record cannot be written, intake stays connected and the drain aborts. An abort after intake was stopped reconnects and asks for the deliveries cached while it was disconnected; a crash mid-drain leaves the record, so the next start asks for them. The replay stays `pending` until Connect acknowledges it. If it is never acknowledged, the next drain carries its cursor and the next start asks again.
 
 1. With Connect intake, sends the **wake hint** (`wake_hint` frame, see below) and waits up to 10 seconds for Connect to acknowledge it. Without an acknowledgement nothing is stopped.
-2. Quiesces every producer: stops Connect intake (deliveries in flight finish and are acknowledged, then the socket closes with code 1000) and asks each API process to stop admitting requests. A request that arrives now gets `503` with `Retry-After: 5`; each API process waits for its requests in flight and confirms.
+2. Quiesces every producer: records the Connect replay owed from now on (see above), stops Connect intake (deliveries in flight finish and are acknowledged, then the socket closes with code 1000) and asks each API process to stop admitting requests. A request that arrives now gets `503` with `Retry-After: 5`; each API process waits for its requests in flight and confirms.
 3. Checks again. Any blocker, or any request since the idle period began (including one turned away in step 2), aborts.
-4. Writes the wake hint file. If it cannot be written (a full or read-only disk), the drain aborts.
+4. Writes the wake hint file, replacing the record from step 2. If it cannot be written (a full or read-only disk), the drain aborts.
 5. Records the shutdown and stores a stop request in Redis.
 6. Waits until every registered API and worker process has acknowledged the stop request. The request stays stored for the whole drain, so a process that was disconnected when it was announced still finds it when it reconnects. Each runs its normal graceful shutdown (close queues, Socket.IO, Redis) and exits with code 0. **The daemon does not exit until every process has acknowledged** or is confirmed stopped; while it waits it logs the processes it is waiting for.
 7. Closes its own timers, Redis and SQLite connections, flushes logs and exits with code 0.
@@ -119,7 +119,7 @@ Delayed jobs whose time passed run as soon as a worker is up; Ultrafix retries a
 | Daemon log `Idle shutdown: stopping the control plane`, then `Idle shutdown: control plane stopped (exit 0)` | shutdown time, reason, idle duration, `nextDueAt`, wake hint file |
 | Daemon log `Idle shutdown: waiting for processes to acknowledge the stop request` | processes that have not confirmed the stop yet (the daemon stays up) |
 | Daemon log `Woke from idle shutdown` | wake source, cold-start duration, time stopped, scheduled work that became due while stopped |
-| Daemon log `Idle shutdown aborted: …` | why the drain stopped: Connect did not acknowledge the wake hint, an API process did not confirm it quiesced, work arrived while draining, or the wake hint file could not be written |
+| Daemon log `Idle shutdown aborted: …` | why the drain stopped: Connect did not acknowledge the wake hint, an API process did not confirm it quiesced, work arrived while draining, or the Connect replay record or the wake hint file could not be written |
 | `GET /api/status` → `idleShutdown`, `GET /api/admin/idle-shutdown`, `propr check`, Settings | live blockers, `idleSince`, `shutdownAt`, `nextDueAt`, `lastShutdown`, `lastWake` |
 
 ## Fly

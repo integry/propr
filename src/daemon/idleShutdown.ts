@@ -39,7 +39,15 @@ import {
     type RoutingWebSocketIntakeService,
 } from '@propr/core';
 import { createDaemonIdleSources } from './idleSignalSources.js';
-import { hintFileIo, recordAbortedDrainReplay, recordAcceptedReplay, requestOwedReplay, updateHint, withHintFile } from './idleReplayObligation.js';
+import {
+    hintFileIo,
+    recordAbortedDrainReplay,
+    recordAcceptedReplay,
+    recordDrainReplayObligation,
+    requestOwedReplay,
+    updateHint,
+    withHintFile,
+} from './idleReplayObligation.js';
 
 /**
  * The daemon owns idle shutdown (issue #3770): it sees every shared signal,
@@ -50,13 +58,16 @@ import { hintFileIo, recordAbortedDrainReplay, recordAcceptedReplay, requestOwed
  * the instance running):
  *   1. Connect intake: the relay must acknowledge the wake hint (it will wake
  *      the instance and replay cached deliveries). No acknowledgement, no stop.
- *   2. Quiesce the producers: stop Connect intake (in-flight deliveries finish
- *      and ACK) and ask every API process to stop admitting requests; each one
- *      waits for its requests in flight and acknowledges.
+ *   2. Quiesce the producers: record in the wake hint file the Connect replay
+ *      owed from now on (before disconnecting, so a crash mid-drain keeps it;
+ *      no record, no disconnect), stop Connect intake (in-flight deliveries
+ *      finish and ACK) and ask every API process to stop admitting requests;
+ *      each one waits for its requests in flight and acknowledges.
  *   3. Check again, now that nothing can add work.
  *   4. Write the wake hint file (the recovery marker and the wake schedule for
- *      other supervisors). A failed write aborts. A Connect replay an earlier
- *      wake still owes is carried over as the replay cursor.
+ *      other supervisors), replacing the record from step 2. A failed write
+ *      aborts. A Connect replay an earlier wake still owes is carried over as
+ *      the replay cursor.
  *   5. Record the shutdown.
  *   6. Ask every registered process (by generation: one that starts later is
  *      not asked) to stop, and wait until each has acknowledged (the request
@@ -161,15 +172,38 @@ async function waitForDeregistration(redis: IntentRedis, timings: IdleDrainTimin
 /**
  * Step 4: write the hint for this stop, keeping the cursor of a replay an
  * earlier stop still owes; otherwise this stop's replay runs from when its
- * intake disconnected (`intakeStoppedAt`), not from `shutdownAt`.
+ * intake disconnected (`intakeStoppedAt`), not from `shutdownAt`. The record
+ * this drain wrote before disconnecting owes exactly that: it is replaced.
  */
 function persistStopHint(ctx: IdleDrainContext, input: Omit<Parameters<typeof buildIdleWakeHint>[0], 'shutdownAt' | 'pendingReplaySince'>): Promise<IdleWakeHint> {
     return withHintFile(async () => {
         const previous = await (ctx.readHint ?? readIdleWakeHint)().catch(() => null);
-        const next = buildIdleWakeHint({ ...input, shutdownAt: Date.now(), pendingReplaySince: needsConnectReplay(previous) ? connectReplaySince(previous) : null });
+        const carried = needsConnectReplay(previous) ? connectReplaySince(previous) : null;
+        const own = typeof input.intakeStoppedAt === 'number' ? new Date(input.intakeStoppedAt).toISOString() : null;
+        const next = buildIdleWakeHint({ ...input, shutdownAt: Date.now(), pendingReplaySince: carried === own ? null : carried });
         await (ctx.writeHint ?? writeIdleWakeHint)(next);
         return next;
     });
+}
+
+/**
+ * Step 2, Connect intake: record the replay owed from now on, then disconnect.
+ * The relay caches what arrives from the disconnect on, so the cursor is taken
+ * before it, and the obligation must be on disk before it too: the Redis
+ * intent holds no cursor and is cleared at startup, and reconnecting alone
+ * does not replay. Returns when intake was disconnected (null without Connect
+ * intake), or the error that kept it connected.
+ */
+async function disconnectIntakeOwingReplay(ctx: IdleDrainContext): Promise<number | null | Error> {
+    if (!ctx.routing) return null;
+    const disconnectAt = Date.now();
+    try {
+        await recordDrainReplayObligation(disconnectAt, { readHint: ctx.readHint, writeHint: ctx.writeHint });
+    } catch (error) {
+        return error instanceof Error ? error : new Error(String(error));
+    }
+    await ctx.routing.stop();
+    return disconnectAt;
 }
 
 /**
@@ -211,11 +245,11 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     } catch (error) {
         return abort('could not record the drain request', { error: (error as Error).message });
     }
-    if (routing) {
-        // The relay caches what arrives from here on: the replay cursor must not be later than this.
-        intakeStoppedAt = Date.now();
-        await routing.stop();
+    const disconnected = await disconnectIntakeOwingReplay(ctx);
+    if (disconnected instanceof Error) {
+        return abort('could not record the Connect replay owed for the drain, so intake stays connected', { error: disconnected.message, file: resolveIdleWakeHintPath() });
     }
+    intakeStoppedAt = disconnected;
     const quiesced = await waitForIdleAcks(redis, intent, { roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs });
     if (!quiesced.confirmed) return abort('API processes did not confirm they stopped admitting requests', { pending: quiesced.pending });
 
@@ -280,9 +314,9 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
 }
 
 /**
- * An aborted drain that had disconnected Connect intake: record the replay
- * owed for the disconnection (before reconnecting, so a crash keeps it), then
- * reconnect and ask for that replay. The relay only replays on request, so
+ * An aborted drain that had disconnected Connect intake: the replay owed for
+ * the disconnection was recorded before it (marked aborted now, and recorded
+ * again if the file lost it), then reconnect and ask for that replay. The relay only replays on request, so
  * reconnecting alone would leave the deliveries cached while draining behind.
  */
 async function resumeIntakeOwingReplay(ctx: IdleDrainContext, routing: IdleRoutingIntake, intakeStoppedAt: number, hintWritten: IdleWakeHint | null): Promise<void> {
