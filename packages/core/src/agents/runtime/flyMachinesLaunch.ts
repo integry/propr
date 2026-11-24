@@ -30,7 +30,11 @@ import type { AgentRunSpec } from './types.js';
  *   {@link MIN_FLY_RESULT_LINGER_SECONDS}, which outlasts the worker's whole
  *   collection, so the Machine holds its result for the worker from its
  *   creation. A run the worker retained (its {@link FLY_RUN_FILES.retain}
- *   marker exists) keeps waiting until the Machine is destroyed.
+ *   marker exists) keeps waiting until the Machine is destroyed. Once the
+ *   agent exited, termination signals are ignored: a deadline or `stop()`
+ *   that has not yet seen the exit must not end the linger (and let
+ *   `auto_destroy` remove the uncollected result); the worker destroys the
+ *   Machine through the API instead.
  */
 
 /** Launcher state inside the Machine: root-only, outside the workspace. */
@@ -100,6 +104,8 @@ fi
 [ "$no_new_privs" = 1 ] && set -- setpriv --no-new-privs -- "$@"
 p=$run_dir/pipe; rm -f "$p".*; : > "$run_dir/stdout"; : > "$run_dir/stderr"
 if [ -n "$refused" ]; then
+  # The refusal is the run's result: kept like a finished run's (see the linger below).
+  trap '' TERM INT HUP
   echo "propr: $refused" >> "$run_dir/stderr"; echo "$mark_err""propr: $refused" >&2; status=126
 else
   # Each reader is its own process (no pipelines), so a stuck one can be killed on its own.
@@ -143,6 +149,11 @@ else
   trap 'forward HUP' HUP
   while kill -0 "$child" 2>/dev/null; do wait "$child"; done
   wait "$child"; status=$?
+  # The run finished: from here on its capture, exit status and result files are kept until the worker
+  # destroys the Machine through the API. A termination signal now (a deadline or stop() that has not seen
+  # the exit yet, Fly's) has nothing left to stop and must neither cut the output drain short nor end the
+  # linger, which would let auto_destroy remove the uncollected result.
+  trap '' TERM INT HUP
   # A process the agent left behind may hold the pipes open: drain them for a few seconds only.
   ( sleep 5; kill "$out_tee" "$err_tee" 2>/dev/null ) & reaper=$!
   wait "$out_tee" "$err_tee" "$out_mark" "$err_mark" 2>/dev/null
@@ -151,13 +162,12 @@ else
 fi
 printf '%s\\n' "$status" > "$run_dir/exit-status.tmp" && mv -f "$run_dir/exit-status.tmp" "$run_dir/exit-status"
 printf '\\n%s%s\\n' "$mark_exit" "$status"
-# A retained run (the worker may need its result later) lingers until the Machine is destroyed.
-stopping=
+# The linger ignores termination signals (see above); only its end, or the Machine's destroy, ends it. A
+# retained run (the worker may need its result later) lingers until the Machine is destroyed.
 sleep "$linger" & sleeper=$!
-trap 'stopping=1; kill "$sleeper" 2>/dev/null' TERM INT HUP
 while :; do
-  wait "$sleeper"
-  [ -z "$stopping" ] && [ -f "$run_dir/retain" ] || break
+  while kill -0 "$sleeper" 2>/dev/null; do wait "$sleeper"; done
+  [ -f "$run_dir/retain" ] || break
   sleep 3600 & sleeper=$!
 done
 exit "$status"

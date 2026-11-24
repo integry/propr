@@ -8,7 +8,7 @@ import { test } from 'node:test';
 const { FLY_FORCED_STOP_SCRIPT, FLY_RUN_FILES, flyForcedStopCommand, renderFlyMachineRequest } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const {
-    WORKSPACE_TRANSPORT_ENVIRONMENT: E, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_RESULT_PHASE_FILE, WORKSPACE_RESULT_STATUS_FILE,
+    WORKSPACE_TRANSPORT_ENVIRONMENT: E, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_RESULT_BUNDLE_FILE, WORKSPACE_RESULT_PHASE_FILE, WORKSPACE_RESULT_STATUS_FILE,
 } = await import('../packages/core/src/git/workspaceTransportScript.ts');
 
 const GIT_ENV = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
@@ -120,9 +120,10 @@ interface CloneRun {
  * A clone run's launcher, transport wrapper and agent (`agentScript`), started exactly as the Machine runs
  * them; only the run directory, a zero linger and `-c` instead of `-lc` (so the test PATH survives a login
  * shell) differ. `env` is added to the run's environment. With `SLOW_STEP` (`snapshot` or `push`) set, the
- * wrapper's finalization touches `SLOW_MARKER` and pauses `SLOW_SECONDS` at that step.
+ * wrapper's finalization touches `SLOW_MARKER` and pauses `SLOW_SECONDS` at that step; with `PUSH_FAILS=1`
+ * every push fails (the wrapper falls back to a bundle). `linger` is the launcher's result linger (seconds).
  */
-function launchCloneRun(root: string, agentScript: string, env: Record<string, string> = {}): CloneRun {
+function launchCloneRun(root: string, agentScript: string, env: Record<string, string> = {}, linger = '0'): CloneRun {
     const remote = path.join(root, 'remote.git');
     const seed = path.join(root, 'seed');
     git(root, 'init', '-q', '--bare', '-b', 'main', remote);
@@ -143,7 +144,7 @@ function launchCloneRun(root: string, agentScript: string, env: Record<string, s
     write(path.join(bin, 'su-exec'), `#!/bin/bash\nshift\n${slow('snapshot')}exec "$@"\n`, 0o755);
     write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
     const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-    write(path.join(bin, 'git'), `#!/bin/bash\n${slow('push')}exec ${realGit} "$@"\n`, 0o755);
+    write(path.join(bin, 'git'), `#!/bin/bash\n${slow('push')}case " $* " in *" push "*) [ "\${PUSH_FAILS:-}" = 1 ] && exit 1 ;; esac\nexec ${realGit} "$@"\n`, 0o755);
     const agent = path.join(root, 'agent.sh');
     write(agent, agentScript, 0o755);
 
@@ -163,7 +164,7 @@ function launchCloneRun(root: string, agentScript: string, env: Record<string, s
     assert.equal(phaseFile, path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE), 'the launcher is told where the wrapper records its phase');
     assert.deepEqual(command.slice(0, 2), ['/bin/bash', '-lc']);
     command[1] = '-c';
-    const launcher = spawn(shell!, [...launcherArgs, runDir, '0', workdir!, user!, noNewPrivileges!, phaseFile!, ...command], {
+    const launcher = spawn(shell!, [...launcherArgs, runDir, linger, workdir!, user!, noNewPrivileges!, phaseFile!, ...command], {
         detached: true, stdio: 'ignore',
         env: {
             PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV, ...env,
@@ -257,6 +258,56 @@ test('a termination signal reaches the agent but never ends the clone wrapper, a
             assert.equal(state, 'pushed', `the wrapper survived the signal and published the workspace (${moment})`);
             assert.equal(git(root, '--git-dir', run.remote, 'rev-parse', run.resultRef), snapshot);
             assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'changed');
+        } finally {
+            if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    }
+});
+
+/** The agent finishes at once, leaving a changed checkout and a refreshed credential copy. */
+const FINISHING_AGENT_SCRIPT = `#!/bin/bash
+echo changed > a.txt
+echo refreshed > "$CREDENTIAL_FILE"
+echo done
+exit 0
+`;
+
+test('after the run finished, a termination signal keeps its result: the launcher lingers until its end or the Machine is destroyed', { timeout: 60_000 }, async () => {
+    // A deadline's or stop()'s TERM that has not seen the exit yet (its logs page was still pending), and
+    // Fly's own signals, reach a launcher that is already lingering. Neither may end the linger: the
+    // Machine would auto-destroy with the capture, the bundle and the refreshed credential uncollected.
+    for (const retained of [false, true]) {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-linger-signal-'));
+        let launcher: ChildProcess | undefined;
+        try {
+            const credential = path.join(root, 'credential.json');
+            const run = launchCloneRun(root, FINISHING_AGENT_SCRIPT, { CREDENTIAL_FILE: credential, PUSH_FAILS: '1' }, '3');
+            launcher = run.launcher;
+            await until(() => fs.existsSync(run.runFile(FLY_RUN_FILES.exitStatus)), 'the launcher to record the exit');
+            const lingerStarted = Date.now();
+            if (retained) write(run.runFile(FLY_RUN_FILES.retain), '');
+            for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.kill(launcher.pid!, signal);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            assert.equal(alive(launcher.pid!), true, `the lingering launcher survives termination signals (retained: ${retained})`);
+            assert.equal(fs.readFileSync(run.runFile(FLY_RUN_FILES.exitStatus), 'utf8').trim(), '0');
+            assert.equal(fs.readFileSync(run.runFile(FLY_RUN_FILES.stdout), 'utf8'), 'done\n');
+            assert.equal(fs.readFileSync(credential, 'utf8'), 'refreshed\n');
+            assert.equal(fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8').trim().split(' ')[0], 'bundle');
+            assert.ok(fs.statSync(path.join(run.resultDir, WORKSPACE_RESULT_BUNDLE_FILE)).size > 0, 'the bundle fallback is kept for the worker');
+            if (!retained) {
+                // Unretained, the linger still ends on its own (auto_destroy then removes the Machine).
+                assert.equal(await run.launcherExit, 0);
+                assert.ok(Date.now() - lingerStarted >= 2_000, 'the linger ran its course despite the signals');
+            } else {
+                // Retained: past its linger it keeps waiting; only the Machine's destroy (a KILL) ends it.
+                await new Promise(resolve => setTimeout(resolve, 3_500));
+                process.kill(launcher.pid!, 'SIGTERM');
+                await new Promise(resolve => setTimeout(resolve, 200));
+                assert.equal(alive(launcher.pid!), true, 'a retained run outlasts its linger and further signals');
+                process.kill(launcher.pid!, 'SIGKILL');
+                await run.launcherExit;
+            }
         } finally {
             if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
             fs.rmSync(root, { recursive: true, force: true });

@@ -82,6 +82,8 @@ class FakeFly {
     failDeletes = 0;
     /** Create requests wait for this before the API answers (a slow image pull/placement). */
     createGate?: Promise<void>;
+    /** Exec requests wait for this before the API answers. */
+    execGate?: Promise<void>;
     /**
      * The next create is accepted but its response is lost: the connection fails (`'network'`) or a proxy
      * answers with this status. `deferred`: the Machine appears only on {@link completeDeferredCreate}.
@@ -214,6 +216,7 @@ class FakeFly {
             return json(200, {});
         }
         if (action === 'exec') {
+            if (this.execGate) await this.execGate;
             const [, , script, , file, offset, length] = body.command as string[];
             if (script.includes('pwd -P')) {
                 // The confined credential reader runs for real, against this host's filesystem.
@@ -681,6 +684,65 @@ test('timeout: log pagination gives way at the run deadline and at the end of ea
     assert.equal(result.timedOut, true);
     assert.equal(result.exitCode, 137, 'the exit status the launcher recorded after the kill');
     assert.deepEqual(fly.destroyed, [], 'the stopped Machine keeps its result files');
+    await handle.release!();
+});
+
+test('an exit not yet seen when the deadline or stop() signals: the lingering Machine keeps the result for collection', async () => {
+    // The agent finished (the launcher recorded the exit and lingers), but the logs page carrying the exit
+    // is still pending when the run's deadline, or a caller's stop(), signals the Machine. The launcher
+    // ignores the signal once lingering (see the launcher tests); the run must find the recorded exit and
+    // collect the result from the Machine instead of escalating to a kill or a destroy.
+    const finishedUnseen = (): FakeFly => {
+        const fly = slowLogsFly();
+        fly.clockStepMs = 250;
+        fly.ignoreSignals = false;
+        return fly;
+    };
+    const finishWhenCreated = async (fly: FakeFly): Promise<void> => {
+        while (!fly.machines.get('m1') || fly.pendingLogPages === 0) await sleep(2);
+        fly.finish(fly.machines.get('m1')!, 'result\n', 'warn\n', 0);
+        // Its logs, the exit marker included, have not reached the logs API yet.
+        fly.machines.get('m1')!.pendingLogs.length = 0;
+        fly.machines.get('m1')!.files.set('/tmp/r/result.bundle', Buffer.from('bundle'));
+    };
+    const killExecs = (fly: FakeFly) => fly.requests.filter(request => request.url.endsWith('/exec') && String(request.body.command[2]).includes('kill -s KILL'));
+
+    const timedOut = finishedUnseen();
+    const expiring = runtime(timedOut, FLY_ENV, timedOut.now).start(spec(), { timeout: 30_000, preserveOutputOnTimeout: true });
+    await finishWhenCreated(timedOut);
+    const result = await expiring.wait();
+    assert.deepEqual(timedOut.machines.get('m1')!.signals, [15], 'the deadline signalled the Machine');
+    assert.equal(result.exitCode, 0, 'the exit status the launcher recorded before the signal');
+    assert.equal(result.stdout, 'result\n');
+    assert.deepEqual(killExecs(timedOut), [], 'no forced stop of a finished run');
+    assert.deepEqual(timedOut.destroyed, [], 'the Machine is not destroyed');
+    assert.equal((await expiring.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle', 'the workspace result is still collectable');
+    await expiring.release!();
+    assert.deepEqual(timedOut.destroyed, ['m1']);
+
+    // stop(): the logs stream normally (without the exit marker); the run's status check, held until the
+    // signal arrived, then finds the recorded exit within the stop window.
+    const stopped = new FakeFly();
+    stopped.delayPolls = 0;
+    let signalled!: () => void;
+    stopped.execGate = new Promise(resolve => { signalled = resolve; });
+    stopped.agent = machine => {
+        stopped.finish(machine, 'result\n', 'warn\n', 0);
+        machine.pendingLogs.length = 0;
+        machine.files.set('/tmp/r/result.bundle', Buffer.from('bundle'));
+    };
+    const handle = runtime(stopped).start(spec(), { timeout: 600_000 });
+    while (!stopped.machines.get('m1')?.ran) await sleep(2);
+    const stopping = handle.stop('SIGTERM', 0);
+    while (!stopped.machines.get('m1')!.signals.length) await sleep(2);
+    signalled();
+    await stopping;
+    const stoppedResult = await handle.wait();
+    assert.deepEqual(stopped.machines.get('m1')!.signals, [15]);
+    assert.equal(stoppedResult.exitCode, 0);
+    assert.equal(stoppedResult.stdout, 'result\n');
+    assert.deepEqual(stopped.destroyed, [], 'stop() of a finished run keeps its Machine');
+    assert.equal((await handle.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle');
     await handle.release!();
 });
 

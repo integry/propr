@@ -17,7 +17,7 @@ export const FLY_MACHINES_ENV = {
     size: 'PROPR_FLY_MACHINE_SIZE',
     /** Memory in MB; defaults to the run's memory limit, else the preset's. */
     memoryMb: 'PROPR_FLY_MACHINE_MEMORY_MB',
-    /** Pullable image the Machines run instead of the run's own image reference (e.g. `registry.fly.io/<app>:agent`). */
+    /** Pullable image the Machines run instead of the run's own image reference (by digest, e.g. `registry.fly.io/<app>@sha256:<digest>`: a build-only push may create no tag). */
     image: 'PROPR_FLY_IMAGE',
     apiUrl: 'PROPR_FLY_MACHINES_API_URL',
     logsApiUrl: 'PROPR_FLY_LOGS_API_URL',
