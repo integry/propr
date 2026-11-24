@@ -2,10 +2,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 
 const credentialRunDir = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-credential-runs-'));
 process.env.PROPR_AGENT_CREDENTIAL_RUN_DIR = credentialRunDir;
+
+// The runtime modules import @propr/core, which opens the shared database connection;
+// close it or the test process never exits.
+after(async () => {
+    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    await closeConnection();
+    fs.rmSync(credentialRunDir, { recursive: true, force: true });
+});
 
 const { FlyMachinesRuntime, flyMachinesCapabilities, FLY_MACHINES_RUNTIME_KIND } = await import('../packages/core/src/agents/runtime/flyMachinesRuntime.ts');
 const { resolveFlyMachinesConfig, flyMachineGuest, flyInternalMcpUrl, dockerMemoryToMb, FlyMachinesConfigError } = await import('../packages/core/src/agents/runtime/flyMachinesConfig.ts');
