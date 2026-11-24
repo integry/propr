@@ -788,6 +788,71 @@ export interface Health {
   status: "ok";
 }
 
+/** Idle shutdown setting and live status. */
+export interface IdleShutdownSettings {
+  /** Effective switch. Off unless an operator turns it on. */
+  enabled: boolean;
+  afterMs: number;
+  /** The window in `.env` form, for example `15m`. */
+  after: string;
+  source: "environment" | "settings" | "default";
+  /** `PROPR_IDLE_SHUTDOWN` or `PROPR_IDLE_SHUTDOWN_AFTER` is set, so the setting cannot be changed here. */
+  environmentManaged: boolean;
+  environment: {
+    [key: string]: string | null;
+  };
+  warnings: string[];
+  /** Null until the daemon has published a status. */
+  status: IdleShutdownStatus | null;
+}
+
+/** Change the idle shutdown instance setting. */
+export interface IdleShutdownSettingsRequest {
+  enabled: boolean;
+  /** Duration between `1m` and `24h`, for example `15m` or `1h30m`. Keeps the saved value when omitted. */
+  after?: string;
+}
+
+/** The daemon's idle detector status, refreshed every 30 seconds. */
+export interface IdleShutdownStatus {
+  enabled: boolean;
+  afterMs: number;
+  source: "environment" | "settings" | "default";
+  /** Whether every signal is quiet and nothing is due within the window. */
+  idle: boolean;
+  idleSince: string | null;
+  /** When the instance stops if nothing changes; null while not idle or when disabled. */
+  shutdownAt: string | null;
+  /** What keeps the instance awake right now. */
+  blockers: Array<{
+    signal: "queue_jobs" | "agent_runs" | "ui_sessions" | "mcp_requests" | "http_requests" | "followup_handoffs" | "connect_deliveries" | "goals" | "ultrafix_loops" | "scheduled_work" | "separate_processes" | "unavailable";
+    detail: string;
+  }>;
+  /** Next due time of scheduled work: the wake hint published before an idle exit. */
+  nextDueAt: string | null;
+  checkedAt: string;
+  lastShutdown: {
+    shutdownAt: string;
+    reason: string;
+    idleForMs: number;
+    nextDueAt: string | null;
+  } | null;
+  lastWake: {
+    wokeAt: string;
+    source: "http" | "connect_ping" | "schedule" | "unknown";
+    /** Process start to daemon ready. */
+    coldStartMs: number;
+    sleptMs: number | null;
+    shutdownAt: string | null;
+  } | null;
+  [key: string]: unknown;
+}
+
+/** The instance is running. */
+export interface IdleWakeAccepted {
+  status: "awake";
+}
+
 export interface InstanceDatabaseExport {
   version: 1;
   instanceId: string;

@@ -159,6 +159,7 @@ const sidebars: SidebarsConfig = {
         'operations/settings-locations',
         'operations/metrics',
         'operations/agent-run-capacity',
+        'operations/idle-shutdown',
         'operations/api-reference',
         'operations/agent-tank',
         'operations/maintenance',

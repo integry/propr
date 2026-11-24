@@ -37,6 +37,14 @@ export const FLY_GH_PRIVATE_KEY_PATH = "/run/propr/github-app.pem";
 export const FLY_GH_PRIVATE_KEY_SECRET = "PROPR_GH_PRIVATE_KEY_B64";
 
 /**
+ * Secret holding the app-scoped token the Machine stops itself with when idle
+ * (#3770). Read by the app image (src/flyMachineStop.ts): in a multi-container
+ * Machine an app exit leaves Redis running, so only a Machines API stop of the
+ * whole Machine lets it reach `stopped`, which the Fly proxy can start again.
+ */
+export const FLY_MACHINE_STOP_TOKEN_SECRET = "PROPR_FLY_MACHINE_STOP_TOKEN";
+
+/**
  * Fly proxy connections reach the Machine from its private 172.16.0.0/12
  * gateway range; trusting it lets the API read the real client IP and HTTPS
  * scheme. Public traffic can only arrive through that proxy.
@@ -74,9 +82,9 @@ export interface FlyDeployPlan {
   volumeSizeGb: number;
   agentRuntime: FlyAgentRuntime;
   /**
-   * Opt-in idle shutdown (#3770); undefined keeps the Machine always on. The
-   * deploy refuses it while the app image cannot stop an idle Machine
-   * (FLY_IDLE_SHUTDOWN_SUPPORTED in deployFly.ts).
+   * Opt-in idle shutdown (#3770); undefined keeps the Machine always on. When
+   * idle, the app stops the whole Machine with the FLY_MACHINE_STOP_TOKEN_SECRET
+   * token (gated by FLY_IDLE_SHUTDOWN_SUPPORTED in deployFly.ts).
    */
   idleShutdownAfter?: string;
   /** Hosted UI tunnel through ProPR Connect; undefined serves on <app>.fly.dev only. */
@@ -197,6 +205,8 @@ export const FLY_MANAGED_ENV_KEYS: ReadonlySet<string> = new Set([
   "PROPR_UI_DIST_DIR", "DASHBOARD_API_HOST", "API_PORT", "UI_PORT", "DOCS_PORT", "REDIS_EXTERNAL_PORT",
   "PROPR_DATA_DIR", "PROPR_DATA_MOUNT", "PROPR_LOGS_DIR", "PROPR_REPOS_DIR", "PROPR_ENV_FILE", "PROPR_ROOT",
   "PROPR_STACK", "PROPR_CLOUDFLARED_IMAGE", "STAGING_ENV_FILE",
+  // Created for this app by the deploy (or given with --machine-stop-token), never copied from a stack .env.
+  FLY_MACHINE_STOP_TOKEN_SECRET,
 ]);
 
 /**
@@ -238,20 +248,25 @@ export function buildRedisContainer(redisImage: string): JsonObject {
 }
 
 function buildAppContainer(plan: FlyDeployPlan, image: string): JsonObject {
-  const dependsOn: JsonObject[] = [{ name: "redis", condition: "healthy" }];
-  if (plan.legacyDocker) dependsOn.push({ name: "docker", condition: "healthy" });
   const container: JsonObject = {
     name: "app",
     image,
     cmd: ["node", "dist/src/allInOne.js"],
     env: buildAppEnv(plan),
-    depends_on: dependsOn,
+    // Never gated on the legacy docker container: dockerd took ~34 s to listen
+    // after a wake from an idle stop, and Fly's proxy fails the waking request
+    // with 503 after ~45 s with nothing on port 4000. The API starts at once;
+    // the worker waits for the Docker API itself (PROPR_DOCKER_STARTUP_WAIT_SECONDS).
+    depends_on: [{ name: "redis", condition: "healthy" }],
     secrets: containerSecrets(plan.secretNames ?? []),
     healthchecks: [{
       name: "api", http: { port: FLY_API_PORT, method: "GET", path: "/health" },
       interval: 15, timeout: 5, grace_period: 60,
     }],
   };
+  // A stop the Machines API did not accept exits 1 (src/allInOneConfig.ts):
+  // the app must start again rather than leave Redis keeping a dead Machine up.
+  if (plan.idleShutdownAfter) container.restart = { policy: "on-failure", max_retries: 10 };
   if (plan.githubAppKey) {
     container.files = [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }];
   }
@@ -287,8 +302,10 @@ export function buildContainers(plan: FlyDeployPlan, appImage: string = plan.ima
 
 /**
  * Always on: restart always, never stopped by the proxy. Idle shutdown (#3770):
- * ProPR exits 0 when idle, so restart only on failure and let an HTTP request
- * (UI, API, MCP, webhook or the Connect `/wake` ping) start the Machine again.
+ * ProPR stops the whole Machine through the Machines API when idle and then
+ * exits 0, so restart only on failure and let an HTTP request (UI, API, MCP,
+ * webhook or the Connect `/wake` ping) start the stopped Machine again. An
+ * exit 0 alone would not stop it: Redis keeps a multi-container Machine started.
  * Fly's traffic-based autostop stays off either way: it would stop the Machine
  * in the middle of an agent run that has no HTTP traffic.
  */
@@ -426,7 +443,7 @@ export function renderFlyToml(plan: FlyDeployPlan, machineConfigPath: string = F
     "",
     "[[restart]]",
     plan.idleShutdownAfter
-      ? "  # Exit code 0 is an idle stop: leave the Machine stopped.\n  policy = \"on-failure\"\n  retries = 10"
+      ? "  # Idle stop: the app stops the whole Machine, then exits 0; leave it stopped.\n  policy = \"on-failure\"\n  retries = 10"
       : "  policy = \"always\"",
     "",
     "[[vm]]",

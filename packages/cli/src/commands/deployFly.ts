@@ -38,6 +38,7 @@ import {
   FLY_AGENT_RUNTIMES,
   FLY_DEFAULTS,
   FLY_GH_PRIVATE_KEY_SECRET,
+  FLY_MACHINE_STOP_TOKEN_SECRET,
   flyPublicUrl,
   selectEnvFileSecrets,
   validateFlyAppName,
@@ -83,6 +84,8 @@ export interface DeployFlyOptions {
   relayUrl?: string;
   installation?: string;
   idleShutdown?: boolean | string;
+  /** App-scoped Fly token the Machine stops itself with when idle (the Machines API backend cannot create one). */
+  machineStopToken?: string;
   legacyDocker?: boolean;
   dryRun?: boolean;
 }
@@ -180,13 +183,13 @@ export function assertFlyAgentRuntimeSupported(plan: Pick<FlyDeployPlan, "agentR
 }
 
 /**
- * Whether the deployed app image can stop an idle Machine. It cannot yet: it
- * has no idle detector and no `/wake` route (#3770), so `--idle-shutdown`
- * would only swap the always-on restart policy for on-failure and print a wake
- * URL nothing serves, while the Machine keeps running and billing. Set this
- * once the app image exits 0 when idle and serves `/wake`.
+ * Whether the deployed app image can stop an idle Machine. It can (#3770): it
+ * detects idleness, serves `/wake`, and stops the whole Machine through the
+ * Machines API with the app-scoped token the deploy stores as the
+ * FLY_MACHINE_STOP_TOKEN_SECRET secret. An app exit alone would not do: Redis
+ * (and any sidecar) would keep the multi-container Machine started.
  */
-export const FLY_IDLE_SHUTDOWN_SUPPORTED: boolean = false;
+export const FLY_IDLE_SHUTDOWN_SUPPORTED: boolean = true;
 
 /** Refuse, before anything is written or sent to Fly, an idle shutdown the app image cannot perform. */
 export function assertFlyIdleShutdownSupported(
@@ -243,6 +246,10 @@ export function collectFlySecrets(
   else if (plan.agentRuntime === "sprites" && !secrets.SPRITES_TOKEN) {
     notes.push("No Sprites token: agent runs fail until you set one (`fly secrets set SPRITES_TOKEN=... --app " + plan.app + "`, or rerun with --sprites-token).");
   }
+  if (options.machineStopToken) {
+    if (!plan.idleShutdownAfter) throw new Error("--machine-stop-token is only used with --idle-shutdown");
+    secrets[FLY_MACHINE_STOP_TOKEN_SECRET] = options.machineStopToken.trim();
+  }
   if (options.agentFlyToken) secrets.FLY_API_TOKEN = options.agentFlyToken;
   else if (plan.agentRuntime === "fly-machines" && !secrets.FLY_API_TOKEN) {
     notes.push("No agent Fly token: create a deploy token for the agent app and pass --agent-fly-token.");
@@ -286,7 +293,7 @@ function printSummary(plan: FlyDeployPlan, browserAuth: FlyBrowserAuth): void {
   for (const line of describeFlyRootfs(plan)) console.log(line);
   console.log(`Agents:        ${plan.agentRuntime}`);
   if (plan.idleShutdownAfter) {
-    console.log(`Idle shutdown: on after ${plan.idleShutdownAfter}; restart policy on-failure, HTTP starts the Machine.`);
+    console.log(`Idle shutdown: on after ${plan.idleShutdownAfter}; the Machine stops itself when idle, and HTTP starts it again.`);
     console.log(`Wake URL:      ${url}/wake  (register it as this instance's Connect wake target)`);
   }
   console.log("");
@@ -372,6 +379,8 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
 
   if (options.dryRun) {
     const { secrets: dryRunSecrets, intake } = planFlyDryRunSecrets(prepared, generatedSecrets);
+    // A real run creates the Machine's stop token unless one is given or already set.
+    if (plan.idleShutdownAfter && !dryRunSecrets[FLY_MACHINE_STOP_TOKEN_SECRET]) dryRunSecrets[FLY_MACHINE_STOP_TOKEN_SECRET] = "(created on deploy)";
     const files = writeFlyFiles({ ...plan, secretNames: Object.keys(dryRunSecrets) }, outDir);
     console.log(`Dry run: wrote ${files.flyToml} and ${files.machineConfig}; nothing was sent to Fly.`);
     console.log(`Secrets that would be set: ${Object.keys(dryRunSecrets).sort().join(", ") || "(none)"}`);
@@ -443,7 +452,8 @@ export function createDeployCommand(): Command {
     .option("--no-relay", "Do not enroll a GitHub relay token")
     .option("--relay-url <url>", "Relay base URL (default: the hosted relay)")
     .option("--installation <id>", "GitHub App installation id for relay enrollment")
-    .option("--idle-shutdown [after]", "Idle shutdown (#3770); refused by this release, which cannot stop an idle Machine yet")
+    .option("--idle-shutdown [after]", "Stop the Machine after it has been idle this long (1m to 24h, default 15m); HTTP starts it again")
+    .option("--machine-stop-token <token>", "App-scoped Fly token the Machine stops itself with (default: created with flyctl; required for --backend api)")
     .option("--legacy-docker", "Run a Docker daemon in the Machine for Docker agents (default 2 GB, at least 1 GB; images on a persistent root filesystem)")
     .option("--rootfs-size <gb>", `With --legacy-docker: persistent root filesystem for Docker images, in GB (default: ${LEGACY_DOCKER_DEFAULT_ROOTFS_GB}, minimum ${LEGACY_DOCKER_MIN_ROOTFS_GB})`)
     .option("--dry-run", "Write fly.toml and the machine config, print the plan, change nothing")
@@ -455,8 +465,10 @@ filesystem for Docker images (20 GB: $3.00/month while stopped) and keeps
 the 1 GB volume, so it fits the Fly Free plan's 5 GB volume cap. Agents run on Sprites by default, but
 this release's worker only runs Docker agents: Sprites and Fly Machines are
 refused before anything is created, so pass --legacy-docker for now. The
-Machine runs always on: this release cannot stop an idle Machine, so
---idle-shutdown is refused as well.
+Machine runs always on unless --idle-shutdown is given: then it stops itself
+through the Machines API once idle, with an app-scoped token stored as the
+${FLY_MACHINE_STOP_TOKEN_SECRET} secret (flyctl creates it; with the API
+backend pass --machine-stop-token from \`fly tokens create deploy --app <app>\`).
 
 Browsers sign in through ProPR Connect (--tunnel-token and --tunnel-url) or a
 GitHub OAuth client in the stack .env (GH_OAUTH_CLIENT_ID and

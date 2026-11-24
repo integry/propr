@@ -25,9 +25,11 @@ import {
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { createApiClient, getSystemStatus } from "../api/index.js";
+import type { SystemStatus } from "../api/index.js";
 import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
+import { checkIdleShutdown } from "./idleShutdownCheck.js";
 import { printOutput } from "../utils/index.js";
 import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
@@ -554,7 +556,22 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 7c. Routing intake diagnostics: routing URL plus live WebSocket state, last
   // delivery id, and last ACK (when the backend is reachable) for the default
   // routing_websocket path.
-  for (const r of await checkRoutingDiagnostics(fileEnv)) emit(r);
+  // One best-effort backend status read, shared by the routing and idle
+  // shutdown rows so a stopped stack is probed (and retried) at most once.
+  let statusRead: Promise<SystemStatus> | undefined;
+  const readStatus = (): Promise<SystemStatus> => {
+    statusRead ??= createApiClient({ defaultTimeout: 1000 }).then(client => getSystemStatus(client));
+    return statusRead;
+  };
+  for (const r of await checkRoutingDiagnostics(fileEnv, readStatus)) emit(r);
+
+  // 7d. Opt-in idle shutdown: the environment setting plus, when the backend is
+  // reachable, the daemon's live status (blockers, last shutdown and wake).
+  const idleEnv: Record<string, string | undefined> = { ...fileEnv };
+  for (const key of ["PROPR_IDLE_SHUTDOWN", "PROPR_IDLE_SHUTDOWN_AFTER", "GITHUB_EVENT_INTAKE_MODE", "ENABLE_GITHUB_WEBHOOKS"]) {
+    if (process.env[key] !== undefined) idleEnv[key] = process.env[key];
+  }
+  for (const r of await checkIdleShutdown(idleEnv, readStatus)) emit(r);
 
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
@@ -886,7 +903,7 @@ function checkGithubIntakeMode(env: Record<string, string>): CheckResult[] {
  * by the daemon), so a host check run before the stack is up simply omits it
  * rather than failing.
  */
-async function checkRoutingDiagnostics(env: Record<string, string>): Promise<CheckResult[]> {
+async function checkRoutingDiagnostics(env: Record<string, string>, readStatus: () => Promise<SystemStatus>): Promise<CheckResult[]> {
   const val = (k: string): string | undefined => process.env[k] ?? env[k];
   const out: CheckResult[] = [];
 
@@ -917,8 +934,7 @@ async function checkRoutingDiagnostics(env: Record<string, string>): Promise<Che
   // bounds the wait when the configured API URL is reachable but slow, so keep it
   // tight to avoid a noticeable stall during offline/pre-start checks.
   try {
-    const client = await createApiClient({ defaultTimeout: 1000 });
-    const status = await getSystemStatus(client);
+    const status = await readStatus();
     const routing = status.routing;
     if (routing) {
       out.push(

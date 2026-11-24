@@ -181,6 +181,18 @@ export class FlyctlBackend {
   }
 
   /**
+   * An app-scoped deploy token (`fly tokens create deploy`): the Machine stops
+   * itself with it when idle. Captured from stdout, never put on argv or logged.
+   */
+  createDeployToken(app: string, name: string): string {
+    const result = check(this.run(["tokens", "create", "deploy", "--app", app, "--name", name]), "tokens create deploy");
+    const lines = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const token = lines.find((line) => /^FlyV1\s/.test(line)) ?? (lines.length === 1 ? lines[0] : undefined);
+    if (!token) throw new Error("flyctl tokens create deploy did not print a token");
+    return token;
+  }
+
+  /**
    * Deploy the published image directly: no remote builder, no Docker-in-Docker.
    * flyctl resolves fly.toml's relative paths (machine_config) against its
    * working directory rather than the config file, so it runs from the

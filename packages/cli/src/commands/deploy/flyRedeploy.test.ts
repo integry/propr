@@ -43,6 +43,7 @@ function flyApp() {
       appFiles = app?.files;
       return "deployed";
     },
+    async createMachineStopToken() { return "FlyV1 fm2_stop"; },
   };
   return { target, secrets, machineEnv: () => machineEnv, appFiles: () => appFiles };
 }

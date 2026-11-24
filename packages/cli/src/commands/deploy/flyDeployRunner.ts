@@ -13,7 +13,9 @@
  *                 only when the app does not already have them, so a redeploy
  *                 never logs everybody out or rotates encryption keys; a
  *                 GitHub App key left by an earlier deploy stays wired into
- *                 the Machine (key file + GH_PRIVATE_KEY_PATH)
+ *                 the Machine (key file + GH_PRIVATE_KEY_PATH); with idle
+ *                 shutdown, the app-scoped token the Machine stops itself
+ *                 with, created once (flyctl) unless given or already set
  *   4. deploy     the published app image directly (no build, no DinD);
  *                 the app container lists every secret name (set now or
  *                 kept), since a multi-container Machine passes app secrets
@@ -40,6 +42,7 @@ import {
   FLY_CONTROL_PLANE_ROLE_KEY,
   FLY_GH_PRIVATE_KEY_SECRET,
   FLY_MACHINE_CONFIG_FILE,
+  FLY_MACHINE_STOP_TOKEN_SECRET,
   renderFlyMachineConfigJson,
   renderFlyToml,
   type FlyDeployPlan,
@@ -61,6 +64,8 @@ export interface FlyDeployTarget {
   secretNames(app: string): Promise<string[]>;
   setSecrets(app: string, values: Record<string, string>): Promise<void>;
   deploy(plan: FlyDeployPlan, volume: { id?: string }, log?: (line: string) => void): Promise<string>;
+  /** An app-scoped token for the Machine to stop itself with when idle; rejects when the target cannot create one. */
+  createMachineStopToken(app: string): Promise<string>;
 }
 
 export interface FlyVolumeRef {
@@ -173,6 +178,16 @@ export async function runFlyDeploy(
   Object.assign(toSet, intake.secrets);
   log(intake.summary);
   const secretsKept: string[] = [];
+  if (plan.idleShutdownAfter) {
+    if (toSet[FLY_MACHINE_STOP_TOKEN_SECRET]) {
+      // Given with --machine-stop-token.
+    } else if (existing.has(FLY_MACHINE_STOP_TOKEN_SECRET)) {
+      secretsKept.push(FLY_MACHINE_STOP_TOKEN_SECRET);
+    } else {
+      toSet[FLY_MACHINE_STOP_TOKEN_SECRET] = await target.createMachineStopToken(plan.app);
+      log(`Created an app-scoped deploy token for the Machine to stop itself when idle (secret ${FLY_MACHINE_STOP_TOKEN_SECRET}).`);
+    }
+  }
   for (const [name, value] of Object.entries(input.generatedSecrets)) {
     if (existing.has(name) || name in toSet) secretsKept.push(name);
     else toSet[name] = value;
@@ -326,6 +341,9 @@ export function createFlyctlTarget(
       const replaced = await deployFlyctlWithoutStaleKeys(backend, plan, volume, files, log, options);
       return `${replaced ? "Replaced the Machine and deployed" : "Deployed"} ${plan.images.app} with flyctl (config: ${files.flyToml}).`;
     },
+    async createMachineStopToken(app) {
+      return backend.createDeployToken(app, "propr idle stop");
+    },
   };
 }
 
@@ -388,6 +406,13 @@ export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
       await api.waitForState(plan.app, machine, "started");
       const ipNote = ips.length ? ` Allocated ${ips.join(" and ")}.` : "";
       return `${machines[0] ? "Updated" : "Created"} Machine ${machine.id} running ${plan.images.app}.${ipNote}`;
+    },
+    async createMachineStopToken(app) {
+      // The Machines API has no token endpoint, and the deploy token given here may be org-wide: never store that one.
+      throw new Error(
+        `--idle-shutdown needs an app-scoped token for the Machine to stop itself when idle. Create one with \`fly tokens create deploy --app ${app}\` `
+          + "and pass it with --machine-stop-token, or install flyctl so the deploy creates it. An app exit alone would leave Redis keeping the Machine started.",
+      );
     },
   };
 }

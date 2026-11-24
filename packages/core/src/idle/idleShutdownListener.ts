@@ -1,0 +1,288 @@
+/**
+ * The API and worker side of idle shutdown (issue #3770). Each process
+ * registers as a participant (see idleParticipants.ts) and follows the
+ * daemon's drain request (see idleShutdownIntent.ts):
+ *
+ *   - `quiesce` (API only): stop admitting requests, let the ones in flight
+ *     finish, publish the activity record and acknowledge — only once that
+ *     callback succeeded; a failure is retried on the next poll. When the request
+ *     is withdrawn (the daemon found work) the API admits requests again, and
+ *     does so on its own once the request has gone unconfirmed for
+ *     {@link IDLE_QUIESCE_MAX_UNCONFIRMED_MS}. Neither waits for a Redis
+ *     command still pending (a connection loss leaves them queued): a
+ *     withdrawn or given-up quiesce is fenced by its intent id, so a late
+ *     completion neither acknowledges it nor quiesces the API again.
+ *   - `stop`: when the request names this process's generation, acknowledge
+ *     (a failed acknowledgement is retried on the next poll), then run the process's own graceful shutdown (the default sends SIGTERM
+ *     to the process, so the existing path runs; in a composed process see
+ *     {@link setIdleShutdownComposedProcess}) and exit 0. The process stays
+ *     registered until that shutdown calls `stop`. A stop request for other
+ *     generations (one left by a daemon that died mid-drain, read by a
+ *     process that started since) is ignored.
+ *
+ * The request arrives over pub/sub and is also read from Redis on every poll
+ * and on every (re)connection, so a process that was disconnected when the
+ * daemon announced it still finds it.
+ */
+
+import { hostname } from 'node:os';
+import { Redis } from 'ioredis';
+import { IDLE_SHUTDOWN_CHANNEL, IDLE_SHUTDOWN_INTENT_REDIS_KEY } from '@propr/shared';
+import { registerIdleParticipant, type IdleParticipantRole } from './idleParticipants.js';
+import {
+    acknowledgeIdleShutdownIntent,
+    isIdleShutdownTarget,
+    parseIdleShutdownIntent,
+    type IdleShutdownIntent,
+    type IntentRedis,
+} from './idleShutdownIntent.js';
+
+/** Message on the channel: an intent, or `{ id, phase: 'resume' }` when the daemon withdraws one. */
+export function parseIdleShutdownMessage(raw: string): IdleShutdownIntent | { id: string; phase: 'resume' } | null {
+    try {
+        const value = JSON.parse(raw) as { id?: unknown; phase?: unknown };
+        if (value && value.phase === 'resume' && typeof value.id === 'string') return { id: value.id, phase: 'resume' };
+    } catch {
+        return null;
+    }
+    return parseIdleShutdownIntent(raw);
+}
+
+/** How often the stored request is read, besides pub/sub. */
+export const IDLE_INTENT_POLL_MS = 5_000;
+/** A quiesced API resumes on its own when it cannot confirm the request for this long. */
+export const IDLE_QUIESCE_MAX_UNCONFIRMED_MS = 2 * 60_000;
+
+interface SubscriberRedis {
+    on(event: 'message', listener: (channel: string, message: string) => void): unknown;
+    on(event: 'ready', listener: () => void): unknown;
+    subscribe(channel: string): Promise<unknown>;
+    quit(): Promise<unknown>;
+}
+
+export interface IdleShutdownListenerOptions {
+    role: IdleParticipantRole;
+    /** Defaults to `<hostname>:<pid>`. */
+    id?: string;
+    /** Opens a connection (called twice: commands and subscriber); the listener owns and closes both. */
+    createConnection?: () => IntentRedis & SubscriberRedis;
+    /** API: stop admitting requests and wait for the ones in flight; resolves when quiesced. */
+    onQuiesce?: (intent: IdleShutdownIntent) => Promise<void>;
+    /** API: admit requests again. */
+    onResume?: () => void;
+    /** Run the graceful shutdown; defaults to SIGTERM to this process. */
+    onShutdown?: (intent: IdleShutdownIntent) => void;
+    pollMs?: number;
+    log?: { info(obj: object, msg: string): void; warn?(obj: object, msg: string): void };
+}
+
+export interface IdleShutdownListener {
+    participantKey: string;
+    /** Deregister (this process is stopped) and close the connections. */
+    stop: () => Promise<void>;
+}
+
+let composedProcess = false;
+
+/**
+ * Mark this process as composed (all-in-one): every participant runs in it,
+ * and the daemon in the same process runs one coordinated close once each has
+ * acknowledged the stop. Participants then only acknowledge, instead of each
+ * signalling the shared process.
+ */
+export function setIdleShutdownComposedProcess(composed: boolean): void {
+    composedProcess = composed;
+}
+
+export function isIdleShutdownComposedProcess(): boolean {
+    return composedProcess;
+}
+
+function defaultConnection(): IntentRedis & SubscriberRedis {
+    return new Redis({
+        host: process.env.REDIS_HOST || '127.0.0.1',
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        maxRetriesPerRequest: null,
+        retryStrategy: (times: number) => Math.min(times * 50, 2000),
+    }) as unknown as IntentRedis & SubscriberRedis;
+}
+
+export function startIdleShutdownListener(options: IdleShutdownListenerOptions): IdleShutdownListener {
+    const connect = options.createConnection ?? defaultConnection;
+    const commands = connect();
+    const subscriber = connect();
+    const registration = registerIdleParticipant(commands, { role: options.role, id: options.id ?? `${hostname()}:${process.pid}` });
+    const onShutdown = options.onShutdown ?? (() => {
+        // Composed: the daemon in this process closes every component together.
+        if (!composedProcess) process.kill(process.pid, 'SIGTERM');
+    });
+    let quiesced: { id: string; confirmedAt: number } | null = null;
+    /** Bumped whenever admission resumes: a quiesce step that started before it is stale once it completes. */
+    let quiesceGeneration = 0;
+    /** Quiesce requests withdrawn or given up (newest last): never acted on again, however late they are read. */
+    const abandoned: string[] = [];
+    const abandon = (id: string) => {
+        if (abandoned.includes(id)) return;
+        abandoned.push(id);
+        if (abandoned.length > 16) abandoned.shift();
+    };
+    let quiesceAcked: string | null = null;
+    /** The intent whose `onQuiesce` completed; entering quiescence is not enough to acknowledge. */
+    let quiesceReady: string | null = null;
+    let stopping = false;
+    let ignoredStop: string | null = null;
+    let closed = false;
+    let chain = Promise.resolve();
+
+    const resume = (reason: string) => {
+        if (!quiesced) return;
+        options.log?.info({ intentId: quiesced.id, reason }, 'Idle shutdown drain withdrawn; admitting requests again');
+        abandon(quiesced.id);
+        quiesced = null;
+        quiesceAcked = null;
+        quiesceReady = null;
+        quiesceGeneration += 1;
+        options.onResume?.();
+    };
+
+    /**
+     * The quiesce watchdog. Runs on the poll timer, outside the serial chain: a quiesce step or a read stuck on a
+     * Redis command that never settles must not keep the API turning every request away.
+     */
+    const resumeIfUnconfirmed = () => {
+        if (closed || stopping || !quiesced) return;
+        if (Date.now() - quiesced.confirmedAt > IDLE_QUIESCE_MAX_UNCONFIRMED_MS) resume('unconfirmed');
+    };
+
+    const handleQuiesce = async (intent: IdleShutdownIntent): Promise<void> => {
+        if (!options.onQuiesce) return;
+        if (!quiesced) {
+            quiesced = { id: intent.id, confirmedAt: Date.now() };
+            options.log?.info({ intentId: intent.id }, 'Idle shutdown: quiescing (no new requests while the daemon re-checks)');
+        }
+        quiesced.confirmedAt = Date.now();
+        const generation = quiesceGeneration;
+        // Admission resumed while a step was awaited (withdrawn, or the watchdog gave up): the step is stale.
+        const stale = () => closed || generation !== quiesceGeneration;
+        if (quiesceReady !== intent.id) {
+            // A failed callback (e.g. the activity record could not be published) stays
+            // unacknowledged and is retried on the next poll; the daemon times out and aborts
+            // rather than re-checking against older evidence.
+            await options.onQuiesce(intent);
+            if (stale()) return;
+            quiesceReady = intent.id;
+        }
+        if (quiesceAcked !== intent.id) {
+            await acknowledgeIdleShutdownIntent(commands, intent, registration.key);
+            if (stale()) return;
+            quiesceAcked = intent.id;
+        }
+    };
+
+    let stopLogged: string | null = null;
+    const handleStop = async (intent: IdleShutdownIntent): Promise<void> => {
+        if (stopLogged !== intent.id) {
+            stopLogged = intent.id;
+            options.log?.info({ intentId: intent.id, reason: intent.reason }, 'Idle shutdown requested by the daemon; shutting down gracefully');
+        }
+        // The daemon waits for this acknowledgement (or for the entry to disappear on a clean stop). Until it is
+        // stored the request stays retryable: the next poll or announcement tries again (a composed process would
+        // otherwise never acknowledge, and the daemon would wait with intake and sweeps stopped).
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                await acknowledgeIdleShutdownIntent(commands, intent, registration.key);
+                // Acknowledged: from now on every further request is ignored, so the shutdown runs once.
+                stopping = true;
+                onShutdown(intent);
+                return;
+            } catch (error) {
+                options.log?.warn?.({ error: (error as Error).message }, 'Idle shutdown: could not acknowledge the drain request; retrying on the next poll');
+            }
+        }
+    };
+
+    const handle = async (intent: IdleShutdownIntent | null, readFailed = false): Promise<void> => {
+        if (closed || stopping) return;
+        if (!intent) {
+            if (!quiesced) return;
+            // Unreadable is not "withdrawn"; resume only after a long unconfirmed spell.
+            if (readFailed) resumeIfUnconfirmed(); else resume('withdrawn');
+            return;
+        }
+        if (!isIdleShutdownTarget(intent, registration.key, registration.participant.startedAt)) {
+            if (ignoredStop !== intent.id) {
+                ignoredStop = intent.id;
+                options.log?.info({ intentId: intent.id, issuedAt: intent.issuedAt }, 'Idle shutdown: ignoring a stop request issued for processes that ran before this one started');
+            }
+            return;
+        }
+        // Withdrawn, or given up as unconfirmed: a read that comes late (or a stored request the daemon could not
+        // delete) must neither turn requests away again for a drain the daemon abandoned nor supersede a newer one.
+        if (intent.phase === 'quiesce' && abandoned.includes(intent.id)) return;
+        if (quiesced && quiesced.id !== intent.id) resume('superseded');
+        await (intent.phase === 'quiesce' ? handleQuiesce(intent) : handleStop(intent));
+    };
+
+    const enqueue = (work: () => Promise<void>) => {
+        chain = chain.then(work).catch((error: unknown) => {
+            options.log?.warn?.({ error: (error as Error).message }, 'Idle shutdown: could not act on the drain request');
+        });
+        return chain;
+    };
+
+    // At most one poll waits in the chain: one stuck behind a pending command must not pile up more.
+    let pollQueued = false;
+    const poll = () => {
+        if (pollQueued) return chain;
+        pollQueued = true;
+        return enqueue(readStored);
+    };
+    const readStored = async (): Promise<void> => {
+        pollQueued = false;
+        let raw: string | null;
+        try {
+            raw = await commands.get(IDLE_SHUTDOWN_INTENT_REDIS_KEY);
+        } catch {
+            return handle(null, true);
+        }
+        return handle(parseIdleShutdownIntent(raw));
+    };
+
+    subscriber.on('message', (channel: string, raw: string) => {
+        if (channel !== IDLE_SHUTDOWN_CHANNEL) return;
+        const message = parseIdleShutdownMessage(raw);
+        if (!message) return;
+        if (message.phase === 'resume') {
+            // At once, not behind the chain: a quiesce step waiting on Redis must not delay admission. Fenced even
+            // when not quiesced yet, so the request it withdraws, still queued, is not acted on.
+            if (closed || stopping) return;
+            abandon(message.id);
+            if (quiesced?.id === message.id) resume('withdrawn');
+            return;
+        }
+        void enqueue(() => handle(message));
+    });
+    // On every (re)connection: subscribe again is ioredis' job; read what was missed.
+    subscriber.on('ready', () => { void poll(); });
+    void Promise.resolve().then(() => subscriber.subscribe(IDLE_SHUTDOWN_CHANNEL)).catch((error: Error) => {
+        options.log?.warn?.({ error: error.message }, 'Idle shutdown: could not subscribe; relying on polling');
+    });
+    void poll();
+    const timer = setInterval(() => {
+        resumeIfUnconfirmed();
+        void poll();
+    }, options.pollMs ?? IDLE_INTENT_POLL_MS);
+    timer.unref?.();
+
+    return {
+        participantKey: registration.key,
+        stop: async () => {
+            if (closed) return;
+            closed = true;
+            clearInterval(timer);
+            await chain;
+            await registration.stop();
+            await Promise.all([subscriber.quit().catch(() => undefined), commands.quit().catch(() => undefined)]);
+        },
+    };
+}

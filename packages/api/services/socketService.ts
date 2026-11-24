@@ -8,7 +8,7 @@ import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
-import { goalActivityState, type WorkerStateManagerOptions } from '@propr/core';
+import { goalActivityState, idleActivity, type WorkerStateManagerOptions } from '@propr/core';
 import {
   REDIS_CHANNELS,
   GOAL_UPDATE, isActivityTimestamp, isActivityUpdatePayload, isGoalUpdatePayload, isTerminalActivityChange,
@@ -181,12 +181,19 @@ export class SocketService {
     return this.activityBroadcaster;
   }
 
+  /** Open Socket.IO sessions, for the idle detector. */
+  getConnectedClientCount(): number {
+    return this.io.engine.clientsCount;
+  }
+
   /**
    * Set up Socket.IO connection handlers
    */
   private setupConnectionHandlers(): void {
     this.io.on('connection', socket => {
       console.log(`[SocketService] Client connected: ${socket.id}`);
+      // An open Web UI session keeps an idle-shutdown instance awake.
+      idleActivity.notify();
       this.subscriptionManager.setup(socket);
     });
   }

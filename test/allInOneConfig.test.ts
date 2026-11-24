@@ -5,8 +5,8 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-    createComponentSupervisor, DEFAULT_SHUTDOWN_TIMEOUT_MS, installShutdownSignalHandlers, prepareAllInOneEnvironment, resolveIndexingMode,
-    resolveShutdownTimeoutMs, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage,
+    createBoundedExit, createComponentSupervisor, DEFAULT_SHUTDOWN_TIMEOUT_MS, installShutdownSignalHandlers, prepareAllInOneEnvironment,
+    resolveIndexingMode, resolveShutdownTimeoutMs, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage,
 } from '../src/allInOneConfig.js';
 
 test('PROPR_INDEXING defaults to inline and accepts off/inline/separate', () => {
@@ -72,7 +72,7 @@ test('all-in-one closes intake before workers, the worker after indexing, and th
     const source = readFileSync(new URL('../src/allInOne.ts', import.meta.url), 'utf8');
     assert.match(source, /supervisor\.run\(stages\)/);
     assert.match(source, /startIndexingWorkerService\(\{ installSignalHandlers: false, ownEgressProxies: false \}\)/);
-    assert.match(source, /startDaemon\(\{ installSignalHandlers: false, closeSharedQueue: false \}\)/);
+    assert.match(source, /startDaemon\(\{ installSignalHandlers: false, closeSharedQueue: false, idleShutdownStop \}\)/);
     assert.match(source, /startWorker\(\{ installSignalHandlers: false, signal \}\)/);
     assert.match(source, /installShutdownSignalHandlers\(/);
     assert.match(source, /startApiServer\(\{ installSignalHandlers: false \}\)/);
@@ -189,6 +189,166 @@ test('uninterrupted startup closes every component in shutdown order', async () 
     assert.deepEqual(events.filter(event => event.startsWith('close:')), ['close:daemon', 'close:indexing worker', 'close:worker', 'close:api']);
 });
 
+test('a component that never finishes starting does not hold the stop: the rest close after a bounded wait', async () => {
+    // Live: the worker stage waits for an agent image that never becomes ready, so SIGTERM never got past it.
+    const events: string[] = [];
+    const infos: string[] = [];
+    const supervisor = createComponentSupervisor({ log: { info: message => infos.push(message), error: () => undefined }, startupWaitMs: 20 });
+    void supervisor.run([
+        componentStage(events, 'api', 'api'),
+        componentStage(events, 'daemon', 'daemon'),
+        componentStage(events, 'worker', 'worker', new Promise<void>(() => undefined)),
+    ]);
+    await new Promise(resolve => setImmediate(resolve));
+    const closing = supervisor.close();
+    assert.equal(supervisor.pendingStep, 'worker (still starting)');
+    assert.deepEqual(await closing, []);
+    assert.deepEqual(events.filter(event => event.startsWith('close:')), ['close:daemon', 'close:api']);
+    assert.ok(infos.includes('all-in-one: worker did not finish starting within 0s; closing the components that started without it'));
+    assert.equal(supervisor.pendingStep, null);
+});
+
+test('the all-in-one exit is bounded: a close that never finishes still ends in exit 0', async () => {
+    const exits: number[] = [];
+    const errors: string[] = [];
+    let flushed = false;
+    const closeAndExit = createBoundedExit({
+        close: () => new Promise<string[]>(() => undefined),
+        exit: code => { exits.push(code); },
+        pendingStep: () => 'api',
+        log: { info: () => undefined, error: message => errors.push(message) },
+        flush: async () => { flushed = true; },
+        deadlineMs: 20,
+    });
+    closeAndExit();
+    closeAndExit();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.deepEqual(exits, [0], 'exits once, with 0');
+    assert.equal(flushed, true, 'logs are flushed before the exit');
+    assert.deepEqual(errors, ['all-in-one: shutdown did not finish within 20 ms (still closing: api); exiting anyway']);
+});
+
+test('an idle close that reaches the deadline exits 1 without a host stop; a signal close still exits 0', async () => {
+    const run = async (call: { idle?: boolean; signal?: string }) => {
+        const exits: number[] = [];
+        const errors: string[] = [];
+        let hostStops = 0;
+        createBoundedExit({
+            close: () => new Promise<string[]>(() => undefined),
+            exit: code => { exits.push(code); },
+            pendingStep: () => 'api',
+            log: { info: () => undefined, error: message => errors.push(message) },
+            // No request seen: only the unfinished close decides.
+            lastActivityAt: () => 0,
+            deadlineMs: 20,
+        })(0, { ...call, activitySince: call.idle ? Date.now() : undefined, stopHost: async () => { hostStops += 1; } });
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return { exits, hostStops, errors };
+    };
+    const idle = await run({ idle: true });
+    assert.deepEqual(idle.exits, [1], 'the API may still have answered: the supervisor starts the control plane again');
+    assert.equal(idle.hostStops, 0, 'the host is not asked to stop');
+    assert.deepEqual(idle.errors, ['all-in-one: the idle stop did not finish closing within 20 ms (still closing: api); exiting with code 1 without stopping the host, so the supervisor starts the control plane again for any request it served meanwhile']);
+    const signal = await run({ signal: 'SIGTERM' });
+    assert.deepEqual(signal.exits, [0], 'a supervisor stop still exits 0');
+    assert.match(signal.errors[0], /did not finish within 20 ms \(still closing: api\); exiting anyway/);
+});
+
+test('the all-in-one exit reports the close result: 0 when clean, 1 when a step failed', async () => {
+    for (const [failed, code] of [[[], 0], [['worker'], 1]] as const) {
+        const exits: number[] = [];
+        createBoundedExit({ close: async () => [...failed], exit: c => { exits.push(c); }, pendingStep: () => null, log: quietLog, deadlineMs: 1_000 })();
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.deepEqual(exits, [code]);
+    }
+});
+
+test('signal and idle shutdown in all-in-one both go through the bounded exit', () => {
+    const source = readFileSync(new URL('../src/allInOne.ts', import.meta.url), 'utf8');
+    assert.match(source, /const closeAndExit = createBoundedExit\(/);
+    assert.equal(source.match(/process\.exit\(failed/g), null, 'no unbounded exit after close()');
+    assert.match(source, /installShutdownSignalHandlers\(\{\n\s+stop: signal => closeAndExit\(0, \{ signal \}\),/);
+    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode, \{ \.\.\.options, idle: true, stopHost: /, 'the arranged wake and the host stop reach the bounded exit');
+});
+
+test('the all-in-one exit keeps the code its caller asked for (a called-off idle stop exits 1)', async () => {
+    for (const close of [async () => [] as string[], () => new Promise<string[]>(() => undefined)]) {
+        const exits: number[] = [];
+        createBoundedExit({ close, exit: c => { exits.push(c); }, pendingStep: () => null, log: quietLog, deadlineMs: 20 })(1);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        assert.deepEqual(exits, [1], 'whether the close completes or runs past its deadline');
+    }
+});
+
+test('an idle exit still closing when the arranged wake comes exits 1 then, not 0 at the later relative deadline', async () => {
+    const exits: Array<[number, number]> = [];
+    const errors: string[] = [];
+    const started = Date.now();
+    const exitBy = started + 40;
+    createBoundedExit({
+        close: () => new Promise<string[]>(() => undefined),
+        exit: code => { exits.push([code, Date.now()]); },
+        pendingStep: () => 'worker',
+        log: { info: () => undefined, error: message => errors.push(message) },
+        deadlineMs: 5_000,
+    })(0, { exitBy });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(exits.length, 1);
+    assert.equal(exits[0][0], 1, 'the wake reached a process still running: the supervisor must start it');
+    assert.ok(exits[0][1] - started < 1_000, 'at the wake, not after the 5 s close deadline');
+    assert.match(errors[0], /still shutting down when the wake arranged for the idle stop came \(still closing: worker\)/);
+});
+
+test('an idle exit that closes before the arranged wake exits 0, flushing only for the time left', async () => {
+    const exits: number[] = [];
+    const flushes: Array<{ timeoutMs: number | undefined; at: number }> = [];
+    const exitBy = Date.now() + 500;
+    createBoundedExit({
+        close: async () => [],
+        exit: code => { exits.push(code); },
+        pendingStep: () => null,
+        log: quietLog,
+        flush: async timeoutMs => { flushes.push({ timeoutMs, at: Date.now() }); },
+        deadlineMs: 5_000,
+    })(0, { exitBy });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(exits, [0]);
+    assert.equal(flushes.length, 1);
+    const [{ timeoutMs, at }] = flushes;
+    assert.ok(timeoutMs !== undefined && timeoutMs <= exitBy - at, 'the flush cannot carry the exit past the wake');
+
+    // A wake that is already due when the close starts: exit 1 at once.
+    const late: number[] = [];
+    createBoundedExit({ close: () => new Promise<string[]>(() => undefined), exit: code => { late.push(code); }, pendingStep: () => null, log: quietLog, deadlineMs: 5_000 })(0, { exitBy: Date.now() - 1 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(late, [1]);
+});
+
+test('an idle exit whose log flush runs through the arranged wake exits 1, not the 0 chosen before the flush', async () => {
+    const exits: number[] = [];
+    const errors: string[] = [];
+    const exitBy = Date.now() + 40;
+    createBoundedExit({
+        close: async () => [],
+        exit: code => { exits.push(code); },
+        pendingStep: () => null,
+        log: { info: () => undefined, error: message => errors.push(message) },
+        // A flush that ignores the time it was given: it resolves only after the wake.
+        flush: () => new Promise<void>(resolve => setTimeout(resolve, 120)),
+        deadlineMs: 5_000,
+    })(0, { exitBy });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.deepEqual(exits, [1], 'the wake reached a running process: the supervisor must start it again');
+    assert.match(errors[0], /wake arranged for the idle stop came while the logs were flushed/);
+
+    // A called-off stop's exit 1 and an unbounded (no wake) exit 0 are not changed by a slow flush.
+    const codes: number[] = [];
+    createBoundedExit({ close: async () => [], exit: code => { codes.push(code); }, pendingStep: () => null, log: quietLog, flush: () => new Promise<void>(resolve => setTimeout(resolve, 30)), deadlineMs: 5_000 })(1, { exitBy: null });
+    createBoundedExit({ close: async () => [], exit: code => { codes.push(code); }, pendingStep: () => null, log: quietLog, flush: () => new Promise<void>(resolve => setTimeout(resolve, 30)), deadlineMs: 5_000 })(0);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(codes.sort(), [0, 1]);
+});
+
 test('shutdown aborts the signal of the stage still starting, so a stuck startup cannot hold the drain', async () => {
     const events: string[] = [];
     const supervisor = createComponentSupervisor({ log: quietLog });
@@ -224,17 +384,23 @@ function fakeSignals(): { emit(signal: 'SIGINT' | 'SIGTERM'): void; on(signal: '
 
 const quietSignalLog = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
+/** The all-in-one wiring: signals reach the bounded exit. */
+function installSignalExit(signals: ReturnType<typeof fakeSignals>, close: () => Promise<string[]>, exit: (code: number) => void, deadlineMs: number, errors: string[] = []): void {
+    const closeAndExit = createBoundedExit({ close, exit, pendingStep: () => 'api', log: { info: () => undefined, error: message => errors.push(message) }, deadlineMs });
+    installShutdownSignalHandlers({ stop: signal => closeAndExit(0, { signal }), log: quietSignalLog, exit, on: signals.on });
+}
+
 test('a finished drain exits 0, a failed close exits 1, a second signal exits 1 at once', async () => {
     for (const [failed, code] of [[[], 0], [['worker'], 1]] as const) {
         const signals = fakeSignals();
         const exits: number[] = [];
         let finish!: (value: string[]) => void;
-        installShutdownSignalHandlers({ close: () => new Promise(resolve => { finish = resolve; }), timeoutMs: 60_000, log: quietSignalLog, exit: c => exits.push(c), on: signals.on });
+        installSignalExit(signals, () => new Promise(resolve => { finish = resolve; }), c => exits.push(c), 60_000);
         signals.emit('SIGTERM');
         signals.emit('SIGINT');
         assert.deepEqual(exits, [1]);
         finish([...failed]);
-        await new Promise(resolve => setImmediate(resolve));
+        await new Promise(resolve => setTimeout(resolve, 10));
         assert.deepEqual(exits, [1, code]);
     }
 });
@@ -243,10 +409,7 @@ test('a drain that never finishes exits 0 at the deadline', async () => {
     const signals = fakeSignals();
     const exits: number[] = [];
     const errors: string[] = [];
-    installShutdownSignalHandlers({
-        close: () => new Promise(() => undefined), timeoutMs: 20,
-        log: { ...quietSignalLog, error: message => errors.push(message) }, exit: c => exits.push(c), on: signals.on,
-    });
+    installSignalExit(signals, () => new Promise(() => undefined), c => exits.push(c), 20, errors);
     signals.emit('SIGTERM');
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.deepEqual(exits, [0]);
@@ -276,5 +439,30 @@ test('SIGTERM ends a real process whose drain hangs within the shutdown timeout'
     assert.equal(code, 0, output);
     assert.ok(elapsed >= 900 && elapsed < 5_000, `exited ${elapsed} ms after SIGTERM`);
     assert.match(output, /received SIGTERM, shutting down gracefully/);
-    assert.match(output, /did not finish within 1000 ms; exiting/);
+    assert.match(output, /did not finish within 1s \(still closing: api\); exiting anyway/);
+});
+
+test('an idle exit rechecks API activity once the close is over: a request after the idle period began exits 1 without a host stop', async () => {
+    const since = Date.now() - 1_000;
+    const run = async (lastActivityAt: () => number, call: { activitySince?: number | null; signal?: string } = { activitySince: since }) => {
+        const exits: number[] = [];
+        let hostStops = 0;
+        let closed = false;
+        createBoundedExit({
+            // Read only once the close is over: the request arrives while a component is still closing.
+            close: async () => { closed = true; return []; },
+            exit: code => { exits.push(code); },
+            pendingStep: () => null,
+            log: quietLog,
+            lastActivityAt: () => (closed ? lastActivityAt() : 0),
+            deadlineMs: 1_000,
+        })(0, { ...call, stopHost: async () => { hostStops += 1; } });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return { exits, hostStops };
+    };
+    assert.deepEqual(await run(() => since + 1), { exits: [1], hostStops: 0 }, 'a request during the close');
+    assert.deepEqual(await run(() => since), { exits: [0], hostStops: 1 }, 'the last request predates the idle period');
+    assert.deepEqual(await run(() => 0), { exits: [0], hostStops: 1 }, 'no request at all');
+    assert.deepEqual(await run(() => since + 1, {}), { exits: [0], hostStops: 1 }, 'no idle boundary given (not an idle exit)');
+    assert.deepEqual(await run(() => { throw new Error('unreadable'); }), { exits: [1], hostStops: 0 }, 'unreadable activity counts as a request');
 });

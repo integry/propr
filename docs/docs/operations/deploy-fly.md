@@ -104,20 +104,27 @@ propr deploy fly --app my-propr --tunnel-token <connector-token> --tunnel-url ht
 
 This adds the `cloudflared` container, which reads `TUNNEL_TOKEN` so the token stays off argv, and maps `api` to loopback so Connect's `http://api:4000` ingress reaches the app. It also sets the same env as `propr tunnel setup`: `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, the hosted `FRONTEND_URL`, `PROPR_WEB_AUTH_MODE=connect`, and `loopback` as a trusted proxy peer. Stop the local stack's tunnel first if the same instance was running locally.
 
-## Idle shutdown (not available yet)
+## Idle shutdown
 
-The Machine runs continuously. The restart policy is `always`, Fly proxy autostop is off (it is traffic-based and would stop the Machine during an agent run with no HTTP traffic), and `min_machines_running = 1`.
+By default the Machine runs continuously. The restart policy is `always`, Fly proxy autostop is off (it is traffic-based and would stop the Machine during an agent run with no HTTP traffic), and `min_machines_running = 1`.
 
-:::warning Idle shutdown is not available yet
-The app image in this release has no idle detector and no `/wake` endpoint (#3770), so nothing would ever stop an idle Machine. The command therefore refuses `--idle-shutdown` before creating anything on Fly, `--dry-run` included. Deploy without it.
-:::
+`--idle-shutdown [after]` (1m to 24h, default `15m`) turns on [idle shutdown](./idle-shutdown.md). It sets `PROPR_IDLE_SHUTDOWN=on`, the restart policy `on-failure`, `min_machines_running = 0` and proxy autostart, and prints the `/wake` URL. When the instance has been idle for that long, the app stops the **whole Machine** through the Machines API. An app exit alone would not stop it: Redis and any other container of the Machine would keep it `started`, unreachable and billed. A request to the UI, API, MCP or webhook URL, or the Connect wake ping, starts the stopped Machine again. A live test woke a stopped Machine to a 200 in about 11 seconds.
+
+The Machine stops itself with an app-scoped deploy token, stored as the `PROPR_FLY_MACHINE_STOP_TOKEN` secret and never copied from the stack `.env`:
+
+- **flyctl backend:** the first idle-shutdown deploy creates it with `fly tokens create deploy --app <app>`. Later deploys keep it.
+- **Machines API backend:** the API cannot create tokens, and the `--token` you deploy with may be org-wide, so it is never stored. Create an app-scoped token with `fly tokens create deploy --app <app>` and pass it with `--machine-stop-token`. Without it the deploy stops before it uploads any secret.
+
+If the Machines API does not accept the stop, the app exits 1 instead and the restart policy starts it again, so the Machine stays reachable.
 
 ## Legacy mode: Docker in the Machine
 
 `--legacy-docker` keeps the Docker agent runtime by running a Docker daemon in a `docker` container of the same Machine. The app container reaches it at `DOCKER_HOST=tcp://127.0.0.1:2375`, which is loopback only. Clones, worktrees and egress sockets move to `/usr/src/app/data/propr-shared` on the Fly volume. Fly mounts the Machine's volume at the same path in every container, so agent bind mounts resolve inside the daemon. Earlier releases used a `temp_dir` scratch volume mounted into both containers instead. On a live Machine that volume never mounted (`cannot stat /upper/dev/vdb/propr_shared`), so the `docker` container exited on every start. The boot script now stops with an error if the Fly volume is not mounted in the `docker` container, rather than creating the shared directory on that container's own filesystem. Every boot applies two fixes learned on Fly:
 
-1. **ext4 loop mount for overlay2.** Without it, `dockerd` would fall back to the slow `vfs` driver on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/var/lib/propr-docker/docker.ext4`, the root filesystem size minus 4 GB for the Machine's own container images), checked with `e2fsck -p` and loop-mounted before `dockerd` starts, so the storage driver is `overlay2`. After a redeploy with a larger `--rootfs-size`, the next boot grows the existing image and its filesystem (`resize2fs`) in place and keeps its contents; it never shrinks it.
+1. **ext4 loop mount for overlay2.** Without it, `dockerd` would fall back to the slow `vfs` driver on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/var/lib/propr-docker/docker.ext4`, the root filesystem size minus 4 GB for the Machine's own container images), checked with `e2fsck -p` and loop-mounted before `dockerd` starts, so the storage driver is `overlay2`. When the superblock says the filesystem was cleanly unmounted, needs no journal recovery or scheduled check, and already fills the image, the check and resize are skipped and the image is mounted at once. The boot script logs each step as `propr-dockerd-boot: <step> (+<seconds>s, machine uptime <seconds>s)`, so a slow start can be traced to a step or to `dockerd` itself (its `API listen` line follows `starting dockerd`). After a redeploy with a larger `--rootfs-size`, the next boot grows the existing image and its filesystem (`resize2fs`) in place and keeps its contents; it never shrinks it.
 2. **Stale PID cleanup.** After an unclean stop, `/var/run/docker*` and `/run/containerd` PID files and sockets make `dockerd` refuse to start. They are removed first.
+
+The app container does not wait for the `docker` container: it starts once Redis is healthy, so the API answers `/health`, `/wake` and the request that woke a stopped Machine while `dockerd` is still starting. Fly's proxy gives up on a waking request after about 45 seconds, and `dockerd` alone took about 34 seconds to listen in a live wake. The worker waits instead: with `PROPR_DOCKER_STARTUP_WAIT_SECONDS=300` (set by the deploy) it polls the Docker API every second before it prepares agent images or takes a task, logs `Waiting for the Docker API before preparing agent images` and then `Docker API is reachable`, and after 5 minutes continues with its usual image recovery.
 
 The image is on the Machine's **persistent root filesystem**, not on the Fly volume. The Machine is created with `rootfs.size_gb` (`--rootfs-size`, default 20 GB, at least 10) and `rootfs.persist: "always"`, so pulled images survive restarts. The volume stays at the 1 GB default and holds SQLite, Redis and the shared clones and worktrees, but not Docker images. Fly's 5 GB volume cap on the Free plan does not apply to the root filesystem. A stopped Machine's persistent root filesystem is billed at $0.15/GB-month, which is $3.00/month for 20 GB, and the summary prints that cost. Deployments from earlier releases kept the image at `/usr/src/app/data/docker.ext4` on the volume. The first boot after a redeploy deletes that file, so the images are pulled again. Fly volumes never shrink, so the volume keeps its earlier size.
 
@@ -154,7 +161,7 @@ Fly prices for Ashburn (`iad`), from Fly's pricing page as of November 2026:
 | Stopped Machine | $0.15/GB-month of root filesystem |
 | Shared IPv4, IPv6, inbound transfer | free (a dedicated IPv4 is $2/month and is not allocated) |
 
-Always on, the default deployment costs about **$6.85/month**. That is more than the Free plan's $5 of monthly usage, and the Machine cannot yet stop itself when idle (see [Idle shutdown](#idle-shutdown-not-available-yet)). The Free plan allows up to 3 Machines; this deployment uses one. With `--legacy-docker` the persistent root filesystem adds $0.15/GB-month while the Machine is stopped ($3.00/month for the default 20 GB).
+Always on, the default deployment costs about **$6.85/month**, above the Free plan's $5 of monthly usage. Opting into [idle shutdown](#idle-shutdown) reduces compute charges. While the Machine is stopped, you still pay for its root filesystem and volume. With `--legacy-docker` the persistent root filesystem costs $0.15/GB-month while the Machine is stopped ($3.00/month for the default 20 GB). The Free plan allows up to 3 Machines, and this deployment uses one.
 
 ### Fly Free plan
 
@@ -165,7 +172,7 @@ Fly rejects volumes over 5 GB on the Free plan (`Volumes larger than 5GB aren't 
 | Machine | shared-cpu-1x, 1 GB (the default) |
 | Volume | 1 GB (the default); anything up to 5 GB |
 | Agents | Sprites (the default runtime), once the worker supports it (see the warning above) |
-| Idle shutdown | opt-in with `--idle-shutdown`, once the app image supports it (see [Idle shutdown](#idle-shutdown-not-available-yet)) |
+| Idle shutdown | opt-in with `--idle-shutdown` (see [Idle shutdown](#idle-shutdown)) |
 | Docker agents | `--legacy-docker` with a volume up to 5 GB (1 GB by default; it also holds clones and worktrees). Docker images go on the persistent root filesystem (`--rootfs-size`, 20 GB or more, see [sizing](#legacy-mode-docker-in-the-machine)), which the volume cap does not limit. A 20 GB persistent root filesystem with `dockerd` on overlay2 ran on a Free-plan shared-cpu-1x, 1 GB Machine (`--memory 1024`; the legacy default is 2048 MB); 512 MB was not enough. |
 
 The command checks the cap before it creates anything: with a `--volume-size` over 5 GB on a Free-plan org, it stops and suggests the default.
@@ -186,7 +193,8 @@ The command checks the cap before it creates anything: with a `--volume-size` ov
 | `--github-app-key <path>` | `HOST_GH_PRIVATE_KEY` | Own GitHub App private key |
 | `--relay`, `--no-relay`, `--relay-url`, `--installation` | auto | GitHub relay enrollment |
 | `--tunnel-token`, `--tunnel-url`, `--instance-id` | — | ProPR Connect hosted UI tunnel |
-| `--idle-shutdown [after]` | off | Refused in this release, see [Idle shutdown](#idle-shutdown-not-available-yet) |
+| `--idle-shutdown [after]` | off | Stop the whole Machine after it has been idle this long (`1m` to `24h`, `15m` when bare), see [Idle shutdown](#idle-shutdown) |
+| `--machine-stop-token <token>` | created with flyctl | App-scoped token the Machine stops itself with; required with `--backend api` |
 | `--legacy-docker` | off | Docker daemon in the Machine |
 | `--rootfs-size <gb>` | `20` | With `--legacy-docker`: persistent root filesystem for Docker images (at least 10; use 20 or more, because 10 leaves less than the 12 GiB agent image build reserve) |
 | `--token <token>`, `--backend auto\|flyctl\|api` | `auto` | How to reach Fly |

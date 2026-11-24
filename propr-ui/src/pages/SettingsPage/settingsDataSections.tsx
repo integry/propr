@@ -4,6 +4,7 @@ import InstanceStorageSection from './InstanceStorageSection';
 import VisualPreviewAuthSection from './VisualPreviewAuthSection';
 import ManagedPreviewStorageSection from './ManagedPreviewStorageSection';
 import MaintenanceSection from './MaintenanceSection';
+import IdleShutdownSection from './IdleShutdownSection';
 import type { SettingsNavigationSection } from './SettingsNavigation';
 import type { CurrentUser } from '../../api/proprTypes';
 import { canManageHeldFollowups, canManageInstanceStorage } from './settingsPermissions';
@@ -62,4 +63,15 @@ export function maintenanceSections(user: CurrentUser | null): SettingsNavigatio
     });
   }
   return sections;
+}
+
+/** Opt-in control-plane idle shutdown; administrators who manage instance settings. */
+export function idleShutdownSections(user: CurrentUser | null): SettingsNavigationSection[] {
+  if (!canManageInstanceStorage(user)) return [];
+  return [{
+    id: 'idle-shutdown',
+    category: 'maintenance',
+    searchText: 'idle shutdown stop sleep wake auto stop start fly machine systemd cost metered host scale to zero PROPR_IDLE_SHUTDOWN',
+    content: <IdleShutdownSection />
+  }];
 }

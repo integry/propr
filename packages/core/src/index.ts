@@ -173,6 +173,7 @@ export { retryPendingEpicMergeProgress } from './webhook/epicPRHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, getWebhookDeliveryInterest, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, RepositoryFilter, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
+export * from './intake/routingIdleFrames.js';
 export { buildDeliveryInterest, DELIVERY_INTEREST_CAPABILITY, MAX_INTEREST_FRAME_BYTES, MAX_INTEREST_REPOSITORIES, type DeliveryInterest, type DeliveryInterestEventRule } from './intake/routingDeliveryInterest.js';
 export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, ConnectAccountStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
@@ -757,3 +758,5 @@ export {
     AGENT_ADMISSION_PARENT_KEY_ENV, goalParentSigningKey, agentAdmissionChildIdentity, agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody, parentScopeFromCommentJob,
     runAsAgentAdmissionParent, runWithAgentAdmissionParent, type AgentAdmissionNesting,
 } from './agents/agentRunNesting.js';
+// Opt-in control-plane idle shutdown: detector, signal collectors, activity heartbeats and wake hints.
+export * from './idle/index.js';

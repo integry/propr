@@ -11,23 +11,26 @@ export const NO_CHANGE_COMPLETION_RECOVERY_INTERVAL_MS = 5 * 60_000;
 export function scheduleNoChangeCompletionRecoverySweep(
     redisClient: Redis,
     intervalMs: number = NO_CHANGE_COMPLETION_RECOVERY_INTERVAL_MS,
-): NodeJS.Timeout {
-    let running = false;
-    const sweep = async (): Promise<void> => {
+): () => Promise<void> {
+    let running: Promise<void> | null = null;
+    const sweep = (): void => {
         if (running) return;
-        running = true;
-        try {
-            // Lazy: keeps the issue-job modules out of the daemon's static import graph.
-            const { recoverNoChangeCompletions } = await import('../jobs/noChangeCompletionRecovery.js');
-            const replayed = await recoverNoChangeCompletions({ store: redisClient });
-            if (replayed) logger.info({ replayed }, 'Recovered retained no-change completions');
-        } catch (error) {
-            logger.warn({ error: (error as Error).message }, 'No-change completion recovery sweep failed');
-        } finally {
-            running = false;
-        }
+        running = (async () => {
+            try {
+                // Lazy: keeps the issue-job modules out of the daemon's static import graph.
+                const { recoverNoChangeCompletions } = await import('../jobs/noChangeCompletionRecovery.js');
+                const replayed = await recoverNoChangeCompletions({ store: redisClient });
+                if (replayed) logger.info({ replayed }, 'Recovered retained no-change completions');
+            } catch (error) {
+                logger.warn({ error: (error as Error).message }, 'No-change completion recovery sweep failed');
+            }
+        })().finally(() => { running = null; });
     };
-    const interval = setInterval(() => { void sweep(); }, intervalMs);
+    const interval = setInterval(sweep, intervalMs);
     interval.unref?.();
-    return interval;
+    // The stop clears the timer and waits for a run in progress.
+    return async () => {
+        clearInterval(interval);
+        await running;
+    };
 }

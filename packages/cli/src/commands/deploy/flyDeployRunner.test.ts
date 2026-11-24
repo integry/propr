@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { createFlyctlRunner, FlyctlBackend, renderSecretsImport, type FlyctlRunner } from "./flyctlBackend.js";
 import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./flyDeployRunner.js";
 import { FlyMachinesApi } from "./flyMachinesApi.js";
-import { renderFlyToml, type FlyDeployPlan } from "./flyMachineConfig.js";
+import { FLY_MACHINE_STOP_TOKEN_SECRET, renderFlyToml, type FlyDeployPlan } from "./flyMachineConfig.js";
 
 const plan: FlyDeployPlan = {
   app: "my-propr",
@@ -50,6 +50,7 @@ function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: 
       async secretNames() { steps.push("secret-names"); return existingSecrets; },
       async setSecrets(_app, values) { steps.push("secrets"); set.push(values); },
       async deploy(deployPlan) { steps.push("deploy"); deployed.push(deployPlan); return "deployed"; },
+      async createMachineStopToken() { steps.push("stop-token"); return "FlyV1 fm2_stop"; },
     },
   };
 }
@@ -404,6 +405,71 @@ test("flyctl finds machine_config when the CLI runs from a different directory t
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("idle shutdown: the Machine gets an app-scoped stop token, created once and listed by the app container", async () => {
+  const idlePlan: FlyDeployPlan = { ...plan, idleShutdownAfter: "15m" };
+  const first = fakeTarget([]);
+  const lines: string[] = [];
+  await runFlyDeploy({ plan: idlePlan, secrets: { ...RELAY }, generatedSecrets: {} }, first.target, (l) => lines.push(l));
+  assert.deepEqual(first.steps, ["app", "volume", "secret-names", "stop-token", "secrets", "deploy"], "created before any secret is uploaded");
+  assert.equal(first.set[0]?.[FLY_MACHINE_STOP_TOKEN_SECRET], "FlyV1 fm2_stop");
+  assert.ok(first.deployed[0]?.secretNames?.includes(FLY_MACHINE_STOP_TOKEN_SECRET), "a multi-container Machine passes it only to a container that lists it");
+  assert.ok(lines.some((l) => l.includes(`secret ${FLY_MACHINE_STOP_TOKEN_SECRET}`)));
+  assert.equal(lines.some((l) => l.includes("fm2_stop")), false, "the token is never logged");
+
+  // A redeploy keeps it rather than minting another token; a given one is uploaded as is.
+  const redeploy = fakeTarget([FLY_MACHINE_STOP_TOKEN_SECRET]);
+  const result = await runFlyDeploy({ plan: idlePlan, secrets: { ...RELAY }, generatedSecrets: {} }, redeploy.target);
+  assert.equal(redeploy.steps.includes("stop-token"), false);
+  assert.ok(result.secretsKept.includes(FLY_MACHINE_STOP_TOKEN_SECRET));
+  const given = fakeTarget([]);
+  await runFlyDeploy({ plan: idlePlan, secrets: { ...RELAY, [FLY_MACHINE_STOP_TOKEN_SECRET]: "FlyV1 given" }, generatedSecrets: {} }, given.target);
+  assert.equal(given.steps.includes("stop-token"), false);
+  assert.equal(given.set[0]?.[FLY_MACHINE_STOP_TOKEN_SECRET], "FlyV1 given");
+
+  // Always on: no token.
+  const alwaysOn = fakeTarget([]);
+  await runFlyDeploy({ plan, secrets: { ...RELAY }, generatedSecrets: {} }, alwaysOn.target);
+  assert.equal(alwaysOn.steps.includes("stop-token"), false);
+  assert.equal(FLY_MACHINE_STOP_TOKEN_SECRET in (alwaysOn.set[0] ?? {}), false);
+});
+
+test("flyctl creates the stop token as an app-scoped deploy token, off argv values and out of the files", async () => {
+  const calls: Array<{ args: string[] }> = [];
+  const runner: FlyctlRunner = (args) => {
+    calls.push({ args });
+    if (args[0] === "apps" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ Name: "my-propr" }]), stderr: "" };
+    if (args[0] === "volumes" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 1 }]), stderr: "" };
+    if (args[0] === "secrets" && args[1] === "list") return { status: 0, stdout: "[]", stderr: "" };
+    if (args[0] === "tokens") return { status: 0, stdout: "FlyV1 fm2_created,fm2_more\n", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  try {
+    await runFlyDeploy({ plan: { ...plan, idleShutdownAfter: "15m" }, secrets: { ...RELAY }, generatedSecrets: {} }, createFlyctlTarget(new FlyctlBackend(runner), outDir));
+    assert.deepEqual(calls.find((c) => c.args[0] === "tokens")?.args, ["tokens", "create", "deploy", "--app", "my-propr", "--name", "propr idle stop"]);
+    const machineConfig = readFileSync(join(outDir, "propr-machine.json"), "utf-8");
+    assert.equal(machineConfig.includes("fm2_created"), false);
+    const app = (JSON.parse(machineConfig) as { containers: Array<{ name: string; restart?: unknown; secrets?: Array<{ name: string }> }> }).containers.find((c) => c.name === "app");
+    assert.ok(app?.secrets?.some((entry) => entry.name === FLY_MACHINE_STOP_TOKEN_SECRET));
+    assert.deepEqual(app?.restart, { policy: "on-failure", max_retries: 10 }, "a refused stop exits 1 and the app starts again");
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  assert.throws(() => new FlyctlBackend(() => ({ status: 0, stdout: "", stderr: "" })).createDeployToken("a", "n"), /did not print a token/);
+});
+
+test("the Machines API backend cannot create the stop token: idle shutdown stops before any secret is uploaded", async () => {
+  const api = { } as unknown as FlyMachinesApi;
+  const target = { ...fakeTarget([]).target, createMachineStopToken: createMachinesApiTarget(api).createMachineStopToken };
+  const steps: string[] = [];
+  const recording: FlyDeployTarget = { ...target, async setSecrets() { steps.push("secrets"); } };
+  await assert.rejects(
+    runFlyDeploy({ plan: { ...plan, idleShutdownAfter: "15m" }, secrets: { ...RELAY }, generatedSecrets: {} }, recording),
+    /fly tokens create deploy --app my-propr.*--machine-stop-token/s,
+  );
+  assert.deepEqual(steps, []);
 });
 
 test("Free-plan preflight: a volume over 5 GB stops the deploy before anything is created", async () => {

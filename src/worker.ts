@@ -1,5 +1,6 @@
 import { preventWithdrawnJob } from '@propr/core';
 import { prepareWorktreeHost } from './gitDirectoryTrust.js';
+import { waitForDockerApiAtStartup } from './workerDockerReadiness.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
@@ -9,7 +10,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManag
 import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
-import { setUltrafixDeps } from '@propr/core';
+import { setUltrafixDeps, startIdleShutdownListener } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -171,6 +172,9 @@ export interface StartedWorker {
 }
 
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
+    // Opt-in (Fly legacy Docker): the API is already serving; only the worker
+    // waits for a Docker daemon that is still booting.
+    await waitForDockerApiAtStartup({ logger, signal: options.signal });
     await prepareWorktreeHost();
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = resolveWorkerConcurrency();
@@ -332,6 +336,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         }
     });
 
+    // Opt-in idle shutdown: register with the daemon and follow its drain request (exit 0).
+    const idleShutdownListener = startIdleShutdownListener({
+        role: 'worker',
+        createConnection: () => subscriberRedis.duplicate() as never,
+        log: logger,
+    });
+
     // Handle incoming config update messages
     subscriberRedis.on('message', async (channel, message) => {
         if (channel === CONFIG_EVENT_CHANNEL) {
@@ -418,6 +429,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await closeAgentImageBuildLock();
         await heartbeatRedis.srem('system:status:workers', workerId);
         await heartbeatRedis.hdel('system:status:worker-capacity', workerId);
+        // Deregistering tells an idle-shutdown daemon this worker has stopped.
+        await idleShutdownListener.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
     };

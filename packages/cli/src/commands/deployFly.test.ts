@@ -21,6 +21,7 @@ import {
   buildAppEnv,
   buildMachineConfig,
   FLY_GH_PRIVATE_KEY_SECRET,
+  FLY_MACHINE_STOP_TOKEN_SECRET,
   renderFlyMachineConfigJson,
   renderFlyToml,
   type JsonObject,
@@ -82,23 +83,29 @@ test("invalid inputs are rejected before any Fly call", () => {
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", volume: "bad-name" }, IMAGES), /volume name/);
 });
 
-test("idle shutdown is refused before anything is written or sent to Fly: the app image cannot stop an idle Machine", () => {
-  // No idle detector or /wake route in the app image yet (#3770): the flag would only swap the restart policy.
-  assert.equal(FLY_IDLE_SHUTDOWN_SUPPORTED, false);
+test("idle shutdown is accepted now that the app image stops the whole Machine when idle", () => {
+  // The app image has the idle detector and /wake (#3770) and stops the Machine through the Machines API.
+  assert.equal(FLY_IDLE_SHUTDOWN_SUPPORTED, true);
   const oauth = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret", PROPR_GH_RELAY_TOKEN: "rt" };
-  const refused = (error: Error) =>
-    /--idle-shutdown is not supported by this release/.test(error.message) && /#3770/.test(error.message) && /always on/.test(error.message);
-  const flagSets: Array<Partial<DeployFlyOptions>> = [{ idleShutdown: true }, { idleShutdown: "15m" }, { idleShutdown: "2h", dryRun: true }];
-  for (const flags of flagSets) {
-    assert.throws(() => prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, oauth, "gh"), refused, JSON.stringify(flags));
+  const flagSets: Array<[Partial<DeployFlyOptions>, string]> = [[{ idleShutdown: true }, "15m"], [{ idleShutdown: "15m" }, "15m"], [{ idleShutdown: "2h", dryRun: true }, "2h"]];
+  for (const [flags, after] of flagSets) {
+    const { plan } = prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, oauth, "gh");
+    assert.equal(plan.idleShutdownAfter, after, JSON.stringify(flags));
+    assert.equal(buildAppEnv(plan).PROPR_IDLE_SHUTDOWN, "on");
+    assert.deepEqual(buildMachineConfig(plan).restart, { policy: "on-failure", max_retries: 10 });
   }
-  // The bare flag as commander parses it reaches the same refusal.
+  // The bare flag as commander parses it, with a token for the Machines API backend.
   const fly = createDeployCommand().commands.find((c) => c.name() === "fly");
   assert.ok(fly);
-  fly.parseOptions(["--app", "my-propr", "--legacy-docker", "--idle-shutdown", "--dry-run"]);
+  fly.parseOptions(["--app", "my-propr", "--legacy-docker", "--idle-shutdown", "--machine-stop-token", "FlyV1 fm2_given", "--dry-run"]);
   const parsed = fly.opts() as DeployFlyOptions;
   assert.equal(parsed.idleShutdown, true);
-  assert.throws(() => prepareFlyDeploy(parsed, IMAGES, oauth, "gh"), refused);
+  const prepared = prepareFlyDeploy(parsed, IMAGES, oauth, "gh");
+  assert.equal(prepared.secrets[FLY_MACHINE_STOP_TOKEN_SECRET], "FlyV1 fm2_given");
+  // A stop token without idle shutdown is a mistake, not silently uploaded.
+  assert.throws(() => prepareFlyDeploy({ app: "my-propr", legacyDocker: true, machineStopToken: "t" }, IMAGES, oauth, "gh"), /only used with --idle-shutdown/);
+  // A stack .env never supplies it: a token for another app would make every idle stop fail.
+  assert.equal(FLY_MACHINE_STOP_TOKEN_SECRET in prepareFlyDeploy({ app: "my-propr", legacyDocker: true, idleShutdown: true }, IMAGES, { ...oauth, [FLY_MACHINE_STOP_TOKEN_SECRET]: "other" }, "gh").secrets, false);
   // A malformed duration still names the accepted range.
   assert.throws(() => prepareFlyDeploy({ app: "my-propr", legacyDocker: true, idleShutdown: "soon" }, IMAGES, oauth, "gh"), /1m to 24h/);
 
@@ -117,8 +124,9 @@ test("idle shutdown is refused before anything is written or sent to Fly: the ap
     assert.doesNotMatch(toml, /idle|decides when to stop/i);
     assert.doesNotMatch(renderFlyMachineConfigJson(plan), /PROPR_IDLE_SHUTDOWN/);
   }
-  // The gate is the one switch to flip once the app image exits 0 when idle.
-  assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: "15m" }, true));
+  // The gate still refuses an idle shutdown for an image that cannot perform it.
+  assert.throws(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: "15m" }, false), /--idle-shutdown is not supported by this release/);
+  assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: "15m" }));
   assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: undefined }));
 });
 

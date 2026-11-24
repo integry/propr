@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in idle shutdown for the control plane** (#3770)
+  - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
+    (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the
+    control plane with exit code 0 after it has been idle for the window, so a
+    supervisor with an `on-failure` restart policy leaves the host stopped.
+    On a Fly Machine (`FLY_MACHINE_ID` set) it first has the Machines API
+    (`_api.internal:4280`) stop the whole Machine, with the app-scoped token in
+    `PROPR_FLY_MACHINE_STOP_TOKEN`: an exit alone leaves Redis and the other
+    containers keeping a multi-container Machine started, unreachable and
+    billed. A stop the API refuses or does not answer within 10 seconds exits
+    1, so the app starts again. A Fly Machine without the token never stops
+    idle.
+  - With `propr deploy fly --legacy-docker` the app container no longer waits
+    for the `docker` container to be healthy, so the request that wakes a
+    stopped Machine is served while `dockerd` starts (it took ~34 s, past
+    Fly's ~45 s proxy timeout once the app started after it). The worker
+    waits for the Docker API instead (`PROPR_DOCKER_STARTUP_WAIT_SECONDS`).
+    The docker boot script skips `e2fsck` and `resize2fs` for a cleanly
+    unmounted, full-size image and logs the time each step took.
+  - Only the single-process control plane (`propr all-in-one`, the `minimal`
+    profile) stops, with the indexing worker inline or off. A standalone
+    daemon, or an API, worker or indexing worker process outside the
+    all-in-one process, keeps the instance awake (blocker
+    `separate_processes`): a called-off stop restarts only the process that
+    exits 1, so a separate process that had already exited 0 would stay
+    stopped.
+  - Idle means no queued or running BullMQ job in any queue, no active agent
+    run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
+    Web UI session or in-flight MCP/HTTP request, no scheduled work due
+    within the window, and no polling intake. A setting that cannot be read
+    prevents the stop and restarts the idle period. Without Connect intake,
+    any scheduled work keeps the instance awake unless
+    `PROPR_IDLE_SCHEDULED_WAKE=external` says your own scheduler starts it at
+    the wake hint file's `nextDueAt`.
+  - With Connect intake the relay must acknowledge the wake hint
+    (`wake_hint_ack`) or the instance stays up; the current relay does not, so
+    Connect instances need propr-routing#335. The daemon quiesces Connect, the
+    API and its own work-queuing sweeps (schedules, retries, auto-merge, merge
+    conflicts) before its last check, aborts (and resumes intake and the
+    sweeps) if the wake hint file cannot be written, and exits only after the
+    API, worker and inline indexing worker have acknowledged the stop. A stop
+    whose acknowledgements are not read in time for the wake arranged for the
+    next scheduled work, whose last check for work is not over in time, or
+    during which work was queued, is called off: the process exits with code
+    1 so the supervisor starts the control plane again. So does a shutdown
+    still running when that wake comes. On the next
+    start it asks Connect to replay deliveries cached since intake
+    disconnected for the drain, keeping that obligation in the hint file,
+    written before intake disconnects so a crash mid-drain keeps it, until
+    the relay acknowledges it (`replay_ack`); an aborted drain asks for the same replay once it
+    reconnects. It also records the wake source and cold-start duration. `POST /wake` is the Connect wake ping.
+  - An API or worker process whose heartbeat or activity record is missing,
+    stale or malformed keeps the instance awake until it is confirmed stopped.
+  - `propr check`, `GET /api/status` (`idleShutdown`) and
+    `GET/PUT /api/admin/idle-shutdown` report what keeps the instance awake,
+    the last idle shutdown and the last wake. See
+    [Idle shutdown](docs/docs/operations/idle-shutdown.md).
+  - The all-in-one shutdown (SIGTERM and idle stop) now always exits. Before,
+    a component that never finished starting, such as a worker waiting for an
+    agent image, kept it running after "shutting down gracefully". It now
+    waits up to 10 seconds for such a component and exits with code 0 within
+    `PROPR_SHUTDOWN_TIMEOUT_MS` (default 50 seconds). An idle stop still
+    closing then exits 1 instead, without stopping the host, since the API
+    may still have answered a request or wake ping.
 - **`propr deploy fly`: the control plane on one Fly Machine** (#3768)
   - Runs the all-in-one app container and Redis in one Machine
     (multi-container), with SQLite and the Redis AOF on an encrypted Fly
@@ -49,9 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     them. `fly.toml` points at `propr-machine.json` by absolute path, and
     flyctl runs from the `--out` directory, so the command works from any
     working directory.
-  - Runs the Machine always on and refuses `--idle-shutdown` before creating
-    anything on Fly, `--dry-run` included: the app image has no idle detector
-    or `/wake` endpoint yet (#3770), so nothing would stop an idle Machine.
+  - Runs the Machine always on unless `--idle-shutdown [after]` is given.
+    With it, the Machine stops itself when idle (#3770) with an app-scoped
+    deploy token stored as `PROPR_FLY_MACHINE_STOP_TOKEN`. flyctl creates
+    that token on the first idle-shutdown deploy; with `--backend api` pass
+    it with `--machine-stop-token`.
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
     loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
     stale `/var/run/docker*` and `/run/containerd` PID files.

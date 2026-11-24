@@ -69,6 +69,10 @@ export const LEGACY_DOCKER_SHARED_ENV = {
   GIT_WORKTREES_BASE_PATH: `${LEGACY_DOCKER_SHARED_DIR}/git-processor/worktrees`,
   PROPR_EGRESS_SOCKET_DIR: `${LEGACY_DOCKER_SHARED_DIR}/egress`,
   HOST_PROPR_EGRESS_SOCKET_DIR: `${LEGACY_DOCKER_SHARED_DIR}/egress`,
+  // The app container starts without waiting for the docker container (so a
+  // waking request is answered), and the worker waits this long for the Docker
+  // API before preparing agent images (src/workerDockerReadiness.ts).
+  PROPR_DOCKER_STARTUP_WAIT_SECONDS: "300",
 } as const;
 
 /** Paths a previous, uncleanly stopped dockerd/containerd can leave behind. */
@@ -109,7 +113,51 @@ function assertDiskSize(diskSizeGb: number): void {
 }
 
 /**
- * The disk steps of the boot script, operating on "$IMG" and "$DOCKER_ROOT".
+ * Timestamped progress lines for the boot script: each names the step that
+ * just finished, how long it took, and the Machine's uptime (from
+ * /proc/uptime, so it lines up with "Machine started" in the Fly logs). A
+ * slow wake can then be split into time before the script started, each disk
+ * step, and dockerd's own startup (its "API listen" line follows the last one).
+ */
+export function renderLegacyDockerBootLogHelpers(): string[] {
+  return [
+    "boot_uptime() { cut -d' ' -f1 /proc/uptime 2>/dev/null || echo 0; }",
+    "BOOT_LAST=$(boot_uptime)",
+    "boot_log() {",
+    "  BOOT_NOW=$(boot_uptime)",
+    "  echo \"propr-dockerd-boot: $1 (+$(awk -v a=\"$BOOT_NOW\" -v b=\"$BOOT_LAST\" 'BEGIN {printf \"%.2f\", a - b}')s, machine uptime ${BOOT_NOW}s)\" >&2",
+    "  BOOT_LAST=$BOOT_NOW",
+    "}",
+  ];
+}
+
+/**
+ * Reads the image superblock once and prints "<filesystem bytes> <verdict>".
+ * The verdict is "clean" only when no check e2fsck -p would make is due: the
+ * filesystem was cleanly unmounted (state flag), its journal needs no
+ * recovery, and neither a mount-count nor a periodic check is configured to
+ * fall due. Anything else names why the boot runs e2fsck.
+ */
+const LEGACY_DOCKER_SUPERBLOCK_AWK = [
+  "function v(x) { gsub(/^[ \\t]+|[ \\t]+$/, \"\", x); return x }",
+  "/^Filesystem state:/ {state = v($2)}",
+  "/^Filesystem features:/ {feat = \" \" v($2) \" \"}",
+  "/^Block count:/ {c = v($2)}",
+  "/^Block size:/ {s = v($2)}",
+  "/^Mount count:/ {mc = v($2)}",
+  "/^Maximum mount count:/ {mx = v($2)}",
+  "/^Check interval:/ {ci = v($2)}",
+  "END { r = \"clean\";",
+  "if (state != \"clean\") { r = \"state:\" (state == \"\" ? \"unreadable\" : state); gsub(/ /, \"_\", r) }",
+  "else if (feat ~ / needs_recovery /) r = \"journal-needs-recovery\";",
+  "else if (mx + 0 > 0 && mc + 0 >= mx + 0) r = \"mount-count-check-due\";",
+  "else if (ci + 0 > 0) r = \"periodic-check-configured\";",
+  "printf \"%.0f %s\", c * s, r }",
+].join(" ");
+
+/**
+ * The disk steps of the boot script, operating on "$IMG" and "$DOCKER_ROOT"
+ * (and the `boot_log` helper from {@link renderLegacyDockerBootLogHelpers}).
  * Kept separate so tests can run them against a scratch image.
  *
  * A first boot creates the image at the requested size. Later boots grow an
@@ -119,6 +167,11 @@ function assertDiskSize(diskSizeGb: number): void {
  * keeps every pulled image. Growth is decided from the filesystem's own size,
  * not from whether this boot extended the file, so a resize interrupted by a
  * stop finishes on the next boot.
+ *
+ * Fast path (the common wake from an idle stop): when the superblock says the
+ * filesystem was cleanly unmounted, needs no journal recovery or scheduled
+ * check, and already fills the image, e2fsck and resize2fs are skipped and the
+ * image is mounted straight away. Any other state takes the repair path.
  */
 export function renderLegacyDockerDiskSteps(diskSizeGb: number): string[] {
   assertDiskSize(diskSizeGb);
@@ -128,22 +181,35 @@ export function renderLegacyDockerDiskSteps(diskSizeGb: number): string[] {
     "  if [ ! -f \"$IMG\" ]; then",
     `    truncate -s ${diskSizeGb}G "$IMG"`,
     "    mkfs.ext4 -q -F \"$IMG\"",
+    `    boot_log "created a ${diskSizeGb} GB ext4 image"`,
     "  fi",
-    "  # Repair after a hard stop; exit codes 1-2 mean errors were corrected.",
-    "  e2fsck -p \"$IMG\" || [ $? -le 2 ]",
     "  # Grow, never shrink, an image made for a smaller volume.",
     `  WANT_BYTES=$((${diskSizeGb} * 1073741824))`,
     "  if [ \"$(stat -c %s \"$IMG\")\" -lt \"$WANT_BYTES\" ]; then",
     "    truncate -s \"$WANT_BYTES\" \"$IMG\"",
     "  fi",
     "  FILE_BYTES=$(stat -c %s \"$IMG\")",
-    "  FS_BYTES=$(dumpe2fs -h \"$IMG\" 2>/dev/null | awk -F: '/^Block count:/ {c=$2} /^Block size:/ {s=$2} END {printf \"%.0f\", c*s}')",
-    `  if [ "$FS_BYTES" -lt $((FILE_BYTES - ${LEGACY_DOCKER_RESIZE_SLACK_BYTES})) ]; then`,
-    "    # resize2fs refuses an image that has not just passed a forced check.",
-    "    e2fsck -f -p \"$IMG\" || [ $? -le 2 ]",
-    "    resize2fs \"$IMG\"",
+    `  MIN_FS_BYTES=$((FILE_BYTES - ${LEGACY_DOCKER_RESIZE_SLACK_BYTES}))`,
+    `  FS_INFO=$(dumpe2fs -h "$IMG" 2>/dev/null | awk -F: '${LEGACY_DOCKER_SUPERBLOCK_AWK}')`,
+    "  FS_BYTES=${FS_INFO%% *}",
+    "  FS_VERDICT=${FS_INFO#* }",
+    "  boot_log \"read the image superblock ($FS_VERDICT)\"",
+    "  if [ \"$FS_VERDICT\" = clean ] && [ \"$FS_BYTES\" -ge \"$MIN_FS_BYTES\" ]; then",
+    "    boot_log \"image cleanly unmounted at full size; skipping e2fsck and resize2fs\"",
+    "  else",
+    "    # Repair after a hard stop; exit codes 1-2 mean errors were corrected.",
+    "    e2fsck -p \"$IMG\" || [ $? -le 2 ]",
+    "    boot_log \"e2fsck -p\"",
+    "    if [ \"$FS_BYTES\" -lt \"$MIN_FS_BYTES\" ]; then",
+    "      # resize2fs refuses an image that has not just passed a forced check.",
+    "      e2fsck -f -p \"$IMG\" || [ $? -le 2 ]",
+    "      boot_log \"e2fsck -f -p before resize\"",
+    "      resize2fs \"$IMG\"",
+    "      boot_log \"resize2fs to $FILE_BYTES bytes\"",
+    "    fi",
     "  fi",
     "  mount -o loop \"$IMG\" \"$DOCKER_ROOT\"",
+    "  boot_log \"mounted the image at $DOCKER_ROOT\"",
     "fi",
   ];
 }
@@ -158,6 +224,8 @@ export function renderLegacyDockerBootScript(diskSizeGb: number): string {
     "#!/bin/sh",
     "# Generated by `propr deploy fly --legacy-docker`.",
     "set -eu",
+    ...renderLegacyDockerBootLogHelpers(),
+    "boot_log \"boot script started\"",
     "",
     "# Fix 2: remove PID files and sockets left by an unclean stop, or dockerd",
     "# refuses to start because it believes another daemon is running.",
@@ -182,6 +250,7 @@ export function renderLegacyDockerBootScript(diskSizeGb: number): string {
     ...renderLegacyDockerDiskSteps(diskSizeGb),
     "",
     `mkdir -p ${LEGACY_DOCKER_SHARED_ENV.GIT_CLONES_BASE_PATH} ${LEGACY_DOCKER_SHARED_ENV.GIT_WORKTREES_BASE_PATH} ${LEGACY_DOCKER_SHARED_ENV.PROPR_EGRESS_SOCKET_DIR}`,
+    "boot_log \"starting dockerd\"",
     "",
     "# Reachable only on the Machine's shared loopback, i.e. by the app container.",
     "exec dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 \\",
