@@ -76,7 +76,7 @@ export const AgentRunAdmissionRuntime = component('AgentRunAdmissionRuntime', z.
     restrictedRuns: z.enum(['enforced', 'refused']).describe('enforced: restricted runs are confined; refused: admission refuses them before launch instead of running them open.'),
     enforcement: z.object({ method: z.string(), description: z.string() }).nullable().describe('How the runtime confines restricted runs.'),
     refusal: z.string().optional().describe('The error a restricted run gets on this runtime.'),
-    refusingRuns: z.boolean().describe('The instance mode is restricted and this runtime cannot enforce it: runs are being refused.'),
+    refusingRuns: z.boolean().describe('The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused.'),
     unavailable: z.string().optional(),
   }),
   mcp: z.object({

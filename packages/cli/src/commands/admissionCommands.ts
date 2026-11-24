@@ -83,7 +83,10 @@ export function formatRuntimeLines(runtime: AdmissionRuntime | null | undefined,
   if (network.restrictedRuns === "enforced") {
     lines.push(`  Restricted runs: enforced${network.enforcement ? ` by ${network.enforcement.method}` : ""}.`);
   } else {
-    lines.push(`  Restricted runs: REFUSED${network.refusingRuns ? " (the instance mode is restricted, so runs are being refused now)" : ""}.`);
+    const when = network.refusingRuns
+      ? " (the instance mode is restricted and enforced, so runs are being refused now)"
+      : network.instanceMode === "restricted" ? " (the instance default is restricted but not enforced: runs whose effective policy remains restricted will be refused)" : "";
+    lines.push(`  Restricted runs: REFUSED${when}.`);
     if (network.refusal) lines.push(`  ${network.refusal}`);
   }
   lines.push(`  ProPR MCP: ${mcp.transport}. ${mcp.reason}`);

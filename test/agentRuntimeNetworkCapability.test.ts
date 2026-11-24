@@ -10,7 +10,7 @@ after(async () => {
 });
 
 const { registerAgentRuntime, runAgent, assertAgentRuntimeSupports, AgentRuntimeCapabilityError } = await import('../packages/core/src/agents/runtime/registry.ts');
-const { agentRunEgressRules, agentRunNetworkPolicy, OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
+const { agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy, OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
 const { planAgentRunMcpTransport, agentRunMcpReachableUrl } = await import('../packages/core/src/agents/runtime/agentRunMcpTransport.ts');
 const { readAgentRuntimeCapabilityReport } = await import('../packages/core/src/agents/runtime/agentRuntimeCapabilityReport.ts');
 const { executeDockerRunWithSpecNetwork, DOCKER_RESTRICTED_NETWORK_ENFORCEMENT } = await import('../packages/core/src/agents/runtime/dockerNetwork.ts');
@@ -82,6 +82,36 @@ test('a restricted run on a runtime that cannot enforce it is refused with a typ
     // A spec restricted only through its neutral policy is refused the same way.
     const neutral = { ...spec(), network: { ...spec().network, policy: agentRunNetworkPolicy('claude', workflowPolicy) } };
     assert.throws(() => assertAgentRuntimeSupports({ kind: 'net-open-only', capabilities: capabilities() } as any, neutral), /cannot enforce the restricted network policy/);
+});
+
+test('dispatch keeps a spec restricted only through its neutral policy: enforced or refused, never launched open', async () => {
+    const neutral = () => ({ ...spec(), network: { ...spec().network, policy: agentRunNetworkPolicy('claude', workflowPolicy) } });
+    assert.deepEqual(withAgentRunNetworkPolicy(neutral()).network.policy, agentRunNetworkPolicy('claude', workflowPolicy), 'normalization never replaces it with open');
+
+    const refused = standIn('neutral-open-only', capabilities());
+    const refusal = await runAgent({ runtime: 'neutral-open-only' }, neutral(), {}).then(() => null, error => error);
+    assert.ok(refusal instanceof AgentRuntimeCapabilityError, 'no ambient policy: the supplied restricted policy still refuses');
+    assert.equal(refusal.capability, 'restricted_network');
+    assert.equal(refused.length, 0);
+
+    const enforcing = standIn('neutral-enforcing', capabilities({ supportsRestrictedNetwork: true, restrictedNetworkEnforcement: { method: 'firewall', description: 'test' } }));
+    await runAgent({ runtime: 'neutral-enforcing' }, neutral(), {});
+    assert.deepEqual(enforcing[0].network.policy, agentRunNetworkPolicy('claude', workflowPolicy));
+    assert.equal(enforcing[0].network.restriction, undefined);
+    await runAgent({ runtime: 'neutral-enforcing' }, neutral(), { networkPolicyExempt: 'test exemption' });
+    assert.equal(enforcing[1].network.policy.mode, 'restricted', 'an exemption does not lift the spec\'s own policy');
+
+    // The same policy applying at launch attaches the restriction Docker's proxy enforces.
+    await executeWithNetworkPolicy(workflowPolicy, () => runAgent({ runtime: 'neutral-enforcing' }, neutral(), {}));
+    assert.deepEqual(enforcing[2].network.restriction, workflowPolicy);
+    assert.deepEqual(enforcing[2].network.policy, agentRunNetworkPolicy('claude', workflowPolicy));
+
+    // A different applying policy refuses rather than replacing either allowlist.
+    const other = { ...workflowPolicy, allow: ['other.example.com'] };
+    await assert.rejects(executeWithNetworkPolicy(other, () => runAgent({ runtime: 'neutral-enforcing' }, neutral(), {})), /differs from the policy applying at launch/);
+    const malformed = { ...spec(), network: { ...spec().network, policy: { mode: 'restricted', allow: [{ host: 'x.example.com', wildcard: false, ports: [] }], privateAddressAllow: [] } } };
+    await assert.rejects(runAgent({ runtime: 'neutral-enforcing' }, malformed as any, {}), /malformed restricted network policy/);
+    assert.equal(enforcing.length, 3);
 });
 
 test('Docker declares how it enforces restricted mode and refuses a restricted policy it cannot enforce', async () => {
@@ -165,6 +195,12 @@ test('the capability report says in advance which runs admission refuses', async
     assert.match(remote.network.refusal ?? '', /"report-open-only" cannot enforce the restricted network policy/);
     assert.equal(remote.mcp.transport, 'reachable-url');
     assert.ok(!JSON.stringify(remote).includes('propr.example.com'), 'the report names the transport, not the URL');
+
+    // A restricted default that is not enforced applies only to runs whose effective policy stays restricted.
+    const notEnforced = await readAgentRuntimeCapabilityReport({ environment: { PROPR_AGENT_RUNTIME: 'report-open-only' }, loadPolicy: async () => ({ mode: 'restricted' as const, enforced: false, allow: [], ignoreRepositoryAllow: false }) });
+    assert.equal(notEnforced.network.instanceMode, 'restricted');
+    assert.equal(notEnforced.network.restrictedRuns, 'refused');
+    assert.equal(notEnforced.network.refusingRuns, false);
 
     const unreadable = await readAgentRuntimeCapabilityReport({ environment: { PROPR_AGENT_RUNTIME: 'report-open-only' }, loadPolicy: async () => { throw new Error('db locked'); } });
     assert.equal(unreadable.network.instanceMode, null);

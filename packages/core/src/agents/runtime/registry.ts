@@ -1,7 +1,7 @@
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } from '../../network/egressExecution.js';
 import type { AgentConfig } from '../types.js';
-import { withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
+import { agentRunNetworkPolicy, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
@@ -113,6 +113,12 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
  * applying policy refuses the run rather than replacing either allowlist. As
  * at launch, an exemption reason does not lift a spec's own restriction, so
  * the comparison uses the policy that applies without it.
+ *
+ * A spec carrying only a restricted `network.policy` (no restriction) is
+ * binding the same way: it is validated and kept, never normalized to open.
+ * When a policy applies at launch it must produce the same allowlist (the
+ * restriction is then attached so Docker's proxy can enforce it); a
+ * different one refuses the run.
  */
 export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options: Pick<AgentRunOptions, 'networkPolicyExempt'> = {}): Promise<AgentRunSpec> {
     const explicit = spec.network.restriction;
@@ -122,6 +128,18 @@ export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options
             throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy (${explicit.source}) that differs from the policy applying at launch (${applicable.source})`);
         }
         return withAgentRunNetworkPolicy(spec);
+    }
+    const supplied = spec.network.policy;
+    if (supplied?.mode === 'restricted') {
+        if (!isValidRestrictedAgentRunNetworkPolicy(supplied)) {
+            throw new NetworkPolicyError(`Agent run ${spec.name} carries a malformed restricted network policy`);
+        }
+        const applicable = await resolveAgentRunNetworkPolicy();
+        if (!applicable) return spec;
+        if (!sameAgentRunNetworkPolicy(agentRunNetworkPolicy(spec.profile.agentType, applicable as AgentRunNetworkRestriction), supplied)) {
+            throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy${supplied.source ? ` (${supplied.source})` : ''} that differs from the policy applying at launch (${applicable.source})`);
+        }
+        return { ...spec, network: { ...spec.network, restriction: applicable as AgentRunNetworkRestriction } };
     }
     const policy = await resolveAgentRunNetworkPolicy(options.networkPolicyExempt);
     if (!policy) return withAgentRunNetworkPolicy(spec);

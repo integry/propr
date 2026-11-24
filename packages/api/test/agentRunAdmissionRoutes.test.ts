@@ -230,7 +230,19 @@ test('the report shows which runs the default runtime refuses, in REST and the M
   const tool = tools.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
   const principal = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
   const summary = presentResult(tool, {}, (await tool.run({ principal, args: {} } as never)).data as never, { instanceId: 'example', origin: 'https://propr.example' }).summary;
-  assert.match(summary, /Restricted networking is on, but agent runtime "remote" cannot enforce it: restricted runs are refused\.$/);
+  assert.match(summary, /Restricted networking is enforced, but agent runtime "remote" cannot enforce it: runs are refused\.$/);
+
+  const notEnforced = refusingRuntime();
+  notEnforced.network = { ...notEnforced.network, enforced: false, refusingRuns: false };
+  const conditional: McpTool[] = [];
+  addAdmissionTools(conditional, {
+    db, taskQueue, redisClient, policy: { repository: async () => undefined },
+    agentRunAdmissionSnapshot: async () => enabledSnapshot(), agentRuntimeCapabilityReport: async () => notEnforced,
+  } as unknown as ToolDeps);
+  const conditionalTool = conditional.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  const conditionalSummary = presentResult(conditionalTool, {}, (await conditionalTool.run({ principal, args: {} } as never)).data as never, { instanceId: 'example', origin: 'https://propr.example' }).summary;
+  assert.match(conditionalSummary, /Restricted networking is the default \(not enforced\), but agent runtime "remote" cannot enforce it: runs whose effective policy remains restricted will be refused\.$/);
+  assert.doesNotMatch(conditionalSummary, /runs are refused\./);
 });
 
 test('an unresolvable runtime selection is reported without failing the report; other errors stay generic', async () => {

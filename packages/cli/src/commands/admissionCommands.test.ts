@@ -159,7 +159,9 @@ test("the runtime section says when restricted runs are refused and how MCP is r
   };
   const text = formatAdmissionReport({ ...report(), runtime: refusing }).join("\n");
   assert.match(text, /^Agent runtime: remote \(PROPR_AGENT_RUNTIME\) · instance network mode restricted \(enforced\)$/m);
-  assert.match(text, /^  Restricted runs: REFUSED \(the instance mode is restricted, so runs are being refused now\)\.$/m);
+  assert.match(text, /^  Restricted runs: REFUSED \(the instance mode is restricted and enforced, so runs are being refused now\)\.$/m);
+  const notEnforced = { ...refusing, network: { ...refusing.network, enforced: false, refusingRuns: false } };
+  assert.equal(formatRuntimeLines(notEnforced)[1], "  Restricted runs: REFUSED (the instance default is restricted but not enforced: runs whose effective policy remains restricted will be refused).");
   assert.match(text, /^  ProPR MCP: reachable-url\. /m);
   const docker = { ...refusing, runtime: "docker", selectedBy: "default", network: { ...refusing.network, instanceMode: "open" as const, enforced: false, restrictedRuns: "enforced" as const, refusingRuns: false, refusal: undefined, enforcement: { method: "egress-proxy-socket", description: "" } } };
   assert.deepEqual(formatRuntimeLines(docker).slice(0, 2), ["Agent runtime: docker (default) · instance network mode open", "  Restricted runs: enforced by egress-proxy-socket."]);

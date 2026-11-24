@@ -33,7 +33,14 @@ export interface AgentRuntimeCapabilityReport {
         enforcement: AgentRuntimeRestrictedNetworkEnforcement | null;
         /** The error restricted runs get on this runtime. */
         refusal?: string;
-        /** True when the instance policy is restricted and this runtime refuses such runs: runs are being refused now. */
+        /**
+         * True when the instance policy is restricted *and enforced* and this
+         * runtime refuses such runs: every run is restricted, so runs are
+         * being refused now. A restricted default that is not enforced
+         * applies only where a run's effective policy stays restricted (an
+         * enclosing automation or workflow policy that does not choose open),
+         * so it is reported as conditional refusal, not this flag.
+         */
         refusingRuns: boolean;
         unavailable?: string;
     };
@@ -81,7 +88,7 @@ export async function readAgentRuntimeCapabilityReport(options: AgentRuntimeCapa
             restrictedRuns: refusal ? 'refused' : 'enforced',
             enforcement: capabilities.supportsRestrictedNetwork ? capabilities.restrictedNetworkEnforcement ?? null : null,
             ...(refusal ? { refusal } : {}),
-            refusingRuns: !!refusal && policy?.mode === 'restricted',
+            refusingRuns: !!refusal && policy?.mode === 'restricted' && policy.enforced,
             ...(unavailable ? { unavailable } : {}),
         },
         mcp: { transport: mcp.transport, reason: mcp.reason },

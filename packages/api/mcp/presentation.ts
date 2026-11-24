@@ -140,9 +140,12 @@ function runtimeSummary(result: Args): string {
   if (result.runtimeUnavailable) return ` Agent runtime unavailable: ${result.runtimeUnavailable}`;
   const network = result.runtime?.network;
   if (!network || network.restrictedRuns !== 'refused') return '';
-  return network.refusingRuns
-    ? ` Restricted networking is on, but agent runtime "${result.runtime.runtime}" cannot enforce it: restricted runs are refused.`
-    : ` Agent runtime "${result.runtime.runtime}" cannot enforce restricted networking; restricted runs would be refused.`;
+  const runtime = result.runtime.runtime;
+  if (network.refusingRuns) return ` Restricted networking is enforced, but agent runtime "${runtime}" cannot enforce it: runs are refused.`;
+  if (network.instanceMode === 'restricted') {
+    return ` Restricted networking is the default (not enforced), but agent runtime "${runtime}" cannot enforce it: runs whose effective policy remains restricted will be refused.`;
+  }
+  return ` Agent runtime "${runtime}" cannot enforce restricted networking; restricted runs would be refused.`;
 }
 
 function admissionLimitSummary(result: Args): string {

@@ -128,7 +128,7 @@ export interface AgentRunAdmissionRuntime {
     } | null;
     /** The error a restricted run gets on this runtime. */
     refusal?: string;
-    /** The instance mode is restricted and this runtime cannot enforce it: runs are being refused. */
+    /** The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused. */
     refusingRuns: boolean;
     unavailable?: string;
   };

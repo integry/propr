@@ -10001,7 +10001,7 @@ components:
               type: string
             refusingRuns:
               type: boolean
-              description: "The instance mode is restricted and this runtime cannot enforce it: runs are being refused."
+              description: "The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused."
             unavailable:
               type: string
           required:

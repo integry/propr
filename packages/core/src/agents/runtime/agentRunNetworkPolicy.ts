@@ -43,7 +43,39 @@ export function agentRunNetworkPolicy(agentType: AgentType, restriction?: AgentR
     };
 }
 
-/** The spec with {@link AgentRunNetwork.policy} derived from its restriction (or open). */
+const ruleKey = (rule: AgentRunEgressRule): string => `${rule.wildcard ? '*.' : ''}${rule.host}:${[...new Set(rule.ports)].sort((a, b) => a - b).join(',')}`;
+const ruleKeys = (rules: readonly AgentRunEgressRule[]): string => JSON.stringify([...new Set(rules.map(ruleKey))].sort());
+
+/** The same neutral policy, whatever the order of its rules and ports. */
+export function sameAgentRunNetworkPolicy(a: AgentRunNetworkPolicy, b: AgentRunNetworkPolicy): boolean {
+    return a.mode === b.mode && (a.source ?? null) === (b.source ?? null)
+        && ruleKeys(a.allow) === ruleKeys(b.allow) && ruleKeys(a.privateAddressAllow) === ruleKeys(b.privateAddressAllow);
+}
+
+function isEgressRule(rule: unknown): rule is AgentRunEgressRule {
+    if (!rule || typeof rule !== 'object') return false;
+    const { host, wildcard, ports } = rule as Partial<AgentRunEgressRule>;
+    return typeof host === 'string' && host.trim() !== '' && typeof wildcard === 'boolean' && Array.isArray(ports)
+        && ports.length > 0 && ports.every(port => Number.isInteger(port) && port > 0 && port <= 65535);
+}
+
+/**
+ * Whether `policy` is a well-formed restricted policy a runtime can enforce:
+ * mode `restricted` with every allow and private-address rule a host plus
+ * at least one valid port. A malformed one is refused, never treated as open.
+ */
+export function isValidRestrictedAgentRunNetworkPolicy(policy: AgentRunNetworkPolicy | undefined): boolean {
+    return !!policy && policy.mode === 'restricted' && Array.isArray(policy.allow) && Array.isArray(policy.privateAddressAllow)
+        && policy.allow.every(isEgressRule) && policy.privateAddressAllow.every(isEgressRule);
+}
+
+/**
+ * The spec with {@link AgentRunNetwork.policy} derived from its restriction
+ * (or open). A spec that already carries a restricted policy but no
+ * restriction keeps that policy: an explicit restriction is never replaced by
+ * the open default.
+ */
 export function withAgentRunNetworkPolicy(spec: AgentRunSpec): AgentRunSpec {
+    if (!spec.network.restriction && spec.network.policy?.mode === 'restricted') return spec;
     return { ...spec, network: { ...spec.network, policy: agentRunNetworkPolicy(spec.profile.agentType, spec.network.restriction) } };
 }
