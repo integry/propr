@@ -171,6 +171,11 @@ export interface AgentRunResult {
 
 export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> {
     readonly spec: AgentRunSpec;
+    /**
+     * Live output from the moment the stream is first read. A runtime bounds
+     * what it holds for a slow reader: output past its limit is dropped (with
+     * a notice in the stream), never applied as backpressure on the agent.
+     */
     readonly stdout: Readable;
     readonly stderr: Readable;
     /** Settles with the run's outcome; rejects like the executor (abort, ownership loss). */

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
+import { Writable } from 'node:stream';
 
 type Call = { command: string; args: string[]; options: Record<string, any> };
 const calls: Call[] = [];
@@ -16,7 +17,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 });
 
 const { getAgentRuntime, registerAgentRuntime, resolveAgentRuntimeKind, runAgent, assertAgentRuntimeSupports, assertNativeGoalRuntime, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.ts');
-const { DockerRuntime, AgentRunStoppedError } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
+const { DockerRuntime, AgentRunStoppedError, AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
 const { executeWithNetworkPolicy, setUnscopedNetworkPolicyResolver } = await import('../packages/core/src/network/egressExecution.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
@@ -96,6 +97,96 @@ test('handle streams forward output once read; stop and inspect address the run 
     const before = calls.length;
     await handle.stop();
     assert.equal(calls.length, before, 'a settled run needs no docker stop');
+});
+
+const OUTPUT_CHUNK = 'x'.repeat(64 * 1024);
+const OUTPUT_CHUNKS = 64; // 4 MiB per stream: four times the buffer limit.
+const DROPPED_NOTICE = /\n\[propr: (\d+) bytes of agent (stdout|stderr) dropped because the reader fell behind\]\n/g;
+
+/** A verbose run producing sustained output on both streams (yielding between chunks) until released. */
+function verboseRun(sample: (handle: any) => void) {
+    let produced!: () => void;
+    const state = { handle: undefined as any, release: (): void => undefined, produced: new Promise<void>(resolve => { produced = resolve; }) };
+    respond = async call => {
+        call.options.agentRun.onSpawn();
+        // Output starts once the test has subscribed (earlier output is never kept).
+        await new Promise(resolve => setImmediate(resolve));
+        for (let i = 0; i < OUTPUT_CHUNKS; i++) {
+            call.options.agentRun.onOutput('stdout', OUTPUT_CHUNK);
+            call.options.agentRun.onOutput('stderr', OUTPUT_CHUNK);
+            sample(state.handle);
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        const released = new Promise<void>(resolve => { state.release = resolve; });
+        produced();
+        await released;
+        return { stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() };
+    };
+    return state;
+}
+
+/** Splits what a reader received into agent output and the bytes the stream reported dropped. */
+function receivedOutput(text: string, name: string) {
+    let dropped = 0;
+    for (const match of text.matchAll(DROPPED_NOTICE)) {
+        assert.equal(match[2], name);
+        dropped += Number(match[1]);
+    }
+    const output = text.replace(DROPPED_NOTICE, '');
+    assert.match(output, /^x*$/, 'only whole agent chunks and drop notices reach the reader');
+    return { output: output.length, dropped };
+}
+
+/** Everything a handle stream holds for its reader (a duplex also queues on its writable side). */
+const pending = (stream: any): number => stream.readableLength + (stream.writableLength ?? 0);
+
+const BOUND = AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES + OUTPUT_CHUNK.length;
+const PRODUCED = OUTPUT_CHUNK.length * OUTPUT_CHUNKS;
+
+test('handle streams bound what they buffer for a paused reader of stdout and stderr', async () => {
+    const run = verboseRun(() => undefined);
+    const handle = run.handle = new DockerRuntime().start(spec());
+    // Both streams are subscribed (allocated) but nobody reads them.
+    const streams = { stdout: handle.stdout, stderr: handle.stderr };
+    await run.produced;
+    for (const stream of Object.values(streams)) assert.ok(pending(stream) <= BOUND, `paused reader holds ${pending(stream)} bytes`);
+    run.release();
+    await handle.wait();
+    for (const [name, stream] of Object.entries(streams)) {
+        const { output, dropped } = receivedOutput(Buffer.concat(await stream.toArray()).toString(), name);
+        assert.ok(dropped > 0, `${name} reports the output it dropped`);
+        assert.ok(output <= BOUND);
+        assert.equal(output + dropped, PRODUCED, `${name} accounts for every produced byte`);
+    }
+});
+
+test('handle streams bound what they buffer when piped into a slower destination', async () => {
+    const peak = { stdout: 0, stderr: 0 };
+    const run = verboseRun(handle => {
+        if (!handle) return;
+        peak.stdout = Math.max(peak.stdout, pending(handle.stdout));
+        peak.stderr = Math.max(peak.stderr, pending(handle.stderr));
+    });
+    const handle = run.handle = new DockerRuntime().start(spec());
+    const received = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+    const finished = (['stdout', 'stderr'] as const).map(name => new Promise<void>(resolve => {
+        const slow = new Writable({
+            highWaterMark: 16 * 1024,
+            write(chunk, _encoding, callback) { received[name].push(chunk); setTimeout(callback, 20); },
+        });
+        slow.on('finish', resolve);
+        handle[name].pipe(slow);
+    }));
+    await run.produced;
+    run.release();
+    await handle.wait();
+    await Promise.all(finished);
+    for (const name of ['stdout', 'stderr'] as const) {
+        assert.ok(peak[name] <= BOUND, `${name} buffered at most ${BOUND} bytes for its slow destination (peak ${peak[name]})`);
+        const { output, dropped } = receivedOutput(Buffer.concat(received[name]).toString(), name);
+        assert.ok(dropped > 0, `${name} reports the output it dropped`);
+        assert.equal(output + dropped, PRODUCED, `${name} accounts for every produced byte`);
+    }
 });
 
 /** A run whose launch preparation (network policy, admission) is pending until released, and which honours the executor's pre-spawn check. */
