@@ -240,6 +240,28 @@ test('supporting runtimes receive the resolved restriction; Docker argv is uncha
     assert.equal(calls[0].options.agentRun.spec.network.restriction, undefined);
 });
 
+test('an explicit spec restriction is kept, never replaced by the applying policy before dispatch', async () => {
+    const started = recordingRuntime('restricting-explicit', true);
+    const own = { mode: 'restricted' as const, source: 'workflow' as const, allow: ['registry.npmjs.org'] };
+    const withOwn = () => { const run = spec(); return { ...run, network: { ...run.network, restriction: own } }; };
+    await runAgent({ runtime: 'restricting-explicit' }, withOwn(), {});
+    assert.equal(started[0].network.restriction, own, 'kept when no policy applies');
+    const enclosing = { mode: 'restricted' as const, source: 'workflow' as const, allow: ['example.com'] };
+    await assert.rejects(executeWithNetworkPolicy(enclosing, () => runAgent({ runtime: 'restricting-explicit' }, withOwn(), {})),
+        /carries a restricted network policy \(workflow\) that differs from the policy applying at launch \(workflow\)/);
+    await assert.rejects(executeWithNetworkPolicy(enclosing, () => runAgent({ runtime: 'restricting-explicit' }, withOwn(), { networkPolicyExempt: 'probe' })),
+        /differs from the policy applying at launch/);
+    setUnscopedNetworkPolicyResolver(async () => ({ ...enforcedPolicy, allow: ['example.com'] }));
+    try {
+        await assert.rejects(runAgent({ runtime: 'restricting-explicit' }, withOwn(), {}), /differs from the policy applying at launch \(instance_enforced\)/);
+    } finally {
+        setUnscopedNetworkPolicyResolver(undefined);
+    }
+    assert.equal(started.length, 1, 'conflicting runs never reach the runtime');
+    await executeWithNetworkPolicy({ ...own, allow: [...own.allow] }, () => runAgent({ runtime: 'restricting-explicit' }, withOwn(), {}));
+    assert.equal(started[1].network.restriction, own, 'a matching policy keeps the spec restriction');
+});
+
 test('native goals resolve the runtime selection and refuse anything but Docker', () => {
     assert.doesNotThrow(() => assertNativeGoalRuntime(undefined, {}));
     assert.doesNotThrow(() => assertNativeGoalRuntime({ runtime: 'docker' }, { [AGENT_RUNTIME_ENV]: 'docker' }));

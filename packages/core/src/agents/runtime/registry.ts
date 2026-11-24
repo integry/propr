@@ -1,5 +1,5 @@
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
-import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
+import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } from '../../network/egressExecution.js';
 import type { AgentConfig } from '../types.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime } from './types.js';
@@ -74,8 +74,22 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
  * The spec with the effective network requirement attached: the run's
  * restricted policy, or the enforced instance policy outside any run. Resolved
  * before dispatch so every runtime sees it, not only the Docker executor.
+ *
+ * A restriction the spec already carries stays binding: it is kept as is when
+ * no policy applies or the applying policy is the same, and a different
+ * applying policy refuses the run rather than replacing either allowlist. As
+ * at launch, an exemption reason does not lift a spec's own restriction, so
+ * the comparison uses the policy that applies without it.
  */
 export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options: Pick<AgentRunOptions, 'networkPolicyExempt'> = {}): Promise<AgentRunSpec> {
+    const explicit = spec.network.restriction;
+    if (explicit) {
+        const applicable = await resolveAgentRunNetworkPolicy();
+        if (applicable && !sameNetworkPolicy(applicable, explicit)) {
+            throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy (${explicit.source}) that differs from the policy applying at launch (${applicable.source})`);
+        }
+        return spec;
+    }
     const policy = await resolveAgentRunNetworkPolicy(options.networkPolicyExempt);
     if (!policy) return spec;
     return { ...spec, network: { ...spec.network, restriction: policy as AgentRunNetworkRestriction } };

@@ -100,3 +100,34 @@ test('a spec restriction that differs from the applying policy is refused before
         setUnscopedNetworkPolicyResolver(undefined);
     }
 });
+
+test('runAgent refuses a spec restriction that differs from an enclosing run policy instead of replacing it', async () => {
+    const other = { mode: 'restricted' as const, source: 'workflow' as const, allow: ['example.com'], instanceAllow: [] };
+    await assert.rejects(executeWithNetworkPolicy(other,
+        () => runAgent(null, restrictedSpec('claude-issue-1-run-agent-conflict'), { timeout: 5000, costCapExempt: true })),
+    /claude-issue-1-run-agent-conflict carries a restricted network policy \(workflow\) that differs from the policy applying at launch \(workflow\)/);
+    assert.equal(spawned.length, 0, 'nothing is spawned under the enclosing allowlist');
+    await assert.rejects(executeWithNetworkPolicy(other,
+        () => runAgent(null, restrictedSpec('claude-issue-1-run-agent-conflict-exempt'), { timeout: 5000, costCapExempt: true, networkPolicyExempt: 'probe' })),
+    /differs from the policy applying at launch/, 'an exemption reason does not skip the comparison');
+    assert.equal(spawned.length, 0);
+    await assert.rejects(executeWithNetworkPolicy({ ...restriction, allow: [...restriction.allow] },
+        () => runAgent(null, restrictedSpec('claude-issue-1-run-agent-same'), { timeout: 5000, costCapExempt: true })), /Captured spawn/);
+    assert.equal(spawned.length, 1, 'a matching enclosing policy launches');
+    assertConfined(spawned[0]);
+});
+
+test('runAgent refuses a spec restriction that differs from the enforced instance policy', async () => {
+    const enforced = { mode: 'restricted' as const, source: 'instance_enforced' as const, allow: ['example.com'], instanceAllow: [] };
+    setUnscopedNetworkPolicyResolver(async () => enforced);
+    try {
+        await assert.rejects(runAgent(null, restrictedSpec('claude-issue-1-run-agent-enforced'), { timeout: 5000, costCapExempt: true }),
+            /carries a restricted network policy \(workflow\) that differs from the policy applying at launch \(instance_enforced\)/);
+        assert.equal(spawned.length, 0);
+        await assert.rejects(runAgent(null, restrictedSpec('claude-issue-1-run-agent-enforced-same', enforced), { timeout: 5000, costCapExempt: true }), /Captured spawn/);
+        assert.equal(spawned.length, 1);
+        assertConfined(spawned[0]);
+    } finally {
+        setUnscopedNetworkPolicyResolver(undefined);
+    }
+});
