@@ -24,6 +24,7 @@ const { providerCredentialManifests, refreshableCredentialPaths } = await import
 const { withCredentialStoreLock, credentialStoreLockPath, CredentialStoreLockTimeoutError } = await import('../packages/core/src/agents/credentials/credentialStoreLock.ts');
 const {
     stageAgentRunCredentials, resolveCredentialBrokerMode, credentialRunRoot, AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV,
+    sweepStaleStaging, STALE_STAGING_LEASE_MS, STAGING_LEASE_FILE, STAGING_RETAINED_FILE,
 } = await import('../packages/core/src/agents/credentials/hostCredentialStaging.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
@@ -260,7 +261,6 @@ test('transport-neutral API: a runtime without host mounts exchanges file lists'
 
 test('every provider manifest declares at least one refreshable or secret credential source', () => {
     for (const manifest of providerCredentialManifests()) {
-        if (manifest.provider === 'opencode' && manifest.store === 'config') continue;
         assert.ok(refreshableCredentialPaths(manifest).length > 0 || (manifest.secretEnvFiles?.length ?? 0) > 0, `${manifest.provider} ${manifest.store}`);
     }
 });
@@ -299,5 +299,108 @@ test('runAgent mounts the per-run copy, passes secrets by name and writes the re
         assert.ok(calls[0].args.includes(`${root}:/home/node/.claude:rw`));
     } finally {
         delete process.env[AGENT_CREDENTIAL_BROKER_ENV];
+    }
+});
+
+test('OpenCode without a data mount: logins copied under the config tree are staged and refreshed', async () => {
+    // Documented fallback: auth copied to <config>/xdg-data/opencode with XDG_DATA_HOME pointing there.
+    const root = makeStore({
+        'opencode.json': '{}', 'xdg-data/opencode/auth.json': 'oc-v1', 'xdg-data/opencode/account.json': 'acct',
+        'xdg-data/opencode/storage/session/x.json': '{}', 'xdg-data/opencode/log/opencode.log': 'log',
+    });
+    const staged = stageAgentRunCredentials(specWith([{ provider: 'opencode', source: root, target: '/home/node/.config/opencode' }]), { environment: brokerEnvironment })!;
+    const storeDir = stagedSource(staged.spec, '/home/node/.config/opencode');
+    assert.deepEqual(listFiles(storeDir), ['opencode.json', 'xdg-data/opencode/account.json', 'xdg-data/opencode/auth.json']);
+    assert.deepEqual(staged.bundle.stores[0].outputs, ['xdg-data/opencode/auth.json', 'xdg-data/opencode/account.json']);
+    refreshIn(storeDir, 'xdg-data/opencode/auth.json', 'oc-v2');
+    const results = await staged.complete();
+    assert.deepEqual(results.filter(result => result.outcome !== 'unchanged').map(result => [result.path, result.outcome]), [['xdg-data/opencode/auth.json', 'written']]);
+    assert.equal(fs.readFileSync(path.join(root, 'xdg-data/opencode/auth.json'), 'utf8'), 'oc-v2');
+    assert.equal(fs.readFileSync(path.join(root, 'xdg-data/opencode/account.json'), 'utf8'), 'acct');
+});
+
+test('a store the worker cannot write keeps the direct mount so the run persists its refresh', () => {
+    if (process.getuid?.() === 0) return; // root bypasses the permission bits that stand in for a read-only mount
+    const readOnly = makeStore({ '.credentials.json': 'claude-v1' });
+    const writable = makeStore({ 'auth.json': 'codex-v1' });
+    fs.chmodSync(readOnly, 0o500);
+    try {
+        const spec = specWith([
+            { provider: 'claude', source: readOnly, target: '/home/node/.claude' },
+            { provider: 'codex', source: writable, target: '/home/node/.codex' },
+        ]);
+        const staged = stageAgentRunCredentials(spec, { environment: brokerEnvironment })!;
+        assert.equal(stagedSource(staged.spec, '/home/node/.claude'), readOnly, 'unwritable store keeps its canonical mount');
+        assert.notEqual(stagedSource(staged.spec, '/home/node/.codex'), writable);
+        assert.ok(renderDockerRunArgs(staged.spec).includes(`${readOnly}:/home/node/.claude:rw`));
+        void staged.complete();
+        assert.equal(stageAgentRunCredentials(specWith([{ provider: 'claude', source: readOnly, target: '/home/node/.claude' }]), { environment: brokerEnvironment }), undefined);
+        // Read-only stores with nothing to refresh are still copied.
+        const vibe = makeStore({ 'config.toml': '' });
+        fs.chmodSync(vibe, 0o500);
+        const vibeRun = stageAgentRunCredentials(specWith([{ provider: 'vibe', source: vibe, target: '/home/node/.vibe', readOnly: true }]), { environment: brokerEnvironment })!;
+        assert.notEqual(stagedSource(vibeRun.spec, '/home/node/.vibe'), vibe);
+        void vibeRun.complete();
+        fs.chmodSync(vibe, 0o700);
+    } finally {
+        fs.chmodSync(readOnly, 0o700);
+    }
+});
+
+test('a failed write-back keeps the staged copy with its refreshed token instead of deleting it', async () => {
+    const root = makeStore({ 'auth.json': 'codex-v1' });
+    const failing = new CredentialBroker({ lock: { lockRoot: path.join(runRoot, '.locks') } });
+    failing.commit = async () => { throw new Error('EROFS: read-only file system'); };
+    const staged = stageAgentRunCredentials(specWith([{ provider: 'codex', source: root, target: '/home/node/.codex' }]), { environment: brokerEnvironment, broker: failing })!;
+    const storeDir = stagedSource(staged.spec, '/home/node/.codex');
+    refreshIn(storeDir, 'auth.json', 'codex-v2');
+    await staged.complete();
+    assert.equal(fs.readFileSync(path.join(storeDir, 'auth.json'), 'utf8'), 'codex-v2', 'the refreshed token survives');
+    const marker = JSON.parse(fs.readFileSync(path.join(staged.stagingDir, STAGING_RETAINED_FILE), 'utf8'));
+    assert.deepEqual(marker.files, [{ staged: path.join(storeDir, 'auth.json'), canonical: path.join(root, 'auth.json') }]);
+    assert.match(marker.error, /EROFS/);
+    // Retained copies are never swept, however old.
+    sweepStaleStaging(runRoot, Date.now() + 10 * STALE_STAGING_LEASE_MS);
+    assert.ok(fs.existsSync(path.join(storeDir, 'auth.json')));
+    fs.rmSync(staged.stagingDir, { recursive: true, force: true });
+
+    // Nothing refreshed: a failed write-back loses nothing, so the copy is removed.
+    const unchanged = stageAgentRunCredentials(specWith([{ provider: 'codex', source: makeStore({ 'auth.json': 'v1' }), target: '/home/node/.codex' }]), { environment: brokerEnvironment, broker: failing })!;
+    await unchanged.complete();
+    assert.equal(fs.existsSync(unchanged.stagingDir), false);
+});
+
+test('sweeping spares live runs by their lease and reclaims only abandoned copies', async () => {
+    const live = stageAgentRunCredentials(specWith([{ provider: 'codex', source: makeStore({ 'auth.json': 'v1' }), target: '/home/node/.codex' }]), { environment: brokerEnvironment })!;
+    const lease = path.join(live.stagingDir, STAGING_LEASE_FILE);
+    assert.ok(fs.existsSync(lease));
+    const ancient = (Date.now() - 2 * STALE_STAGING_LEASE_MS) / 1000;
+    // A run older than the cutoff whose lease is still being refreshed survives a sweep.
+    fs.utimesSync(live.stagingDir, ancient, ancient);
+    sweepStaleStaging(runRoot);
+    assert.ok(fs.existsSync(path.join(stagedSource(live.spec, '/home/node/.codex'), 'auth.json')));
+    // Once the lease stops being refreshed (owner gone) the copy is reclaimed.
+    fs.utimesSync(lease, ancient, ancient);
+    sweepStaleStaging(runRoot);
+    assert.equal(fs.existsSync(live.stagingDir), false);
+    await live.complete();
+});
+
+test('a live run refreshes its staging lease while it runs', async () => {
+    mock.timers.enable({ apis: ['setInterval'] });
+    try {
+        const { STAGING_LEASE_REFRESH_MS } = await import('../packages/core/src/agents/credentials/hostCredentialStaging.ts');
+        const live = stageAgentRunCredentials(specWith([{ provider: 'codex', source: makeStore({ 'auth.json': 'v1' }), target: '/home/node/.codex' }]), { environment: brokerEnvironment })!;
+        const lease = path.join(live.stagingDir, STAGING_LEASE_FILE);
+        const ancient = (Date.now() - 2 * STALE_STAGING_LEASE_MS) / 1000;
+        fs.utimesSync(lease, ancient, ancient);
+        fs.utimesSync(live.stagingDir, ancient, ancient);
+        mock.timers.tick(STAGING_LEASE_REFRESH_MS);
+        sweepStaleStaging(runRoot);
+        assert.ok(fs.existsSync(live.stagingDir), 'the heartbeat kept the lease fresh');
+        await live.complete();
+        assert.equal(fs.existsSync(live.stagingDir), false);
+    } finally {
+        mock.timers.reset();
     }
 });

@@ -13,9 +13,10 @@ services:
       - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode
 
   indexing-worker:
+    # Read-write: the worker writes refreshed tokens from per-run copies back.
     volumes:
-      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode:ro
-      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode:ro
+      - ${HOME:?HOME must be set}/.config/opencode:${HOME:?HOME must be set}/.config/opencode
+      - ${HOME:?HOME must be set}/.local/share/opencode:${HOME:?HOME must be set}/.local/share/opencode
 
   api:
     environment:

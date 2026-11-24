@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import {
     CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, lstatInside,
     type CredentialBundle, type CredentialStoreRequest, type CredentialWriteBackResult, type ReturnedCredentialFile,
 } from './broker.js';
+import { providerCredentialManifest, refreshableCredentialPaths } from './providerManifests.js';
 
 /**
  * Docker transport for the credential broker: stage the per-run copy in a
@@ -19,8 +20,17 @@ export const AGENT_CREDENTIAL_BROKER_ENV = 'PROPR_AGENT_CREDENTIAL_BROKER';
 export const AGENT_CREDENTIAL_RUN_DIR_ENV = 'PROPR_AGENT_CREDENTIAL_RUN_DIR';
 export type CredentialBrokerMode = 'per-run' | 'legacy';
 
-/** Staged copies older than this belong to a crashed worker and are swept. */
-const STALE_STAGING_MS = 24 * 60 * 60 * 1000;
+/**
+ * A staged copy whose lease has not been refreshed for this long belongs to a
+ * worker that is no longer running and is swept. Live runs refresh their lease
+ * every {@link STAGING_LEASE_REFRESH_MS}, however long the run takes.
+ */
+export const STALE_STAGING_LEASE_MS = 24 * 60 * 60 * 1000;
+export const STAGING_LEASE_REFRESH_MS = 5 * 60 * 1000;
+/** Lease file in each staging directory (beside, never inside, the mounted stores). */
+export const STAGING_LEASE_FILE = '.propr-lease';
+/** Marks a staging directory kept because refreshed tokens could not be written back. */
+export const STAGING_RETAINED_FILE = '.propr-retained.json';
 
 type Environment = Record<string, string | undefined>;
 
@@ -75,18 +85,70 @@ function definedVariables(spec: AgentRunSpec, launchEnvironment: Environment): s
         .map(variable => variable.name);
 }
 
-function sweepStaleStaging(root: string): void {
+/**
+ * Remove staging directories whose owner is gone: the lease (or, before the
+ * lease exists, the directory itself) has not been touched within
+ * {@link STALE_STAGING_LEASE_MS}. Directories retained after a failed
+ * write-back hold the only copy of a refreshed token and are never swept.
+ */
+export function sweepStaleStaging(root: string, now = Date.now()): void {
     let entries: string[];
     try { entries = fs.readdirSync(root); } catch { return; }
-    const cutoff = Date.now() - STALE_STAGING_MS;
+    const cutoff = now - STALE_STAGING_LEASE_MS;
     for (const entry of entries) {
         if (entry === '.locks') continue;
         const candidate = path.join(root, entry);
         try {
             const stat = fs.lstatSync(candidate);
-            if (stat.isDirectory() && stat.mtimeMs < cutoff) fs.rmSync(candidate, { recursive: true, force: true });
+            if (!stat.isDirectory() || fs.existsSync(path.join(candidate, STAGING_RETAINED_FILE))) continue;
+            let heartbeatMs = stat.mtimeMs;
+            try { heartbeatMs = Math.max(heartbeatMs, fs.lstatSync(path.join(candidate, STAGING_LEASE_FILE)).mtimeMs); } catch { /* not leased yet */ }
+            if (heartbeatMs < cutoff) fs.rmSync(candidate, { recursive: true, force: true });
         } catch { /* another worker removed it, or it is container-owned */ }
     }
+}
+
+/** Keep the staging lease fresh while the run (and its write-back) is in progress. */
+function holdStagingLease(stagingDir: string, runName: string): () => void {
+    const lease = path.join(stagingDir, STAGING_LEASE_FILE);
+    fs.writeFileSync(lease, `${process.pid}\n`, { mode: 0o600, flag: 'wx' });
+    let warned = false;
+    const timer = setInterval(() => {
+        try {
+            const seconds = Date.now() / 1000;
+            fs.utimesSync(lease, seconds, seconds);
+        } catch (error) {
+            if (!warned) logger.warn({ run: runName, stagingDir, error: (error as Error).message }, 'Could not refresh the staged credential lease');
+            warned = true;
+        }
+    }, STAGING_LEASE_REFRESH_MS);
+    timer.unref?.();
+    return () => clearInterval(timer);
+}
+
+/**
+ * Whether refreshed tokens can be written back to `mount`'s canonical store
+ * from this process. A store mounted read-only into the worker (or not
+ * writable by its user) keeps the direct mount instead, so the run's own
+ * read-write bind persists refreshes as it did before per-run copies.
+ */
+function canWriteBack(mount: CredentialBindMount): boolean {
+    if (mount.readOnly) return true;
+    const manifest = providerCredentialManifest(mount.credentialStore.provider, mount.credentialStore.store);
+    if (!manifest || refreshableCredentialPaths(manifest).length === 0) return true;
+    try {
+        fs.accessSync(mount.source, fs.constants.W_OK);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    }
+}
+
+function changedOutputs(bundle: CredentialBundle, returned: readonly ReturnedCredentialFile[]): ReturnedCredentialFile[] {
+    return returned.filter(file => {
+        const store = bundle.stores.find(candidate => candidate.id === file.storeId);
+        return !!store && createHash('sha256').update(file.content).digest('hex') !== store.baseline[file.path];
+    });
 }
 
 function chownIfPrivileged(target: string, owner: { uid: number; gid: number } | undefined): void {
@@ -138,6 +200,27 @@ export function collectStagedCredentials(bundle: CredentialBundle, stagingDir: s
     return returned;
 }
 
+/** Keep a staged copy whose refreshed tokens were not written back, and say where it is. */
+function retainStaging(
+    stagingDir: string, bundle: CredentialBundle, failure: { pending: ReturnedCredentialFile[] | undefined; error: string; runName: string },
+): void {
+    const { pending, error, runName } = failure;
+    const files = (pending ?? bundle.stores.flatMap(store => store.outputs.map(output => ({ storeId: store.id, path: output }))))
+        .map(file => {
+            const store = bundle.stores.find(candidate => candidate.id === file.storeId)!;
+            return { staged: path.join(stagingDir, store.id, file.path), canonical: path.join(store.canonicalRoot, file.path) };
+        });
+    try {
+        fs.writeFileSync(path.join(stagingDir, STAGING_RETAINED_FILE), `${JSON.stringify({ retainedAt: new Date().toISOString(), error, files }, null, 2)}\n`, { mode: 0o600 });
+    } catch (markerError) {
+        logger.warn({ run: runName, stagingDir, error: (markerError as Error).message }, 'Could not mark retained staged credentials');
+    }
+    logger.error(
+        { run: runName, stagingDir, error, files },
+        'Credential broker could not write back refreshed credentials; kept the staged copy. Restore each staged file that is newer than its canonical file, then delete the directory',
+    );
+}
+
 /**
  * Replace each per-run credential bind in `spec` with a staged copy holding
  * only its manifest's files. Returns `undefined` when the spec has no such
@@ -149,7 +232,14 @@ export function stageAgentRunCredentials(
 ): StagedAgentRunCredentials | undefined {
     const environment = options.environment ?? process.env;
     if (resolveCredentialBrokerMode(environment) === 'legacy') return undefined;
-    const mounts = perRunCredentialMounts(spec);
+    const candidates = perRunCredentialMounts(spec);
+    const mounts = candidates.filter(canWriteBack);
+    for (const mount of candidates.filter(candidate => !mounts.includes(candidate))) {
+        logger.warn(
+            { run: spec.name, provider: mount.credentialStore.provider, store: mount.credentialStore.store, source: mount.source },
+            'Credential store is not writable from the worker; mounting it directly so refreshed tokens persist',
+        );
+    }
     if (mounts.length === 0) return undefined;
     const root = credentialRunRoot(environment);
     const broker = options.broker ?? new CredentialBroker({ lock: { lockRoot: path.join(root, '.locks') } });
@@ -165,9 +255,12 @@ export function stageAgentRunCredentials(
     const safeName = spec.name.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(-80);
     const stagingDir = path.join(root, `${safeName}-${randomBytes(6).toString('hex')}`);
     fs.mkdirSync(stagingDir, { mode: 0o711 });
+    let releaseLease: () => void = () => {};
     try {
+        releaseLease = holdStagingLease(stagingDir, spec.name);
         for (const store of bundle.stores) writeStore(path.join(stagingDir, store.id), store);
     } catch (error) {
+        releaseLease();
         fs.rmSync(stagingDir, { recursive: true, force: true });
         throw error;
     }
@@ -188,13 +281,24 @@ export function stageAgentRunCredentials(
     let completion: Promise<CredentialWriteBackResult[]> | undefined;
     const complete = (): Promise<CredentialWriteBackResult[]> => completion ??= (async () => {
         let results: CredentialWriteBackResult[] = [];
+        let returned: ReturnedCredentialFile[] | undefined;
         try {
-            results = await broker.commit(bundle, collectStagedCredentials(bundle, stagingDir));
+            returned = collectStagedCredentials(bundle, stagingDir);
+            results = await broker.commit(bundle, returned);
             const written = results.filter(result => result.outcome !== 'unchanged');
             if (written.length > 0) logger.info({ run: spec.name, results: written }, 'Credential broker wrote back refreshed credentials');
         } catch (error) {
-            logger.error({ run: spec.name, error: (error as Error).message }, 'Credential broker could not write back refreshed credentials');
+            const message = (error as Error).message;
+            // Unknown (collection failed) or refreshed outputs: the staged copy may be their only copy.
+            const pending = returned ? changedOutputs(bundle, returned) : undefined;
+            if (!pending || pending.length > 0) {
+                releaseLease();
+                retainStaging(stagingDir, bundle, { pending, error: message, runName: spec.name });
+                return results;
+            }
+            logger.error({ run: spec.name, error: message }, 'Credential broker could not write back refreshed credentials');
         }
+        releaseLease();
         try { fs.rmSync(stagingDir, { recursive: true, force: true }); }
         catch (error) { logger.warn({ run: spec.name, stagingDir, error: (error as Error).message }, 'Could not remove staged agent credentials'); }
         return results;

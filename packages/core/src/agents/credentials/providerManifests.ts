@@ -87,6 +87,10 @@ const MANIFESTS: readonly ProviderCredentialManifest[] = Object.freeze([
             file('config.json'),
             file('tui.json'),
             file('AGENTS.md'),
+            // Documented fallback without a separate data mount: logins copied
+            // under the config tree (agent XDG_DATA_HOME=<config>/xdg-data).
+            file('xdg-data/opencode/auth.json', true),
+            file('xdg-data/opencode/account.json', true),
             ...['agent', 'agents', 'command', 'commands', 'mode', 'modes', 'plugin', 'plugins', 'tool', 'tools', 'skill', 'skills', 'themes']
                 .map(directory),
         ],
