@@ -5,7 +5,9 @@ import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } f
 import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.js';
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
+import { collectingHandle, uploadAgentRunFiles, type UploadedAgentRunFiles } from './agentRunFileUpload.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
+import { FLY_MACHINES_RUNTIME_KIND, FlyMachinesRuntime } from './flyMachinesRuntime.js';
 import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
@@ -15,7 +17,10 @@ export const DEFAULT_AGENT_RUNTIME = 'docker';
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
 export type AgentRuntimeFactory = () => ProviderAgentRuntime;
 
-const factories = new Map<string, AgentRuntimeFactory>([[DEFAULT_AGENT_RUNTIME, () => new DockerRuntime()]]);
+const factories = new Map<string, AgentRuntimeFactory>([
+    [DEFAULT_AGENT_RUNTIME, () => new DockerRuntime()],
+    [FLY_MACHINES_RUNTIME_KIND, () => new FlyMachinesRuntime()],
+]);
 const instances = new Map<string, ProviderAgentRuntime>();
 
 const RUNTIME_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -174,26 +179,41 @@ export async function runAgent(
         throw new Error(`Agent runtime "${runtime.kind}" cannot run the "${mode}" workspace transport for ${resolved.name}`);
     }
     // Workspace transport changes only the checkout and its git mounts. Runtimes
-    // that can bind host credential paths still get per-run copies on the host.
+    // that can bind host credential paths still get per-run copies on the host;
+    // runtimes that cannot receive them (and other bind sources) as uploaded files.
     const staged = runtime.capabilities.supportsBindMounts
         ? stageAgentRunCredentials(resolved, { launchEnvironment: options.extraEnvVars })
         : undefined;
+    const uploaded: UploadedAgentRunFiles | undefined = !runtime.capabilities.supportsBindMounts && runtime.capabilities.supportsFileUpload
+        ? uploadAgentRunFiles(resolved, { launchEnvironment: options.extraEnvVars })
+        : undefined;
     try {
-        const runSpec = staged?.spec ?? resolved;
-        const runOptions = staged && Object.keys(staged.secretEnv).length > 0
-            ? { ...options, extraEnvVars: { ...options.extraEnvVars, ...staged.secretEnv } }
+        const runSpec = staged?.spec ?? uploaded?.spec ?? resolved;
+        const secretEnv = staged?.secretEnv ?? uploaded?.secretEnv ?? {};
+        const runOptions = Object.keys(secretEnv).length > 0
+            ? { ...options, extraEnvVars: { ...options.extraEnvVars, ...secretEnv } }
             : options;
+        // Refreshed credentials are read back from the run before anything releases it.
+        const runRuntime = uploaded ? withCredentialCollection(runtime, uploaded) : runtime;
         if (mode === 'bind') {
             assertAgentRuntimeSupports(runtime, runSpec);
-            return await runtime.start(runSpec, runOptions).wait();
+            return await runRuntime.start(runSpec, runOptions).wait();
         }
-        return await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
+        return await runWithWorkspaceTransport(runRuntime, runSpec, runOptions, {
             transport: await createWorkspaceTransport(mode),
             assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
         });
     } finally {
         await staged?.complete();
     }
+}
+
+function withCredentialCollection(runtime: ProviderAgentRuntime, uploaded: UploadedAgentRunFiles): ProviderAgentRuntime {
+    return {
+        kind: runtime.kind,
+        capabilities: runtime.capabilities,
+        start: (spec, options) => collectingHandle(runtime.start(spec, options), handle => uploaded.collect(handle)),
+    };
 }
 
 /**

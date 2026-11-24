@@ -77,7 +77,7 @@ export interface StagedAgentRunCredentials {
     complete(): Promise<CredentialWriteBackResult[]>;
 }
 
-type CredentialBindMount = Extract<AgentRunMount, { type: 'bind' }> & { credentialStore: NonNullable<Extract<AgentRunMount, { type: 'bind' }>['credentialStore']> };
+export type CredentialBindMount = Extract<AgentRunMount, { type: 'bind' }> & { credentialStore: NonNullable<Extract<AgentRunMount, { type: 'bind' }>['credentialStore']> };
 
 function perRunCredentialMounts(spec: AgentRunSpec): CredentialBindMount[] {
     return spec.mounts.filter((mount): mount is CredentialBindMount => mount.type === 'bind' && !!mount.credentialStore?.perRun);
@@ -89,7 +89,7 @@ function perRunCredentialMounts(spec: AgentRunSpec): CredentialBindMount[] {
  * `NAME` inherited from the client environment (omitted when unset there).
  * An unreadable file defines nothing here; Docker refuses to start the run.
  */
-function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
+export function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
     const values = new Map<string, string>();
     let content: string;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch { return values; }
@@ -111,7 +111,7 @@ function envFileValues(filePath: string, launchEnvironment: Environment): Map<st
  * fallback secret appended by name would replace an env-file value; those
  * variables must count as defined too.
  */
-function definedVariables(spec: AgentRunSpec, launchEnvironment: Environment): string[] {
+export function definedVariables(spec: AgentRunSpec, launchEnvironment: Environment): string[] {
     const effective = new Map<string, string>();
     for (const file of [...spec.envFiles].sort((left, right) => left.order - right.order)) {
         for (const [name, value] of envFileValues(file.path, launchEnvironment)) effective.set(name, value);
@@ -173,7 +173,7 @@ function holdStagingLease(stagingDir: string, runName: string): () => void {
  * read-write bind persists refreshes as it did before per-run copies. An
  * explicit `per-run` selection refuses such a run instead.
  */
-function canWriteBack(mount: CredentialBindMount): boolean {
+export function canWriteBack(mount: CredentialBindMount): boolean {
     if (mount.readOnly) return true;
     const manifest = providerCredentialManifest(mount.credentialStore.provider, mount.credentialStore.store);
     if (!manifest || refreshableCredentialPaths(manifest).length === 0) return true;

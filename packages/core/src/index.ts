@@ -385,6 +385,8 @@ export { OPEN_AGENT_RUN_NETWORK_POLICY, agentRunEgressRules, agentRunNetworkPoli
 export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransport, type AgentRunMcpTransportPlan } from './agents/runtime/agentRunMcpTransport.js';
 export { readAgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReportOptions } from './agents/runtime/agentRuntimeCapabilityReport.js';
 export { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './agents/runtime/dockerNetwork.js';
+export { FlyMachinesRuntime, FLY_MACHINES_RUNTIME_KIND, flyMachinesCapabilities } from './agents/runtime/flyMachinesRuntime.js';
+export { resolveFlyMachinesConfig, flyInternalMcpUrl, FLY_MACHINES_ENV, type FlyMachinesConfig } from './agents/runtime/flyMachinesConfig.js';
 export {
     BindWorkspaceTransport, WORKSPACE_TRANSPORT_ENV, WorkspaceTransportError, createWorkspaceTransport, resolveWorkspaceTransportMode,
     runWithWorkspaceTransport, runtimeWorkspaceTransports, type PreparedWorkspace, type WorkspaceCompletionOptions, type WorkspaceRunOutcome,

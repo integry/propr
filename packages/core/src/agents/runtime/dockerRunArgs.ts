@@ -54,7 +54,7 @@ function renderLabelArgs(labels: Record<string, string>): string[] {
  * Without a setup wrapper the transport wrapper starts the explicit
  * entrypoint as the unprivileged agent user itself.
  */
-function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArgs: string[] } {
+export function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArgs: string[] } {
     const { repoSetup } = spec;
     const clone = spec.workspace.mode === 'clone' ? spec.workspace.clone : undefined;
     if (spec.workspace.mode === 'clone' && !clone) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but was not prepared by it`);
@@ -71,6 +71,16 @@ function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArg
     }
     if (!spec.entrypoint) throw new Error(`Agent run ${spec.name} needs an explicit entrypoint for the clone workspace transport`);
     return { entrypoint: '/bin/bash', wrapperArgs: ['-lc', clone.script, WORKSPACE_DIRECT_AGENT_LAUNCH, spec.entrypoint] };
+}
+
+/**
+ * The run's whole command line, entrypoint first: what a runtime that
+ * replaces the image entrypoint (Fly Machines) executes. Undefined
+ * entrypoint means the image's own, which such a runtime cannot chain.
+ */
+export function renderAgentRunCommand(spec: AgentRunSpec): { entrypoint?: string; args: string[] } {
+    const { entrypoint, wrapperArgs } = renderEntrypoint(spec);
+    return { ...(entrypoint ? { entrypoint } : {}), args: [...wrapperArgs, ...spec.args] };
 }
 
 /**

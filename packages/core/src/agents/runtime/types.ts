@@ -32,6 +32,12 @@ export interface AgentRunSpec {
     mounts: AgentRunMount[];
     /** Host env files whose variables the runtime loads into the run. */
     envFiles: AgentRunEnvFile[];
+    /**
+     * Files and directories written into the run before it starts, on
+     * runtimes without bind mounts: set at dispatch from the bind sources
+     * the runtime cannot mount (see `agentRunFileUpload.ts`).
+     */
+    files?: AgentRunFile[];
     resources?: AgentRunResources;
     network: AgentRunNetwork;
     security: AgentRunSecurity;
@@ -102,6 +108,17 @@ export interface AgentRunEnvFile {
 
 export type AgentRunMountPurpose =
     | 'workspace' | 'git' | 'credential' | 'logs' | 'prompt' | 'runtime-home' | 'data' | 'scratch';
+
+/** A file (or an empty directory) a runtime without bind mounts writes into the run before it starts. */
+export interface AgentRunFile {
+    type: 'file' | 'directory';
+    /** Absolute path inside the run. */
+    path: string;
+    /** File content; absent for directories. */
+    content?: Buffer;
+    mode: number;
+    purpose: AgentRunMountPurpose;
+}
 
 export type AgentRunMount =
     | {
@@ -258,6 +275,13 @@ export interface AgentRuntimeCapabilities {
      * Absent counts as supported (any runtime with outbound HTTP has it).
      */
     supportsMcpReachableUrl?: boolean;
+    /**
+     * Bind sources can be delivered as files written into the run before it
+     * starts (credential stores, read-only seeds), and files the run leaves
+     * can be read back through {@link AgentRunHandle.readFile} once it
+     * finished. Lets a runtime without bind mounts use the credential broker.
+     */
+    supportsFileUpload?: boolean;
     /** A worker can reattach to a run it did not start (after restart). */
     reattach: boolean;
     /** Workspace transports the runtime can run; `['bind']` when bind mounts are supported and this is omitted. */

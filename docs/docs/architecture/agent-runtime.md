@@ -31,7 +31,27 @@ This table maps each agent type to the unified image, its type-specific entrypoi
 | OpenCode | `propr/agent` | `Dockerfile.agent` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
 | Mistral Vibe | `propr/agent` | `Dockerfile.agent` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
 
-Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default and currently the only built-in runtime (`PROPR_AGENT_RUNTIME=docker`). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
+Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default runtime (`PROPR_AGENT_RUNTIME=docker`); `fly-machines` runs each agent on an ephemeral Fly Machine (see [Fly Machines Runtime](#fly-machines-runtime)). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
+
+## Fly Machines Runtime
+
+`PROPR_AGENT_RUNTIME=fly-machines` (or an agent's `runtime: fly-machines`) creates one Fly Machine per run through the Machines API (`api.machines.dev/v1`). Machines boot from OCI images, so the `propr/agent` image runs unchanged with the same entrypoints. Use it when you need exact image parity or more memory than the worker host has.
+
+| Variable | Meaning |
+| --- | --- |
+| `PROPR_FLY_API_TOKEN` (fallback `FLY_API_TOKEN`) | Deploy token scoped to the app: `fly tokens create deploy -a <app>`. Required. |
+| `PROPR_FLY_APP` | App the run Machines are created in. Required. |
+| `PROPR_FLY_REGION` | Region code, for example `ams`. When unset, Fly picks the region. |
+| `PROPR_FLY_MACHINE_SIZE` | `shared-cpu-<n>x` or `performance-<n>x` (default `performance-2x`). |
+| `PROPR_FLY_MACHINE_MEMORY_MB` | Memory in MB. Defaults to the run's memory limit (`AGENT_CONTAINER_MEMORY_LIMIT`), else the preset's. |
+| `PROPR_FLY_IMAGE` | Pullable image to run instead of the run's own reference, for example `registry.fly.io/<app>:agent`. Locally built images are not visible to Fly. |
+| `PROPR_FLY_PRIVATE_NETWORK` | `auto` (default: on when the control plane runs on Fly), `on` or `off`. |
+| `PROPR_FLY_PREWARM` | `1` pulls `PROPR_FLY_IMAGE` in the region when the runtime starts. A throwaway Machine runs `/bin/true`, and the pull time is logged. |
+| `PROPR_FLY_RESULT_LINGER_SECONDS` | How long a finished Machine waits for the worker to read its result (default 900). |
+
+Each Machine has `auto_destroy` set and restart policy `no`. Runs always use the clone [workspace transport](./coding-agent-integration.md#workspace-transport), so start them as root (the transport requires it). Credential stores arrive as per-run copies from the credential broker, written into the Machine as files. Refreshed tokens are read back and written to the canonical store after the run. Other bind sources are copied in, bounded at 16 MiB, and log directories are created empty. Machines have no stdin, so a small launcher feeds the prompt from an uploaded file. The launcher also forwards stop signals to the agent and keeps exact stdout and stderr in files. It mirrors them, line-marked, to the console, which is how the logs API streams them live. The worker reads the exact output through the exec API once the agent exits, then destroys the Machine. Liveness comes from the Machine state, and `stop()` signals the agent through the Machine. Cancellation destroys the Machine. The create-to-started time (image pull plus boot) is logged as `coldStartMs`.
+
+Restricted network policies are refused on this runtime because Fly has no per-Machine egress allowlist. When the control plane runs on Fly, run Machines share the org private network. ProPR MCP is then reached over `http://<control-plane-app>.internal:<port>/api/mcp`: point `PROPR_INTERNAL_API_URL` or `PROPR_AGENT_MCP_URL` there. Elsewhere, runs reach a reachable URL with their per-run grant token. The spend cap, physical admission slots and activity watchdog of the Docker executor do not apply to Fly runs. Secrets in the run environment and uploaded credential copies are part of the Machine config, which any holder of the deploy token can read until the Machine is destroyed.
 
 ## Container Configuration
 

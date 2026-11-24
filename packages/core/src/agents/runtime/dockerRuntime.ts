@@ -31,7 +31,7 @@ export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.free
     workspaceTransports: Object.freeze(['bind', 'clone'] as const),
 });
 
-type StreamName = 'stdout' | 'stderr';
+export type StreamName = 'stdout' | 'stderr';
 
 /**
  * Output a run-handle stream holds for a reader that has fallen behind (paused,
@@ -93,7 +93,7 @@ class BoundedOutputStream extends Readable {
  * never buffered twice, and that buffer at most
  * {@link AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES} each for a slow reader.
  */
-class LazyOutputStreams {
+export class LazyOutputStreams {
     private readonly streams: Partial<Record<StreamName, BoundedOutputStream>> = {};
     private ended = false;
 
