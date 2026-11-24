@@ -19,7 +19,7 @@
  */
 import 'dotenv/config';
 import { logger } from '@propr/core';
-import { prepareAllInOneEnvironment, resolveIndexingMode, runShutdownSequence, type ShutdownStep } from './allInOneConfig.js';
+import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, type StartupStage } from './allInOneConfig.js';
 
 export interface StartedAllInOne {
     close(): Promise<string[]>;
@@ -27,40 +27,28 @@ export interface StartedAllInOne {
 
 /**
  * Start every component in one process. Components register their close
- * handle as soon as they are up, so a signal (or a failure) mid-startup still
- * closes whatever already started.
+ * handle as soon as they are up. A signal mid-startup stops any further
+ * component from starting, waits for the one still starting, and closes it
+ * together with whatever already started.
  */
 export async function startAllInOne(): Promise<StartedAllInOne> {
     const indexingMode = resolveIndexingMode(process.env.PROPR_INDEXING);
     const defaulted = prepareAllInOneEnvironment(process.env);
     logger.info({ indexingMode, defaulted }, 'Starting ProPR all-in-one control plane');
 
-    // Started components, in START order. Shutdown uses a fixed order instead
-    // (see below), so record them by role.
-    const handles: Partial<Record<'daemon' | 'worker' | 'indexing' | 'api', ShutdownStep>> = {};
-    let closing: Promise<string[]> | undefined;
-
-    const close = (): Promise<string[]> => {
-        closing ??= (async () => {
-            // 1. Stop intake first: no new GitHub events become jobs.
-            // 2. Drain the indexing worker; it does not own the egress proxies.
-            // 3. Drain the main worker; its sweeper then closes every egress
-            //    proxy in the process, which is why it goes after indexing.
-            // 4. Close the API (HTTP, Socket.IO, sessions) last so the UI keeps
-            //    reporting state while jobs drain.
-            // 5. Close the process-wide task queue connection shared by all.
-            const steps = (['daemon', 'indexing', 'worker', 'api'] as const)
-                .map(role => handles[role])
-                .filter((step): step is ShutdownStep => step !== undefined);
+    // Components close in SHUTDOWN_ORDER (intake, indexing, worker, API), then
+    // the process-wide task queue connection shared by all.
+    const supervisor = createComponentSupervisor({
+        log: {
+            info: message => logger.info(message),
+            error: (message, error) => logger.error({ error: (error as Error)?.message }, message),
+        },
+        finalSteps: async () => {
             const core = await import('@propr/core');
-            steps.push({ name: 'shared task queue', close: () => core.shutdownQueue() });
-            return runShutdownSequence(steps, {
-                info: message => logger.info(message),
-                error: (message, error) => logger.error({ error: (error as Error)?.message }, message),
-            });
-        })();
-        return closing;
-    };
+            return [{ name: 'shared task queue', close: () => core.shutdownQueue() }];
+        },
+    });
+    const close = (): Promise<string[]> => supervisor.close();
 
     let signalled = false;
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -75,41 +63,56 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         });
     }
 
-    // Migrate once for every component, then tell the later startups so they
-    // skip their own (idempotent but redundant) migration pass.
-    const core = await import('@propr/core');
-    await core.runMigrations();
-    process.env.PROPR_MIGRATIONS_PREAPPLIED = '1';
-
-    // The API (and with it the UI) comes up first: the worker may wait for an
-    // agent image build before it claims jobs, and the operator should be able
-    // to watch that from the dashboard.
-    const api = await import('../packages/api/server.js');
-    const startedApi = await api.startApiServer({ installSignalHandlers: false });
-    handles.api = { name: 'api', close: () => startedApi.close() };
-
-    const { startDaemon } = await import('./daemon.js');
-    const startedDaemon = await startDaemon({ installSignalHandlers: false, closeSharedQueue: false });
-    handles.daemon = { name: 'daemon', close: () => startedDaemon.close() };
-
-    const { startWorker } = await import('./worker.js');
-    const startedWorker = await startWorker({ installSignalHandlers: false });
-    handles.worker = { name: 'worker', close: () => startedWorker.close() };
-    const statusSignal = await import('./jobs/pullRequestStatusSignal.js');
-    await statusSignal.enablePullRequestStatusMaintenance({ backfill: true });
-
+    const stages: StartupStage[] = [
+        {
+            // Migrate once for every component, then tell the later startups so
+            // they skip their own (idempotent but redundant) migration pass.
+            name: 'database migrations',
+            run: async () => {
+                const core = await import('@propr/core');
+                await core.runMigrations();
+                process.env.PROPR_MIGRATIONS_PREAPPLIED = '1';
+            },
+        },
+        {
+            // The API (and with it the UI) comes up first: the worker may wait for
+            // an agent image build before it claims jobs, and the operator should
+            // be able to watch that from the dashboard.
+            name: 'api',
+            role: 'api',
+            run: async () => (await import('../packages/api/server.js')).startApiServer({ installSignalHandlers: false }),
+        },
+        {
+            name: 'daemon',
+            role: 'daemon',
+            run: async () => (await import('./daemon.js')).startDaemon({ installSignalHandlers: false, closeSharedQueue: false }),
+        },
+        {
+            name: 'worker',
+            role: 'worker',
+            run: async () => (await import('./worker.js')).startWorker({ installSignalHandlers: false }),
+        },
+        {
+            name: 'pull request status maintenance',
+            run: async () => (await import('./jobs/pullRequestStatusSignal.js')).enablePullRequestStatusMaintenance({ backfill: true }),
+        },
+    ];
     if (indexingMode === 'inline') {
-        const { startIndexingWorkerService } = await import('./indexing_worker.js');
-        // The main worker already owns the egress proxy sweeper and network policy.
-        const indexing = await startIndexingWorkerService({ installSignalHandlers: false, ownEgressProxies: false });
-        handles.indexing = { name: 'indexing worker', close: () => indexing.close() };
+        stages.push({
+            name: 'indexing worker',
+            role: 'indexing',
+            // The main worker already owns the egress proxy sweeper and network policy.
+            run: async () => (await import('./indexing_worker.js')).startIndexingWorkerService({ installSignalHandlers: false, ownEgressProxies: false }),
+        });
     } else if (indexingMode === 'separate') {
         logger.info('PROPR_INDEXING=separate: run the indexing worker as its own process (npm run indexing-worker)');
     } else {
         logger.info('PROPR_INDEXING=off: repository indexing is disabled');
     }
 
-    logger.info({ indexingMode }, 'ProPR all-in-one control plane started');
+    if (await supervisor.run(stages)) {
+        logger.info({ indexingMode }, 'ProPR all-in-one control plane started');
+    }
     return { close };
 }
 

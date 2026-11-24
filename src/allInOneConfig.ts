@@ -69,3 +69,101 @@ export async function runShutdownSequence(
     }
     return failed;
 }
+
+/** Components the all-in-one process starts, by role. */
+export type ComponentRole = 'daemon' | 'worker' | 'indexing' | 'api';
+
+/**
+ * Shutdown order (start order differs):
+ * 1. stop intake first, so no new GitHub events become jobs;
+ * 2. drain the indexing worker, which does not own the egress proxies;
+ * 3. drain the main worker; its sweeper then closes every egress proxy in the
+ *    process, which is why it goes after indexing;
+ * 4. close the API (HTTP, Socket.IO, sessions) last so the UI keeps reporting
+ *    state while jobs drain.
+ */
+export const SHUTDOWN_ORDER: readonly ComponentRole[] = ['daemon', 'indexing', 'worker', 'api'] as const;
+
+/**
+ * One startup step. `role` steps return the started component's close handle;
+ * other steps (status maintenance, ...) only take effect and return nothing.
+ */
+export interface StartupStage {
+    name: string;
+    role?: ComponentRole;
+    run: () => Promise<{ close(): Promise<unknown> } | void>;
+}
+
+export interface ComponentSupervisor {
+    /** True once close() was called; no further stage starts after that. */
+    readonly closing: boolean;
+    /**
+     * Run stages in order. Stops before the next stage once shutdown began and
+     * resolves false; a stage still starting when shutdown begins is awaited by
+     * close() and its component closed with the rest. A stage that fails after
+     * shutdown began is logged instead of rethrown, so it cannot abort the
+     * drain. Resolves true when every stage ran.
+     */
+    run(stages: readonly StartupStage[]): Promise<boolean>;
+    /** Idempotent: waits for in-flight startup, then closes in SHUTDOWN_ORDER followed by `finalSteps`. */
+    close(): Promise<string[]>;
+}
+
+type SupervisorLog = { info(message: string): void; error(message: string, error: unknown): void };
+
+/**
+ * Coordinates component startup with shutdown, so a termination signal that
+ * arrives mid-startup neither misses a component that finishes starting while
+ * shutdown runs nor lets startup go on to start more components.
+ */
+export function createComponentSupervisor(options: {
+    log: SupervisorLog;
+    /** Steps after every component closed (the shared task queue). */
+    finalSteps?: () => Promise<readonly ShutdownStep[]> | readonly ShutdownStep[];
+}): ComponentSupervisor {
+    const handles: Partial<Record<ComponentRole, ShutdownStep>> = {};
+    let inFlight: Promise<unknown> | undefined;
+    let closing: Promise<string[]> | undefined;
+
+    const supervisor: ComponentSupervisor = {
+        get closing() {
+            return closing !== undefined;
+        },
+        async run(stages) {
+            for (const stage of stages) {
+                if (closing) {
+                    options.log.info(`all-in-one: shutdown in progress, not starting ${stage.name}`);
+                    return false;
+                }
+                const started = stage.run().then(handle => {
+                    // Registered even when shutdown began meanwhile: close() waits for
+                    // this promise before it builds its sequence.
+                    if (stage.role && handle) handles[stage.role] = { name: stage.name, close: () => handle.close() };
+                });
+                inFlight = started.catch(() => undefined);
+                try {
+                    await started;
+                } catch (error) {
+                    if (!closing) throw error;
+                    options.log.error(`all-in-one: ${stage.name} failed to start during shutdown`, error);
+                    return false;
+                } finally {
+                    inFlight = undefined;
+                }
+            }
+            return !closing;
+        },
+        close() {
+            closing ??= (async () => {
+                await inFlight;
+                const steps = SHUTDOWN_ORDER
+                    .map(role => handles[role])
+                    .filter((step): step is ShutdownStep => step !== undefined);
+                steps.push(...(await options.finalSteps?.() ?? []));
+                return runShutdownSequence(steps, options.log);
+            })();
+            return closing;
+        },
+    };
+    return supervisor;
+}
