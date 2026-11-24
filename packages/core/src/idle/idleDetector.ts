@@ -42,6 +42,12 @@ export interface IdleSignals {
     ultrafixLoops: number;
     /** Scheduled items and when they are due. */
     scheduled: ScheduledItem[];
+    /**
+     * Polling intake is running. It always blocks: the poll timer runs on its
+     * own cadence and is not stopped by a drain, so no observation-time
+     * deadline can describe the next poll (and a stop would miss it).
+     */
+    pollingIntake: boolean;
     /** Signals that could not be read; each keeps the instance awake. */
     unavailable: string[];
     /** Most recent request or other activity (epoch ms); the idle period cannot start before it. */
@@ -62,7 +68,7 @@ export const MAX_REPORTED_SCHEDULED = 5;
 export function emptyIdleSignals(): IdleSignals {
     return {
         queues: [], activeAgentRuns: 0, uiSessions: 0, mcpRequests: 0, httpRequests: 0, followupHandoffs: 0,
-        connectDeliveries: 0, runningGoals: 0, ultrafixLoops: 0, scheduled: [], unavailable: [], lastActivityAt: null,
+        connectDeliveries: 0, runningGoals: 0, ultrafixLoops: 0, scheduled: [], pollingIntake: false, unavailable: [], lastActivityAt: null,
     };
 }
 
@@ -107,6 +113,7 @@ export function evaluateIdle(signals: IdleSignals, options: { now: number; windo
         ...signals.unavailable.map(detail => ({ signal: 'unavailable' as const, detail: `could not read ${detail}` })),
         ...queueBlockers(signals.queues),
         ...countBlockers(signals),
+        ...(signals.pollingIntake ? [{ signal: 'scheduled_work' as const, detail: 'GitHub polling intake (polls on an interval; polling intake never idles)' }] : []),
     ];
     const horizon = options.now + options.windowMs;
     for (const item of nextDue) {

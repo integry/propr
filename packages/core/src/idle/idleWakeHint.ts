@@ -37,6 +37,8 @@ export function buildIdleWakeHint(input: {
     connect?: boolean;
     /** An earlier stop's replay still pending (see {@link connectReplaySince}): kept as the replay cursor. */
     pendingReplaySince?: string | null;
+    /** When Connect intake was disconnected for this stop (epoch ms), before `shutdownAt`. */
+    intakeStoppedAt?: number | null;
 }): IdleWakeHint {
     const first = [...input.nextDue].sort((a, b) => a.dueAt - b.dueAt)[0];
     const carried = input.pendingReplaySince ?? null;
@@ -49,6 +51,7 @@ export function buildIdleWakeHint(input: {
         nextDue: input.nextDue,
         ...(input.connect || carried !== null ? { connectReplay: 'pending' as const } : {}),
         ...(carried !== null ? { replaySince: carried } : {}),
+        ...(typeof input.intakeStoppedAt === 'number' ? { intakeStoppedAt: new Date(input.intakeStoppedAt).toISOString() } : {}),
     };
 }
 
@@ -81,6 +84,7 @@ export async function readIdleWakeHint(file: string = resolveIdleWakeHintPath())
             ...(typeof value.wokeAt === 'string' ? { wokeAt: value.wokeAt } : {}),
             ...(value.connectReplay === 'pending' || value.connectReplay === 'accepted' ? { connectReplay: value.connectReplay } : {}),
             ...(typeof value.replaySince === 'string' && !Number.isNaN(Date.parse(value.replaySince)) ? { replaySince: value.replaySince } : {}),
+            ...(typeof value.intakeStoppedAt === 'string' && !Number.isNaN(Date.parse(value.intakeStoppedAt)) ? { intakeStoppedAt: value.intakeStoppedAt } : {}),
         };
     } catch {
         return null;
@@ -127,9 +131,13 @@ export function needsConnectReplay(hint: IdleWakeHint | null): hint is IdleWakeH
     return hint !== null && hint.connectReplay === 'pending';
 }
 
-/** Where the pending replay starts: the earliest stop not yet replayed. */
+/**
+ * Where the pending replay starts: the earliest stop not yet replayed, from
+ * the moment its intake disconnected (deliveries cached while draining are
+ * owed too), falling back to `shutdownAt` for older hints.
+ */
 export function connectReplaySince(hint: IdleWakeHint): string {
-    return hint.replaySince ?? hint.shutdownAt;
+    return hint.replaySince ?? hint.intakeStoppedAt ?? hint.shutdownAt;
 }
 
 /** Whether a start is waking from an idle stop recorded in `hint`. */

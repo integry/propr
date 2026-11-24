@@ -492,7 +492,7 @@ async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDae
     };
     // Standalone, each process exits on its own; composed (all-in-one), the process closes every component together.
     if (options.installSignalHandlers !== false || options.idleShutdownStop) {
-        idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE, pollingIntervalMs: POLLING_INTERVAL_MS,
+        idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE,
             getRoutingService: () => routingService, close, stopProcess: options.idleShutdownStop });
     }
     if (options.installSignalHandlers !== false) {

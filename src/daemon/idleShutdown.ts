@@ -39,6 +39,7 @@ import {
     type RoutingWebSocketIntakeService,
 } from '@propr/core';
 import { createDaemonIdleSources } from './idleSignalSources.js';
+import { hintFileIo, recordAbortedDrainReplay, recordAcceptedReplay, requestOwedReplay, updateHint, withHintFile } from './idleReplayObligation.js';
 
 /**
  * The daemon owns idle shutdown (issue #3770): it sees every shared signal,
@@ -86,7 +87,7 @@ export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
     pollMs: 1_000,
 };
 
-type IdleRoutingIntake = Pick<RoutingWebSocketIntakeService, 'sendWakeHint' | 'stop' | 'start'>;
+type IdleRoutingIntake = Pick<RoutingWebSocketIntakeService, 'sendWakeHint' | 'stop' | 'start' | 'requestReplay'>;
 
 export interface IdleDrainContext {
     redis: IntentRedis;
@@ -111,7 +112,6 @@ export interface IdleDrainContext {
 export interface DaemonIdleShutdownDeps {
     redis: Redis;
     intakeMode: string;
-    pollingIntervalMs: number;
     getRoutingService: () => RoutingWebSocketIntakeService | null;
     /** The daemon's normal graceful close (timers, routing, Redis, queues). */
     close: () => Promise<void>;
@@ -143,18 +143,6 @@ function flushLogs(): Promise<void> {
 const toIso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
 
 /**
- * The wake hint file is read and rewritten by the drain and by wake recovery,
- * both in this process: one at a time, so neither replaces what the other
- * just wrote from a stale read.
- */
-let hintFileTurn: Promise<unknown> = Promise.resolve();
-function withHintFile<T>(work: () => Promise<T>): Promise<T> {
-    const run = hintFileTurn.then(work, work);
-    hintFileTurn = run.catch(() => undefined);
-    return run;
-}
-
-/**
  * Wait (bounded) until no participant from `targets` remains registered: each
  * has finished its graceful shutdown. With `skipOwnProcess` (composed) the
  * participants in this process deregister in the coordinated close instead.
@@ -170,7 +158,11 @@ async function waitForDeregistration(redis: IntentRedis, timings: IdleDrainTimin
     }
 }
 
-/** Step 4: write the hint for this stop, keeping the cursor of a replay an earlier stop still owes. */
+/**
+ * Step 4: write the hint for this stop, keeping the cursor of a replay an
+ * earlier stop still owes; otherwise this stop's replay runs from when its
+ * intake disconnected (`intakeStoppedAt`), not from `shutdownAt`.
+ */
 function persistStopHint(ctx: IdleDrainContext, input: Omit<Parameters<typeof buildIdleWakeHint>[0], 'shutdownAt' | 'pendingReplaySince'>): Promise<IdleWakeHint> {
     return withHintFile(async () => {
         const previous = await (ctx.readHint ?? readIdleWakeHint)().catch(() => null);
@@ -201,14 +193,15 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     }
 
     const intent: IdleShutdownIntent = newIdleShutdownIntent('quiesce', reason);
-    let routingStopped = false;
+    /** When Connect intake was disconnected (taken before the disconnect): the replay cursor for this drain. */
+    let intakeStoppedAt: number | null = null;
     let hintWritten: IdleWakeHint | null = null;
     const abort = async (message: string, details: object = {}): Promise<false> => {
         logger.info({ ...details, intentId: intent.id }, `Idle shutdown aborted: ${message}; staying up`);
         await withdrawIdleShutdownIntent(redis, intent.id).catch(() => undefined);
-        if (routingStopped && routing) await routing.start();
+        if (intakeStoppedAt !== null && routing) await resumeIntakeOwingReplay(ctx, routing, intakeStoppedAt, hintWritten);
         // The hint file must not make the next plain start look like a wake.
-        if (hintWritten) await (ctx.writeHint ?? writeIdleWakeHint)({ ...hintWritten, wokeAt: new Date().toISOString() }).catch(() => undefined);
+        else if (hintWritten) await (ctx.writeHint ?? writeIdleWakeHint)({ ...hintWritten, wokeAt: new Date().toISOString() }).catch(() => undefined);
         return false;
     };
 
@@ -219,8 +212,9 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
         return abort('could not record the drain request', { error: (error as Error).message });
     }
     if (routing) {
+        // The relay caches what arrives from here on: the replay cursor must not be later than this.
+        intakeStoppedAt = Date.now();
         await routing.stop();
-        routingStopped = true;
     }
     const quiesced = await waitForIdleAcks(redis, intent, { roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs });
     if (!quiesced.confirmed) return abort('API processes did not confirm they stopped admitting requests', { pending: quiesced.pending });
@@ -239,7 +233,7 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     //    A replay still owed for an earlier stop stays owed: its cursor is carried into the new hint.
     let hint: IdleWakeHint;
     try {
-        hint = await persistStopHint(ctx, { reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: routing !== null });
+        hint = await persistStopHint(ctx, { reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: routing !== null, intakeStoppedAt });
         hintWritten = hint;
     } catch (error) {
         return abort('could not write the wake hint file', { error: (error as Error).message, file: resolveIdleWakeHintPath() });
@@ -285,6 +279,28 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     return true;
 }
 
+/**
+ * An aborted drain that had disconnected Connect intake: record the replay
+ * owed for the disconnection (before reconnecting, so a crash keeps it), then
+ * reconnect and ask for that replay. The relay only replays on request, so
+ * reconnecting alone would leave the deliveries cached while draining behind.
+ */
+async function resumeIntakeOwingReplay(ctx: IdleDrainContext, routing: IdleRoutingIntake, intakeStoppedAt: number, hintWritten: IdleWakeHint | null): Promise<void> {
+    const io = { readHint: ctx.readHint, writeHint: ctx.writeHint };
+    let owed: IdleWakeHint;
+    try {
+        // A hint already written for this stop holds the obligation; it must not make the next plain start look like a wake.
+        owed = hintWritten ? { ...hintWritten, wokeAt: new Date().toISOString() } : await recordAbortedDrainReplay(intakeStoppedAt, io);
+        if (hintWritten) await withHintFile(() => (ctx.writeHint ?? writeIdleWakeHint)(owed));
+    } catch (error) {
+        // Still asked for below; only a restart before the relay answers would lose it.
+        owed = hintWritten ?? buildIdleWakeHint({ shutdownAt: intakeStoppedAt, reason: 'idle shutdown aborted', idleForMs: 0, nextDue: [], connect: true, intakeStoppedAt });
+        logger.warn({ error: (error as Error).message, file: resolveIdleWakeHintPath() }, 'Idle shutdown: could not record the Connect replay owed for the aborted drain');
+    }
+    await routing.start();
+    void requestOwedReplay(routing, owed, io).catch(() => undefined);
+}
+
 /** Step 7: the daemon itself, or (composed) the process's one coordinated close of every component. */
 async function stopDaemonProcess(ctx: IdleDrainContext, record: IdleShutdownRecord): Promise<void> {
     if (ctx.stopProcess) {
@@ -306,7 +322,6 @@ export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdl
         redis: deps.redis,
         database: db,
         intakeMode: deps.intakeMode,
-        pollingIntervalMs: deps.pollingIntervalMs,
         connectInFlight: () => deps.getRoutingService()?.getInFlightCount() ?? 0,
         connectIdleWakeSupport: () => deps.getRoutingService()?.getIdleWakeSupport() ?? null,
     });
@@ -384,7 +399,7 @@ export async function recoverFromIdleWake(deps: {
         logger.info({ ...record, dueWhileStopped: due.map(item => item.detail) }, 'Woke from idle shutdown');
         const consumed: IdleWakeHint = { ...hint, wokeAt: record.wokeAt };
         hint = consumed;
-        await updateHint(file, current => (current.shutdownAt === consumed.shutdownAt ? { ...current, wokeAt: consumed.wokeAt } : null)).catch((error: Error) => {
+        await updateHint(hintFileIo(file), current => (current.shutdownAt === consumed.shutdownAt ? { ...current, wokeAt: consumed.wokeAt } : null)).catch((error: Error) => {
             logger.warn({ error: error.message, file }, 'Could not mark the idle wake hint consumed');
         });
     }
@@ -398,25 +413,7 @@ export async function recoverFromIdleWake(deps: {
         return;
     }
     logger.info({ since }, 'Connect accepted the replay of deliveries cached while stopped');
-    const accepted = hint;
-    await updateHint(file, current => (current.shutdownAt === accepted.shutdownAt
-        ? { ...current, connectReplay: 'accepted' }
-        // A later stop replaced the hint meanwhile: its own replay (since that stop) is still owed.
-        : (current.replaySince === since ? { ...current, replaySince: undefined } : null)),
-    ).catch((error: Error) => {
+    await recordAcceptedReplay(hintFileIo(file), hint, connectReplaySince(hint)).catch((error: Error) => {
         logger.warn({ error: error.message, file }, 'Could not record the accepted replay in the idle wake hint');
-    });
-}
-
-/**
- * Rewrite the hint file from what it holds now: `update(current)`, or leave
- * it when that returns null. Recovery runs alongside the idle controller, so
- * a later stop may have replaced the hint recovery started from.
- */
-async function updateHint(file: string, update: (current: IdleWakeHint) => IdleWakeHint | null): Promise<void> {
-    await withHintFile(async () => {
-        const current = await readIdleWakeHint(file);
-        const next = current ? update(current) : null;
-        if (next) await writeIdleWakeHint(next, file);
     });
 }

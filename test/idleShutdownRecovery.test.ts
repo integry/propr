@@ -12,6 +12,7 @@ const {
     RoutingWebSocketIntakeService,
     buildIdleWakeHint,
     closeConnection,
+    connectReplaySince,
     readIdleWakeHint,
     writeIdleWakeHint,
 } = await import('@propr/core');
@@ -205,7 +206,8 @@ test('a replay owed since an earlier stop is requested from that stop, and a lat
     // Before the relay answers, another idle stop replaces the hint (carrying the same cursor).
     const laterStop = SHUTDOWN_AT + 3_600_000;
     await new Promise(resolve => setTimeout(resolve, 10));
-    await writeIdleWakeHint(buildIdleWakeHint({ shutdownAt: laterStop, reason: 'idle', idleForMs: 0, nextDue: [], connect: true, pendingReplaySince: earlier }), hintFile);
+    const laterIntakeStoppedAt = laterStop - 20_000;
+    await writeIdleWakeHint(buildIdleWakeHint({ shutdownAt: laterStop, reason: 'idle', idleForMs: 0, nextDue: [], connect: true, pendingReplaySince: earlier, intakeStoppedAt: laterIntakeStoppedAt }), hintFile);
     acknowledge('replay');
     await recovery;
     const after = await readIdleWakeHint(hintFile);
@@ -213,5 +215,21 @@ test('a replay owed since an earlier stop is requested from that stop, and a lat
     assert.equal(after?.wokeAt, undefined, 'the later stop is still a pending wake');
     assert.equal(after?.connectReplay, 'pending', 'deliveries cached since the later stop are still owed');
     assert.equal(after?.replaySince, undefined, 'the acknowledged replay covered the earlier interval');
+    assert.equal(connectReplaySince(after!), new Date(laterIntakeStoppedAt).toISOString(), 'the later stop still owes everything since its intake disconnected');
+    await service.stop();
+});
+
+test('the replay starts when intake disconnected for the drain, not at the later shutdown time', async () => {
+    const intakeStoppedAt = SHUTDOWN_AT - 25_000;
+    await writeIdleWakeHint(buildIdleWakeHint({ shutdownAt: SHUTDOWN_AT, reason: 'idle', idleForMs: 0, nextDue: [], connect: true, intakeStoppedAt }), hintFile);
+    const service = routingService();
+    await service.start();
+    FakeSocket.last!.emit('open');
+    const recovery = recoverFromIdleWake({ redis: new FakeRedis() as never, routingService: service, processStartedAt: Date.now(), waitMs: 0 });
+    await sentFrames('replay', 1);
+    assert.equal(FakeSocket.last!.frames('replay')[0].since, new Date(intakeStoppedAt).toISOString(), 'deliveries cached while draining are covered');
+    acknowledge('replay');
+    await recovery;
+    assert.equal((await readIdleWakeHint(hintFile))?.connectReplay, 'accepted');
     await service.stop();
 });

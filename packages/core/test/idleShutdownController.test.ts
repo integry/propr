@@ -44,14 +44,14 @@ class FakeRedis implements IdleRedis {
     async hdel(key: string, field: string) { return this.hashes.get(key)?.delete(field) ? 1 : 0; }
 }
 
-function controllerHarness(options: { signals: () => IdleSignals; config?: IdleShutdownConfig; onIdle?: (request: IdleShutdownRequest) => Promise<boolean> }) {
+function controllerHarness(options: { signals: () => IdleSignals; config?: IdleShutdownConfig; resolveConfig?: () => Promise<IdleShutdownConfig>; onIdle?: (request: IdleShutdownRequest) => Promise<boolean> }) {
     let now = START;
     const redis = new FakeRedis();
     const requests: IdleShutdownRequest[] = [];
     const controller = new IdleShutdownController({
         redis,
         now: () => now,
-        resolveConfig: async () => options.config ?? resolveIdleShutdownConfig({ PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: '15m' }),
+        resolveConfig: options.resolveConfig ?? (async () => options.config ?? resolveIdleShutdownConfig({ PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: '15m' })),
         collect: async () => options.signals(),
         onIdle: async request => { requests.push(request); return options.onIdle ? options.onIdle(request) : true; },
     });
@@ -153,6 +153,56 @@ test('disabled (the default) publishes status but never stops', async () => {
     assert.equal(harness.status().enabled, false);
     assert.equal(harness.status().idle, true);
     assert.equal(harness.status().shutdownAt, null);
+});
+
+test('a setting that cannot be read prohibits shutdown and starts the idle period over', async () => {
+    const enabled = resolveIdleShutdownConfig({ PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: '15m' });
+    let readable = true;
+    const harness = controllerHarness({
+        signals: emptyIdleSignals,
+        resolveConfig: async () => { if (!readable) throw new Error('Invalid JSON in stored setting'); return enabled; },
+    });
+    await harness.controller.tick();
+    harness.advance(14 * MINUTE);
+    readable = false;
+    await harness.controller.tick();
+    harness.advance(5 * MINUTE);
+    await harness.controller.tick();
+    assert.equal(harness.requests.length, 0, 'no shutdown on a cached setting, though the window has passed');
+    const status = harness.status();
+    assert.equal(status.enabled, true, 'the last known setting is still shown');
+    assert.equal(status.idle, false);
+    assert.equal(status.idleSince, null);
+    assert.equal(status.shutdownAt, null);
+    assert.ok(status.blockers.some(blocker => blocker.signal === 'unavailable' && /idle shutdown setting/.test(blocker.detail)), 'the unreadable setting is a blocker');
+
+    // Readable again: a whole new window, counted from now.
+    readable = true;
+    await harness.controller.tick();
+    assert.equal(harness.status().idleSince, new Date(START + 19 * MINUTE).toISOString());
+    harness.advance(14 * MINUTE);
+    await harness.controller.tick();
+    assert.equal(harness.requests.length, 0);
+    harness.advance(MINUTE);
+    await harness.controller.tick();
+    assert.equal(harness.requests.length, 1);
+});
+
+test('the final check before stopping re-reads the setting', async () => {
+    const enabled = resolveIdleShutdownConfig({ PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: '15m' });
+    let reads = 0;
+    let failAt = Infinity;
+    const harness = controllerHarness({
+        signals: emptyIdleSignals,
+        resolveConfig: async () => { reads += 1; if (reads >= failAt) throw new Error('Invalid JSON in stored setting'); return enabled; },
+    });
+    await harness.controller.tick();
+    harness.advance(15 * MINUTE);
+    // The tick's own read succeeds; the read right before stopping fails.
+    failAt = reads + 2;
+    await harness.controller.tick();
+    assert.equal(harness.requests.length, 0);
+    assert.equal(harness.status().idle, true);
 });
 
 test('queue collector finds every queue and the earliest delayed job', async () => {

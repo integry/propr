@@ -18,9 +18,11 @@ import {
     type IdleShutdownStatus,
     type IdleWakeRecord,
 } from '@propr/shared';
-import { evaluateIdle, IdleClock, type IdleEvaluation, type IdleSignals } from './idleDetector.js';
+import { emptyIdleSignals, evaluateIdle, IdleClock, type IdleEvaluation, type IdleSignals } from './idleDetector.js';
 
 export const DEFAULT_IDLE_CHECK_INTERVAL_MS = 30_000;
+/** The blocker shown while the setting cannot be read (`could not read …`). */
+export const IDLE_SETTING_UNAVAILABLE = 'the idle shutdown setting';
 /** The published status outlives a few missed ticks, then disappears with the daemon. */
 export const IDLE_STATUS_TTL_SECONDS = 120;
 
@@ -101,9 +103,11 @@ export class IdleShutdownController {
         try {
             config = await this.options.resolveConfig();
         } catch (error) {
-            // An unreadable setting keeps the last known value (or off).
-            this.options.log?.warn({ error: (error as Error).message }, 'Idle shutdown: could not read the setting');
-            config = this.lastConfig ?? { enabled: false, afterMs: 0, source: 'default', warnings: [] };
+            // No authority to stop without the setting: the idle period starts over once it reads again.
+            this.options.log?.warn({ error: (error as Error).message }, 'Idle shutdown: could not read the setting; not stopping');
+            this.clock.reset();
+            await this.publishUnreadableConfig();
+            return;
         }
         if (this.lastConfig?.enabled !== config.enabled || this.lastConfig?.afterMs !== config.afterMs) {
             this.options.log?.info({ enabled: config.enabled, afterMs: config.afterMs, source: config.source }, 'Idle shutdown setting');
@@ -120,8 +124,26 @@ export class IdleShutdownController {
         }
     }
 
+    /**
+     * The status for a tick whose setting could not be read: the last known
+     * setting for display only, with the unreadable setting as a blocker.
+     */
+    private async publishUnreadableConfig(): Promise<void> {
+        const display = this.lastConfig ?? { enabled: false, afterMs: 0, source: 'default' as const, warnings: [] };
+        const signals = await this.options.collect().catch(() => emptyIdleSignals());
+        signals.unavailable.push(IDLE_SETTING_UNAVAILABLE);
+        const now = this.now();
+        await this.publish(display, evaluateIdle(signals, { now, windowMs: display.afterMs }), null, now);
+    }
+
     /** Re-collect right before stopping: the last tick may be up to one interval old. */
     private async shutdownIfStillIdle(config: IdleShutdownConfig, idleSince: number): Promise<void> {
+        // The setting too: collecting takes time, and stopping needs the setting as it is now.
+        const current = await this.options.resolveConfig().catch(() => null);
+        if (!current?.enabled || current.afterMs !== config.afterMs) {
+            this.clock.reset();
+            return;
+        }
         const now = this.now();
         const signals = await this.options.collect();
         const evaluation = evaluateIdle(signals, { now, windowMs: config.afterMs });

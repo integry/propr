@@ -7,7 +7,7 @@ import path from 'node:path';
 const directory = await mkdtemp(path.join(tmpdir(), 'idle-drain-'));
 process.env.PROPR_IDLE_WAKE_HINT_FILE = path.join(directory, 'idle-wake-hint.json');
 
-const { buildIdleWakeHint, closeConnection, emptyIdleSignals, idleActivity, IdleActivityTracker, setIdleShutdownComposedProcess, startIdleShutdownListener } = await import('@propr/core');
+const { buildIdleWakeHint, closeConnection, connectReplaySince, emptyIdleSignals, idleActivity, IdleActivityTracker, setIdleShutdownComposedProcess, startIdleShutdownListener } = await import('@propr/core');
 const { drainIdleControlPlane } = await import('../src/daemon/idleShutdown.js');
 const { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig } = await import('@propr/shared');
 type IdleSignals = ReturnType<typeof emptyIdleSignals>;
@@ -69,11 +69,32 @@ const TIMINGS = { quiesceTimeoutMs: 1_000, stopConfirmTimeoutMs: 1_000, deregist
 
 class FakeRouting {
     calls: string[] = [];
+    stoppedAt: number | null = null;
+    replays: Array<string | null> = [];
+    /** Settles the outstanding replay request (the relay's answer). */
+    answerReplay: (accepted: boolean) => void = () => undefined;
     constructor(private readonly acceptsWakeHint: boolean) {}
     async sendWakeHint() { this.calls.push('wake_hint'); return this.acceptsWakeHint; }
-    async stop() { this.calls.push('stop'); }
+    async stop() { this.calls.push('stop'); this.stoppedAt ??= Date.now(); }
     async start() { this.calls.push('start'); }
+    requestReplay(since: string | null) {
+        this.calls.push('replay');
+        this.replays.push(since);
+        return new Promise<boolean>(resolve => { this.answerReplay = resolve; });
+    }
 }
+
+/** A hint file in memory: reads return what was last written. */
+function hintStore(initial: unknown = null) {
+    const store = { current: initial as { shutdownAt: string; connectReplay?: string; wokeAt?: string; intakeStoppedAt?: string; replaySince?: string } | null };
+    return {
+        store,
+        readHint: async () => store.current,
+        writeHint: async (hint: unknown) => { store.current = JSON.parse(JSON.stringify(hint)); },
+    };
+}
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 20));
 
 /** An API process: a tracker that quiesces on request, like `startApiIdleShutdown`. */
 function apiProcess(hub: Hub, events: string[]) {
@@ -107,7 +128,7 @@ function workerProcess(hub: Hub, events: string[], options: { acknowledges?: boo
     return { stop: () => listener.stop() };
 }
 
-function context(hub: Hub, routing: FakeRouting | null, overrides: { collect?: () => Promise<IdleSignals>; writeHint?: () => Promise<void>; readHint?: () => Promise<unknown> } = {}) {
+function context(hub: Hub, routing: FakeRouting | null, overrides: { collect?: () => Promise<IdleSignals>; writeHint?: (hint: unknown) => Promise<void>; readHint?: () => Promise<unknown> } = {}) {
     const exits: number[] = [];
     const hints: unknown[] = [];
     return {
@@ -154,7 +175,7 @@ test('a request that reaches the API during the drain aborts it before any worke
     assert.equal(await drainIdleControlPlane(request, ctx), false);
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.deepEqual(events, ['api quiesced', 're-check', 'api resumed']);
-    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start'], 'Connect intake resumes');
+    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay'], 'Connect intake resumes and asks for what was cached while disconnected');
     assert.equal(api.tracker.quiescedIntent, null);
     assert.deepEqual(exits, []);
     await api.stop();
@@ -170,7 +191,7 @@ test('a wake hint file that cannot be written aborts the shutdown and restores i
     assert.equal(await drainIdleControlPlane(request, ctx), false);
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.deepEqual(events, ['api quiesced', 'api resumed']);
-    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start']);
+    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay'], 'the replay is still requested in process');
     assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'no stop request was issued');
     assert.deepEqual(exits, []);
     await api.stop();
@@ -224,6 +245,67 @@ test('a stop while an earlier wake still owes its Connect replay keeps that repl
     const accepted = context(new Hub(), new FakeRouting(true), { readHint: async () => ({ ...owed, connectReplay: 'accepted' }) });
     assert.equal(await drainIdleControlPlane(request, accepted.ctx), true);
     assert.equal((accepted.hints[0] as { replaySince?: string }).replaySince, undefined);
+});
+
+test('a successful stop owes the replay from before intake disconnected, not from the later shutdown time', async () => {
+    const hub = new Hub();
+    const routing = new FakeRouting(true);
+    // Draining takes a while: a delivery cached by the relay during it must be inside the replay.
+    const { ctx, exits, hints } = context(hub, routing, { collect: async () => { await new Promise(resolve => setTimeout(resolve, 30)); return emptyIdleSignals(); } });
+    assert.equal(await drainIdleControlPlane(request, ctx), true);
+    assert.deepEqual(exits, [0]);
+    const written = hints[0] as { shutdownAt: string; intakeStoppedAt?: string; connectReplay?: string };
+    assert.equal(written.connectReplay, 'pending');
+    assert.ok(written.intakeStoppedAt, 'the disconnect time is recorded');
+    assert.ok(Date.parse(written.intakeStoppedAt!) <= routing.stoppedAt!, 'taken before intake disconnected');
+    assert.ok(Date.parse(written.intakeStoppedAt!) < Date.parse(written.shutdownAt));
+    assert.equal(connectReplaySince(written as never), written.intakeStoppedAt, 'the next start asks for everything since the disconnect');
+});
+
+test('an aborted drain records the replay owed for its disconnection and asks for it after reconnecting', async () => {
+    const hub = new Hub();
+    const routing = new FakeRouting(true);
+    const hints = hintStore();
+    const { ctx, exits } = context(hub, routing, { ...hints, collect: async () => ({ ...emptyIdleSignals(), httpRequests: 1 }) });
+    assert.equal(await drainIdleControlPlane(request, ctx), false);
+    assert.deepEqual(exits, []);
+    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay']);
+    const owed = hints.store.current!;
+    assert.equal(owed.connectReplay, 'pending', 'the obligation is durable before the relay answers');
+    assert.ok(owed.wokeAt, 'not a stop: the next plain start is not counted as a wake');
+    assert.ok(Date.parse(owed.intakeStoppedAt!) <= routing.stoppedAt!);
+    assert.deepEqual(routing.replays, [owed.intakeStoppedAt], 'replay since the disconnect');
+
+    // Kept pending until acknowledged, then released.
+    routing.answerReplay(true);
+    await settle();
+    assert.equal(hints.store.current!.connectReplay, 'accepted');
+});
+
+test('an aborted drain whose replay is refused leaves it pending; an earlier owed replay keeps its cursor', async () => {
+    const earlierStop = Date.UTC(2026, 10, 24, 2, 0, 0);
+    const owedEarlier = { ...buildIdleWakeHint({ shutdownAt: earlierStop, reason: 'idle', idleForMs: 0, nextDue: [], connect: true, intakeStoppedAt: earlierStop - 10_000 }), wokeAt: new Date(earlierStop + 60_000).toISOString() };
+    const routing = new FakeRouting(true);
+    const hints = hintStore(owedEarlier);
+    const { ctx } = context(new Hub(), routing, { ...hints, collect: async () => ({ ...emptyIdleSignals(), httpRequests: 1 }) });
+    assert.equal(await drainIdleControlPlane(request, ctx), false);
+    assert.deepEqual(routing.replays, [new Date(earlierStop - 10_000).toISOString()], 'the earliest owed cursor covers this disconnection too');
+    assert.equal(hints.store.current!.shutdownAt, owedEarlier.shutdownAt, 'the earlier obligation is kept, not replaced');
+    routing.answerReplay(false);
+    await settle();
+    assert.equal(hints.store.current!.connectReplay, 'pending', 'requested again by a later drain or start');
+});
+
+test('an aborted drain that never disconnected intake owes no replay', async () => {
+    const routing = new FakeRouting(true);
+    const hints = hintStore();
+    const hub = new Hub();
+    const { ctx } = context(hub, routing, { ...hints });
+    // The drain request cannot be recorded: abort before intake is stopped.
+    (ctx.redis as unknown as { set: () => Promise<never> }).set = async () => { throw new Error('READONLY'); };
+    assert.equal(await drainIdleControlPlane(request, ctx), false);
+    assert.deepEqual(routing.calls, ['wake_hint']);
+    assert.equal(hints.store.current, null);
 });
 
 test('in a composed process the participants only acknowledge and the daemon runs the coordinated close', async () => {

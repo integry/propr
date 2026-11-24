@@ -98,9 +98,12 @@ test('overdue scheduled work is reported as due now', () => {
     assert.match(result.blockers[0].detail, /due now/);
 });
 
-test('polling is always within the window', () => {
-    const result = evaluate({ scheduled: [{ kind: 'polling', dueAt: NOW + 60_000, detail: 'GitHub polling' }] });
+test('polling intake always blocks, whatever its interval, and reports no deadline', () => {
+    const result = evaluate({ pollingIntake: true });
     assert.equal(result.idle, false);
+    assert.equal(result.blockers[0].signal, 'scheduled_work');
+    assert.match(result.blockers[0].detail, /polling/);
+    assert.equal(result.nextDueAt, null, 'no observation-time deadline that could drift past the real next poll');
 });
 
 test('IdleClock requires continuous idleness and resets on activity', () => {

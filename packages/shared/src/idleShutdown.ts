@@ -230,6 +230,12 @@ export interface IdleWakeHint {
      * absent means `shutdownAt`.
      */
     replaySince?: string;
+    /**
+     * When this stop disconnected Connect intake (ISO), taken before the
+     * disconnect: deliveries the relay cached from then on are this stop's
+     * to replay. Absent on hints written before it existed (`shutdownAt`).
+     */
+    intakeStoppedAt?: string;
 }
 
 export interface IdleWakeRecord {

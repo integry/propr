@@ -16,17 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     supervisor with an `on-failure` restart policy leaves the host stopped.
   - Idle means no queued or running BullMQ job in any queue, no active agent
     run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
-    Web UI session or in-flight MCP/HTTP request, and no scheduled work due
-    within the window.
+    Web UI session or in-flight MCP/HTTP request, no scheduled work due
+    within the window, and no polling intake. A setting that cannot be read
+    prevents the stop and restarts the idle period.
   - With Connect intake the relay must acknowledge the wake hint
     (`wake_hint_ack`) or the instance stays up; the current relay does not, so
     Connect instances need propr-routing#335. The daemon quiesces Connect and
     the API before its last check, aborts (and resumes intake) if the wake hint
     file cannot be written, and exits only after every registered API and
     worker process has acknowledged the stop. On the next start it asks Connect
-    to replay deliveries cached while stopped, keeping that obligation in the
-    hint file until the relay acknowledges it (`replay_ack`), and records the
-    wake source and cold-start duration. `POST /wake` is the Connect wake ping.
+    to replay deliveries cached since intake disconnected for the drain,
+    keeping that obligation in the hint file until the relay acknowledges it
+    (`replay_ack`); an aborted drain asks for the same replay once it
+    reconnects. It also records the wake source and cold-start duration. `POST /wake` is the Connect wake ping.
   - An API or worker process whose heartbeat or activity record is missing,
     stale or malformed keeps the instance awake until it is confirmed stopped.
   - `propr check`, `GET /api/status` (`idleShutdown`) and

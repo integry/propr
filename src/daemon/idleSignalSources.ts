@@ -57,7 +57,6 @@ export interface DaemonIdleSourceDeps {
     redis: Redis;
     database: Knex;
     intakeMode: string;
-    pollingIntervalMs: number;
     connectInFlight: () => number;
     /** Null without Connect intake. */
     connectIdleWakeSupport?: () => IdleWakeSupport | null;
@@ -79,9 +78,8 @@ export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<stri
         'Connect idle wake': async () => (deps.connectIdleWakeSupport?.() === 'rejected'
             ? { unavailable: ['Connect idle wake support (the relay did not acknowledge the wake hint)'] }
             : {}),
-        // Polling is scheduled work: the next poll is always one interval away.
-        'polling': async () => (deps.intakeMode === 'polling'
-            ? { scheduled: [{ kind: 'polling' as const, dueAt: now() + deps.pollingIntervalMs, detail: 'GitHub polling' }] }
-            : {}),
+        // Polling intake always blocks: its timer keeps its own cadence (set at startup, not at
+        // this observation), so a deadline derived from `now()` would drift past the real next poll.
+        'polling': async () => (deps.intakeMode === 'polling' ? { pollingIntake: true } : {}),
     };
 }

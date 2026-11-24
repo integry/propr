@@ -41,19 +41,20 @@ The daemon checks every 30 seconds. The instance is idle only when all of these 
 - Connect deliveries received but not yet acknowledged;
 - running goals;
 - Ultrafix loops waiting for CI or holding a claimed step;
-- scheduled work due **within the idle window**: scheduled automations (including a claimed slot), deferred automation runs, delayed jobs, Ultrafix retries, and GitHub polling.
+- scheduled work due **within the idle window**: scheduled automations (including a claimed slot), deferred automation runs, delayed jobs and Ultrafix retries;
+- GitHub polling intake, always (see below).
 
-A signal that cannot be read keeps the instance awake. That includes the API and worker processes themselves: each one registers with the daemon and refreshes its entry every 15 seconds, and each API process publishes its sessions and requests. A registered process whose heartbeat or activity record is missing, older than 45 seconds or malformed blocks idle shutdown (`could not read api:<host>:<pid> …`) until it is confirmed stopped: it removed its entry on a clean shutdown, or the daemon sees on the same host and pid namespace that the pid is gone. `/health` and `/wake` requests are not activity, so platform health checks do not keep it awake; any other request does, including an uptime monitor polling `/api/status`.
+A signal that cannot be read keeps the instance awake, and so does the idle shutdown setting itself: if it cannot be read (for example a malformed stored value), the check does not stop the instance, the idle period starts over, and the status shows the last known setting with the blocker `could not read the idle shutdown setting`. The setting is read again right before stopping. Signals that cannot be read include the API and worker processes themselves: each one registers with the daemon and refreshes its entry every 15 seconds, and each API process publishes its sessions and requests. A registered process whose heartbeat or activity record is missing, older than 45 seconds or malformed blocks idle shutdown (`could not read api:<host>:<pid> …`) until it is confirmed stopped: it removed its entry on a clean shutdown, or the daemon sees on the same host and pid namespace that the pid is gone. `/health` and `/wake` requests are not activity, so platform health checks do not keep it awake; any other request does, including an uptime monitor polling `/api/status`.
 
 Things that wait for a person (an automation run awaiting approval, a follow-up held for an operator) do not keep the instance awake: the person's next action reaches it through the Web UI, MCP or GitHub and wakes it.
 
 :::note Polling intake never idles
-In `polling` intake mode the next poll is always less than one window away, so the instance never stops. Use the default `routing_websocket` (Connect) intake, or `direct_webhook` behind a proxy that starts the host on a request.
+In `polling` intake mode the poll timer keeps its own schedule, which a stop would miss, so polling intake always blocks idle shutdown, whatever `POLLING_INTERVAL_MS` is, and the instance never stops. Use the default `routing_websocket` (Connect) intake, or `direct_webhook` behind a proxy that starts the host on a request.
 :::
 
 ## How it stops
 
-Once the instance has been idle for the whole window, the daemon checks once more and then drains. Every step up to 5 can abort: the daemon then withdraws its request, the API admits requests again, Connect intake reconnects and the idle period starts over.
+Once the instance has been idle for the whole window, the daemon checks once more and then drains. Every step up to 5 can abort: the daemon then withdraws its request, the API admits requests again, Connect intake reconnects and the idle period starts over. Connect only replays on request, so an abort after intake was stopped first records a pending replay in the wake hint file (since `intakeStoppedAt`, with `wokeAt` set so the next start is not counted as a wake), then reconnects and asks for the deliveries cached while it was disconnected. The replay stays `pending` until Connect acknowledges it. If it is never acknowledged, the next drain carries its cursor and the next start asks again.
 
 1. With Connect intake, sends the **wake hint** (`wake_hint` frame, see below) and waits up to 10 seconds for Connect to acknowledge it. Without an acknowledgement nothing is stopped.
 2. Quiesces every producer: stops Connect intake (deliveries in flight finish and are acknowledged, then the socket closes with code 1000) and asks each API process to stop admitting requests. A request that arrives now gets `503` with `Retry-After: 5`; each API process waits for its requests in flight and confirms.
@@ -84,11 +85,12 @@ Before exiting, the daemon publishes the next due time of scheduled work:
   "idleForMs": 900000,
   "nextDueAt": "2026-11-24T14:00:00.000Z",
   "nextDue": [{ "kind": "automation", "dueAt": 1795010400000, "detail": "scheduled automation" }],
-  "connectReplay": "pending"
+  "connectReplay": "pending",
+  "intakeStoppedAt": "2026-11-24T09:59:40.000Z"
 }
 ```
 
-`nextDueAt` is `null` when nothing is scheduled; only a request or a delivery needs to wake the instance then. The next start adds `wokeAt` to mark the hint as consumed. `connectReplay` is present only after a stop with Connect intake: `pending` until Connect has acknowledged the replay request, then `accepted`. When the instance stops again while an earlier replay is still `pending`, the new hint keeps it `pending` and records `replaySince`, the earlier stop's time, so the next start asks for everything since then.
+`nextDueAt` is `null` when nothing is scheduled; only a request or a delivery needs to wake the instance then. The next start adds `wokeAt` to mark the hint as consumed. `connectReplay` is present only after a stop with Connect intake: `pending` until Connect has acknowledged the replay request, then `accepted`. `intakeStoppedAt` is when the drain disconnected Connect intake. That is before `shutdownAt`, so deliveries Connect cached while the drain finished are included in the replay. When the instance stops again while an earlier replay is still `pending`, the new hint keeps it `pending` and records `replaySince`, the earlier stop's replay start, so the next start asks for everything since then.
 
 ## How it wakes
 
@@ -104,7 +106,7 @@ Expect a cold start of about 5–10 seconds (host start plus Node boot) before w
 
 On start the daemon reads the wake hint file and, when it records an idle stop:
 
-- when `connectReplay` is `pending`, asks Connect for the deliveries cached while it was stopped (`{ "type": "replay", "reason": "idle_wake", "since": "<replaySince or shutdownAt>" }`) and waits for `{ "type": "replay_ack" }`. Only then does it set `connectReplay` to `accepted`. If Connect does not acknowledge (or Connect intake is not running), the obligation stays `pending` and the next start asks again. A connection that drops before the answer is retried on the next connection. Connect keeps deliveries for a disconnected instance: on the free tier the newest 25 for one hour, on paid plans 500 for 24 hours. Delivery IDs are de-duplicated, so a delivery that arrives twice is processed once;
+- when `connectReplay` is `pending`, asks Connect for the deliveries cached while it was stopped (`{ "type": "replay", "reason": "idle_wake", "since": "<replaySince, else intakeStoppedAt, else shutdownAt>" }`) and waits for `{ "type": "replay_ack" }`. Only then does it set `connectReplay` to `accepted`. If Connect does not acknowledge (or Connect intake is not running), the obligation stays `pending` and the next start asks again. A connection that drops before the answer is retried on the next connection. Connect keeps deliveries for a disconnected instance: on the free tier the newest 25 for one hour, on paid plans 500 for 24 hours. Delivery IDs are de-duplicated, so a delivery that arrives twice is processed once;
 - resumes scheduled work that became due while stopped: the schedule sweeps run at startup, and missed automation slots coalesce into **one** run for the latest slot;
 - records the wake: its source (`http`, `connect_ping`, `schedule` or `unknown`) and the cold-start duration (process start to daemon ready).
 
