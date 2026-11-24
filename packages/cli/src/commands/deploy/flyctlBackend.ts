@@ -83,8 +83,20 @@ export class FlyctlBackend {
   constructor(private readonly run: FlyctlRunner) {}
 
   appExists(app: string): boolean {
+    return this.appOwner(app).exists;
+  }
+
+  /**
+   * Whether the app exists and, when `apps list` says, the slug of the org
+   * that owns it (`org` is undefined when flyctl does not report one).
+   */
+  appOwner(app: string): { exists: boolean; org?: string } {
     const result = check(this.run(["apps", "list", "--json"]), "apps list");
-    return parseJsonArray(result.stdout, "apps list").some((entry) => (entry.Name ?? entry.name) === app);
+    const entry = parseJsonArray(result.stdout, "apps list").find((e) => (e.Name ?? e.name) === app);
+    if (!entry) return { exists: false };
+    const organization = (entry.Organization ?? entry.organization) as Record<string, unknown> | undefined;
+    const slug = organization?.Slug ?? organization?.slug;
+    return { exists: true, org: typeof slug === "string" && slug ? slug : undefined };
   }
 
   /** The token of the current `fly auth login` session, or undefined when flyctl cannot print one. */

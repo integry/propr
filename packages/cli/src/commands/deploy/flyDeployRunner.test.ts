@@ -10,7 +10,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { test } from "node:test";
 import { createFlyctlRunner, FlyctlBackend, renderSecretsImport, type FlyctlRunner } from "./flyctlBackend.js";
 import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./flyDeployRunner.js";
-import type { FlyMachinesApi } from "./flyMachinesApi.js";
+import { FlyMachinesApi } from "./flyMachinesApi.js";
 import { renderFlyToml, type FlyDeployPlan } from "./flyMachineConfig.js";
 
 const plan: FlyDeployPlan = {
@@ -43,6 +43,7 @@ function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: 
     target: {
       kind: "machines-api",
       async orgPlan() { steps.push("org-plan"); return "free"; },
+      async appOwner() { steps.push("app-owner"); return { exists: false }; },
       async ensureApp() { steps.push("app"); return true; },
       async ensureVolume() { steps.push("volume"); return { id: "vol_1", created: true, sizeGb: 1 }; },
       async extendVolume() { throw new Error("not expected"); },
@@ -295,6 +296,7 @@ test("Machines API: an undersized reused volume is extended and confirmed; the D
   let createdConfig: unknown;
   const api = {
     async orgPlan() { calls.push("org-plan"); return "paid"; },
+    async appOwner() { return { exists: true, org: "personal" }; },
     async appExists() { return true; },
     async listVolumes() {
       const size = sizes[Math.min(listed++, sizes.length - 1)];
@@ -320,6 +322,7 @@ test("Machines API: a volume Fly still reports undersized stops the deploy befor
   const calls: string[] = [];
   const api = {
     async orgPlan() { return "unknown"; },
+    async appOwner() { return { exists: true, org: "personal" }; },
     async appExists() { return true; },
     async listVolumes() { return [{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 1, state: "created" }]; },
     async extendVolume() { calls.push("extend"); },
@@ -385,7 +388,7 @@ test("Free-plan preflight: a volume over 5 GB stops the deploy before anything i
     (error: Error) => /Free plan, which caps volumes at 5 GB, but --volume-size is 20 GB/.test(error.message)
       && /Nothing was created/.test(error.message) && /without --volume-size \(default: 1 GB/.test(error.message),
   );
-  assert.deepEqual(free.steps, ["org-plan"]);
+  assert.deepEqual(free.steps, ["app-owner", "org-plan"]);
 });
 
 test("Free-plan preflight: volumes within the cap are not looked up, and paid or unknown plans go ahead", async () => {
@@ -393,6 +396,7 @@ test("Free-plan preflight: volumes within the cap are not looked up, and paid or
   small.target.ensureVolume = async () => ({ id: "vol_1", created: true, sizeGb: 5 });
   await runFlyDeploy({ plan: { ...plan, volumeSizeGb: 5 }, secrets: { ...RELAY }, generatedSecrets: {} }, small.target);
   assert.equal(small.steps.includes("org-plan"), false);
+  assert.equal(small.steps.includes("app-owner"), false);
 
   for (const [orgPlan, warns] of [["paid", false], ["unknown", true]] as const) {
     const big = fakeTarget([]);
@@ -423,4 +427,130 @@ test("flyctl target reads the org plan with the session token from `fly auth tok
   const noSession: FlyctlRunner = () => ({ status: 1, stdout: "", stderr: "not logged in" });
   assert.equal(await createFlyctlTarget(new FlyctlBackend(noSession), tmpdir(), fetchImpl).orgPlan("personal"), "unknown");
   assert.equal(requests.length, 1);
+});
+
+test("Free-plan preflight: an existing app is checked against the org that owns it, not --org", async () => {
+  // Redeploying an app in a paid org while --org names a Free-plan org goes ahead.
+  const paidOwner = fakeTarget([]);
+  const asked: string[] = [];
+  paidOwner.target.appOwner = async () => ({ exists: true, org: "acme-paid" });
+  paidOwner.target.orgPlan = async (org) => { asked.push(org); return org === "acme-paid" ? "paid" : "free"; };
+  paidOwner.target.ensureApp = async () => false;
+  paidOwner.target.ensureVolume = async () => ({ id: "vol_1", created: false, sizeGb: 20 });
+  await runFlyDeploy({ plan: { ...plan, org: "personal", volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, paidOwner.target);
+  assert.deepEqual(asked, ["acme-paid"]);
+  assert.equal(paidOwner.deployed.length, 1);
+
+  // An existing app in a Free-plan org is refused even when --org is paid, and the error names the owner.
+  const freeOwner = fakeTarget([]);
+  freeOwner.target.appOwner = async () => { freeOwner.steps.push("app-owner"); return { exists: true, org: "hobby" }; };
+  freeOwner.target.orgPlan = async (org) => { freeOwner.steps.push(`org-plan:${org}`); return org === "hobby" ? "free" : "paid"; };
+  await assert.rejects(
+    runFlyDeploy({ plan: { ...plan, org: "acme-paid", volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, freeOwner.target),
+    /org hobby is on the Fly Free plan/,
+  );
+  assert.deepEqual(freeOwner.steps, ["app-owner", "org-plan:hobby"]);
+
+  // A new app is checked against --org, where it will be created.
+  const fresh = fakeTarget([]);
+  const freshAsked: string[] = [];
+  fresh.target.orgPlan = async (org) => { freshAsked.push(org); return "paid"; };
+  fresh.target.ensureVolume = async () => ({ id: "vol_1", created: true, sizeGb: 20 });
+  await runFlyDeploy({ plan: { ...plan, org: "acme-paid", volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, fresh.target);
+  assert.deepEqual(freshAsked, ["acme-paid"]);
+});
+
+test("Free-plan preflight: an existing app whose org cannot be read is not checked against --org", async () => {
+  const fake = fakeTarget([]);
+  fake.target.appOwner = async () => ({ exists: true });
+  fake.target.orgPlan = async () => { throw new Error("must not look up --org for an existing app"); };
+  fake.target.ensureApp = async () => false;
+  fake.target.ensureVolume = async () => ({ id: "vol_1", created: false, sizeGb: 20 });
+  const lines: string[] = [];
+  await runFlyDeploy({ plan: { ...plan, volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, fake.target, (l) => lines.push(l));
+  assert.equal(fake.deployed.length, 1);
+  assert.ok(lines.some((l) => l.includes("Could not read the org of app my-propr")));
+});
+
+test("flyctl target: the plan of an existing app's own org is looked up, read only and before any create", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  const slugs: string[] = [];
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    const slug = JSON.parse(String(init.body)).variables.slug as string;
+    slugs.push(slug);
+    return new Response(JSON.stringify({ data: { organization: { slug, paidPlan: slug === "acme-paid" } } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const run = (owner: string) => {
+    const calls: string[] = [];
+    const runner: FlyctlRunner = (args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "apps" && args[1] === "list") {
+        return { status: 0, stdout: JSON.stringify([{ Name: "my-propr", Organization: { Slug: owner } }]), stderr: "" };
+      }
+      if (args.join(" ") === "auth token") return { status: 0, stdout: "FlyV1 fm2_abc\n", stderr: "" };
+      if (args[0] === "volumes" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 20 }]), stderr: "" };
+      if (args[0] === "secrets" && args[1] === "list") return { status: 0, stdout: "[]", stderr: "" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    return { calls, target: createFlyctlTarget(new FlyctlBackend(runner), outDir, fetchImpl) };
+  };
+  try {
+    const paid = run("acme-paid");
+    await runFlyDeploy({ plan: { ...plan, org: "personal", volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, paid.target);
+    assert.deepEqual(slugs, ["acme-paid"]);
+    assert.equal(paid.calls.some((c) => c.startsWith("apps create")), false);
+
+    const free = run("hobby");
+    await assert.rejects(
+      runFlyDeploy({ plan: { ...plan, org: "acme-paid", volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, free.target),
+      /org hobby is on the Fly Free plan/,
+    );
+    assert.deepEqual(slugs, ["acme-paid", "hobby"]);
+    assert.deepEqual(free.calls, ["apps list --json", "auth token"]);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("Machines API target: the plan of an existing app's own org is looked up, read only and before any create", async () => {
+  const run = async (owner: string | undefined, requestedOrg: string) => {
+    const requests: string[] = [];
+    const slugs: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const method = init.method ?? "GET";
+      requests.push(`${method} ${url}`);
+      if (url === "https://api.fly.io/graphql") {
+        const slug = JSON.parse(String(init.body)).variables.slug as string;
+        slugs.push(slug);
+        return new Response(JSON.stringify({ data: { organization: { slug, paidPlan: slug === "acme-paid" } } }), { status: 200 });
+      }
+      if (method === "GET" && url.endsWith("/apps/my-propr")) {
+        return owner === undefined
+          ? new Response(JSON.stringify({ error: "not found" }), { status: 404 })
+          : new Response(JSON.stringify({ name: "my-propr", organization: { slug: owner } }), { status: 200 });
+      }
+      throw new Error(`stop after preflight: ${method} ${url}`);
+    }) as unknown as typeof fetch;
+    const api = new FlyMachinesApi({ token: "tok", fetchImpl, baseUrl: "https://fly.test/v1" });
+    const outcome = await runFlyDeploy({ plan: { ...plan, org: requestedOrg, volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, createMachinesApiTarget(api))
+      .then(() => "deployed", (error: Error) => error.message);
+    return { requests, slugs, outcome };
+  };
+
+  // Existing app in a paid org, --org a Free-plan org: past the preflight (stops at the next, stubbed call).
+  const paid = await run("acme-paid", "personal");
+  assert.deepEqual(paid.slugs, ["acme-paid"]);
+  assert.match(paid.outcome, /stop after preflight/);
+  assert.equal(paid.requests.some((r) => r.startsWith("POST https://fly.test/v1/apps")), false);
+
+  // Existing app in a Free-plan org, --org paid: refused, nothing created.
+  const free = await run("hobby", "acme-paid");
+  assert.deepEqual(free.slugs, ["hobby"]);
+  assert.match(free.outcome, /org hobby is on the Fly Free plan/);
+  assert.deepEqual(free.requests, ["GET https://fly.test/v1/apps/my-propr", "POST https://api.fly.io/graphql"]);
+
+  // New app: --org decides.
+  const fresh = await run(undefined, "personal");
+  assert.deepEqual(fresh.slugs, ["personal"]);
+  assert.match(fresh.outcome, /org personal is on the Fly Free plan/);
 });

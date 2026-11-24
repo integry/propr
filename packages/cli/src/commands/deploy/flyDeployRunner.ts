@@ -1,8 +1,9 @@
 /**
  * The `propr deploy fly` sequence, independent of how Fly is reached:
  *
- *   0. preflight  a volume over 5 GB is refused when the org is on the Fly
- *                 Free plan, which would reject it (see flyOrgPlan.ts)
+ *   0. preflight  a volume over 5 GB is refused when the org that owns (or,
+ *                 for a new app, will own) the app is on the Fly Free plan,
+ *                 which would reject it (see flyOrgPlan.ts)
  *   1. app        create it in the chosen org unless it exists
  *   2. volume     reuse the named volume in the region, else create it; a
  *                 reused volume smaller than the plan is extended and its new
@@ -44,6 +45,11 @@ export interface FlyDeployTarget {
   readonly kind: "flyctl" | "machines-api";
   /** The org's Fly plan; "unknown" when it cannot be read. Read only, never creates anything. */
   orgPlan(org: string): Promise<FlyOrgPlan>;
+  /**
+   * Whether the app exists and, if Fly says, the org that owns it. Read only:
+   * an existing app's resources belong to its own org, not to `--org`.
+   */
+  appOwner(app: string): Promise<{ exists: boolean; org?: string }>;
   ensureApp(app: string, org: string): Promise<boolean>;
   ensureVolume(app: string, input: { name: string; region: string; sizeGb: number }): Promise<FlyVolumeRef>;
   /** Grow a volume (Fly volumes never shrink); resolves to the size Fly reports afterwards. */
@@ -110,13 +116,21 @@ async function confirmVolumeCapacity(
  * Before anything is created: a volume Fly would reject on the Free plan
  * stops the deploy here rather than at `volumes create`/`extend`. Only a
  * volume over the cap needs the lookup; an unreadable plan does not block.
+ * The plan checked is that of the org owning the volume: an existing app's
+ * own org (`--org` only names where a new app is created), else `--org`.
  */
 async function preflightFlyPlan(plan: FlyDeployPlan, target: FlyDeployTarget, log: (line: string) => void): Promise<void> {
   if (!exceedsFreePlanVolumeCap(plan)) return;
-  const orgPlan = await target.orgPlan(plan.org);
-  assertVolumeFitsFlyPlan(plan, orgPlan);
+  const owner = await target.appOwner(plan.app);
+  const org = owner.exists ? owner.org : plan.org;
+  if (!org) {
+    log(`Could not read the org of app ${plan.app}; on the Free plan Fly rejects volumes over ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB.`);
+    return;
+  }
+  const orgPlan = await target.orgPlan(org);
+  assertVolumeFitsFlyPlan({ org, volumeSizeGb: plan.volumeSizeGb }, orgPlan);
   if (orgPlan === "unknown") {
-    log(`Could not read the Fly plan of org ${plan.org}; on the Free plan Fly rejects volumes over ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB.`);
+    log(`Could not read the Fly plan of org ${org}; on the Free plan Fly rejects volumes over ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB.`);
   }
 }
 
@@ -201,6 +215,9 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string, fetch
       const token = backend.authToken();
       return token ? fetchFlyOrgPlan(flyAuthorizationHeader(token), org, fetchImpl) : "unknown";
     },
+    async appOwner(app) {
+      return backend.appOwner(app);
+    },
     async ensureApp(app, org) {
       if (backend.appExists(app)) return false;
       backend.createApp(app, org);
@@ -250,6 +267,9 @@ export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
     kind: "machines-api",
     async orgPlan(org) {
       return api.orgPlan(org);
+    },
+    async appOwner(app) {
+      return api.appOwner(app);
     },
     async ensureApp(app, org) {
       if (await api.appExists(app)) return false;

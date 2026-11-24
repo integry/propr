@@ -62,9 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `--rootfs-size`; `rootfs.persist: true`) instead of the volume, which stays
     at the 1 GB default for SQLite and Redis. Boot removes the image an
     earlier release left on the volume. A `--volume-size` over 5 GB is refused
-    before anything is created when Fly reports the org on the Free plan,
-    which caps volumes at 5 GB. The plan output, `--dry-run` included, shows
-    the rootfs size and its cost while stopped ($0.15/GB-month).
+    before anything is created when Fly reports the org owning the app (an
+    existing app's own org, else `--org`) on the Free plan, which caps volumes
+    at 5 GB. The plan output, `--dry-run` included, shows the rootfs size and
+    its cost while stopped ($0.15/GB-month).
     Legacy mode now accepts `--memory 1024` (default still 2048 MB):
     `dockerd` ran next to the app and Redis on a 1 GB Machine.
 

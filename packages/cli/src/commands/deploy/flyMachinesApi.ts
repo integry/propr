@@ -102,6 +102,17 @@ export class FlyMachinesApi {
     return status !== 404;
   }
 
+  /**
+   * Whether the app exists (false on 404) and the slug of the org that owns
+   * it (`org` is undefined when the response does not carry one).
+   */
+  async appOwner(app: string): Promise<{ exists: boolean; org?: string }> {
+    const { status, data } = await this.request<{ organization?: { slug?: unknown } }>("GET", this.appPath(app), undefined, [404]);
+    if (status === 404) return { exists: false };
+    const slug = data?.organization?.slug;
+    return { exists: true, org: typeof slug === "string" && slug ? slug : undefined };
+  }
+
   async createApp(app: string, org: string): Promise<void> {
     // The documented request uses `app_name`; fly-go sends `name`. Send both.
     await this.request("POST", "/apps", { app_name: app, name: app, org_slug: org });
