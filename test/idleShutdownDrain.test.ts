@@ -817,3 +817,69 @@ test('a stop called off while Redis stays unresponsive still reaches the bounded
     assert.equal(stopStored(), true, 'the withdrawal never completed: the request is left to expire on its own');
     await api.stop();
 });
+
+test('direct webhook intake with future scheduled work and no external scheduled wake keeps running: a due time in the hint file wakes nothing', async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const worker = workerProcess(hub, events);
+    // Due long after the idle window, so the window alone would let the drain go ahead.
+    const automation = { kind: 'automation' as const, dueAt: Date.now() + 6 * 60 * 60_000, detail: 'scheduled automation' };
+    const later = { ...request, evaluation: { ...request.evaluation, nextDueAt: automation.dueAt, nextDue: [automation] } };
+    const signals = async () => ({ ...emptyIdleSignals(), scheduled: [automation] });
+    const hints = hintStore();
+    const { ctx, exits } = context(hub, null, { ...hints, collect: signals });
+    assert.equal(await drainIdleControlPlane(later, { ...ctx, collectWork: signals, producers: fakeProducers(events) }), false);
+    await settle();
+    assert.ok(!events.includes('worker stopping') && !events.includes('api stopping'), 'nothing is asked to stop');
+    assert.ok(events.includes('api resumed') && events.includes('sweeps resumed'));
+    assert.equal(hints.store.current, null, 'no stop hint is written');
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+    assert.deepEqual(exits, []);
+
+    // The operator's own scheduler starts the instance from the hint file: then it may stop, waking at the due time.
+    const { ctx: external, exits: externalExits } = context(hub, null, { ...hints, collect: signals });
+    assert.equal(await drainIdleControlPlane(later, { ...external, collectWork: signals, externalScheduledWake: true }), true);
+    assert.deepEqual(externalExits, [0]);
+    assert.equal(hints.store.current!.shutdownAt !== undefined, true);
+    await api.stop();
+    await worker.stop();
+});
+
+test('a last check for work left pending after the API quiesced aborts at the drain timeout and restores intake, the sweeps and the API', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const worker = workerProcess(hub, events);
+    const routing = new FakeRouting(true);
+    // The daemon's Redis command behind the collection never answers.
+    const { ctx, exits } = context(hub, routing, { collect: () => { events.push('re-check'); return new Promise<IdleSignals>(() => undefined); } });
+    const drainTimeoutMs = 400;
+    const started = Date.now();
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, producers: fakeProducers(events), timings: { ...TIMINGS, drainTimeoutMs, closeDeadlineMs: 300 } }), false);
+    assert.ok(Date.now() - started < drainTimeoutMs + 1_000, `ended at the drain timeout, not never (took ${Date.now() - started}ms)`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(events.indexOf('api quiesced') < events.indexOf('re-check'), 'the check was pending after quiescence');
+    assert.ok(events.includes('api resumed'), 'the API admits requests again');
+    assert.ok(events.includes('sweeps resumed'), 'the daemon sweeps run again');
+    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay'], 'intake reconnects and asks for what was cached meanwhile');
+    assert.ok(!events.includes('worker stopping'));
+    assert.deepEqual(exits, []);
+    await api.stop();
+    await worker.stop();
+});
+
+test('an aborted drain whose intake cannot reconnect in time exits 1 instead of staying up with intake down', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const routing = new FakeRouting(true);
+    routing.start = () => { routing.calls.push('start'); return new Promise<void>(() => undefined); };
+    const { ctx, exits } = context(hub, routing, { collect: () => new Promise<IdleSignals>(() => undefined) });
+    const started = Date.now();
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, producers: fakeProducers(events), timings: { ...TIMINGS, drainTimeoutMs: 300, closeDeadlineMs: 300 } }), true);
+    assert.deepEqual(exits, [1], 'the supervisor starts the control plane again');
+    assert.ok(Date.now() - started < 300 + 2 * 300 + 1_000, `bounded (took ${Date.now() - started}ms)`);
+    assert.ok(events.includes('sweeps resumed'));
+    await api.stop();
+});

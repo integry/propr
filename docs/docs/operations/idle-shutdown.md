@@ -101,7 +101,7 @@ Anything that starts the host starts the control plane:
 
 - **HTTP**: on Fly, a request to the Web UI, API, MCP or webhook URL starts a stopped Machine (`auto_start_machines = true`).
 - **Connect wake ping**: Connect sends a request to `POST /wake` when a delivery arrives for a stopped instance. The endpoint is public, answers `202 { "status": "awake" }` at once and has no other effect.
-- **Schedule**: Connect, or your own supervisor reading the wake hint file, starts the host when `nextDueAt` is reached.
+- **Schedule**: Connect, or your own scheduler reading the wake hint file, starts the host when `nextDueAt` is reached. The file alone wakes nothing: without Connect intake the instance stops with scheduled work only when you set `PROPR_IDLE_SCHEDULED_WAKE=external` to say that such a scheduler runs. Otherwise any scheduled work keeps it running (blocker `scheduled_work`, `… nothing would wake the stopped instance for it`). `propr deploy fly` with direct webhook intake installs no such scheduler.
 
 Expect a cold start of about 5–10 seconds (host start plus Node boot) before work begins. That is fine for jobs that take minutes; a Web UI visit to a stopped instance takes that long to load.
 
@@ -158,7 +158,7 @@ Point the Connect wake target at the Machine's public URL plus `/wake`.
 
 ## systemd
 
-Run the all-in-one control plane (`node dist/src/allInOne.js`) as one unit with `Restart=on-failure`, so an idle exit (code 0) leaves the unit stopped, and start it again with socket activation, a timer reading `nextDueAt` from the wake hint file, or wake-on-LAN. Separate units for the daemon, API and worker never stop idle (see the requirement at the top of this page).
+Run the all-in-one control plane (`node dist/src/allInOne.js`) as one unit with `Restart=on-failure`, so an idle exit (code 0) leaves the unit stopped, and start it again with socket activation, a timer reading `nextDueAt` from the wake hint file (set `PROPR_IDLE_SCHEDULED_WAKE=external` so the instance stops with scheduled work; without Connect intake it otherwise stays up), or wake-on-LAN. Separate units for the daemon, API and worker never stop idle (see the requirement at the top of this page).
 
 ```ini
 [Service]

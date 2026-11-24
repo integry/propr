@@ -7,8 +7,8 @@
  *     finish, publish the activity record and acknowledge — only once that
  *     callback succeeded; a failure is retried on the next poll. When the request
  *     is withdrawn (the daemon found work) the API admits requests again.
- *   - `stop`: when the request names this process's generation, acknowledge,
- *     then run the process's own graceful shutdown (the default sends SIGTERM
+ *   - `stop`: when the request names this process's generation, acknowledge
+ *     (a failed acknowledgement is retried on the next poll), then run the process's own graceful shutdown (the default sends SIGTERM
  *     to the process, so the existing path runs; in a composed process see
  *     {@link setIdleShutdownComposedProcess}) and exit 0. The process stays
  *     registered until that shutdown calls `stop`. A stop request for other
@@ -149,19 +149,26 @@ export function startIdleShutdownListener(options: IdleShutdownListenerOptions):
         }
     };
 
+    let stopLogged: string | null = null;
     const handleStop = async (intent: IdleShutdownIntent): Promise<void> => {
-        stopping = true;
-        options.log?.info({ intentId: intent.id, reason: intent.reason }, 'Idle shutdown requested by the daemon; shutting down gracefully');
-        // The daemon waits for this acknowledgement (or for the entry to disappear on a clean stop).
+        if (stopLogged !== intent.id) {
+            stopLogged = intent.id;
+            options.log?.info({ intentId: intent.id, reason: intent.reason }, 'Idle shutdown requested by the daemon; shutting down gracefully');
+        }
+        // The daemon waits for this acknowledgement (or for the entry to disappear on a clean stop). Until it is
+        // stored the request stays retryable: the next poll or announcement tries again (a composed process would
+        // otherwise never acknowledge, and the daemon would wait with intake and sweeps stopped).
         for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
                 await acknowledgeIdleShutdownIntent(commands, intent, registration.key);
-                break;
+                // Acknowledged: from now on every further request is ignored, so the shutdown runs once.
+                stopping = true;
+                onShutdown(intent);
+                return;
             } catch (error) {
-                options.log?.warn?.({ error: (error as Error).message }, 'Idle shutdown: could not acknowledge the drain request');
+                options.log?.warn?.({ error: (error as Error).message }, 'Idle shutdown: could not acknowledge the drain request; retrying on the next poll');
             }
         }
-        onShutdown(intent);
     };
 
     const handle = async (intent: IdleShutdownIntent | null, readFailed = false): Promise<void> => {

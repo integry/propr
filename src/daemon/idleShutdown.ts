@@ -12,7 +12,6 @@ import {
 import {
     IdleShutdownController,
     beforeIdleDeadline,
-    buildIdleWakeHint,
     buildIdleWakeRecord,
     classifyIdleWake,
     collectIdleSignals,
@@ -32,7 +31,6 @@ import {
     resolveIdleWakeHintPath,
     waitForIdleAcks,
     withdrawIdleShutdownIntent,
-    writeIdleWakeHint,
     type IdleEvaluation,
     type IdleParticipantRole,
     type IdleShutdownIntent,
@@ -45,14 +43,13 @@ import { flyMachineStopProblem } from '../flyMachineStop.js';
 import { createDaemonIdleSources, createDaemonWorkSources } from './idleSignalSources.js';
 import { stopDaemonProcess, type IdleStopProcess } from './idleStopExit.js';
 import type { DaemonWorkProducers } from './workProducers.js';
+import { DrainAbort, connectAcceptsWakeHint, disconnectIntakeOwingReplay, hasExternalScheduledWake, persistStopHint, restoreAbortedDrain, scheduledWakeMissing, type IdleDrainProgress } from './idleDrainSteps.js';
+
+export { hasExternalScheduledWake, scheduledWakeMissing };
 import {
     hintFileIo,
-    recordAbortedDrainReplay,
     recordAcceptedReplay,
-    recordDrainReplayObligation,
-    requestOwedReplay,
     updateHint,
-    withHintFile,
 } from './idleReplayObligation.js';
 
 /**
@@ -69,7 +66,8 @@ import {
  *
  * Drain order once idle (any failure before the stop request is stored in
  * step 5 restores intake and the daemon's sweeps and keeps the instance
- * running):
+ * running; steps 1 to 5 share one deadline, `drainTimeoutMs`, and a
+ * restoration that cannot finish within the close's allowance exits 1):
  *   1. Connect intake: the relay must acknowledge the wake hint (it will wake
  *      the instance and replay cached deliveries). No acknowledgement, no stop.
  *   2. Quiesce the producers: pause the daemon's own sweeps (schedules,
@@ -79,7 +77,10 @@ import {
  *      disconnect), stop Connect intake (in-flight deliveries finish and ACK)
  *      and ask every API process to stop admitting requests; each one waits
  *      for its requests in flight and acknowledges.
- *   3. Check again, now that nothing can add work.
+ *   3. Check again, now that nothing can add work. Without Connect intake
+ *      nothing wakes the instance for scheduled work unless the operator's
+ *      own scheduler reads the hint file (`PROPR_IDLE_SCHEDULED_WAKE=external`):
+ *      without one, any scheduled work aborts.
  *   4. Write the wake hint file (the recovery marker and the wake schedule for
  *      other supervisors), replacing the record from step 2. A failed write
  *      aborts. A Connect replay an earlier wake still owes is carried over as
@@ -125,6 +126,12 @@ export interface IdleDrainTimings {
      * later than the arranged wake, and reaching that wake first exits 1.
      */
     closeDeadlineMs: number;
+    /**
+     * Steps 1 to 5, before the stop request is stored: the whole drain must end within this, or it aborts (intake and
+     * the sweeps restored). A drain step still pending then is not waited for; a restoration that cannot finish within
+     * `closeDeadlineMs` exits 1 instead, so the supervisor starts the control plane again.
+     */
+    drainTimeoutMs: number;
 }
 
 export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
@@ -133,9 +140,11 @@ export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
     deregisterWaitMs: 30_000,
     pollMs: 1_000,
     closeDeadlineMs: 30_000,
+    drainTimeoutMs: 120_000,
 };
 
-type IdleRoutingIntake = Pick<RoutingWebSocketIntakeService, 'sendWakeHint' | 'stop' | 'start' | 'requestReplay'>;
+
+export type IdleRoutingIntake = Pick<RoutingWebSocketIntakeService, 'sendWakeHint' | 'stop' | 'start' | 'requestReplay'>;
 
 export interface IdleDrainContext {
     redis: IntentRedis;
@@ -159,6 +168,11 @@ export interface IdleDrainContext {
      */
     stopProcess?: IdleStopProcess;
     timings?: Partial<IdleDrainTimings>;
+    /**
+     * An external scheduler (`PROPR_IDLE_SCHEDULED_WAKE=external`) starts the instance at the hint file's `nextDueAt`.
+     * Without it, and without Connect intake, nothing arranges a wake for scheduled work, so any keeps it running.
+     */
+    externalScheduledWake?: boolean;
     /** True once the daemon is shutting down for another reason (SIGTERM): stop waiting, do not exit here. */
     isCancelled?: () => boolean;
 }
@@ -176,6 +190,8 @@ export interface DaemonIdleShutdownDeps {
     stopProcess?: IdleStopProcess;
     intervalMs?: number;
     timings?: Partial<IdleDrainTimings>;
+    /** See {@link IdleDrainContext.externalScheduledWake}; defaults to {@link hasExternalScheduledWake}. */
+    externalScheduledWake?: boolean;
 }
 
 export interface DaemonIdleShutdown {
@@ -205,43 +221,6 @@ async function waitForDeregistration(redis: IntentRedis, targets: Set<string>, o
 }
 
 /**
- * Step 4: write the hint for this stop, keeping the cursor of a replay an
- * earlier stop still owes; otherwise this stop's replay runs from when its
- * intake disconnected (`intakeStoppedAt`), not from `shutdownAt`. The record
- * this drain wrote before disconnecting owes exactly that: it is replaced.
- */
-function persistStopHint(ctx: IdleDrainContext, input: Omit<Parameters<typeof buildIdleWakeHint>[0], 'shutdownAt' | 'pendingReplaySince'>): Promise<IdleWakeHint> {
-    return withHintFile(async () => {
-        const previous = await (ctx.readHint ?? readIdleWakeHint)().catch(() => null);
-        const carried = needsConnectReplay(previous) ? connectReplaySince(previous) : null;
-        const own = typeof input.intakeStoppedAt === 'number' ? new Date(input.intakeStoppedAt).toISOString() : null;
-        const next = buildIdleWakeHint({ ...input, shutdownAt: Date.now(), pendingReplaySince: carried === own ? null : carried });
-        await (ctx.writeHint ?? writeIdleWakeHint)(next);
-        return next;
-    });
-}
-
-/**
- * Step 2, Connect intake: record the replay owed from now on, then disconnect.
- * The relay caches what arrives from the disconnect on, so the cursor is taken
- * before it, and the obligation must be on disk before it too: the Redis
- * intent holds no cursor and is cleared at startup, and reconnecting alone
- * does not replay. Returns when intake was disconnected (null without Connect
- * intake), or the error that kept it connected.
- */
-async function disconnectIntakeOwingReplay(ctx: IdleDrainContext): Promise<number | null | Error> {
-    if (!ctx.routing) return null;
-    const disconnectAt = Date.now();
-    try {
-        await recordDrainReplayObligation(disconnectAt, { readHint: ctx.readHint, writeHint: ctx.writeHint });
-    } catch (error) {
-        return error instanceof Error ? error : new Error(String(error));
-    }
-    await ctx.routing.stop();
-    return disconnectAt;
-}
-
-/**
  * Drain and exit (see the module comment for the order). Resolves false when
  * the instance keeps running; true once the stop is under way.
  */
@@ -251,67 +230,37 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     const nextDueAt = toIso(request.evaluation.nextDueAt);
     const reason = `idle for ${Math.round(request.idleForMs / 1000)}s`;
 
+    // Steps 1 to 5 share one deadline: a step that never settles (a Redis command left pending, a hung disk) must
+    // not keep intake disconnected and the sweeps paused while the controller waits inside this drain.
+    const drainBy = Date.now() + timings.drainTimeoutMs;
+    const bounded = <T>(work: Promise<T>) => beforeIdleDeadline(work, drainBy);
+
     // 1. With Connect intake the relay is the wake arrangement and the replay source: it must accept.
-    if (routing) {
-        const accepted = await routing.sendWakeHint(nextDueAt);
-        if (!accepted) {
-            logger.warn({ nextDueAt }, 'Idle shutdown aborted: Connect did not acknowledge the wake hint, so nothing would wake the instance or replay its deliveries; staying up');
-            return false;
-        }
-        logger.info({ nextDueAt }, 'Idle shutdown: Connect accepted the wake hint');
-    }
+    if (routing && !(await connectAcceptsWakeHint(routing, nextDueAt, drainBy))) return false;
 
     const intent: IdleShutdownIntent = newIdleShutdownIntent('quiesce', reason);
-    /** When Connect intake was disconnected (taken before the disconnect): the replay cursor for this drain. */
-    let intakeStoppedAt: number | null = null;
-    let hintWritten: IdleWakeHint | null = null;
-    let producersPaused = false;
-    const abort = async (message: string, details: object = {}): Promise<false> => {
+    const progress: IdleDrainProgress = { intentId: intent.id, intakeStoppedAt: null, disconnectPending: false, hintWritten: null, producersPaused: false };
+    const abort = async (message: string, details: object = {}): Promise<boolean> => {
         logger.info({ ...details, intentId: intent.id }, `Idle shutdown aborted: ${message}; staying up`);
-        // Bounded: Redis going away must not keep intake disconnected and the sweeps paused (the request expires on its own).
-        const withdrawn = await beforeIdleDeadline(withdrawIdleShutdownIntent(redis, intent.id).catch(() => undefined), Date.now() + timings.closeDeadlineMs);
-        if (!withdrawn.ok) logger.warn({ intentId: intent.id }, 'Idle shutdown: withdrawing the drain request did not finish in time; resuming anyway');
-        if (intakeStoppedAt !== null && routing) await resumeIntakeOwingReplay(ctx, routing, intakeStoppedAt, hintWritten);
-        // The hint file must not make the next plain start look like a wake.
-        else if (hintWritten) await (ctx.writeHint ?? writeIdleWakeHint)({ ...hintWritten, wokeAt: new Date().toISOString() }).catch(() => undefined);
-        if (producersPaused) ctx.producers?.resume();
-        return false;
+        // The restoration gets the close's allowance; one that cannot finish exits 1.
+        const unrestored = await restoreAbortedDrain(ctx, progress, Date.now() + timings.closeDeadlineMs);
+        if (unrestored === null) return false;
+        // Running with intake down would miss every delivery: restart instead (the replay owed is on disk).
+        logger.error({ intentId: intent.id, reason: unrestored }, 'Idle shutdown: the aborted drain could not restore intake; exiting with code 1 so the supervisor starts the control plane again');
+        const record: IdleShutdownRecord = { shutdownAt: new Date().toISOString(), reason, idleForMs: request.idleForMs, nextDueAt };
+        if (!ctx.isCancelled?.()) await stopDaemonProcess(ctx, record, { closeDeadlineMs: timings.closeDeadlineMs, exitCode: 1, wakeAt: null });
+        return true;
     };
 
     // 2. Quiesce every producer before the last check. The daemon's own sweeps first: a run in
     //    progress may still call the API, which turns requests away once it is quiesced.
-    if (ctx.producers) {
-        producersPaused = true;
-        const running = await ctx.producers.pause(timings.quiesceTimeoutMs);
-        if (running.length > 0) return abort('daemon sweeps did not finish their run in progress', { running });
-    }
+    let prepared: PreparedStop;
     try {
-        await issueIdleShutdownIntent(redis, intent);
+        prepared = await quiesceAndPersist(request, ctx, { timings, progress, intent, reason, drainBy });
     } catch (error) {
-        return abort('could not record the drain request', { error: (error as Error).message });
+        return error instanceof DrainAbort ? abort(error.message, error.details) : abort('the drain failed', { error: (error as Error).message });
     }
-    const disconnected = await disconnectIntakeOwingReplay(ctx);
-    if (disconnected instanceof Error) {
-        return abort('could not record the Connect replay owed for the drain, so intake stays connected', { error: disconnected.message, file: resolveIdleWakeHintPath() });
-    }
-    intakeStoppedAt = disconnected;
-    const quiesced = await waitForIdleAcks(redis, intent, { roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs });
-    if (!quiesced.confirmed) return abort('API processes did not confirm they stopped admitting requests', { pending: quiesced.pending });
-
-    // 3. Nothing can add work now: look once more.
-    const recheck = await recheckBeforeStop(request, ctx, timings);
-    if ('abort' in recheck) return abort(recheck.abort, recheck.details);
-    const { after, wake } = recheck;
-
-    // 4. The hint file is the recovery marker (and the wake schedule for other supervisors): no file, no stop.
-    //    A replay still owed for an earlier stop stays owed: its cursor is carried into the new hint.
-    let hint: IdleWakeHint;
-    try {
-        hint = await persistStopHint(ctx, { reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: routing !== null, intakeStoppedAt });
-        hintWritten = hint;
-    } catch (error) {
-        return abort('could not write the wake hint file', { error: (error as Error).message, file: resolveIdleWakeHintPath() });
-    }
+    const { wake, hint } = prepared;
 
     // 5. Store the stop request (6 waits for it), then the records for /api/status (informational).
     const record: IdleShutdownRecord = { shutdownAt: hint.shutdownAt, reason, idleForMs: request.idleForMs, nextDueAt: hint.nextDueAt };
@@ -319,13 +268,17 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     let stopIntent: IdleShutdownIntent;
     try {
         // Only the generations registered now: a process that starts later is not asked to stop.
-        stopIntent = { ...intent, phase: 'stop', issuedAt: new Date().toISOString(), targets: await listIdleShutdownTargets(redis, stopRoles) };
+        const targets = await bounded(listIdleShutdownTargets(redis, stopRoles));
+        if (!targets.ok) return abort('listing the processes to stop did not finish within the drain timeout', { drainTimeoutMs: timings.drainTimeoutMs });
+        stopIntent = { ...intent, phase: 'stop', issuedAt: new Date().toISOString(), targets: targets.value };
         // Only this process's: one outside it would exit 0 on its own and stay stopped if the stop were called off.
         const outside = (stopIntent.targets ?? []).filter(target => !isIdleParticipantInThisProcess(target.key, target.startedAt)).map(target => target.key);
         if (outside.length > 0) return abort('a process outside this one registered while draining, and a called-off stop would leave it stopped', { outside });
         // Steps 4 and 5 took time too: the window checked in step 3 must still be there.
         if (stopWindowTooShort(wake, timings)) return abort('scheduled work is due too soon for the stop to finish before it', { nextDueAt: toIso(wake.wakeAt) });
-        await issueIdleShutdownIntent(redis, stopIntent);
+        const stored = await bounded(issueIdleShutdownIntent(redis, stopIntent));
+        // Still pending, the stop request may yet be stored and acknowledged: no longer safe to resume, so call it off.
+        if (!stored.ok) return callOffStop(ctx, { intent: stopIntent, hint, record, wake, closeDeadlineMs: timings.closeDeadlineMs }, 'storing the stop request did not finish within the drain timeout', { drainTimeoutMs: timings.drainTimeoutMs });
     } catch (error) {
         return abort('could not record the stop request', { error: (error as Error).message });
     }
@@ -337,6 +290,58 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     // 6. Hear back from every process.
     logger.info({ ...record, file: resolveIdleWakeHintPath() }, 'Idle shutdown: stopping the control plane');
     return finishStop(ctx, { intent: stopIntent, roles: stopRoles, hint, record, wake }, timings);
+}
+
+interface PreparedStop { wake: StopWake; hint: IdleWakeHint }
+
+/**
+ * Steps 2 to 4, each bounded by the drain deadline (`drainBy`): quiesce the
+ * producers and intake, check once more, and write the stop's hint. Throws
+ * {@link DrainAbort} for anything that keeps the instance running.
+ */
+async function quiesceAndPersist(
+    request: IdleShutdownRequest,
+    ctx: IdleDrainContext,
+    drain: { timings: IdleDrainTimings; progress: IdleDrainProgress; intent: IdleShutdownIntent; reason: string; drainBy: number },
+): Promise<PreparedStop> {
+    const { timings, progress, intent } = drain;
+    const step = async <T>(name: string, work: Promise<T>, failure: string, details: object = {}): Promise<T> => {
+        const result = await beforeIdleDeadline(work, drain.drainBy).catch((error: Error) => {
+            throw new DrainAbort(failure, { ...details, error: error.message });
+        });
+        if (!result.ok) throw new DrainAbort(`${name} did not finish within the drain timeout`, { drainTimeoutMs: timings.drainTimeoutMs });
+        return result.value;
+    };
+    if (ctx.producers) {
+        progress.producersPaused = true;
+        const running = await step('pausing the daemon sweeps', ctx.producers.pause(timings.quiesceTimeoutMs), 'the daemon sweeps could not be paused');
+        if (running.length > 0) throw new DrainAbort('daemon sweeps did not finish their run in progress', { running });
+    }
+    await step('recording the drain request', issueIdleShutdownIntent(ctx.redis, intent), 'could not record the drain request');
+    const disconnected = await beforeIdleDeadline(disconnectIntakeOwingReplay(ctx, progress), drain.drainBy);
+    if (!disconnected.ok) throw new DrainAbort(`${progress.intakeStoppedAt === null ? 'recording the Connect replay owed for the drain' : 'disconnecting Connect intake'} did not finish within the drain timeout`, { drainTimeoutMs: timings.drainTimeoutMs });
+    if (disconnected.value instanceof Error) {
+        throw new DrainAbort('could not record the Connect replay owed for the drain, so intake stays connected', { error: disconnected.value.message, file: resolveIdleWakeHintPath() });
+    }
+    const intakeStoppedAt = disconnected.value;
+    const quiesced = await step('waiting for API processes to quiesce', waitForIdleAcks(ctx.redis, intent, { roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs }), 'could not read the quiesce acknowledgements');
+    if (!quiesced.confirmed) throw new DrainAbort('API processes did not confirm they stopped admitting requests', { pending: quiesced.pending });
+
+    // 3. Nothing can add work now: look once more.
+    const recheck = await step('the last check for work', recheckBeforeStop(request, ctx, timings), 'the last check for work failed');
+    if ('abort' in recheck) throw new DrainAbort(recheck.abort, recheck.details);
+    const { after, wake } = recheck;
+
+    // 4. The hint file is the recovery marker (and the wake schedule for other supervisors): no file, no stop.
+    //    A replay still owed for an earlier stop stays owed: its cursor is carried into the new hint.
+    const hint = await step(
+        'writing the wake hint file',
+        persistStopHint(ctx, { reason: drain.reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: ctx.routing !== null, intakeStoppedAt }),
+        'could not write the wake hint file',
+        { file: resolveIdleWakeHintPath() },
+    );
+    progress.hintWritten = hint;
+    return { wake, hint };
 }
 
 /** When the first wake arranged for a stop fires, and by when the stop must be confirmed for the rest of it to end before then. */
@@ -360,7 +365,12 @@ async function recheckBeforeStop(request: IdleShutdownRequest, ctx: IdleDrainCon
     if (ctx.routing && after.nextDueAt !== null && (hinted === null || after.nextDueAt < hinted)) {
         return { abort: 'scheduled work is due earlier than the wake hint Connect accepted', details: { nextDueAt: toIso(after.nextDueAt), hinted: toIso(hinted) } };
     }
-    const wakeAt = earliest(hinted, after.nextDueAt);
+    // A due time in the hint file is not a wake: only Connect's acknowledgement, or a scheduler the operator
+    // configured to read that file, arranges one. Without either, scheduled work would be stranded.
+    if (!ctx.routing && !ctx.externalScheduledWake && after.nextDueAt !== null) {
+        return { abort: `scheduled work remains and ${scheduledWakeMissing(false, false)}`, details: { nextDueAt: toIso(after.nextDueAt) } };
+    }
+    const wakeAt = ctx.routing ? hinted : after.nextDueAt;
     const wake = { wakeAt, confirmBy: wakeAt === null ? null : wakeAt - timings.deregisterWaitMs - timings.closeDeadlineMs };
     if (stopWindowTooShort(wake, timings)) {
         return { abort: 'scheduled work is due too soon for the stop to finish before it', details: { nextDueAt: toIso(wakeAt) } };
@@ -464,31 +474,10 @@ async function callOffStop(ctx: IdleDrainContext, stop: StopUnderWay & { closeDe
     return true;
 }
 
-/**
- * An aborted drain that had disconnected Connect intake: the replay owed for
- * the disconnection was recorded before it (marked aborted now, and recorded
- * again if the file lost it), then reconnect and ask for that replay. The relay only replays on request, so
- * reconnecting alone would leave the deliveries cached while draining behind.
- */
-async function resumeIntakeOwingReplay(ctx: IdleDrainContext, routing: IdleRoutingIntake, intakeStoppedAt: number, hintWritten: IdleWakeHint | null): Promise<void> {
-    const io = { readHint: ctx.readHint, writeHint: ctx.writeHint };
-    let owed: IdleWakeHint;
-    try {
-        // A hint already written for this stop holds the obligation; it must not make the next plain start look like a wake.
-        owed = hintWritten ? { ...hintWritten, wokeAt: new Date().toISOString() } : await recordAbortedDrainReplay(intakeStoppedAt, io);
-        if (hintWritten) await withHintFile(() => (ctx.writeHint ?? writeIdleWakeHint)(owed));
-    } catch (error) {
-        // Still asked for below; only a restart before the relay answers would lose it.
-        owed = hintWritten ?? buildIdleWakeHint({ shutdownAt: intakeStoppedAt, reason: 'idle shutdown aborted', idleForMs: 0, nextDue: [], connect: true, intakeStoppedAt });
-        logger.warn({ error: (error as Error).message, file: resolveIdleWakeHintPath() }, 'Idle shutdown: could not record the Connect replay owed for the aborted drain');
-    }
-    await routing.start();
-    void requestOwedReplay(routing, owed, io).catch(() => undefined);
-}
-
 export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdleShutdown {
     // A drain request left by a daemon that died mid-drain must not stop the processes starting now.
     void deps.redis.del(IDLE_SHUTDOWN_INTENT_REDIS_KEY).catch(() => undefined);
+    const externalScheduledWake = deps.externalScheduledWake ?? hasExternalScheduledWake();
     const sources = createDaemonIdleSources({
         redis: deps.redis,
         database: db,
@@ -497,6 +486,7 @@ export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdl
         connectInFlight: () => deps.getRoutingService()?.getInFlightCount() ?? 0,
         connectIdleWakeSupport: () => deps.getRoutingService()?.getIdleWakeSupport() ?? null,
         hostStopProblem: () => flyMachineStopProblem(process.env),
+        scheduledWakeMissing: () => scheduledWakeMissing(deps.getRoutingService() !== null, externalScheduledWake),
     });
     const collect = () => collectIdleSignals(sources);
     const workSources = createDaemonWorkSources({ redis: deps.redis, database: db });
@@ -515,6 +505,7 @@ export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdl
             exit: deps.exit ?? process.exit,
             stopProcess: deps.stopProcess,
             timings: deps.timings,
+            externalScheduledWake,
             isCancelled: () => cancelled,
         }),
         intervalMs: deps.intervalMs,

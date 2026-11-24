@@ -197,5 +197,6 @@ function mergeSignals(target: IdleSignals, part: Partial<IdleSignals>): void {
     if (part.unavailable) target.unavailable.push(...part.unavailable);
     if (part.pollingIntake) target.pollingIntake = true;
     if (part.separateProcesses) target.separateProcesses.push(...part.separateProcesses);
+    if (part.scheduledWakeMissing) target.scheduledWakeMissing = part.scheduledWakeMissing;
     if (typeof part.lastActivityAt === 'number') target.lastActivityAt = Math.max(target.lastActivityAt ?? 0, part.lastActivityAt);
 }

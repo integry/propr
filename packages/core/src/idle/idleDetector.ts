@@ -56,6 +56,13 @@ export interface IdleSignals {
      * off would stay stopped while the rest restarted.
      */
     separateProcesses: string[];
+    /**
+     * Why nothing would start the stopped instance when scheduled work becomes
+     * due (no Connect intake to accept a wake hint, and no external scheduled
+     * wake configured); null when a wake can be arranged. Set, any scheduled
+     * work blocks, however far off: recording a due time arranges no wake.
+     */
+    scheduledWakeMissing: string | null;
     /** Signals that could not be read; each keeps the instance awake. */
     unavailable: string[];
     /** Most recent request or other activity (epoch ms); the idle period cannot start before it. */
@@ -76,7 +83,7 @@ export const MAX_REPORTED_SCHEDULED = 5;
 export function emptyIdleSignals(): IdleSignals {
     return {
         queues: [], activeAgentRuns: 0, uiSessions: 0, mcpRequests: 0, httpRequests: 0, followupHandoffs: 0,
-        connectDeliveries: 0, runningGoals: 0, ultrafixLoops: 0, scheduled: [], pollingIntake: false, separateProcesses: [], unavailable: [],
+        connectDeliveries: 0, runningGoals: 0, ultrafixLoops: 0, scheduled: [], pollingIntake: false, separateProcesses: [], scheduledWakeMissing: null, unavailable: [],
         lastActivityAt: null,
     };
 }
@@ -130,6 +137,11 @@ export function evaluateIdle(signals: IdleSignals, options: { now: number; windo
         if (item.dueAt > horizon) break;
         const when = item.dueAt <= options.now ? 'due now' : `due in ${Math.ceil((item.dueAt - options.now) / 1000)}s`;
         blockers.push({ signal: 'scheduled_work', detail: `${item.detail} (${when})` });
+    }
+    // Due beyond the window, but nothing would wake the stopped instance for it.
+    const first = nextDue[0];
+    if (signals.scheduledWakeMissing && first && first.dueAt > horizon) {
+        blockers.push({ signal: 'scheduled_work', detail: `${first.detail} (due ${new Date(first.dueAt).toISOString()}): ${signals.scheduledWakeMissing}` });
     }
     return {
         idle: blockers.length === 0,

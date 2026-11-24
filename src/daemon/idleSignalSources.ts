@@ -65,6 +65,8 @@ export interface DaemonIdleSourceDeps {
     connectInFlight: () => number;
     /** Null without Connect intake. */
     connectIdleWakeSupport?: () => IdleWakeSupport | null;
+    /** Why nothing would wake the stopped instance for scheduled work; null when Connect or an external wake would. */
+    scheduledWakeMissing?: () => string | null;
     /** Why this process could not stop its host (a Fly Machine without a stop token); null when it can. */
     hostStopProblem?: () => string | null;
     now?: () => number;
@@ -117,6 +119,9 @@ export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<stri
         'Connect idle wake': async () => (deps.connectIdleWakeSupport?.() === 'rejected'
             ? { unavailable: ['Connect idle wake support (the relay did not acknowledge the wake hint)'] }
             : {}),
+        // A due time written to the wake hint file wakes nothing by itself: without Connect intake (or an external
+        // scheduler the operator configured), scheduled work keeps the instance up however far off it is.
+        'scheduled wake': async () => ({ scheduledWakeMissing: deps.scheduledWakeMissing?.() ?? null }),
         // An exit that cannot stop the host would leave it started and unreachable: worse than staying up.
         'host stop': async () => {
             const problem = deps.hostStopProblem?.() ?? null;

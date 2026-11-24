@@ -107,6 +107,16 @@ test('polling intake always blocks, whatever its interval, and reports no deadli
     assert.equal(result.nextDueAt, null, 'no observation-time deadline that could drift past the real next poll');
 });
 
+test('with no wake arranged for scheduled work, work due beyond the window blocks too', () => {
+    const automation = { kind: 'automation' as const, dueAt: NOW + 6 * 60 * 60_000, detail: 'scheduled automation' };
+    assert.equal(evaluate({ scheduled: [automation] }).idle, true, 'a wake can be arranged: only the window counts');
+    const stranded = evaluate({ scheduled: [automation], scheduledWakeMissing: 'nothing would wake the stopped instance for it' });
+    assert.equal(stranded.idle, false);
+    assert.deepEqual(stranded.blockers.map(blocker => blocker.signal), ['scheduled_work']);
+    assert.match(stranded.blockers[0].detail, /scheduled automation .*nothing would wake/);
+    assert.equal(evaluate({ scheduledWakeMissing: 'nothing would wake the stopped instance for it' }).idle, true, 'nothing scheduled, nothing to wake for');
+});
+
 test('a control-plane process idle shutdown cannot stop and start again with this one always blocks', () => {
     const result = evaluate({ separateProcesses: ['worker:host:42 runs outside the all-in-one process'] });
     assert.equal(result.idle, false);

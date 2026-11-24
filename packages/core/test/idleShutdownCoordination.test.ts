@@ -283,6 +283,44 @@ test('in a composed process a stop is only acknowledged: the daemon runs the one
     }
 });
 
+test('a stop acknowledgement whose writes fail is retried once Redis recovers, and the shutdown runs once, only after it', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    const stops: string[] = [];
+    setIdleShutdownComposedProcess(true);
+    try {
+        const listener = startIdleShutdownListener({ role: 'worker', id: 'w1', createConnection: hub.connect, onShutdown: intent => { stops.push(intent.id); }, pollMs: 10 });
+        await settle();
+        const commands = hub.connections[1] as FakeConnection;
+        // Redis refuses the acknowledgement writes (and only those) until it recovers.
+        let refused = 0;
+        let refusing = true;
+        const write = commands.hset.bind(commands);
+        commands.hset = async (key: string, field: string, value: string) => {
+            if (refusing && key.startsWith(IDLE_SHUTDOWN_ACKS_REDIS_PREFIX)) {
+                refused += 1;
+                throw new Error('READONLY You can\'t write against a read only replica.');
+            }
+            return write(key, field, value);
+        };
+        const intent = { ...newIdleShutdownIntent('quiesce', 'idle'), phase: 'stop' as const, targets: await listIdleShutdownTargets(daemon as never, ['worker']) };
+        await issueIdleShutdownIntent(daemon as never, intent);
+        const refusedWhileDown = await waitForIdleAcks(daemon as never, intent, { roles: ['worker'], timeoutMs: 100, ...FAST, isGone: () => false });
+        assert.equal(refusedWhileDown.confirmed, false);
+        assert.ok(refused > 3, `retried on later polls, not given up after the first three writes (${refused} attempts)`);
+        assert.deepEqual(stops, [], 'no shutdown without an acknowledgement');
+
+        refusing = false;
+        const confirmed = await waitForIdleAcks(daemon as never, intent, { roles: ['worker'], timeoutMs: 2_000, ...FAST });
+        assert.equal(confirmed.confirmed, true, 'the drain completes once Redis recovers');
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assert.deepEqual(stops, [intent.id], 'the shutdown runs exactly once, despite later polls and announcements');
+        await listener.stop();
+    } finally {
+        setIdleShutdownComposedProcess(false);
+    }
+});
+
 /** The daemon's connection, with the reads of a stop's acknowledgements held for `delayMs` (or forever) before they are answered. */
 function slowAckReads(hub: FakeRedisHub, delayMs: number | null) {
     const daemon = hub.connect() as unknown as FakeConnection;

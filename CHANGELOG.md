@@ -32,7 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
     Web UI session or in-flight MCP/HTTP request, no scheduled work due
     within the window, and no polling intake. A setting that cannot be read
-    prevents the stop and restarts the idle period.
+    prevents the stop and restarts the idle period. Without Connect intake,
+    any scheduled work keeps the instance awake unless
+    `PROPR_IDLE_SCHEDULED_WAKE=external` says your own scheduler starts it at
+    the wake hint file's `nextDueAt`.
   - With Connect intake the relay must acknowledge the wake hint
     (`wake_hint_ack`) or the instance stays up; the current relay does not, so
     Connect instances need propr-routing#335. The daemon quiesces Connect, the

@@ -36,6 +36,23 @@ test('other intake modes are not blocked by polling', async () => {
     assert.equal(evaluateIdle(signals, { now: Date.now(), windowMs: 15 * MINUTE }).idle, true);
 });
 
+test('without Connect intake or an external scheduler, scheduled work far beyond the window keeps the instance up', async () => {
+    const { scheduledWakeMissing } = await import('../src/daemon/idleShutdown.js');
+    const automation = { kind: 'automation' as const, dueAt: Date.now() + 6 * 60 * MINUTE, detail: 'scheduled automation' };
+    const evaluate = async (connect: boolean, external: boolean) => {
+        const { 'scheduled wake': wake } = createDaemonIdleSources({
+            redis: {} as never, database: {} as never, intakeMode: 'webhook', composed: true, connectInFlight: () => 0,
+            scheduledWakeMissing: () => scheduledWakeMissing(connect, external),
+        });
+        return evaluateIdle(await collectIdleSignals({ wake, schedule: async () => ({ scheduled: [automation] }) }), { now: Date.now(), windowMs: 15 * MINUTE });
+    };
+    const direct = await evaluate(false, false);
+    assert.equal(direct.idle, false, 'direct webhook intake: the hint file\'s due time alone wakes nothing');
+    assert.match(direct.blockers[0].detail, /PROPR_IDLE_SCHEDULED_WAKE=external/);
+    assert.equal((await evaluate(true, false)).idle, true, 'Connect accepts a wake hint for it');
+    assert.equal((await evaluate(false, true)).idle, true, 'the operator configured a scheduler that reads the hint file');
+});
+
 /** The participant registry in Redis. */
 function registryRedis() {
     const entries = new Map<string, string>();
