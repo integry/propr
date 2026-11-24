@@ -70,7 +70,7 @@ export async function readAgentRuntimeCapabilityReport(options: AgentRuntimeCapa
         unavailable = 'The instance network policy could not be read; agent runs fail closed until it can.';
     }
     const refusal = restrictedNetworkRefusal(runtime);
-    const mcp = planAgentRunMcpTransport(runtime, environment);
+    const mcp = planAgentRunMcpTransport(runtime, environment, policy?.mode);
     return {
         runtime: runtime.kind,
         selectedBy: environment[AGENT_RUNTIME_ENV]?.trim() ? AGENT_RUNTIME_ENV : 'default',

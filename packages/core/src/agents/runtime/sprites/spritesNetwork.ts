@@ -5,7 +5,7 @@ import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../
 
 export const SPRITES_RESTRICTED_NETWORK_ENFORCEMENT: AgentRuntimeRestrictedNetworkEnforcement = Object.freeze({
     method: 'sprites-dns-allowlist',
-    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts and the granted ProPR MCP host, with every other domain denied. The policy is applied before the agent starts and cleared before the Sprite is restored and reused. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
+    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts and the granted ProPR MCP host, with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
 });
 
 /** Sprites' unrestricted state: no rules, no enforcement. */
@@ -17,20 +17,14 @@ export const OPEN_SPRITE_NETWORK_POLICY: NetworkPolicy = Object.freeze({ rules: 
  * the endpoint must be a public DNS name over HTTPS (the grant token crosses
  * the internet).
  */
-export function spriteMcpHost(spec: AgentRunSpec): string | undefined {
-    const grant = spec.mcpGrant;
-    if (!grant) return undefined;
-    if (grant.network || grant.transport !== 'reachable-url') {
-        throw new Error(`Sprites cannot join MCP network "${grant.network ?? 'unnamed'}"; set PROPR_SPRITES_MCP_URL to a public ProPR MCP URL`);
-    }
-    if (!grant.url) return undefined;
+export function restrictedSpriteMcpEndpoint(endpoint: string): { host: string } | { reason: string } {
     let url: URL;
-    try { url = new URL(grant.url); } catch { throw new Error('Sprites requires a valid ProPR MCP URL'); }
+    try { url = new URL(endpoint); } catch { return { reason: 'Sprites requires a valid ProPR MCP URL' }; }
     const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
     if (url.protocol !== 'https:' || isIP(host) !== 0 || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) {
-        throw new Error(`Sprites cannot reach ProPR MCP at ${url.origin}: set PROPR_SPRITES_MCP_URL (or PROPR_AGENT_MCP_URL/API_PUBLIC_URL) to a public HTTPS URL`);
+        return { reason: `Sprites cannot reach ProPR MCP at ${url.origin}: set PROPR_SPRITES_MCP_URL (or PROPR_AGENT_MCP_URL/API_PUBLIC_URL) to a public HTTPS URL` };
     }
-    return host;
+    return { host };
 }
 
 /**
@@ -47,7 +41,10 @@ export function spriteMcpHost(spec: AgentRunSpec): string | undefined {
  */
 export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefined {
     if (spec.network.mode === 'named') throw new Error(`Sprites cannot join network "${spec.network.name}"`);
-    const mcpHost = spriteMcpHost(spec);
+    const grant = spec.mcpGrant;
+    if (grant && (grant.network || grant.transport !== 'reachable-url')) {
+        throw new Error(`Sprites cannot join MCP network "${grant.network ?? 'unnamed'}"; set PROPR_SPRITES_MCP_URL to a public ProPR MCP URL`);
+    }
     const { restriction, policy } = spec.network;
     if (!restriction && policy?.mode !== 'restricted') return undefined;
     assertAgentRunNetworkRepresentationsAgree(spec);
@@ -61,7 +58,11 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
         if (rule.wildcard) zones.add(host);
         allowed.add(rule.wildcard ? `*.${host}` : host);
     }
-    if (mcpHost) allowed.add(mcpHost);
+    if (grant?.url) {
+        const endpoint = restrictedSpriteMcpEndpoint(grant.url);
+        if ('reason' in endpoint) throw new Error(endpoint.reason);
+        allowed.add(endpoint.host);
+    }
     const wildcardZones = [...zones];
     const denied = wildcardZones.filter(zone => !allowed.has(zone)
         && !wildcardZones.some(parent => zone.endsWith(`.${parent}`)));

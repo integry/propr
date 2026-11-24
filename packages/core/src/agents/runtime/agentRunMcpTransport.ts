@@ -1,3 +1,5 @@
+import type { AgentNetworkMode } from '../../network/networkPolicy.js';
+import { restrictedSpriteMcpEndpoint } from './sprites/spritesNetwork.js';
 import { getAgentRuntime, runtimeSupportsMcpReachableUrl, type ProviderAgentRuntime } from './registry.js';
 import type { AgentConfig } from '../types.js';
 import type { AgentRunMcpTransport } from './types.js';
@@ -48,7 +50,7 @@ export function agentRunMcpRuntimeEndpoint(kind: string, environment: NodeJS.Pro
     return kind === 'sprites' ? environment.PROPR_SPRITES_MCP_URL?.trim() || undefined : undefined;
 }
 
-export function planAgentRunMcpTransport(
+function selectAgentRunMcpTransport(
     runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>,
     environment: NodeJS.ProcessEnv = process.env,
 ): AgentRunMcpTransportPlan {
@@ -78,13 +80,27 @@ export function planAgentRunMcpTransport(
     return { transport: 'reachable-url', url, reason: `Agent runtime "${runtime.kind}" cannot join a private network; runs reach ProPR MCP at a reachable URL with their per-run grant token.` };
 }
 
+export function planAgentRunMcpTransport(
+    runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>,
+    environment: NodeJS.ProcessEnv = process.env,
+    networkMode: AgentNetworkMode = 'open',
+): AgentRunMcpTransportPlan {
+    const plan = selectAgentRunMcpTransport(runtime, environment);
+    if (runtime.kind === 'sprites' && networkMode === 'restricted' && plan.transport === 'reachable-url') {
+        const endpoint = restrictedSpriteMcpEndpoint(plan.url);
+        if ('reason' in endpoint) return { transport: 'unavailable', reason: endpoint.reason };
+    }
+    return plan;
+}
+
 /** The plan for the runtime an agent configuration selects (or the instance default). */
 export function agentRunMcpTransportFor(
     config?: Pick<AgentConfig, 'runtime'> | null,
     environment: NodeJS.ProcessEnv = process.env,
+    networkMode: AgentNetworkMode = 'open',
 ): AgentRunMcpTransportPlan & { runtime: string } {
     const runtime = getAgentRuntime(config, environment);
-    return { ...planAgentRunMcpTransport(runtime, environment), runtime: runtime.kind };
+    return { ...planAgentRunMcpTransport(runtime, environment, networkMode), runtime: runtime.kind };
 }
 
 export type { AgentRunMcpTransport };

@@ -117,14 +117,14 @@ export class SpritePool {
         try {
             // Stop descendants that outlived the launcher, including detached processes.
             await slot.sprite.restart();
+            await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
+            await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
             if (slot.restricted) {
-                // Clear the run's allowlist before the restore: the next run, or a
-                // replacement's setup, must start from the open checkpoint state.
+                // A restart can relaunch run-installed services. Keep them confined
+                // until the checkpoint stream confirms the clean state is restored.
                 await applySpriteNetworkPolicy(slot.sprite, OPEN_SPRITE_NETWORK_POLICY);
                 slot = { sprite: slot.sprite, checkpoint: slot.checkpoint };
             }
-            await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
-            await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
         } catch {
             await this.discard(slot.sprite);
             if (this.closed) return;
