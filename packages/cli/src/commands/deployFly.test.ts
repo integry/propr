@@ -5,8 +5,25 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { collectFlySecrets, createDeployCommand, FLY_WORKER_AGENT_RUNTIMES, parseIdleShutdownAfter, prepareFlyDeploy, resolveFlyDeployPlan } from "./deployFly.js";
-import { FLY_GH_PRIVATE_KEY_SECRET } from "./deploy/flyMachineConfig.js";
+import {
+  assertFlyIdleShutdownSupported,
+  collectFlySecrets,
+  createDeployCommand,
+  FLY_IDLE_SHUTDOWN_SUPPORTED,
+  FLY_WORKER_AGENT_RUNTIMES,
+  parseIdleShutdownAfter,
+  prepareFlyDeploy,
+  resolveFlyDeployPlan,
+  type DeployFlyOptions,
+} from "./deployFly.js";
+import {
+  buildAppEnv,
+  buildMachineConfig,
+  FLY_GH_PRIVATE_KEY_SECRET,
+  renderFlyMachineConfigJson,
+  renderFlyToml,
+  type JsonObject,
+} from "./deploy/flyMachineConfig.js";
 
 const IMAGES = { app: "propr/app:0.9.3", redis: "redis:7-alpine", cloudflared: "cloudflare/cloudflared:2024.12.2" };
 
@@ -56,6 +73,46 @@ test("invalid inputs are rejected before any Fly call", () => {
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", agentRuntime: "podman" }, IMAGES), /--agent-runtime/);
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", memory: "1gb" }, IMAGES), /--memory/);
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", volume: "bad-name" }, IMAGES), /volume name/);
+});
+
+test("idle shutdown is refused before anything is written or sent to Fly: the app image cannot stop an idle Machine", () => {
+  // No idle detector or /wake route in the app image yet (#3770): the flag would only swap the restart policy.
+  assert.equal(FLY_IDLE_SHUTDOWN_SUPPORTED, false);
+  const oauth = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret", PROPR_GH_RELAY_TOKEN: "rt" };
+  const refused = (error: Error) =>
+    /--idle-shutdown is not supported by this release/.test(error.message) && /#3770/.test(error.message) && /always on/.test(error.message);
+  const flagSets: Array<Partial<DeployFlyOptions>> = [{ idleShutdown: true }, { idleShutdown: "15m" }, { idleShutdown: "2h", dryRun: true }];
+  for (const flags of flagSets) {
+    assert.throws(() => prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, oauth, "gh"), refused, JSON.stringify(flags));
+  }
+  // The bare flag as commander parses it reaches the same refusal.
+  const fly = createDeployCommand().commands.find((c) => c.name() === "fly");
+  assert.ok(fly);
+  fly.parseOptions(["--app", "my-propr", "--legacy-docker", "--idle-shutdown", "--dry-run"]);
+  const parsed = fly.opts() as DeployFlyOptions;
+  assert.equal(parsed.idleShutdown, true);
+  assert.throws(() => prepareFlyDeploy(parsed, IMAGES, oauth, "gh"), refused);
+  // A malformed duration still names the accepted range.
+  assert.throws(() => prepareFlyDeploy({ app: "my-propr", legacyDocker: true, idleShutdown: "soon" }, IMAGES, oauth, "gh"), /1m to 24h/);
+
+  // Without the flag the Machine is always on in both generated forms: restart always, never scaled to zero, no idle env.
+  for (const idleShutdown of [undefined, false]) {
+    const { plan } = prepareFlyDeploy({ app: "my-propr", legacyDocker: true, idleShutdown }, IMAGES, oauth, "gh");
+    assert.equal(plan.idleShutdownAfter, undefined);
+    const config = buildMachineConfig(plan);
+    assert.deepEqual(config.restart, { policy: "always" });
+    assert.equal((config.services as JsonObject[])[0].min_machines_running, 1);
+    assert.equal(buildAppEnv(plan).PROPR_IDLE_SHUTDOWN, undefined);
+    assert.equal(buildAppEnv(plan).PROPR_IDLE_SHUTDOWN_AFTER, undefined);
+    const toml = renderFlyToml(plan);
+    assert.match(toml, /policy = "always"/);
+    assert.match(toml, /min_machines_running = 1/);
+    assert.doesNotMatch(toml, /idle|decides when to stop/i);
+    assert.doesNotMatch(renderFlyMachineConfigJson(plan), /PROPR_IDLE_SHUTDOWN/);
+  }
+  // The gate is the one switch to flip once the app image exits 0 when idle.
+  assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: "15m" }, true));
+  assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: undefined }));
 });
 
 test("idle shutdown is off unless given; bare flag means 15m", () => {

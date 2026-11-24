@@ -49,8 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     them. `fly.toml` points at `propr-machine.json` by absolute path, and
     flyctl runs from the `--out` directory, so the command works from any
     working directory.
-  - `--idle-shutdown [after]` opts in to idle shutdown (#3770): restart
-    `on-failure`, proxy autostop off, autostart on, and prints the `/wake` URL.
+  - Runs the Machine always on and refuses `--idle-shutdown` before creating
+    anything on Fly, `--dry-run` included: the app image has no idle detector
+    or `/wake` endpoint yet (#3770), so nothing would stop an idle Machine.
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
     loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
     stale `/var/run/docker*` and `/run/containerd` PID files.

@@ -104,18 +104,13 @@ propr deploy fly --app my-propr --tunnel-token <connector-token> --tunnel-url ht
 
 This adds the `cloudflared` container, which reads `TUNNEL_TOKEN` so the token stays off argv, and maps `api` to loopback so Connect's `http://api:4000` ingress reaches the app. It also sets the same env as `propr tunnel setup`: `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, the hosted `FRONTEND_URL`, `PROPR_WEB_AUTH_MODE=connect`, and `loopback` as a trusted proxy peer. Stop the local stack's tunnel first if the same instance was running locally.
 
-## Idle shutdown (opt-in)
+## Idle shutdown (not available yet)
 
-By default the Machine runs continuously. The restart policy is `always`, Fly proxy autostop is off, and `min_machines_running = 1`.
+The Machine runs continuously. The restart policy is `always`, Fly proxy autostop is off (it is traffic-based and would stop the Machine during an agent run with no HTTP traffic), and `min_machines_running = 1`.
 
-`--idle-shutdown [after]` (default `15m`, from `1m` to `24h`) opts in to idle shutdown (`PROPR_IDLE_SHUTDOWN`, added by #3770):
-
-- `PROPR_IDLE_SHUTDOWN=on` and `PROPR_IDLE_SHUTDOWN_AFTER=<after>`;
-- restart policy `on-failure`, because exit code 0 is an idle stop and the Machine stays stopped;
-- `auto_stop_machines = "off"`. Fly's autostop is traffic-based and would stop the Machine during an agent run with no HTTP traffic, so ProPR decides when to stop;
-- `auto_start_machines = true` and `min_machines_running = 0`, so a request to the UI, API, MCP or webhook URL starts the Machine.
-
-The command prints the wake URL, `https://<app>.fly.dev/wake`. Register it as the instance's Connect wake target, so that a delivery for a stopped instance starts it.
+:::warning Idle shutdown is not available yet
+The app image in this release has no idle detector and no `/wake` endpoint (#3770), so nothing would ever stop an idle Machine. The command therefore refuses `--idle-shutdown` before creating anything on Fly, `--dry-run` included. Deploy without it.
+:::
 
 ## Legacy mode: Docker in the Machine
 
@@ -147,7 +142,7 @@ Fly prices for Ashburn (`iad`), from Fly's pricing page as of November 2026:
 | Stopped Machine | $0.15/GB-month of root filesystem |
 | Shared IPv4, IPv6, inbound transfer | free (a dedicated IPv4 is $2/month and is not allocated) |
 
-Always on, the default deployment costs about **$6.85/month**. That is more than the Free plan's $5 of monthly usage, so on a Free-plan org use `--idle-shutdown`. At about 4 hours awake a day, the Machine costs roughly $1.12/month plus the volume, which leaves most of the allowance for agent runs on Sprites. The Free plan allows up to 3 Machines; this deployment uses one.
+Always on, the default deployment costs about **$6.85/month**. That is more than the Free plan's $5 of monthly usage, and the Machine cannot yet stop itself when idle (see [Idle shutdown](#idle-shutdown-not-available-yet)). The Free plan allows up to 3 Machines; this deployment uses one.
 
 ## Options
 
@@ -165,7 +160,7 @@ Always on, the default deployment costs about **$6.85/month**. That is more than
 | `--github-app-key <path>` | `HOST_GH_PRIVATE_KEY` | Own GitHub App private key |
 | `--relay`, `--no-relay`, `--relay-url`, `--installation` | auto | GitHub relay enrollment |
 | `--tunnel-token`, `--tunnel-url`, `--instance-id` | — | ProPR Connect hosted UI tunnel |
-| `--idle-shutdown [after]` | off | Opt-in idle shutdown |
+| `--idle-shutdown [after]` | off | Refused in this release, see [Idle shutdown](#idle-shutdown-not-available-yet) |
 | `--legacy-docker` | off | Docker daemon in the Machine |
 | `--token <token>`, `--backend auto\|flyctl\|api` | `auto` | How to reach Fly |
 | `--out <dir>` | `./propr-fly` | Where generated files go |

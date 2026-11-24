@@ -73,7 +73,11 @@ export interface FlyDeployPlan {
   volumeName: string;
   volumeSizeGb: number;
   agentRuntime: FlyAgentRuntime;
-  /** Opt-in idle shutdown (#3770); undefined keeps the Machine always on. */
+  /**
+   * Opt-in idle shutdown (#3770); undefined keeps the Machine always on. The
+   * deploy refuses it while the app image cannot stop an idle Machine
+   * (FLY_IDLE_SHUTDOWN_SUPPORTED in deployFly.ts).
+   */
   idleShutdownAfter?: string;
   /** Hosted UI tunnel through ProPR Connect; undefined serves on <app>.fly.dev only. */
   tunnel?: FlyTunnelSettings;
@@ -380,7 +384,7 @@ export function renderFlyToml(plan: FlyDeployPlan, machineConfigPath: string = F
     `  internal_port = ${FLY_API_PORT}`,
     "  force_https = true",
     "  # Fly proxy autostop is traffic-based and would stop the Machine during an",
-    "  # agent run that has no HTTP traffic. ProPR decides when to stop instead.",
+    "  # agent run that has no HTTP traffic, so it stays off.",
     "  auto_stop_machines = \"off\"",
     "  auto_start_machines = true",
     `  min_machines_running = ${plan.idleShutdownAfter ? 0 : 1}`,

@@ -20,7 +20,7 @@ function prepare(flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, s
 
 test("default deploy without Connect or a GitHub OAuth client is refused before provisioning", () => {
   // Logged in, so a relay token would be enrolled: that serves GitHub API calls, not browser sign-in.
-  for (const flags of [{}, { dryRun: true }, { idleShutdown: "15m" }]) {
+  for (const flags of [{}, { dryRun: true }]) {
     assert.throws(
       () => prepare(flags, {}),
       (error: Error) => {
