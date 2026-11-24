@@ -99,3 +99,15 @@ test("command registers `deploy fly` with tri-state relay and env-file flags", (
   assert.equal(parsed.relay, undefined);
   assert.equal(parsed.envFile, undefined);
 });
+
+test("stack .env values for deployment-owned settings are not uploaded with a legacy Docker plan", () => {
+  const plan = resolveFlyDeployPlan({ app: "my-propr", legacyDocker: true }, IMAGES);
+  const { secrets } = collectFlySecrets(plan, { app: "my-propr" }, {
+    PROPR_INDEXING: "separate",
+    GIT_CLONES_BASE_PATH: "/home/me/clones",
+    GIT_WORKTREES_BASE_PATH: "/home/me/worktrees",
+    PROPR_EGRESS_SOCKET_DIR: "/home/me/egress",
+    ANTHROPIC_API_KEY: "k",
+  });
+  assert.deepEqual(secrets, { ANTHROPIC_API_KEY: "k" });
+});

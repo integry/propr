@@ -13,6 +13,7 @@ import {
   FLY_DB_FILENAME,
   FLY_GH_PRIVATE_KEY_PATH,
   FLY_GH_PRIVATE_KEY_SECRET,
+  FLY_MANAGED_ENV_KEYS,
   renderFlyMachineConfigJson,
   renderFlyToml,
   selectEnvFileSecrets,
@@ -186,6 +187,45 @@ test("a non-default stack SESSION_REDIS_PORT is not uploaded; the session store 
   assert.equal(env.REDIS_PORT, "6379");
   const redis = buildContainers(plan).find((c) => c.name === "redis") as JsonObject;
   assert.match((redis.cmd as string[]).join(" "), /--port 6379 /);
+});
+
+test("every setting the app env builder can emit is excluded from uploaded secrets", () => {
+  const tunnel = { instanceId: "abc", publicUrl: "https://t-abc.propr.dev" };
+  for (const agentRuntime of ["sprites", "fly-machines", "docker"] as const) {
+    for (const legacyDocker of [false, true]) {
+      const plan = basePlan({ agentRuntime, legacyDocker, tunnel, githubAppKey: true, idleShutdownAfter: "15m" });
+      for (const key of Object.keys(buildAppEnv(plan))) {
+        assert.ok(FLY_MANAGED_ENV_KEYS.has(key) || key.startsWith("HOST_"), `${key} (${agentRuntime}, legacyDocker=${legacyDocker})`);
+      }
+    }
+  }
+});
+
+test("conflicting stack indexing and Sprites settings cannot override the generated topology", () => {
+  const uploaded = selectEnvFileSecrets({ PROPR_INDEXING: "separate", SPRITES_CLIENT_SIGNALS: "1", ANTHROPIC_API_KEY: "k" });
+  assert.deepEqual(uploaded, { ANTHROPIC_API_KEY: "k" });
+  const env = buildAppEnv(basePlan());
+  assert.equal(env.PROPR_INDEXING, "inline", "no separate indexing worker runs in the Machine");
+  assert.equal(env.SPRITES_CLIENT_SIGNALS, "0");
+});
+
+test("conflicting stack filesystem settings cannot move legacy Docker paths off the shared volume", () => {
+  const uploaded = selectEnvFileSecrets({
+    GIT_CLONES_BASE_PATH: "/home/me/propr/clones",
+    GIT_WORKTREES_BASE_PATH: "/home/me/propr/worktrees",
+    PROPR_EGRESS_SOCKET_DIR: "/home/me/propr/egress",
+    HOST_PROPR_EGRESS_SOCKET_DIR: "/home/me/propr/egress",
+    DOCKER_HOST: "unix:///var/run/docker.sock",
+    GH_TOKEN: "t",
+  });
+  assert.deepEqual(uploaded, { GH_TOKEN: "t" });
+  const plan = basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048, volumeSizeGb: 20 });
+  const env = buildAppEnv(plan);
+  for (const key of ["GIT_CLONES_BASE_PATH", "GIT_WORKTREES_BASE_PATH", "PROPR_EGRESS_SOCKET_DIR", "HOST_PROPR_EGRESS_SOCKET_DIR"]) {
+    assert.ok(env[key].startsWith("/propr-shared/"), `${key}=${env[key]}`);
+  }
+  const docker = buildContainers(plan).find((c) => c.name === "docker") as JsonObject;
+  assert.deepEqual(docker.mounts, [{ name: "propr_shared", path: "/propr-shared" }]);
 });
 
 test("flyctl machine_config and Machines API config carry the same control-plane metadata", () => {

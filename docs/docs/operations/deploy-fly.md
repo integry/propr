@@ -47,7 +47,7 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 
 | Secret | Source |
 | --- | --- |
-| Stack `.env` entries | `<stack root>/.env` when present, or `--env-file <path>`. Skipped: empty values, host paths (`HOST_*`), and the keys the deploy sets itself (ports, Redis, database path, URLs, `NODE_ENV`). Turn this off with `--no-env-file`. |
+| Stack `.env` entries | `<stack root>/.env` when present, or `--env-file <path>`. Skipped: empty values, host paths (`HOST_*`), and every key the deploy sets itself (ports, Redis, database path, URLs, `NODE_ENV`, `PROPR_INDEXING`, the agent runtime and, with `--legacy-docker`, the clone, worktree and egress paths on the shared volume). Turn this off with `--no-env-file`. |
 | `SESSION_SECRET` | Generated only when the app does not have one yet, so a redeploy does not sign everyone out. A `SESSION_SECRET` in the `.env` is uploaded as is. |
 | `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. |
 | `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
@@ -84,7 +84,7 @@ The command prints the wake URL, `https://<app>.fly.dev/wake`. Register it as th
 
 `--legacy-docker` keeps the Docker agent runtime by running a Docker daemon in a `docker` container of the same Machine. The app container reaches it at `DOCKER_HOST=tcp://127.0.0.1:2375`, which is loopback only. Clones, worktrees and egress sockets move to a scratch directory, `/propr-shared`, that both containers mount at the same path, so agent bind mounts resolve inside the daemon. Every boot applies two fixes learned on Fly:
 
-1. **ext4 loop mount for overlay2.** overlay2 cannot run on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/usr/src/app/data/docker.ext4`, the volume size minus 2 GB) on the Fly volume, checked with `e2fsck -p` and loop-mounted before `dockerd` starts. Pulled images survive restarts.
+1. **ext4 loop mount for overlay2.** overlay2 cannot run on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/usr/src/app/data/docker.ext4`, the volume size minus 2 GB) on the Fly volume, checked with `e2fsck -p` and loop-mounted before `dockerd` starts. Pulled images survive restarts. After a redeploy with a larger `--volume-size`, the next boot grows the existing image and its filesystem (`resize2fs`) in place and keeps its contents; it never shrinks it.
 2. **Stale PID cleanup.** After an unclean stop, `/var/run/docker*` and `/run/containerd` PID files and sockets make `dockerd` refuse to start. They are removed first.
 
 Legacy mode needs at least 2 GB of memory and a 10 GB volume (defaults: 2048 MB, 20 GB), so it does not fit the Free plan. The `docker` container must be allowed to create loop devices and mount filesystems. Prefer Sprites or Fly Machines agents where you can.

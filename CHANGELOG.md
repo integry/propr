@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
     loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
     stale `/var/run/docker*` and `/run/containerd` PID files.
+    A larger `--volume-size` grows the existing image in place on the next
+    boot, keeping pulled images.
 
 ### Changed
 

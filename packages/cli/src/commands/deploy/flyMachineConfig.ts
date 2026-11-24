@@ -157,17 +157,29 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
   return { ...env, ...(plan.extraEnv ?? {}) };
 }
 
+/**
+ * Every key {@link buildAppEnv} can set, across all plan variants (tunnel,
+ * GitHub App key, idle shutdown, legacy Docker, Sprites). Derived rather than
+ * listed so a setting the builder owns can never be overridden by a stack .env
+ * value uploaded as a Fly secret.
+ */
+function generatedAppEnvKeys(): string[] {
+  const variants: FlyDeployPlan[] = FLY_AGENT_RUNTIMES.map((agentRuntime) => ({
+    app: "propr", org: "personal", region: "iad", images: { app: "", redis: "", cloudflared: "" },
+    cpuKind: "shared", cpus: 1, memoryMb: 1024, volumeName: "propr_data", volumeSizeGb: 1, agentRuntime,
+    idleShutdownAfter: FLY_DEFAULTS.idleShutdownAfter, tunnel: { instanceId: "i", publicUrl: "https://t-i.propr.dev" },
+    legacyDocker: true, githubAppKey: true,
+  }));
+  return variants.flatMap((plan) => Object.keys(buildAppEnv(plan)));
+}
+
 /** Keys the deploy owns; a stack .env value for one of these is never uploaded. */
 export const FLY_MANAGED_ENV_KEYS: ReadonlySet<string> = new Set([
-  "NODE_ENV", "PROPR_CONTAINERIZED", "PROPR_PROFILE", "PROPR_SERVE_UI", "PROPR_SERVED_UI_API_URL",
-  "PROPR_UI_DIST_DIR", "DASHBOARD_API_PORT", "DASHBOARD_API_HOST", "API_PORT", "UI_PORT", "DOCS_PORT",
-  "REDIS_HOST", "REDIS_PORT", "REDIS_EXTERNAL_PORT", "SESSION_REDIS_HOST",
-  "SESSION_REDIS_PORT", "DB_FILENAME", "DATA_DIR",
+  ...generatedAppEnvKeys(),
+  // Host/stack-only settings the Machine does not use or derives itself.
+  "PROPR_UI_DIST_DIR", "DASHBOARD_API_HOST", "API_PORT", "UI_PORT", "DOCS_PORT", "REDIS_EXTERNAL_PORT",
   "PROPR_DATA_DIR", "PROPR_DATA_MOUNT", "PROPR_LOGS_DIR", "PROPR_REPOS_DIR", "PROPR_ENV_FILE", "PROPR_ROOT",
-  "PROPR_STACK", "CONFIG_REPO_PATH", "API_PUBLIC_URL", "FRONTEND_URL", "GH_OAUTH_CALLBACK_URL",
-  "PROPR_TRUSTED_PROXY_PEERS", "PROPR_UI_TUNNEL_ENABLED", "PROPR_UI_PUBLIC_API_URL", "PROPR_INSTANCE_ID",
-  "PROPR_WEB_AUTH_MODE", "GH_PRIVATE_KEY_PATH", "PROPR_AGENT_RUNTIME", "PROPR_IDLE_SHUTDOWN",
-  "PROPR_IDLE_SHUTDOWN_AFTER", "DOCKER_HOST", "PROPR_CLOUDFLARED_IMAGE", "STAGING_ENV_FILE",
+  "PROPR_STACK", "PROPR_CLOUDFLARED_IMAGE", "STAGING_ENV_FILE",
 ]);
 
 /**
