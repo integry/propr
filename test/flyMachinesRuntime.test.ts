@@ -509,6 +509,38 @@ test('stop() signals the agent through the Machine and the run settles with its 
     await handle.release!();
 });
 
+test('stop(): a clone wrapper still publishing the workspace past the stop window is not cancelled', async () => {
+    // The agent exits on TERM, but its wrapper's snapshot and push outlast stop()'s window: the launcher
+    // records the exit status only once the workspace is published, and the Machine must survive until then.
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    fly.ignoreSignals = true;
+    fly.delayPolls = 0;
+    const handle = runtime(fly).start(spec(), { timeout: 600_000 });
+    while (!fly.machines.get('m1')?.ran) await sleep(2);
+    const machine = fly.machines.get('m1')!;
+    machine.files.set('/tmp/r/phase', Buffer.from('agent\n'));
+    const stopStarted = Date.now();
+    const stopping = handle.stop('SIGTERM', 0);
+    while (!machine.signals.length) await sleep(2);
+    machine.files.set('/tmp/r/phase', Buffer.from('finalizing\n'));
+    const publishedAfterMs = STOP_SETTLE_WINDOW_MS + 2_000;
+    setTimeout(() => {
+        machine.files.set('/tmp/r/result.bundle', Buffer.from('bundle'));
+        fly.finish(machine, 'result\n', 'terminated\n', 143);
+    }, publishedAfterMs);
+    await stopping;
+    assert.ok(Date.now() - stopStarted >= publishedAfterMs, 'stop() waited for the wrapper to publish');
+    const result = await handle.wait();
+    assert.equal(result.exitCode, 143);
+    assert.equal(result.stdout, 'result\n');
+    assert.ok(fly.requests.some(request => request.url.endsWith('/exec') && request.body.command.includes('/tmp/r/phase')), 'stop() read the wrapper phase');
+    assert.deepEqual(fly.destroyed, [], 'the finalizing Machine was not destroyed');
+    assert.equal((await handle.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle', 'the published workspace is collectable');
+    await handle.release!();
+    assert.deepEqual(fly.destroyed, ['m1']);
+});
+
 test('cancellation destroys the Machine and rejects; a timeout keeps partial output when asked', async () => {
     const fly = new FakeFly();
     fly.agent = () => undefined;

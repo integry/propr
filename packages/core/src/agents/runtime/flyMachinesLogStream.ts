@@ -19,6 +19,17 @@ export function pause(ms: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
+/** True when `settled` settles (resolves or rejects) within `ms`, false once `ms` passed. */
+export async function settlesWithin(settled: Promise<unknown>, ms: number): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); });
+    try {
+        return await Promise.race([settled.then(() => true, () => true), expired]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 /**
  * When polling must give way to termination handling: the run is cancelled,
  * or a deadline passed. `signal` aborts the requests in flight; `due()`

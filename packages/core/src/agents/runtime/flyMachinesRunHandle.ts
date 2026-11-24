@@ -11,10 +11,10 @@ import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
 import { FlyMachineCreation } from './flyMachinesCreation.js';
-import { confinedCredentialPath, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
+import { confinedCredentialPath, flyCloneWrapperFinalizing, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
 import { assertFlyNetworkUnrestricted, flyForcedStopCommand, FLY_RUN_FILES, renderFlyMachineRequest } from './flyMachinesLaunch.js';
-import { FlyLogStream, pause, pollInterrupt, type PollInterrupt } from './flyMachinesLogStream.js';
+import { FlyLogStream, pause, pollInterrupt, settlesWithin, type PollInterrupt } from './flyMachinesLogStream.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
 
 /** How long a Machine create → `started` may take: image pull plus boot. */
@@ -374,15 +374,23 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         return readMachineFile(this.deps.client, this.machineId!, filePath, bounds);
     }
 
-    private async settlesWithin(ms: number): Promise<boolean> {
-        if (this.settled) return true;
-        let timer: NodeJS.Timeout | undefined;
-        const expired = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); });
-        try {
-            return await Promise.race([this.result.then(() => true, () => true), expired]);
-        } finally {
-            clearTimeout(timer);
-        }
+    /**
+     * After stop()'s window: the recorded exit status or the Machine's end
+     * (the run may only be waiting on a logs page), else a clone transport
+     * wrapper that reports `finalizing` (its agent exited; it records the exit
+     * only once it published the workspace) gets the clone finalization
+     * window, as after a timeout's forced stop. True when the run settled.
+     */
+    private async settlesAfterStopWindow(): Promise<boolean> {
+        const undecided = () => this.exitCode === undefined && !this.settled && !this.discarding && !this.cancellation.signal.aborted;
+        if (undecided()) await this.checkStatus();
+        if (!undecided() || this.machineGone || !await flyCloneWrapperFinalizing(this.deps.client, this.machineId!, this.spec)) return this.settled;
+        if (!await this.settlesWithin(CLONE_FINALIZE_SETTLE_MS) && undecided()) await this.checkStatus();
+        return this.settled;
+    }
+
+    private settlesWithin(ms: number): Promise<boolean> {
+        return this.settled ? Promise.resolve(true) : settlesWithin(this.result, ms);
     }
 
     /**
@@ -390,7 +398,9 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * a clone transport wrapper) and settles with its exit status. An agent
      * that already exited (its exit status recorded, also when the run has
      * not seen it yet) is never cancelled: `stop()` waits for the run to
-     * collect its result from the Machine. A launch still creating its
+     * collect its result from the Machine. Neither is a clone transport
+     * wrapper still publishing the workspace after its agent exited: it gets
+     * the clone finalization window first. A launch still creating its
      * Machine, or an agent that does not exit within `timeoutMs`, is
      * cancelled: its Machine is destroyed and `wait()` rejects with
      * {@link AgentRunStoppedError}.
@@ -404,9 +414,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             } catch (error) {
                 logger.warn({ run: this.spec.name, machine: this.machineId, error: (error as Error).message }, 'Could not signal the Fly Machine; cancelling the run');
             }
-            // Not settled is not "still running": the run may only be waiting on a logs page. The recorded
-            // exit status (or the Machine's end) decides, before a cancellation destroys the Machine.
-            if (this.exitCode === undefined && !this.settled && !this.discarding && !this.cancellation.signal.aborted) await this.checkStatus();
+            if (await this.settlesAfterStopWindow()) return;
         }
         // The agent exited: the run is collecting its output and result from the Machine. It settles once its
         // pending requests (each bounded by its request timeout) answer; cancelling it would destroy the

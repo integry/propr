@@ -276,7 +276,7 @@ export function flyForcedStopCommand(spec: AgentRunSpec): string[] {
 }
 
 /** Where a clone run's transport wrapper records its phase; '' for a run without one. */
-function flyClonePhaseFile(spec: AgentRunSpec): string {
+export function flyClonePhaseFile(spec: AgentRunSpec): string {
     const resultDir = spec.workspace.clone?.resultDir;
     return resultDir ? `${resultDir.replace(/\/+$/, '')}/${WORKSPACE_RESULT_PHASE_FILE}` : '';
 }

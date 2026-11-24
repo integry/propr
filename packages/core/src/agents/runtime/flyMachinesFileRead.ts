@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { parseFlyStat, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
-import type { AgentRunFileRead } from './types.js';
+import { flyClonePhaseFile } from './flyMachinesLaunch.js';
+import type { AgentRunFileRead, AgentRunSpec } from './types.js';
 
 /** Reading files from a lingering Fly Machine through the exec API (base64 over the exec stdout). */
 
@@ -61,6 +62,21 @@ export async function readMachineFile(client: FlyMachinesClient, id: string, fil
         chunks.push(chunk);
     }
     return { content: Buffer.concat(chunks), mtimeMs };
+}
+
+/** The clone transport wrapper's phase file holds one short word. */
+const MAX_PHASE_BYTES = 64;
+
+/**
+ * Whether a clone run's transport wrapper reports `finalizing` in its phase
+ * file: its agent exited and it is snapshotting and publishing the
+ * workspace. False for a run without one, or when unreadable.
+ */
+export async function flyCloneWrapperFinalizing(client: FlyMachinesClient, id: string, spec: AgentRunSpec): Promise<boolean> {
+    const phaseFile = flyClonePhaseFile(spec);
+    if (!phaseFile) return false;
+    const phase = await readMachineFile(client, id, phaseFile, { limit: MAX_PHASE_BYTES }).catch(() => undefined);
+    return !!phase && phase !== 'oversized' && phase.content.toString('utf8').trim() === 'finalizing';
 }
 
 export interface ConfinedPath { directory: string; name: string }
