@@ -167,10 +167,10 @@ export function collectFlySecrets(
   }
 
   const keyPath = options.githubAppKey ?? envFileValues.HOST_GH_PRIVATE_KEY;
-  if (keyPath) {
-    secrets[FLY_GH_PRIVATE_KEY_SECRET] = Buffer.from(readFile(keyPath)).toString("base64");
-    plan.githubAppKey = true;
-  }
+  if (keyPath) secrets[FLY_GH_PRIVATE_KEY_SECRET] = Buffer.from(readFile(keyPath)).toString("base64");
+  // A key file or a base64 key already in the stack .env: either way the
+  // Machine must write the key file and point GH_PRIVATE_KEY_PATH at it.
+  if (secrets[FLY_GH_PRIVATE_KEY_SECRET]) plan.githubAppKey = true;
 
   if (options.tunnelToken || options.tunnelUrl || options.instanceId) {
     const tunnel = buildTunnelSetupEnv({ token: options.tunnelToken ?? "", url: options.tunnelUrl, instanceId: options.instanceId });
@@ -261,6 +261,10 @@ export function prepareFlyDeploy(
   if (browserAuth === "github") {
     notes.push(`Browser sign-in uses the stack's GitHub OAuth client; its callback URL must be ${flyOAuthCallbackUrl(plan)}.`);
   }
+  // Fly secrets are only ever added or replaced: a PROPR_DEMO_MODE=true left
+  // by an earlier deploy would keep the API in demo mode (no sign-in at all)
+  // while this run reports GitHub or Connect sign-in, so switch it off explicitly.
+  if (browserAuth !== "demo" && !secrets.PROPR_DEMO_MODE) secrets.PROPR_DEMO_MODE = "false";
   return { plan, secrets, notes, relayPlan, browserAuth };
 }
 

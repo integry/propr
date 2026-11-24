@@ -28,7 +28,7 @@ The deployed API needs a way to sign browsers in, and the command stops before c
 | --- | --- |
 | ProPR Connect, from `https://app.propr.dev` | `--tunnel-token` and `--tunnel-url` (see [GitHub relay and Connect](#github-relay-and-connect)). The command enrolls the relay token Connect needs. |
 | GitHub OAuth, on `https://<app>.fly.dev` | `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET` in the stack `.env`, from a GitHub App or OAuth App whose callback URL is `https://<app>.fly.dev/api/auth/github/callback`. The deploy sets that callback itself and prints it. |
-| None (read-only demo) | `PROPR_DEMO_MODE=true` in the stack `.env`. |
+| None (read-only demo) | `PROPR_DEMO_MODE=true` in the stack `.env`. A later deploy that selects Connect or GitHub sign-in sets `PROPR_DEMO_MODE=false`, so the retained Fly secret cannot keep the API in demo mode. |
 
 A relay token alone does not sign browsers in on Fly: the automatic Connect sign-in for relay-only stacks works only with a loopback callback, as on a local stack. Fly secret values cannot be read back, so an OAuth client left on the app by an earlier deploy does not count; keep it in the stack `.env`. The summary prints a `Sign-in:` line with the method the deploy chose.
 
@@ -67,7 +67,7 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 | --- | --- |
 | Stack `.env` entries | `<stack root>/.env` when present, or `--env-file <path>`. Skipped: empty values, host paths (`HOST_*`), and every key the deploy sets itself (ports, Redis, database path, URLs, `NODE_ENV`, `PROPR_INDEXING`, the agent runtime and, with `--legacy-docker`, the clone, worktree and egress paths on the shared volume). Turn this off with `--no-env-file`. |
 | `SESSION_SECRET` | Generated only when the app does not have one yet, so a redeploy does not sign everyone out. A `SESSION_SECRET` in the `.env` is uploaded as is. |
-| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. A redeploy without a key keeps the earlier one wired in the same way. |
+| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64; a `PROPR_GH_PRIVATE_KEY_B64` already in the `.env` is uploaded as is. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. A redeploy without a key keeps the earlier one wired in the same way. |
 | `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
 | `SPRITES_TOKEN` | `--sprites-token` or `SPRITES_TOKEN`. Without it agent runs on Sprites fail, and the command says so. |
 | `FLY_API_TOKEN` | `--agent-fly-token`, for the Fly Machines agent runtime. The deploy token is never reused for agents. |

@@ -28,12 +28,14 @@ const plan: FlyDeployPlan = {
   githubAppKey: false,
 };
 
-function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: Array<Record<string, string>>; steps: string[] } {
+function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: Array<Record<string, string>>; steps: string[]; deployed: FlyDeployPlan[] } {
   const set: Array<Record<string, string>> = [];
   const steps: string[] = [];
+  const deployed: FlyDeployPlan[] = [];
   return {
     set,
     steps,
+    deployed,
     target: {
       kind: "machines-api",
       async ensureApp() { steps.push("app"); return true; },
@@ -41,10 +43,30 @@ function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: 
       async extendVolume() { throw new Error("not expected"); },
       async secretNames() { steps.push("secret-names"); return existingSecrets; },
       async setSecrets(_app, values) { steps.push("secrets"); set.push(values); },
-      async deploy() { steps.push("deploy"); return "deployed"; },
+      async deploy(deployPlan) { steps.push("deploy"); deployed.push(deployPlan); return "deployed"; },
     },
   };
 }
+
+test("the GitHub App key is wired in when this run uploads it, when the app already has it, and not otherwise", async () => {
+  // Uploaded by this run (a base64 key from the stack .env; the plan flag was never set).
+  const uploading = fakeTarget([]);
+  const lines: string[] = [];
+  await runFlyDeploy({ plan, secrets: { PROPR_GH_PRIVATE_KEY_B64: "a2V5" }, generatedSecrets: {} }, uploading.target, (l) => lines.push(l));
+  assert.equal(uploading.deployed[0]?.githubAppKey, true);
+  assert.equal(lines.some((l) => l.includes("earlier deploy")), false);
+
+  // Left by an earlier deploy.
+  const retained = fakeTarget(["PROPR_GH_PRIVATE_KEY_B64"]);
+  await runFlyDeploy({ plan, secrets: {}, generatedSecrets: {} }, retained.target, (l) => lines.push(l));
+  assert.equal(retained.deployed[0]?.githubAppKey, true);
+  assert.ok(lines.some((l) => l.includes("Keeping the GitHub App private key from an earlier deploy")));
+
+  // No key anywhere.
+  const none = fakeTarget([]);
+  await runFlyDeploy({ plan, secrets: {}, generatedSecrets: {} }, none.target);
+  assert.equal(none.deployed[0]?.githubAppKey, false);
+});
 
 test("generated SESSION_SECRET is set once and kept on redeploy", async () => {
   const first = fakeTarget([]);

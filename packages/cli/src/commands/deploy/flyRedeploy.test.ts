@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_PROPR_GH_RELAY_URL, resolveGithubAuthMode } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, parseTruthyEnvValue, resolveGithubAuthMode } from "@propr/shared";
 import { deployPreparedFly, prepareFlyDeploy, type DeployFlyOptions } from "../deployFly.js";
 import type { FlyDeployTarget } from "./flyDeployRunner.js";
 import { buildAppEnv, buildMachineConfig, FLY_GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_SECRET } from "./flyMachineConfig.js";
@@ -16,6 +16,8 @@ import type { FlyRelayDeps } from "./flyRelay.js";
 const IMAGES = { app: "propr/app:0.9.3", redis: "redis:7-alpine", cloudflared: "cloudflare/cloudflared:2024.12.2" };
 const OAUTH_ENV = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret" };
 const OWN_APP_ENV = { ...OAUTH_ENV, GH_APP_ID: "42", GH_INSTALLATION_ID: "777", HOST_GH_PRIVATE_KEY: "/keys/app.pem" };
+const TUNNEL_FLAGS = { tunnelToken: "cf-token", tunnelUrl: "https://t-abc123.propr.dev" };
+const KEY_FILE_DECLARATION = [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }];
 
 /** A Fly app as the deploy sees it: setSecrets adds or replaces, nothing is ever removed. */
 function flyApp() {
@@ -131,4 +133,46 @@ test("redeploying an own-App app without new GitHub credentials keeps the App ke
   assert.equal(second.GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH, "the env still points at the key file");
   assert.deepEqual(app.appFiles(), [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }], "the key file is still declared");
   assert.deepEqual(authModes(second), ["app", "app"]);
+});
+
+test("a first deploy with only a base64 App key in the stack .env wires that key into the Machine", async () => {
+  // No key file, no HOST_GH_PRIVATE_KEY: the .env carries the key the way an earlier upload stored it.
+  const { HOST_GH_PRIVATE_KEY: _path, ...noKeyFile } = OWN_APP_ENV;
+  const b64Env = { ...noKeyFile, [FLY_GH_PRIVATE_KEY_SECRET]: Buffer.from("-----BEGIN KEY-----\n").toString("base64") };
+  const app = flyApp();
+  const env = await deploy(app, {}, b64Env, "gh");
+  assert.equal(env.GH_AUTH_MODE, "app");
+  assert.equal(env.GH_INSTALLATION_ID, "777");
+  assert.equal(env.GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH, "the env points at the key file");
+  assert.deepEqual(app.appFiles(), KEY_FILE_DECLARATION, "the key file is declared from this run's upload");
+  assert.equal(app.secrets[FLY_GH_PRIVATE_KEY_SECRET], b64Env[FLY_GH_PRIVATE_KEY_SECRET]);
+  assert.deepEqual(authModes(env), ["app", "app"]);
+
+  // The same .env on a Connect deploy keeps the own App for API auth with the key wired in.
+  const connectApp = flyApp();
+  const connectEnv = await deploy(connectApp, TUNNEL_FLAGS, b64Env, "gh");
+  assert.equal(connectEnv.GH_AUTH_MODE, "app");
+  assert.equal(connectEnv.GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH);
+  assert.deepEqual(connectApp.appFiles(), KEY_FILE_DECLARATION);
+});
+
+test("a demo-mode app redeployed with a GitHub OAuth client leaves demo mode", async () => {
+  const app = flyApp();
+  const first = await deploy(app, {}, { PROPR_DEMO_MODE: "true" });
+  assert.equal(parseTruthyEnvValue(first.PROPR_DEMO_MODE), true);
+
+  // PROPR_DEMO_MODE dropped from the local .env; Fly still holds the earlier value.
+  const second = await deploy(app, {}, OAUTH_ENV);
+  assert.equal(second.PROPR_DEMO_MODE, "false");
+  assert.equal(parseTruthyEnvValue(second.PROPR_DEMO_MODE), false, "the API no longer boots in demo mode");
+  assert.equal(second.GH_OAUTH_CLIENT_ID, "Iv1.client");
+});
+
+test("a demo-mode app redeployed with Connect leaves demo mode", async () => {
+  const app = flyApp();
+  await deploy(app, {}, { PROPR_DEMO_MODE: "true" });
+  const second = await deploy(app, TUNNEL_FLAGS, {}, "gh");
+  assert.equal(second.PROPR_DEMO_MODE, "false");
+  assert.equal(parseTruthyEnvValue(second.PROPR_DEMO_MODE), false);
+  assert.equal(second.PROPR_WEB_AUTH_MODE, "connect");
 });

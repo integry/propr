@@ -115,11 +115,14 @@ export async function runFlyDeploy(
 
   const existing = new Set(await target.secretNames(plan.app));
   const toSet: Record<string, string> = { ...input.secrets };
-  // Fly secrets are never removed, so a GitHub App key from an earlier deploy
-  // is still on the app; the container must keep writing it and pointing
-  // GH_PRIVATE_KEY_PATH at it, or GH_AUTH_MODE=app has no key to sign with.
-  const githubAppKey = plan.githubAppKey || existing.has(FLY_GH_PRIVATE_KEY_SECRET);
-  if (githubAppKey && !plan.githubAppKey) log("Keeping the GitHub App private key from an earlier deploy.");
+  // The container must write the GitHub App key file and point
+  // GH_PRIVATE_KEY_PATH at it whenever the app has the key secret, or
+  // GH_AUTH_MODE=app has no key to sign with: the key this run uploads (from a
+  // key file or a base64 value in the stack .env) counts, and so does one left
+  // by an earlier deploy, since Fly secrets are never removed.
+  const uploadsKey = plan.githubAppKey || Boolean(toSet[FLY_GH_PRIVATE_KEY_SECRET]);
+  const githubAppKey = uploadsKey || existing.has(FLY_GH_PRIVATE_KEY_SECRET);
+  if (githubAppKey && !uploadsKey) log("Keeping the GitHub App private key from an earlier deploy.");
   // Size everything carved out of the volume (the legacy Docker filesystem) from its confirmed capacity.
   const deployPlan: FlyDeployPlan = { ...plan, volumeSizeGb, githubAppKey };
   const secretsKept: string[] = [];

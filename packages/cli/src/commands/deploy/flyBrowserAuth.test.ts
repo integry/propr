@@ -65,6 +65,15 @@ test("a GitHub OAuth client in the stack .env signs browsers in on the public UR
 });
 
 test("demo mode needs no sign-in", () => {
-  assert.equal(prepare({}, { PROPR_DEMO_MODE: "true" }).browserAuth, "demo");
+  const demo = prepare({}, { PROPR_DEMO_MODE: "true" });
+  assert.equal(demo.browserAuth, "demo");
+  assert.equal(demo.secrets.PROPR_DEMO_MODE, "true");
   assert.throws(() => prepare({}, { PROPR_DEMO_MODE: "false" }), /nobody can sign in/);
+});
+
+test("GitHub and Connect sign-in switch demo mode off explicitly, so a retained Fly secret cannot keep it on", () => {
+  assert.equal(prepare({}, OAUTH_ENV).secrets.PROPR_DEMO_MODE, "false");
+  assert.equal(prepare(TUNNEL_FLAGS, {}).secrets.PROPR_DEMO_MODE, "false");
+  // A stack .env that already says so is uploaded as is.
+  assert.equal(prepare({}, { ...OAUTH_ENV, PROPR_DEMO_MODE: "0" }).secrets.PROPR_DEMO_MODE, "0");
 });

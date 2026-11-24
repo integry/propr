@@ -72,6 +72,20 @@ test("secrets: stack .env minus tunnel tokens, GitHub key as base64, Connect tun
   assert.ok(notes.some((n) => n.includes("PROPR_UI_TUNNEL_TOKEN")));
 });
 
+test("a base64 GitHub App key already in the stack .env wires the key file without a key path", () => {
+  const plan = resolveFlyDeployPlan({ app: "my-propr" }, IMAGES);
+  const b64 = Buffer.from("-----BEGIN KEY-----\n").toString("base64");
+  const { secrets } = collectFlySecrets(plan, { app: "my-propr", spritesToken: "sp" }, { GH_APP_ID: "1", [FLY_GH_PRIVATE_KEY_SECRET]: b64 }, () => {
+    throw new Error("no key file should be read");
+  });
+  assert.equal(secrets[FLY_GH_PRIVATE_KEY_SECRET], b64);
+  assert.equal(plan.githubAppKey, true);
+  // Without any key the plan stays key-less.
+  const bare = resolveFlyDeployPlan({ app: "my-propr" }, IMAGES);
+  collectFlySecrets(bare, { app: "my-propr", spritesToken: "sp" }, { GH_APP_ID: "1" });
+  assert.equal(bare.githubAppKey, false);
+});
+
 test("without a tunnel flag the local tunnel token is not copied and a missing Sprites token is noted", () => {
   const saved = process.env.SPRITES_TOKEN;
   delete process.env.SPRITES_TOKEN;
