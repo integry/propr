@@ -210,7 +210,7 @@ test('a private-network MCP grant is refused on a runtime without private networ
     assert.equal(privateGrant.transport, 'private-network');
     assert.throws(() => assertAgentRuntimeSupports(remote, { ...spec(), mcpGrant: privateGrant }), (error: any) => error.capability === 'mcp_private_network' && /API_PUBLIC_URL/.test(error.message));
     const reachable = agentRunMcpGrant({ mcpServers: [{ name: 'propr', url: 'https://propr.example.com/api/mcp' }] } as any)!;
-    assert.deepEqual(reachable, { servers: ['propr'], transport: 'reachable-url' });
+    assert.deepEqual(reachable, { servers: ['propr'], transport: 'reachable-url', url: 'https://propr.example.com/api/mcp' });
     assert.doesNotThrow(() => assertAgentRuntimeSupports(remote, { ...spec(), mcpGrant: reachable }));
     assert.throws(() => assertAgentRuntimeSupports({ ...remote, capabilities: capabilities({ supportsMcpReachableUrl: false }) }, { ...spec(), mcpGrant: reachable }), /reachable URL/);
 });

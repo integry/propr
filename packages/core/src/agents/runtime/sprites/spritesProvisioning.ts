@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import logger from '../../../utils/logger.js';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
+import { applySpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -19,7 +20,8 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'>;
-export type Slot = { sprite: Sprite; checkpoint: string };
+/** `restricted`: a network policy may have been applied, so release must clear it before reuse. */
+export type Slot = { sprite: Sprite; checkpoint: string; restricted?: boolean };
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -115,6 +117,12 @@ export class SpritePool {
         try {
             // Stop descendants that outlived the launcher, including detached processes.
             await slot.sprite.restart();
+            if (slot.restricted) {
+                // Clear the run's allowlist before the restore: the next run, or a
+                // replacement's setup, must start from the open checkpoint state.
+                await applySpriteNetworkPolicy(slot.sprite, OPEN_SPRITE_NETWORK_POLICY);
+                slot = { sprite: slot.sprite, checkpoint: slot.checkpoint };
+            }
             await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
             await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
         } catch {

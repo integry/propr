@@ -6,14 +6,16 @@ import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../git/workspaceTransportScri
 import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
+import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
 import { unsupportedMount, uploadRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: false,
-        supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] as const };
+    readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: true,
+        restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
+        supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
     private closing?: Promise<void>;
@@ -33,8 +35,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
         const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
-        if (spec.network.restriction || spec.network.policy?.mode === 'restricted' || spec.network.mode === 'named')
-            throw new Error('Sprites requires open networking');
+        // Named networks, private MCP endpoints and malformed policies stay refused.
+        const networkPolicy = spriteNetworkPolicy(spec);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
         let pool = this.pools.get(token);
@@ -44,6 +46,9 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             this.pools.set(token, pool);
         }
         options = { ...options, extraEnvVars: { ...options.extraEnvVars } };
+        // As on Docker: a restricted Claude run skips the telemetry hosts its allowlist
+        // denies, unless its configuration (env files, spec env) sets the variable.
+        if (networkPolicy && spec.profile.agentType === 'claude') options.extraEnvVars!.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ??= '1';
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
         const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(options.timeout ?? 300_000),
@@ -65,6 +70,11 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 // after stop() must dispose of its Sprite before this acquisition ends.
                 const acquired = await ready.acquire(signal);
                 try {
+                    if (networkPolicy) {
+                        // Marked first, so release clears a policy even if applying it failed halfway.
+                        acquired.restricted = true;
+                        await startupStep(signal, () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
+                    }
                     const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch));
                     signal.throwIfAborted();
                     slot = acquired;
