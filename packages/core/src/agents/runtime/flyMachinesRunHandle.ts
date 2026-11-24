@@ -149,10 +149,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         this.timing.createMs = now() - startedAt;
         let live: ReturnType<typeof startLiveOutputStreaming> | undefined;
         try {
-            if (signal.aborted) {
-                await this.discardMachine('cancelled');
-                this.throwIfAborted(signal);
-            }
+            await this.discardIfAborted(signal);
             live = startLiveOutputStreaming({
                 ...options, onOverflow: error => logger.warn({ run: this.spec.name, error: error.message }, 'Live output unavailable; continuing agent execution'),
             }, () => this.logs.stdout.output, () => this.logs.stderr.value);
@@ -199,11 +196,10 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         }
         if (timedOut && !signal.aborted) await this.stopAfterTimeout(sessionContext, live, signal);
         // Cancelled while running, or while the timeout stop waited for the agent: the Machine is destroyed.
-        if (signal.aborted) {
-            await this.discardMachine('cancelled');
-            this.throwIfAborted(signal);
-        }
-        const result = await this.collect(sessionContext);
+        await this.discardIfAborted(signal);
+        const result = await this.collect(sessionContext, signal);
+        // Cancelled while the output was read back: no result is returned from a run the caller gave up.
+        await this.discardIfAborted(signal);
         if (!timedOut) return result;
         return await new Promise<ExecutionResult>((resolve, reject) => settleTimeoutStop(timeoutMs, result, options.preserveOutputOnTimeout ?? false, { resolve, reject }));
     }
@@ -211,6 +207,13 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     private throwIfAborted(signal: AbortSignal): void {
         const aborted = getExecutionAbortError(signal);
         if (aborted) throw aborted;
+    }
+
+    /** A cancelled run destroys its Machine and rejects with the cancellation's error. */
+    private async discardIfAborted(signal: AbortSignal): Promise<void> {
+        if (!signal.aborted) return;
+        await this.discardMachine('cancelled');
+        this.throwIfAborted(signal);
     }
 
     /**
@@ -340,14 +343,18 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         }
     }
 
-    /** The exact output from the Machine's capture files, falling back to what the logs streamed. */
-    private async collect(context: SessionLineInspectionContext): Promise<ExecutionResult> {
+    /**
+     * The exact output from the Machine's capture files, falling back to what
+     * the logs streamed. `signal` (the run's cancellation) aborts the reads;
+     * the caller then destroys the Machine instead of returning the result.
+     */
+    private async collect(context: SessionLineInspectionContext, signal: AbortSignal): Promise<ExecutionResult> {
         let stdout = this.logs.stdout.output;
         let stderr = this.logs.stderr.value;
         if (!this.machineGone && this.machineId) {
             const [capturedRead, capturedErrRead] = await Promise.all([
-                this.execRead(FLY_RUN_FILES.stdout, { tail: MAX_CAPTURE_READ_BYTES }).catch(() => undefined),
-                this.execRead(FLY_RUN_FILES.stderr, { tail: MAX_CAPTURE_READ_BYTES }).catch(() => undefined),
+                this.execRead(FLY_RUN_FILES.stdout, { tail: MAX_CAPTURE_READ_BYTES, signal }).catch(() => undefined),
+                this.execRead(FLY_RUN_FILES.stderr, { tail: MAX_CAPTURE_READ_BYTES, signal }).catch(() => undefined),
             ]);
             const captured = capturedRead && capturedRead !== 'oversized' ? capturedRead.content : undefined;
             const capturedErr = capturedErrRead && capturedErrRead !== 'oversized' ? capturedErrRead.content : undefined;

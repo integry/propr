@@ -86,6 +86,11 @@ class FakeFly {
     createGate?: Promise<void>;
     /** Exec requests wait for this before the API answers. */
     execGate?: Promise<void>;
+    /** An abort by the client rejects an exec held by {@link execGate} first (otherwise it is answered anyway). */
+    execGateObservesAbort = false;
+    /** Exec requests held by {@link execGate}, and those the client aborted. */
+    pendingExecs = 0;
+    abortedExecs = 0;
     /** Logs requests wait for this before the API answers (a page still pending); an abort by the client rejects it first. */
     logsGate?: Promise<void>;
     /**
@@ -231,7 +236,18 @@ class FakeFly {
             return json(200, {});
         }
         if (action === 'exec') {
-            if (this.execGate) await this.execGate;
+            if (this.execGate) {
+                const gate = this.execGate;
+                this.pendingExecs++;
+                try {
+                    await new Promise<void>((resolve, reject) => {
+                        if (this.execGateObservesAbort) init.signal?.addEventListener('abort', () => { this.abortedExecs++; reject(init.signal!.reason); }, { once: true });
+                        void gate.then(resolve);
+                    });
+                } finally {
+                    this.pendingExecs--;
+                }
+            }
             const [, , script, , file, offset, length] = body.command as string[];
             if (script.includes('pwd -P')) {
                 // The confined credential reader runs for real, against this host's filesystem.
@@ -853,6 +869,51 @@ test('stop() of a finished run whose logs page or capture reads outlast the sett
     assert.deepEqual(delayedReads.destroyed, [], 'stop() during collection keeps the Machine');
     assert.equal((await collecting.readFile!('/tmp/r/result.bundle'))!.toString(), 'bundle');
     await collecting.release!();
+});
+
+test('cancellation while the capture files are read back destroys the Machine and rejects', async () => {
+    const collectingFly = (observesAbort: boolean): { fly: FakeFly; release: () => void } => {
+        const fly = new FakeFly();
+        fly.delayPolls = 0;
+        fly.execGateObservesAbort = observesAbort;
+        let release!: () => void;
+        fly.agent = machine => {
+            fly.finish(machine, 'result\n', 'warn\n', 0);
+            machine.files.set('/tmp/r/result.bundle', Buffer.from('bundle'));
+            // The exit is seen from the logs; the capture reads that follow are held.
+            fly.execGate = new Promise(resolve => { release = resolve; });
+        };
+        return { fly, release: () => release() };
+    };
+    const captureReads = (fly: FakeFly) => fly.requests.filter(request => request.url.endsWith('/exec')
+        && (request.body.command.includes(FLY_RUN_FILES.stdout) || request.body.command.includes(FLY_RUN_FILES.stderr))).length;
+
+    // The pending capture reads observe the caller's cancellation: the run settles without waiting for them.
+    const aborting = collectingFly(true);
+    const controller = new AbortController();
+    const run = runtime(aborting.fly).start(spec(), { timeout: 600_000, signal: controller.signal });
+    const outcome = run.wait().then(() => 'resolved', (error: Error) => error.message);
+    while (aborting.fly.pendingExecs === 0 || captureReads(aborting.fly) === 0) await sleep(2);
+    controller.abort(new Error('cancelled during collection'));
+    assert.equal(await Promise.race([outcome, sleep(3_000).then(() => 'still running')]), 'cancelled during collection');
+    assert.ok(aborting.fly.abortedExecs > 0, 'the capture reads in flight were aborted');
+    assert.deepEqual(aborting.fly.destroyed, ['m1'], 'the Machine is destroyed before wait() rejects');
+    assert.equal(await run.readFile!('/tmp/r/result.bundle'), null, 'nothing is read from a discarded Machine');
+    aborting.release();
+
+    // Capture reads the API answers despite the abort: the run still rejects and destroys the Machine
+    // instead of returning the collected result.
+    const answering = collectingFly(false);
+    const late = new AbortController();
+    const answered = runtime(answering.fly).start(spec(), { timeout: 600_000, signal: late.signal });
+    const answeredOutcome = answered.wait().then(() => 'resolved', (error: Error) => error.message);
+    while (answering.fly.pendingExecs === 0 || captureReads(answering.fly) === 0) await sleep(2);
+    late.abort(new Error('cancelled while the reads were answered'));
+    await sleep(20);
+    assert.deepEqual(answering.fly.destroyed, [], 'still collecting');
+    answering.release();
+    assert.equal(await answeredOutcome, 'cancelled while the reads were answered');
+    assert.deepEqual(answering.fly.destroyed, ['m1']);
 });
 
 test('timeout: when the kill cannot be confirmed the Machine is destroyed before settling, or the run fails', async () => {
