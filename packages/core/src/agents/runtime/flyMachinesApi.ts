@@ -16,6 +16,13 @@ export interface FlyMachineFile {
 export interface FlyMachineConfigBody {
     image: string;
     init: { entrypoint?: string[]; cmd?: string[]; exec?: string[] };
+    /**
+     * Process overrides. `init` has no user field, so Fly starts the process
+     * as the image's `USER` unless a process sets `user`; a process that
+     * sets only `user` runs the image's default command instead of `init`'s,
+     * so it has to carry the entrypoint and command as well.
+     */
+    processes?: Array<{ user?: string; entrypoint?: string[]; cmd?: string[]; exec?: string[]; env?: Record<string, string> }>;
     env: Record<string, string>;
     guest: FlyMachineGuest;
     files?: FlyMachineFile[];
@@ -73,6 +80,34 @@ export class FlyMachinesApiError extends Error {
     }
 }
 
+/** Machines an org on Fly's Free plan may have at once, across all of its apps. */
+export const FLY_FREE_PLAN_MACHINE_LIMIT = 3;
+
+/**
+ * A create refused because the org has as many Machines as its plan allows
+ * (HTTP 422, "Your organization has reached its machine limit"). It is a
+ * definite refusal: no Machine was created.
+ */
+export class FlyMachineLimitError extends FlyMachinesApiError {
+    constructor(readonly detail: string) {
+        super(
+            `Fly Machines API refused to create a Machine: ${detail}. Every Machine in the Fly organization counts toward its limit, `
+            + 'across all of its apps: the ProPR control plane, other apps, and run Machines that still exist (a run being read, a run '
+            + 'kept because its result or refreshed credentials could not be read, or a finished run waiting out PROPR_FLY_RESULT_LINGER_SECONDS '
+            + `after its worker went away). The Fly Free plan allows ${FLY_FREE_PLAN_MACHINE_LIMIT} Machines, which fits about one concurrent `
+            + 'run next to the control plane; Sprites is the recommended runtime on the Free plan. Destroy leftover Machines '
+            + '(fly machines list -a <app>) or raise the organization\'s limit.',
+            422,
+        );
+        this.name = 'FlyMachineLimitError';
+    }
+}
+
+/** Whether an API error body is the org Machine-limit refusal. */
+export function isFlyMachineLimitRefusal(status: number, detail: string): boolean {
+    return status === 422 && /machine limit/i.test(detail);
+}
+
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 /** `signal` aborts the request (on top of its own timeout): the caller no longer waits for it. */
@@ -120,6 +155,7 @@ export class FlyMachinesClient {
             // The API's error body names the problem; it never echoes the token.
             let detail = text.trim().slice(0, 500);
             try { detail = (JSON.parse(text) as { error?: string }).error ?? detail; } catch { /* plain text */ }
+            if (isFlyMachineLimitRefusal(response.status, detail)) throw new FlyMachineLimitError(detail);
             throw new FlyMachinesApiError(`Fly Machines API ${method} ${new URL(url).pathname} returned ${response.status}${detail ? `: ${detail}` : ''}`, response.status);
         }
         let body: T | undefined;

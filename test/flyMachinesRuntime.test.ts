@@ -18,8 +18,8 @@ after(async () => {
 
 const { FlyMachinesRuntime, flyMachinesCapabilities, FLY_MACHINES_RUNTIME_KIND } = await import('../packages/core/src/agents/runtime/flyMachinesRuntime.ts');
 const { resolveFlyMachinesConfig, flyMachineGuest, flyInternalMcpUrl, dockerMemoryToMb, FlyMachinesConfigError, MIN_FLY_RESULT_LINGER_SECONDS } = await import('../packages/core/src/agents/runtime/flyMachinesConfig.ts');
-const { renderFlyMachineRequest, parseFlyLogLine, flyMachineName, FLY_LOG_MARKERS, FLY_RUN_FILES } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
-const { flyAuthorization, flyMachineExitCode } = await import('../packages/core/src/agents/runtime/flyMachinesApi.ts');
+const { renderFlyMachineRequest, parseFlyLogLine, flyMachineName, FLY_LOG_MARKERS, FLY_RUN_FILES, FLY_LAUNCHER_USER } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
+const { flyAuthorization, flyMachineExitCode, FlyMachineLimitError, FlyMachinesApiError, FLY_FREE_PLAN_MACHINE_LIMIT } = await import('../packages/core/src/agents/runtime/flyMachinesApi.ts');
 const { uploadAgentRunFiles, AgentRunFileUploadError } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
 const { FLY_CREATION_METADATA_KEY, FLY_CREATE_SETTLE_MS } = await import('../packages/core/src/agents/runtime/flyMachinesCreation.ts');
 const { envFileValues } = await import('../packages/core/src/agents/credentials/hostCredentialStaging.ts');
@@ -89,6 +89,8 @@ class FakeFly {
     lostCreate?: { response: 'network' | number; deferred?: boolean };
     /** The next create is refused with this status; no Machine is created. */
     refuseCreate?: number;
+    /** The refused create's error body. */
+    refuseCreateError = 'invalid config';
     /** This many list requests fail with 503. */
     failLists = 0;
     private deferredCreate?: () => void;
@@ -179,7 +181,7 @@ class FakeFly {
         const [, , id, action] = match;
         if (method === 'POST' && !id) {
             if (this.createGate) await this.createGate;
-            if (this.refuseCreate) { const status = this.refuseCreate; this.refuseCreate = undefined; return json(status, { error: 'invalid config' }); }
+            if (this.refuseCreate) { const status = this.refuseCreate; this.refuseCreate = undefined; return json(status, { error: this.refuseCreateError }); }
             const create = (): FakeMachine => {
                 const machine: FakeMachine = { id: `m${this.nextId++}`, state: 'started', request: body, files: new Map(), mtimes: new Map(), events: [], pendingLogs: [], signals: [] };
                 for (const file of body.config.files ?? []) machine.files.set(file.guest_path, Buffer.from(file.raw_value, 'base64'));
@@ -372,6 +374,26 @@ test('machine request: image entrypoint chain, Docker env semantics, uploads, pr
     const bound = spec();
     bound.mounts.push({ type: 'bind', source: '/x', target: '/y', readOnly: true, purpose: 'data', order: 9 });
     assert.throws(() => renderFlyMachineRequest(bound, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }), /bind-mounts \/y/);
+});
+
+test('machine request: the launcher process starts as root with the complete launcher command, whatever the image USER', () => {
+    const render = (run: any) => renderFlyMachineRequest(run, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} });
+    for (const user of ['0:0', 'root']) {
+        const { config } = render(spec({ user }));
+        // init has no user field: without a process user Fly runs the image's USER (node), and the launcher refuses.
+        // A process with only a user runs the image's default command instead of the launcher.
+        assert.equal(FLY_LAUNCHER_USER, 'root');
+        assert.equal(config.processes?.length, 1);
+        const [process] = config.processes!;
+        assert.equal(process.user, 'root');
+        assert.deepEqual(process.entrypoint, config.init.entrypoint);
+        assert.deepEqual(process.cmd, config.init.cmd);
+        assert.equal(process.entrypoint![0], '/bin/bash');
+        assert.equal(process.cmd![3], user, 'the run\'s own user is passed to the launcher');
+    }
+    // The request on the wire carries all three together.
+    const wire = JSON.parse(JSON.stringify(render(spec())));
+    assert.deepEqual(Object.keys(wire.config.processes[0]).sort(), ['cmd', 'entrypoint', 'user']);
 });
 
 test('machine request: security restrictions the Machine cannot enforce are refused before launch', () => {
@@ -1070,6 +1092,34 @@ test('a create whose response is lost: its Machine is found by the run\'s creati
     await handle.release!();
     assert.equal(creationLookups(refused).length, 0);
     assert.equal(refused.requests.filter(request => request.method === 'DELETE').length, 0);
+});
+
+test('a create refused at the org Machine limit names the limit, the Free-plan cap and what holds Machines', async () => {
+    const fly = new FakeFly();
+    fly.refuseCreate = 422;
+    fly.refuseCreateError = 'Your organization has reached its machine limit. Please contact billing@fly.io';
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    const error: any = await handle.wait().then(() => assert.fail('the create was refused'), (rejected: unknown) => rejected);
+    assert.ok(error instanceof FlyMachineLimitError);
+    assert.ok(error instanceof FlyMachinesApiError, 'still an API refusal');
+    assert.equal(error.status, 422);
+    assert.match(error.message, /reached its machine limit/);
+    assert.match(error.message, new RegExp(`Free plan allows ${FLY_FREE_PLAN_MACHINE_LIMIT} Machines`));
+    assert.match(error.message, /control plane/);
+    assert.match(error.message, /PROPR_FLY_RESULT_LINGER_SECONDS/);
+    assert.match(error.message, /Sprites/);
+    assert.ok(!error.message.includes('fm2_test'), 'the token is never echoed');
+    // A definite refusal: no Machine exists, none is looked for or destroyed.
+    await handle.release!();
+    assert.equal(creationLookups(fly).length, 0);
+    assert.equal(fly.requests.filter(request => request.method === 'DELETE').length, 0);
+
+    // Other 422s keep the API's own message.
+    const other = new FakeFly();
+    other.refuseCreate = 422;
+    const plain = runtime(other).start(spec(), { timeout: 10_000 });
+    await assert.rejects(plain.wait(), (rejected: unknown) => rejected instanceof FlyMachinesApiError && !(rejected instanceof FlyMachineLimitError) && /returned 422: invalid config/.test((rejected as Error).message));
+    await plain.release!();
 });
 
 test('a lost create keeps its cleanup obligation until a lookup settles it', async () => {

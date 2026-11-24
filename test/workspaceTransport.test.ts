@@ -129,12 +129,29 @@ interface LocalRuntime extends AgentRuntime<{ extraEnvVars?: Record<string, stri
  * own UID; no real UID boundary). `agentUid: 0` simulates an image whose `node`
  * user is root.
  */
-function simulatedRoot(f: Fixture, { agentUid = 1000 }: { agentUid?: number } = {}): { bin: string; log: string } {
+function simulatedRoot(f: Fixture, { agentUid = 1000, foreignWorkspace = false }: { agentUid?: number; foreignWorkspace?: boolean } = {}): { bin: string; log: string } {
     const bin = path.join(f.root, 'bin');
     const log = path.join(f.root, 'su-exec.log');
     write(path.join(bin, 'id'), `#!/bin/bash\ncase "$*" in\n  -u) echo 0 ;;\n  node) echo "uid=${agentUid}(node)" ;;\n  "-u node") echo ${agentUid} ;;\n  *) exec /usr/bin/id "$@" ;;\nesac\n`, 0o755);
-    write(path.join(bin, 'su-exec'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nshift\nexec "$@"\n`, 0o755);
+    write(path.join(bin, 'su-exec'), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nshift\nexport PROPR_TEST_DROPPED=1\nexec "$@"\n`, 0o755);
     write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
+    if (foreignWorkspace) {
+        // The image's workspace belongs to another UID than the (simulated root) wrapper's:
+        // git run by the wrapper inside it sees the repository there as another user's.
+        // After the privilege drop the agent owns the workspace (the wrapper chowns it).
+        // A local fetch's upload-pack inherits the flag, but the repository it serves (the
+        // wrapper's private one) is root's own: it runs without it.
+        write(path.join(bin, 'git'), `#!/bin/bash
+case "$PWD/" in
+  ${JSON.stringify(f.sandbox)}/*)
+    if [ -z "\${PROPR_TEST_DROPPED:-}" ]; then
+        export GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+        [ "$1" != fetch ] || { shift; set -- fetch --upload-pack='env -u GIT_TEST_ASSUME_DIFFERENT_OWNER git-upload-pack' "$@"; }
+    fi ;;
+esac
+exec /usr/bin/git "$@"
+`, 0o755);
+    }
     return { bin, log };
 }
 
@@ -145,10 +162,10 @@ function simulatedRoot(f: Fixture, { agentUid = 1000 }: { agentUid?: number } = 
  * ({@link simulatedRoot}) unless `root` is false, when it runs as the test's
  * real unprivileged user.
  */
-function localRuntime(f: Fixture, setup: { root?: boolean; agentUid?: number } = {}): LocalRuntime {
+function localRuntime(f: Fixture, setup: { root?: boolean; agentUid?: number; foreignWorkspace?: boolean } = {}): LocalRuntime {
     const tmp = path.join(f.root, 'tmp');
     fs.mkdirSync(tmp, { recursive: true });
-    const identities = setup.root === false ? undefined : simulatedRoot(f, { agentUid: setup.agentUid });
+    const identities = setup.root === false ? undefined : simulatedRoot(f, { agentUid: setup.agentUid, foreignWorkspace: setup.foreignWorkspace });
     const pathPrefix = identities?.bin;
     const runtime: LocalRuntime = {
         kind: 'local', started: [], released: 0, retained: 0,
@@ -433,6 +450,34 @@ test('a clone-mode run cancelled as it settles retrieves nothing and is discarde
     assert.equal(remoteRunRefs(f), '');
     assert.deepEqual(f.revoked, [TOKEN]);
     assert.equal(runtime.released, 1);
+});
+
+test('a root wrapper clones into a workspace directory owned by another user ID', async () => {
+    const f = fixture();
+    // Like the image's /home/node/workspace: it exists, empty, and belongs to node, not the root wrapper.
+    fs.mkdirSync(f.sandbox, { recursive: true });
+    const runtime = localRuntime(f, { foreignWorkspace: true });
+    const result = await runWithWorkspaceTransport(runtime, runSpec(f), { stdinData: 'the prompt' }, { transport: f.transport });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /dubious ownership/);
+    assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'changed\n');
+    assert.deepEqual(git(f.worktree, 'status', '--porcelain').split('\n').sort(), [' D remove-me.txt', ' M a.txt', '?? new.txt', '?? prompt.seen']);
+    // The exception is passed per command, never written into the workspace's own configuration.
+    assert.doesNotMatch(fs.readFileSync(path.join(f.sandbox, '.git/config'), 'utf8'), /safe/);
+    assert.equal(remoteRunRefs(f), '');
+    assert.deepEqual(f.revoked, [TOKEN]);
+});
+
+test('the foreign-owner simulation reproduces git refusing a checkout it does not own', () => {
+    const f = fixture();
+    const { bin } = simulatedRoot(f, { foreignWorkspace: true });
+    const dir = f.sandbox;
+    fs.mkdirSync(dir);
+    const env = { PATH: `${bin}:${process.env.PATH}`, HOME: f.root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+    execFileSync('git', ['init', '-q', '.'], { cwd: dir, env });
+    const refused = spawnSync('git', ['remote', 'add', 'origin', 'x'], { cwd: dir, env, encoding: 'utf8' });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /dubious ownership/);
 });
 
 test('a run whose workspace cannot be bootstrapped fails without touching the worktree', async () => {

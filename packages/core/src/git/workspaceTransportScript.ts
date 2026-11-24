@@ -132,8 +132,19 @@ transport_git() {
         GIT_CONFIG_KEY_2=http.https://github.com/.extraheader GIT_CONFIG_VALUE_2="$auth_header" \\
         git --git-dir="$trusted/repo.git" "$@"
 }
+# The workspace as the wrapper sees it: possibly another user's directory (the
+# image's /home/node/workspace belongs to node, the wrapper runs as root), which
+# git refuses as dubiously owned. safe.directory is honoured from command-line
+# configuration, which is what GIT_CONFIG_COUNT is, so it is set here (the
+# wrapper replaces any inherited count). Exactly this checkout is trusted: as
+# given and as resolved, since git compares the resolved path. Before anything
+# agent-controlled starts, so its contents are the wrapper's own.
+workspace_real=""
 local_git() {
-    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"
+    GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+        GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1="$workspace" \\
+        GIT_CONFIG_KEY_2=safe.directory GIT_CONFIG_VALUE_2="\${workspace_real:-$workspace}" \\
+        git "$@"
 }
 # The token's boundary is the user ID: a process under the wrapper's identity can
 # read its initial environment (/proc/<pid>/environ still holds the variable
@@ -186,6 +197,7 @@ transport_git fetch -q --no-tags "$remote" "+$base_ref:refs/propr/base" || boots
 [ "$(trusted_git rev-parse --verify -q refs/propr/base)" = "$base_commit" ] || bootstrap_failed "fetched base does not match $base_commit"
 mkdir -p "$workspace" || bootstrap_failed "cannot create $workspace"
 cd "$workspace" || bootstrap_failed "cannot enter $workspace"
+workspace_real="$(pwd -P)" || bootstrap_failed "cannot resolve $workspace"
 [ -z "$(ls -A . 2>/dev/null)" ] || bootstrap_failed "$workspace is not empty"
 local_git init -q . || bootstrap_failed "git init failed"
 local_git remote add origin "$remote" || bootstrap_failed "cannot add origin"

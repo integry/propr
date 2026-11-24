@@ -49,6 +49,9 @@ export const FLY_RUN_FILES = {
     mounts: `${FLY_RUN_DIR}/mounts`,
 } as const;
 
+/** Identity the Machine's launcher process is started as. */
+export const FLY_LAUNCHER_USER = 'root';
+
 /** Console line prefixes the launcher writes; logs without one are Fly's own (init, health) and are ignored. */
 export const FLY_LOG_MARKERS = { stdout: '\u001epropr:o\u001e', stderr: '\u001epropr:e\u001e', exit: '\u001epropr:x\u001e' } as const;
 
@@ -436,20 +439,25 @@ export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLau
     if (!entrypoint) throw new Error(`Agent run ${spec.name} needs an explicit entrypoint or repository setup wrapper to run on Fly Machines`);
     const noNewPrivileges = flyMachineNoNewPrivileges(spec);
     const { config } = input;
+    const launcher = {
+        entrypoint: ['/bin/bash', '-c', LAUNCHER_SCRIPT, 'propr-fly-run'],
+        // Never below the minimum, however the config was built: the worker cannot extend the linger once it runs.
+        cmd: [
+            FLY_RUN_DIR, String(Math.max(config.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS)), spec.workdir, spec.user ?? '',
+            noNewPrivileges ? '1' : '0', flyClonePhaseFile(spec), entrypoint, ...args,
+        ],
+    };
     return {
         name: flyMachineName(spec.name),
         ...(config.region ? { region: config.region } : {}),
         skip_service_registration: true,
         config: {
             image: config.image ?? spec.profile.image,
-            init: {
-                entrypoint: ['/bin/bash', '-c', LAUNCHER_SCRIPT, 'propr-fly-run'],
-                // Never below the minimum, however the config was built: the worker cannot extend the linger once it runs.
-                cmd: [
-                    FLY_RUN_DIR, String(Math.max(config.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS)), spec.workdir, spec.user ?? '',
-                    noNewPrivileges ? '1' : '0', flyClonePhaseFile(spec), entrypoint, ...args,
-                ],
-            },
+            init: launcher,
+            // The launcher must start as root (it mounts, then drops to spec.user), but Fly starts
+            // the image's USER (`node` for ProPR images) unless a process overrides it. A process
+            // with only `user` would run the image's default command, so it repeats the launcher.
+            processes: [{ user: FLY_LAUNCHER_USER, entrypoint: [...launcher.entrypoint], cmd: [...launcher.cmd] }],
             env: flyMachineEnvironment(spec, input.launchEnvironment),
             guest: flyMachineGuest(config, spec.resources),
             files: machineFiles(spec, input.stdinData),
