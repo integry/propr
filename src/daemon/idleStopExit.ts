@@ -35,9 +35,12 @@ export async function stopDaemonProcess(
         await ctx.close();
         await closeConnection();
     })();
-    const outcome = await beforeIdleDeadline(closing, exitBy === null ? closeBy : Math.min(closeBy, exitBy)).then(result => (result.ok ? 'closed' : 'deadline'), (error: unknown) => error);
+    const wakeBoundsClose = exitBy !== null && exitBy <= closeBy;
+    const outcome = await beforeIdleDeadline(closing, wakeBoundsClose ? exitBy : closeBy).then(result => (result.ok ? 'closed' : 'deadline'), (error: unknown) => error);
     let code = exitCode;
-    if (exitBy !== null && Date.now() >= exitBy) {
+    // A deadline reached at the wake counts as the wake itself: the timer may fire a millisecond before
+    // Date.now() reads exitBy, and an exit 0 then would come with the close still running at the wake.
+    if (exitBy !== null && ((outcome === 'deadline' && wakeBoundsClose) || Date.now() >= exitBy)) {
         code = 1;
         logger.error({ wakeAt: toIso(exitBy) }, 'Idle shutdown: the daemon was still closing when the wake arranged for the scheduled work came; exiting with code 1 so the supervisor starts it again');
     } else if (outcome === 'deadline') logger.error({ closeDeadlineMs }, 'Idle shutdown: the daemon did not finish closing in time; exiting anyway');
