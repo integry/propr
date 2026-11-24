@@ -34,6 +34,15 @@ export const STAGING_RETAINED_FILE = '.propr-retained.json';
 
 type Environment = Record<string, string | undefined>;
 
+/** The broker mode, and whether the operator selected it rather than it being the default. */
+function credentialBrokerSelection(environment: Environment): { mode: CredentialBrokerMode; explicit: boolean } {
+    const value = environment[AGENT_CREDENTIAL_BROKER_ENV]?.trim().toLowerCase();
+    if (value === 'legacy' || value === 'off' || value === '0' || value === 'false') return { mode: 'legacy', explicit: true };
+    if (value === 'per-run' || value === 'on' || value === '1' || value === 'true') return { mode: 'per-run', explicit: true };
+    if (value) throw new Error(`${AGENT_CREDENTIAL_BROKER_ENV} must be "per-run" or "legacy", not "${value}"`);
+    return { mode: environment.PROPR_MANAGED_LOGS === '1' ? 'legacy' : 'per-run', explicit: false };
+}
+
 /**
  * `per-run` (default): runs get a per-run copy of their credential files.
  * `legacy`: the canonical store is bind-mounted directly, as before. Unset
@@ -41,11 +50,7 @@ type Environment = Record<string, string | undefined>;
  * is enabled, because that capture reads provider logs from the canonical store.
  */
 export function resolveCredentialBrokerMode(environment: Environment = process.env): CredentialBrokerMode {
-    const value = environment[AGENT_CREDENTIAL_BROKER_ENV]?.trim().toLowerCase();
-    if (value === 'legacy' || value === 'off' || value === '0' || value === 'false') return 'legacy';
-    if (value === 'per-run' || value === 'on' || value === '1' || value === 'true') return 'per-run';
-    if (value) throw new Error(`${AGENT_CREDENTIAL_BROKER_ENV} must be "per-run" or "legacy", not "${value}"`);
-    return environment.PROPR_MANAGED_LOGS === '1' ? 'legacy' : 'per-run';
+    return credentialBrokerSelection(environment).mode;
 }
 
 /**
@@ -163,9 +168,10 @@ function holdStagingLease(stagingDir: string, runName: string): () => void {
 
 /**
  * Whether refreshed tokens can be written back to `mount`'s canonical store
- * from this process. A store mounted read-only into the worker (or not
- * writable by its user) keeps the direct mount instead, so the run's own
- * read-write bind persists refreshes as it did before per-run copies.
+ * from this process. By default a store mounted read-only into the worker (or
+ * not writable by its user) keeps the direct mount instead, so the run's own
+ * read-write bind persists refreshes as it did before per-run copies. An
+ * explicit `per-run` selection refuses such a run instead.
  */
 function canWriteBack(mount: CredentialBindMount): boolean {
     if (mount.readOnly) return true;
@@ -260,21 +266,33 @@ function retainStaging(
  * Replace each per-run credential bind in `spec` with a staged copy holding
  * only its manifest's files. Returns `undefined` when the spec has no such
  * bind or the legacy mode is selected, so the canonical mount is used.
+ * Throws, before staging anything, when `per-run` was selected explicitly but
+ * the worker cannot write a store's refreshed tokens back: the run would
+ * otherwise receive that whole canonical store.
  */
 export function stageAgentRunCredentials(
     spec: AgentRunSpec,
     options: { environment?: Environment; launchEnvironment?: Environment; broker?: CredentialBroker } = {},
 ): StagedAgentRunCredentials | undefined {
     const environment = options.environment ?? process.env;
-    if (resolveCredentialBrokerMode(environment) === 'legacy') return undefined;
+    const selection = credentialBrokerSelection(environment);
+    if (selection.mode === 'legacy') return undefined;
     const candidates = perRunCredentialMounts(spec);
-    const mounts = candidates.filter(canWriteBack);
-    for (const mount of candidates.filter(candidate => !mounts.includes(candidate))) {
-        logger.warn(
-            { run: spec.name, provider: mount.credentialStore.provider, store: mount.credentialStore.store, source: mount.source },
-            'Credential store is not writable from the worker; mounting it directly so refreshed tokens persist',
+    const unwritable = candidates.filter(candidate => !canWriteBack(candidate));
+    const describe = (mount: CredentialBindMount) => ({ provider: mount.credentialStore.provider, store: mount.credentialStore.store, source: mount.source });
+    if (selection.explicit && unwritable.length > 0) {
+        logger.error({ run: spec.name, stores: unwritable.map(describe) }, 'Credential store is not writable from the worker; refusing the run because per-run credential copies were requested');
+        const names = unwritable.map(mount => `${mount.credentialStore.provider} ${mount.credentialStore.store}`).join(', ');
+        const stores = unwritable.length === 1 ? 'store' : 'stores';
+        throw new Error(
+            `${AGENT_CREDENTIAL_BROKER_ENV} requires per-run credential copies, but the worker cannot write refreshed tokens back to the ${names} credential ${stores} for ${spec.name}. `
+            + `Make the ${stores} writable from the worker, or unset ${AGENT_CREDENTIAL_BROKER_ENV} to let such runs mount ${unwritable.length === 1 ? 'it' : 'them'} directly`,
         );
     }
+    for (const mount of unwritable) {
+        logger.warn({ run: spec.name, ...describe(mount) }, 'Credential store is not writable from the worker; mounting it directly so refreshed tokens persist');
+    }
+    const mounts = candidates.filter(candidate => !unwritable.includes(candidate));
     if (mounts.length === 0) return undefined;
     const root = credentialRunRoot(environment);
     const broker = options.broker ?? new CredentialBroker({ lock: { lockRoot: path.join(root, '.locks') } });

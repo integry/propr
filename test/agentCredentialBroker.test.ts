@@ -409,7 +409,7 @@ test('OpenCode without a data mount: logins copied under the config tree are sta
     assert.equal(fs.readFileSync(path.join(root, 'xdg-data/opencode/account.json'), 'utf8'), 'acct');
 });
 
-test('a store the worker cannot write keeps the direct mount so the run persists its refresh', () => {
+test('by default, a store the worker cannot write keeps the direct mount so the run persists its refresh', () => {
     if (process.getuid?.() === 0) return; // root bypasses the permission bits that stand in for a read-only mount
     const readOnly = makeStore({ '.credentials.json': 'claude-v1' });
     const writable = makeStore({ 'auth.json': 'codex-v1' });
@@ -435,6 +435,65 @@ test('a store the worker cannot write keeps the direct mount so the run persists
     } finally {
         fs.chmodSync(readOnly, 0o700);
     }
+});
+
+/** Make `access(W_OK)` fail on `roots` as a read-only worker bind does (EROFS), whatever the test's uid. */
+function simulateReadOnlyWorkerMounts(roots: string[]) {
+    const accessSync = fs.accessSync;
+    return mock.method(fs, 'accessSync', (target: fs.PathLike, mode?: number) => {
+        if (roots.includes(path.resolve(String(target))) && mode !== undefined && (mode & fs.constants.W_OK) !== 0) {
+            throw Object.assign(new Error(`EROFS: read-only file system, access '${String(target)}'`), { code: 'EROFS' });
+        }
+        return accessSync(target, mode);
+    });
+}
+
+test('explicit per-run refuses a store the worker cannot write instead of mounting the canonical store', async () => {
+    const claudeRoot = makeStore({ '.credentials.json': 'claude-oauth', 'projects/x/s.jsonl': '{"history":true}' });
+    const codexRoot = makeStore({ 'auth.json': 'codex-v1' });
+    const vibeRoot = makeStore({ 'config.toml': '' });
+    const access = simulateReadOnlyWorkerMounts([claudeRoot, vibeRoot]);
+    const stagingEntries = () => (fs.existsSync(runRoot) ? fs.readdirSync(runRoot).sort() : []);
+    const before = stagingEntries();
+    const explicit = { ...brokerEnvironment, [AGENT_CREDENTIAL_BROKER_ENV]: 'per-run' };
+    const claudeOnly = specWith([{ provider: 'claude', source: claudeRoot, target: '/home/node/.claude' }]);
+    const mixed = specWith([
+        { provider: 'claude', source: claudeRoot, target: '/home/node/.claude' },
+        { provider: 'codex', source: codexRoot, target: '/home/node/.codex' },
+    ]);
+    const refused = /PROPR_AGENT_CREDENTIAL_BROKER requires per-run credential copies, but the worker cannot write refreshed tokens back to the claude config credential store/;
+    try {
+        // Unset (the default) keeps the documented direct-mount fallback.
+        assert.equal(stageAgentRunCredentials(claudeOnly, { environment: brokerEnvironment }), undefined);
+        // Every spelling of an explicit per-run selection refuses instead, including over managed-log capture.
+        for (const value of ['per-run', 'on', '1', 'true']) {
+            assert.throws(() => stageAgentRunCredentials(claudeOnly, { environment: { ...brokerEnvironment, [AGENT_CREDENTIAL_BROKER_ENV]: value } }), refused);
+        }
+        assert.throws(() => stageAgentRunCredentials(claudeOnly, { environment: { ...explicit, PROPR_MANAGED_LOGS: '1' } }), refused);
+        // Another eligible store does not let the unwritable one through unchanged.
+        assert.throws(() => stageAgentRunCredentials(mixed, { environment: explicit }), refused);
+        // An API-key run would otherwise receive the stored OAuth login and session history.
+        assert.throws(() => stageAgentRunCredentials(specWith([{ provider: 'claude', source: claudeRoot, target: '/home/node/.claude' }], { ANTHROPIC_API_KEY: 'sk-ant' }), { environment: explicit }), refused);
+        assert.deepEqual(stagingEntries(), before, 'a refused run stages nothing');
+
+        // runAgent refuses before starting the run, so the canonical mount is never launched.
+        process.env[AGENT_CREDENTIAL_BROKER_ENV] = 'per-run';
+        calls.length = 0;
+        await assert.rejects(runAgent(null, mixed, {}), refused);
+        await assert.rejects(runAgent(null, claudeOnly, {}), refused);
+        assert.equal(calls.length, 0, 'no container was started');
+        assert.deepEqual(stagingEntries(), before);
+
+        // A store with nothing to write back needs no write access and is still copied.
+        calls.length = 0;
+        await runAgent(null, specWith([{ provider: 'vibe', source: vibeRoot, target: '/home/node/.vibe', readOnly: true }]), {});
+        assert.equal(calls.length, 1);
+        assert.ok(!calls[0].args.some(arg => arg.startsWith(`${vibeRoot}:`)), 'the canonical Vibe store is not mounted');
+    } finally {
+        delete process.env[AGENT_CREDENTIAL_BROKER_ENV];
+        access.mock.restore();
+    }
+    assert.equal(fs.readFileSync(path.join(codexRoot, 'auth.json'), 'utf8'), 'codex-v1');
 });
 
 test('a failed write-back keeps the staged copy with its refreshed token instead of deleting it', async () => {
