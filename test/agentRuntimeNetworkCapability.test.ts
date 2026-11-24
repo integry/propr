@@ -192,6 +192,8 @@ test('MCP networking is a capability: private network, else a reachable URL, els
     const remote = { kind: 'remote', capabilities: capabilities() };
     assert.deepEqual(planAgentRunMcpTransport(remote, { API_PUBLIC_URL: 'https://propr.example.com/' }).transport, 'reachable-url');
     assert.equal(agentRunMcpReachableUrl({ API_PUBLIC_URL: 'https://propr.example.com/' }), 'https://propr.example.com/api/mcp');
+    assert.equal(agentRunMcpReachableUrl({ API_PUBLIC_URL: '  https://propr.example.com/propr///  ' }), 'https://propr.example.com/propr/api/mcp');
+    assert.equal(agentRunMcpReachableUrl({ API_PUBLIC_URL: '///' }), undefined);
     assert.equal(agentRunMcpReachableUrl({ PROPR_AGENT_MCP_URL: 'https://mcp.example.com/api/mcp', API_PUBLIC_URL: 'https://propr.example.com' }), 'https://mcp.example.com/api/mcp');
     assert.equal(agentRunMcpReachableUrl({ PROPR_AGENT_MCP_URL: 'http://api:4000/api/mcp', PROPR_AGENT_DOCKER_NETWORK: 'private' }), undefined,
         'an MCP URL pinned to a private network is not reachable without it');
@@ -241,9 +243,10 @@ test('an explicit MCP URL without a pinned network: the report and the issued gr
     const environment = { SYSTEM_TASK_SECRET: 'secret', PROPR_AGENT_MCP_URL: 'https://mcp.example.com/api/mcp' };
     const report = await readAgentRuntimeCapabilityReport({ environment, loadPolicy: async () => ({ mode: 'open' as const, enforced: false, allow: [], ignoreRepositoryAllow: false }) });
     assert.equal(report.runtime, 'docker');
-    assert.equal(report.mcp.transport, 'reachable-url', 'capability support alone does not select the private network');
-    assert.match(report.mcp.reason, /PROPR_AGENT_MCP_URL is set without PROPR_AGENT_DOCKER_NETWORK/);
-    assert.ok(!JSON.stringify(report).includes('mcp.example.com'), 'the report names the transport, not the URL');
+    assert.deepEqual(report.mcp, {
+        transport: 'reachable-url',
+        reason: 'PROPR_AGENT_MCP_URL is set without PROPR_AGENT_DOCKER_NETWORK; runs on agent runtime "docker" reach ProPR MCP at that URL with their per-run grant token and join no private network.',
+    });
 
     const fetchImpl = (async () => Response.json({ grantId: 'g-3', url: 'http://api:4000/api/mcp', token: 'propr_mcp_run', expiresAt: 5 })) as unknown as typeof fetch;
     const grant = await requestAgentRunMcpGrant('run-3', 'report', {
@@ -281,8 +284,10 @@ test('the capability report says in advance which runs admission refuses', async
     assert.equal(remote.network.restrictedRuns, 'refused');
     assert.equal(remote.network.refusingRuns, true);
     assert.match(remote.network.refusal ?? '', /"report-open-only" cannot enforce the restricted network policy/);
-    assert.equal(remote.mcp.transport, 'reachable-url');
-    assert.ok(!JSON.stringify(remote).includes('propr.example.com'), 'the report names the transport, not the URL');
+    assert.deepEqual(remote.mcp, {
+        transport: 'reachable-url',
+        reason: 'Agent runtime "report-open-only" cannot join a private network; runs reach ProPR MCP at a reachable URL with their per-run grant token.',
+    });
 
     // A restricted default that is not enforced applies only to runs whose effective policy stays restricted.
     const notEnforced = await readAgentRuntimeCapabilityReport({ environment: { PROPR_AGENT_RUNTIME: 'report-open-only' }, loadPolicy: async () => ({ mode: 'restricted' as const, enforced: false, allow: [], ignoreRepositoryAllow: false }) });
