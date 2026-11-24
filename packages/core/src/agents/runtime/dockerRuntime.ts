@@ -1,6 +1,7 @@
 import { PassThrough, type Readable } from 'node:stream';
 import { executeDockerCommand, type DockerCommandOptions, type ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { ExecutionAbortedError } from '../../claude/docker/dockerExecutionOwnership.js';
+import { executeWithAgentRunNetworkRestriction } from '../../network/agentRunNetworkRestriction.js';
 import { renderDockerRunArgs } from './dockerRunArgs.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
@@ -69,15 +70,20 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions) {
         const args = renderDockerRunArgs(spec);
         const signal = options.signal ? AbortSignal.any([options.signal, this.cancellation.signal]) : this.cancellation.signal;
-        this.result = executeDockerCommand('docker', args, {
-            ...options,
+        const { restriction } = spec.network;
+        // The spec's restriction is installed as the launch's policy scope, so the executor's
+        // network boundary confines the container whatever policy (if any) is ambient. A spec that
+        // demands confinement is not exempted from it by a caller's exemption reason.
+        const launchOptions = restriction ? { ...options, networkPolicyExempt: undefined } : options;
+        this.result = executeWithAgentRunNetworkRestriction(restriction, spec.name, () => executeDockerCommand('docker', args, {
+            ...launchOptions,
             signal,
             agentRun: {
                 spec,
                 onOutput: (stream, chunk) => this.output.write(stream, chunk),
                 onSpawn: () => { this.spawned = true; },
             },
-        });
+        }));
         // Callers that only stop or inspect still observe the settlement through wait().
         const settle = (): void => { this.settled = true; this.output.end(); };
         this.result.then(settle, settle);
