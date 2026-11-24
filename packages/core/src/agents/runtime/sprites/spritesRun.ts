@@ -31,7 +31,9 @@ function supportedBinds(spec: AgentRunSpec) {
     return binds;
 }
 
-function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: string) {
+type EnvDefaults = ReadonlyArray<readonly [string, string]>;
+
+function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: string, defaults: EnvDefaults) {
     const inherited = { ...process.env, ...options.extraEnvVars };
     const env = new Map(Object.entries(options.extraEnvVars ?? {}));
     for (const file of [...spec.envFiles].sort((a, b) => a.order - b.order)) {
@@ -42,6 +44,9 @@ function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: str
         const value = variable.value ?? inherited[variable.name];
         if (value === undefined) env.delete(variable.name);
         else env.set(variable.name, value);
+    }
+    for (const [name, value] of defaults) {
+        if (!env.has(name)) env.set(name, value);
     }
     const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) ?? '';
     env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
@@ -64,14 +69,14 @@ function claudeSeed(binds: Bind[], token: string): string | undefined {
 }
 
 export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string };
-export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch) {
+export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch, defaults: EnvDefaults = []) {
     const clone = spec.workspace.clone;
     if (!clone || spec.workspace.mode !== 'clone' || spec.workspace.containerPath !== '/home/node/workspace' || spec.workspace.readOnly)
         throw new Error('Sprites requires a prepared writable clone workspace');
     const provider = spec.profile.agentType;
     if (!(provider in stores)) throw new Error(`Unsupported Sprites provider: ${provider}`);
     const binds = supportedBinds(spec);
-    const { env, transportToken } = runEnvironment(spec, options, token);
+    const { env, transportToken } = runEnvironment(spec, options, token, defaults);
     const home = provider === 'antigravity' ? antigravityHome : '/home/node';
     Object.entries({ PATH, HOME: home, USER: 'node', LOGNAME: 'node', LANG: 'C.UTF-8', DISABLE_AUTOUPDATER: '1', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
         .forEach(([key, value]) => env.set(key, value));

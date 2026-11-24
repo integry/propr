@@ -244,6 +244,11 @@ export interface AgentRunMcpGrant {
     /** Network the run must join to reach the granted servers. */
     network?: string;
     transport: AgentRunMcpTransport;
+    /**
+     * The ProPR MCP URL a `reachable-url` grant names, so a runtime that
+     * confines egress (Sprites) can allow exactly that endpoint.
+     */
+    url?: string;
 }
 
 export interface AgentRunRepoSetup {
@@ -299,6 +304,7 @@ export interface AgentRuntimeCapabilities {
 export type AgentRunLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
 
 export interface AgentRunInspection {
+    diagnostics?: readonly string[];
     liveness: AgentRunLiveness;
     id?: string;
     name: string;
