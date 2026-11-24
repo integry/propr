@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_CHANNEL, IDLE_SHUTDOWN_INTENT_REDIS_KEY } from '@propr/shared';
-import { collectParticipantSignals, isIdleParticipantInThisProcess, registerIdleParticipant } from '../src/idle/idleParticipants.js';
+import {
+    collectParticipantSignals,
+    isIdleParticipantInThisProcess,
+    localInstanceId,
+    localProcessIdentity,
+    registerIdleParticipant,
+    type LocalProcessIdentity,
+} from '../src/idle/idleParticipants.js';
 import {
     issueIdleShutdownIntent,
     listIdleShutdownTargets,
     newIdleShutdownIntent,
+    readIdleAckProgress,
     waitForIdleAcks,
     withdrawIdleShutdownIntent,
 } from '../src/idle/idleShutdownIntent.js';
@@ -383,4 +394,123 @@ test('a participant counts as this process\'s only for the generation registered
     assert.equal(isIdleParticipantInThisProcess('api:elsewhere', registration.participant.startedAt), false);
     await registration.stop();
     assert.equal(isIdleParticipantInThisProcess(registration.key, registration.participant.startedAt), false, 'deregistered');
+});
+
+/** A temporary DATA_DIR, so the instance id file of a test is its own. */
+async function withDataDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'idle-instance-'));
+    const previous = process.env.DATA_DIR;
+    process.env.DATA_DIR = dir;
+    try {
+        return await run(dir);
+    } finally {
+        if (previous === undefined) delete process.env.DATA_DIR;
+        else process.env.DATA_DIR = previous;
+        await rm(dir, { recursive: true, force: true });
+    }
+}
+
+test('the instance id persists in DATA_DIR and is shared by every process that reads it', async () => {
+    await withDataDir(async dir => {
+        const file = path.join(dir, 'idle-instance-id');
+        const id = localInstanceId(file);
+        assert.match(id ?? '', /^[0-9a-f-]{36}$/);
+        assert.equal(localInstanceId(file), id);
+        assert.equal((await readFile(file, 'utf8')).trim(), id, 'written for the next boot');
+        // After a restart the id comes from the file (a fresh path stands in for a fresh process cache).
+        const restored = path.join(dir, 'restored', 'idle-instance-id');
+        await mkdir(path.dirname(restored));
+        await writeFile(restored, `${id}\n`);
+        assert.equal(localInstanceId(restored), id);
+        // A file that holds anything else is not replaced, and no id is claimed.
+        const garbled = path.join(dir, 'garbled');
+        await writeFile(garbled, 'not an id');
+        assert.equal(localInstanceId(garbled), null);
+        assert.equal(await readFile(garbled, 'utf8'), 'not an id');
+    });
+});
+
+const BOOT_TIME = 1_800_000_000_000;
+const HERE = { host: 'propr-host', pidNamespace: 'pid:[1]', bootId: 'boot-now', instanceId: 'instance-a', bootTime: BOOT_TIME };
+
+function earlierBootEntry(id: string, overrides: Record<string, unknown> = {}) {
+    return JSON.stringify({
+        role: 'worker', id, host: HERE.host, pid: 100, pidNamespace: HERE.pidNamespace, bootId: 'boot-before',
+        instanceId: HERE.instanceId, startedAt: BOOT_TIME - 3_600_000, seenAt: BOOT_TIME - 60_000, ...overrides,
+    });
+}
+
+test('registrations left by an earlier boot of this installation do not block idle shutdown', async () => {
+    const hub = new FakeRedisHub();
+    const redis = hub.connect() as unknown as FakeConnection;
+    const now = BOOT_TIME + 10 * 60_000;
+    await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'worker:propr-host:100', earlierBootEntry('propr-host:100'));
+    await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'api:propr-host:101', earlierBootEntry('propr-host:101', { role: 'api', pid: 101 }));
+    // Another container of the installation (own hostname, same data directory and kernel).
+    await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'worker:sidecar:7', earlierBootEntry('sidecar:7', { host: 'sidecar', pid: 7, pidNamespace: 'pid:[9]' }));
+    // The current boot's processes, under other pids.
+    await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'worker:propr-host:200', earlierBootEntry('propr-host:200', { pid: 200, bootId: HERE.bootId, startedAt: now - 1_000, seenAt: now }));
+
+    const isGone = () => assert.fail('an earlier boot needs no pid lookup');
+    const signals = await collectParticipantSignals(redis as never, { now, local: HERE, isGone });
+    assert.deepEqual(signals.unavailable, []);
+    assert.deepEqual(signals.participants.map(participant => participant.id), ['propr-host:200']);
+    assert.deepEqual(Object.keys(hub.hash(IDLE_PARTICIPANTS_REDIS_KEY)), ['worker:propr-host:200'], 'the obsolete entries are removed');
+});
+
+test('a stale registration is not confirmed gone across boots without matching evidence', async () => {
+    const now = BOOT_TIME + 10 * 60_000;
+    const cases: Record<string, [string, LocalProcessIdentity]> = {
+        'another installation (a remote participant)': [earlierBootEntry('remote:1', { instanceId: 'instance-b' }), HERE],
+        'an entry without an instance id': [earlierBootEntry('legacy:1', { instanceId: undefined }), HERE],
+        'an entry without a boot id': [earlierBootEntry('noboot:1', { bootId: undefined }), HERE],
+        'a heartbeat after this kernel booted (another kernel with this id)': [earlierBootEntry('twin:1', { seenAt: BOOT_TIME + 60_000 }), HERE],
+        'an unreadable local instance id': [earlierBootEntry('here:1'), { ...HERE, instanceId: null }],
+        'an unreadable boot time': [earlierBootEntry('here:2'), { ...HERE, bootTime: null }],
+        'a local identity without the persistent fields': [earlierBootEntry('here:3'), { host: HERE.host, pidNamespace: HERE.pidNamespace, bootId: HERE.bootId }],
+        'the same boot, a pid still in use': [earlierBootEntry('here:4', { bootId: HERE.bootId }), HERE],
+    };
+    for (const [name, [entry, local]] of Object.entries(cases)) {
+        const hub = new FakeRedisHub();
+        const redis = hub.connect() as unknown as FakeConnection;
+        await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'worker:x', entry);
+        const { unavailable } = await collectParticipantSignals(redis as never, { now, local, isGone: () => false });
+        assert.equal(unavailable.length, 1, name);
+        assert.deepEqual(Object.keys(hub.hash(IDLE_PARTICIPANTS_REDIS_KEY)), ['worker:x'], `${name}: kept`);
+    }
+});
+
+test('a stop acknowledgement is not awaited from a process of an earlier boot', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    await daemon.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'api:propr-host:101', earlierBootEntry('propr-host:101', { role: 'api', pid: 101 }));
+    await daemon.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'api:remote:1', earlierBootEntry('remote:1', { role: 'api', instanceId: 'instance-b' }));
+    const intent = newIdleShutdownIntent('quiesce', 'idle');
+    const progress = await readIdleAckProgress(daemon as never, intent, { roles: ['api'], local: HERE, isGone: () => false });
+    assert.deepEqual(progress.pending, ['api:remote:1']);
+    assert.deepEqual(Object.keys(hub.hash(IDLE_PARTICIPANTS_REDIS_KEY)), ['api:remote:1']);
+});
+
+test('after a reboot, the entries this installation registered before it are reconciled by the real identity', { skip: !localProcessIdentity().bootId && 'no kernel boot id here' }, async () => {
+    await withDataDir(async () => {
+        const hub = new FakeRedisHub();
+        const redis = hub.connect() as unknown as FakeConnection;
+        const current = registerIdleParticipant(redis as never, { role: 'worker', id: `here:${process.pid}`, intervalMs: 60_000 });
+        await settle();
+        const local = localProcessIdentity();
+        assert.ok(current.participant.instanceId, 'the registration records the instance id');
+        assert.equal(current.participant.instanceId, local.instanceId);
+        assert.ok(local.bootTime, 'boot time read from /proc/stat');
+        // What Redis restored from before the reboot: same installation, another boot, other pids.
+        for (const [key, pid] of [['worker:here:1', 1], ['api:here:2', 2]] as const) {
+            await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, key, JSON.stringify({
+                ...current.participant, role: key.split(':')[0], id: key.slice(key.indexOf(':') + 1), pid,
+                bootId: 'an-earlier-boot', startedAt: local.bootTime! - 7_200_000, seenAt: local.bootTime! - 3_600_000,
+            }));
+        }
+        const { unavailable } = await collectParticipantSignals(redis as never, { now: Date.now() });
+        assert.deepEqual(unavailable, []);
+        assert.deepEqual(Object.keys(hub.hash(IDLE_PARTICIPANTS_REDIS_KEY)), [current.key]);
+        await current.stop();
+    });
 });

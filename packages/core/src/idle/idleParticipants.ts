@@ -4,12 +4,15 @@
  * its entry while it runs and removes it on a clean stop. The daemon then
  * knows which observations it expects: an entry without a fresh heartbeat is
  * unavailable evidence, not idleness, until the process is confirmed stopped
- * (it removed itself, or the daemon can see on the same host that its pid is
- * gone).
+ * (it removed itself, the daemon can see on the same host that its pid is
+ * gone, or the entry was written by this installation under an earlier kernel
+ * boot, see {@link isIdleParticipantFromEarlierBoot}).
  */
 
-import { readFileSync, readlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { linkSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
+import path from 'node:path';
 import { IDLE_PARTICIPANTS_REDIS_KEY } from '@propr/shared';
 
 export type IdleParticipantRole = 'api' | 'worker' | 'indexing_worker';
@@ -22,6 +25,8 @@ export interface IdleParticipant {
     /** `/proc/self/ns/pid` and the kernel boot id; a pid check is only valid when both match. */
     pidNamespace: string | null;
     bootId: string | null;
+    /** The installation's persistent id (see {@link localInstanceId}); null when it could not be read. */
+    instanceId: string | null;
     startedAt: number;
     seenAt: number;
 }
@@ -53,6 +58,70 @@ export interface LocalProcessIdentity {
     host: string;
     pidNamespace: string | null;
     bootId: string | null;
+    /** See {@link localInstanceId}. */
+    instanceId?: string | null;
+    /** When the running kernel booted (epoch ms, `btime` in `/proc/stat`). */
+    bootTime?: number | null;
+}
+
+export const IDLE_INSTANCE_ID_FILENAME = 'idle-instance-id';
+
+export function resolveIdleInstanceIdPath(env: NodeJS.ProcessEnv = process.env): string {
+    return path.join(env.DATA_DIR ?? path.join(process.cwd(), 'data'), IDLE_INSTANCE_ID_FILENAME);
+}
+
+const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const instanceIds = new Map<string, string>();
+
+function readInstanceId(file: string): string | null {
+    const value = readFileSync(file, 'utf8').trim();
+    return INSTANCE_ID_PATTERN.test(value) ? value : null;
+}
+
+/**
+ * A random id kept in `<DATA_DIR>/idle-instance-id`, created by the first
+ * process that needs it. It survives reboots with the data directory, which
+ * every process of an installation shares (the SQLite database lives there,
+ * so it is local storage of one machine), and nothing outside the
+ * installation has it. Null when the file cannot be read or created, or holds
+ * anything else: then no entry is reconciled across boots.
+ */
+export function localInstanceId(file: string = resolveIdleInstanceIdPath()): string | null {
+    const cached = instanceIds.get(file);
+    if (cached) return cached;
+    let id: string | null;
+    try {
+        id = readInstanceId(file);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+        id = createInstanceId(file);
+    }
+    if (id) instanceIds.set(file, id);
+    return id;
+}
+
+/** Publish a complete file or none (a hard link never replaces one): processes starting together agree on one id. */
+function createInstanceId(file: string): string | null {
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(temporary, `${randomUUID()}\n`, { mode: 0o644 });
+        try {
+            linkSync(temporary, file);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
+        }
+        return readInstanceId(file);
+    } catch {
+        return null;
+    } finally {
+        rmSync(temporary, { force: true });
+    }
+}
+
+function readBootTime(): number | null {
+    const btime = readQuietly(() => /^btime\s+(\d+)$/m.exec(readFileSync('/proc/stat', 'utf8'))?.[1] ?? '');
+    return btime ? Number(btime) * 1000 : null;
 }
 
 export function localProcessIdentity(): LocalProcessIdentity {
@@ -60,6 +129,8 @@ export function localProcessIdentity(): LocalProcessIdentity {
         host: hostname(),
         pidNamespace: readQuietly(() => readlinkSync('/proc/self/ns/pid')),
         bootId: readQuietly(() => readFileSync('/proc/sys/kernel/random/boot_id', 'utf8')),
+        instanceId: localInstanceId(),
+        bootTime: readBootTime(),
     };
 }
 
@@ -79,6 +150,7 @@ export function parseIdleParticipant(raw: string | undefined): IdleParticipant |
             pid: value.pid,
             pidNamespace: typeof value.pidNamespace === 'string' ? value.pidNamespace : null,
             bootId: typeof value.bootId === 'string' ? value.bootId : null,
+            instanceId: typeof value.instanceId === 'string' ? value.instanceId : null,
             startedAt: value.startedAt,
             seenAt: value.seenAt,
         };
@@ -110,16 +182,35 @@ function pidIsGone(pid: number): boolean {
 }
 
 /**
- * Whether the daemon can confirm the process has stopped. Only on the same
- * host, kernel boot and pid namespace is a pid lookup meaningful; elsewhere
- * a missing heartbeat stays unconfirmed. A reused pid reads as alive, which
- * errs on the side of staying awake.
+ * Whether the entry was written by this installation under a kernel boot that
+ * has ended, so its process cannot still run: a reboot leaves the entries of
+ * the previous boot behind under pids that no new process overwrites. It
+ * needs the same installation (instance id), another boot id, and a last
+ * heartbeat from before the running kernel booted. The hostname is not
+ * compared: containers of one installation share its data directory and
+ * kernel but have their own hostnames. A participant elsewhere never has this
+ * installation's id; one without an id, or a local identity that cannot be
+ * read, is never reconciled this way.
+ */
+export function isIdleParticipantFromEarlierBoot(participant: IdleParticipant, local: LocalProcessIdentity): boolean {
+    if (!participant.instanceId || participant.instanceId !== local.instanceId) return false;
+    if (!participant.bootId || !local.bootId || participant.bootId === local.bootId) return false;
+    return typeof local.bootTime === 'number' && participant.seenAt < local.bootTime;
+}
+
+/**
+ * Whether the daemon can confirm the process has stopped: it ran under an
+ * earlier boot of this installation, or it ran here and its pid is gone. Only
+ * on the same host, kernel boot and pid namespace is a pid lookup meaningful;
+ * elsewhere a missing heartbeat stays unconfirmed. A reused pid reads as
+ * alive, which errs on the side of staying awake.
  */
 export function isIdleParticipantConfirmedGone(
     participant: IdleParticipant,
     local: LocalProcessIdentity = localProcessIdentity(),
     isGone: (pid: number) => boolean = pidIsGone,
 ): boolean {
+    if (isIdleParticipantFromEarlierBoot(participant, local)) return true;
     if (participant.host !== local.host) return false;
     if (!participant.pidNamespace || participant.pidNamespace !== local.pidNamespace) return false;
     if (!participant.bootId || participant.bootId !== local.bootId) return false;
@@ -164,6 +255,7 @@ export function registerIdleParticipant(
         pid: process.pid,
         pidNamespace: local.pidNamespace,
         bootId: local.bootId,
+        instanceId: local.instanceId ?? null,
         startedAt: now(),
         seenAt: now(),
     };

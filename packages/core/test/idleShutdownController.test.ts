@@ -260,6 +260,17 @@ test('an API process confirmed stopped on this host is no longer expected', asyn
     assert.deepEqual((await collectActivitySignals(redis, { now: START, local: { ...local, pidNamespace: 'pid:[2]' }, isGone: () => true })).unavailable.length, 1);
 });
 
+test('an API process of an earlier boot of this installation is no longer expected', async () => {
+    const redis = new FakeRedis();
+    const local = { host: 'here', pidNamespace: 'pid:[1]', bootId: 'boot-now', instanceId: 'instance-a', bootTime: START - 2 * MINUTE };
+    const participant = { role: 'api', id: 'before-reboot', host: 'here', pid: 4242, pidNamespace: 'pid:[1]', bootId: 'boot-before', instanceId: 'instance-a', startedAt: START - 60 * MINUTE, seenAt: START - 5 * MINUTE };
+    await redis.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'api:before-reboot', JSON.stringify(participant));
+    const isGone = () => false;
+    assert.deepEqual((await collectActivitySignals(redis, { now: START, local, isGone })).unavailable, []);
+    // Another installation's process with the same history stays expected.
+    assert.equal((await collectActivitySignals(redis, { now: START, local: { ...local, instanceId: 'instance-b' }, isGone })).unavailable.length, 1);
+});
+
 test('a failing source is reported as unavailable', async () => {
     const result = await collectIdleSignals({
         ok: async () => ({ uiSessions: 1 }),
