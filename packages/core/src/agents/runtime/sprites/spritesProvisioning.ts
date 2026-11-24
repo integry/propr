@@ -27,7 +27,13 @@ export const SPRITES_SETUP_FILES = [
     'scripts/gh-wrapper.sh',
 ] as const;
 export const SPRITES_SETUP_STAMP = '/opt/propr/sprites-setup.hash';
-const SPRITES_SETUP_UPLOAD_DIR = '/tmp/propr-sprite-setup';
+/**
+ * Root runs the setup files from here: inside the run root (created by the
+ * Sprite's own user, mode 0711), where the agent user cannot create or replace
+ * entries, unlike a name in the world-writable `/tmp`. Not a run directory
+ * (dot-prefixed, so the run directory scans skip it).
+ */
+export const SPRITES_SETUP_UPLOAD_DIR = path.posix.join(SPRITES_RUN_ROOT, '.setup');
 const SETUP_TIMEOUT_MS = 20 * 60_000;
 const SETUP_CHECKPOINT_PREFIX = 'propr-setup ';
 
@@ -212,7 +218,8 @@ async function readStamp(sprite: SpriteLike): Promise<string | undefined> {
 async function runSetup(sprite: SpriteLike, bundle: SpritesSetupBundle): Promise<void> {
     const filesystem = sprite.filesystem();
     await filesystem.rm(SPRITES_SETUP_UPLOAD_DIR, { recursive: true, force: true }).catch(() => undefined);
-    await filesystem.mkdir(SPRITES_SETUP_UPLOAD_DIR, { recursive: true, mode: 0o755 });
+    await filesystem.mkdir(SPRITES_RUN_ROOT, { recursive: true, mode: 0o711 });
+    await filesystem.mkdir(SPRITES_SETUP_UPLOAD_DIR, { recursive: true, mode: 0o700 });
     for (const file of bundle.files) await filesystem.writeFile(path.posix.join(SPRITES_SETUP_UPLOAD_DIR, file.name), file.content, { mode: 0o755 });
     const pins = Object.entries(bundle.pins).filter(([, value]) => value).map(([name, value]) => `${name}=${value}`);
     let result;

@@ -50,14 +50,17 @@ function cloneSpec(credentials: string, overrides: { name?: string; stdin?: bool
     return spec;
 }
 
-function runtimeFor(client: FakeSpritesClient, environment: Record<string, string> = {}, dependencies: { setupHash?: string } = {}) {
+function runtimeFor(client: FakeSpritesClient, environment: Record<string, string> = {}, dependencies: { setupHash?: string; stopSettlementMs?: number } = {}) {
     const env: NodeJS.ProcessEnv = {
         PROPR_SPRITES_TOKEN: 'org-token', PROPR_SPRITES_WORKER_ID: 'w1', PROPR_SPRITES_REGION: 'ord',
         PROPR_SPRITES_KEEP_AWAKE_INTERVAL_MS: '20', PROPR_AGENT_CREDENTIAL_RUN_DIR: tempDir('propr-sprites-locks-'), ...environment,
     };
     const { setupHash } = dependencies;
     const setupBundle = setupHash ? (() => { const bundle = readSpritesSetupBundle(); return () => ({ ...bundle, hash: setupHash }); })() : undefined;
-    return new SpritesRuntime({ createClient: async () => client as never, environment: env, reconnectDelayMs: 5, launcherSettleMs: 300, ...(setupBundle ? { setupBundle } : {}) });
+    return new SpritesRuntime({
+        createClient: async () => client as never, environment: env, reconnectDelayMs: 5, launcherSettleMs: 300,
+        ...(setupBundle ? { setupBundle } : {}), ...(dependencies.stopSettlementMs ? { stopSettlementMs: dependencies.stopSettlementMs } : {}),
+    });
 }
 
 function claudeStore(): string {
@@ -122,13 +125,20 @@ test('mounts: credential stores, logs and small read-only files are provided; ho
 
 test('command mapping reuses the entrypoint contract and Docker environment precedence', () => {
     const spec = cloneSpec(claudeStore());
-    assert.deepEqual(renderSpritesArgv(spec), ['/bin/bash', '-lc', CLONE_SCRIPT, 'setup-wrapper', '/home/node/claude-entrypoint.sh', 'claude', '-p', '-', '--output-format', 'stream-json']);
+    // The provider entrypoint root runs after the setup hook is the root-owned copy, not the agent-writable /home/node one.
+    assert.deepEqual(renderSpritesArgv(spec), ['/bin/bash', '-lc', CLONE_SCRIPT, 'setup-wrapper', '/opt/propr/entrypoints/claude-entrypoint.sh', 'claude', '-p', '-', '--output-format', 'stream-json']);
     const environment = resolveSpritesEnvironment(spec, { PROPR_WORKSPACE_GIT_TOKEN: 'repo-token' });
     assert.equal(environment.get('PROPR_WORKSPACE_GIT_TOKEN'), 'repo-token');
     assert.equal(environment.get('PROPR_REPO_SETUP'), '1');
     assert.equal(environment.get('HOME'), '/root');
     assert.equal(environment.has('UNSET_IN_LAUNCH'), false);
     assert.match(environment.get('PATH')!, /^\/opt\/propr\/bin:/);
+    assert.ok(!environment.get('PATH')!.split(':').some(directory => directory.startsWith('/home/') || directory.startsWith('/tmp/')), 'root resolves commands only through directories the agent cannot write');
+    assert.match(resolveSpritesEnvironment({ ...spec, user: '1000:1000' }, {}).get('PATH')!, /:\/home\/node\/\.local\/bin:/, 'a run started as node keeps its own ~/.local/bin');
+    for (const exposed of ['/home/node/custom-entrypoint.sh', '/tmp/propr-entrypoint.sh', '/home/node/../node/claude-entrypoint.sh/../evil.sh', './claude-entrypoint.sh']) {
+        assert.throws(() => renderSpritesArgv({ ...spec, repoSetup: { ...spec.repoSetup!, providerEntrypoint: exposed } }), /will not run .* as root/, exposed);
+    }
+    assert.throws(() => renderSpritesArgv({ ...spec, repoSetup: { ...spec.repoSetup!, shell: '/home/node/.local/bin/bash' } }), /will not run \/home\/node\/\.local\/bin\/bash as root/);
     assert.throws(() => renderSpritesArgv({ ...spec, profile: { ...spec.profile, agentType: 'vibe' } }), /does not run vibe agents yet/);
     assert.throws(() => renderSpritesArgv({ ...spec, workspace: { ...spec.workspace, mode: 'bind', clone: undefined } }), /only the clone workspace transport/);
 });
@@ -256,7 +266,7 @@ test('Antigravity runs on a Sprite, and release() restores the clean checkpoint 
     const result = await handle.wait();
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, 'done\n');
-    assert.deepEqual(argv.slice(-5), ['setup-wrapper', '/home/node/antigravity-entrypoint.sh', 'agy', '--print', '-']);
+    assert.deepEqual(argv.slice(-5), ['setup-wrapper', '/opt/propr/entrypoints/antigravity-entrypoint.sh', 'agy', '--print', '-']);
     assert.equal((await handle.readFile(`${WORKSPACE_TRANSPORT_RESULT_DIR}/result.bundle`))?.toString(), 'bundle');
 
     const sprite = client.sprites.get('propr-w1-0')!;
@@ -759,4 +769,171 @@ test('a used Sprite without a clean baseline is replaced instead of checkpointed
         assert.equal(handle.timings.created, true);
         await handle.release();
     }
+});
+
+test('setup installs the root-run entrypoints where the agent user cannot replace them, referring only to each other there', { skip: process.platform !== 'linux' }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_ENTRYPOINT_DIR, SPRITES_INSTALLED_ENTRYPOINTS, spritesProtectedEntrypoint } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const setup = path.resolve('scripts/sprites-agent-setup.sh');
+    const target = tempDir('propr-sprites-entrypoints-');
+    const entryDir = path.join(target, 'entrypoints');
+    const ghBin = path.join(target, 'gh-bin');
+    execFileSync('bash', ['-c', 'source "$1"; install_root_entrypoints "$2" "$3" "$4"', 'propr-test', setup, path.resolve('scripts'), entryDir, ghBin]);
+    for (const script of SPRITES_INSTALLED_ENTRYPOINTS) {
+        const installed = fs.readFileSync(path.join(entryDir, script), 'utf8');
+        assert.doesNotMatch(installed, /\/home\/node\/[^\s]*entrypoint|\/home\/node\/bin\b/, `${script} hands root nothing under /home/node`);
+        assert.equal(fs.statSync(path.join(entryDir, script)).mode & 0o777, 0o755);
+        assert.equal(spritesProtectedEntrypoint(`/home/node/${script}`), `${SPRITES_ENTRYPOINT_DIR}/${script}`);
+    }
+    // The default entrypoint dispatches to the protected provider entrypoint, and the gh wrapper directory root puts on PATH is protected too.
+    assert.ok(fs.readFileSync(path.join(entryDir, 'agent-entrypoint.sh'), 'utf8').includes(`exec "${entryDir}/\${agent_type}-entrypoint.sh"`));
+    assert.match(fs.readFileSync(path.join(entryDir, 'claude-entrypoint.sh'), 'utf8'), new RegExp(`export PATH="${ghBin}:\\$PATH"`));
+    assert.equal(fs.readlinkSync(path.join(ghBin, 'gh')), '/usr/local/bin/gh-wrapper');
+    // Every path root executes must be out of the agent user's reach, ancestors included.
+    const user = os.userInfo().username;
+    const beyondControl = (file: string) => { try { execFileSync('bash', ['-c', 'source "$1"; beyond_user_control "$2" "$3"', 'propr-test', setup, user, file]); return true; } catch { return false; } };
+    assert.equal(beyondControl(path.join(entryDir, 'claude-entrypoint.sh')), false, 'a directory the user owns is refused');
+    if (process.getuid!() !== 0) assert.equal(beyondControl('/usr/bin/env'), true, 'root-owned system paths pass');
+    const nested = path.join(fs.mkdtempSync(path.join('/tmp', 'propr-sprites-ancestor-')), 'inner');
+    fs.mkdirSync(nested);
+    assert.equal(beyondControl(nested), false, 'a writable ancestor is refused as well');
+});
+
+test('a launcher that cannot return a refreshed credential keeps the live copy and records no export', { skip: !linuxProcesses }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-export-');
+    const launcher = path.join(dir, 'launch.sh');
+    // As the test user: no root check, no node user, no chown to node; the agent UID is one no process has.
+    fs.writeFileSync(launcher, SPRITES_LAUNCHER_SCRIPT.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000').replace('[ "$(id -u)" = "0" ]', 'true')
+        .replace('id node >/dev/null 2>&1', 'true').replaceAll('chown -R node:node --', 'true --').replaceAll('chown node:node --', 'true --'));
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const runDir = (name: string) => {
+        const run = path.join(dir, name);
+        const live = path.join(dir, `${name}-home`, '.claude');
+        fs.mkdirSync(path.join(run, 'store', 'claude'), { recursive: true });
+        fs.writeFileSync(path.join(run, 'store', 'claude', '.credentials.json'), '{"token":"old"}');
+        fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', 'printf \'{"token":"rotated"}\' > "$1/.credentials.json"', 'agent', live]));
+        fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+        fs.writeFileSync(path.join(run, 'manifest'), nul(['store', 'store/claude', live, 'output', path.join(live, '.credentials.json'), 'returned/claude/.credentials.json']));
+        fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, `${name}-work`));
+        fs.writeFileSync(path.join(run, 'user'), 'root');
+        return { run, live };
+    };
+    const failed = runDir('failed');
+    fs.writeFileSync(path.join(failed.run, 'returned'), 'not a directory'); // the copy into returned/ fails
+    execFileSync('bash', [launcher, failed.run]);
+    assert.equal(fs.readFileSync(path.join(failed.run, 'exit-status'), 'utf8'), '0\n', 'the exit status alone does not confirm the export');
+    assert.equal(fs.existsSync(path.join(failed.run, 'credentials-exported')), false);
+    assert.equal(fs.readFileSync(path.join(failed.live, '.credentials.json'), 'utf8'), '{"token":"rotated"}', 'the only rotated copy survives');
+    assert.match(fs.readFileSync(path.join(failed.run, 'stderr.log'), 'utf8'), /cannot return the refreshed credential/);
+
+    const exported = runDir('exported');
+    execFileSync('bash', [launcher, exported.run]);
+    assert.equal(fs.readFileSync(path.join(exported.run, 'credentials-exported'), 'utf8'), 'ok\n');
+    assert.equal(fs.readFileSync(path.join(exported.run, 'returned', 'claude', '.credentials.json'), 'utf8'), '{"token":"rotated"}');
+    assert.equal(fs.existsSync(exported.live), false, 'a confirmed export removes the live copy');
+});
+
+test('a failed credential export keeps the rotated token and the recovery obligation instead of trusting the exit status', async () => {
+    const client = new FakeSpritesClient();
+    const credentials = claudeStore();
+    client.configureSprite = sprite => {
+        sprite.exportFails = true;
+        sprite.agent = async context => { context.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"token":"rotated"}')); return 0; };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const handle = runtime.start(cloneSpec(credentials, { name: 'claude-issue-80' }), { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    await handle.release();
+    const sprite = client.sprites.get('propr-w1-0')!;
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-80' })}`;
+    assert.equal(sprite.files.get(`${root}/exit-status`)?.toString(), '0\n');
+    assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"old"}', 'no unconfirmed export counts as "nothing refreshed"');
+    assert.equal(sprite.files.get('/home/node/.claude/.credentials.json')?.toString(), '{"token":"rotated"}', 'the live copy is kept for recovery');
+    const obligation = JSON.parse(sprite.files.get(`${root}/credentials-retained`)!.toString());
+    assert.equal(obligation.reason, 'export-failed');
+    assert.deepEqual(obligation.liveCopies, ['/home/node/.claude']);
+    assert.deepEqual(sprite.restored, [], 'the Sprite is not restored over the live copy');
+    await assert.rejects(runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-81' }), { timeout: 10_000 }).wait(), /awaiting recovery/);
+});
+
+test('a run whose stop requests fail settles as interrupted within the stop bound and keeps its Sprite out of use', async () => {
+    for (const via of ['timeout', 'stop'] as const) {
+        const client = new FakeSpritesClient();
+        const credentials = claudeStore();
+        let finish!: (status: number) => void;
+        client.configureSprite = sprite => {
+            sprite.signalFails = true;
+            sprite.agent = async context => {
+                context.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"token":"rotated"}'));
+                return new Promise<number>(resolve => { finish = resolve; });
+            };
+        };
+        const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' }, { stopSettlementMs: 200 });
+        const name = `claude-issue-9${via === 'timeout' ? 0 : 1}`;
+        const started = Date.now();
+        const handle = runtime.start(cloneSpec(credentials, { name }), { timeout: via === 'timeout' ? 150 : 60_000 });
+        const waited = handle.wait().then(() => null, error => error as Error);
+        if (via === 'stop') {
+            await sleep(50);
+            await handle.stop();
+        }
+        const error = await waited;
+        if (via === 'timeout') assert.ok(error instanceof SpritesRunInterruptedError && /did not confirm that it stopped within 200ms of its timeout stop request/.test(error.message), String(error));
+        else assert.equal(error?.name, 'AgentRunStoppedError');
+        assert.ok(Date.now() - started < 5_000, `${via}: settled within its bound`);
+        await handle.release(); // resolves: cleanup ran, even though nothing confirmed the run stopped
+        const sprite = client.sprites.get('propr-w1-0')!;
+        assert.ok(sprite.signals.includes('TERM') && sprite.signals.includes('KILL'));
+        assert.deepEqual(sprite.restored, [], `${via}: a Sprite whose run may still be running is not cleaned for reuse`);
+        const root = `/tmp/propr-sprite-runs/${spritesRunId({ name })}`;
+        assert.equal(JSON.parse(sprite.files.get(`${root}/credentials-retained`)!.toString()).reason, 'export-unconfirmed');
+        assert.equal(sprite.files.get('/home/node/.claude/.credentials.json')?.toString(), '{"token":"rotated"}');
+        const keepAlive = setInterval(() => undefined, 50);
+        await assert.rejects(runtime.start(cloneSpec(claudeStore(), { name: `${name}b` }), { timeout: 200 }).wait(), /timed out after 200ms/, 'its slot stays taken');
+        clearInterval(keepAlive);
+        finish(143);
+    }
+});
+
+test('a CLI version other than the Sprite\'s pin is refused at launch and when the configuration is saved', async () => {
+    const { spritesCliVersionRefusal, spritesAgentConfigRefusal } = await import('../packages/core/src/agents/runtime/sprites/spritesCliVersions.ts');
+    const { runAgent, AgentRuntimeCapabilityError } = await import('../packages/core/src/agents/runtime/registry.ts');
+    const pins = readSpritesCliPins(process.cwd());
+    const { AGENT_DEFAULT_VERSIONS } = await import('../packages/core/src/agents/version/types.ts');
+    assert.equal(AGENT_DEFAULT_VERSIONS.claude, pins.CLAUDE_CLI_VERSION, 'the default version is the one a Sprite runs');
+    assert.equal(AGENT_DEFAULT_VERSIONS.codex, pins.CODEX_CLI_VERSION);
+    assert.equal(AGENT_DEFAULT_VERSIONS.antigravity, pins.ANTIGRAVITY_CLI_VERSION);
+    assert.equal(spritesCliVersionRefusal({ type: 'claude' }, pins), undefined);
+    assert.equal(spritesCliVersionRefusal({ type: 'codex', cliVersionType: 'default', cliVersionResolved: pins.CODEX_CLI_VERSION }, pins), undefined);
+    assert.equal(spritesCliVersionRefusal({ type: 'claude', cliVersionType: 'specific', cliVersion: pins.CLAUDE_CLI_VERSION }, pins), undefined, 'selecting the pinned version explicitly is fine');
+    assert.match(spritesCliVersionRefusal({ type: 'claude', alias: 'old-claude', cliVersionType: 'specific', cliVersion: '2.0.1', cliVersionResolved: '2.0.1' }, pins)!,
+        new RegExp(`Agent 'old-claude' selects claude CLI 2\\.0\\.1, but the Sprites runtime runs only claude CLI ${pins.CLAUDE_CLI_VERSION.replaceAll('.', '\\.')}`));
+    assert.match(spritesCliVersionRefusal({ type: 'codex', cliVersionType: 'tag', cliVersion: 'latest' }, pins)!, /selects codex CLI tag latest/, 'an unresolved tag is not assumed to be the pin');
+    assert.match(spritesCliVersionRefusal({ type: 'antigravity', cliVersionResolved: '1.0.0' }, pins)!, /antigravity CLI 1\.0\.0/);
+    // Saving: only enabled agents that select Sprites (themselves or through PROPR_AGENT_RUNTIME).
+    const old = { type: 'claude' as const, alias: 'old-claude', enabled: true, cliVersionType: 'specific' as const, cliVersion: '2.0.1', cliVersionResolved: '2.0.1' };
+    assert.equal(spritesAgentConfigRefusal([old], {}, pins), undefined, 'Docker runs any version');
+    assert.match(spritesAgentConfigRefusal([{ ...old, runtime: 'sprites' }], {}, pins)!, /old-claude/);
+    assert.match(spritesAgentConfigRefusal([old], { PROPR_AGENT_RUNTIME: 'sprites' }, pins)!, /old-claude/);
+    assert.equal(spritesAgentConfigRefusal([{ ...old, enabled: false, runtime: 'sprites' }], {}, pins), undefined);
+    // Launching: refused before anything reaches a Sprite.
+    const spec = cloneSpec(claudeStore(), { name: 'claude-issue-95' });
+    await assert.rejects(runAgent({ ...old, runtime: 'sprites' }, spec, { timeout: 1_000 }),
+        (error: Error) => error instanceof AgentRuntimeCapabilityError && error.capability === 'agent_config' && /selects claude CLI 2\.0\.1/.test(error.message));
+    const runtime = runtimeFor(new FakeSpritesClient());
+    assert.equal(runtime.unsupportedAgentConfig(null, spec), undefined, 'the default agent runs the pinned version');
+    assert.match(runtime.unsupportedAgentConfig({ runtime: 'sprites', type: 'claude', cliVersionResolved: '2.0.1' }, spec)!, /2\.0\.1/);
+});
+
+test('setup runs its scripts as root from the run root, where the agent user cannot create or replace entries', async () => {
+    const { SPRITES_SETUP_UPLOAD_DIR } = await import('../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts');
+    assert.equal(SPRITES_SETUP_UPLOAD_DIR, '/tmp/propr-sprite-runs/.setup');
+    const client = new FakeSpritesClient();
+    const handle = runtimeFor(client).start(cloneSpec(claudeStore(), { name: 'claude-issue-96' }), { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    const setup = client.sprites.get('propr-w1-0')!.calls.find(call => call.file === 'sudo' && call.args.includes('env'))!;
+    assert.deepEqual(setup.args.slice(-3), ['bash', `${SPRITES_SETUP_UPLOAD_DIR}/sprites-agent-setup.sh`, SPRITES_SETUP_UPLOAD_DIR]);
+    await handle.release();
 });

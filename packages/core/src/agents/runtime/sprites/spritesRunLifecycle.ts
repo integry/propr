@@ -20,6 +20,27 @@ import type { SpriteLike, SpritesClientLike } from './spritesSdk.js';
 
 export interface SpriteRunLease { sprite: SpriteLike; name: string; release(): void }
 
+/** Startup overhead of one run, logged per run (`Sprites run startup overhead`). */
+export interface SpritesStartupTimings {
+    /** Waiting for a free Sprite of this worker. */
+    queueMs?: number;
+    /** Getting the Sprite awake, or creating it. */
+    wakeMs?: number;
+    created?: boolean;
+    /** First-time provisioning (pinned CLIs, entrypoints) including its checkpoint. */
+    setupMs?: number;
+    /** Restoring the clean post-setup checkpoint. */
+    restoreMs?: number;
+    /** Uploading the run files and the per-run credential copy. */
+    credentialSyncMs?: number;
+    /** Session start to the clone transport's "cloned" line. */
+    cloneMs?: number;
+    /** Request to agent command start. */
+    totalMs?: number;
+    /** Reading refreshed tokens back and writing them to the canonical stores. */
+    credentialWriteBackMs?: number;
+}
+
 export interface SpriteAcquisitionTimings { queueMs?: number; wakeMs?: number; created?: boolean }
 
 /** Rejects as soon as `signal` aborts; `promise` itself keeps running (and is awaited before cleanup). */
@@ -102,7 +123,9 @@ export type SpritesRecoveryReason =
     /** The canonical store did not take the returned tokens: the run directory's `returned/` holds them. */
     | 'write-back-failed'
     /** The launcher's export could not be confirmed: the live copies in the agent home are kept as they are. */
-    | 'export-unconfirmed';
+    | 'export-unconfirmed'
+    /** The launcher finished but could not return every refreshed credential: it kept the live copies in the agent home. */
+    | 'export-failed';
 
 function recoveryMarker(paths: SpritesRunPaths): string {
     return path.posix.join(paths.root, SPRITES_RETAINED_CREDENTIALS_MARKER);
@@ -185,21 +208,36 @@ export interface SpritesCredentialFinish {
     writeBackMs?: number;
 }
 
+/** Whether the launcher recorded that every refreshed credential was returned (false when that cannot be read). */
+export async function credentialExportConfirmed(sprite: SpriteLike, paths: SpritesRunPaths): Promise<boolean> {
+    try {
+        return (await sprite.filesystem().readFile(paths.credentialsExported, null)).toString('utf8').trim() === 'ok';
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Writes the run's refreshed tokens back, once the launcher confirmed their
  * export (a returned file it has not exported yet looks like no refresh), and
- * lifts the run's recovery obligation. When the export cannot be confirmed or
- * the write-back fails, the credentials stay on the Sprite and the obligation
- * records why.
+ * lifts the run's recovery obligation. The launcher's exit status only shows
+ * that it finished; the export is confirmed by its own record, which it writes
+ * only when every copy succeeded. When the export failed or cannot be
+ * confirmed, or the write-back fails, the credentials stay on the Sprite and
+ * the obligation records why.
  */
 export async function finishRunCredentials(
     sprite: SpriteLike, paths: SpritesRunPaths, run: string, { credentials, settleMs }: { credentials: SpritesCredentialSync; settleMs?: number },
 ): Promise<SpritesCredentialFinish> {
     const started = Date.now();
-    if (!await settleLauncher(sprite, paths, settleMs)) {
+    const finished = await settleLauncher(sprite, paths, settleMs);
+    if (!finished || !await credentialExportConfirmed(sprite, paths)) {
         const liveCopies = credentials.records.filter(record => record[0] === 'store').map(record => record[2]);
-        logger.error({ run, sprite: sprite.name, runDirectory: paths.root, liveCopies }, 'Could not confirm that the Sprites run returned its refreshed credentials; kept the live copies on the Sprite. Copy each newer file back to its canonical store, then delete the run directory');
-        const persisted = await persistRecoveryObligation(sprite, paths, run, { reason: 'export-unconfirmed', liveCopies });
+        const reason: SpritesRecoveryReason = finished ? 'export-failed' : 'export-unconfirmed';
+        logger.error({ run, sprite: sprite.name, runDirectory: paths.root, liveCopies, reason }, finished
+            ? 'The Sprites run could not return its refreshed credentials; kept the live copies on the Sprite. Copy each newer file back to its canonical store, then delete the run directory'
+            : 'Could not confirm that the Sprites run returned its refreshed credentials; kept the live copies on the Sprite. Copy each newer file back to its canonical store, then delete the run directory');
+        const persisted = await persistRecoveryObligation(sprite, paths, run, { reason, liveCopies });
         return { retained: true, liveCopiesRetained: true, holdSprite: !persisted };
     }
     const outcome = await credentials.writeBack(sprite.filesystem(), paths);

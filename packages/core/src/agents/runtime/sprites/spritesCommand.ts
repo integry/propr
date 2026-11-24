@@ -12,17 +12,30 @@ import type { AgentRunMount, AgentRunSpec } from '../types.js';
  * A Sprite cannot boot the `propr/agent` image, so the setup script
  * (`scripts/sprites-agent-setup.sh`) reproduces the parts of it the provider
  * entrypoints rely on: an unprivileged `node` user with `/home/node`, the
- * `docker/`-equivalent entrypoint scripts at `/home/node/<agent>-entrypoint.sh`,
- * `su-exec`/`gosu`, the `gh` wrapper and pinned CLI versions. The spec's
- * entrypoint, wrappers and CLI arguments are then run unchanged, as root, by
- * {@link SPRITES_LAUNCHER_SCRIPT}, exactly as `docker run --user 0:0` would.
+ * `docker/`-equivalent entrypoint scripts, `su-exec`/`gosu`, the `gh` wrapper
+ * and pinned CLI versions. The spec's entrypoint, wrappers and CLI arguments
+ * are then run, as root, by {@link SPRITES_LAUNCHER_SCRIPT}, as
+ * `docker run --user 0:0` would; only the image's `/home/node/<agent>-entrypoint.sh`
+ * paths are mapped to their root-owned copies in {@link SPRITES_ENTRYPOINT_DIR}.
  */
 
 /** Per-run directories on the Sprite, private to the Sprite's own user (never readable by the agent). */
 export const SPRITES_RUN_ROOT = '/tmp/propr-sprite-runs';
-/** The image's default entrypoint (`ENTRYPOINT [tini, --, /home/node/agent-entrypoint.sh]`). */
-export const SPRITES_DEFAULT_ENTRYPOINT = '/home/node/agent-entrypoint.sh';
 export const SPRITES_AGENT_HOME = '/home/node';
+/**
+ * Where setup installs the entrypoint scripts root runs. The image keeps them
+ * in `/home/node`, which the agent user owns: the repository setup hook (run as
+ * `node` before the root-run provider entrypoint) could replace them there. This
+ * directory and every ancestor are root-owned and not writable by `node`
+ * (setup verifies it), and the installed copies refer to each other here.
+ */
+export const SPRITES_ENTRYPOINT_DIR = '/opt/propr/entrypoints';
+/** Entrypoint scripts setup installs in {@link SPRITES_ENTRYPOINT_DIR}. */
+export const SPRITES_INSTALLED_ENTRYPOINTS: readonly string[] = Object.freeze(['agent-entrypoint.sh', 'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh']);
+/** The image's default entrypoint (`ENTRYPOINT [tini, --, /home/node/agent-entrypoint.sh]`), at its protected path. */
+export const SPRITES_DEFAULT_ENTRYPOINT = `${SPRITES_ENTRYPOINT_DIR}/agent-entrypoint.sh`;
+/** Locations the agent user can write to (or create entries in): root never executes a file from them. */
+const AGENT_WRITABLE_PREFIXES: readonly string[] = ['/home/', '/tmp/', '/var/tmp/', '/dev/shm/', '/run/propr-'];
 export const SPRITES_LAUNCHER_EXIT_FAILURE = 125;
 
 /** Providers whose CLI the setup script pins; others follow the same entrypoint contract once their CLI is pinned on the Sprite. */
@@ -55,7 +68,15 @@ export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>
 /** Removes the given paths as root: `bash -c <script> propr-scrub <path>...`. */
 export const SPRITES_SCRUB_SCRIPT = 'rm -rf -- "$@"';
 
-const BASE_PATH = '/opt/propr/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+/**
+ * A root-started run's PATH has only root-owned directories: root resolves the
+ * entrypoints' commands (`su-exec`, `id`, `chown`, ...) through it after the
+ * repository setup hook ran as `node`, so a directory `node` can write to would
+ * let the hook plant them. The agent inherits it through `su-exec`.
+ */
+const ROOT_PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+/** A run started as `node` also gets the agent's own `~/.local/bin`, as in the image. */
+const AGENT_PATH = '/opt/propr/bin:/home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 /** Host binds whose content the run never needs back: an empty directory stands in. */
 const EMPTY_DIRECTORY_PURPOSES = new Set<AgentRunMount['purpose']>(['logs', 'scratch']);
 /** Read-only files copied into the run (e.g. Claude's `.claude.json` seed). */
@@ -74,6 +95,8 @@ export interface SpritesRunPaths {
     stdoutLog: string;
     stderrLog: string;
     exitStatus: string;
+    /** Written by the launcher only once every refreshed credential was returned to `returned/`. */
+    credentialsExported: string;
     result: string;
 }
 
@@ -83,7 +106,7 @@ export function spritesRunPaths(runId: string): SpritesRunPaths {
     const at = (name: string) => path.posix.join(root, name);
     return {
         root, argv: at('argv'), env: at('env'), manifest: at('manifest'), workdir: at('workdir'), user: at('user'), stdin: at('stdin'), pid: at('pid'),
-        launcher: at('launch.sh'), stdoutLog: at('stdout.log'), stderrLog: at('stderr.log'), exitStatus: at('exit-status'), result: at('result'),
+        launcher: at('launch.sh'), stdoutLog: at('stdout.log'), stderrLog: at('stderr.log'), exitStatus: at('exit-status'), credentialsExported: at('credentials-exported'), result: at('result'),
     };
 }
 
@@ -139,7 +162,25 @@ export function planSpritesMounts(spec: AgentRunSpec): SpritesMountPlan {
     return plan;
 }
 
-/** `argv` the launcher runs: the entrypoint the image would use, its wrappers, then the provider CLI. */
+/** The root-owned Sprite copy of an image entrypoint (`/home/node/<agent>-entrypoint.sh`); any other path as it is. */
+export function spritesProtectedEntrypoint(file: string): string {
+    const name = path.posix.basename(file);
+    return path.posix.dirname(file) === SPRITES_AGENT_HOME && SPRITES_INSTALLED_ENTRYPOINTS.includes(name) ? path.posix.join(SPRITES_ENTRYPOINT_DIR, name) : file;
+}
+
+/** A bare command name resolves through the run's root-only PATH; a relative path from the agent-owned workspace. */
+function agentWritable(file: string): boolean {
+    if (!path.posix.isAbsolute(file)) return file.includes('/');
+    const normalized = path.posix.normalize(file);
+    return AGENT_WRITABLE_PREFIXES.some(prefix => normalized.startsWith(prefix));
+}
+
+/**
+ * `argv` the launcher runs: the entrypoint the image would use, its wrappers,
+ * then the provider CLI. Image entrypoint paths become their root-owned
+ * copies, and a root-started run whose entrypoint or provider entrypoint is
+ * still a file the agent user could replace is refused.
+ */
 export function renderSpritesArgv(spec: AgentRunSpec): string[] {
     if (!SPRITES_SUPPORTED_AGENTS.has(spec.profile.agentType)) {
         throw new Error(`Agent runtime "sprites" does not run ${spec.profile.agentType} agents yet; supported: ${[...SPRITES_SUPPORTED_AGENTS].join(', ')}`);
@@ -147,7 +188,13 @@ export function renderSpritesArgv(spec: AgentRunSpec): string[] {
     if (spec.workspace.mode !== 'clone') throw new Error(`Agent runtime "sprites" runs only the clone workspace transport (run ${spec.name})`);
     spritesRunLeftovers(spec);
     const { entrypoint, wrapperArgs } = renderAgentRunEntrypoint(spec);
-    return [entrypoint ?? SPRITES_DEFAULT_ENTRYPOINT, ...wrapperArgs, ...spec.args];
+    const launch = [entrypoint ?? SPRITES_DEFAULT_ENTRYPOINT, ...wrapperArgs].map(spritesProtectedEntrypoint);
+    if (spritesRunUser(spec) === 'root') {
+        const rootExecuted = [launch[0], ...(spec.repoSetup ? [spritesProtectedEntrypoint(spec.repoSetup.providerEntrypoint)] : [])];
+        const exposed = rootExecuted.find(agentWritable);
+        if (exposed) throw new Error(`Agent runtime "sprites" will not run ${exposed} as root for ${spec.name}: the agent user can replace files there`);
+    }
+    return [...launch, ...spec.args];
 }
 
 /** `root` for a spec that starts as uid 0 (as every ProPR provider does), else the image user. */
@@ -165,7 +212,7 @@ export function spritesRunUser(spec: Pick<AgentRunSpec, 'user'>): 'root' | 'node
 export function resolveSpritesEnvironment(spec: AgentRunSpec, launchEnvironment: Record<string, string | undefined>): Map<string, string> {
     const user = spritesRunUser(spec);
     const environment = new Map<string, string>([
-        ['PATH', BASE_PATH], ['HOME', user === 'root' ? '/root' : SPRITES_AGENT_HOME], ['USER', user], ['LANG', 'C.UTF-8'],
+        ['PATH', user === 'root' ? ROOT_PATH : AGENT_PATH], ['HOME', user === 'root' ? '/root' : SPRITES_AGENT_HOME], ['USER', user], ['LANG', 'C.UTF-8'],
         ['AGY_CLI_DISABLE_AUTO_UPDATE', 'true'], ['DISABLE_AUTOUPDATER', '1'],
     ]);
     for (const file of [...spec.envFiles].sort((left, right) => left.order - right.order)) {
@@ -275,7 +322,10 @@ const RESULT_DIR = WORKSPACE_TRANSPORT_RESULT_DIR;
  * killed before the run starts (leftovers of an earlier run) and once the
  * command exits (as a container's processes die with it). Then it returns the
  * refreshable credentials and the workspace result through the run
- * directory, removes every credential copy and records the exit status.
+ * directory and records the exit status. Every step of the credential return
+ * is checked: only when all succeeded does it record `credentials-exported`
+ * and remove the credential copies; otherwise the live copies stay (they may
+ * hold the only valid rotated token) and the worker keeps the recovery obligation.
  */
 export const SPRITES_LAUNCHER_SCRIPT = `
 set -u
@@ -288,12 +338,19 @@ record_status() {
     printf '%s\\n' "$1" > "$run_dir/exit-status.tmp" && chown "$owner" -- "$run_dir/exit-status.tmp" && mv -f -- "$run_dir/exit-status.tmp" "$run_dir/exit-status"
 }
 remove_credentials() { for dst in "\${stores[@]}"; do rm -rf -- "$dst"; done; }
+# Confirms that every refreshed credential is in returned/ (or that none can have refreshed).
+record_export() {
+    printf 'ok\n' > "$run_dir/credentials-exported.tmp" && chown "$owner" -- "$run_dir/credentials-exported.tmp" && mv -f -- "$run_dir/credentials-exported.tmp" "$run_dir/credentials-exported"
+}
+# Before the command started: the copies were never used, so the canonical stores are current.
 fail() {
     echo "ProPR Sprites runtime: $*" >> "$run_dir/stderr.log"
     remove_credentials
+    record_export
     record_status ${SPRITES_LAUNCHER_EXIT_FAILURE}
     exit ${SPRITES_LAUNCHER_EXIT_FAILURE}
 }
+rm -f -- "$run_dir/credentials-exported" "$run_dir/credentials-exported.tmp"
 : > "$run_dir/stdout.log" && : > "$run_dir/stderr.log" && chown "$owner" -- "$run_dir/stdout.log" "$run_dir/stderr.log" || exit ${SPRITES_LAUNCHER_EXIT_FAILURE}
 printf '%s\\n' "$$" > "$run_dir/pid.tmp" && chown "$owner" -- "$run_dir/pid.tmp" && mv -f -- "$run_dir/pid.tmp" "$run_dir/pid" || fail "cannot record the launcher PID"
 id node >/dev/null 2>&1 || fail "the Sprite has no node user; the ProPR setup script has not run"
@@ -355,18 +412,29 @@ done
 trap - TERM INT HUP
 # Nothing the run started outlives it (background jobs, daemons that left the session).
 kill_run_members "$run_dir" "$child" || echo "ProPR Sprites runtime: processes of the run survived SIGKILL" >> "$run_dir/stderr.log"
+exported=1
 j=0
 while [ "$j" -lt "\${#outputs[@]}" ]; do
     src="\${outputs[$j]}"; ret="\${outputs[$((j + 1))]}"; j=$((j + 2))
     if [ -f "$src" ] && [ ! -L "$src" ]; then
-        mkdir -p -- "$(dirname -- "$ret")" && cp -p -- "$src" "$ret" && chmod 600 -- "$ret"
+        if ! { mkdir -p -- "$(dirname -- "$ret")" && cp -p -- "$src" "$ret" && chmod 600 -- "$ret"; }; then
+            exported=0
+            echo "ProPR Sprites runtime: cannot return the refreshed credential $src" >> "$run_dir/stderr.log"
+        fi
     fi
 done
-[ ! -d "$run_dir/returned" ] || chown -R "$owner" -- "$run_dir/returned"
+if [ -d "$run_dir/returned" ] && ! chown -R "$owner" -- "$run_dir/returned"; then
+    exported=0
+    echo "ProPR Sprites runtime: cannot hand the returned credentials to the worker" >> "$run_dir/stderr.log"
+fi
 if [ -d "${RESULT_DIR}" ]; then
     mkdir -p -- "$run_dir/result" && cp -a -- "${RESULT_DIR}/." "$run_dir/result/" && chown -R "$owner" -- "$run_dir/result"
 fi
-remove_credentials
+if [ "$exported" = 1 ] && record_export; then
+    remove_credentials
+else
+    echo "ProPR Sprites runtime: kept the run's live credential copies; their return was not confirmed" >> "$run_dir/stderr.log"
+fi
 record_status "$status"
 exit "$status"
 `.trim();

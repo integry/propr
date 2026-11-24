@@ -380,6 +380,7 @@ export {
     SpritesRuntime, SPRITES_RUNTIME_CAPABILITIES, SpritesRunInterruptedError, SpritesConfigurationError, spritesRunId,
     type SpritesStartupTimings, type SpritesRuntimeDependencies,
 } from './agents/runtime/spritesRuntime.js';
+export { spritesAgentConfigRefusal, spritesCliVersionRefusal, spritesProvidedCliVersion } from './agents/runtime/sprites/spritesCliVersions.js';
 export { dockerAgentRuntimeInUse, selectedAgentRuntimeName } from './agents/runtime/runtimeSelection.js';
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,

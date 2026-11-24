@@ -11,19 +11,21 @@ import {
     planSpritesMounts, renderSpritesArgv, resolveSpritesEnvironment, spritesManifest, spritesMountRefusal, spritesRunPaths, spritesRunUser,
     encodeNulList, spritesRunLeftovers, SPRITES_CREDENTIAL_TARGETS, SPRITES_LAUNCHER_SCRIPT, SPRITES_RUN_ROOT, SPRITES_SCRUB_SCRIPT, type SpritesRunPaths,
 } from './sprites/spritesCommand.js';
+import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
 import { prepareSpritesCredentials, type SpritesCredentialSync } from './sprites/spritesCredentials.js';
-import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession, terminateRunProcesses } from './sprites/spritesExecution.js';
+import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession, terminateRunProcesses, SPRITES_STOP_SETTLEMENT_MS } from './sprites/spritesExecution.js';
 import { clearCleanMarker, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
 import {
     acquireSprite, clearRecoveryObligation, finishRunCredentials, persistRecoveryObligation, provisionLeasedSprite, spriteHoldsRetainedCredentials,
-    startDeadlineResult, untilAborted, SpritesStartDeadlineError, type SpriteRunLease,
+    startDeadlineResult, untilAborted, SpritesStartDeadlineError, type SpriteRunLease, type SpritesStartupTimings,
 } from './sprites/spritesRunLifecycle.js';
 import { defaultSpritesClientFactory, type SpriteCommandLike, type SpriteLike, type SpritesClientFactory, type SpritesClientLike } from './sprites/spritesSdk.js';
-import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
+import type { AgentRunConfigSelection, AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export { SpritesRunInterruptedError } from './sprites/spritesExecution.js';
 export { SpritesConfigurationError } from './sprites/spritesConfig.js';
+export type { SpritesStartupTimings } from './sprites/spritesRunLifecycle.js';
 
 export const SPRITES_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.freeze({
     // Host paths never reach a Sprite: credentials and small read-only files are copied in instead.
@@ -37,27 +39,6 @@ export const SPRITES_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.fre
     workspaceTransports: Object.freeze(['clone'] as const),
 });
 
-/** Startup overhead of one run, logged per run (`Sprites run startup overhead`). */
-export interface SpritesStartupTimings {
-    /** Waiting for a free Sprite of this worker. */
-    queueMs?: number;
-    /** Getting the Sprite awake, or creating it. */
-    wakeMs?: number;
-    created?: boolean;
-    /** First-time provisioning (pinned CLIs, entrypoints) including its checkpoint. */
-    setupMs?: number;
-    /** Restoring the clean post-setup checkpoint. */
-    restoreMs?: number;
-    /** Uploading the run files and the per-run credential copy. */
-    credentialSyncMs?: number;
-    /** Session start to the clone transport's "cloned" line. */
-    cloneMs?: number;
-    /** Request to agent command start. */
-    totalMs?: number;
-    /** Reading refreshed tokens back and writing them to the canonical stores. */
-    credentialWriteBackMs?: number;
-}
-
 export interface SpritesRuntimeDependencies {
     createClient?: SpritesClientFactory;
     config?: () => SpritesRuntimeConfig;
@@ -66,6 +47,8 @@ export interface SpritesRuntimeDependencies {
     reconnectDelayMs?: number;
     /** How long a stopped run's launcher gets to export credentials before its processes are killed (tests shorten it). */
     launcherSettleMs?: number;
+    /** Bound on a stopped run's settlement when its termination cannot be confirmed (tests shorten it). */
+    stopSettlementMs?: number;
 }
 
 /** Run id on the Sprite: derived from the (unique) run name, so a restarted worker finds it again. */
@@ -221,7 +204,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         return superviseSpriteSession({
             spec: this.spec, options, client: await this.runtime.client(), sprite, paths: this.paths, session,
             signal, remainingMs, keepAwakeIntervalMs: this.runtime.config().keepAwakeIntervalMs,
-            reconnectDelayMs: this.runtime.reconnectDelayMs,
+            reconnectDelayMs: this.runtime.reconnectDelayMs, stopSettlementMs: this.runtime.stopSettlementMs,
             onStarted: () => {
                 this.timings.totalMs = Date.now() - requested;
                 logger.info({ run: this.spec.name, sprite: sprite.name, timings: this.timings }, 'Sprites run startup overhead');
@@ -328,13 +311,17 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         finally { clearTimeout(timer); }
     }
 
-    /** Cancels a launch still preparing; a started run gets its session stopped. Resolves once the run settled. */
+    /**
+     * Cancels a launch still preparing; a started run gets its session stopped. Resolves once the run settled: within
+     * {@link SPRITES_STOP_SETTLEMENT_MS} plus its credential export, as interrupted when its termination is unconfirmed.
+     */
     async stop(signal: NodeJS.Signals = 'SIGTERM', timeoutMs = 10_000): Promise<void> {
         if (this.settled) return;
         // The launcher always gets TERM first (KILL after its grace period), whatever signal was asked for.
         logger.info({ run: this.spec.name, sprite: this.lease?.name, signal }, 'Stopping Sprites run');
         if (!this.cancellation.signal.aborted) this.cancellation.abort(new AgentRunStoppedError(this.spec.name));
-        if (!await this.settlesWithin(timeoutMs + 60_000)) throw new Error(`Agent run ${this.spec.name} did not settle after it was stopped`);
+        const settlementMs = this.runtime.stopSettlementMs ?? SPRITES_STOP_SETTLEMENT_MS;
+        if (!await this.settlesWithin(timeoutMs + settlementMs + 60_000)) throw new Error(`Agent run ${this.spec.name} did not settle after it was stopped`);
     }
 
     async inspect(): Promise<AgentRunInspection> {
@@ -382,7 +369,12 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     release(): Promise<void> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
         this.released ??= (async () => {
-            if (!this.settled) await this.stop();
+            if (!this.settled) {
+                const still = (error: unknown) => logger.warn({ run: this.spec.name, sprite: this.lease?.name, error: (error as Error).message }, 'Sprites run is still settling after its stop; cleaning up its Sprite once it settled');
+                await this.stop().catch(still);
+                // Cleanup never races the run's own credential export: it follows the run's settlement.
+                await this.result.then(() => undefined, () => undefined);
+            }
             await this.cleanUp();
         })();
         return this.released;
@@ -429,11 +421,11 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     /** Delay between output reconnect attempts (tests shorten it). */
     readonly reconnectDelayMs?: number;
     readonly launcherSettleMs?: number;
+    readonly stopSettlementMs?: number;
 
     constructor(private readonly dependencies: SpritesRuntimeDependencies = {}) {
         this.environment = dependencies.environment ?? process.env;
-        this.reconnectDelayMs = dependencies.reconnectDelayMs;
-        this.launcherSettleMs = dependencies.launcherSettleMs;
+        ({ reconnectDelayMs: this.reconnectDelayMs, launcherSettleMs: this.launcherSettleMs, stopSettlementMs: this.stopSettlementMs } = dependencies);
         applySpritesClientSignalsDefault(this.environment);
     }
 
@@ -462,6 +454,11 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
 
     unsupportedMount(mount: Parameters<NonNullable<AgentRuntime['unsupportedMount']>>[0]): string | undefined {
         return spritesMountRefusal(mount);
+    }
+
+    /** A CLI version other than the one this setup revision pins cannot run on a Sprite. */
+    unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec): string | undefined {
+        return spritesCliVersionRefusal({ ...config, type: config?.type ?? spec.profile.agentType }, this.setupBundle().pins);
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): SpritesRunHandle {

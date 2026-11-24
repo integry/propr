@@ -7,7 +7,7 @@ import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { SpritesRuntime } from './spritesRuntime.js';
-import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
+import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
@@ -66,7 +66,7 @@ export function getAgentRuntime(
     return runtime;
 }
 
-export type AgentRuntimeCapability = 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url';
+export type AgentRuntimeCapability = 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'agent_config';
 
 /**
  * A run refused before launch because its runtime cannot provide what the
@@ -176,11 +176,14 @@ export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options
  * applied back to the worker worktree before this resolves.
  */
 export async function runAgent(
-    config: Pick<AgentConfig, 'runtime'> | null | undefined,
+    config: AgentRunConfigSelection | null | undefined,
     spec: AgentRunSpec,
     options: AgentRunOptions,
 ): Promise<ExecutionResult> {
     const runtime = getAgentRuntime(config);
+    // e.g. a CLI version the runtime does not provide: refused, never run on another version.
+    const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
+    if (configRefusal) throw new AgentRuntimeCapabilityError(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`, runtime.kind, 'agent_config');
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {

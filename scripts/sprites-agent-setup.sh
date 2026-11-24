@@ -7,8 +7,10 @@
 #   - su-exec and gosu (shims over setpriv when the Sprite has neither);
 #   - the agent CLIs at the versions Dockerfile.agent pins, under /opt/propr,
 #     ahead of the Sprite's preinstalled (older) CLIs on the run's PATH;
-#   - the entrypoint scripts at /home/node/<agent>-entrypoint.sh and the gh
-#     wrapper at /usr/local/bin/gh-wrapper, as in the image;
+#   - the entrypoint scripts, which root runs, in the root-owned
+#     /opt/propr/entrypoints (not /home/node as in the image: the repository
+#     setup hook runs as node before the root-run provider entrypoint, and node
+#     owns /home/node), and the gh wrapper at /usr/local/bin/gh-wrapper;
 #   - the image's git configuration for the node user.
 # It is idempotent and records PROPR_SPRITES_SETUP_HASH in
 # /opt/propr/sprites-setup.hash; the runtime checkpoints the Sprite after it.
@@ -82,6 +84,45 @@ configure_agent_git() {
     su-exec "$user" env HOME="$home" git config --global --replace-all safe.directory '*'
 }
 
+# Whether <user> can modify neither <path> nor any directory above it: none
+# is owned by <user>, world-writable, or group-writable for a group <user> is
+# in. A symlink is checked along with its target.
+beyond_user_control() {
+    local user="$1" path="$2" uid groups current mode
+    uid="$(id -u "$user")" || return 1
+    groups=" $(id -G "$user") "
+    for current in "$path" "$(readlink -f -- "$path")"; do
+        while :; do
+            [ -e "$current" ] || [ -L "$current" ] || return 1
+            [ "$(stat -c %u -- "$current")" != "$uid" ] || return 1
+            mode="$(stat -c %a -- "$current")"
+            (( (8#$mode & 8#002) == 0 )) || [ -L "$current" ] || return 1
+            if (( (8#$mode & 8#020) != 0 )) && [ ! -L "$current" ]; then
+                case "$groups" in *" $(stat -c %g -- "$current") "*) return 1 ;; esac
+            fi
+            [ "$current" != / ] || break
+            current="$(dirname -- "$current")"
+        done
+    done
+}
+
+# Installs the entrypoint scripts root runs into <directory> (owned by the
+# caller, root during setup), pointing their references to each other and to
+# the gh wrapper directory at the protected copies instead of /home/node.
+install_root_entrypoints() {
+    local source_dir="$1" entry_dir="$2" gh_bin_dir="$3" script
+    install -d -m 0755 "$entry_dir" "$gh_bin_dir"
+    ln -sfn /usr/local/bin/gh-wrapper "$gh_bin_dir/gh"
+    for script in agent-entrypoint.sh claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh; do
+        sed -e "s#/home/node/\([^/\"' ]*-entrypoint\.sh\)#$entry_dir/\1#g" -e "s#/home/node/bin\>#$gh_bin_dir#g" "$source_dir/$script" > "$entry_dir/$script.tmp"
+        if grep -qE '/home/node/[^[:space:]]*entrypoint|/home/node/bin\>' "$entry_dir/$script.tmp"; then
+            rm -f "$entry_dir/$script.tmp"; die "$script still refers to an entrypoint or PATH directory under /home/node"
+        fi
+        chmod 0755 "$entry_dir/$script.tmp"
+        mv -f "$entry_dir/$script.tmp" "$entry_dir/$script"
+    done
+}
+
 # Sourcing the script (the unit tests do) only defines the functions above.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -94,14 +135,17 @@ source_dir="${1:?usage: sprites-agent-setup.sh <directory with the entrypoint sc
 # The launcher reads NUL-separated records with mapfile -d (bash 4.4+).
 [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; } || die "bash 4.4 or later is required"
 link_sprite_node /.sprite/bin/node /usr/local/bin
-for tool in node npm git curl tar sha512sum mkfifo tee stat install useradd; do
+for tool in node npm git curl tar sha512sum mkfifo tee stat install useradd sed readlink; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool $tool is missing on this Sprite"
 done
 
 prefix=/opt/propr
 bin_dir="$prefix/bin"
 npm_prefix="$prefix/npm"
+entry_dir="$prefix/entrypoints"
+gh_bin_dir="$prefix/gh-bin"
 mkdir -p "$bin_dir" "$npm_prefix"
+chown root:root "$prefix" "$bin_dir"
 chmod 755 "$prefix" "$bin_dir"
 
 # --- node user -----------------------------------------------------------
@@ -146,10 +190,14 @@ if [ -n "${ANTIGRAVITY_CLI_VERSION:-}" ] && [ -n "${ANTIGRAVITY_CLI_RELEASE_ID:-
 fi
 
 # --- entrypoint contract -------------------------------------------------
-for script in agent-entrypoint.sh claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh; do
-    install -m 0755 -o node -g node "$source_dir/$script" "/home/node/$script"
-done
 install -m 0755 "$source_dir/gh-wrapper.sh" /usr/local/bin/gh-wrapper
+install_root_entrypoints "$source_dir" "$entry_dir" "$gh_bin_dir"
+# Copies an earlier revision installed where node could replace them.
+for script in agent-entrypoint.sh claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh; do rm -f "/home/node/$script"; done
+# Everything root executes for a run, and every directory above it, must stay out of node's reach.
+for path in "$entry_dir"/*-entrypoint.sh "$gh_bin_dir/gh" "$bin_dir" "$npm_prefix" /usr/local/bin/gh-wrapper "$(command -v su-exec)" "$(command -v gosu)"; do
+    beyond_user_control node "$path" || die "the node user can modify $path or a directory above it, so it could replace what root runs"
+done
 
 configure_agent_git node /home/node
 

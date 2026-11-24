@@ -32,6 +32,13 @@ const STOP_GRACE_MS = 10_000;
 const KEEP_AWAKE_TIMEOUT_MS = 20_000;
 const SIGNAL_TIMEOUT_MS = 30_000;
 const EXIT_STATUS_SETTLE_ATTEMPTS = 5;
+/**
+ * How long a stopped run may take to settle: TERM, KILL after the grace
+ * period, and that request's own timeout. A run whose followers still wait
+ * then (its stop requests failed, or the launcher ignores them) settles as
+ * interrupted instead of waiting for a launcher that may never exit.
+ */
+export const SPRITES_STOP_SETTLEMENT_MS = STOP_GRACE_MS + SIGNAL_TIMEOUT_MS + 5_000;
 
 /** The run ended without an exit status because its Sprite paused, restarted or lost the launcher. */
 export class SpritesRunInterruptedError extends Error {
@@ -57,6 +64,8 @@ export interface SpriteSessionSupervision {
     remainingMs: number;
     keepAwakeIntervalMs: number;
     reconnectDelayMs?: number;
+    /** Bound on settling after a stop request ({@link SPRITES_STOP_SETTLEMENT_MS}; tests shorten it). */
+    stopSettlementMs?: number;
     onOutput(stream: StreamName, chunk: string): void;
     /** Called once the launcher is running (or found running). */
     onStarted?(): void;
@@ -138,8 +147,9 @@ async function recordedExitStatus(sprite: SpriteLike, paths: SpritesRunPaths): P
 
 /**
  * Resolves true once the launcher recorded its exit status, which it does only
- * after it returned the refreshable credentials and the workspace result: only
- * then does a missing returned file mean the run refreshed nothing. Supervision
+ * after it handled the refreshable credentials and the workspace result: only
+ * then can its export record (`credentials-exported`, written when every
+ * copy succeeded) say that a missing returned file means no refresh. Supervision
  * can end before that (its output followers gave up while the launcher was
  * still handling TERM), so this waits for the launcher; after `graceMs` it kills
  * the run's processes (the launcher then exports and finishes) and checks once
@@ -175,17 +185,30 @@ export async function superviseSpriteSession(input: SpriteSessionSupervision): P
     const run: { stopCause: StopCause | null; interruption: Error | null; costMessage: string | null; callbackFailure?: { error: unknown } } = {
         stopCause: null, interruption: null, costMessage: null,
     };
+    const stopSettlementMs = input.stopSettlementMs ?? SPRITES_STOP_SETTLEMENT_MS;
     const followers = new Set<SpriteCommandLike>();
     const timers: NodeJS.Timeout[] = [];
+    // Resolved when the run stops following its launcher: every pending connection wait ends then, whether or not closing it did.
+    let abandonFollowing!: () => void;
+    const followingAbandoned = new Promise<void>(resolve => { abandonFollowing = resolve; });
+    const untilAbandoned = <T>(promise: Promise<T>, abandoned: T): Promise<T> => Promise.race([promise, followingAbandoned.then(() => abandoned)]);
+    let settlementTimer: NodeJS.Timeout | undefined;
     const requestStop = (cause: StopCause): void => {
         if (run.stopCause) return;
         run.stopCause = cause;
-        void signalLauncher(sprite, paths, 'TERM').catch(error => {
-            logger.warn({ run: spec.name, sprite: sprite.name, error: (error as Error).message }, 'Could not stop the Sprites run');
-        });
-        const force = setTimeout(() => { void signalLauncher(sprite, paths, 'KILL').catch(() => undefined); }, STOP_GRACE_MS);
+        const signalFailed = (signal: string) => (error: unknown) => {
+            logger.warn({ run: spec.name, sprite: sprite.name, signal, error: (error as Error).message }, 'Could not stop the Sprites run');
+        };
+        void signalLauncher(sprite, paths, 'TERM').catch(signalFailed('TERM'));
+        const force = setTimeout(() => { void signalLauncher(sprite, paths, 'KILL').catch(signalFailed('KILL')); }, STOP_GRACE_MS);
         force.unref();
         timers.push(force);
+        // The open followers end only when the launcher exits, which nothing confirmed: bound the wait.
+        settlementTimer = setTimeout(() => interrupt(new SpritesRunInterruptedError(
+            `Agent run ${spec.name} on Sprite ${sprite.name} did not confirm that it stopped within ${stopSettlementMs}ms of its ${cause} stop request; its processes may still run, so the Sprite is not reused until they are verifiably killed`,
+        )), stopSettlementMs);
+        settlementTimer.unref();
+        timers.push(settlementTimer);
     };
     const cost = registerCostExecution('sprites', [], { model: options.model, costCapExempt: options.costCapExempt, agentRun: { spec } }, message => {
         run.costMessage ??= message;
@@ -248,6 +271,7 @@ export async function superviseSpriteSession(input: SpriteSessionSupervision): P
         run.interruption = error;
         requestStop('interrupted');
         for (const follower of followers) follower.close();
+        abandonFollowing();
     };
 
     /** Follow one log until the launcher exits; resumes from `received` after a dropped connection. */
@@ -266,8 +290,7 @@ export async function superviseSpriteSession(input: SpriteSessionSupervision): P
             command.on('error', (error: Error) => logger.debug({ run: spec.name, stream, error: error.message }, 'Sprites output follower connection error'));
             let code = -1;
             try {
-                await waitSpawned(command);
-                code = await command.wait();
+                if (await untilAbandoned(waitSpawned(command).then(() => true), false)) code = await untilAbandoned(command.wait(), -1);
             } catch (error) {
                 logger.warn({ run: spec.name, sprite: sprite.name, stream, attempt, error: (error as Error).message }, 'Could not follow the Sprites run output');
             } finally {
@@ -315,11 +338,13 @@ export async function superviseSpriteSession(input: SpriteSessionSupervision): P
             input.session.stdout.resume();
             input.session.stderr.resume();
             input.session.on('error', (error: Error) => logger.debug({ run: spec.name, error: error.message }, 'Sprite session connection error'));
-            await waitSpawned(input.session);
+            if (!await untilAbandoned(waitSpawned(input.session).then(() => true), false)) throw run.interruption ?? new SpritesRunInterruptedError(`The session of agent run ${spec.name} did not start`);
             input.session.stdin.end();
         }
         input.onStarted?.();
         const outcomes = await Promise.all([follow('stdout'), follow('stderr')]);
+        // The launcher exited (or the run was interrupted): its stop, if any, settled.
+        clearTimeout(settlementTimer);
         if (!run.interruption) {
             for (let attempt = 0; exitCode === undefined && attempt < EXIT_STATUS_SETTLE_ATTEMPTS; attempt++) {
                 exitCode = await readRecordedExitStatus(sprite, paths);

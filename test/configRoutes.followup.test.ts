@@ -1053,6 +1053,23 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual(result.processedAgents?.[0].cliVersionResolved, 'github:example/claude-fork#resolved');
     });
 
+    test('prepareAgentsUpdate refuses a CLI version the Sprites runtime cannot run', async () => {
+        const agent = (overrides: Record<string, unknown>) => ({
+            id: 'sprites-agent', alias: 'sprites-claude', type: 'claude', enabled: true, dockerImage: 'old:image',
+            configPath: '/tmp/claude', supportedModels: [], runtime: 'sprites', cliVersionType: 'specific', cliVersion: '2.0.1', ...overrides,
+        });
+        const deps = {
+            resolveVersion: async (_type: string, _versionType: string, version?: string) => version ?? configManager.AGENT_DEFAULT_VERSIONS.claude,
+            computeContentHash: () => 'content-hash',
+            generateAgentBundleImageTag: () => 'propr/agent:test',
+        };
+        const refused = await prepareAgentsUpdate([agent({})], deps as never);
+        assert.strictEqual(refused.status, 400);
+        assert.match(refused.error ?? '', /Agent 'sprites-claude' selects claude CLI 2\.0\.1, but the Sprites runtime runs only claude CLI/);
+        assert.strictEqual((await prepareAgentsUpdate([agent({ runtime: 'docker' })], deps as never)).error, undefined, 'Docker builds any version');
+        assert.strictEqual((await prepareAgentsUpdate([agent({ cliVersionType: 'default', cliVersion: undefined })], deps as never)).error, undefined);
+    });
+
     test('prepareAgentsUpdate does not mislabel local TypeErrors as registry outages', async () => {
         const result = await prepareAgentsUpdate([
             {

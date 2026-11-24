@@ -1,6 +1,6 @@
 import type { Readable } from 'node:stream';
 import type { ResolvedNetworkPolicy } from '../../network/networkPolicy.js';
-import type { AgentType } from '../types.js';
+import type { AgentConfig, AgentType } from '../types.js';
 
 /**
  * Runtime-neutral description of one coding-agent run.
@@ -316,6 +316,10 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
     retain?(): void;
 }
 
+/** What a launch knows of the agent's configuration: its runtime and CLI version selection. */
+export type AgentRunConfigSelection = Pick<AgentConfig, 'runtime'>
+    & Partial<Pick<AgentConfig, 'type' | 'id' | 'alias' | 'cliVersionType' | 'cliVersion' | 'cliVersionResolved'>>;
+
 export interface AgentRuntime<Options = unknown, Result extends AgentRunResult = AgentRunResult> {
     readonly kind: string;
     readonly capabilities: AgentRuntimeCapabilities;
@@ -326,6 +330,12 @@ export interface AgentRuntime<Options = unknown, Result extends AgentRunResult =
      * undefined when the runtime materialises it. Absent: every bind is refused.
      */
     unsupportedMount?(mount: Extract<AgentRunMount, { type: 'bind' }>): string | undefined;
+    /**
+     * Why the runtime cannot run the agent as configured (e.g. a CLI version it
+     * does not provide), or undefined when it can. Checked before every launch;
+     * `config` is null for the instance's default agent.
+     */
+    unsupportedAgentConfig?(config: AgentRunConfigSelection | null, spec: AgentRunSpec): string | undefined;
     /**
      * Reattach to a run this process did not start (a worker restart), when
      * {@link AgentRuntimeCapabilities.reattach} is set. Resolves to null when the

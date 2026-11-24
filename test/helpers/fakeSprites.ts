@@ -72,6 +72,10 @@ export class FakeSprite {
     keepAwakeFails = false;
     /** The run's processes survive SIGKILL (the signal script reports survivors). */
     survivesKill = false;
+    /** Every TERM/KILL request fails (the Sprite API refuses it), so the launcher never hears of the stop. */
+    signalFails = false;
+    /** The launcher cannot return the refreshed credentials (e.g. a write error): it keeps the live copies and records no export. */
+    exportFails = false;
     /** Sessions created, in order (the launcher of each run). */
     readonly sessions: string[] = [];
     private readonly launchers = new Map<string, { running: boolean; terminate: () => void }>();
@@ -121,6 +125,7 @@ export class FakeSprite {
         if (file === 'sudo' && args.includes('propr-signal')) {
             const signal = args[args.indexOf('propr-signal') + 1];
             this.signals.push(signal);
+            if (this.signalFails) throw new Error('sprite API unavailable');
             this.launchers.get(args[args.indexOf('propr-signal') + 2])?.terminate();
             return { stdout: '', stderr: '', exitCode: this.survivesKill ? 1 : 0 };
         }
@@ -209,11 +214,14 @@ export class FakeSprite {
         } catch {
             status = 1;
         }
-        for (const [source, returned] of outputs) if (this.files.has(source)) this.files.set(returned, this.files.get(source)!);
+        if (!this.exportFails) for (const [source, returned] of outputs) if (this.files.has(source)) this.files.set(returned, this.files.get(source)!);
         for (const [file, content] of [...this.files]) {
             if (file.startsWith('/tmp/propr-workspace-result/')) this.files.set(`${at('result')}/${file.slice('/tmp/propr-workspace-result/'.length)}`, content);
         }
-        for (const target of installed) this.filesystem().rm(target);
+        if (!this.exportFails) {
+            this.files.set(at('credentials-exported'), Buffer.from('ok\n'));
+            for (const target of installed) this.filesystem().rm(target);
+        }
         this.files.set(at('exit-status'), Buffer.from(`${status}\n`));
         launcher.running = false;
     }

@@ -5,6 +5,7 @@ import {
   generateAgentBundleImageTag,
   getAgentCliVersionMatrix,
   resolveVersion,
+  spritesAgentConfigRefusal,
 } from '@propr/core';
 import type { AgentConfig, AgentType, CliVersionType } from '@propr/core';
 import { normalizeAgentsConfig, validateAgentsConfig } from './configHelpers.js';
@@ -145,6 +146,10 @@ export async function prepareAgentsUpdate(
       status: 400,
     };
   }
+
+  // A Sprite runs only the CLI versions its setup pins: refuse other selections instead of running the pinned ones.
+  const spritesRefusal = spritesAgentConfigRefusal(processedAgents);
+  if (spritesRefusal) return { error: spritesRefusal, status: 400 };
 
   try {
     const bundleImage = preparationDeps.generateAgentBundleImageTag(
