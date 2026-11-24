@@ -1,8 +1,8 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { IDLE_PARTICIPANTS_REDIS_KEY } from '@propr/shared';
-import { closeConnection, collectIdleSignals, evaluateIdle, registerIdleParticipant } from '@propr/core';
-import { createDaemonIdleSources } from '../src/daemon/idleSignalSources.js';
+import { IdleActivityTracker, closeConnection, collectIdleSignals, evaluateIdle, registerIdleParticipant } from '@propr/core';
+import { createDaemonActivitySources, createDaemonIdleSources } from '../src/daemon/idleSignalSources.js';
 
 const MINUTE = 60_000;
 
@@ -103,4 +103,18 @@ test('a host this process cannot stop (a Fly Machine without its stop token) kee
         assert.equal(evaluation.idle, idle);
         if (!idle) assert.deepEqual(evaluation.blockers, [{ signal: 'unavailable', detail: `could not read ${problem}` }]);
     }
+});
+
+test('API activity counts a request this process just turned away before its record reaches Redis', async () => {
+    // No API record published yet (the eager publish is still in flight), no registrations.
+    const redis = { hgetall: async () => ({}), scan: async () => ['0', []], get: async () => null };
+    const local = new IdleActivityTracker();
+    const sources = createDaemonActivitySources({ redis: redis as never, local });
+    assert.equal((await collectIdleSignals(sources)).lastActivityAt, null, 'no request yet');
+    local.quiesce('intent-1');
+    const before = Date.now();
+    local.touch();
+    const signals = await collectIdleSignals(sources);
+    assert.ok((signals.lastActivityAt ?? 0) >= before, 'the turned-away request is activity at once');
+    assert.deepEqual(signals.unavailable, []);
 });

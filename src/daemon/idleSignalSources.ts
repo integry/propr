@@ -5,8 +5,10 @@ import {
     collectDatabaseSignals,
     collectParticipantSignals,
     collectQueueSignals,
+    idleActivity,
     idleParticipantKey,
     isIdleParticipantInThisProcess,
+    type IdleActivityTracker,
     type IdleParticipant,
     type IdleSignalSource,
     type IdleSignals,
@@ -87,6 +89,26 @@ export function createDaemonWorkSources(deps: Pick<DaemonIdleSourceDeps, 'redis'
 }
 
 /**
+ * API activity: the record every API process publishes (open Web UI sessions,
+ * requests in flight, the last request, one turned away while quiesced
+ * included), and this process's own tracker. Composed, the API runs here, and
+ * a request it just turned away counts at once, before its record reaches
+ * Redis. The idle drain reads these again after it quiesced the API, right
+ * before it asks every process to stop and once they have acknowledged.
+ */
+export function createDaemonActivitySources(deps: Pick<DaemonIdleSourceDeps, 'redis' | 'now'> & { local?: IdleActivityTracker }): Record<string, IdleSignalSource> {
+    const now = deps.now ?? Date.now;
+    const local = deps.local ?? idleActivity;
+    return {
+        'API activity': () => collectActivitySignals(deps.redis, { now: now() }),
+        'API requests in this process': async () => {
+            const { lastRequestAt } = local.snapshot();
+            return lastRequestAt > 0 ? { lastActivityAt: lastRequestAt } : {};
+        },
+    };
+}
+
+/**
  * Idle shutdown stops only the composed process. Its participants exit with
  * it, so a stop that is called off (exit 1) restarts every one of them; a
  * process outside it exits 0 on its own and would stay stopped. So a
@@ -111,7 +133,7 @@ export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<stri
             const { unavailable, participants } = await collectParticipantSignals(deps.redis, { now: now() });
             return { unavailable, separateProcesses: separateProcessSignals(deps.composed, participants) };
         },
-        'API activity': () => collectActivitySignals(deps.redis, { now: now() }),
+        ...createDaemonActivitySources(deps),
         'database work': work['database work'],
         'Ultrafix loops': work['Ultrafix loops'],
         'Connect deliveries': async () => ({ connectDeliveries: deps.connectInFlight() }),

@@ -10,6 +10,7 @@ process.env.PROPR_IDLE_WAKE_HINT_FILE = path.join(directory, 'idle-wake-hint.jso
 const {
     buildIdleWakeHint,
     closeConnection,
+    collectIdleSignals,
     connectReplaySince,
     emptyIdleSignals,
     idleActivity,
@@ -23,6 +24,8 @@ const { DEFAULT_IDLE_DRAIN_TIMINGS, drainIdleControlPlane, recoverFromIdleWake }
 const { stopDaemonProcess } = await import('../src/daemon/idleStopExit.js');
 const { recordAcceptedReplay } = await import('../src/daemon/idleReplayObligation.js');
 const { createDaemonWorkProducers } = await import('../src/daemon/workProducers.js');
+const { createDaemonActivitySources } = await import('../src/daemon/idleSignalSources.js');
+const { createIdleActivityMiddleware, startApiIdleShutdown } = await import('../packages/api/idleShutdownIntegration.js');
 const {
     IDLE_LAST_SHUTDOWN_REDIS_KEY, IDLE_LAST_WAKE_REDIS_KEY, IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig,
 } = await import('@propr/shared');
@@ -70,6 +73,11 @@ class Connection {
     }
     async hdel(key: string, field: string) { return this.hub.hashes.get(key)?.delete(field) ? 1 : 0; }
     async hgetall(key: string) { return Object.fromEntries(this.hub.hashes.get(key) ?? []); }
+    async scan(_cursor: string, _match: string, pattern: string) {
+        const prefix = pattern.replace(/\*$/, '');
+        return ['0', [...this.hub.strings.keys()].filter(key => key.startsWith(prefix))];
+    }
+    duplicate() { return this.hub.connect(); }
     async quit() { this.connected = false; return 'OK'; }
 }
 
@@ -1019,4 +1027,114 @@ test('with production timings and nothing scheduled, a last check for work that 
     assert.ok(elapsedMs <= deregisterWaitMs + stopConfirmTimeoutMs + 2 * closeDeadlineMs + 5_000, `bounded (took ${elapsedMs} ms)`);
     await api.stop();
     await worker.stop();
+});
+
+/** The quiesced API's answer to a request (the real middleware). */
+function requestThroughApi(middleware: ReturnType<typeof createIdleActivityMiddleware>) {
+    const answer = { status: 0, retryAfter: null as string | null, admitted: false };
+    const onEnd: Array<() => void> = [];
+    const res = {
+        setHeader: (name: string, value: string) => { if (name === 'Retry-After') answer.retryAfter = value; },
+        status: (code: number) => { answer.status = code; return res; },
+        json: () => res,
+        once: (_event: string, listener: () => void) => { onEnd.push(listener); return res; },
+    };
+    middleware({ path: '/api/status' } as never, res as never, () => { answer.admitted = true; });
+    // An admitted request is answered at once: it must not stay in flight for the next test.
+    for (const end of onEnd) end();
+    return answer;
+}
+
+/**
+ * The all-in-one wiring for API activity: the real API integration (middleware, activity publisher, drain listener)
+ * on the process-wide tracker, a worker, and the daemon's activity sources (Redis records and this process's tracker).
+ */
+async function composedWithApi(run: (setup: { hub: Hub; events: string[]; middleware: ReturnType<typeof createIdleActivityMiddleware>; collectActivity: () => Promise<IdleSignals>; idleSince: number }) => Promise<void>) {
+    setIdleShutdownComposedProcess(true);
+    const hub = new Hub();
+    const events: string[] = [];
+    // Anything an earlier test left on the process-wide tracker predates this idle period.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const idleSince = Date.now();
+    const stopApi = startApiIdleShutdown({ redis: hub.connect() as never, countSessions: () => 0 });
+    const worker = startIdleShutdownListener({
+        role: 'worker', id: 'worker-composed', createConnection: hub.connect, pollMs: 10,
+        onShutdown: () => { events.push('worker acknowledged the stop'); },
+    });
+    const sources = createDaemonActivitySources({ redis: hub.connect() as never });
+    try {
+        await run({ hub, events, middleware: createIdleActivityMiddleware(() => null), collectActivity: () => collectIdleSignals(sources), idleSince });
+    } finally {
+        await worker.stop();
+        await stopApi();
+        setIdleShutdownComposedProcess(false);
+    }
+}
+
+test('a request the quiesced API turns away while the stop hint is written aborts the drain before any process is asked to stop', async () => {
+    await composedWithApi(async ({ hub, events, middleware, collectActivity, idleSince }) => {
+        const routing = new FakeRouting(true);
+        const hints = hintStore();
+        let writes = 0;
+        let answer: ReturnType<typeof requestThroughApi> | null = null;
+        const stops: number[] = [];
+        const { ctx, exits } = context(hub, routing, {
+            // Step 3 reads the same activity: quiet, so the drain goes on to write the stop's hint.
+            collect: collectActivity,
+            readHint: hints.readHint,
+            writeHint: async hint => {
+                writes += 1;
+                // The second write is the stop's hint (the first records the replay owed before the disconnect).
+                if (writes === 2) {
+                    events.push('stop hint written');
+                    answer = requestThroughApi(middleware);
+                }
+                await hints.writeHint(hint);
+            },
+        });
+        const quiet = { ...request, idleSince };
+        assert.equal(await drainIdleControlPlane(quiet, { ...ctx, collectWork: async () => emptyIdleSignals(), collectActivity, stopProcess: code => { stops.push(code); } }), false);
+        await settle();
+        assert.deepEqual(answer, { status: 503, retryAfter: '5', admitted: false }, 'the request reached the quiesced API while the hint was written');
+        assert.deepEqual(stops, [], 'nothing is closed');
+        assert.deepEqual(exits, []);
+        assert.ok(!events.includes('worker acknowledged the stop'), 'no process was asked to stop');
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+        assert.equal(hub.strings.has(IDLE_LAST_SHUTDOWN_REDIS_KEY), false, 'no shutdown is recorded for a stop that never started');
+        assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay'], 'Connect intake resumes');
+        assert.equal(idleActivity.quiescedIntent, null, 'the API admits the retry');
+        assert.equal(requestThroughApi(middleware).admitted, true);
+        assert.ok(hints.store.current!.wokeAt, 'the next plain start is not counted as a wake');
+    });
+});
+
+test('a request the API turns away once the stop request is stored calls the stop off (exit 1) instead of exit 0', async () => {
+    await composedWithApi(async ({ hub, events, middleware, collectActivity, idleSince }) => {
+        const hints = hintStore();
+        const stops: number[] = [];
+        let answer: ReturnType<typeof requestThroughApi> | null = null;
+        const { ctx } = context(hub, new FakeRouting(true), { ...hints, collect: collectActivity });
+        const collectWork = async () => {
+            // Every process acknowledged; the API, still quiesced, turns a client away just before the last check.
+            events.push('work check');
+            answer = requestThroughApi(middleware);
+            return emptyIdleSignals();
+        };
+        assert.equal(await drainIdleControlPlane({ ...request, idleSince }, { ...ctx, collectWork, collectActivity, stopProcess: code => { stops.push(code); } }), true);
+        assert.deepEqual(answer, { status: 503, retryAfter: '5', admitted: false });
+        assert.ok(events.includes('worker acknowledged the stop'));
+        assert.deepEqual(stops, [1], 'the supervisor starts the control plane again, and it serves the retry');
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'the stop request is withdrawn');
+        assert.ok(hints.store.current!.wokeAt, 'the restart is not counted as a wake');
+    });
+});
+
+test('with no request during the drain, the same activity checks let the stop end with exit 0', async () => {
+    await composedWithApi(async ({ hub, events, collectActivity, idleSince }) => {
+        const stops: number[] = [];
+        const { ctx } = context(hub, new FakeRouting(true), { ...hintStore(), collect: collectActivity });
+        assert.equal(await drainIdleControlPlane({ ...request, idleSince }, { ...ctx, collectWork: async () => emptyIdleSignals(), collectActivity, stopProcess: code => { stops.push(code); } }), true);
+        assert.ok(events.includes('worker acknowledged the stop'));
+        assert.deepEqual(stops, [0]);
+    });
 });
