@@ -39,7 +39,8 @@ await mock.module('../packages/core/src/utils/logger.js', { defaultExport: {
 } });
 await mock.module('../packages/core/src/services/pricingService.js', { namedExports: { getModelPricing: async () => null } });
 
-const { recordLLMMetrics, insertConversationDetails } = await import('../packages/core/src/utils/llmMetrics.js');
+const { recordLLMMetrics } = await import('../packages/core/src/utils/llmMetrics.js');
+const { insertConversationDetails } = await import('../packages/core/src/utils/llmMetricsDetails.js');
 
 const issueRef = { repoOwner: 'o', repoName: 'r', number: 1 };
 let counter = 0;

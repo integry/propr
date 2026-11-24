@@ -5,6 +5,7 @@ import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, insertExecutionRow, ALREADY_PERSISTED, type StageClaim } from './llmMetricsExecutionClaim.js';
+import { persistConversationDetails } from './llmMetricsDetails.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -191,37 +192,6 @@ function buildConversationDetail(params: ConversationDetailParams): Conversation
         metadata: getStepMetadata(step, hasClaudeMessage)
     };
 }
-/**
- * SQLite caps a multi-row insert: knex compiles it to a compound SELECT (500 terms
- * at most) and the bound variables are capped too, so one insert of every event
- * fails for a long run. 100 rows of 14 columns stays far below both limits.
- */
-const DETAIL_INSERT_BATCH_SIZE = 100;
-const DETAIL_PERSIST_ATTEMPTS = 3;
-
-/**
- * Inserts the details in order, in batches. A row already stored under its
- * (execution_id, sequence_number) is skipped, so repeating the call after a
- * partial failure stores only what is missing and never duplicates a row.
- */
-export async function insertConversationDetails(details: ConversationDetail[], batchSize = DETAIL_INSERT_BATCH_SIZE): Promise<void> {
-    for (let start = 0; start < details.length; start += batchSize) {
-        await db('llm_execution_details').insert(details.slice(start, start + batchSize)).onConflict(['execution_id', 'sequence_number']).ignore();
-    }
-}
-
-async function insertDetailsWithRetry(details: ConversationDetail[], context: { correlationId?: string; taskId?: string | null; executionId: number | string }): Promise<void> {
-    for (let attempt = 1; ; attempt++) {
-        try {
-            await insertConversationDetails(details);
-            return;
-        } catch (error) {
-            if (attempt >= DETAIL_PERSIST_ATTEMPTS) throw error;
-            logger.warn({ ...context, attempt, error: (error as Error).message }, 'Retrying conversation detail insert; already stored rows are skipped');
-        }
-    }
-}
-
 interface ProcessConversationLogParams { claudeResult: ClaudeResult; executionId: string; costUsd: number; correlationId?: string; taskId?: string | null; }
 
 async function processConversationLog(params: ProcessConversationLogParams): Promise<void> {
@@ -245,18 +215,7 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog!, totalTokens, costUsd })
     );
 
-    if (detailsArray.length > 0) {
-        logger.info({
-            correlationId, taskId,
-            sampleDetail: {
-                sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
-                hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
-                inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
-                toolName: detailsArray[0].tool_name
-            }
-        }, 'DEBUG: Sample detail before insert');
-        await insertDetailsWithRetry(detailsArray, { correlationId, taskId, executionId });
-    }
+    await persistConversationDetails(detailsArray, { correlationId, taskId, executionId });
 }
 /** The level exactly as the agent ran it (`auto` included); blank or absent is unknown. */
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
