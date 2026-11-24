@@ -40,7 +40,7 @@ await mock.module('../packages/core/src/utils/logger.js', { defaultExport: {
 } });
 await mock.module('../packages/core/src/services/pricingService.js', { namedExports: { getModelPricing: async () => null } });
 
-const { recordLLMMetrics } = await import('../packages/core/src/utils/llmMetrics.js');
+const { persistToDatabase, recordLLMMetrics } = await import('../packages/core/src/utils/llmMetrics.js');
 const { insertConversationDetails } = await import('../packages/core/src/utils/llmMetricsDetails.js');
 
 const issueRef = { repoOwner: 'o', repoName: 'r', number: 1 };
@@ -64,6 +64,24 @@ const stopFailing = () => realDb.raw('DROP TRIGGER IF EXISTS fail_detail');
 before(() => { process.env.NODE_ENV = 'test'; });
 beforeEach(async () => { transientFailures.clear(); logged.warn.length = 0; logged.error.length = 0; await stopFailing(); });
 after(async () => { await realDb.destroy(); });
+
+for (const scenario of [
+    { name: 'successful batches', log: events(101), complete: true },
+    { name: 'an empty log', log: [], complete: true },
+    { name: 'an absent log', log: undefined, complete: true },
+    { name: 'an exhausted second batch', log: events(101), complete: false },
+]) {
+    test(`persistToDatabase returns detail completion status for ${scenario.name}`, async () => {
+        if (!scenario.complete) await failAtSequence(100);
+        const sessionId = `status-${++counter}`;
+        const result = await persistToDatabase({ conversationLog: scenario.log }, null, {
+            sessionId, conversationId: null, executionTimeMs: 1000, model: 'm', success: true, numTurns: 1, costUsd: 0,
+        });
+        const row = await realDb('llm_executions').where({ session_id: sessionId }).first();
+        assert.ok(row);
+        assert.deepEqual(result, { executionId: row.execution_id, taskId: null, detailsPersisted: scenario.complete });
+    });
+}
 
 for (const count of [50, 500, 5000]) {
     test(`persists all ${count} conversation events in order with their sequence numbers`, async () => {

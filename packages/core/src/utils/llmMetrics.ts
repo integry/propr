@@ -221,13 +221,13 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
-interface PersistedExecution { executionId: number | string; taskId: string | null; }
+interface PersistedExecution { executionId: number | string; taskId: string | null; detailsPersisted: boolean; }
 /**
  * Writes the execution row and its details; the row once inserted, even if its
  * details then fail (the failure is logged as incomplete details), `already_persisted` when the execution id already has a
  * row, else null.
  */
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
+export async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId, reasoningLevel } = metrics;
     let persisted: PersistedExecution | null = null;
     try {
@@ -256,9 +256,10 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         };
         const executionId = await insertExecutionRow(db, executionData, claudeResult.executionId, { correlationId, taskId });
         if (executionId === ALREADY_PERSISTED) return executionId;
-        persisted = { executionId, taskId: effectiveTaskId };
+        persisted = { executionId, taskId: effectiveTaskId, detailsPersisted: false };
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
+        persisted.detailsPersisted = true;
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
     } catch (error) {
         if (persisted) {
