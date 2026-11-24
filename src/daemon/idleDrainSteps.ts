@@ -46,13 +46,25 @@ export async function connectAcceptsWakeHint(routing: IdleRoutingIntake, nextDue
  * intake disconnected (`intakeStoppedAt`), not from `shutdownAt`. The record
  * this drain wrote before disconnecting owes exactly that: it is replaced.
  */
-export function persistStopHint(ctx: IdleDrainContext, input: Omit<Parameters<typeof buildIdleWakeHint>[0], 'shutdownAt' | 'pendingReplaySince'>): Promise<IdleWakeHint> {
+export function persistStopHint(
+    ctx: IdleDrainContext,
+    progress: Pick<IdleDrainProgress, 'abandoned'>,
+    input: Omit<Parameters<typeof buildIdleWakeHint>[0], 'shutdownAt' | 'pendingReplaySince'>,
+): Promise<IdleWakeHint> {
     return withHintFile(async () => {
         const previous = await (ctx.readHint ?? readIdleWakeHint)().catch(() => null);
         const carried = needsConnectReplay(previous) ? connectReplaySince(previous) : null;
         const own = typeof input.intakeStoppedAt === 'number' ? new Date(input.intakeStoppedAt).toISOString() : null;
         const next = buildIdleWakeHint({ ...input, shutdownAt: Date.now(), pendingReplaySince: carried === own ? null : carried });
+        // The drain gave up on this write (its deadline passed) and was restored without it: a stop hint written now
+        // would make the next plain start look like a wake. Not written; one already under way is marked consumed.
+        if (progress.abandoned) return next;
         await (ctx.writeHint ?? writeIdleWakeHint)(next);
+        if (progress.abandoned) {
+            const consumed = { ...next, wokeAt: new Date().toISOString() };
+            await (ctx.writeHint ?? writeIdleWakeHint)(consumed);
+            return consumed;
+        }
         return next;
     });
 }
@@ -66,6 +78,11 @@ export interface IdleDrainProgress {
     disconnectPending: boolean;
     hintWritten: IdleWakeHint | null;
     producersPaused: boolean;
+    /**
+     * The drain aborted (set before its restoration starts). A preparation step left running past the drain deadline
+     * checks this after its awaited work and must not apply its change: the restoration has already run without it.
+     */
+    abandoned: boolean;
 }
 
 /**
@@ -85,6 +102,10 @@ export async function disconnectIntakeOwingReplay(ctx: IdleDrainContext, progres
     } catch (error) {
         return error instanceof Error ? error : new Error(String(error));
     }
+    // The drain gave up waiting for that record and restored itself (with intake still connected): disconnecting now
+    // would leave the running instance without intake and nothing to reconnect it. The record stays: it only makes
+    // a later start ask for a replay, whose duplicates are dropped by delivery ID.
+    if (progress.abandoned) return new Error('the drain was abandoned before intake disconnected');
     // From here an abort owes the replay and must reconnect, even if the stop below never finishes.
     progress.intakeStoppedAt = disconnectAt;
     progress.disconnectPending = true;

@@ -1,4 +1,4 @@
-import { after, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,7 +19,7 @@ const {
     startIdleShutdownListener,
     writeIdleWakeHint,
 } = await import('@propr/core');
-const { drainIdleControlPlane, recoverFromIdleWake } = await import('../src/daemon/idleShutdown.js');
+const { DEFAULT_IDLE_DRAIN_TIMINGS, drainIdleControlPlane, recoverFromIdleWake } = await import('../src/daemon/idleShutdown.js');
 const { stopDaemonProcess } = await import('../src/daemon/idleStopExit.js');
 const { recordAcceptedReplay } = await import('../src/daemon/idleReplayObligation.js');
 const { createDaemonWorkProducers } = await import('../src/daemon/workProducers.js');
@@ -236,9 +236,9 @@ test('the daemon does not exit while a registered process has not acknowledged t
     const api = apiProcess(hub, events);
     workerProcess(hub, events, { acknowledges: false });
     const { ctx, exits } = context(hub, null);
-    // Nothing scheduled, no confirmation timeout: it waits (until SIGTERM, here after a while).
+    // Nothing scheduled, a long confirmation timeout: it waits (until SIGTERM, here after a while).
     const started = Date.now();
-    const cancelled = { ...ctx, timings: { ...TIMINGS, stopConfirmTimeoutMs: null }, isCancelled: () => Date.now() - started > 300 };
+    const cancelled = { ...ctx, timings: { ...TIMINGS, stopConfirmTimeoutMs: 60_000 }, isCancelled: () => Date.now() - started > 300 };
     assert.equal(await drainIdleControlPlane(request, cancelled), true);
     assert.deepEqual(exits, [], 'no exit without every confirmation');
     assert.ok(events.includes('api stopping'));
@@ -550,7 +550,7 @@ test('a stop acknowledgement held past an automation deadline does not end in ex
     // Due beyond the idle window, so the drain goes ahead and Connect accepts that deadline as its wake.
     const idleBeforeAutomation = { ...request, evaluation: { ...request.evaluation, nextDueAt: dueAt, nextDue: [automation] }, config: { ...config, afterMs: 200 } };
     const { ctx, exits } = context(hub, routing, { ...hints, collect: async () => ({ ...emptyIdleSignals(), scheduled: [automation] }) });
-    const timings = { ...TIMINGS, stopConfirmTimeoutMs: null, quiesceTimeoutMs: 300, deregisterWaitMs: 300, closeDeadlineMs: 300 };
+    const timings = { ...TIMINGS, stopConfirmTimeoutMs: 60_000, quiesceTimeoutMs: 300, deregisterWaitMs: 300, closeDeadlineMs: 300 };
 
     assert.equal(await drainIdleControlPlane(idleBeforeAutomation, { ...ctx, producers, timings }), true);
     assert.ok(Date.now() < dueAt, 'decided before the wake Connect accepted');
@@ -700,7 +700,7 @@ function stopBeforeAutomation(dueInMs: number) {
         dueAt,
         request: { ...request, evaluation: { ...request.evaluation, nextDueAt: dueAt, nextDue: [automation] }, config: { ...config, afterMs: 200 } },
         collect: async () => ({ ...emptyIdleSignals(), scheduled: [automation] }),
-        timings: { ...TIMINGS, stopConfirmTimeoutMs: null, quiesceTimeoutMs: 300, deregisterWaitMs: 300, closeDeadlineMs: 300 },
+        timings: { ...TIMINGS, stopConfirmTimeoutMs: 60_000, quiesceTimeoutMs: 300, deregisterWaitMs: 300, closeDeadlineMs: 300 },
     };
 }
 
@@ -882,4 +882,141 @@ test('an aborted drain whose intake cannot reconnect in time exits 1 instead of 
     assert.ok(Date.now() - started < 300 + 2 * 300 + 1_000, `bounded (took ${Date.now() - started}ms)`);
     assert.ok(events.includes('sweeps resumed'));
     await api.stop();
+});
+
+/** A write that stays pending until `release()`: the disk hangs. */
+function heldWrite() {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    return { held, release: () => release() };
+}
+
+test('a replay obligation recorded only after the drain gave up does not disconnect the restored intake', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const routing = new FakeRouting(true);
+    const hints = hintStore();
+    const disk = heldWrite();
+    // The record owed before the disconnect is written only after the drain deadline.
+    const { ctx, exits } = context(hub, routing, { ...hints, writeHint: async hint => { await disk.held; await hints.writeHint(hint); } });
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, producers: fakeProducers(events), timings: { ...TIMINGS, drainTimeoutMs: 200, closeDeadlineMs: 300 } }), false);
+    assert.deepEqual(routing.calls, ['wake_hint'], 'intake was never disconnected, so nothing reconnects it');
+    disk.release();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(routing.calls, ['wake_hint'], 'the late record does not disconnect the instance that kept running');
+    assert.ok(events.includes('sweeps resumed'));
+    assert.ok(!events.includes('api quiesced') || events.includes('api resumed'), 'the API admits requests');
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+    assert.deepEqual(exits, []);
+    await api.stop();
+});
+
+test('a stop hint written only after the drain gave up does not make the next plain start look like a wake', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const hints = hintStore();
+    const disk = heldWrite();
+    // Direct intake: the stop's hint is the first write, and it lands after the drain deadline.
+    const { ctx, exits } = context(hub, null, { ...hints, writeHint: async hint => { await disk.held; await hints.writeHint(hint); } });
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, timings: { ...TIMINGS, drainTimeoutMs: 300, closeDeadlineMs: 300 } }), false);
+    assert.ok(events.includes('api quiesced'), 'the drain reached the hint write');
+    disk.release();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(hints.store.current === null || hints.store.current.wokeAt, 'no unconsumed stop hint is left behind');
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+    assert.deepEqual(exits, []);
+    await api.stop();
+});
+
+test('a quiesce wait outliving the drain deadline does not store the withdrawn drain request again', { timeout: 10_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    let release: () => void = () => undefined;
+    const quiescing = new Promise<void>(resolve => { release = resolve; });
+    // An API process that cannot confirm it is quiesced (its in-flight requests do not finish).
+    const listener = startIdleShutdownListener({
+        role: 'api', id: 'api-slow', createConnection: hub.connect, pollMs: 10,
+        onQuiesce: async () => { events.push('api quiescing'); await quiescing; },
+        onResume: () => { events.push('api resumed'); },
+    });
+    const { ctx, exits } = context(hub, null);
+    // The quiesce wait's own timeout is far beyond the drain deadline, so it is still polling (and re-storing) when the drain aborts.
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, timings: { ...TIMINGS, quiesceTimeoutMs: 5_000, drainTimeoutMs: 200, closeDeadlineMs: 300 } }), false);
+    assert.ok(events.includes('api quiescing'));
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'withdrawn');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'not stored again by the abandoned wait: the API is not re-quiesced');
+    assert.deepEqual(exits, []);
+    release();
+    await listener.stop();
+});
+
+/** Run `drain` with a mocked clock, advancing it until it settles: production timings take minutes. */
+async function withMockedClock<T>(drain: () => Promise<T>): Promise<{ value: T; elapsedMs: number }> {
+    mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
+    const started = Date.now();
+    try {
+        let settled: { value: T } | null = null;
+        let failed: unknown = null;
+        drain().then(value => { settled = { value }; }, (error: unknown) => { failed = error ?? new Error('rejected'); });
+        for (let step = 0; step < 4_000 && !settled && !failed; step += 1) {
+            for (let i = 0; i < 5; i += 1) await new Promise(resolve => setImmediate(resolve));
+            mock.timers.tick(250);
+        }
+        if (failed) throw failed;
+        assert.ok(settled, 'the drain settled within 1000 s of mocked time');
+        return { value: (settled as { value: T }).value, elapsedMs: Date.now() - started };
+    } finally {
+        mock.timers.reset();
+    }
+}
+
+test('the production stop confirmation is bounded', () => {
+    assert.equal(typeof DEFAULT_IDLE_DRAIN_TIMINGS.stopConfirmTimeoutMs, 'number');
+    assert.ok(Number.isFinite(DEFAULT_IDLE_DRAIN_TIMINGS.stopConfirmTimeoutMs) && DEFAULT_IDLE_DRAIN_TIMINGS.stopConfirmTimeoutMs > 0);
+});
+
+test('with production timings and nothing scheduled, Redis going away during the stop wait still reaches the bounded exit 1', { timeout: 60_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    workerProcess(hub, events, { acknowledges: false });
+    const { ctx, exits } = context(hub, null);
+    const connection = ctx.redis as unknown as Connection;
+    const stopStored = () => JSON.parse(hub.strings.get(IDLE_SHUTDOWN_INTENT_REDIS_KEY) ?? '{}').phase === 'stop';
+    let down = false;
+    const hang = <F extends (...args: never[]) => Promise<unknown>>(method: F, ackRead = false): F => ((...args: never[]) => {
+        if (ackRead && stopStored() && String(args[0]).startsWith(IDLE_SHUTDOWN_ACKS_REDIS_PREFIX)) down = true;
+        return down ? new Promise(() => undefined) : method.apply(connection, args);
+    }) as F;
+    for (const name of ['get', 'set', 'del', 'publish', 'hgetall', 'hdel'] as const) {
+        (connection as unknown as Record<string, unknown>)[name] = hang(connection[name].bind(connection) as never, name === 'hgetall');
+    }
+    // Production timings: no override at all.
+    const { value, elapsedMs } = await withMockedClock(() => drainIdleControlPlane(request, { ...ctx, timings: {} }));
+    assert.equal(value, true);
+    assert.equal(down, true, 'Redis went away at the acknowledgement read');
+    assert.deepEqual(exits, [1], 'called off: the supervisor starts the control plane again');
+    const { stopConfirmTimeoutMs, closeDeadlineMs } = DEFAULT_IDLE_DRAIN_TIMINGS;
+    assert.ok(elapsedMs <= stopConfirmTimeoutMs + 2 * closeDeadlineMs + 5_000, `bounded by the confirmation timeout and the clean-up (took ${elapsedMs} ms)`);
+    await api.stop();
+});
+
+test('with production timings and nothing scheduled, a last check for work that never settles calls the stop off', { timeout: 60_000 }, async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const worker = workerProcess(hub, events);
+    const { ctx, exits } = context(hub, null);
+    const collectWork = () => new Promise<IdleSignals>(() => undefined);
+    const { value, elapsedMs } = await withMockedClock(() => drainIdleControlPlane(request, { ...ctx, collectWork, timings: {} }));
+    assert.equal(value, true);
+    assert.ok(events.includes('worker stopping'), 'every process acknowledged the stop');
+    assert.deepEqual(exits, [1], 'not 0 without the check, and not never');
+    const { stopConfirmTimeoutMs, deregisterWaitMs, closeDeadlineMs } = DEFAULT_IDLE_DRAIN_TIMINGS;
+    assert.ok(elapsedMs <= deregisterWaitMs + stopConfirmTimeoutMs + 2 * closeDeadlineMs + 5_000, `bounded (took ${elapsedMs} ms)`);
+    await api.stop();
+    await worker.stop();
 });

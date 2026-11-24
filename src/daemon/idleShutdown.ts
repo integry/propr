@@ -95,7 +95,9 @@ import {
  *      arranged for it (the Connect wake hint, the hint file's `nextDueAt`):
  *      unconfirmed by then (an acknowledgement read later does not count), or
  *      when the wait ends otherwise, the stop is called off (see
- *      `callOffStop`). Without, the daemon waits.
+ *      `callOffStop`). Without, it is still called off when unconfirmed after
+ *      `stopConfirmTimeoutMs`: Redis going away must not leave the quiesced
+ *      instance waiting, unable to serve, for ever.
  *   7. Look for work once more: anything queued while the processes stopped,
  *      or due before the arranged wake, would be stranded, so the stop is
  *      called off instead, as it is when that check is not over in time for
@@ -113,10 +115,12 @@ export interface IdleDrainTimings {
     /** How long API processes get to confirm they are quiesced, and the daemon's sweeps to finish a run in progress. */
     quiesceTimeoutMs: number;
     /**
-     * How long to wait for stop acknowledgements; null waits until confirmed (or the daemon is stopped). Either way
-     * the wait ends early enough for the deregistration wait and the close to finish before the arranged wake.
+     * How long to wait for stop acknowledgements (and, step 7, for the last check for work), wake arranged or not:
+     * the quiesced control plane must not wait indefinitely on Redis. Unconfirmed by then, the stop is called off
+     * (exit 1). With a wake arranged, the wait also ends early enough for the deregistration wait and the close to
+     * finish before it.
      */
-    stopConfirmTimeoutMs: number | null;
+    stopConfirmTimeoutMs: number;
     /** How long to wait, after every acknowledgement, for processes to deregister. */
     deregisterWaitMs: number;
     pollMs: number;
@@ -136,7 +140,7 @@ export interface IdleDrainTimings {
 
 export const DEFAULT_IDLE_DRAIN_TIMINGS: IdleDrainTimings = {
     quiesceTimeoutMs: 30_000,
-    stopConfirmTimeoutMs: null,
+    stopConfirmTimeoutMs: 120_000,
     deregisterWaitMs: 30_000,
     pollMs: 1_000,
     closeDeadlineMs: 30_000,
@@ -239,9 +243,11 @@ export async function drainIdleControlPlane(request: IdleShutdownRequest, ctx: I
     if (routing && !(await connectAcceptsWakeHint(routing, nextDueAt, drainBy))) return false;
 
     const intent: IdleShutdownIntent = newIdleShutdownIntent('quiesce', reason);
-    const progress: IdleDrainProgress = { intentId: intent.id, intakeStoppedAt: null, disconnectPending: false, hintWritten: null, producersPaused: false };
+    const progress: IdleDrainProgress = { intentId: intent.id, intakeStoppedAt: null, disconnectPending: false, hintWritten: null, producersPaused: false, abandoned: false };
     const abort = async (message: string, details: object = {}): Promise<boolean> => {
         logger.info({ ...details, intentId: intent.id }, `Idle shutdown aborted: ${message}; staying up`);
+        // Before restoring: a preparation step still running past the deadline must not reapply the abandoned drain.
+        progress.abandoned = true;
         // The restoration gets the close's allowance; one that cannot finish exits 1.
         const unrestored = await restoreAbortedDrain(ctx, progress, Date.now() + timings.closeDeadlineMs);
         if (unrestored === null) return false;
@@ -324,7 +330,11 @@ async function quiesceAndPersist(
         throw new DrainAbort('could not record the Connect replay owed for the drain, so intake stays connected', { error: disconnected.value.message, file: resolveIdleWakeHintPath() });
     }
     const intakeStoppedAt = disconnected.value;
-    const quiesced = await step('waiting for API processes to quiesce', waitForIdleAcks(ctx.redis, intent, { roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs }), 'could not read the quiesce acknowledgements');
+    const quiesced = await step('waiting for API processes to quiesce', waitForIdleAcks(ctx.redis, intent, {
+        roles: ['api'], timeoutMs: timings.quiesceTimeoutMs, pollMs: timings.pollMs,
+        // Left running past the drain deadline, the wait must not store the withdrawn request again (re-quiescing the API).
+        isCancelled: () => progress.abandoned,
+    }), 'could not read the quiesce acknowledgements');
     if (!quiesced.confirmed) throw new DrainAbort('API processes did not confirm they stopped admitting requests', { pending: quiesced.pending });
 
     // 3. Nothing can add work now: look once more.
@@ -336,7 +346,7 @@ async function quiesceAndPersist(
     //    A replay still owed for an earlier stop stays owed: its cursor is carried into the new hint.
     const hint = await step(
         'writing the wake hint file',
-        persistStopHint(ctx, { reason: drain.reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: ctx.routing !== null, intakeStoppedAt }),
+        persistStopHint(ctx, progress, { reason: drain.reason, idleForMs: request.idleForMs, nextDue: after.nextDue, connect: ctx.routing !== null, intakeStoppedAt }),
         'could not write the wake hint file',
         { file: resolveIdleWakeHintPath() },
     );
@@ -403,7 +413,7 @@ async function finishStop(ctx: IdleDrainContext, stop: StopUnderWay & { roles: r
             if (Date.now() - lastPendingLog < 60_000) return;
             lastPendingLog = Date.now();
             logger.warn({ pending, callOffAt: toIso(confirmBy) }, `Idle shutdown: waiting for processes to acknowledge the stop request; ${confirmBy === null
-                ? 'the daemon stays up until they do' : 'unconfirmed by callOffAt (before the wake arranged for the scheduled work), the stop is called off'}`);
+                ? 'unconfirmed within the confirmation timeout, the stop is called off' : 'unconfirmed by callOffAt (before the wake arranged for the scheduled work), the stop is called off'}`);
         },
     });
     if (ctx.isCancelled?.()) return true;
@@ -418,10 +428,13 @@ async function finishStop(ctx: IdleDrainContext, stop: StopUnderWay & { roles: r
     if (remaining.length > 0) logger.warn({ remaining }, 'Idle shutdown: processes acknowledged the stop but are still shutting down');
 
     // 7. The check in step 3 is older than the stop: work queued since, or due before the wake, would be left behind.
-    const work = await beforeIdleDeadline((ctx.collectWork ?? ctx.collect)(), decideBy);
+    //    Bounded even with no wake arranged: a check that never settles must reach the call-off, not hang.
+    const work = await beforeIdleDeadline((ctx.collectWork ?? ctx.collect)(), earliest(Date.now() + timings.stopConfirmTimeoutMs, decideBy));
     if (ctx.isCancelled?.()) return true;
     if (!work.ok || (decideBy !== null && Date.now() > decideBy)) {
-        return callOff('the last check for work did not finish in time for the close to end before the wake arranged for the scheduled work', { wakeAt: toIso(wakeAt) });
+        return callOff(decideBy === null
+            ? 'the last check for work did not finish within the confirmation timeout'
+            : 'the last check for work did not finish in time for the close to end before the wake arranged for the scheduled work', { wakeAt: toIso(wakeAt) });
     }
     const stranded = strandedWork(work.value, wakeAt, Date.now());
     if (stranded.length > 0) return callOff('work arrived while the control plane was stopping', { blockers: stranded, wakeAt: toIso(wakeAt) });

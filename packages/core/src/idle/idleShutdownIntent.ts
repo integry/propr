@@ -237,6 +237,8 @@ export async function waitForIdleAcks(
         options.onPending?.(progress.pending);
         await new Promise(resolve => setTimeout(resolve, deadline === null ? pollMs : Math.min(pollMs, Math.max(0, deadline - Date.now()))));
         if (deadline !== null && Date.now() >= deadline) return expired();
+        // Cancelled during the pause (e.g. the drain was abandoned and withdrew the request): do not store it again.
+        if (options.isCancelled?.()) return progress;
         await beforeIdleDeadline(issueIdleShutdownIntent(redis, intent).catch(() => undefined), deadline);
     }
 }
