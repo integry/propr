@@ -50,12 +50,14 @@ function cloneSpec(credentials: string, overrides: { name?: string; stdin?: bool
     return spec;
 }
 
-function runtimeFor(client: FakeSpritesClient, environment: Record<string, string> = {}) {
+function runtimeFor(client: FakeSpritesClient, environment: Record<string, string> = {}, dependencies: { setupHash?: string } = {}) {
     const env: NodeJS.ProcessEnv = {
         PROPR_SPRITES_TOKEN: 'org-token', PROPR_SPRITES_WORKER_ID: 'w1', PROPR_SPRITES_REGION: 'ord',
         PROPR_SPRITES_KEEP_AWAKE_INTERVAL_MS: '20', PROPR_AGENT_CREDENTIAL_RUN_DIR: tempDir('propr-sprites-locks-'), ...environment,
     };
-    return new SpritesRuntime({ createClient: async () => client as never, environment: env, reconnectDelayMs: 5 });
+    const { setupHash } = dependencies;
+    const setupBundle = setupHash ? (() => { const bundle = readSpritesSetupBundle(); return () => ({ ...bundle, hash: setupHash }); })() : undefined;
+    return new SpritesRuntime({ createClient: async () => client as never, environment: env, reconnectDelayMs: 5, launcherSettleMs: 300, ...(setupBundle ? { setupBundle } : {}) });
 }
 
 function claudeStore(): string {
@@ -329,18 +331,71 @@ test('a dropped output connection resumes from the received bytes without losing
     await handle.release();
 });
 
-test('a Sprite that goes cold under the run fails clearly instead of hanging', async () => {
+test('a Sprite that goes cold under the run fails clearly instead of hanging, and keeps the live credential copy it could not export', async () => {
     const client = new FakeSpritesClient();
+    const credentials = claudeStore();
     client.configureSprite = sprite => {
-        sprite.agent = async () => {
+        sprite.agent = async context => {
+            context.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"token":"rotated"}'));
             sprite.status = 'cold';
             sprite.keepAwakeFails = true;
             await new Promise(() => undefined);
             return 0;
         };
     };
-    const handle = runtimeFor(client).start(cloneSpec(claudeStore(), { name: 'claude-issue-10' }), { timeout: 60_000 });
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const handle = runtime.start(cloneSpec(credentials, { name: 'claude-issue-10' }), { timeout: 60_000 });
     await assert.rejects(handle.wait(), (error: Error) => error instanceof SpritesRunInterruptedError && /went cold/.test(error.message));
+    await handle.release();
+    const sprite = client.sprites.get('propr-w1-0')!;
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-10' })}`;
+    // The launcher died before it returned the token: no exit status, nothing in returned/.
+    assert.equal(sprite.files.get('/home/node/.claude/.credentials.json')?.toString(), '{"token":"rotated"}', 'the live copy holding the rotated token is kept');
+    assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"old"}', 'nothing unconfirmed is written back');
+    const obligation = JSON.parse(sprite.files.get(`${root}/credentials-retained`)!.toString());
+    assert.equal(obligation.reason, 'export-unconfirmed');
+    assert.deepEqual(obligation.liveCopies, ['/home/node/.claude']);
+    assert.deepEqual(sprite.restored, [], 'the Sprite is not restored over the live copy');
+    sprite.status = 'warm';
+    sprite.keepAwakeFails = false;
+    await assert.rejects(runtime.start(cloneSpec(claudeStore(), { name: 'claude-issue-10b' }), { timeout: 10_000 }).wait(), /awaiting recovery/);
+    assert.equal(sprite.files.get('/home/node/.claude/.credentials.json')?.toString(), '{"token":"rotated"}');
+});
+
+test('output lost while the launcher still runs: write-back waits for the launcher to export the rotated token', async () => {
+    const client = new FakeSpritesClient();
+    const credentials = claudeStore();
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            context.files.set('/home/node/.claude/.credentials.json', Buffer.from('{"token":"rotated"}'));
+            sprite.dropFollowersAlways = true;
+            await context.terminated;
+            await sleep(150); // still handling TERM when supervision gives up on the output
+            return 143;
+        };
+    };
+    const handle = runtimeFor(client).start(cloneSpec(credentials, { name: 'claude-issue-16' }), { timeout: 60_000 });
+    await assert.rejects(handle.wait(), (error: Error) => error instanceof SpritesRunInterruptedError && /could not reconnect/.test(error.message));
+    assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"rotated"}', 'the exported token reached the canonical store');
+    const sprite = client.sprites.get('propr-w1-0')!;
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-16' })}`;
+    assert.equal(sprite.files.has(`${root}/credentials-retained`), false, 'a confirmed write-back lifts the run\'s recovery obligation');
+    await handle.release();
+    assert.deepEqual(sprite.restored, ['v1']);
+});
+
+test('the run\'s credential recovery obligation is durable on the Sprite from upload until its write-back', async () => {
+    const client = new FakeSpritesClient();
+    const root = `/tmp/propr-sprite-runs/${spritesRunId({ name: 'claude-issue-17' })}`;
+    let duringRun: unknown;
+    client.configureSprite = sprite => {
+        sprite.agent = async context => { duringRun = JSON.parse(context.files.get(`${root}/credentials-retained`)!.toString()); return 0; };
+    };
+    const handle = runtimeFor(client).start(cloneSpec(claudeStore(), { name: 'claude-issue-17' }), { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    // A worker that stopped here would leave the Sprite quarantined for every process instead of restorable over the token.
+    assert.equal((duringRun as { reason: string }).reason, 'pending-write-back');
+    assert.equal(client.sprites.get('propr-w1-0')!.files.has(`${root}/credentials-retained`), false);
     await handle.release();
 });
 
@@ -582,11 +637,14 @@ const linuxProcesses = process.platform === 'linux' && fs.existsSync('/proc/self
 
 test('the launcher contains the run\'s processes: KILL takes descendants that ignore TERM or left the session, and exit kills leftovers', { skip: !linuxProcesses }, async t => {
     const { execFileSync, spawn } = await import('node:child_process');
-    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SIGNAL_SCRIPT } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_SIGNAL_SCRIPT: signalScript, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
     const dir = tempDir('propr-sprites-procs-');
     const launcher = path.join(dir, 'launch.sh');
-    // The launcher runs as root on a Sprite; here as the test user (who owns every process it starts).
-    fs.writeFileSync(launcher, SPRITES_LAUNCHER_SCRIPT.replace('[ "$(id -u)" = "0" ]', 'true').replace('id node >/dev/null 2>&1', 'true'));
+    // The launcher runs as root on a Sprite; here as the test user (who owns every process it starts). The
+    // agent UID is one no process has: the test user may be `node`, and every process of the agent UID is killed.
+    const unusedAgentUid = (script: string) => script.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000');
+    const SPRITES_SIGNAL_SCRIPT = unusedAgentUid(signalScript);
+    fs.writeFileSync(launcher, unusedAgentUid(SPRITES_LAUNCHER_SCRIPT).replace('[ "$(id -u)" = "0" ]', 'true').replace('id node >/dev/null 2>&1', 'true'));
     const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
     const marker = `propr-${process.pid}-${Date.now()}`;
     const alive = (): string[] => {
@@ -626,4 +684,79 @@ test('the launcher contains the run\'s processes: KILL takes descendants that ig
     execFileSync('bash', [launcher, leftovers]);
     assert.deepEqual(alive(), [], 'background processes do not outlive the run');
     assert.equal(fs.readFileSync(path.join(leftovers, 'stdout.log'), 'utf8'), 'bye\n');
+});
+
+test('run membership includes every process of the agent UID, so a descendant that left the session and cleared its environment is killed', { skip: !linuxProcesses }, async t => {
+    const { execFileSync, spawn } = await import('node:child_process');
+    const { SPRITES_RUN_MEMBERS_FUNCTIONS, SPRITES_AGENT_UID_LINE, SPRITES_LAUNCHER_SCRIPT } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const marker = `propr-escape-${process.pid}-${Date.now()}`;
+    // What an agent can do with PROPR_SPRITES_RESTORE_CHECKPOINT=false: a new session, no run tag, nothing inherited.
+    spawn('setsid', ['-f', 'env', '-i', 'PATH=/usr/bin:/bin', 'bash', '-c', `exec -a "sleep 86402 ${marker}" sleep 86402`], { stdio: 'ignore' });
+    const find = () => execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' }).split('\n').find(line => line.includes(`sleep 86402 ${marker}`))?.trim().split(' ')[0];
+    let pid: string | undefined;
+    for (let i = 0; i < 200 && !(pid = find()); i++) await sleep(10);
+    assert.ok(pid, 'the escaped process is running');
+    t.after(() => { try { process.kill(Number(pid), 'SIGKILL'); } catch { /* already gone */ } });
+    const escaped = { pid: Number(pid) };
+    assert.doesNotMatch(fs.readFileSync(`/proc/${escaped.pid}/environ`, 'utf8'), /PROPR_SPRITES_RUN/);
+    // Listing only (never killing): as non-root the "agent UID" can only be the test user's own.
+    const members = (agentUidLine: string) => execFileSync('bash', ['-c', `${SPRITES_RUN_MEMBERS_FUNCTIONS.replace(SPRITES_AGENT_UID_LINE, agentUidLine)}\nrun_members /tmp/propr-sprite-runs/escape-test ""`], { encoding: 'utf8' })
+        .split('\n').filter(Boolean);
+    assert.ok(members(`agent_uid=${process.getuid!()}`).includes(String(escaped.pid)), 'the escaped process is a member through its UID');
+    assert.ok(!members('agent_uid=2147483000').includes(String(escaped.pid)), 'without the UID, session and environment tag both miss it');
+    assert.ok(!members('agent_uid=0').includes(String(escaped.pid)) && members('agent_uid=0').length === 0, 'root is never the agent UID');
+    // The launcher clears leftovers of earlier runs before it installs this run's credentials.
+    assert.ok(SPRITES_LAUNCHER_SCRIPT.indexOf('kill_run_members "$run_dir" ""') < SPRITES_LAUNCHER_SCRIPT.indexOf('case "$kind" in'));
+});
+
+/** A run that finished but was never released (its worker stopped): its data is still on the Sprite. */
+async function unreleasedRun(client: FakeSpritesClient, name: string) {
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            context.files.set('/home/node/workspace/secret.txt', Buffer.from('repository code'));
+            context.files.set('/home/node/stray-cache', Buffer.from('previous run data'));
+            return 0;
+        };
+    };
+    const handle = runtimeFor(client).start(cloneSpec(claudeStore(), { name }), { timeout: 10_000 });
+    assert.equal((await handle.wait()).exitCode, 0);
+    handle.retain(); // never released
+    client.configureSprite = sprite => { sprite.agent = async () => 0; };
+    return client.sprites.get('propr-w1-0')!;
+}
+
+const previousRunData = (files: Iterable<string>) => [...files].filter(file => file === '/home/node/workspace/secret.txt' || file === '/home/node/stray-cache' || file.startsWith('/tmp/propr-sprite-runs/claude-issue-70'));
+
+test('a new setup revision provisions from the previous revision\'s clean checkpoint, never from an unreleased run\'s filesystem', async () => {
+    const client = new FakeSpritesClient();
+    const sprite = await unreleasedRun(client, 'claude-issue-70');
+    assert.ok(previousRunData(sprite.files.keys()).length > 0);
+    sprite.agent = async () => 0;
+    const upgraded = runtimeFor(client, {}, { setupHash: 'feedfacefeedface' }).start(cloneSpec(claudeStore(), { name: 'claude-issue-71' }), { timeout: 10_000 });
+    assert.equal((await upgraded.wait()).exitCode, 0);
+    assert.deepEqual(sprite.restored, ['v1'], 'restored to the earlier revision\'s baseline before setup');
+    const checkpoint = sprite.checkpoints.find(candidate => candidate.comment === 'propr-setup feedfacefeedface')!;
+    assert.deepEqual(previousRunData(sprite.snapshots.get(checkpoint.id)!.keys()), [], 'the new baseline holds nothing of the earlier run');
+    assert.equal(upgraded.timings.setupMs !== undefined && upgraded.timings.restoreMs !== undefined, true);
+    await upgraded.release();
+    assert.deepEqual(client.deleted, []);
+});
+
+test('a used Sprite without a clean baseline is replaced instead of checkpointed as it is', async () => {
+    for (const setupHash of ['feedfacefeedface', undefined]) {
+        const client = new FakeSpritesClient();
+        const used = await unreleasedRun(client, 'claude-issue-70');
+        used.checkpoints.splice(0); // the earlier revision's (or this revision's) checkpoint is gone
+        const handle = runtimeFor(client, {}, { setupHash }).start(cloneSpec(claudeStore(), { name: 'claude-issue-72' }), { timeout: 10_000 });
+        assert.equal((await handle.wait()).exitCode, 0, `setup hash ${setupHash ?? 'unchanged'}`);
+        assert.deepEqual(client.deleted, ['propr-w1-0']);
+        assert.deepEqual(client.created, ['propr-w1-0', 'propr-w1-0']);
+        const replacement = client.sprites.get('propr-w1-0')!;
+        assert.notEqual(replacement, used);
+        assert.equal(replacement.checkpoints.length, 1);
+        assert.deepEqual(previousRunData(replacement.snapshots.get(replacement.checkpoints[0].id)!.keys()), []);
+        assert.deepEqual(used.checkpoints, [], 'nothing was checkpointed on the used Sprite');
+        assert.equal(handle.timings.created, true);
+        await handle.release();
+    }
 });

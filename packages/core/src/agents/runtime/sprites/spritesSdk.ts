@@ -67,6 +67,7 @@ export interface SpritesClientLike {
         labels?: string[];
         waitForCapacity?: boolean;
     }): Promise<SpriteLike>;
+    deleteSprite(name: string): Promise<void>;
 }
 
 export type SpritesClientFactory = (config: SpritesRuntimeConfig) => Promise<SpritesClientLike>;

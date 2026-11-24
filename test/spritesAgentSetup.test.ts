@@ -105,3 +105,53 @@ test('Sprite setup allows the pinned package install scripts (npm 12 blocks them
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+/**
+ * The setpriv shim the setup installs on a Sprite without su-exec or gosu, with
+ * a setpriv stand-in that (like setpriv) changes ids but passes HOME through:
+ * the test user cannot change ids, so only the environment contract is exercised.
+ */
+function privilegeShimPath(root: string): string {
+    const bin = path.join(root, 'shim-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    writeExecutable(path.join(bin, 'setpriv'), 'while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done; shift; exec "$@"');
+    runSourced(`write_privilege_shim "${path.join(bin, 'su-exec')}"`, { PATH: toolPath(root, ['cat', 'chmod']) });
+    return `${bin}:${toolPath(root, ['id', 'getent', 'cut', 'env', 'git', 'sh', 'printf'])}`;
+}
+
+const testUser = () => execFileSync('id', ['-un'], { encoding: 'utf8' }).trim();
+const testUserHome = () => execFileSync('getent', ['passwd', testUser()], { encoding: 'utf8' }).trim().split(':')[5];
+
+test('the setpriv privilege shim sets HOME to the target user\'s home, as su-exec and gosu do', () => {
+    const root = tempDir();
+    try {
+        const PATH = privilegeShimPath(root);
+        const home = runSourced(`su-exec "${testUser()}" sh -c 'printf "%s" "$HOME"'`, { PATH, HOME: '/root' });
+        assert.equal(home, testUserHome());
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('Sprite setup writes the agent git configuration to the agent home through the shim, never to the inherited root HOME', () => {
+    const root = tempDir();
+    const rootHome = path.join(root, 'root-home');
+    const agentHome = path.join(root, 'agent-home');
+    fs.mkdirSync(rootHome);
+    fs.mkdirSync(agentHome);
+    fs.chmodSync(rootHome, 0o555); // root's home: the dropped user cannot write there
+    try {
+        const PATH = privilegeShimPath(root);
+        // The shim alone would pick the user's passwd home, so this also proves the explicit HOME wins.
+        runSourced(`configure_agent_git "${testUser()}" "${agentHome}"`, { PATH, HOME: rootHome, GIT_CONFIG_NOSYSTEM: '1' });
+        const config = (key: string) => execFileSync('git', ['config', '--file', path.join(agentHome, '.gitconfig'), '--get-all', key], { encoding: 'utf8' }).trim();
+        assert.equal(config('user.name'), 'ProPR Agent Bot');
+        assert.equal(config('user.email'), 'agent-bot@propr.dev');
+        assert.equal(config('init.defaultBranch'), 'main');
+        assert.equal(config('safe.directory'), '*');
+        assert.deepEqual(fs.readdirSync(rootHome), []);
+    } finally {
+        fs.chmodSync(rootHome, 0o755);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

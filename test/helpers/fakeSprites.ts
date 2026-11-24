@@ -67,6 +67,8 @@ export class FakeSprite {
     agent: FakeAgent = async () => 0;
     /** Drop each follower connection once, after it delivered its first chunk. */
     dropFollowersOnce = false;
+    /** Every follower connection drops right away (the worker loses the output while the launcher keeps running). */
+    dropFollowersAlways = false;
     keepAwakeFails = false;
     /** The run's processes survive SIGKILL (the signal script reports survivors). */
     survivesKill = false;
@@ -136,7 +138,8 @@ export class FakeSprite {
         }
         if (file === 'sudo' && args.includes('propr-probe')) {
             const root = path.posix.dirname(args[5]);
-            return { stdout: '', stderr: '', exitCode: this.launchers.get(root)?.running ? 0 : 1 };
+            // A cold Sprite runs no process.
+            return { stdout: '', stderr: '', exitCode: this.status !== 'cold' && this.launchers.get(root)?.running ? 0 : 1 };
         }
         throw new Error(`unexpected exec ${file} ${args.join(' ')}`);
     }
@@ -218,6 +221,7 @@ export class FakeSprite {
     spawn(command: string, args: string[] = []): FakeCommand {
         const follower = new FakeCommand();
         if (command !== 'bash' || args[2] !== 'propr-follow') throw new Error(`unexpected spawn ${command} ${args.join(' ')}`);
+        if (this.dropFollowersAlways) { setTimeout(() => follower.close(), 1); return follower; }
         let offset = Number(args[3]) - 1;
         const root = path.posix.dirname(args[4]);
         const log = args[5];
@@ -240,6 +244,9 @@ export class FakeSprite {
             }
             if (this.status === 'cold') { clearInterval(poll); follower.close(); }
         }, 2);
+        // A connection the worker closed follows nothing any more.
+        follower.once('exit', () => clearInterval(poll));
+
         return follower;
     }
 }
@@ -247,6 +254,7 @@ export class FakeSprite {
 export class FakeSpritesClient {
     readonly sprites = new Map<string, FakeSprite>();
     readonly created: string[] = [];
+    readonly deleted: string[] = [];
     configureSprite: (sprite: FakeSprite) => void = () => undefined;
 
     sprite(name: string): FakeSprite {
@@ -259,6 +267,11 @@ export class FakeSpritesClient {
         const sprite = this.sprites.get(name);
         if (!sprite) throw Object.assign(new Error(`Failed to get sprite (status 404): not found`), { statusCode: 404 });
         return sprite;
+    }
+
+    async deleteSprite(name: string): Promise<void> {
+        this.deleted.push(name);
+        this.sprites.delete(name);
     }
 
     async createSprite(name: string): Promise<FakeSprite> {

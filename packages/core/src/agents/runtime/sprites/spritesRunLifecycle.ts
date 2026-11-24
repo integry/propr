@@ -4,7 +4,12 @@ import { settleTimeoutStop } from '../../../claude/docker/dockerExecutionSettlem
 import logger from '../../../utils/logger.js';
 import type { SpritesRunPaths } from './spritesCommand.js';
 import type { SpritesRuntimeConfig } from './spritesConfig.js';
-import { retainedCredentialRuns, spriteName, spriteRunInProgress, wakeSprite, SPRITES_RETAINED_CREDENTIALS_MARKER, type SpritePool } from './spritesProvisioning.js';
+import type { SpritesCredentialSync } from './spritesCredentials.js';
+import { settleLauncher } from './spritesExecution.js';
+import {
+    createAgentSprite, prepareSprite, retainedCredentialRuns, spriteName, spriteRunInProgress, wakeSprite,
+    SpriteBaselineUnknownError, SPRITES_RETAINED_CREDENTIALS_MARKER, type SpritePool, type SpriteProvisioning, type SpritesSetupBundle,
+} from './spritesProvisioning.js';
 import type { SpriteLike, SpritesClientLike } from './spritesSdk.js';
 
 /**
@@ -90,19 +95,117 @@ export async function spriteHoldsRetainedCredentials(sprite: SpriteLike, run: st
     });
 }
 
+/** Why a run directory holds credentials awaiting recovery. */
+export type SpritesRecoveryReason =
+    /** Written with the run's credential copy, cleared once its refreshed tokens were written back: a worker that stops mid-run leaves it. */
+    | 'pending-write-back'
+    /** The canonical store did not take the returned tokens: the run directory's `returned/` holds them. */
+    | 'write-back-failed'
+    /** The launcher's export could not be confirmed: the live copies in the agent home are kept as they are. */
+    | 'export-unconfirmed';
+
+function recoveryMarker(paths: SpritesRunPaths): string {
+    return path.posix.join(paths.root, SPRITES_RETAINED_CREDENTIALS_MARKER);
+}
+
 /**
  * Quarantines the Sprite, for every worker process, until the retained
  * credentials are recovered. Resolves false when the obligation could not be
  * persisted: then only this process knows, and must keep the Sprite out of use.
  */
-export async function persistRecoveryObligation(sprite: SpriteLike, paths: SpritesRunPaths, run: string): Promise<boolean> {
-    const marker = path.posix.join(paths.root, SPRITES_RETAINED_CREDENTIALS_MARKER);
+export async function persistRecoveryObligation(
+    sprite: SpriteLike, paths: SpritesRunPaths, run: string, { reason = 'write-back-failed', liveCopies = [] }: { reason?: SpritesRecoveryReason; liveCopies?: readonly string[] } = {},
+): Promise<boolean> {
+    const record = { run, reason, retainedAt: new Date().toISOString(), ...(liveCopies.length > 0 ? { liveCopies } : {}) };
     try {
-        await sprite.filesystem().writeFile(marker, `${JSON.stringify({ run, retainedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
-        logger.error({ run, sprite: sprite.name, runDirectory: paths.root }, 'Sprite quarantined: it is not restored or given another run until its retained credentials are recovered and the run directory is deleted');
+        await sprite.filesystem().writeFile(recoveryMarker(paths), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+        if (reason !== 'pending-write-back') {
+            logger.error({ run, sprite: sprite.name, runDirectory: paths.root, reason, liveCopies }, 'Sprite quarantined: it is not restored or given another run until its retained credentials are recovered and the run directory is deleted');
+        }
         return true;
     } catch (error) {
-        logger.error({ run, sprite: sprite.name, runDirectory: paths.root, error: (error as Error).message }, 'Could not mark the Sprite as holding retained credentials; this worker keeps it out of use until it restarts');
+        logger.error({ run, sprite: sprite.name, runDirectory: paths.root, reason, error: (error as Error).message }, 'Could not mark the Sprite as holding retained credentials; this worker keeps it out of use until it restarts');
         return false;
     }
+}
+
+/**
+ * Lifts the run's own recovery obligation once nothing of its credentials is
+ * left to recover (written back, or never installed). Resolves false when the
+ * marker could not be removed: the Sprite then stays quarantined.
+ */
+export async function clearRecoveryObligation(sprite: SpriteLike, paths: SpritesRunPaths, run: string): Promise<boolean> {
+    try {
+        await sprite.filesystem().rm(recoveryMarker(paths), { force: true });
+        return true;
+    } catch (error) {
+        logger.warn({ run, sprite: sprite.name, runDirectory: paths.root, error: (error as Error).message }, 'Could not clear the run\'s credential recovery marker; the Sprite stays quarantined');
+        return false;
+    }
+}
+
+/**
+ * Deletes the Sprite and creates it again under the same name: used when no
+ * clean baseline can be established for it, so its filesystem (which may hold
+ * an earlier run's data) never becomes a checkpoint. Only called while the
+ * lease is held, after acquisition found no retained credentials and no live launcher.
+ */
+export async function replaceSprite(client: SpritesClientLike, config: SpritesRuntimeConfig, lease: SpriteRunLease, reason: string): Promise<SpriteRunLease> {
+    logger.warn({ sprite: lease.name, reason }, 'Replacing the Sprite: no clean baseline can be established for it');
+    await client.deleteSprite(lease.name);
+    return { ...lease, sprite: await createAgentSprite(client, lease.name, config) };
+}
+
+/**
+ * {@link prepareSprite}, replacing the Sprite when no clean baseline can be
+ * established for it. Resolves with the lease to use (a new Sprite when replaced).
+ */
+export async function provisionLeasedSprite(
+    { client, config, bundle }: { client: SpritesClientLike; config: SpritesRuntimeConfig; bundle: SpritesSetupBundle },
+    lease: SpriteRunLease,
+    signal: AbortSignal,
+): Promise<{ lease: SpriteRunLease; provisioning: SpriteProvisioning; replaced: boolean }> {
+    try {
+        return { lease, provisioning: await prepareSprite(lease.sprite, bundle, config), replaced: false };
+    } catch (error) {
+        if (!(error instanceof SpriteBaselineUnknownError)) throw error;
+        signal.throwIfAborted();
+        const replacement = await replaceSprite(client, config, lease, error.message);
+        return { lease: replacement, provisioning: await prepareSprite(replacement.sprite, bundle, config), replaced: true };
+    }
+}
+
+export interface SpritesCredentialFinish {
+    /** Credentials of the run stay on the Sprite for recovery (the Sprite is quarantined). */
+    retained: boolean;
+    /** The launcher's export was not confirmed: the live copies in the agent home are the ones to recover. */
+    liveCopiesRetained: boolean;
+    /** The obligation could not be persisted: only this process knows, and must keep the Sprite out of use. */
+    holdSprite: boolean;
+    writeBackMs?: number;
+}
+
+/**
+ * Writes the run's refreshed tokens back, once the launcher confirmed their
+ * export (a returned file it has not exported yet looks like no refresh), and
+ * lifts the run's recovery obligation. When the export cannot be confirmed or
+ * the write-back fails, the credentials stay on the Sprite and the obligation
+ * records why.
+ */
+export async function finishRunCredentials(
+    sprite: SpriteLike, paths: SpritesRunPaths, run: string, { credentials, settleMs }: { credentials: SpritesCredentialSync; settleMs?: number },
+): Promise<SpritesCredentialFinish> {
+    const started = Date.now();
+    if (!await settleLauncher(sprite, paths, settleMs)) {
+        const liveCopies = credentials.records.filter(record => record[0] === 'store').map(record => record[2]);
+        logger.error({ run, sprite: sprite.name, runDirectory: paths.root, liveCopies }, 'Could not confirm that the Sprites run returned its refreshed credentials; kept the live copies on the Sprite. Copy each newer file back to its canonical store, then delete the run directory');
+        const persisted = await persistRecoveryObligation(sprite, paths, run, { reason: 'export-unconfirmed', liveCopies });
+        return { retained: true, liveCopiesRetained: true, holdSprite: !persisted };
+    }
+    const outcome = await credentials.writeBack(sprite.filesystem(), paths);
+    const writeBackMs = Date.now() - started;
+    if (outcome.retained) return { retained: true, liveCopiesRetained: false, holdSprite: !await persistRecoveryObligation(sprite, paths, run), writeBackMs };
+    // A marker that cannot be removed keeps the Sprite quarantined: safe, if needlessly.
+    await clearRecoveryObligation(sprite, paths, run);
+    return { retained: false, liveCopiesRetained: false, holdSprite: false, writeBackMs };
 }

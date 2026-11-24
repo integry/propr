@@ -128,6 +128,43 @@ export async function terminateRunProcesses(sprite: SpriteLike, paths: SpritesRu
     return false;
 }
 
+/** How long a stopped run's launcher gets to finish (forwarding TERM, then exporting credentials) before its processes are killed. */
+export const SPRITES_LAUNCHER_SETTLE_MS = STOP_GRACE_MS;
+const LAUNCHER_SETTLE_POLL_MS = 250;
+
+async function recordedExitStatus(sprite: SpriteLike, paths: SpritesRunPaths): Promise<number | undefined> {
+    return readRecordedExitStatus(sprite, paths).catch(() => undefined);
+}
+
+/**
+ * Resolves true once the launcher recorded its exit status, which it does only
+ * after it returned the refreshable credentials and the workspace result: only
+ * then does a missing returned file mean the run refreshed nothing. Supervision
+ * can end before that (its output followers gave up while the launcher was
+ * still handling TERM), so this waits for the launcher; after `graceMs` it kills
+ * the run's processes (the launcher then exports and finishes) and checks once
+ * more. Resolves false when the export cannot be confirmed: the launcher is
+ * gone without a status (the Sprite paused) or did not finish, or the Sprite
+ * cannot be reached.
+ */
+export async function settleLauncher(sprite: SpriteLike, paths: SpritesRunPaths, graceMs = SPRITES_LAUNCHER_SETTLE_MS): Promise<boolean> {
+    const deadline = Date.now() + graceMs;
+    let killed = false;
+    for (;;) {
+        if (await recordedExitStatus(sprite, paths) !== undefined) return true;
+        // The launcher may have recorded its status between both checks.
+        if (!await launcherIsRunning(sprite, paths)) return await recordedExitStatus(sprite, paths) !== undefined;
+        if (Date.now() >= deadline) {
+            if (killed) return false;
+            killed = true;
+            // Kills the run's processes, then waits a few seconds for the launcher to finish.
+            await signalLauncher(sprite, paths, 'KILL').catch(() => undefined);
+            continue;
+        }
+        await delay(Math.min(LAUNCHER_SETTLE_POLL_MS, Math.max(1, deadline - Date.now())));
+    }
+}
+
 // eslint-disable-next-line complexity -- one run's streaming, stop, reconnect and settlement share its state
 export async function superviseSpriteSession(input: SpriteSessionSupervision): Promise<ExecutionResult> {
     const { spec, options, sprite, client, paths } = input;

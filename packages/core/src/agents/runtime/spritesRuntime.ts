@@ -14,9 +14,10 @@ import {
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
 import { prepareSpritesCredentials, type SpritesCredentialSync } from './sprites/spritesCredentials.js';
 import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession, terminateRunProcesses } from './sprites/spritesExecution.js';
-import { clearCleanMarker, prepareSprite, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
+import { clearCleanMarker, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
 import {
-    acquireSprite, persistRecoveryObligation, spriteHoldsRetainedCredentials, startDeadlineResult, untilAborted, SpritesStartDeadlineError, type SpriteRunLease,
+    acquireSprite, clearRecoveryObligation, finishRunCredentials, persistRecoveryObligation, provisionLeasedSprite, spriteHoldsRetainedCredentials,
+    startDeadlineResult, untilAborted, SpritesStartDeadlineError, type SpriteRunLease,
 } from './sprites/spritesRunLifecycle.js';
 import { defaultSpritesClientFactory, type SpriteCommandLike, type SpriteLike, type SpritesClientFactory, type SpritesClientLike } from './sprites/spritesSdk.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
@@ -63,6 +64,8 @@ export interface SpritesRuntimeDependencies {
     setupBundle?: () => SpritesSetupBundle;
     environment?: NodeJS.ProcessEnv;
     reconnectDelayMs?: number;
+    /** How long a stopped run's launcher gets to export credentials before its processes are killed (tests shorten it). */
+    launcherSettleMs?: number;
 }
 
 /** Run id on the Sprite: derived from the (unique) run name, so a restarted worker finds it again. */
@@ -84,6 +87,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     private started = false;
     private settled = false;
     private retainedCredentials = false;
+    /** The launcher's credential export was not confirmed: the live copies on the Sprite are the ones to recover. */
+    private liveCredentialsRetained = false;
     /** The Sprite must stay out of the pool: its retained credentials have no persisted recovery marker, or the run's processes could not be stopped. */
     private holdSprite = false;
     private retained = false;
@@ -181,16 +186,17 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         const client = await this.runtime.client();
         signal.throwIfAborted();
         this.lease = await this.runtime.acquire(client, config, signal, this.timings);
-        const { sprite } = this.lease;
         signal.throwIfAborted();
         const wakeStarted = Date.now();
-        const provisioning = await prepareSprite(sprite, this.runtime.setupBundle(), config);
+        const { lease, provisioning, replaced } = await provisionLeasedSprite({ client, config, bundle: this.runtime.setupBundle() }, this.lease, signal);
+        this.lease = lease;
+        if (replaced) this.timings.created = true;
         Object.assign(this.timings, { ...(provisioning.setupMs !== undefined ? { setupMs: provisioning.setupMs } : {}), ...(provisioning.restoreMs !== undefined ? { restoreMs: provisioning.restoreMs } : {}) });
         this.timings.wakeMs = (this.timings.wakeMs ?? 0) + Math.max(0, Date.now() - wakeStarted - (provisioning.setupMs ?? 0) - (provisioning.restoreMs ?? 0));
         signal.throwIfAborted();
-        const provisioned = Date.now();
-        await this.uploadRun(sprite, run);
-        this.timings.credentialSyncMs = Date.now() - provisioned;
+        const uploadStarted = Date.now();
+        await this.uploadRun(this.lease.sprite, run);
+        this.timings.credentialSyncMs = Date.now() - uploadStarted;
     }
 
     private async reattach(options: AgentRunOptions, signal: AbortSignal, lease: SpriteRunLease): Promise<ExecutionResult> {
@@ -242,6 +248,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         await filesystem.rm(paths.root, { recursive: true, force: true }).catch(() => undefined);
         await filesystem.mkdir(SPRITES_RUN_ROOT, { recursive: true, mode: 0o711 });
         await filesystem.mkdir(paths.root, { recursive: true, mode: 0o700 });
+        // Durable before the credentials reach the Sprite and cleared only after their write-back: a worker that stops mid-run leaves the Sprite quarantined.
+        if (credentials && !await persistRecoveryObligation(sprite, paths, this.spec.name, { reason: 'pending-write-back' })) throw new Error(`Could not record the credential recovery marker of run ${this.spec.name} on Sprite ${sprite.name}`);
         await credentials?.upload(filesystem, paths);
         const records: string[][] = SPRITES_CREDENTIAL_TARGETS.map(target => ['purge', target]);
         records.push(...(credentials?.records ?? []));
@@ -265,11 +273,10 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
 
     private async finishCredentials(credentials?: SpritesCredentialSync): Promise<void> {
         if (!credentials || !this.lease) return;
-        const started = Date.now();
-        const outcome = await credentials.writeBack(this.lease.sprite.filesystem(), this.paths);
-        this.retainedCredentials = outcome.retained;
-        this.timings.credentialWriteBackMs = Date.now() - started;
-        if (outcome.retained && !await persistRecoveryObligation(this.lease.sprite, this.paths, this.spec.name)) this.holdSprite = true;
+        const outcome = await finishRunCredentials(this.lease.sprite, this.paths, this.spec.name, { credentials, settleMs: this.runtime.launcherSettleMs });
+        ({ retained: this.retainedCredentials, liveCopiesRetained: this.liveCredentialsRetained } = outcome);
+        this.holdSprite ||= outcome.holdSprite;
+        if (outcome.writeBackMs !== undefined) this.timings.credentialWriteBackMs = outcome.writeBackMs;
     }
 
     /**
@@ -304,8 +311,9 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         };
         await clearCleanMarker(sprite).catch(warn('Could not remove the Sprite clean marker'));
         // Root-owned: the clone workspace, the workspace result and Antigravity's disposable HOME.
+        const leftovers = spritesRunLeftovers(this.spec, { keepLiveCredentials: this.liveCredentialsRetained });
         await Promise.resolve()
-            .then(() => sprite.execFile('sudo', ['-n', 'bash', '-c', SPRITES_SCRUB_SCRIPT, 'propr-scrub', ...spritesRunLeftovers(this.spec)], { timeout: 120_000 }))
+            .then(() => sprite.execFile('sudo', ['-n', 'bash', '-c', SPRITES_SCRUB_SCRIPT, 'propr-scrub', ...leftovers], { timeout: 120_000 }))
             .then(result => { if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}: ${String(result.stderr).trim()}`); })
             .catch(warn('Could not remove the run data the run left on the Sprite'));
         if (this.retainedCredentials) return;
@@ -391,6 +399,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
             await this.preparation;
             const lease = this.lease;
             if (!lease) return;
+            // Credentials uploaded for a run that never started were never installed: nothing to recover.
+            if (!this.started) await clearRecoveryObligation(lease.sprite, this.paths, this.spec.name);
             if (this.started && !await terminateRunProcesses(lease.sprite, this.paths)) {
                 logger.error({ run: this.spec.name, sprite: lease.name }, 'Could not verify that the Sprites run stopped; this worker keeps the Sprite out of use until it restarts');
                 return;
@@ -418,10 +428,12 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     private bundle?: SpritesSetupBundle;
     /** Delay between output reconnect attempts (tests shorten it). */
     readonly reconnectDelayMs?: number;
+    readonly launcherSettleMs?: number;
 
     constructor(private readonly dependencies: SpritesRuntimeDependencies = {}) {
         this.environment = dependencies.environment ?? process.env;
         this.reconnectDelayMs = dependencies.reconnectDelayMs;
+        this.launcherSettleMs = dependencies.launcherSettleMs;
         applySpritesClientSignalsDefault(this.environment);
     }
 

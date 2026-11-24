@@ -174,6 +174,11 @@ export async function wakeSprite(client: SpritesClientLike, name: string, config
     } catch (error) {
         if (spritesErrorStatus(error) !== 404) throw error;
     }
+    return { sprite: await createAgentSprite(client, name, config), created: true };
+}
+
+/** Creates the Sprite in the configured region and size. */
+export async function createAgentSprite(client: SpritesClientLike, name: string, config: SpritesRuntimeConfig): Promise<SpriteLike> {
     const spriteConfig = {
         ...(config.region ? { region: config.region } : {}),
         ...(config.ramMB ? { ramMB: config.ramMB } : {}),
@@ -185,7 +190,7 @@ export async function wakeSprite(client: SpritesClientLike, name: string, config
         waitForCapacity: true,
     });
     logger.info({ sprite: name, region: config.region }, 'Created Sprite for agent runs');
-    return { sprite, created: true };
+    return sprite;
 }
 
 async function drain(stream: SpriteProgressStream, what: string): Promise<void> {
@@ -198,13 +203,10 @@ function text(value: string | Buffer): string {
     return Buffer.isBuffer(value) ? value.toString('utf8') : value;
 }
 
+/** The setup revision the Sprite was provisioned for; undefined when it never was. Throws when the Sprite cannot be checked. */
 async function readStamp(sprite: SpriteLike): Promise<string | undefined> {
-    try {
-        const result = await sprite.execFile('cat', [SPRITES_SETUP_STAMP], { timeout: 60_000 });
-        return result.exitCode === 0 ? text(result.stdout).trim() : undefined;
-    } catch {
-        return undefined;
-    }
+    const result = await sprite.execFile('cat', [SPRITES_SETUP_STAMP], { timeout: 60_000 });
+    return result.exitCode === 0 ? text(result.stdout).trim() || undefined : undefined;
 }
 
 async function runSetup(sprite: SpriteLike, bundle: SpritesSetupBundle): Promise<void> {
@@ -289,29 +291,66 @@ export interface SpriteProvisioning {
     restoreMs?: number;
 }
 
-/** Bring the Sprite to the clean, provisioned state of this setup revision. */
+/**
+ * The Sprite was used (it carries a setup stamp) but has no clean checkpoint
+ * to start from: its filesystem may hold an earlier run's workspace or
+ * credentials, so it must be replaced rather than provisioned and checkpointed as it is.
+ */
+export class SpriteBaselineUnknownError extends Error {
+    constructor(sprite: string, readonly reason: string) {
+        super(`Sprite ${sprite} has no clean baseline: ${reason}`);
+        this.name = 'SpriteBaselineUnknownError';
+    }
+}
+
+async function findSetupCheckpoint(sprite: SpriteLike, comment: string) {
+    return (await sprite.listCheckpoints()).find(candidate => candidate.comment === comment);
+}
+
+async function restoreTo(sprite: SpriteLike, checkpoint: { id: string }): Promise<number> {
+    const started = Date.now();
+    await drain(await sprite.restoreCheckpoint(checkpoint.id), `Restoring Sprite ${sprite.name} to checkpoint ${checkpoint.id}`);
+    return Date.now() - started;
+}
+
+/**
+ * Bring the Sprite to the clean, provisioned state of this setup revision.
+ * Setup only ever runs on a filesystem no run has used since its baseline: a
+ * Sprite that was never provisioned, or one restored to the clean checkpoint
+ * of the revision it was provisioned for, so a new revision's checkpoint never
+ * captures an earlier run's data. A used Sprite without such a checkpoint
+ * throws {@link SpriteBaselineUnknownError} (with checkpoints disabled, nothing is checkpointed).
+ */
 export async function prepareSprite(sprite: SpriteLike, bundle: SpritesSetupBundle, config: Pick<SpritesRuntimeConfig, 'restoreCheckpoint'>): Promise<SpriteProvisioning> {
     const comment = `${SETUP_CHECKPOINT_PREFIX}${bundle.hash}`;
     // Consumed whatever happens next, so a marker never outlives the run that follows it.
     const marker = await takeCleanMarker(sprite);
-    if (await readStamp(sprite) === bundle.hash) {
+    const stamp = await readStamp(sprite);
+    if (stamp === bundle.hash) {
         if (!config.restoreCheckpoint) return { action: 'ready' };
         if (marker === comment) return { action: 'clean' };
-        const checkpoint = (await sprite.listCheckpoints()).find(candidate => candidate.comment === comment);
-        if (checkpoint) {
-            const started = Date.now();
-            await drain(await sprite.restoreCheckpoint(checkpoint.id), `Restoring Sprite ${sprite.name} to checkpoint ${checkpoint.id}`);
-            return { action: 'restore', restoreMs: Date.now() - started };
+        const checkpoint = await findSetupCheckpoint(sprite, comment);
+        if (!checkpoint) throw new SpriteBaselineUnknownError(sprite.name, `it is provisioned for ${bundle.hash} but its clean checkpoint is missing`);
+        return { action: 'restore', restoreMs: await restoreTo(sprite, checkpoint) };
+    }
+    let restoreMs: number | undefined;
+    if (stamp !== undefined && config.restoreCheckpoint) {
+        // Provisioned for an earlier revision: start from that revision's clean baseline, never from what its last run left.
+        const previous = `${SETUP_CHECKPOINT_PREFIX}${stamp}`;
+        if (marker !== previous) {
+            const checkpoint = await findSetupCheckpoint(sprite, previous);
+            if (!checkpoint) throw new SpriteBaselineUnknownError(sprite.name, `it is provisioned for ${stamp}, which has no clean checkpoint to upgrade from`);
+            restoreMs = await restoreTo(sprite, checkpoint);
+            if (await readStamp(sprite) !== stamp) throw new SpriteBaselineUnknownError(sprite.name, `its checkpoint ${checkpoint.id} is not the clean baseline of ${stamp}`);
         }
-        logger.warn({ sprite: sprite.name, setup: bundle.hash }, 'Provisioned Sprite has no clean checkpoint; provisioning it again');
     }
     const started = Date.now();
     await runSetup(sprite, bundle);
     if (await readStamp(sprite) !== bundle.hash) throw new Error(`Sprite ${sprite.name} setup did not record revision ${bundle.hash}`);
     const setupMs = Date.now() - started;
     if (config.restoreCheckpoint) await drain(await sprite.createCheckpoint(comment), `Checkpointing Sprite ${sprite.name}`);
-    logger.info({ sprite: sprite.name, setup: bundle.hash, pins: bundle.pins, setupMs }, 'Provisioned Sprite for agent runs');
-    return { action: 'setup', setupMs };
+    logger.info({ sprite: sprite.name, setup: bundle.hash, previous: stamp, pins: bundle.pins, setupMs }, 'Provisioned Sprite for agent runs');
+    return { action: 'setup', setupMs, ...(restoreMs !== undefined ? { restoreMs } : {}) };
 }
 
 export function spriteName(config: SpritesRuntimeConfig, slot: number): string {

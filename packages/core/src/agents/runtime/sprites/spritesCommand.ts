@@ -41,13 +41,15 @@ export const SPRITES_ANTIGRAVITY_HOME = '/tmp/propr-antigravity-home';
  * Everything a run leaves outside its run directory: the clone workspace
  * (with `.git`), the workspace result (`result.bundle`), Antigravity's
  * disposable HOME and every credential target. Removed when the run is
- * released and the Sprite cannot be restored to its clean checkpoint.
+ * released and the Sprite cannot be restored to its clean checkpoint. With
+ * `keepLiveCredentials` (their export was not confirmed, so they may hold the
+ * only valid token) the credential targets and Antigravity's HOME stay.
  */
-export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>): string[] {
+export function spritesRunLeftovers(spec: Pick<AgentRunSpec, 'workdir' | 'name'>, { keepLiveCredentials = false } = {}): string[] {
     const workdir = path.posix.normalize(spec.workdir);
     const safeWorkdir = path.posix.isAbsolute(workdir) && [`${SPRITES_AGENT_HOME}/`, '/tmp/'].some(prefix => workdir.startsWith(prefix) && workdir.length > prefix.length);
     if (!safeWorkdir) throw new Error(`Agent runtime "sprites" cannot run ${spec.name} in ${spec.workdir} (the workdir must be under ${SPRITES_AGENT_HOME}/ or /tmp/)`);
-    return [workdir, WORKSPACE_TRANSPORT_RESULT_DIR, SPRITES_ANTIGRAVITY_HOME, ...SPRITES_CREDENTIAL_TARGETS];
+    return keepLiveCredentials ? [workdir, WORKSPACE_TRANSPORT_RESULT_DIR] : [workdir, WORKSPACE_TRANSPORT_RESULT_DIR, SPRITES_ANTIGRAVITY_HOME, ...SPRITES_CREDENTIAL_TARGETS];
 }
 
 /** Removes the given paths as root: `bash -c <script> propr-scrub <path>...`. */
@@ -199,14 +201,29 @@ export function spritesManifest(records: ReadonlyArray<readonly string[]>): Buff
 /** Environment variable every process of a run inherits (its value is the run directory). */
 export const SPRITES_RUN_TAG = 'PROPR_SPRITES_RUN';
 
+/** The line of {@link SPRITES_RUN_MEMBERS_FUNCTIONS} that resolves the agent UID (tests substitute an unused UID). */
+export const SPRITES_AGENT_UID_LINE = 'agent_uid="$(id -u node 2>/dev/null)"';
+
 /**
  * Bash functions shared by the launcher and {@link SPRITES_SIGNAL_SCRIPT}:
  * `run_members <run dir> <session id>` lists the run's live processes (its
- * session or process group, or anything carrying its {@link SPRITES_RUN_TAG},
- * which catches processes that started a session of their own), and
- * `kill_run_members` SIGKILLs them until none is left (status 1 when some survive).
+ * session or process group, anything carrying its {@link SPRITES_RUN_TAG},
+ * and every process of the dedicated agent user `node`, whichever of its
+ * real, effective, saved or filesystem UIDs that is), and `kill_run_members`
+ * SIGKILLs them until none is left (status 1 when some survive). The UID is
+ * the enforced boundary: a process can leave the session and clear its
+ * environment (`setsid env -i ...`), but cannot stop being `node`. Only runs
+ * use that user, and a Sprite hosts one run at a time.
  */
-const SPRITES_RUN_MEMBERS_FUNCTIONS = `
+export const SPRITES_RUN_MEMBERS_FUNCTIONS = `
+${SPRITES_AGENT_UID_LINE}
+case "$agent_uid" in ''|0|*[!0-9]*) agent_uid="" ;; esac
+agent_member() {
+    local uid
+    [ -n "$agent_uid" ] || return 1
+    for uid in $(sed -n 's/^Uid:[[:space:]]*//p' "$1/status" 2>/dev/null); do [ "$uid" != "$agent_uid" ] || return 0; done
+    return 1
+}
 run_members() {
     local tag="${SPRITES_RUN_TAG}=$1" group="$2" entry pid stat own_group own_session
     local -a fields
@@ -221,6 +238,7 @@ run_members() {
         read -r -a fields <<< "\${stat##*) }"
         [ "\${fields[0]}" != "Z" ] || continue
         if [ -n "$group" ] && { [ "\${fields[2]}" = "$group" ] || [ "\${fields[3]}" = "$group" ]; }; then echo "$pid"; continue; fi
+        if agent_member "$entry"; then echo "$pid"; continue; fi
         if tr '\\0' '\\n' < "$entry/environ" 2>/dev/null | grep -qxF -- "$tag"; then echo "$pid"; fi
     done
 }
@@ -252,9 +270,10 @@ const RESULT_DIR = WORKSPACE_TRANSPORT_RESULT_DIR;
  * command as root or `node` with only the spec's environment, the prompt on
  * stdin from a file, and stdout/stderr appended to separate log files the
  * worker follows. The command runs in its own session (`setsid`) and carries
- * `PROPR_SPRITES_RUN=<run dir>` in its environment: that is the run's process
- * boundary, which TERM is forwarded to and which is killed once the command
- * exits (as a container's processes die with it). Then it returns the
+ * `PROPR_SPRITES_RUN=<run dir>` in its environment; with the agent user's UID
+ * that is the run's process boundary, which TERM is forwarded to and which is
+ * killed before the run starts (leftovers of an earlier run) and once the
+ * command exits (as a container's processes die with it). Then it returns the
  * refreshable credentials and the workspace result through the run
  * directory, removes every credential copy and records the exit status.
  */
@@ -278,11 +297,14 @@ fail() {
 : > "$run_dir/stdout.log" && : > "$run_dir/stderr.log" && chown "$owner" -- "$run_dir/stdout.log" "$run_dir/stderr.log" || exit ${SPRITES_LAUNCHER_EXIT_FAILURE}
 printf '%s\\n' "$$" > "$run_dir/pid.tmp" && chown "$owner" -- "$run_dir/pid.tmp" && mv -f -- "$run_dir/pid.tmp" "$run_dir/pid" || fail "cannot record the launcher PID"
 id node >/dev/null 2>&1 || fail "the Sprite has no node user; the ProPR setup script has not run"
+[ -n "$agent_uid" ] || fail "the node user must have a non-root UID (the run's process boundary)"
 command -v setsid >/dev/null 2>&1 || fail "the Sprite has no setsid (util-linux)"
 mapfile -d '' -t argv < "$run_dir/argv" || fail "cannot read the command"
 mapfile -d '' -t envv < "$run_dir/env" || fail "cannot read the environment"
 envv+=("${SPRITES_RUN_TAG}=$run_dir")
 rm -f -- "$run_dir/env"
+# Nothing of an earlier run (a process that escaped its cleanup, or one a crashed worker never stopped) may see this run's credentials or workspace.
+kill_run_members "$run_dir" "" || fail "processes of an earlier run on this Sprite survived SIGKILL"
 mapfile -d '' -t manifest < "$run_dir/manifest" || fail "cannot read the manifest"
 workdir="$(cat "$run_dir/workdir")"
 run_user="$(cat "$run_dir/user")"
@@ -368,7 +390,8 @@ exec tail -c "+$1" --pid="$(cat "$2")" -s 0.5 -F -- "$3" 2>/dev/null
 /**
  * Stops a run: `bash -c <script> propr-signal <TERM|KILL> <run dir>`. TERM goes
  * to the launcher, which forwards it to the run's session. KILL kills every
- * process of the run (session, process group and tagged processes), then the
+ * process of the run (session, process group, tagged processes and every
+ * process of the agent user), then the
  * launcher if it does not finish within a few seconds, and exits 0 only when
  * none of them is left: the run is verifiably stopped.
  */

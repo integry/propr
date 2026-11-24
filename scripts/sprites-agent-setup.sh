@@ -54,6 +54,34 @@ pin_npm_cli() {
     installed_version "$bin_dir/$bin_name" | grep -qF "$version" || die "$bin_name is not at the pinned version $version"
 }
 
+# su-exec compatible shim over setpriv: like su-exec and gosu, it sets HOME
+# to the target user's home (setpriv alone keeps the caller's, e.g. /root).
+write_privilege_shim() {
+    cat > "$1" <<'SHIM'
+#!/bin/sh
+# su-exec compatible: <user>[:<group>] <command> [args...]
+set -e
+spec="$1"; shift
+user="${spec%%:*}"
+if [ "$user" != "$spec" ]; then group="${spec#*:}"; else group="$(id -gn "$user")"; fi
+home="$(getent passwd "$user" | cut -d: -f6)"
+if [ -n "$home" ]; then HOME="$home"; export HOME; fi
+exec setpriv --reuid="$(id -u "$user")" --regid="$(getent group "$group" | cut -d: -f3)" --init-groups -- "$@"
+SHIM
+    chmod 755 "$1"
+}
+
+# The image's git configuration for <user>, written to <home>/.gitconfig. HOME
+# is explicit: setup runs under sudo with HOME=/root, which a privilege drop
+# need not change, and git would then target root's unwritable ~/.gitconfig.
+configure_agent_git() {
+    local user="$1" home="$2"
+    su-exec "$user" env HOME="$home" git config --global user.name "ProPR Agent Bot"
+    su-exec "$user" env HOME="$home" git config --global user.email "agent-bot@propr.dev"
+    su-exec "$user" env HOME="$home" git config --global init.defaultBranch main
+    su-exec "$user" env HOME="$home" git config --global --replace-all safe.directory '*'
+}
+
 # Sourcing the script (the unit tests do) only defines the functions above.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -89,18 +117,6 @@ chown node:node /home/node /home/node/workspace /home/node/.local /home/node/.lo
 chmod 755 /home/node
 
 # --- privilege drop ------------------------------------------------------
-write_privilege_shim() {
-    cat > "$1" <<'SHIM'
-#!/bin/sh
-# su-exec compatible: <user>[:<group>] <command> [args...]
-set -e
-spec="$1"; shift
-user="${spec%%:*}"
-if [ "$user" != "$spec" ]; then group="${spec#*:}"; else group="$(id -gn "$user")"; fi
-exec setpriv --reuid="$(id -u "$user")" --regid="$(getent group "$group" | cut -d: -f3)" --init-groups -- "$@"
-SHIM
-    chmod 755 "$1"
-}
 if ! command -v su-exec >/dev/null 2>&1; then
     if command -v gosu >/dev/null 2>&1; then ln -sf "$(command -v gosu)" /usr/local/bin/su-exec
     else command -v setpriv >/dev/null 2>&1 || die "neither su-exec, gosu nor setpriv is available"; write_privilege_shim /usr/local/bin/su-exec; fi
@@ -135,10 +151,7 @@ for script in agent-entrypoint.sh claude-entrypoint.sh codex-entrypoint.sh antig
 done
 install -m 0755 "$source_dir/gh-wrapper.sh" /usr/local/bin/gh-wrapper
 
-su-exec node git config --global user.name "ProPR Agent Bot"
-su-exec node git config --global user.email "agent-bot@propr.dev"
-su-exec node git config --global init.defaultBranch main
-su-exec node git config --global --replace-all safe.directory '*'
+configure_agent_git node /home/node
 
 {
     echo "claude $("$bin_dir/claude" --version 2>/dev/null | head -n 1)"
