@@ -55,8 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
     loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
     stale `/var/run/docker*` and `/run/containerd` PID files.
-    A larger `--volume-size` grows the existing image in place on the next
+    A larger `--rootfs-size` grows the existing image in place on the next
     boot, keeping pulled images.
+  - Fits the Fly Free plan (#3785). `--legacy-docker` keeps Docker images on a
+    persistent root filesystem (`rootfs.size_gb`, default 20 GB, set with
+    `--rootfs-size`; `rootfs.persist: true`) instead of the volume, which stays
+    at the 1 GB default for SQLite and Redis. Boot removes the image an
+    earlier release left on the volume. A `--volume-size` over 5 GB is refused
+    before anything is created when Fly reports the org on the Free plan,
+    which caps volumes at 5 GB. The plan output, `--dry-run` included, shows
+    the rootfs size and its cost while stopped ($0.15/GB-month).
+    Legacy mode now accepts `--memory 1024` (default still 2048 MB):
+    `dockerd` ran next to the app and Redis on a 1 GB Machine.
 
 ### Changed
 

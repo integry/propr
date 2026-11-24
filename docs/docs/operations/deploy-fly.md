@@ -48,9 +48,9 @@ propr deploy fly --app my-propr --legacy-docker
 | `flyctl` (or `fly`) on `PATH` | Uses your `fly auth login` session. Writes `fly.toml` and `propr-machine.json` to `--out` (default `./propr-fly`), creates the app and volume, stages secrets with `fly secrets import --stage` (values go over stdin, never argv), then runs `fly deploy --image <manifest image> --ha=false` from the `--out` directory. `fly.toml` points at `propr-machine.json` by absolute path, because flyctl resolves `machine_config` against its working directory rather than the config file. |
 | No flyctl | Uses the Machines API (`https://api.machines.dev/v1`) with `--token` or `FLY_API_TOKEN`, for example from `fly tokens create org`. It creates the app, allocates a shared IPv4 and an IPv6, creates the volume, sets secrets, then creates the Machine, or updates it in place on a later run, and waits until it starts. |
 
-Use `--backend flyctl` or `--backend api` to choose explicitly. Every step can be rerun: an existing app, volume or Machine is reused and updated. A reused volume smaller than `--volume-size` (for example the 1 GB default volume when you later add `--legacy-docker`) is extended to that size before any secret is set, and the deploy stops if Fly does not then report the new size. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
+Use `--backend flyctl` or `--backend api` to choose explicitly. Before creating anything, a `--volume-size` over 5 GB is checked against the org's plan, which the command reads from Fly's GraphQL API (`organization.paidPlan`) with the same token or `fly auth` session. When the org is on the Free plan, the command stops with a message that the Free plan caps volumes at 5 GB (see [Fly Free plan](#fly-free-plan)). If the plan cannot be read, the deploy goes on and logs that. Every step can be rerun: an existing app, volume or Machine is reused and updated. A reused volume smaller than `--volume-size` is extended to that size before any secret is set, and the deploy stops if Fly does not then report the new size. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
 
-`--dry-run` writes `fly.toml` and `propr-machine.json`, prints the secret **names** it would set and the summary, and contacts nothing. It stops on the same configuration errors as a real run, such as missing [browser sign-in](#browser-sign-in).
+`--dry-run` writes `fly.toml` and `propr-machine.json`, prints the secret **names** it would set and the summary, and contacts nothing. With `--legacy-docker` the summary includes the persistent root filesystem size and its cost while stopped. A dry run does not read the org's plan; with a volume over 5 GB it prints a note that a real run will check it. It stops on the same configuration errors as a real run, such as missing [browser sign-in](#browser-sign-in).
 
 ## Machine layout
 
@@ -116,10 +116,12 @@ The app image in this release has no idle detector and no `/wake` endpoint (#377
 
 `--legacy-docker` keeps the Docker agent runtime by running a Docker daemon in a `docker` container of the same Machine. The app container reaches it at `DOCKER_HOST=tcp://127.0.0.1:2375`, which is loopback only. Clones, worktrees and egress sockets move to a scratch directory, `/propr-shared`, that both containers mount at the same path, so agent bind mounts resolve inside the daemon. Every boot applies two fixes learned on Fly:
 
-1. **ext4 loop mount for overlay2.** overlay2 cannot run on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/usr/src/app/data/docker.ext4`, the volume size minus 2 GB) on the Fly volume, checked with `e2fsck -p` and loop-mounted before `dockerd` starts. Pulled images survive restarts. After a redeploy with a larger `--volume-size`, the next boot grows the existing image and its filesystem (`resize2fs`) in place and keeps its contents; it never shrinks it.
+1. **ext4 loop mount for overlay2.** Without it, `dockerd` would fall back to the slow `vfs` driver on the Machine's overlay root filesystem. `/var/lib/docker` is an ext4 image (`/var/lib/propr-docker/docker.ext4`, the root filesystem size minus 4 GB for the Machine's own container images), checked with `e2fsck -p` and loop-mounted before `dockerd` starts, so the storage driver is `overlay2`. After a redeploy with a larger `--rootfs-size`, the next boot grows the existing image and its filesystem (`resize2fs`) in place and keeps its contents; it never shrinks it.
 2. **Stale PID cleanup.** After an unclean stop, `/var/run/docker*` and `/run/containerd` PID files and sockets make `dockerd` refuse to start. They are removed first.
 
-Legacy mode needs at least 2 GB of memory and a 10 GB volume (defaults: 2048 MB, 20 GB), so it does not fit the Free plan. The `docker` container must be allowed to create loop devices and mount filesystems. Prefer Sprites or Fly Machines agents where you can.
+The image is on the Machine's **persistent root filesystem**, not on the Fly volume. The Machine is created with `rootfs.size_gb` (`--rootfs-size`, default 20 GB, at least 10) and `rootfs.persist: true`, so pulled images survive restarts. The volume stays at the 1 GB default and holds only SQLite and Redis. Fly's 5 GB volume cap on the Free plan does not apply to the root filesystem. A stopped Machine's persistent root filesystem is billed at $0.15/GB-month, which is $3.00/month for 20 GB, and the summary prints that cost. Deployments from earlier releases kept the image at `/usr/src/app/data/docker.ext4` on the volume. The first boot after a redeploy deletes that file, so the images are pulled again. Fly volumes never shrink, so the volume keeps its earlier size.
+
+Legacy mode defaults to 2048 MB of memory and accepts `--memory 1024` or more. `dockerd` runs next to the app and Redis on a 1 GB Machine but not on 512 MB, and agent containers need room on top of that. The `docker` container must be allowed to create loop devices and mount filesystems. Prefer Sprites or Fly Machines agents where you can.
 
 ## Size, memory and cost
 
@@ -142,7 +144,21 @@ Fly prices for Ashburn (`iad`), from Fly's pricing page as of November 2026:
 | Stopped Machine | $0.15/GB-month of root filesystem |
 | Shared IPv4, IPv6, inbound transfer | free (a dedicated IPv4 is $2/month and is not allocated) |
 
-Always on, the default deployment costs about **$6.85/month**. That is more than the Free plan's $5 of monthly usage, and the Machine cannot yet stop itself when idle (see [Idle shutdown](#idle-shutdown-not-available-yet)). The Free plan allows up to 3 Machines; this deployment uses one.
+Always on, the default deployment costs about **$6.85/month**. That is more than the Free plan's $5 of monthly usage, and the Machine cannot yet stop itself when idle (see [Idle shutdown](#idle-shutdown-not-available-yet)). The Free plan allows up to 3 Machines; this deployment uses one. With `--legacy-docker` the persistent root filesystem adds $0.15/GB-month while the Machine is stopped ($3.00/month for the default 20 GB).
+
+### Fly Free plan
+
+Fly rejects volumes over 5 GB on the Free plan (`Volumes larger than 5GB aren't included in the Free plan`). These choices fit:
+
+| Item | Fits the Free plan |
+| --- | --- |
+| Machine | shared-cpu-1x, 1 GB (the default) |
+| Volume | 1 GB (the default); anything up to 5 GB |
+| Agents | Sprites (the default runtime), once the worker supports it (see the warning above) |
+| Idle shutdown | opt-in with `--idle-shutdown`, once the app image supports it (see [Idle shutdown](#idle-shutdown-not-available-yet)) |
+| Docker agents | `--legacy-docker` with the 1 GB volume. Docker images go on the persistent root filesystem (`--rootfs-size`), which the volume cap does not limit. A 20 GB persistent root filesystem with `dockerd` on overlay2 ran on a Free-plan shared-cpu-1x, 1 GB Machine (`--memory 1024`; the legacy default is 2048 MB); 512 MB was not enough. |
+
+The command checks the cap before it creates anything: with a `--volume-size` over 5 GB on a Free-plan org, it stops and suggests the default.
 
 ## Options
 
@@ -152,7 +168,7 @@ Always on, the default deployment costs about **$6.85/month**. That is more than
 | `--org <slug>` | `personal` | Organization to create the app in |
 | `--region <code>` | `iad` | Region for the Machine and volume |
 | `--memory <mb>` / `--cpus <n>` | `1024` / `1` | Machine size (shared CPU) |
-| `--volume <name>` / `--volume-size <gb>` | `propr_data` / `1` | Volume for SQLite and Redis |
+| `--volume <name>` / `--volume-size <gb>` | `propr_data` / `1` | Volume for SQLite and Redis; at most 5 GB on the Fly Free plan |
 | `--image <ref>` | manifest `images.app` | Deploy a different app image |
 | `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`). Only `docker` is accepted in this release, see the warning above |
 | `--sprites-token`, `--agent-fly-token` | — | Agent runtime credentials, stored as secrets |
@@ -162,6 +178,7 @@ Always on, the default deployment costs about **$6.85/month**. That is more than
 | `--tunnel-token`, `--tunnel-url`, `--instance-id` | — | ProPR Connect hosted UI tunnel |
 | `--idle-shutdown [after]` | off | Refused in this release, see [Idle shutdown](#idle-shutdown-not-available-yet) |
 | `--legacy-docker` | off | Docker daemon in the Machine |
+| `--rootfs-size <gb>` | `20` | With `--legacy-docker`: persistent root filesystem for Docker images (at least 10) |
 | `--token <token>`, `--backend auto\|flyctl\|api` | `auto` | How to reach Fly |
 | `--out <dir>` | `./propr-fly` | Where generated files go |
 | `--dry-run` | — | Write the files and print the plan only |

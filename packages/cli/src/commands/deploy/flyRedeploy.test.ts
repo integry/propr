@@ -26,6 +26,7 @@ function flyApp() {
   let appFiles: unknown;
   const target: FlyDeployTarget = {
     kind: "machines-api",
+    async orgPlan() { return "unknown"; },
     async ensureApp() { return Object.keys(secrets).length === 0; },
     async ensureVolume(_app, input) { return { id: "vol_1", created: false, sizeGb: input.sizeGb }; },
     async extendVolume() { throw new Error("not expected"); },

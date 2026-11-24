@@ -87,6 +87,14 @@ export class FlyctlBackend {
     return parseJsonArray(result.stdout, "apps list").some((entry) => (entry.Name ?? entry.name) === app);
   }
 
+  /** The token of the current `fly auth login` session, or undefined when flyctl cannot print one. */
+  authToken(): string | undefined {
+    const result = this.run(["auth", "token"]);
+    if (result.status !== 0) return undefined;
+    const lines = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return lines[lines.length - 1] || undefined;
+  }
+
   createApp(app: string, org: string): void {
     check(this.run(["apps", "create", app, "--org", org]), "apps create");
   }

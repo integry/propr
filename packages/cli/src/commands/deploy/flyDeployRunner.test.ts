@@ -42,6 +42,7 @@ function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: 
     deployed,
     target: {
       kind: "machines-api",
+      async orgPlan() { steps.push("org-plan"); return "free"; },
       async ensureApp() { steps.push("app"); return true; },
       async ensureVolume() { steps.push("volume"); return { id: "vol_1", created: true, sizeGb: 1 }; },
       async extendVolume() { throw new Error("not expected"); },
@@ -205,7 +206,7 @@ test("secrets import rejects multi-line values", () => {
   assert.throws(() => renderSecretsImport({ KEY: "a\nb" }), /single line/);
 });
 
-const legacyPlan: FlyDeployPlan = { ...plan, memoryMb: 2048, volumeSizeGb: 20, legacyDocker: true, agentRuntime: "docker" };
+const legacyPlan: FlyDeployPlan = { ...plan, memoryMb: 2048, volumeSizeGb: 20, legacyDocker: true, agentRuntime: "docker", rootfsSizeGb: 20 };
 
 function dockerDiskSizeArg(machineConfig: string): string | undefined {
   const config = JSON.parse(machineConfig) as { containers: Array<{ name: string; files?: Array<{ raw_value: string }> }> };
@@ -231,7 +232,7 @@ function sizedFlyctl(sizes: Array<number | undefined>, outDir: string) {
   return { calls, target: createFlyctlTarget(new FlyctlBackend(runner), outDir) };
 }
 
-test("flyctl: an undersized reused volume is extended and confirmed before secrets, and Docker is sized from it", async () => {
+test("flyctl: an undersized reused volume is extended and confirmed before secrets; Docker is sized from the rootfs", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
   try {
     const { calls, target } = sizedFlyctl([1, 20], outDir);
@@ -242,7 +243,8 @@ test("flyctl: an undersized reused volume is extended and confirmed before secre
     assert.equal(argv[extend + 1], "volumes list --app my-propr --json", "size is re-read after extending");
     assert.ok(extend < argv.findIndex((a) => a.startsWith("secrets import")), "extended before secrets are uploaded");
     assert.equal(result.volumeSizeGb, 20);
-    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "18");
+    // Docker images live on the persistent rootfs, so the volume does not size them.
+    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "16");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -273,25 +275,26 @@ test("flyctl: an unreadable volume size stops the deploy instead of assuming cap
   }
 });
 
-test("a reused volume larger than requested is kept and sizes the Docker filesystem", async () => {
+test("a reused volume larger than requested is kept and does not size the Docker filesystem", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
   try {
     const { calls, target } = sizedFlyctl([30], outDir);
     const result = await runFlyDeploy({ plan: legacyPlan, secrets: { ...RELAY }, generatedSecrets: {} }, target);
     assert.equal(calls.some((c) => c[1] === "extend"), false);
     assert.equal(result.volumeSizeGb, 30);
-    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "28");
+    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "16");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
 });
 
-test("Machines API: an undersized reused volume is extended, confirmed, and sizes the Docker filesystem", async () => {
+test("Machines API: an undersized reused volume is extended and confirmed; the Docker filesystem follows the rootfs", async () => {
   const calls: string[] = [];
   const sizes = [1, 20];
   let listed = 0;
   let createdConfig: unknown;
   const api = {
+    async orgPlan() { calls.push("org-plan"); return "paid"; },
     async appExists() { return true; },
     async listVolumes() {
       const size = sizes[Math.min(listed++, sizes.length - 1)];
@@ -307,14 +310,16 @@ test("Machines API: an undersized reused volume is extended, confirmed, and size
     async waitForState() {},
   } as unknown as FlyMachinesApi;
   const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1", ...RELAY }, generatedSecrets: {} }, createMachinesApiTarget(api));
-  assert.deepEqual(calls, ["list:1", "extend:vol_1:20", "list:20", "secrets"]);
+  assert.deepEqual(calls, ["org-plan", "list:1", "extend:vol_1:20", "list:20", "secrets"]);
   assert.equal(result.volumeSizeGb, 20);
-  assert.equal(dockerDiskSizeArg(JSON.stringify(createdConfig)), "18");
+  assert.equal(dockerDiskSizeArg(JSON.stringify(createdConfig)), "16");
+  assert.deepEqual((createdConfig as { rootfs?: unknown }).rootfs, { size_gb: 20, persist: true });
 });
 
 test("Machines API: a volume Fly still reports undersized stops the deploy before secrets", async () => {
   const calls: string[] = [];
   const api = {
+    async orgPlan() { return "unknown"; },
     async appExists() { return true; },
     async listVolumes() { return [{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 1, state: "created" }]; },
     async extendVolume() { calls.push("extend"); },
@@ -371,4 +376,51 @@ test("flyctl finds machine_config when the CLI runs from a different directory t
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("Free-plan preflight: a volume over 5 GB stops the deploy before anything is created", async () => {
+  const free = fakeTarget([]);
+  await assert.rejects(
+    runFlyDeploy({ plan: { ...plan, volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, free.target),
+    (error: Error) => /Free plan, which caps volumes at 5 GB, but --volume-size is 20 GB/.test(error.message)
+      && /Nothing was created/.test(error.message) && /without --volume-size \(default: 1 GB/.test(error.message),
+  );
+  assert.deepEqual(free.steps, ["org-plan"]);
+});
+
+test("Free-plan preflight: volumes within the cap are not looked up, and paid or unknown plans go ahead", async () => {
+  const small = fakeTarget([]);
+  small.target.ensureVolume = async () => ({ id: "vol_1", created: true, sizeGb: 5 });
+  await runFlyDeploy({ plan: { ...plan, volumeSizeGb: 5 }, secrets: { ...RELAY }, generatedSecrets: {} }, small.target);
+  assert.equal(small.steps.includes("org-plan"), false);
+
+  for (const [orgPlan, warns] of [["paid", false], ["unknown", true]] as const) {
+    const big = fakeTarget([]);
+    big.target.orgPlan = async () => orgPlan;
+    big.target.ensureVolume = async () => ({ id: "vol_1", created: true, sizeGb: 20 });
+    const lines: string[] = [];
+    await runFlyDeploy({ plan: { ...plan, volumeSizeGb: 20 }, secrets: { ...RELAY }, generatedSecrets: {} }, big.target, (l) => lines.push(l));
+    assert.equal(big.deployed.length, 1, orgPlan);
+    assert.equal(lines.some((l) => l.includes("Could not read the Fly plan of org personal")), warns, orgPlan);
+  }
+});
+
+test("flyctl target reads the org plan with the session token from `fly auth token`", async () => {
+  const requests: Array<{ url: string; authorization: string; body: string }> = [];
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    requests.push({ url, authorization: String((init.headers as Record<string, string>).Authorization), body: String(init.body) });
+    return new Response(JSON.stringify({ data: { organization: { slug: "personal", paidPlan: false } } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const runner: FlyctlRunner = (args) => args.join(" ") === "auth token"
+    ? { status: 0, stdout: "FlyV1 fm2_abc\n", stderr: "" }
+    : { status: 1, stdout: "", stderr: "unexpected" };
+  assert.equal(await createFlyctlTarget(new FlyctlBackend(runner), tmpdir(), fetchImpl).orgPlan("personal"), "free");
+  assert.equal(requests[0]?.url, "https://api.fly.io/graphql");
+  assert.equal(requests[0]?.authorization, "FlyV1 fm2_abc");
+  assert.match(requests[0]?.body ?? "", /paidPlan/);
+  assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}").variables, { slug: "personal" });
+
+  const noSession: FlyctlRunner = () => ({ status: 1, stdout: "", stderr: "not logged in" });
+  assert.equal(await createFlyctlTarget(new FlyctlBackend(noSession), tmpdir(), fetchImpl).orgPlan("personal"), "unknown");
+  assert.equal(requests.length, 1);
 });

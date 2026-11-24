@@ -1,6 +1,8 @@
 /**
  * The `propr deploy fly` sequence, independent of how Fly is reached:
  *
+ *   0. preflight  a volume over 5 GB is refused when the org is on the Fly
+ *                 Free plan, which would reject it (see flyOrgPlan.ts)
  *   1. app        create it in the chosen org unless it exists
  *   2. volume     reuse the named volume in the region, else create it; a
  *                 reused volume smaller than the plan is extended and its new
@@ -25,7 +27,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { FlyctlBackend } from "./flyctlBackend.js";
 import { selectFlyIntakeMode } from "./flyIntake.js";
-import { FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
+import { flyAuthorizationHeader, FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
+import { assertVolumeFitsFlyPlan, exceedsFreePlanVolumeCap, fetchFlyOrgPlan, FLY_FREE_PLAN_MAX_VOLUME_GB, type FlyOrgPlan } from "./flyOrgPlan.js";
 import {
   buildMachineConfig,
   FLY_CONTROL_PLANE_ROLE,
@@ -39,6 +42,8 @@ import {
 
 export interface FlyDeployTarget {
   readonly kind: "flyctl" | "machines-api";
+  /** The org's Fly plan; "unknown" when it cannot be read. Read only, never creates anything. */
+  orgPlan(org: string): Promise<FlyOrgPlan>;
   ensureApp(app: string, org: string): Promise<boolean>;
   ensureVolume(app: string, input: { name: string; region: string; sizeGb: number }): Promise<FlyVolumeRef>;
   /** Grow a volume (Fly volumes never shrink); resolves to the size Fly reports afterwards. */
@@ -101,6 +106,20 @@ async function confirmVolumeCapacity(
   return extended;
 }
 
+/**
+ * Before anything is created: a volume Fly would reject on the Free plan
+ * stops the deploy here rather than at `volumes create`/`extend`. Only a
+ * volume over the cap needs the lookup; an unreadable plan does not block.
+ */
+async function preflightFlyPlan(plan: FlyDeployPlan, target: FlyDeployTarget, log: (line: string) => void): Promise<void> {
+  if (!exceedsFreePlanVolumeCap(plan)) return;
+  const orgPlan = await target.orgPlan(plan.org);
+  assertVolumeFitsFlyPlan(plan, orgPlan);
+  if (orgPlan === "unknown") {
+    log(`Could not read the Fly plan of org ${plan.org}; on the Free plan Fly rejects volumes over ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB.`);
+  }
+}
+
 export async function runFlyDeploy(
   input: FlyDeployInput,
   target: FlyDeployTarget,
@@ -108,6 +127,7 @@ export async function runFlyDeploy(
 ): Promise<FlyDeployResult> {
   const { plan } = input;
   log(`Using ${target.kind === "flyctl" ? "flyctl" : "the Fly Machines API"}.`);
+  await preflightFlyPlan(plan, target, log);
 
   const appCreated = await target.ensureApp(plan.app, plan.org);
   log(appCreated ? `Created app ${plan.app} in org ${plan.org}.` : `App ${plan.app} already exists.`);
@@ -173,9 +193,14 @@ export function writeFlyFiles(plan: FlyDeployPlan, outDir: string): { flyToml: s
   return { flyToml, machineConfig };
 }
 
-export function createFlyctlTarget(backend: FlyctlBackend, outDir: string): FlyDeployTarget {
+export function createFlyctlTarget(backend: FlyctlBackend, outDir: string, fetchImpl: typeof fetch = fetch): FlyDeployTarget {
   return {
     kind: "flyctl",
+    async orgPlan(org) {
+      // `fly auth token` prints the token flyctl uses, FLY_API_TOKEN included.
+      const token = backend.authToken();
+      return token ? fetchFlyOrgPlan(flyAuthorizationHeader(token), org, fetchImpl) : "unknown";
+    },
     async ensureApp(app, org) {
       if (backend.appExists(app)) return false;
       backend.createApp(app, org);
@@ -223,6 +248,9 @@ function volumeSize(value: unknown): number {
 export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
   return {
     kind: "machines-api",
+    async orgPlan(org) {
+      return api.orgPlan(org);
+    },
     async ensureApp(app, org) {
       if (await api.appExists(app)) return false;
       await api.createApp(app, org);

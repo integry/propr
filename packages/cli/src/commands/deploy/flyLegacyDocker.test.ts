@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   buildLegacyDockerContainer,
+  flyRootfsMonthlyCost,
   LEGACY_DOCKER_BOOT_SCRIPT_PATH,
   LEGACY_DOCKER_STALE_RUNTIME_PATHS,
   legacyDockerDiskSizeGb,
@@ -41,8 +42,11 @@ test("boot script loop-mounts an ext4 image at /var/lib/docker for overlay2", ()
   assert.match(script, /--storage-driver=overlay2/);
   assert.match(script, /--host=tcp:\/\/127\.0\.0\.1:2375/);
   assert.ok(script.indexOf("mount -o loop") < script.indexOf("exec dockerd"));
-  // The image lives on the persistent Fly volume, so pulled images survive restarts.
-  assert.match(script, /^IMG=\/usr\/src\/app\/data\/docker\.ext4$/m);
+  // The image lives on the persistent root filesystem, off the (Free-plan capped) Fly volume.
+  assert.match(script, /^IMG=\/var\/lib\/propr-docker\/docker\.ext4$/m);
+  // An image an earlier release left on the volume is removed before the new one is used.
+  const cleanup = script.indexOf("rm -f /usr/src/app/data/docker.ext4");
+  assert.ok(cleanup > 0 && cleanup < script.indexOf("mount -o loop"));
 });
 
 test("boot script is valid POSIX sh", () => {
@@ -50,9 +54,12 @@ test("boot script is valid POSIX sh", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("disk size leaves volume headroom and rejects nonsense", () => {
-  assert.equal(legacyDockerDiskSizeGb(20), 18);
+test("disk size leaves rootfs headroom for the Machine's images and rejects nonsense", () => {
+  assert.equal(legacyDockerDiskSizeGb(20), 16);
+  assert.equal(legacyDockerDiskSizeGb(10), 6);
   assert.equal(legacyDockerDiskSizeGb(5), 4);
+  assert.equal(flyRootfsMonthlyCost(20), "$3.00");
+  assert.equal(flyRootfsMonthlyCost(15), "$2.25");
   assert.throws(() => renderLegacyDockerBootScript(0), /positive whole number/);
   assert.throws(() => renderLegacyDockerBootScript(1.5), /positive whole number/);
 });

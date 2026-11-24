@@ -16,12 +16,14 @@
  *
  * The Fly volume is mounted at /usr/src/app/data, the same path the local
  * stack bind-mounts, so SQLite and the Redis append-only file both persist.
+ * Legacy mode keeps Docker images on a persistent root filesystem instead.
  */
 
 import { Buffer } from "node:buffer";
 import {
   buildLegacyDockerContainer,
   legacyDockerDiskSizeGb,
+  LEGACY_DOCKER_DEFAULT_ROOTFS_GB,
   LEGACY_DOCKER_SHARED_DIR,
   LEGACY_DOCKER_SHARED_ENV,
   LEGACY_DOCKER_SHARED_VOLUME,
@@ -83,6 +85,12 @@ export interface FlyDeployPlan {
   tunnel?: FlyTunnelSettings;
   /** Run a Docker daemon in the Machine for Docker agents (legacy mode). */
   legacyDocker: boolean;
+  /**
+   * Legacy mode only: size of the Machine's persistent root filesystem, which
+   * holds the Docker image store (see flyLegacyDocker.ts). Defaults to
+   * LEGACY_DOCKER_DEFAULT_ROOTFS_GB.
+   */
+  rootfsSizeGb?: number;
   /** A GitHub App private key was supplied (as the FLY_GH_PRIVATE_KEY_SECRET secret). */
   githubAppKey: boolean;
   /** Extra plain (non-secret) env for the app container. */
@@ -274,7 +282,7 @@ function buildTunnelContainer(image: string, secretNames: readonly string[]): Js
 /** Multi-container list. `appImage` lets flyctl substitute the image it deploys. */
 export function buildContainers(plan: FlyDeployPlan, appImage: string = plan.images.app): JsonObject[] {
   const containers = [buildRedisContainer(plan.images.redis)];
-  if (plan.legacyDocker) containers.push(buildLegacyDockerContainer(legacyDockerDiskSizeGb(plan.volumeSizeGb)));
+  if (plan.legacyDocker) containers.push(buildLegacyDockerContainer(legacyDockerDiskSizeGb(legacyRootfsSizeGb(plan))));
   containers.push(buildAppContainer(plan, appImage));
   if (plan.tunnel) containers.push(buildTunnelContainer(plan.images.cloudflared, plan.secretNames ?? []));
   return containers;
@@ -318,7 +326,7 @@ export function buildMachineConfig(plan: FlyDeployPlan, volume: string = plan.vo
     stop_config: { signal: "SIGTERM", timeout: "60s" },
     metadata: buildMachineMetadata(),
   };
-  if (plan.legacyDocker) config.volumes = [buildLegacyDockerSharedVolume()];
+  if (plan.legacyDocker) Object.assign(config, buildLegacyDockerMachineFields(plan));
   return config;
 }
 
@@ -340,8 +348,21 @@ export function buildMachineMetadata(): Record<string, string> {
   };
 }
 
-function buildLegacyDockerSharedVolume(): JsonObject {
-  return { name: LEGACY_DOCKER_SHARED_VOLUME, temp_dir: { storage_type: "disk", size_mb: 8192 } };
+/** The persistent rootfs size of a legacy plan. */
+export function legacyRootfsSizeGb(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): number {
+  return plan.rootfsSizeGb ?? LEGACY_DOCKER_DEFAULT_ROOTFS_GB;
+}
+
+/**
+ * Machine-level legacy fields: the shared scratch volume, and a persistent
+ * root filesystem for the Docker image store, so Docker images stay off the
+ * Fly volume (capped at 5 GB on the Free plan) and survive restarts.
+ */
+function buildLegacyDockerMachineFields(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): JsonObject {
+  return {
+    volumes: [{ name: LEGACY_DOCKER_SHARED_VOLUME, temp_dir: { storage_type: "disk", size_mb: 8192 } }],
+    rootfs: { size_gb: legacyRootfsSizeGb(plan), persist: true },
+  };
 }
 
 function tomlString(value: string): string {
@@ -416,6 +437,6 @@ export function renderFlyMachineConfigJson(plan: FlyDeployPlan): string {
     stop_config: { signal: "SIGTERM", timeout: "60s" },
     metadata: buildMachineMetadata(),
   };
-  if (plan.legacyDocker) doc.volumes = [buildLegacyDockerSharedVolume()];
+  if (plan.legacyDocker) Object.assign(doc, buildLegacyDockerMachineFields(plan));
   return `${JSON.stringify(doc, null, 2)}\n`;
 }

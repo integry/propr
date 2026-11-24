@@ -163,6 +163,25 @@ test("legacy Docker mode adds the daemon container and shares worktree paths", (
   assert.deepEqual(config.volumes, [{ name: "propr_shared", temp_dir: { storage_type: "disk", size_mb: 8192 } }]);
 });
 
+test("legacy Docker mode keeps Docker images on a persistent rootfs and the volume at its default", () => {
+  // No rootfs size given: the default 20 GB, persisted across restarts.
+  const config = buildMachineConfig(basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048 }));
+  assert.deepEqual(config.rootfs, { size_gb: 20, persist: true });
+  assert.deepEqual(config.mounts, [{ volume: "propr_data", path: "/usr/src/app/data" }]);
+  const script = Buffer.from(((container(config, "docker").files as Array<{ raw_value: string }>)[0]).raw_value, "base64").toString();
+  assert.match(script, /^IMG=\/var\/lib\/propr-docker\/docker\.ext4$/m);
+  assert.match(script, /truncate -s 16G "\$IMG"/);
+
+  const sized = basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048, rootfsSizeGb: 30 });
+  assert.deepEqual(buildMachineConfig(sized).rootfs, { size_gb: 30, persist: true });
+  // flyctl gets the same rootfs through the machine_config JSON.
+  assert.deepEqual((JSON.parse(renderFlyMachineConfigJson(sized)) as JsonObject).rootfs, { size_gb: 30, persist: true });
+
+  // Without legacy mode there is no Docker image store and no persistent rootfs.
+  assert.equal(buildMachineConfig(basePlan()).rootfs, undefined);
+  assert.equal((JSON.parse(renderFlyMachineConfigJson(basePlan())) as JsonObject).rootfs, undefined);
+});
+
 test("flyctl files: fly.toml points at the machine config and the deployed container", () => {
   const plan = basePlan();
   const toml = renderFlyToml(plan);
