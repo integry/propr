@@ -119,6 +119,12 @@ export interface AgentRunFile {
     content?: Buffer;
     mode: number;
     purpose: AgentRunMountPurpose;
+    /**
+     * Converted from a read-only bind: the run must not be able to change this
+     * entry (or, for a directory, anything below it). A runtime that cannot
+     * enforce that refuses the run.
+     */
+    readOnly?: boolean;
 }
 
 export type AgentRunMount =
@@ -361,8 +367,12 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
      * called explicitly, cancelling any automatic removal of an unreleased run. A
      * runtime that removes unreleased runs on its own must offer this, so a caller
      * holding the only copy of a result there can keep it. Idempotent.
+     *
+     * A runtime whose retention takes effect asynchronously returns a promise
+     * that resolves `true` once the run is kept and `false` when that could not
+     * be established (the run may still be removed automatically). It never rejects.
      */
-    retain?(): void;
+    retain?(): void | Promise<boolean>;
 }
 
 export interface AgentRuntime<Options = unknown, Result extends AgentRunResult = AgentRunResult> {

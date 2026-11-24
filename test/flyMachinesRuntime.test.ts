@@ -648,7 +648,7 @@ test('credential write-back failure saves the refreshed copy for recovery; an un
     assert.deepEqual(marker.files, [{ staged: saved, canonical: path.join(store, '.credentials.json') }]);
     assert.match(marker.error, /EROFS/);
     await wrapped.release!();
-    assert.deepEqual(refreshed.counts(), { retained: 0, released: 1 });
+    assert.deepEqual(refreshed.counts(), { retained: 1, released: 1 }, 'retained while its credentials were read, then released as usual');
 
     // The refreshed credential cannot be read back: the run may hold its only copy and is kept.
     const unreadable = uploadAgentRunFiles(credentialRun(store, 'read-fails'));
@@ -657,7 +657,7 @@ test('credential write-back failure saves the refreshed copy for recovery; an un
     await kept.wait();
     assert.equal((await unreadable.collect(failing.handle)).keepRun, true);
     await kept.release!();
-    assert.deepEqual(failing.counts(), { retained: 1, released: 0 }, 'retained, and release() does not discard it');
+    assert.deepEqual(failing.counts(), { retained: 2, released: 0 }, 'retained before reading and again when kept; release() does not discard it');
 });
 
 test('credential read-back refuses symlinks on the path and never uses the general file reader', async () => {
@@ -801,4 +801,88 @@ test('release() during a slow create waits for the Machine and keeps retrying it
     } finally {
         mock.timers.reset();
     }
+});
+
+/** A credential run whose store lives at `guestRoot` (the fake Machine's filesystem is this host's). */
+function guestCredentialRun(store: string, guestRoot: string, name: string) {
+    const run = new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'propr/agent:test', name, stdin: false, user: '0:0', network: agentRunNetwork('bridge'),
+        workspace: { hostPath: '/tmp/w', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone' },
+    }).credentialBind(store, guestRoot, false, { provider: 'claude', store: 'config', perRun: true }).command('claude').build();
+    run.entrypoint = '/home/node/claude-entrypoint.sh';
+    run.workspace.clone = spec().workspace.clone;
+    return run;
+}
+
+test('credential collection retains the Machine (awaited) before reading refreshed credentials, then releases it normally', async () => {
+    const { collectingHandle } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+    const store = credentialStore();
+    const guestRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-guest-store-')));
+    fs.writeFileSync(path.join(guestRoot, '.credentials.json'), '{"token":"refreshed"}');
+    const run = guestCredentialRun(store, guestRoot, 'retain-before-collect');
+    const uploaded = uploadAgentRunFiles(run);
+    const fly = new FakeFly();
+    const order: string[] = [];
+    const fetch = fly.fetch;
+    let markAnswered = false;
+    fly.fetch = async (url, init) => {
+        const command: string[] | undefined = init?.body ? JSON.parse(String(init.body)).command : undefined;
+        if (command?.[2] === ': > "$1"') {
+            order.push('retain-requested');
+            // The mark takes a while (a slow exec API); nothing may be read before it is in the Machine.
+            await new Promise(resolve => setTimeout(resolve, 50));
+            const response = await fetch(url, init);
+            markAnswered = true;
+            order.push('retain-marked');
+            return response;
+        }
+        if (command?.[2]?.includes('pwd -P')) order.push(markAnswered ? 'credential-read' : 'credential-read-before-mark');
+        return fetch(url, init);
+    };
+    const handle = collectingHandle(runtime(fly).start(uploaded.spec, { timeout: 10_000 }), candidate => uploaded.collect(candidate));
+    await handle.wait();
+    assert.deepEqual(order.slice(0, 2), ['retain-requested', 'retain-marked'], 'the mark is requested and in the Machine first');
+    assert.ok(order.includes('credential-read'), 'then the refreshed credential is read');
+    assert.ok(!order.includes('credential-read-before-mark'), 'never before the mark');
+    assert.ok(fly.machines.get('m1')!.files.has(FLY_RUN_FILES.retain), 'the launcher keeps lingering past its result linger while collection reads');
+    const collected = await uploaded.collect(handle);
+    assert.equal(collected.retained, true);
+    assert.equal(collected.keepRun, false);
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"refreshed"}');
+    await handle.release!();
+    assert.deepEqual(fly.destroyed, ['m1'], 'a successful collection does not keep the Machine past release()');
+    fs.rmSync(guestRoot, { recursive: true, force: true });
+});
+
+test('credential collection reports a retention it could not establish instead of treating the Machine as kept', async () => {
+    const { collectingHandle } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+    const store = credentialStore();
+    const run = guestCredentialRun(store, '/nonexistent/propr-guest/.claude', 'retain-fails');
+    const uploaded = uploadAgentRunFiles(run);
+    const fly = new FakeFly();
+    const fetch = fly.fetch;
+    let marks = 0;
+    let execDown = true;
+    fly.fetch = async (url, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+        if (!execDown) return fetch(url, init);
+        // The exec API is down: neither the retain mark nor the credential read gets through.
+        if (body?.command?.[2] === ': > "$1"') { marks++; return new Response(JSON.stringify({ error: 'exec unavailable' }), { status: 503 }); }
+        if (body?.command?.[2]?.includes('pwd -P')) return new Response(JSON.stringify({ error: 'exec unavailable' }), { status: 503 });
+        return fetch(url, init);
+    };
+    const flyHandle = runtime(fly).start(uploaded.spec, { timeout: 10_000 });
+    const handle = collectingHandle(flyHandle, candidate => uploaded.collect(candidate));
+    await handle.wait();
+    const collected = await uploaded.collect(handle);
+    assert.ok(marks >= 3, 'the mark was attempted (and retried) before reading');
+    assert.equal(collected.keepRun, true, 'the unread refresh still asks to keep the run');
+    assert.equal(collected.retained, false, 'but the run is not reported as kept');
+    assert.equal(fly.machines.get('m1')!.files.has(FLY_RUN_FILES.retain), false);
+    assert.equal(await flyHandle.retain!(), false, 'retain() resolves false while the mark cannot be written');
+    // Once the exec API is back, a later retain() writes the mark.
+    execDown = false;
+    assert.equal(await flyHandle.retain!(), true);
+    assert.ok(fly.machines.get('m1')!.files.has(FLY_RUN_FILES.retain));
+    await flyHandle.release!();
 });

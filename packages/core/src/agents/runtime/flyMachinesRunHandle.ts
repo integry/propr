@@ -88,7 +88,8 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     /** The handle decided to destroy the Machine (cancelled, or its termination not confirmed): nothing is read from it. */
     private discarding = false;
     private destroyRetryMs = DESTROY_RETRY_MS;
-    private retaining?: Promise<void>;
+    /** The retain marker being written (true once it is in the Machine); cleared after a failure so a later retain() retries. */
+    private retaining?: Promise<boolean>;
     /** `release()` was called: the Machine must be destroyed, retained or not, and failed destroys are retried. */
     private releaseRequested = false;
     private settled = false;
@@ -438,30 +439,41 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * exit (and auto-destroy the Machine) when its linger ends. Reads wait for
      * the mark, so a caller retrieving a result after `retain()` does so from
      * a Machine that stays.
+     *
+     * Resolves true once the mark is in the Machine, false when it could not
+     * be written (the Machine is gone, being discarded, or the exec failed):
+     * then the Machine still destroys itself when its linger ends. A later
+     * call retries a failed mark. Never rejects.
      */
-    retain(): void {
+    retain(): Promise<boolean> {
         this.retained = true;
         if (this.releaseTimer && !this.discarding && !this.releaseRequested) {
             clearTimeout(this.releaseTimer);
             this.releaseTimer = undefined;
         }
-        if (!this.retaining && this.machineId && !this.machineGone && !this.discarding) this.retaining = this.markRetained();
+        if (!this.machineId || this.machineGone || this.discarding) return Promise.resolve(false);
+        this.retaining ??= this.markRetained().then(marked => {
+            if (!marked) this.retaining = undefined;
+            return marked;
+        });
+        return this.retaining;
     }
 
-    private async markRetained(): Promise<void> {
+    private async markRetained(): Promise<boolean> {
         let failure = '';
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
                 const marked = await this.deps.client.exec(this.machineId!, ['/bin/sh', '-c', ': > "$1"', 'sh', FLY_RUN_FILES.retain], 30);
-                if (marked.exit_code === 0) return;
+                if (marked.exit_code === 0) return true;
                 failure = marked.stderr.trim() || `exit ${marked.exit_code}`;
             } catch (error) {
                 failure = (error as Error).message;
             }
-            if (this.machineGone || this.released) return;
-            await pause(Math.min(this.deps.pollIntervalMs * attempt, 5_000));
+            if (this.machineGone || this.released) break;
+            if (attempt < 3) await pause(Math.min(this.deps.pollIntervalMs * attempt, 5_000));
         }
         logger.error({ run: this.spec.name, machine: this.machineId, error: failure }, 'Could not mark the Fly Machine retained; it destroys itself when its result linger ends');
+        return false;
     }
 
     /**

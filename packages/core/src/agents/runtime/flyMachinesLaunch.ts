@@ -12,6 +12,10 @@ import type { AgentRunSpec } from './types.js';
  * launcher that:
  *
  * - creates the uploaded directories and hands uploaded paths to the agent user;
+ * - enforces the run's mount restrictions (see {@link flyMachineMounts}):
+ *   read-only uploads become read-only bind mounts of themselves, and each
+ *   declared tmpfs is mounted with its options; a mount that fails, or a
+ *   launcher not running as root, refuses the run;
  * - feeds the prompt from an uploaded file (Machines have no stdin);
  * - keeps the agent's exact stdout/stderr in files and mirrors them, line
  *   marked, to the console so the logs API streams them live;
@@ -34,6 +38,8 @@ export const FLY_RUN_FILES = {
     retain: `${FLY_RUN_DIR}/retain`,
     stdin: `${FLY_RUN_DIR}/stdin`,
     uploads: `${FLY_RUN_DIR}/uploads`,
+    /** Mount restrictions the launcher sets up before the agent starts (read-only uploads, tmpfs). */
+    mounts: `${FLY_RUN_DIR}/mounts`,
 } as const;
 
 /** Console line prefixes the launcher writes; logs without one are Fly's own (init, health) and are ignored. */
@@ -61,6 +67,25 @@ case "$run_user" in
   ''|0|0:*|root|root:*) if [ -n "$run_user" ] && [ "$is_root" != 1 ]; then refused="the run must start as root, but the Machine started it as uid $(id -u)"; fi ;;
   *) if [ "$is_root" = 1 ]; then gid=\${run_user#*:}; set -- setpriv --reuid="\${run_user%%:*}" --regid="$gid" --clear-groups -- "$@"; fi ;;
 esac
+# Mount restrictions, as root before the agent starts: every tmpfs mount point first (one may lie inside a
+# read-only upload), then, in order, read-only self-binds and the tmpfs mounts. Any failure refuses the run.
+if [ -z "$refused" ] && [ -f "$run_dir/mounts" ]; then
+  if [ "$is_root" != 1 ]; then
+    refused="the run declares read-only or tmpfs mounts, which only root can set up, but the Machine started it as uid $(id -u)"
+  else
+    while IFS=$'\\t' read -r kind options target; do
+      [ "$kind" = t ] && [ -n "$target" ] && { mkdir -p "$target" || refused="could not create the tmpfs mount point $target"; }
+    done < "$run_dir/mounts"
+    while [ -z "$refused" ] && IFS=$'\\t' read -r kind options target; do
+      [ -n "$target" ] || continue
+      case "$kind" in
+        r) { mount --bind "$target" "$target" && mount -o remount,bind,ro "$target"; } || refused="could not make $target read-only" ;;
+        t) mount -t tmpfs -o "$options" tmpfs "$target" || refused="could not mount a tmpfs at $target" ;;
+        *) refused="unknown mount restriction $kind for $target" ;;
+      esac
+    done < "$run_dir/mounts"
+  fi
+fi
 # Like Docker's no-new-privileges: inherited across exec, so no setuid binary in the run regains privileges.
 [ "$no_new_privs" = 1 ] && set -- setpriv --no-new-privs -- "$@"
 p=$run_dir/pipe; rm -f "$p".*; : > "$run_dir/stdout"; : > "$run_dir/stderr"
@@ -250,6 +275,56 @@ function metadata(spec: AgentRunSpec): Record<string, string> {
     return Object.fromEntries([...entries, ['propr_run', spec.name.slice(0, 256)], ['propr_agent', spec.profile.agentType]]);
 }
 
+/** Inside `ancestor` (or `ancestor` itself). */
+function within(target: string, ancestor: string): boolean {
+    const root = ancestor.replace(/\/+$/, '');
+    return target === ancestor || target === root || target.startsWith(`${root}/`);
+}
+
+/** Linux tmpfs mount options a Docker `--tmpfs` spec may carry; anything else (e.g. Docker's `tmpcopyup`) cannot be honoured. */
+const TMPFS_OPTION = /^(?:rw|ro|nosuid|suid|nodev|dev|noexec|exec|sync|async|dirsync|atime|noatime|diratime|nodiratime|relatime|norelatime|strictatime|nostrictatime|lazytime|nolazytime|(?:size|nr_blocks|nr_inodes)=\d+[kKmMgG%]?|mode=[0-7]{3,4}|[ug]id=\d+)$/;
+/** Docker's defaults for a `--tmpfs` mount; the spec's own options follow and override them. */
+const DOCKER_TMPFS_DEFAULTS = 'noexec,nosuid,nodev';
+
+/**
+ * The launcher's mount restrictions (`kind\toptions\ttarget` lines), or
+ * throws for one the Machine cannot enforce as declared:
+ *
+ * - each outermost read-only upload becomes a read-only bind of itself; a
+ *   writable upload inside one, or the launcher's run directory, could not
+ *   stay writable and refuses the run;
+ * - each tmpfs is mounted (memory-backed, as in Docker) with Docker's defaults
+ *   and its own options; options Linux tmpfs does not take, an upload it
+ *   would hide, or a mount over the run directory refuse the run.
+ */
+export function flyMachineMounts(spec: AgentRunSpec): string[] {
+    const refuse = (what: string): never => { throw new Error(`Agent run ${spec.name} ${what}, which Fly Machines cannot enforce`); };
+    const uploads = spec.files ?? [];
+    const readOnly = uploads.filter(upload => upload.readOnly).map(upload => upload.path);
+    const roots = readOnly.filter(target => !readOnly.some(other => other !== target && within(target, other)));
+    const lines: string[] = [];
+    for (const root of [...new Set(roots)]) {
+        assertGuestPath(root);
+        if (within(FLY_RUN_DIR, root)) refuse(`mounts ${root} read-only over the launcher's run directory`);
+        const writable = uploads.find(upload => !upload.readOnly && within(upload.path, root));
+        if (writable) refuse(`uploads writable ${writable.path} inside read-only ${root}`);
+        lines.push(`r\t-\t${root}`);
+    }
+    const tmpfs = spec.mounts.flatMap(mount => (mount.type === 'tmpfs' ? [mount] : [])).sort((left, right) => left.order - right.order);
+    for (const mount of tmpfs) {
+        assertGuestPath(mount.target);
+        const options = mount.options.split(',').map(option => option.trim()).filter(Boolean);
+        const unsupported = options.find(option => !TMPFS_OPTION.test(option));
+        if (unsupported !== undefined) refuse(`requires tmpfs option ${JSON.stringify(unsupported)} at ${mount.target}`);
+        if (within(FLY_RUN_DIR, mount.target)) refuse(`mounts a tmpfs at ${mount.target} over the launcher's run directory`);
+        // The tmpfs would hide them, unlike Docker, which mounts a bind declared after it on top.
+        const hidden = uploads.find(upload => within(upload.path, mount.target) && !(upload.type === 'directory' && upload.path === mount.target));
+        if (hidden) refuse(`uploads ${hidden.path} under its tmpfs at ${mount.target}`);
+        lines.push(`t\t${[DOCKER_TMPFS_DEFAULTS, ...options].join(',')}\t${mount.target}`);
+    }
+    return lines;
+}
+
 function machineFiles(spec: AgentRunSpec, stdinData: string | undefined): FlyMachineFile[] {
     const uploads = spec.files ?? [];
     const files: FlyMachineFile[] = [];
@@ -261,6 +336,8 @@ function machineFiles(spec: AgentRunSpec, stdinData: string | undefined): FlyMac
         if (upload.type === 'file') files.push({ guest_path: upload.path, raw_value: (upload.content ?? Buffer.alloc(0)).toString('base64'), mode: upload.mode & 0o7777 });
     }
     if (manifest.length > 0) files.push({ guest_path: FLY_RUN_FILES.uploads, raw_value: Buffer.from(`${manifest.join('\n')}\n`).toString('base64'), mode: 0o600 });
+    const mounts = flyMachineMounts(spec);
+    if (mounts.length > 0) files.push({ guest_path: FLY_RUN_FILES.mounts, raw_value: Buffer.from(`${mounts.join('\n')}\n`).toString('base64'), mode: 0o600 });
     if (spec.stdin && stdinData !== undefined) files.push({ guest_path: FLY_RUN_FILES.stdin, raw_value: Buffer.from(stdinData).toString('base64'), mode: 0o600 });
     return files;
 }
@@ -293,7 +370,7 @@ function flyMachineNoNewPrivileges(spec: AgentRunSpec): boolean {
  * The create request for one run. Throws for a spec the Machine cannot run
  * as declared: no explicit entrypoint (the image's own cannot be chained), a
  * remaining bind mount (the upload step converts every bind it can), a
- * security restriction it cannot enforce, or an unreadable env file.
+ * security or mount restriction it cannot enforce, or an unreadable env file.
  */
 export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLaunchInput): FlyCreateMachineRequest {
     const bind = spec.mounts.find(mount => mount.type === 'bind');

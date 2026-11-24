@@ -29,6 +29,11 @@ import type { AgentRunFile, AgentRunFileRead, AgentRunHandle, AgentRunMount, Age
  * - Any other bind is copied in (bounded, regular files only, symlinks
  *   skipped); writes to it stay in the sandbox. Log directories are created
  *   empty. A writable copy is never written back.
+ * - Every entry uploaded for a read-only bind (credential store or not) is
+ *   marked `readOnly`: the runtime enforces that in the run or refuses it.
+ * - Before refreshed credentials are read back, the run is retained (and that
+ *   awaited), so a runtime that removes finished runs on its own cannot do so
+ *   while the only copy of a refreshed credential is being read.
  * - Workspace and git binds are left alone: the clone workspace transport
  *   removes them, and a run still carrying one is refused by the capability check.
  */
@@ -66,6 +71,12 @@ export interface CredentialCollection {
      * be read back, or not saved after a failed write-back): it must be kept.
      */
     keepRun: boolean;
+    /**
+     * The run was confirmed kept before its refreshed credentials were read
+     * (or there was nothing to read). False when the runtime could not
+     * establish retention: the run may have been removed meanwhile.
+     */
+    retained: boolean;
 }
 
 interface UploadOptions {
@@ -87,20 +98,21 @@ function isCredentialStore(mount: BindMount): mount is CredentialBindMount {
 /** Bounded copy of a bind source: a file, or a directory tree of regular files. */
 function copyBindSource(mount: BindMount): AgentRunFile[] {
     const files: AgentRunFile[] = [];
+    const restriction = mount.readOnly ? { readOnly: true } : {};
     let bytes = 0;
     const add = (source: string, target: string, stat: fs.Stats): void => {
         if (files.length >= MAX_UPLOADED_BIND_FILES || bytes + stat.size > MAX_UPLOADED_BIND_BYTES) {
             throw new AgentRunFileUploadError(`Bind source ${mount.source} exceeds the upload limit (${MAX_UPLOADED_BIND_FILES} files, ${MAX_UPLOADED_BIND_BYTES} bytes)`);
         }
         bytes += stat.size;
-        files.push({ type: 'file', path: target, content: fs.readFileSync(source), mode: stat.mode & 0o777, purpose: mount.purpose });
+        files.push({ type: 'file', path: target, content: fs.readFileSync(source), mode: stat.mode & 0o777, purpose: mount.purpose, ...restriction });
     };
     const walk = (source: string, target: string): void => {
         const stat = fs.lstatSync(source);
         if (stat.isSymbolicLink()) return;
         if (stat.isFile()) { add(source, target, stat); return; }
         if (!stat.isDirectory()) return;
-        files.push({ type: 'directory', path: target, mode: stat.mode & 0o777, purpose: mount.purpose });
+        files.push({ type: 'directory', path: target, mode: stat.mode & 0o777, purpose: mount.purpose, ...restriction });
         for (const entry of fs.readdirSync(source).sort()) walk(path.join(source, entry), path.posix.join(target, entry));
     };
     let stat: fs.Stats;
@@ -110,14 +122,14 @@ function copyBindSource(mount: BindMount): AgentRunFile[] {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         // `--mount` refuses a missing source; `-v` creates an empty directory.
         if (mount.syntax === 'mount') throw new AgentRunFileUploadError(`Bind source ${mount.source} for ${mount.target} does not exist`);
-        return [{ type: 'directory', path: mount.target, mode: 0o755, purpose: mount.purpose }];
+        return [{ type: 'directory', path: mount.target, mode: 0o755, purpose: mount.purpose, ...restriction }];
     }
     if (stat.isSymbolicLink()) {
         // Docker follows a symlinked source; resolve it once, then copy without following links below it.
         return copyBindSource({ ...mount, source: fs.realpathSync(mount.source) });
     }
     // Logs a run writes are not read back from the sandbox; give it the directory only.
-    if (mount.purpose === 'logs' && stat.isDirectory()) return [{ type: 'directory', path: mount.target, mode: 0o777, purpose: 'logs' }];
+    if (mount.purpose === 'logs' && stat.isDirectory()) return [{ type: 'directory', path: mount.target, mode: 0o777, purpose: 'logs', ...restriction }];
     walk(mount.source, mount.target);
     return files;
 }
@@ -185,10 +197,11 @@ function storeFiles(bundle: CredentialBundle, targets: StoreTarget[]): AgentRunF
     for (const target of targets) {
         const store = bundle.stores.find(candidate => candidate.id === target.storeId)!;
         const root = target.mount.target;
-        files.push({ type: 'directory', path: root, mode: 0o700, purpose: target.mount.purpose });
-        for (const directory of store.directories) files.push({ type: 'directory', path: path.posix.join(root, directory), mode: 0o700, purpose: target.mount.purpose });
+        const entry = { purpose: target.mount.purpose, ...(target.mount.readOnly ? { readOnly: true } : {}) };
+        files.push({ type: 'directory', path: root, mode: 0o700, ...entry });
+        for (const directory of store.directories) files.push({ type: 'directory', path: path.posix.join(root, directory), mode: 0o700, ...entry });
         for (const file of store.files) {
-            files.push({ type: 'file', path: path.posix.join(root, file.path), content: file.content, mode: file.mode & 0o777, purpose: target.mount.purpose });
+            files.push({ type: 'file', path: path.posix.join(root, file.path), content: file.content, mode: file.mode & 0o777, ...entry });
         }
     }
     return files;
@@ -249,10 +262,14 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
         // Name only: the value travels in the launch environment, never in the spec.
         env: [...spec.env, ...Object.keys(bundle.secretEnv).map(name => ({ name, order: nextOrder++ }))],
     };
+    const refreshable = targets.some(target => target.writeBack && bundle.stores.find(store => store.id === target.storeId)!.outputs.length > 0);
     let collection: Promise<CredentialCollection> | undefined;
     const collect = (handle: AgentRunHandle): Promise<CredentialCollection> => collection ??= (async () => {
         const returned: ReturnedCredentialFile[] = [];
         const unread: string[] = [];
+        // Keep the run before reading: a runtime that removes finished runs on its own (a lingering
+        // Machine) must not do so while a refreshed credential is still being read from it.
+        const retained = refreshable ? await retainForCollection(handle, spec.name) : true;
         for (const target of targets.filter(candidate => candidate.writeBack)) {
             const store = bundle.stores.find(candidate => candidate.id === target.storeId)!;
             for (const output of store.outputs) {
@@ -288,24 +305,50 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
             }
         }
         const keepRun = unread.length > 0 || unsaved;
-        if (keepRun) {
+        if (keepRun && retained) {
             logger.error({ run: spec.name, unread, unsaved }, 'The run may hold the only copy of a refreshed credential; keeping it until it is released explicitly');
+        } else if (keepRun) {
+            logger.error(
+                { run: spec.name, unread, unsaved },
+                'The run may hold the only copy of a refreshed credential, but it could not be retained: the runtime may already have removed it, and the refreshed credential may be lost',
+            );
         }
-        return { results, keepRun, ...(recoveryDir ? { recoveryDir } : {}) };
+        return { results, keepRun, retained, ...(recoveryDir ? { recoveryDir } : {}) };
     })();
     return { spec: uploadedSpec, secretEnv: bundle.secretEnv, bundle, collect };
 }
 
 /**
+ * Retain the run and wait until the runtime confirms it (a runtime without
+ * asynchronous retention keeps a retained run at once). False, logged, when
+ * the runtime could not establish it; a handle without `retain()` cannot
+ * remove the run on its own, so it counts as kept.
+ */
+async function retainForCollection(handle: AgentRunHandle, run: string): Promise<boolean> {
+    if (!handle.retain) return true;
+    let retained: boolean;
+    try {
+        retained = (await handle.retain()) !== false;
+    } catch (error) {
+        logger.warn({ run, error: (error as Error).message }, 'Retaining the run before reading back refreshed credentials failed');
+        retained = false;
+    }
+    if (!retained) logger.warn({ run }, 'Could not retain the run before reading back its refreshed credentials; reading them anyway before it is removed');
+    return retained;
+}
+
+/**
  * A handle whose `wait()` settles only after the run's refreshed credentials
  * were collected, so they are read before the workspace transport (or the
- * caller) releases the run. A run that may hold the only copy of a refreshed
- * credential is retained, and `release()` keeps it instead of discarding it.
+ * caller) releases the run. Collection retains the run first; once it
+ * succeeded, `release()` (from the workspace transport or the caller)
+ * discards the run as usual. A run that may hold the only copy of a refreshed
+ * credential stays retained, and `release()` keeps it instead of discarding it.
  */
 export function collectingHandle<Handle extends AgentRunHandle>(handle: Handle, collect: (handle: AgentRunHandle) => Promise<Pick<CredentialCollection, 'keepRun'>>): Handle {
     let collected: Promise<boolean> | undefined;
-    const collectOnce = (): Promise<boolean> => collected ??= collect(handle).then(outcome => {
-        if (outcome.keepRun) handle.retain?.();
+    const collectOnce = (): Promise<boolean> => collected ??= collect(handle).then(async outcome => {
+        if (outcome.keepRun) await handle.retain?.();
         return outcome.keepRun;
     });
     let waited: ReturnType<Handle['wait']> | undefined;
