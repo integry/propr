@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { baseEgressAllowlist, DEFAULT_EGRESS_PORTS, parseEgressAllowEntry } from '../../network/egressAllowlist.js';
 import type { AgentType } from '../types.js';
 import type { AgentRunEgressRule, AgentRunNetworkPolicy, AgentRunNetworkRestriction, AgentRunSpec } from './types.js';
@@ -27,6 +28,19 @@ export function agentRunEgressRules(entries: readonly string[]): AgentRunEgressR
     return [...rules.values()].sort((a, b) => (a.wildcard ? `*.${a.host}` : a.host).localeCompare(b.wildcard ? `*.${b.host}` : b.host));
 }
 
+const isIpLiteralRule = (rule: AgentRunEgressRule): boolean => !rule.wildcard && isIP(rule.host) !== 0;
+
+/**
+ * The instance allowlist entries that may reach private, loopback or
+ * link-local addresses: exact IP literals only. Hostname and wildcard entries
+ * stay public-only, matching Docker's proxy, which checks this list against
+ * the resolved address, so a hostname's private resolution is never
+ * authorized unless its IP literal is listed too.
+ */
+export function agentRunPrivateAddressRules(instanceAllow: readonly string[]): AgentRunEgressRule[] {
+    return agentRunEgressRules(instanceAllow).filter(isIpLiteralRule);
+}
+
 /**
  * The runtime-neutral policy for a run of `agentType`: open without a
  * restriction; otherwise the same allowlist Docker's egress proxy compiles
@@ -38,7 +52,7 @@ export function agentRunNetworkPolicy(agentType: AgentType, restriction?: AgentR
     return {
         mode: 'restricted',
         allow: agentRunEgressRules([...baseEgressAllowlist(agentType), ...restriction.allow]),
-        privateAddressAllow: agentRunEgressRules(restriction.instanceAllow ?? []),
+        privateAddressAllow: agentRunPrivateAddressRules(restriction.instanceAllow ?? []),
         source: restriction.source,
     };
 }
@@ -62,11 +76,12 @@ function isEgressRule(rule: unknown): rule is AgentRunEgressRule {
 /**
  * Whether `policy` is a well-formed restricted policy a runtime can enforce:
  * mode `restricted` with every allow and private-address rule a host plus
- * at least one valid port. A malformed one is refused, never treated as open.
+ * at least one valid port, and every private-address rule an exact IP
+ * literal. A malformed one is refused, never treated as open.
  */
 export function isValidRestrictedAgentRunNetworkPolicy(policy: AgentRunNetworkPolicy | undefined): boolean {
     return !!policy && policy.mode === 'restricted' && Array.isArray(policy.allow) && Array.isArray(policy.privateAddressAllow)
-        && policy.allow.every(isEgressRule) && policy.privateAddressAllow.every(isEgressRule);
+        && policy.allow.every(isEgressRule) && policy.privateAddressAllow.every(rule => isEgressRule(rule) && isIpLiteralRule(rule));
 }
 
 /**

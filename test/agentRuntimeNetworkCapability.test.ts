@@ -10,7 +10,7 @@ after(async () => {
 });
 
 const { registerAgentRuntime, runAgent, assertAgentRuntimeSupports, AgentRuntimeCapabilityError } = await import('../packages/core/src/agents/runtime/registry.ts');
-const { agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy, OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
+const { agentRunEgressRules, agentRunNetworkPolicy, agentRunPrivateAddressRules, withAgentRunNetworkPolicy, OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
 const { planAgentRunMcpTransport, agentRunMcpReachableUrl } = await import('../packages/core/src/agents/runtime/agentRunMcpTransport.ts');
 const { readAgentRuntimeCapabilityReport } = await import('../packages/core/src/agents/runtime/agentRuntimeCapabilityReport.ts');
 const { executeDockerRunWithSpecNetwork, DOCKER_RESTRICTED_NETWORK_ENFORCEMENT } = await import('../packages/core/src/agents/runtime/dockerNetwork.ts');
@@ -59,6 +59,33 @@ test('the neutral network policy is a host/port allowlist: base hosts plus addit
     assert.deepEqual(policy.allow.find(rule => rule.host === 'cdn.example.com'), { host: 'cdn.example.com', wildcard: true, ports: [80, 443] });
     assert.deepEqual(policy.privateAddressAllow, [{ host: '10.0.0.5', wildcard: false, ports: [80, 443] }]);
     assert.deepEqual(agentRunEgressRules(['not a host', '*.com']), [], 'invalid entries never widen the allowlist');
+});
+
+test('only exact IP literals in the instance allowlist may reach private addresses', async () => {
+    const instanceAllow = ['registry.example.com:443', '*.internal.example.com', '10.0.0.5:8080', '10.0.0.5', '[fd00:0:0:0:0:0:0:7]:5432', 'fe80::1'];
+    const mixed = { ...workflowPolicy, instanceAllow, allow: [...workflowPolicy.allow, ...instanceAllow] };
+    const expected = [
+        { host: '10.0.0.5', wildcard: false, ports: [80, 443, 8080] },
+        { host: 'fd00::7', wildcard: false, ports: [5432] },
+        { host: 'fe80::1', wildcard: false, ports: [80, 443] },
+    ];
+    assert.deepEqual(agentRunPrivateAddressRules(instanceAllow), expected, 'hostname and wildcard entries never authorize private addresses');
+    const policy = agentRunNetworkPolicy('claude', mixed);
+    assert.deepEqual(policy.privateAddressAllow, expected);
+    assert.ok(policy.allow.some(rule => rule.host === 'registry.example.com' && rule.ports.includes(443)), 'a hostname entry still reaches its public addresses');
+    assert.ok(policy.allow.some(rule => rule.host === 'internal.example.com' && rule.wildcard));
+
+    // Dispatch hands the runtime the filtered list.
+    const started = standIn('net-private-ip-only', capabilities({ supportsRestrictedNetwork: true, restrictedNetworkEnforcement: { method: 'firewall', description: 'test' } }));
+    await executeWithNetworkPolicy(mixed, () => runAgent({ runtime: 'net-private-ip-only' }, spec(), {}));
+    assert.deepEqual(started[0].network.policy.privateAddressAllow, expected);
+
+    // A supplied policy naming a hostname or wildcard as a private destination is malformed, never passed on.
+    for (const rule of [{ host: 'registry.example.com', wildcard: false, ports: [443] }, { host: 'internal.example.com', wildcard: true, ports: [443] }]) {
+        const supplied = { ...spec(), network: { ...spec().network, policy: { ...agentRunNetworkPolicy('claude', workflowPolicy), privateAddressAllow: [rule] } } };
+        await assert.rejects(runAgent({ runtime: 'net-private-ip-only' }, supplied as any, {}), /malformed restricted network policy/);
+    }
+    assert.equal(started.length, 1);
 });
 
 test('dispatch attaches the neutral policy; a runtime that enforces restricted mode receives it', async () => {
