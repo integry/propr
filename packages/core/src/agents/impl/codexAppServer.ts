@@ -21,6 +21,7 @@ import {
 } from './codexAppServerGoalProtocol.js';
 import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { buildCodexAppServerDockerArgs } from './utils/codexDockerArgsBuilder.js';
+import { assertNativeGoalRuntime } from '../runtime/registry.js';
 
 export { CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS, runGoalProtocol } from './codexAppServerGoalProtocol.js';
 
@@ -79,6 +80,8 @@ export async function executeCodexAppServerGoal(
     const model = cleanModelName(options.model || config.defaultModel);
     const control = options.goalControl;
     if (!control || !options.nativeGoalObjective) throw new Error('Codex native goal execution requires durable goal controls and an objective');
+    // The app-server session launches Docker directly from rendered argv.
+    assertNativeGoalRuntime(config);
     const ownership = getExecutionOwnershipContext();
     const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
     if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;

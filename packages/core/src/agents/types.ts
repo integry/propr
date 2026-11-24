@@ -19,6 +19,8 @@ export interface AgentConfig {
     // Docker configuration
     dockerImage: string;    // e.g., 'propr/agent:latest'
     configPath: string;     // Host path or '~' path resolved before Docker bind use
+    /** Agent runtime the runs use (`docker` by default, or PROPR_AGENT_RUNTIME). */
+    runtime?: string;
 
     // Model configuration
     supportedModels: string[]; // List of models this agent supports

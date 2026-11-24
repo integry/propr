@@ -1,14 +1,12 @@
-import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agents/agentGitAccess.js';
 import path from 'path';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { generateClaudePrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
 import type { ExecutionResult } from './docker/dockerExecutor.js';
-import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
-import { claudeConfigDockerArgs } from './docker/claudeConfigSeed.js';
+import { renderDockerRunArgs } from '../agents/runtime/dockerRunArgs.js';
+import { buildClaudeServiceRunSpec } from './claudeServiceRunSpec.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
-import { createContainerExecutionId } from '../agents/impl/utils/containerExecutionId.js';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;
@@ -236,62 +234,9 @@ export function verifyWorktreePostExecution(
     }
 }
 
+/** The `docker run` argv of {@link buildClaudeServiceRunSpec}. */
 export function buildDockerArgs(params: DockerArgsParams): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS, systemPrompt, tools, taskId, agentAlias } = params;
-
-    // Generate human-readable container name with unique suffix
-    // TaskId format: {repo}-{issue}-{agent}-{model}-{correlationId}
-    // Use the LAST 8 chars of taskId (part of correlationId UUID) for uniqueness
-    const shortId = createContainerExecutionId(taskId);
-    const containerName = `${agentAlias || 'claude'}-issue-${issueNumber}-${shortId}`;
-
-    // Always use stdin for prompt to avoid E2BIG errors with large prompts
-    const dockerArgs: string[] = [
-        'run', '--rm',
-        '-i', // Allow stdin for piping prompt
-        '--name', containerName,
-        '--security-opt', 'no-new-privileges',
-        '--cap-add', 'CHOWN',
-        '--network', 'bridge',
-        '--user', '0:0',
-        '-v', `${worktreePath}:/home/node/workspace:rw`,
-        ...(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath)),
-        ...buildAgentGitCredentialArgs(),
-        '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
-        '-v', `${CLAUDE_CONFIG_PATH}:/home/node/.claude:rw`,
-        ...claudeConfigDockerArgs(),
-        '-e', `GH_TOKEN=${githubToken}`,
-        '-w', '/home/node/workspace',
-        CLAUDE_DOCKER_IMAGE,
-        'claude', '-p', '-', // Read prompt from stdin
-        '--no-session-persistence',
-        '--max-turns', CLAUDE_MAX_TURNS.toString(),
-        '--output-format', 'stream-json',
-        '--verbose',
-        '--dangerously-skip-permissions'
-    ];
-
-    if (modelName) {
-        const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
-        dockerArgs.splice(maxTurnsIndex, 0, '--model', modelName);
-        logger.info({ issueNumber, requestedModel: modelName }, 'Using specific model for Claude Code execution');
-    } else {
-        logger.debug({ issueNumber }, 'No model specified, Claude Code will use default');
-    }
-
-    if (systemPrompt !== undefined) {
-        dockerArgs.push('--system-prompt', systemPrompt);
-        logger.info({ issueNumber, systemPromptLength: systemPrompt.length }, 'Using custom system prompt');
-    }
-
-    if (tools !== undefined) {
-        dockerArgs.push('--tools', tools);
-        logger.info({ issueNumber, tools }, 'Using custom tools configuration');
-    }
-
-    logger.info({ issueNumber, hasSystemPrompt: systemPrompt !== undefined, hasTools: tools !== undefined }, 'Docker args built');
-
-    return wrapDockerRunArgsWithRepoSetup(dockerArgs, CLAUDE_DOCKER_IMAGE, 'claude');
+    return renderDockerRunArgs(buildClaudeServiceRunSpec(params));
 }
 
 export function parseStreamJsonOutput(result: ExecutionResult): ClaudeOutput {

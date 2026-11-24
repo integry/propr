@@ -6,12 +6,13 @@ import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentTerminationReason, AnalysisResult } from '../agents/types.js';
 import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
-import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
+import { buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
+import { runAgent } from '../agents/runtime/registry.js';
+import { buildClaudeServiceRunSpec } from './claudeServiceRunSpec.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
     setWorktreeOwnership,
-    buildDockerArgs,
     parseStreamJsonOutput,
     storePromptInRedis,
     buildClaudePrompt,
@@ -143,14 +144,14 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
         const access = await prepareAgentGitAccess({ worktreePath, githubToken, issueRef, prompt });
-        const dockerArgs = buildDockerArgs({
+        const runSpec = buildClaudeServiceRunSpec({
             worktreePath, githubToken: access.githubToken, gitMountArgs: access.gitMountArgs, prompt, modelName, issueNumber: issueRef.number,
             CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS,
             systemPrompt: options.systemPrompt, tools: options.tools, agentAlias: 'claude'
         });
         const { result, usageMetrics } = await executeWithUsageTracking(
             'claude',
-            async () => executeDockerCommand('docker', dockerArgs, {
+            async () => runAgent(null, runSpec, {
                 timeout: timeoutMs ?? CLAUDE_TIMEOUT_MS,
                 cwd: worktreePath,
                 onSessionId,
