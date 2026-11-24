@@ -87,11 +87,35 @@ test('accumulator: time-weighted memory, kernel peak, cumulative CPU extended to
     accumulator.record({ atMs: 10_000, cpuSeconds: 5, memoryBytes: 100, memoryPeakBytes: 400 });
     accumulator.record({ atMs: 30_000, cpuSeconds: 15, memoryBytes: 200 });
     const result = accumulator.finish(40_000, 'docker');
-    // Memory: 100 for 10 s, 200 for 20 s. CPU: 15 s by 30 s at 0.5 CPU-s/s for the last 10 s.
+    // Memory: 100 for 10 s, 200 for 20 s, and the last 200 through the exit 10 s later (7000 byte-s / 40 s).
+    // CPU: 15 s by 30 s at 0.5 CPU-s/s for the last 10 s.
     assert.deepEqual(result, {
-        runtime: 'docker', wallTimeMs: 40_000, cpuSeconds: 20, peakMemoryBytes: 400, avgMemoryBytes: Math.round(500 / 3),
+        runtime: 'docker', wallTimeMs: 40_000, cpuSeconds: 20, peakMemoryBytes: 400, avgMemoryBytes: 175,
         costUsd: null, costSource: null,
     });
+    // Finishing does not consume the tail: a later sample still measures from the last observation.
+    assert.equal(accumulator.finish(40_000, 'docker').avgMemoryBytes, 175);
+    accumulator.record({ atMs: 40_000, memoryBytes: 400 });
+    assert.equal(accumulator.finish(40_000, 'docker').avgMemoryBytes, 9_000 / 40, 'the new sample, not the extended tail, covers 30-40 s');
+});
+
+test('accumulator: memory pricing covers a run that ends between samples', () => {
+    const accumulator = new ComputeUsageAccumulator(0);
+    accumulator.record({ atMs: 10_000, memoryBytes: 100 * GIB });
+    accumulator.record({ atMs: 30_000, memoryBytes: 200 * GIB });
+    const usage = accumulator.finish(40_000, 'docker');
+    assert.equal(usage.avgMemoryBytes, 175 * GIB);
+    // 175 GiB over 40 s = 175 * 40 / 3600 GiB-hours.
+    assert.equal(priceComputeUsage(usage, { perGiBHourUsd: 0.36 }), Math.round(0.36 * 175 * 40 / 3600 * 1e6) / 1e6);
+});
+
+test('accumulator: CPU-only samples between memory samples leave no gap in the memory average', () => {
+    const accumulator = new ComputeUsageAccumulator(0);
+    accumulator.record({ atMs: 10_000, cpuSeconds: 5, memoryBytes: 100 });
+    accumulator.record({ atMs: 20_000, cpuSeconds: 10 });
+    accumulator.record({ atMs: 30_000, cpuSeconds: 15, memoryBytes: 200 });
+    // 100 for 10 s, 200 for the 20 s since the previous memory reading, 200 through the exit.
+    assert.equal(accumulator.finish(40_000, 'docker').avgMemoryBytes, 175);
 });
 
 test('accumulator: CPU percentages are integrated when no cumulative reading exists; no samples means unmeasured', () => {

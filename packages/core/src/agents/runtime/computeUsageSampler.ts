@@ -15,15 +15,17 @@ export interface ComputeUsageSample {
 /**
  * Folds periodic samples of a run into its {@link AgentRunComputeUsage}.
  *
- * Memory is averaged over time (each sample stands for the interval before it)
- * and its peak is the highest sample or kernel-recorded peak. CPU is one
+ * Memory is averaged over time: each sample stands for the interval since the
+ * previous memory observation (or the start), and the last one is extended to
+ * the end of the run since nothing is observed after it. Its peak is the highest sample or kernel-recorded peak. CPU is one
  * running total whatever measured it: a cumulative reading replaces the total
  * (it is exact from the start), a percentage adds its interval on top of the
  * latest reading. The total is extended to the end of the run at the latest
  * observed rate since the sandbox cannot be read once it has exited.
  */
 export class ComputeUsageAccumulator {
-    private lastAtMs: number;
+    /** Latest memory observation, the baseline for the next interval and for the unsampled tail. */
+    private lastMemory: { atMs: number; bytes: number } | null = null;
     private memoryWeightedSum = 0;
     private memoryWeightMs = 0;
     private peakMemory: number | null = null;
@@ -34,20 +36,21 @@ export class ComputeUsageAccumulator {
     /** CPU-seconds per second observed most recently, used for the unsampled tail. */
     private cpuRate: number | null = null;
 
-    constructor(private readonly startMs: number) {
-        this.lastAtMs = startMs;
-    }
+    constructor(private readonly startMs: number) {}
 
     get sampled(): boolean {
         return this.peakMemory !== null || this.cpuTotal !== null;
     }
 
     record(sample: ComputeUsageSample): void {
-        const intervalMs = Math.max(0, sample.atMs - this.lastAtMs);
-        this.lastAtMs = Math.max(this.lastAtMs, sample.atMs);
         if (sample.memoryBytes !== undefined) {
+            // Measured from the previous memory observation, so CPU-only samples in between leave no gap.
+            const previousAtMs = this.lastMemory?.atMs ?? this.startMs;
+            const atMs = Math.max(previousAtMs, sample.atMs);
+            const intervalMs = atMs - previousAtMs;
             this.memoryWeightedSum += sample.memoryBytes * intervalMs;
             this.memoryWeightMs += intervalMs;
+            this.lastMemory = { atMs, bytes: sample.memoryBytes };
             this.peakMemory = Math.max(this.peakMemory ?? 0, sample.memoryBytes);
         }
         if (sample.memoryPeakBytes !== undefined) this.peakMemory = Math.max(this.peakMemory ?? 0, sample.memoryPeakBytes);
@@ -80,8 +83,12 @@ export class ComputeUsageAccumulator {
             const tailSeconds = Math.max(0, (endMs - this.cpuTotal.atMs) / 1000);
             cpuSeconds = this.cpuTotal.seconds + (this.cpuRate ?? 0) * tailSeconds;
         }
-        const avgMemoryBytes = this.memoryWeightMs > 0
-            ? this.memoryWeightedSum / this.memoryWeightMs
+        // The latest observation stands for the tail up to the exit; accumulated state is left untouched.
+        const tailMs = this.lastMemory ? Math.max(0, endMs - this.lastMemory.atMs) : 0;
+        const memoryWeightMs = this.memoryWeightMs + tailMs;
+        const memoryWeightedSum = this.memoryWeightedSum + (this.lastMemory?.bytes ?? 0) * tailMs;
+        const avgMemoryBytes = memoryWeightMs > 0
+            ? memoryWeightedSum / memoryWeightMs
             : this.peakMemory;
         return {
             runtime,
