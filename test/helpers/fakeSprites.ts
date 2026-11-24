@@ -6,7 +6,8 @@ import { PassThrough } from 'node:stream';
  * An in-memory stand-in for the part of `@fly/sprites` the Sprites runtime
  * uses. A fake Sprite has a filesystem (with entry types, so symlinks and
  * special files can be planted), checkpoints that snapshot and restore that
- * filesystem, and a launcher that behaves like `scripts/sprites-launcher.sh`
+ * filesystem except `/tmp` (on a real Sprite `/tmp` is a separate disk that a
+ * checkpoint neither captures nor resets), and a launcher that behaves like `scripts/sprites-launcher.sh`
  * at the level the worker sees: it unpacks the uploaded payload, installs the
  * manifest, "runs" a scripted behaviour, exports the refreshable credentials
  * and records the exit status.
@@ -52,6 +53,11 @@ export interface FakeRunBehavior {
 export const FAKE_LAUNCHER = '/opt/propr/launcher.sh';
 export const FAKE_RUN_DIR = '/opt/propr/run';
 const SETUP_DIR = '/tmp/propr-sprites-setup';
+/** Not part of a checkpoint, as on a real Sprite. */
+const UNCHECKPOINTED = '/tmp';
+const MOUNT_DIR = '/var/lib/propr/mounts';
+
+function uncheckpointed(file: string): boolean { return file.startsWith(`${UNCHECKPOINTED}/`); }
 
 function notFound(file: string): Error {
     return Object.assign(new Error(`ENOENT: no such file or directory, '${file}'`), { code: 'ENOENT' });
@@ -122,6 +128,8 @@ export class FakeSprite {
     failRestores = 0;
     /** `signal KILL` reports survivors. */
     killFails = false;
+    /** How many of the next `scrub` calls fail to empty `/tmp`. */
+    failScrubs = 0;
     /** How many of the next output followers drop their connection after `dropAfterBytes`. */
     dropFollowers = 0;
     dropAfterBytes = 0;
@@ -157,6 +165,15 @@ export class FakeSprite {
         return node;
     }
 
+    /** `file` with a symlinked directory above it followed, as a write on the Sprite would. */
+    private throughLinks(file: string): string {
+        for (let parent = path.posix.dirname(file); parent !== '/' && parent !== '.'; parent = path.posix.dirname(parent)) {
+            const node = this.files.get(parent);
+            if (node?.type === 'symlink') return `${node.target}${file.slice(parent.length)}`;
+        }
+        return file;
+    }
+
     filesystem() {
         return {
             readFile: async (file: string): Promise<Buffer> => {
@@ -189,7 +206,8 @@ export class FakeSprite {
 
     async createCheckpoint(comment?: string) {
         const id = `v${this.checkpoints.length + 1}`;
-        this.checkpoints.push({ id, comment, createTime: new Date(Date.now() + this.checkpoints.length), files: new Map(this.files) });
+        const files = new Map([...this.files].filter(([file]) => !uncheckpointed(file)));
+        this.checkpoints.push({ id, comment, createTime: new Date(Date.now() + this.checkpoints.length), files });
         this.note(`checkpoint:${id}`);
         return this.progress([{ type: 'info' }, { type: 'complete' }]);
     }
@@ -206,7 +224,8 @@ export class FakeSprite {
             this.note(`restore-failed:${id}`);
             return this.progress([{ type: 'error', error: 'restore failed' }]);
         }
-        this.files.clear();
+        // Whatever is under /tmp stays as it is: the restore does not touch that disk.
+        for (const file of [...this.files.keys()]) if (!uncheckpointed(file)) this.files.delete(file);
         for (const [file, node] of checkpoint.files) this.files.set(file, node);
         this.exitStatus = undefined;
         this.exportStatus = undefined;
@@ -236,6 +255,16 @@ export class FakeSprite {
             await running?.done;
             return done(0);
         }
+        if (launcher?.[0] === 'scrub') {
+            if (this.failScrubs > 0) {
+                this.failScrubs--;
+                this.note('scrub-failed');
+                return done(1, '', 'could not empty /tmp');
+            }
+            for (const file of [...this.files.keys()]) if (uncheckpointed(file)) this.files.delete(file);
+            this.note('scrub');
+            return done(0);
+        }
         if (command === 'sudo' && args.some(argument => argument.endsWith('/sprites-agent-setup.sh'))) return this.setup(args);
         return done(127, '', `fake Sprite: unknown command ${command} ${args.join(' ')}`);
     }
@@ -253,7 +282,7 @@ export class FakeSprite {
             return [argument.slice(0, separator), argument.slice(separator + 1)];
         }));
         this.remove(SETUP_DIR);
-        for (const directory of ['/opt/propr/bin', '/opt/propr/entrypoints', FAKE_RUN_DIR, '/home/node/workspace']) this.put(directory, { type: 'dir' });
+        for (const directory of ['/opt/propr/bin', '/opt/propr/entrypoints', FAKE_RUN_DIR, '/home/node/workspace', '/var/lib/propr/run']) this.put(directory, { type: 'dir' });
         this.putFile(FAKE_LAUNCHER, 'launcher', 0);
         this.putFile('/opt/propr/sprites-setup.hash', this.setupEnvironment.PROPR_SPRITES_SETUP_HASH ?? '', 0);
         this.note('setup');
@@ -323,16 +352,20 @@ export class FakeSprite {
             const record = manifest.slice(index, index + length);
             records.push(record);
             index += length;
+            // As the real launcher: a target under /tmp is created on the checkpointed root and only linked from /tmp.
+            const target = kind === 'output' ? undefined : record[length - 1];
+            const real = target && uncheckpointed(target) ? `${MOUNT_DIR}/${index}` : target;
+            if (target && real && real !== target) this.put(target, { type: 'symlink', target: real });
             if (kind === 'store' || kind === 'source') {
-                this.put(record[2], { type: 'dir' });
+                this.put(real!, { type: 'dir' });
                 for (const item of entries.filter(candidate => candidate.path.startsWith(`${record[1]}/`))) {
-                    const target = `${record[2]}/${item.path.slice(record[1].length + 1)}`;
-                    this.put(target, item.type === 'dir' ? { type: 'dir' } : { type: 'file', content: item.content, mode: item.mode, mtimeMs: item.mtimeMs });
+                    const file = `${real}/${item.path.slice(record[1].length + 1)}`;
+                    this.put(file, item.type === 'dir' ? { type: 'dir' } : { type: 'file', content: item.content, mode: item.mode, mtimeMs: item.mtimeMs });
                 }
             } else if (kind === 'file') {
-                this.put(record[2], { type: 'file', content: entry(record[1])!, mode: 0o440, mtimeMs: 0 });
+                this.put(real!, { type: 'file', content: entry(record[1])!, mode: 0o440, mtimeMs: 0 });
             } else if (kind === 'dir') {
-                this.put(record[1], { type: 'dir' });
+                this.put(real!, { type: 'dir' });
             } else if (kind === 'output') {
                 outputs.push({ index: Number(record[1]), livePath: record[2] });
             } else throw new Error(`fake launcher: unknown manifest record ${kind}`);
@@ -341,7 +374,7 @@ export class FakeSprite {
         const context: FakeRunContext = {
             sprite: this, argv: nulList(entry('argv')), records, outputs, pathsAtLaunch, ...(stdin === undefined ? {} : { stdin }),
             env: Object.fromEntries(nulList(entry('env')).map(pair => [pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1)])),
-            write: (file, content, mtimeMs) => this.putFile(file, content, mtimeMs),
+            write: (file, content, mtimeMs) => this.putFile(this.throughLinks(file), content, mtimeMs),
         };
         this.runs.push(context);
         this.note(`run:${context.env.PROPR_TEST_RUN ?? this.runs.length}`);
@@ -367,7 +400,7 @@ export class FakeSprite {
 
 export class FakeSpritesClient {
     readonly sprites = new Map<string, FakeSprite>();
-    /** `create:<name>`, `setup:<name>`, `checkpoint:<id>:<name>`, `run:<n>:<name>`, `restore:<id>:<name>`, `delete:<name>`, in order. */
+    /** `create:<name>`, `setup:<name>`, `checkpoint:<id>:<name>`, `run:<n>:<name>`, `scrub:<name>`, `restore:<id>:<name>`, `delete:<name>`, in order. */
     readonly operations: string[] = [];
     /** Behaviours handed to Sprites as they are created, when a test cannot reach the Sprite first. */
     behaviors: FakeRunBehavior[] = [];

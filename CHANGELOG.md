@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     post-setup checkpoint, and the checkpoint is restored when the run ends
     (a Sprite that cannot be restored is destroyed and provisioned anew), so
     nothing of one run reaches the next. There is no setting that skips it.
+    A Sprite's `/tmp` is not part of its checkpoint, so runs keep their scratch
+    files, log directory and Antigravity's disposable HOME on the checkpointed
+    root, and `/tmp` is emptied before every restore.
   - Provider entrypoints run entirely as the unprivileged `node` user on a
     Sprite, and refreshed tokens return only through the launcher's export
     directory. See `docs/docs/architecture/agent-runtime.md#sprites-runtime`.
@@ -229,6 +232,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/model` beside Gemini 4 Neon and Argon.
 
 ### Fixed
+
+- **Clone workspace transport on a prepared VM** (#3790): the root wrapper
+  failed with `detected dubious ownership in repository` when the workspace
+  directory already belonged to the agent user (a Sprite, a Fly Machine). Its
+  git commands now name the workspace as a `safe.directory` themselves.
 
 - **The all-in-one process exits on SIGTERM** (#3768). Shutdown waited
   for the worker to finish starting, and without a Docker daemon (for example

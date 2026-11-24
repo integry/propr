@@ -8,7 +8,7 @@ import { AGENT_DEFAULT_VERSIONS } from '../../version/types.js';
 import { renderAgentRunEntrypoint } from '../dockerRunArgs.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import { SPRITES_TOKEN_VARIABLES } from './spritesConfig.js';
-import { SPRITES_BIN_DIR, SPRITES_ENTRYPOINT_DIR, SPRITES_RUN_DIR, type SpritesCliPins } from './spritesSetup.js';
+import { SPRITES_BIN_DIR, SPRITES_ENTRYPOINT_DIR, SPRITES_RUN_DIR, SPRITES_SCRATCH_DIR, type SpritesCliPins } from './spritesSetup.js';
 import { createTarArchive, type TarEntry } from './spritesTar.js';
 
 /**
@@ -25,8 +25,13 @@ export const SPRITES_EXPORT_DIR = `${SPRITES_RUN_DIR}/out`;
 /** Root-owned, written by the clone wrapper: the workspace result status and bundle fallback. */
 export const SPRITES_RESULT_DIR = `${SPRITES_RUN_DIR}/result`;
 const AGENT_HOME = '/home/node';
-/** Antigravity task runs keep their state in a disposable HOME the entrypoint fills from the read-only source. */
-const ANTIGRAVITY_RUNTIME_CONFIG = '/tmp/propr-antigravity-home/.gemini';
+/**
+ * Antigravity task runs keep their state in a disposable HOME the entrypoint
+ * fills from the read-only source. On a Sprite it is on the checkpointed root
+ * (the `antigravity-as-agent` shim names it), never under `/tmp`.
+ */
+export const SPRITES_ANTIGRAVITY_HOME = `${SPRITES_SCRATCH_DIR}/antigravity-home`;
+const ANTIGRAVITY_RUNTIME_CONFIG = `${SPRITES_ANTIGRAVITY_HOME}/.gemini`;
 /**
  * The PATH of everything that runs as root (the launcher's command, the clone
  * and setup wrappers): root-owned directories only. The agent user gets its
@@ -127,6 +132,8 @@ export function resolveSpritesEnvironment(
 ): { environment: Map<string, string>; withheld: string[] } {
     const environment = new Map<string, string>([
         ['PATH', ROOT_PATH], ['HOME', '/root'], ['USER', 'root'], ['LOGNAME', 'root'], ['LANG', 'C.UTF-8'],
+        // Temporary files of the wrappers and the agent go to the checkpointed root, not to /tmp (which a restore does not reset).
+        ['TMPDIR', SPRITES_SCRATCH_DIR],
         ['NODE_OPTIONS', '--max-old-space-size=8192'], ['AGY_CLI_DISABLE_AUTO_UPDATE', 'true'], ['DISABLE_AUTOUPDATER', '1'],
     ]);
     for (const file of [...spec.envFiles].sort((left, right) => left.order - right.order)) {

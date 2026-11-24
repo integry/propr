@@ -14,7 +14,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 
 const {
     buildSpritesPayload, materializeSpritesCredentials, planSpritesRun, renderSpritesArgv, resolveSpritesEnvironment, spritesCliVersionRefusal, spritesMountRefusal,
-    SPRITES_RESULT_DIR,
+    SPRITES_RESULT_DIR, SPRITES_ANTIGRAVITY_HOME,
 } = await import('../packages/core/src/agents/runtime/sprites/spritesRunPlan.ts');
 const { readSpriteCredentialExport, readSpriteExportFile } = await import('../packages/core/src/agents/runtime/sprites/spritesExport.ts');
 const { readSpritesCliPins, readSpritesSetupBundle, SPRITES_SETUP_FILES } = await import('../packages/core/src/agents/runtime/sprites/spritesSetup.ts');
@@ -329,7 +329,7 @@ test('setup: the provider entrypoints run entirely as the agent user, Antigravit
     // su-exec stand-in: records the drop and marks the environment, then runs the command.
     fs.writeFileSync(path.join(fakeBin, 'su-exec'), '#!/bin/bash\necho "su-exec $1" >&2\nshift\nFAKE_DROPPED=yes exec "$@"\n', { mode: 0o755 });
     fs.writeFileSync(path.join(fakeBin, 'id'), '#!/bin/bash\nif [ "$1" = "-u" ]; then echo 0; else /usr/bin/id "$@"; fi\n', { mode: 0o755 });
-    const installed = bash(`install_entrypoints "${source}" "${entries}" /opt/propr/bin`, 'sprites-agent-setup.sh');
+    const installed = bash(`install_entrypoints "${source}" "${entries}" /opt/propr/bin ${SPRITES_ANTIGRAVITY_HOME}`, 'sprites-agent-setup.sh');
     assert.equal(installed.status, 0, installed.stderr);
     assert.deepEqual(fs.readdirSync(entries).sort(), ['antigravity-as-agent', 'antigravity-entrypoint.sh', 'claude-as-agent', 'claude-entrypoint.sh', 'codex-as-agent', 'codex-entrypoint.sh']);
     const run = (agent: string, env: Record<string, string> = {}) => spawnSync(path.join(entries, `${agent}-as-agent`), [agent, '-p', '-'], {
@@ -340,8 +340,36 @@ test('setup: the provider entrypoints run entirely as the agent user, Antigravit
     assert.match(claude.stderr, /^su-exec node$/m, 'root is given up before the entrypoint starts');
     assert.match(claude.stdout, /uid-check=yes home=\/home\/node user=node path=\/opt\/propr\/bin:\/home\/node\/\.local\/bin:\/usr\/local\/sbin:.* args=claude -p -/);
     const antigravity = run('antigravity', { PROPR_EPHEMERAL_STATE: '1' });
-    assert.match(antigravity.stdout, /uid-check=yes home=\/home\/node .* args=env HOME=\/tmp\/propr-antigravity-home antigravity -p -/);
-    assert.doesNotMatch(run('antigravity').stdout, /propr-antigravity-home/);
+    // The disposable HOME is on the Sprite's checkpointed root, never under /tmp (a checkpoint restore does not reset /tmp).
+    assert.equal(SPRITES_ANTIGRAVITY_HOME, '/var/lib/propr/run/antigravity-home');
+    assert.match(antigravity.stdout, /uid-check=yes home=\/home\/node .* args=env HOME=\/var\/lib\/propr\/run\/antigravity-home antigravity -p -/);
+    assert.doesNotMatch(antigravity.stdout, /\/tmp\//);
+    assert.doesNotMatch(run('antigravity').stdout, /antigravity-home/);
+
+    // The real entrypoint, unprivileged as on a Sprite, prepares the disposable HOME where the shim names it.
+    const home = path.join(root, 'checkpointed', 'antigravity-home');
+    const agySource = path.join(root, 'gemini-source');
+    fs.mkdirSync(path.join(agySource, 'antigravity-cli'), { recursive: true });
+    fs.writeFileSync(path.join(agySource, 'antigravity-cli', 'antigravity-oauth-token'), 'oauth');
+    // Its first part only (where the HOME is chosen and filled): the rest sets up /home/node itself.
+    const entrypointText = fs.readFileSync(path.join(repoRoot, 'scripts', 'antigravity-entrypoint.sh'), 'utf8');
+    const preparation = entrypointText.slice(0, entrypointText.indexOf('prepare_antigravity_config_dir() {'));
+    assert.match(preparation, /Using disposable Antigravity runtime state/);
+    const entry = (env: Record<string, string>) => spawnSync('bash', ['-c', `${preparation}\necho "home=$antigravity_runtime_home"`], {
+        encoding: 'utf8', env: { PATH: process.env.PATH ?? '', PROPR_EPHEMERAL_STATE: '1', PROPR_ANTIGRAVITY_SOURCE_CONFIG: agySource, ...env },
+    });
+    if (process.getuid?.() !== 0) {
+        const prepared = entry({ PROPR_ANTIGRAVITY_RUNTIME_HOME: home });
+        assert.equal(prepared.status, 0, prepared.stderr);
+        assert.match(prepared.stdout, new RegExp(`^home=${home}$`, 'm'));
+        assert.equal(fs.readFileSync(path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'), 'utf8'), 'oauth');
+    }
+    // Only an absolute path given to an unprivileged entrypoint is taken: as root (the image) the script chowns that directory.
+    assert.match(preparation, /case "\$\{PROPR_ANTIGRAVITY_RUNTIME_HOME:-\}" in\n\s+\/\*\) if \[ "\$\(id -u\)" != "0" \]; then antigravity_runtime_home=/);
+    const asRoot = spawnSync('bash', ['-c', `id() { echo 0; }; chown() { :; }; mkdir() { :; }; cp() { :; }\n${preparation}\necho "home=$antigravity_runtime_home"`], {
+        encoding: 'utf8', env: { PATH: process.env.PATH ?? '', PROPR_EPHEMERAL_STATE: '1', PROPR_ANTIGRAVITY_RUNTIME_HOME: home },
+    });
+    assert.match(asRoot.stdout, /^home=\/tmp\/propr-antigravity-home$/m, 'the image, started as root, keeps its own place');
 
     // The real Antigravity entrypoint syncs state back to its source only as root: started as the agent user it never does.
     const entrypoint = fs.readFileSync(path.join(repoRoot, 'scripts', 'antigravity-entrypoint.sh'), 'utf8');
@@ -357,8 +385,37 @@ test('setup: the provider entrypoints run entirely as the agent user, Antigravit
     assert.match(setup, /for bin in node npm npx; do/);
     assert.match(setup, /npm install -g .*--allow-scripts="\$package"/);
     assert.match(setup, /the node user must not have sudo/);
+    // The run's scratch directory is on the checkpointed root, and the shim is told where Antigravity's HOME goes.
+    assert.match(setup, /^scratch_dir="\$state_dir\/run"$/m);
+    assert.match(setup, /^state_dir=\/var\/lib\/propr$/m);
+    assert.match(setup, /install -d -m 1777 -o root -g root "\$scratch_dir"/);
+    assert.match(setup, /^antigravity_home="\$scratch_dir\/antigravity-home"$/m);
     assert.match(setup, /sha512sum -c -/);
     assert.equal(spawnSync('bash', ['-n', path.join(repoRoot, 'scripts', 'sprites-agent-setup.sh')]).status, 0);
+});
+
+test('setup: sudo rights are read from sudo\'s listing, not its exit status', () => {
+    const root = temporary();
+    const fakeBin = path.join(root, 'bin');
+    fs.mkdirSync(fakeBin);
+    // The Sprite's sudo: `sudo -l -U <user>` exits 0 whether or not the user may run anything.
+    fs.writeFileSync(path.join(fakeBin, 'sudo'), `#!/bin/bash
+user="\${@: -1}"
+case "$user" in
+    allowed) printf 'Matching Defaults entries for allowed on sprite:\\n    env_reset\\n\\nUser allowed may run the following commands on sprite:\\n    (ALL : ALL) ALL\\n' ;;
+    *) echo "User $user is not allowed to run sudo on sprite." ;;
+esac
+exit 0
+`, { mode: 0o755 });
+    const check = (user: string) => spawnSync('/bin/bash', ['-c', `source "${path.join(repoRoot, 'scripts', 'sprites-agent-setup.sh')}"\nuser_may_sudo ${user}`], {
+        encoding: 'utf8', env: { PATH: `${fakeBin}:${process.env.PATH}` },
+    }).status;
+    assert.equal(check('node'), 1, 'a user sudo lists nothing for has no sudo, although sudo exited 0');
+    assert.equal(check('nobody'), 1);
+    assert.equal(check('allowed'), 0);
+    const setup = fs.readFileSync(path.join(repoRoot, 'scripts', 'sprites-agent-setup.sh'), 'utf8');
+    assert.match(setup, /if user_may_sudo node; then die /);
+    assert.doesNotMatch(setup, /if sudo -l[^\n]*>\/dev\/null 2>&1; then/, 'the exit status of sudo -l is never the check');
 });
 
 test('setup: node, npm and npx are linked from the nvm shim\'s real directory when sudo\'s PATH has no node', () => {

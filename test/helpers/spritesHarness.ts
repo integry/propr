@@ -61,7 +61,7 @@ export function createCredentialStore(root: string, agent: 'claude' | 'codex' | 
 
 /** The live path of the provider's refreshable token on the Sprite. */
 export function liveTokenPath(agent: 'claude' | 'codex' | 'antigravity'): string {
-    if (agent === 'antigravity') return '/tmp/propr-antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token';
+    if (agent === 'antigravity') return '/var/lib/propr/run/antigravity-home/.gemini/antigravity-cli/antigravity-oauth-token';
     return `${CREDENTIAL_TARGETS[agent].target}/${CREDENTIAL_TARGETS[agent].file}`;
 }
 

@@ -17,7 +17,7 @@ const { tryAcquireSpriteLock } = await import('../packages/core/src/agents/runti
 
 const SPRITE = 'propr-w1-0';
 const CONTENDER = fileURLToPath(new URL('./helpers/spritesLockContender.ts', import.meta.url));
-const CLEAN_PATHS = ['/', '/home', '/home/node', '/home/node/workspace', '/opt', '/opt/propr', '/opt/propr/bin', '/opt/propr/entrypoints', '/opt/propr/launcher.sh', '/opt/propr/run', '/opt/propr/sprites-setup.hash', '/tmp'];
+const CLEAN_PATHS = ['/', '/home', '/home/node', '/home/node/workspace', '/opt', '/opt/propr', '/opt/propr/bin', '/opt/propr/entrypoints', '/opt/propr/launcher.sh', '/opt/propr/run', '/opt/propr/sprites-setup.hash', '/tmp', '/var', '/var/lib', '/var/lib/propr', '/var/lib/propr/run'];
 
 /** What a run leaves behind: the #3786 findings were each of these reaching the next run. */
 function leaveEverything(agent: 'claude' | 'antigravity' = 'claude') {
@@ -26,7 +26,10 @@ function leaveEverything(agent: 'claude' | 'antigravity' = 'claude') {
         context.write('/home/node/workspace/.git/config', 'origin');
         context.write('/tmp/claude-logs/session.jsonl', 'log of run 1');
         context.write('/home/node/.cache-scratch/notes', 'scratch of run 1');
+        // /tmp is not part of a Sprite's checkpoint: the restore alone would leave these.
         context.write('/tmp/leftover-by-agent', 'tmp of run 1');
+        context.write('/tmp/propr-workspace-transport.abc/repo.git/HEAD', 'scratch of the clone wrapper');
+        context.write('/var/lib/propr/run/scratch-by-agent', 'TMPDIR of run 1');
         context.write('/home/node/.bashrc', 'planted for the next run');
         context.write(liveTokenPath(agent), `${agent}-token-refreshed`);
     };
@@ -43,7 +46,7 @@ test('the first run provisions and checkpoints its Sprite; every later run start
     assert.equal((await first.wait()).stdout, 'run one\n');
     await first.release();
     const sprite = harness.client.sprites.get(SPRITE)!;
-    assert.deepEqual(harness.client.operations, [`create:${SPRITE}`, `setup:${SPRITE}`, `checkpoint:v1:${SPRITE}`, `run:run-1:${SPRITE}`, `restore:v1:${SPRITE}`]);
+    assert.deepEqual(harness.client.operations, [`create:${SPRITE}`, `setup:${SPRITE}`, `checkpoint:v1:${SPRITE}`, `run:run-1:${SPRITE}`, `scrub:${SPRITE}`, `restore:v1:${SPRITE}`]);
     // Provisioning installed exactly the CLIs Dockerfile.agent pins, Antigravity's verified archive included.
     assert.deepEqual(sprite.setupEnvironment, { ...TEST_BUNDLE.pins, PROPR_SPRITES_SETUP_HASH: TEST_BUNDLE.hash });
     assert.deepEqual(sprite.runs[0].pathsAtLaunch, [...CLEAN_PATHS, `${FAKE_RUN_DIR}/payload.tar`].sort());
@@ -56,7 +59,7 @@ test('the first run provisions and checkpoints its Sprite; every later run start
     await second.release();
     // Run 2 saw the clean checkpoint and its own payload: no workspace, result bundle, logs, scratch, HOME files or tokens of run 1.
     assert.deepEqual(sprite.runs[1].pathsAtLaunch, [...CLEAN_PATHS, `${FAKE_RUN_DIR}/payload.tar`].sort());
-    assert.deepEqual(harness.client.operations.slice(5), [`run:run-2:${SPRITE}`, `restore:v1:${SPRITE}`]);
+    assert.deepEqual(harness.client.operations.slice(6), [`run:run-2:${SPRITE}`, `scrub:${SPRITE}`, `restore:v1:${SPRITE}`]);
     assert.equal(typeof second.timings.credentialSyncMs, 'number');
     assert.equal(second.timings.provisionMs, undefined, 'a warm run neither provisions');
     assert.equal(second.timings.restoreMs, undefined, 'nor restores before it starts: the restore ran when run 1 ended');
@@ -79,7 +82,71 @@ test('Antigravity: the disposable HOME and its oauth token do not survive the ru
     const second = harness.runtime.start(cloneSpec('agy-2', { agent: 'antigravity', credentialStore: store.directory }), { timeout: 5000 });
     await second.wait();
     await second.release();
-    assert.ok(!sprite.runs[1].pathsAtLaunch.some(file => file.startsWith('/tmp/propr-antigravity-home') || file.startsWith('/home/node/.gemini')));
+    assert.ok(!sprite.runs[1].pathsAtLaunch.some(file => file.includes('antigravity-home') || file.startsWith('/home/node/.gemini')));
+    // The disposable HOME, with the oauth token in it, is on the checkpointed root: never under /tmp, which no restore resets.
+    assert.ok(liveTokenPath('antigravity').startsWith('/var/lib/propr/run/antigravity-home/'));
+});
+
+test('/tmp is not part of the checkpoint: it is emptied before every restore, and run-scoped directories are kept off it', async () => {
+    const harness = createHarness();
+    const store = createCredentialStore(harness.root, 'claude');
+    let duringRun: string[] = [];
+    harness.client.behaviors.push({
+        act: context => {
+            leaveEverything()(context);
+            context.write('/tmp/claude-logs/propr-operator/question.json', 'exchange of run 1');
+            duringRun = context.sprite.paths();
+        },
+    }, {}, {});
+    const first = harness.runtime.start(cloneSpec('run-1', { credentialStore: store.directory }), { timeout: 5000 });
+    await first.wait();
+    const sprite = harness.client.sprites.get(SPRITE)!;
+    // The run's TMPDIR and the clone wrapper's result directory are on the checkpointed root.
+    assert.equal(sprite.runs[0].env.TMPDIR, '/var/lib/propr/run');
+    assert.equal(sprite.runs[0].env.PROPR_WORKSPACE_CLONE_RESULT_DIR, `${FAKE_RUN_DIR}/result`);
+    // The log directory the run was given under /tmp is only a link there; what the run wrote to it is on the root.
+    assert.equal(sprite.files.get('/tmp/claude-logs'), undefined, 'gone with the scrub');
+    assert.ok(duringRun.includes('/tmp/claude-logs') && !duringRun.some(file => file.startsWith('/tmp/claude-logs/')));
+    assert.ok(duringRun.some(file => /^\/var\/lib\/propr\/mounts\/\d+\/session\.jsonl$/.test(file)));
+    assert.ok(duringRun.some(file => /^\/var\/lib\/propr\/mounts\/\d+\/propr-operator\/question\.json$/.test(file)));
+    // What the agent wrote straight to /tmp was there until the scrub; the restore alone would have kept it.
+    assert.ok(duringRun.includes('/tmp/leftover-by-agent'));
+    await first.release();
+    assert.deepEqual(sprite.paths(), CLEAN_PATHS);
+    const order = harness.client.operations.filter(operation => /^(run|scrub|restore)/.test(operation));
+    assert.deepEqual(order, [`run:run-1:${SPRITE}`, `scrub:${SPRITE}`, `restore:v1:${SPRITE}`], 'the scrub ran after the run and before the restore');
+
+    const second = harness.runtime.start(cloneSpec('run-2', { credentialStore: store.directory }), { timeout: 5000 });
+    await second.wait();
+    await second.release();
+    assert.deepEqual(sprite.runs[1].pathsAtLaunch.filter(file => file.startsWith('/tmp')), ['/tmp'], 'run 2 found /tmp empty');
+
+    // A fake Sprite restored WITHOUT the scrub keeps /tmp, as a real one does: the model the test above relies on.
+    sprite.putFile('/tmp/kept-by-restore', 'x');
+    sprite.putFile('/home/node/dropped-by-restore', 'x');
+    await sprite.restoreCheckpoint('v1');
+    assert.ok(sprite.files.has('/tmp/kept-by-restore') && !sprite.files.has('/home/node/dropped-by-restore'));
+    sprite.remove('/tmp/kept-by-restore');
+});
+
+test('a Sprite whose /tmp cannot be emptied is destroyed, not restored', async () => {
+    const harness = createHarness();
+    let original!: FakeSprite;
+    harness.client.behaviors.push({ act: context => { original = context.sprite; leaveEverything()(context); context.sprite.failScrubs = 1; } }, {});
+    const first = harness.runtime.start(cloneSpec('run-1'), { timeout: 5000 });
+    await first.wait();
+    await first.release();
+    assert.equal(first.timings.recycleAction, 'replaced');
+    assert.deepEqual(harness.client.operations.slice(3), [
+        `run:run-1:${SPRITE}`, `scrub-failed:${SPRITE}`, `delete:${SPRITE}`, `create:${SPRITE}`, `setup:${SPRITE}`, `checkpoint:v1:${SPRITE}`,
+    ]);
+    const replacement = harness.client.sprites.get(SPRITE)!;
+    assert.notEqual(replacement.id, original.id);
+    const second = harness.runtime.start(cloneSpec('run-2'), { timeout: 5000 });
+    await second.wait();
+    await second.release();
+    assert.equal(original.runs.length, 1, 'the Sprite with leftovers in /tmp never ran again');
+    assert.deepEqual(replacement.runs[0].pathsAtLaunch, [...CLEAN_PATHS, `${FAKE_RUN_DIR}/payload.tar`].sort());
 });
 
 test('the Sprite is restored after a failed run and after a killed run', async () => {
@@ -137,7 +204,7 @@ test('a failed restore destroys the Sprite and provisions a new one', async () =
     await first.release();
     assert.equal(first.timings.recycleAction, 'replaced');
     assert.deepEqual(harness.client.operations.slice(3), [
-        `run:run-1:${SPRITE}`, `restore-failed:v1:${SPRITE}`, `delete:${SPRITE}`, `create:${SPRITE}`, `setup:${SPRITE}`, `checkpoint:v1:${SPRITE}`,
+        `run:run-1:${SPRITE}`, `scrub:${SPRITE}`, `restore-failed:v1:${SPRITE}`, `delete:${SPRITE}`, `create:${SPRITE}`, `setup:${SPRITE}`, `checkpoint:v1:${SPRITE}`,
     ]);
     const replacement = harness.client.sprites.get(SPRITE)!;
     assert.notEqual(replacement.id, original.id);
@@ -146,6 +213,28 @@ test('a failed restore destroys the Sprite and provisions a new one', async () =
     await second.release();
     assert.equal(original.runs.length, 1, 'the unrestorable Sprite never ran again');
     assert.deepEqual(replacement.runs[0].pathsAtLaunch, [...CLEAN_PATHS, `${FAKE_RUN_DIR}/payload.tar`].sort());
+});
+
+test('a failed setup reaches the operator with the setup script\'s own message', async () => {
+    const harness = createHarness();
+    harness.client.failSetups = 1;
+    const errors: string[] = [];
+    const logged = mock.method(logger, 'error', (fields: { error?: string }) => { if (fields?.error) errors.push(fields.error); });
+    try {
+        const first = harness.runtime.start(cloneSpec('run-1'), { timeout: 5000 });
+        // The run that needed the Sprite fails with the exit status and the tail of the setup's stderr, not a generic message.
+        await assert.rejects(first.wait(), /Sprite propr-w1-0 setup failed \(exit 1\): ProPR Sprite setup: npm install failed/);
+        await first.release();
+        // So does a replacement after a run, which no run waits for: it is logged.
+        harness.client.behaviors.push({ act: context => { context.sprite.failRestores = 1; harness.client.failSetups = 1; } });
+        const second = harness.runtime.start(cloneSpec('run-2'), { timeout: 5000 });
+        await second.wait();
+        await second.release();
+        assert.equal(second.timings.recycleAction, 'failed');
+        assert.ok(errors.some(error => /setup failed \(exit 1\): ProPR Sprite setup: npm install failed/.test(error)), errors.join('\n'));
+    } finally {
+        logged.mock.restore();
+    }
 });
 
 test('a Sprite that can be neither restored nor replaced is replaced before its next run, never run on', async () => {

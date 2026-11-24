@@ -23,6 +23,12 @@ antigravity_state_files=(
 
 if [ "$antigravity_ephemeral" = "1" ]; then
     antigravity_runtime_home="/tmp/propr-antigravity-home"
+    # A runtime whose /tmp outlives the run (a Sprite's /tmp is a disk its checkpoint restore does not
+    # reset) names another place for the disposable HOME. Only an entrypoint that is already
+    # unprivileged takes it: started as root, this script chowns that directory.
+    case "${PROPR_ANTIGRAVITY_RUNTIME_HOME:-}" in
+        /*) if [ "$(id -u)" != "0" ]; then antigravity_runtime_home="$PROPR_ANTIGRAVITY_RUNTIME_HOME"; fi ;;
+    esac
     antigravity_config_dir="$antigravity_runtime_home/.gemini"
     mkdir -p "$antigravity_config_dir"
 

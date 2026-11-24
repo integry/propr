@@ -6,6 +6,7 @@
 #   launcher.sh follow <stream> <offset> stream stdout|stderr from a 1-based byte offset until the run ends
 #   launcher.sh signal <TERM|KILL>       stop the run
 #   launcher.sh status                   print the run's exit and export status
+#   launcher.sh scrub                    empty /tmp, which a checkpoint restore does not reset
 #
 # Rules this script keeps:
 #   1. It is root only to install the run's files and to start the command the
@@ -18,11 +19,19 @@
 #      are read by a process running AS the agent user (a planted symlink can
 #      only yield what that user may read anyway) into the root-owned export
 #      directory, after every process of the agent user is gone.
-#   3. It cleans nothing up. The worker restores the Sprite's clean checkpoint
-#      after every run; that, not this script, keeps runs apart.
+#   3. It cleans up one thing only. The worker restores the Sprite's clean
+#      checkpoint after every run; that, not this script, keeps runs apart.
+#      But a Sprite's /tmp is a separate disk the checkpoint does not cover, so:
+#      a directory the run was to get under /tmp is created on the checkpointed
+#      root and only linked from /tmp, and `scrub` (run by the worker once the
+#      run's processes are gone, before every restore) empties /tmp.
 set -u
 
 RUN_DIR=/opt/propr/run
+# Not part of a Sprite's checkpoint: a separate disk that keeps its content through a restore.
+TMP_DIR=/tmp
+# Root-owned, on the checkpointed root: where the directories a run was to get under TMP_DIR really are.
+MOUNT_DIR=/var/lib/propr/mounts
 AGENT_USER=node
 # One byte over the worker's limit, so an oversize file is seen as oversize and refused there.
 EXPORT_READ_BYTES=1048577
@@ -85,7 +94,7 @@ export_output() {
 }
 
 run_launcher() {
-    local uid owner status child kind src dst mode i count export_state input
+    local uid owner status child kind src dst real i count export_state input
     local -a argv envv manifest outputs
     [ "$(id -u)" = "0" ] || { echo "ProPR Sprites launcher: must run as root through passwordless sudo" >&2; exit "$LAUNCHER_FAILURE"; }
     cd "$RUN_DIR" || exit "$LAUNCHER_FAILURE"
@@ -130,28 +139,35 @@ run_launcher() {
     while [ "$i" -lt "$count" ]; do
         kind="${manifest[$i]}"
         case "$kind" in
+            store|source|file) src="in/${manifest[$((i + 1))]}"; dst="${manifest[$((i + 2))]}"; i=$((i + 3)) ;;
+            dir) dst="${manifest[$((i + 1))]}"; i=$((i + 2)) ;;
+            *) dst="" ;;
+        esac
+        # What the run keeps under TMP_DIR would outlive the restore: it is created on the checkpointed root and linked from there.
+        real="$dst"
+        case "$dst" in "$TMP_DIR"/*) real="$MOUNT_DIR/$i" ;; esac
+        case "$kind" in
             store)
                 # A credential store the CLI refreshes in place: owned by the agent user.
-                src="in/${manifest[$((i + 1))]}"; dst="${manifest[$((i + 2))]}"; i=$((i + 3))
-                rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && cp -a -- "$src" "$dst" && chown -R "$AGENT_USER:$AGENT_USER" -- "$dst" && chmod 700 -- "$dst" \
+                rm -rf -- "$real" && mkdir -p -- "$(dirname -- "$real")" && cp -a -- "$src" "$real" && chown -R "$AGENT_USER:$AGENT_USER" -- "$real" && chmod 700 -- "$real" \
                     || fail "cannot install credentials at $dst" ;;
             source)
                 # A credential source the entrypoint copies from: the agent user can read it, never change it.
-                src="in/${manifest[$((i + 1))]}"; dst="${manifest[$((i + 2))]}"; i=$((i + 3))
-                rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && cp -a -- "$src" "$dst" && chown -R "root:$AGENT_USER" -- "$dst" && chmod -R u=rwX,g=rX,o= -- "$dst" \
+                rm -rf -- "$real" && mkdir -p -- "$(dirname -- "$real")" && cp -a -- "$src" "$real" && chown -R "root:$AGENT_USER" -- "$real" && chmod -R u=rwX,g=rX,o= -- "$real" \
                     || fail "cannot install credentials at $dst" ;;
             file)
                 # A read-only file of the worker's (a read-only bind in the image).
-                src="in/${manifest[$((i + 1))]}"; dst="${manifest[$((i + 2))]}"; i=$((i + 3))
-                rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && install -m 0440 -o root -g "$AGENT_USER" -- "$src" "$dst" || fail "cannot install $dst" ;;
+                rm -rf -- "$real" && mkdir -p -- "$(dirname -- "$real")" && install -m 0440 -o root -g "$AGENT_USER" -- "$src" "$real" || fail "cannot install $dst" ;;
             dir)
                 # An empty directory standing in for a log bind or a tmpfs.
-                dst="${manifest[$((i + 1))]}"; i=$((i + 2))
-                mkdir -p -- "$dst" && chown "$AGENT_USER:$AGENT_USER" -- "$dst" || fail "cannot create $dst" ;;
+                mkdir -p -- "$real" && chown "$AGENT_USER:$AGENT_USER" -- "$real" || fail "cannot create $dst" ;;
             output)
                 outputs+=("${manifest[$((i + 1))]}" "${manifest[$((i + 2))]}"); i=$((i + 3)) ;;
             *) fail "unknown manifest record $kind" ;;
         esac
+        if [ "$real" != "$dst" ]; then
+            mkdir -p -- "$(dirname -- "$dst")" && ln -s -- "$real" "$dst" || fail "cannot link $dst"
+        fi
     done
     umask 077
     rm -rf in/store in/files in/manifest
@@ -236,6 +252,27 @@ print_status() {
     printf 'running=%s\nexit=%s\nexport=%s\n' "$running" "$(cat "$RUN_DIR/exit-status" 2>/dev/null)" "$(cat "$RUN_DIR/export-status" 2>/dev/null)"
 }
 
+# Removes everything under <dir> without following symlinks or crossing into
+# another filesystem; status 1 when something is left.
+empty_directory() {
+    local dir="$1"
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    find "$dir" -xdev -mindepth 1 -delete 2>/dev/null
+    [ -z "$(find "$dir" -xdev -mindepth 1 -print -quit 2>/dev/null)" ]
+}
+
+# What a checkpoint restore leaves of a run: the content of TMP_DIR. Only once
+# no process of the agent user is left to write there again.
+scrub_run() {
+    local uid
+    [ "$(id -u)" = "0" ] || { echo "ProPR Sprites launcher: must run as root through passwordless sudo" >&2; exit "$LAUNCHER_FAILURE"; }
+    if uid="$(agent_uid)"; then
+        kill_agent_processes "$uid" || { echo "processes of the $AGENT_USER user survived SIGKILL; $TMP_DIR was not emptied" >&2; exit 1; }
+    fi
+    empty_directory "$TMP_DIR" || { echo "could not empty $TMP_DIR" >&2; exit 1; }
+    exit 0
+}
+
 # Sourcing the script (the unit tests do) only defines the functions above.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -244,5 +281,6 @@ case "${1:-}" in
     follow) follow_output "${2:-}" "${3:-}" ;;
     signal) signal_run "${2:-TERM}" ;;
     status) print_status ;;
-    *) echo "usage: launcher.sh run | follow <stdout|stderr> <offset> | signal <TERM|KILL> | status" >&2; exit 2 ;;
+    scrub) scrub_run ;;
+    *) echo "usage: launcher.sh run | follow <stdout|stderr> <offset> | signal <TERM|KILL> | status | scrub" >&2; exit 2 ;;
 esac

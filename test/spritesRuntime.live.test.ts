@@ -20,7 +20,9 @@ import { test } from 'node:test';
  * unprivileged `node` user without sudo, cannot read the run directory, and
  * the "refreshed" credential comes back through the export. It leaves files
  * in every place a run can write. Run 2 (warm) must find none of them: the
- * checkpoint was restored when run 1 ended. Both runs print their timings.
+ * checkpoint was restored when run 1 ended, and /tmp (a separate disk on a
+ * Sprite, which the restore does not reset) was emptied before that. Both
+ * runs print their timings.
  *
  * No repository is involved: a stand-in for the clone wrapper only starts the
  * setup wrapper and provider entrypoint. A full task run (clone, agent, result
@@ -31,6 +33,8 @@ const token = process.env.PROPR_SPRITES_LIVE_TOKEN?.trim();
 const LEFTOVERS = [
     '/home/node/workspace/propr-live-leftover', '/home/node/.propr-live-leftover', '/tmp/propr-live-leftover', '/var/tmp/propr-live-leftover',
     '/dev/shm/propr-live-leftover', '/tmp/claude-logs/propr-live-leftover', '/home/node/.claude/projects/propr-live-leftover',
+    // /tmp is not covered by a Sprite's checkpoint: these are gone only because the launcher emptied it before the restore.
+    '/tmp/propr-live-nested/deeper/leftover', '/tmp/.propr-live-hidden', '/var/lib/propr/run/propr-live-leftover',
 ];
 
 test('real Sprite: pinned CLIs, unprivileged agent, credential export, and a clean checkpoint between runs', {
@@ -96,6 +100,8 @@ test('real Sprite: pinned CLIs, unprivileged agent, credential export, and a cle
             echo "agy=$(agy --version | head -n 1)"
             echo "stdin=$(cat)"
             echo "token-env=\${PROPR_SPRITES_TOKEN:-unset}"
+            echo "tmpdir=$TMPDIR made=$(dirname "$(mktemp)")"
+            echo "logs=$(readlink -f /tmp/claude-logs)"
             echo "received=$(cat /home/node/.claude/.credentials.json)"
             printf 'live-token-v2' > /home/node/.claude/.credentials.json
             for file in ${LEFTOVERS.join(' ')}; do mkdir -p "$(dirname "$file")" 2>/dev/null; echo left > "$file" 2>/dev/null || echo "cannot-leave=$file"; done
@@ -112,6 +118,9 @@ test('real Sprite: pinned CLIs, unprivileged agent, credential export, and a cle
         assert.ok(output.includes(`agy=${pins.ANTIGRAVITY_CLI_VERSION}`), 'the pinned Antigravity CLI runs');
         assert.match(output, /stdin=prompt from stdin/);
         assert.match(output, /token-env=unset/);
+        // Scratch and the log directory are on the checkpointed root, not on /tmp.
+        assert.match(output, /tmpdir=\/var\/lib\/propr\/run made=\/var\/lib\/propr\/run$/m);
+        assert.match(output, /logs=\/var\/lib\/propr\/mounts\/\d+$/m);
         assert.match(output, /received=live-token-v1/);
         assert.ok(!output.includes(token!) && !first.result.stderr.includes(token!));
         assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), 'live-token-v2', 'the refreshed credential returned through the export');
@@ -119,6 +128,9 @@ test('real Sprite: pinned CLIs, unprivileged agent, credential export, and a cle
 
         const second = await run('warm', `
             for file in ${LEFTOVERS.join(' ')}; do if [ -e "$file" ]; then echo "survived=$file"; fi; done
+            for entry in /tmp/* /tmp/.[!.]*; do
+                if [ -e "$entry" ] && [ "$entry" != /tmp/claude-logs ] && [ -O "$entry" ]; then echo "survived=$entry"; fi
+            done
             if pgrep -u "$(id -u)" -x sleep >/dev/null 2>&1; then echo "survived=process"; fi
             echo "received=$(cat /home/node/.claude/.credentials.json)"
             echo checked

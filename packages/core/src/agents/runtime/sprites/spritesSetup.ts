@@ -17,14 +17,25 @@ export const SPRITES_SETUP_SCRIPT = 'sprites-agent-setup.sh';
 export const SPRITES_SETUP_FILES: readonly string[] = Object.freeze([
     SPRITES_SETUP_SCRIPT, 'sprites-launcher.sh', 'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh', 'gh-wrapper.sh',
 ]);
-/** Where the worker uploads the setup files on a new Sprite (nothing agent-controlled has run there yet). */
+/** Where the worker uploads the setup files on a new Sprite (nothing agent-controlled has run there yet); setup removes it. */
 export const SPRITES_SETUP_UPLOAD_DIR = '/tmp/propr-sprites-setup';
 export const SPRITES_LAUNCHER = '/opt/propr/launcher.sh';
 /** The one run directory of a Sprite: empty in the clean checkpoint, readable only by the filesystem API's user and root. */
 export const SPRITES_RUN_DIR = '/opt/propr/run';
 export const SPRITES_ENTRYPOINT_DIR = '/opt/propr/entrypoints';
 export const SPRITES_BIN_DIR = '/opt/propr/bin';
+/**
+ * A Sprite's `/tmp` is a separate disk: a checkpoint restore does not reset it
+ * (verified on real Sprites; `/home`, `/var/tmp` and the rest of the root are).
+ * So nothing of a run is put there. This directory, on the checkpointed root,
+ * is the run's `TMPDIR` and holds Antigravity's disposable HOME; the launcher
+ * empties `/tmp` itself before every restore ({@link restoreCleanCheckpoint}).
+ */
+export const SPRITES_SCRATCH_DIR = '/var/lib/propr/run';
+/** Not covered by a Sprite's checkpoint. */
+export const SPRITES_UNCHECKPOINTED_TMP = '/tmp';
 const SETUP_TIMEOUT_MS = 20 * 60_000;
+const SCRUB_TIMEOUT_MS = 5 * 60_000;
 const CHECKPOINT_COMMENT_PREFIX = 'propr-clean ';
 
 /** CLI pins the setup script installs: the `propr/agent` image's own `ARG`s, so both runtimes run the same CLIs. */
@@ -137,6 +148,16 @@ export async function provisionSprite(sprite: SpriteLike, bundle: SpritesSetupBu
     return { spriteId: sprite.id ?? '', checkpointId: checkpoint.id, setupHash: bundle.hash };
 }
 
+/**
+ * Brings a Sprite back to its clean state: the launcher's `scrub` empties
+ * `/tmp` (which the checkpoint does not cover) once no process of the agent
+ * user is left, then the checkpoint is restored. A Sprite whose `/tmp` could
+ * not be emptied is not restored: the error has the caller destroy it.
+ */
 export async function restoreCleanCheckpoint(sprite: SpriteLike, state: SpriteCleanState): Promise<void> {
+    const scrubbed = await execOnSprite(sprite, 'sudo', ['-n', '/bin/bash', SPRITES_LAUNCHER, 'scrub'], { timeout: SCRUB_TIMEOUT_MS });
+    if (scrubbed.exitCode !== 0) {
+        throw new Error(`Sprite ${sprite.name} could not empty ${SPRITES_UNCHECKPOINTED_TMP}, which its checkpoint does not cover (exit ${scrubbed.exitCode}): ${tail(scrubbed.stderr)}`);
+    }
     await drainSpriteStream(await sprite.restoreCheckpoint(state.checkpointId), `Restoring Sprite ${sprite.name} to its clean checkpoint ${state.checkpointId}`);
 }

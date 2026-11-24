@@ -263,6 +263,32 @@ test('clone mode: the run clones the base, the worker applies its result as unco
     assert.equal(grepToken(f.resultDir), '');
 });
 
+test('a root wrapper clones into a workspace directory the agent user already owns (git\'s dubious-ownership check)', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    // A prepared VM (a Sprite, a Fly Machine) has the agent user's workspace directory before the root wrapper clones
+    // into it. Git then refuses every command there unless the directory is a safe.directory, and the wrapper sets its
+    // own GIT_CONFIG_COUNT, so only the wrapper can say so. No root here: git is told to see another owner, in the
+    // workspace only. A fetch is left out: its upload-pack child would inherit the switch for the wrapper's private
+    // repository, which is root's own in a real run.
+    fs.mkdirSync(f.sandbox);
+    const realGit = execFileSync('/bin/bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    write(path.join(f.root, 'bin', 'git'), `#!/bin/bash\ncase "$PWD/ $*" in ${JSON.stringify(`${f.sandbox}/`)}*" fetch "*) ;; ${JSON.stringify(`${f.sandbox}/`)}*) export GIT_TEST_ASSUME_DIFFERENT_OWNER=1 ;; esac\nexec ${JSON.stringify(realGit)} "$@"\n`, 0o755);
+    const refused = spawnSync(path.join(f.root, 'bin', 'git'), ['init', '-q', '.'], { cwd: f.sandbox, encoding: 'utf8' });
+    assert.equal(refused.status, 0, refused.stderr);
+    const probe = spawnSync(path.join(f.root, 'bin', 'git'), ['status'], { cwd: f.sandbox, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+    assert.match(probe.stderr, /dubious ownership/, 'the simulation reproduces git\'s refusal');
+    fs.rmSync(path.join(f.sandbox, '.git'), { recursive: true });
+
+    const result = await runWithWorkspaceTransport(runtime, runSpec(f, { env: { GIT_CONFIG_NOSYSTEM: '1' } }), { stdinData: 'the prompt' }, { transport: f.transport });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /dubious ownership/);
+    assert.match(result.stderr, new RegExp(`cloned ${f.base} into ${f.sandbox}`));
+    // The snapshot (git as the agent, in the workspace) came back too.
+    assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'changed\n');
+    assert.ok(fs.existsSync(path.join(f.worktree, 'new.txt')));
+});
+
 test('clone mode falls back to a bundle read through the runtime file API when the result push is refused', async () => {
     const f = fixture();
     const runtime = localRuntime(f);
