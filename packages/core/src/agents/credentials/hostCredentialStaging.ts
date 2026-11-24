@@ -78,11 +78,46 @@ function perRunCredentialMounts(spec: AgentRunSpec): CredentialBindMount[] {
     return spec.mounts.filter((mount): mount is CredentialBindMount => mount.type === 'bind' && !!mount.credentialStore?.perRun);
 }
 
-/** Variables the run defines with a value, either literally or inherited from the launch environment. */
+/**
+ * Values an `--env-file` gives the run, parsed as the Docker CLI does: lines
+ * trimmed on the left, `#` comments, `NAME=value` taken verbatim and a bare
+ * `NAME` inherited from the client environment (omitted when unset there).
+ * An unreadable file defines nothing here; Docker refuses to start the run.
+ */
+function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
+    const values = new Map<string, string>();
+    let content: string;
+    try { content = fs.readFileSync(filePath, 'utf8'); } catch { return values; }
+    for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+        const line = rawLine.trimStart();
+        if (!line || line.startsWith('#')) continue;
+        const separator = line.indexOf('=');
+        const name = separator === -1 ? line : line.slice(0, separator);
+        const value = separator === -1 ? launchEnvironment[name] : line.slice(separator + 1);
+        if (value !== undefined) values.set(name, value);
+    }
+    return values;
+}
+
+/**
+ * Variables the run defines with a value: literally, inherited from the
+ * launch environment, or through an environment file. Docker applies `-e`
+ * after every `--env-file` (later files overriding earlier ones), so a
+ * fallback secret appended by name would replace an env-file value; those
+ * variables must count as defined too.
+ */
 function definedVariables(spec: AgentRunSpec, launchEnvironment: Environment): string[] {
-    return [...(spec.repoSetup?.env ?? []), ...spec.env]
-        .filter(variable => (variable.value ?? launchEnvironment[variable.name] ?? '') !== '')
-        .map(variable => variable.name);
+    const effective = new Map<string, string>();
+    for (const file of [...spec.envFiles].sort((left, right) => left.order - right.order)) {
+        for (const [name, value] of envFileValues(file.path, launchEnvironment)) effective.set(name, value);
+    }
+    for (const variable of [...(spec.repoSetup?.env ?? []), ...spec.env]) {
+        const value = variable.value ?? launchEnvironment[variable.name];
+        // A bare name unset in the client environment unsets the variable, env-file value included.
+        if (value === undefined) effective.delete(variable.name);
+        else effective.set(variable.name, value);
+    }
+    return [...effective].filter(([, value]) => value !== '').map(([name]) => name);
 }
 
 /**

@@ -174,6 +174,53 @@ test('API-key runs do not receive the OAuth token file, and secret files never o
     void vibe.complete();
 });
 
+test('variables supplied through an environment file take precedence over fallback secrets and API-key detection', () => {
+    const envDir = fs.mkdtempSync(path.join(scratch, 'env-'));
+    const vibeRoot = makeStore({ '.env': 'MISTRAL_API_KEY=old-key\n', 'config.toml': '' });
+    const envFile = path.join(envDir, 'agent.env');
+    fs.writeFileSync(envFile, '# selected for this run\nMISTRAL_API_KEY=selected-key\nGH_TOKEN=gh\n');
+    const builder = new AgentRunSpecBuilder({
+        agentType: 'vibe', image: 'propr/agent:test', name: 'vibe-issue-1-env', stdin: false, network: agentRunNetwork('bridge'),
+        workspace: { hostPath: '/tmp/w', containerPath: '/home/node/workspace', readOnly: false },
+    }).workspaceMount();
+    builder.credentialBind(vibeRoot, '/home/node/.vibe', true, { provider: 'vibe', store: 'config', perRun: true });
+    builder.envFile(envFile);
+    const vibe = stageAgentRunCredentials(builder.command('vibe').build(), { environment: brokerEnvironment });
+    assert.ok(vibe);
+    assert.deepEqual(vibe.secretEnv, {}, 'the canonical .env key is not injected over the run\'s env-file key');
+    assert.ok(!renderDockerRunArgs(vibe.spec).includes('MISTRAL_API_KEY'), 'no name-only -e would override the env file');
+    void vibe.complete();
+
+    // A bare name in an env file inherits the launch environment, as the Docker CLI does.
+    const codexRoot = makeStore({ 'auth.json': '{"oauth":1}', 'config.toml': '' });
+    const codexEnv = path.join(envDir, 'codex.env');
+    fs.writeFileSync(codexEnv, '  CODEX_API_KEY\n');
+    const codexSpec = specWith([{ provider: 'codex', source: codexRoot, target: '/home/node/.codex' }]);
+    codexSpec.envFiles.push({ path: codexEnv, order: 999 });
+    const apiKeyRun = stageAgentRunCredentials(codexSpec, { environment: brokerEnvironment, launchEnvironment: { CODEX_API_KEY: 'sk-codex' } });
+    assert.ok(apiKeyRun);
+    assert.deepEqual(apiKeyRun.bundle.stores[0].skipped, [{ path: 'auth.json', reason: 'api-key-env' }]);
+    void apiKeyRun.complete();
+    const oauthRun = stageAgentRunCredentials(codexSpec, { environment: brokerEnvironment, launchEnvironment: {} });
+    assert.ok(oauthRun);
+    assert.deepEqual(oauthRun.bundle.stores[0].outputs, ['auth.json'], 'an unset bare name defines nothing');
+    void oauthRun.complete();
+});
+
+test('write-back keeps the canonical mode under a restrictive worker umask', async () => {
+    const root = makeStore({ 'auth.json': 'v0' }, { 'auth.json': 0o640 });
+    const staged = stageAgentRunCredentials(specWith([{ provider: 'codex', source: root, target: '/home/node/.codex' }]), { environment: brokerEnvironment })!;
+    refreshIn(stagedSource(staged.spec, '/home/node/.codex'), 'auth.json', 'v1');
+    const previousUmask = process.umask(0o077);
+    try {
+        assert.equal((await staged.complete())[0].outcome, 'written');
+    } finally {
+        process.umask(previousUmask);
+    }
+    assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), 'v1');
+    assert.equal(fs.statSync(path.join(root, 'auth.json')).mode & 0o777, 0o640);
+});
+
 test('feature flag: legacy keeps the direct mount; managed native diagnostics default to legacy', () => {
     const root = makeStore({ 'auth.json': '{}' });
     const spec = specWith([{ provider: 'codex', source: root, target: '/home/node/.codex' }]);

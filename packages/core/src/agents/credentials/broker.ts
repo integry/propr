@@ -225,7 +225,7 @@ function ownerFor(root: string, relative: string): { uid: number; gid: number } 
     return undefined;
 }
 
-/** Atomically replace `root/relative`, keeping the canonical owner and the run's refresh time. */
+/** Atomically replace `root/relative`, keeping the canonical owner and mode and the run's refresh time. */
 function writeCanonical(root: string, relative: string, file: ReturnedCredentialFile, mode: number): void {
     const target = path.join(root, relative);
     const parent = path.dirname(target);
@@ -238,8 +238,10 @@ function writeCanonical(root: string, relative: string, file: ReturnedCredential
     const fd = fs.openSync(temporary, 'wx', mode);
     try {
         fs.writeSync(fd, file.content);
-        fs.fsyncSync(fd);
         if (process.getuid?.() === 0 && owner) fs.fchownSync(fd, owner.uid, owner.gid);
+        // open() applied the worker's umask; the rename must carry the canonical mode exactly.
+        fs.fchmodSync(fd, mode);
+        fs.fsyncSync(fd);
     } catch (error) {
         fs.closeSync(fd);
         fs.rmSync(temporary, { force: true });
