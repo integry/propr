@@ -690,3 +690,66 @@ test('a worker stopped during the donor leaves an incident that blocks another d
     assert.equal(donors.mock.callCount(), 0);
     await assert.rejects(access(markerPath(f)));
 });
+
+test('a successful fetch does not close an incident whose recorded revision is still damaged', async t => {
+    const f = await fixture(t);
+    await f.removeObject(f.blob);
+    const donors = t.mock.method(fs, 'mkdtemp');
+    // The fetch needed the missing blob as a delta base, and the donor could not reach the remote.
+    await f.git.remote(['set-url', 'origin', path.join(f.root, 'unavailable')]);
+    await assert.rejects(fetchWithObjectRecovery(f.git, async () => {
+        throw new Error('fatal: unresolved deltas left after unpacking');
+    }, 'main'), RepositoryRepairRequiredError);
+    await f.git.remote(['set-url', 'origin', f.remote]);
+    assert.equal(donors.mock.callCount(), 1);
+    const failed = await readFile(markerPath(f), 'utf8');
+    assert.deepEqual([JSON.parse(failed).revision, JSON.parse(failed).fetchVerificationPending], [f.revision, true]);
+
+    // The remote branch is at the cached revision: the fetch needs no objects and restores none.
+    let fetches = 0;
+    const recovery = () => fetchWithObjectRecovery(f.git, () => { fetches++; return fetchMain(f)(); }, 'main');
+    await assert.rejects(recovery(), error => {
+        assert.ok(error instanceof RepositoryRepairRequiredError);
+        assert.ok(error instanceof UnrecoverableError);
+        assert.ok(error.message.includes(`revision ${f.revision}: objects recorded by a previous automatic repair are still missing`), error.message);
+        return true;
+    });
+    assert.equal(fetches, 1);
+    assert.equal(await readFile(markerPath(f), 'utf8'), failed);
+    // Preparation meets the same damage and is refused instead of starting another donor.
+    await assert.rejects(ensureWorktreeObjects(f.git, f.revision), /previous automatic repair failed or was interrupted/);
+    assert.equal(donors.mock.callCount(), 1);
+    assert.equal(await readFile(markerPath(f), 'utf8'), failed);
+
+    // An operator restores the object directly; the next fetch verifies it and closes the incident.
+    execFileSync('git', ['-C', f.clone, 'hash-object', '-w', '--stdin'], { input: 'original' });
+    await recovery();
+    await assert.rejects(access(markerPath(f)));
+    assert.equal(donors.mock.callCount(), 1);
+    await f.git.raw(['fsck', '--no-dangling']);
+});
+
+test('damage found on another ref does not replace an incident whose recorded revision is still damaged', async t => {
+    const f = await fixture(t);
+    const other = await publish(f, 'other', 'other branch');
+    await f.removeObject(f.blob);
+    await f.removeObject(other);
+    // Left by a donor that failed for the blob; the fetch is now blocked by the other ref.
+    const failed = JSON.stringify({ revision: f.revision, startedAt: 'earlier', fetchVerificationPending: true });
+    await writeFile(markerPath(f), failed);
+    const donors = t.mock.method(fs, 'mkdtemp');
+    const recovery = () => fetchWithObjectRecovery(f.git, fetchMain(f), 'main');
+    await assert.rejects(recovery(), error => {
+        assert.ok(error instanceof RepositoryRepairRequiredError);
+        assert.ok(error.message.includes("ref 'refs/remotes/origin/other'"), error.message);
+        return true;
+    });
+    assert.equal(await readFile(markerPath(f), 'utf8'), failed);
+
+    // Restoring only the other ref lets the fetch succeed, and the recorded blob is still missing.
+    await f.git.raw(['fetch', 'origin', other]);
+    await assert.rejects(recovery(), /objects recorded by a previous automatic repair are still missing/);
+    assert.equal(await readFile(markerPath(f), 'utf8'), failed);
+    await assert.rejects(ensureWorktreeObjects(f.git, f.revision), /previous automatic repair failed or was interrupted/);
+    assert.equal(donors.mock.callCount(), 0);
+});

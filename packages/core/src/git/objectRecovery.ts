@@ -258,25 +258,47 @@ async function* fetchRecoveryCandidates(
     }
 }
 
-/** The ordinary fetch succeeded under the gate: an incident that was waiting for it is over. */
-async function clearVerifiedFetch(common: string): Promise<void> {
+/** The revision an incident recorded, when it is one that can be verified. */
+function recordedRevision(contents: string): string | undefined {
+    try {
+        const recorded: unknown = JSON.parse(contents)?.revision;
+        return typeof recorded === 'string' && OBJECT_ID.test(recorded) ? recorded : undefined;
+    } catch { return undefined; }
+}
+
+/**
+ * The ordinary fetch succeeded under the gate. That alone proves nothing about
+ * the recorded damage: a fetch that needs no new objects passes over a missing
+ * tree or blob. Only a complete closure of the recorded revision ends the
+ * incident; otherwise it stays recorded and no donor is started.
+ */
+async function clearVerifiedFetch(git: SimpleGit, common: string): Promise<void> {
     const marker = path.join(common, OBJECT_REPAIR_MARKER);
     const contents = await readMarker(marker);
     if (contents === undefined || !awaitsFetch(contents)) return;
+    const recorded = recordedRevision(contents);
+    if (recorded === undefined) return; // Retain unverifiable incident data for an operator.
+    if (await hasMissingObjects(git, common, recorded)) {
+        throw new RepositoryRepairRequiredError(common,
+            `revision ${recorded}: objects recorded by a previous automatic repair are still missing after a successful fetch`);
+    }
     await removeStaleDonors(common);
     await unlinkVerifiedMarker(marker, contents);
 }
 
-/** Point the retained incident at the damage that still blocks the fetch. It keeps waiting for the fetch. */
-async function retainIncidentFor(common: string, revision: string, context: string): Promise<void> {
+/**
+ * Point the retained incident at the damage that still blocks the fetch. It
+ * keeps waiting for the fetch. Damage it already records is replaced only once
+ * its closure is complete, so an unresolved revision is never forgotten.
+ */
+async function retainIncidentFor(git: SimpleGit, common: string, revision: string, context: string): Promise<void> {
     const marker = path.join(common, OBJECT_REPAIR_MARKER);
     const current = await readMarker(marker);
     // An operator removed the marker outside the gate; this attempt is still spent.
     if (current === undefined) return void await recordIncident(common, revision, context, true);
-    let recorded: unknown;
-    try { recorded = JSON.parse(current)?.revision; }
-    catch { return; } // Retain unreadable incident data for an operator.
-    if (recorded === revision) return;
+    const recorded = recordedRevision(current);
+    // Retain unverifiable incident data for an operator.
+    if (recorded === undefined || recorded === revision || await hasMissingObjects(git, common, recorded)) return;
     const replacement = `${marker}.next`;
     await fs.writeFile(replacement, JSON.stringify({ revision, startedAt: new Date().toISOString(), fetchVerificationPending: true }), { mode: 0o600 });
     await fs.rename(replacement, marker);
@@ -294,7 +316,7 @@ async function remainingDamage(
     for await (const { revision, ref } of fetchRecoveryCandidates(git, error, branch)) {
         if (!await hasMissingObjects(git, common, revision)) continue;
         const context = `ref '${ref}': `;
-        await retainIncidentFor(common, revision, context);
+        await retainIncidentFor(git, common, revision, context);
         const reason = repaired
             ? 'objects are still missing after the one automatic repair restored another ref'
             : 'a previous automatic repair failed or was interrupted before its fetch succeeded';
@@ -333,7 +355,7 @@ export async function fetchWithObjectRecovery<T>(
                 if (!repaired) throw error;
                 continue;
             }
-            await clearVerifiedFetch(common);
+            await clearVerifiedFetch(git, common);
             return result;
         }
     });
