@@ -24,6 +24,7 @@ import { buildTunnelSetupEnv } from "./tunnelCommand.js";
 import { createFlyctlRunner, detectFlyctl, FlyctlBackend } from "./deploy/flyctlBackend.js";
 import { FlyMachinesApi } from "./deploy/flyMachinesApi.js";
 import { planFlyRelay, resolveFlyRelaySecrets, type FlyRelayDeps } from "./deploy/flyRelay.js";
+import { selectFlyIntakeMode } from "./deploy/flyIntake.js";
 import { describeFlyBrowserAuth, flyOAuthCallbackUrl, planFlyBrowserAuth, type FlyBrowserAuth } from "./deploy/flyBrowserAuth.js";
 import {
   createFlyctlTarget,
@@ -282,9 +283,14 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   const generatedSecrets = { SESSION_SECRET: randomBytes(32).toString("hex") };
 
   if (options.dryRun) {
-    const files = writeFlyFiles(plan, outDir);
+    // Fly is not asked for the secrets an earlier deploy left, so the files
+    // list (and the intake check sees) only the ones this run would set.
+    const intake = relayPlan.kind === "enroll" ? undefined : selectFlyIntakeMode(secrets, new Set());
+    const dryRunSecrets = { ...secrets, ...intake?.secrets, ...generatedSecrets };
+    const files = writeFlyFiles({ ...plan, secretNames: Object.keys(dryRunSecrets) }, outDir);
     console.log(`Dry run: wrote ${files.flyToml} and ${files.machineConfig}; nothing was sent to Fly.`);
-    console.log(`Secrets that would be set: ${[...Object.keys(secrets), ...Object.keys(generatedSecrets)].sort().join(", ") || "(none)"}`);
+    console.log(`Secrets that would be set: ${Object.keys(dryRunSecrets).sort().join(", ") || "(none)"}`);
+    if (intake) console.log(intake.summary);
     if (relayPlan.kind === "enroll") console.log("Note: a real run enrolls a GitHub relay token for this Machine.");
     for (const note of notes) console.log(`Note: ${note}`);
     printSummary(plan, browserAuth);

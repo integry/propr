@@ -9,6 +9,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
 
 export interface FlyctlRunResult {
   status: number | null;
@@ -20,6 +21,8 @@ export interface FlyctlRunOptions {
   input?: string;
   /** Stream output to the terminal instead of capturing it (long-running deploys). */
   inherit?: boolean;
+  /** Working directory for flyctl (defaults to the caller's). */
+  cwd?: string;
 }
 
 export type FlyctlRunner = (args: string[], options?: FlyctlRunOptions) => FlyctlRunResult;
@@ -28,6 +31,7 @@ export function createFlyctlRunner(bin: string, env: NodeJS.ProcessEnv = process
   return (args, options = {}) => {
     const result = spawnSync(bin, args, {
       env,
+      cwd: options.cwd,
       input: options.input,
       encoding: "utf-8",
       stdio: options.inherit ? ["pipe", "inherit", "inherit"] : ["pipe", "pipe", "pipe"],
@@ -123,11 +127,16 @@ export class FlyctlBackend {
     check(this.run(["secrets", "import", "--app", app, "--stage"], { input: renderSecretsImport(values) }), "secrets import");
   }
 
-  /** Deploy the published image directly: no remote builder, no Docker-in-Docker. */
+  /**
+   * Deploy the published image directly: no remote builder, no Docker-in-Docker.
+   * flyctl resolves fly.toml's relative paths (machine_config) against its
+   * working directory rather than the config file, so it runs from the
+   * config's directory; the generated fly.toml also uses an absolute path.
+   */
   deploy(input: { app: string; configPath: string; image: string; region: string }): void {
     check(this.run([
       "deploy", "--app", input.app, "--config", input.configPath, "--image", input.image,
       "--primary-region", input.region, "--ha=false", "--yes",
-    ], { inherit: true }), "deploy");
+    ], { inherit: true, cwd: dirname(input.configPath) }), "deploy");
   }
 }

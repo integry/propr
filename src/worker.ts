@@ -117,6 +117,8 @@ interface WorkerOptions {
     help?: boolean;
     /** Install the standalone SIGINT/SIGTERM handlers that close and exit (default true). */
     installSignalHandlers?: boolean;
+    /** Aborts startup (the agent image readiness wait) when a supervisor shuts down mid-startup. */
+    signal?: AbortSignal;
 }
 
 function parseArguments(): WorkerOptions {
@@ -265,7 +267,15 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     // Do not advertise or claim task capacity while an image is still building.
-    const agentImageWatchdog = startAgentImageWatchdog(await prepareAgentRegistryAtStartup());
+    let preparedRegistry: Awaited<ReturnType<typeof prepareAgentRegistryAtStartup>>;
+    try {
+        preparedRegistry = await prepareAgentRegistryAtStartup({ signal: options.signal });
+    } catch (error) {
+        // Aborted by shutdown: nothing else has started yet, so close what has.
+        await Promise.allSettled([runtimeBuildWorker.close(), agentImagePreparationWorker.close(), agentImagePreparationQueue.close()]);
+        throw error;
+    }
+    const agentImageWatchdog = startAgentImageWatchdog(preparedRegistry);
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',

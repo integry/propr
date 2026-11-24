@@ -130,6 +130,19 @@ test("Connect tunnel adds a cloudflared sidecar that resolves api to loopback", 
   assert.equal(JSON.stringify(config).includes("TUNNEL_TOKEN="), false);
 });
 
+test("each container lists the app secrets it needs; Fly passes no others in a multi-container Machine", () => {
+  const secretNames = ["SESSION_SECRET", "PROPR_UI_TUNNEL_TOKEN", "TUNNEL_TOKEN", "ANTHROPIC_API_KEY"];
+  const plan = basePlan({ secretNames, tunnel: { instanceId: "abc", publicUrl: "https://t-abc.propr.dev" } });
+  const byName = Object.fromEntries(buildContainers(plan).map((c) => [c.name, c.secrets]));
+  assert.deepEqual(byName.app, [...secretNames].sort().map((name) => ({ env_var: name, name })));
+  assert.deepEqual(byName.tunnel, [{ env_var: "TUNNEL_TOKEN", name: "TUNNEL_TOKEN" }]);
+  assert.equal(byName.redis, undefined, "Redis needs no secrets");
+  // The flyctl machine_config carries the same lists, names only.
+  const json = JSON.parse(renderFlyMachineConfigJson(plan)) as { containers: JsonObject[] };
+  assert.deepEqual(json.containers.find((c) => c.name === "app")?.secrets, byName.app);
+  assert.deepEqual(buildContainers(basePlan()).find((c) => c.name === "app")?.secrets, []);
+});
+
 test("GitHub App key is written from a secret, not embedded", () => {
   const config = buildMachineConfig(basePlan({ githubAppKey: true }));
   const app = container(config, "app");

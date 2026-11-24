@@ -32,10 +32,13 @@ function flyApp() {
     async secretNames() { return Object.keys(secrets); },
     async setSecrets(_app, values) { Object.assign(secrets, values); },
     async deploy(plan) {
-      // The Machine sees every app secret plus the generated plain env.
-      machineEnv = { ...secrets, ...buildAppEnv(plan) };
-      const containers = buildMachineConfig(plan, "vol_1").containers as Array<{ name: string; files?: unknown }>;
-      appFiles = containers.find((c) => c.name === "app")?.files;
+      // As on Fly: a container in a multi-container Machine sees only the app
+      // secrets it lists, plus the generated plain env.
+      const containers = buildMachineConfig(plan, "vol_1").containers as Array<{ name: string; files?: unknown; secrets?: Array<{ env_var: string; name: string }> }>;
+      const app = containers.find((c) => c.name === "app");
+      const visible = Object.fromEntries((app?.secrets ?? []).filter((s) => s.name in secrets).map((s) => [s.env_var, secrets[s.name]]));
+      machineEnv = { ...visible, ...buildAppEnv(plan) };
+      appFiles = app?.files;
       return "deployed";
     },
   };
@@ -161,11 +164,42 @@ test("a demo-mode app redeployed with a GitHub OAuth client leaves demo mode", a
   const first = await deploy(app, {}, { PROPR_DEMO_MODE: "true" });
   assert.equal(parseTruthyEnvValue(first.PROPR_DEMO_MODE), true);
 
+  // Demo mode has nothing to ingest: the passive intake keeps the daemon up without a relay token.
+  assert.equal(first.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
+  assert.equal(first.SESSION_SECRET, "s", "the app container sees the app secrets");
+
   // PROPR_DEMO_MODE dropped from the local .env; Fly still holds the earlier value.
-  const second = await deploy(app, {}, OAUTH_ENV);
+  const second = await deploy(app, {}, OAUTH_ENV, "gh");
   assert.equal(second.PROPR_DEMO_MODE, "false");
   assert.equal(parseTruthyEnvValue(second.PROPR_DEMO_MODE), false, "the API no longer boots in demo mode");
   assert.equal(second.GH_OAUTH_CLIENT_ID, "Iv1.client");
+  assert.equal(second.GITHUB_EVENT_INTAKE_MODE, "routing_websocket", "the enrolled relay token carries events");
+});
+
+test("secrets left by an earlier deploy stay visible to the app container", async () => {
+  const app = flyApp();
+  await deploy(app, {}, { ...OAUTH_ENV, ANTHROPIC_API_KEY: "sk-earlier" }, "gh");
+  // The next run's .env no longer has the key; Fly still does, and the Machine must see it.
+  const env = await deploy(app, {}, OAUTH_ENV, "gh");
+  assert.equal(env.ANTHROPIC_API_KEY, "sk-earlier");
+  assert.equal(env.PROPR_GH_RELAY_TOKEN, "shared-relay-token");
+});
+
+test("a --no-relay deploy without GitHub credentials stops before uploading secrets", async () => {
+  const app = flyApp();
+  await assert.rejects(deploy(app, { relay: false }, OAUTH_ENV, "gh"), /no GitHub credentials, so its daemon could not start/);
+  assert.deepEqual(app.secrets, {});
+});
+
+test("an own GitHub App without a relay token polls, or takes direct webhooks with a webhook secret", async () => {
+  const polling = await deploy(flyApp(), { relay: false }, OWN_APP_ENV);
+  assert.equal(polling.GITHUB_EVENT_INTAKE_MODE, "polling");
+  const webhook = await deploy(flyApp(), { relay: false }, { ...OWN_APP_ENV, GH_WEBHOOK_SECRET: "whsec" });
+  assert.equal(webhook.GITHUB_EVENT_INTAKE_MODE, "direct_webhook");
+  // Connect enrolls a relay token for sign-in, but the own App keeps API auth, so routing_websocket (relay auth only) is not picked.
+  const connect = await deploy(flyApp(), TUNNEL_FLAGS, OWN_APP_ENV, "gh");
+  assert.equal(connect.GH_AUTH_MODE, "app");
+  assert.equal(connect.GITHUB_EVENT_INTAKE_MODE, "polling");
 });
 
 test("a demo-mode app redeployed with Connect leaves demo mode", async () => {

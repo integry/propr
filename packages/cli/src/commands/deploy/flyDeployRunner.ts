@@ -5,12 +5,16 @@
  *   2. volume     reuse the named volume in the region, else create it; a
  *                 reused volume smaller than the plan is extended and its new
  *                 size confirmed, and the deploy is sized from that capacity
- *   3. secrets    upload the given secrets; generated ones (SESSION_SECRET)
+ *   3. secrets    pin GITHUB_EVENT_INTAKE_MODE to a mode the Machine can run
+ *                 (see flyIntake.ts), then upload the given secrets; generated ones (SESSION_SECRET)
  *                 only when the app does not already have them, so a redeploy
  *                 never logs everybody out or rotates encryption keys; a
  *                 GitHub App key left by an earlier deploy stays wired into
  *                 the Machine (key file + GH_PRIVATE_KEY_PATH)
- *   4. deploy     the published app image directly (no build, no DinD)
+ *   4. deploy     the published app image directly (no build, no DinD);
+ *                 the app container lists every secret name (set now or
+ *                 kept), since a multi-container Machine passes app secrets
+ *                 only to the containers that list them
  *
  * Two targets implement the steps: flyctl (when installed) and the Machines
  * API with a user-provided token. Both are idempotent, so re-running the
@@ -18,8 +22,9 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { FlyctlBackend } from "./flyctlBackend.js";
+import { selectFlyIntakeMode } from "./flyIntake.js";
 import { FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
 import {
   buildMachineConfig,
@@ -123,13 +128,24 @@ export async function runFlyDeploy(
   const uploadsKey = plan.githubAppKey || Boolean(toSet[FLY_GH_PRIVATE_KEY_SECRET]);
   const githubAppKey = uploadsKey || existing.has(FLY_GH_PRIVATE_KEY_SECRET);
   if (githubAppKey && !uploadsKey) log("Keeping the GitHub App private key from an earlier deploy.");
-  // Size everything carved out of the volume (the legacy Docker filesystem) from its confirmed capacity.
-  const deployPlan: FlyDeployPlan = { ...plan, volumeSizeGb, githubAppKey };
+  // Pin an event intake mode the daemon can start with (or stop here, before
+  // any secret is uploaded): unset means routing_websocket, which crashes the
+  // Machine without a relay token.
+  const intake = selectFlyIntakeMode(toSet, existing);
+  Object.assign(toSet, intake.secrets);
+  log(intake.summary);
   const secretsKept: string[] = [];
   for (const [name, value] of Object.entries(input.generatedSecrets)) {
     if (existing.has(name) || name in toSet) secretsKept.push(name);
     else toSet[name] = value;
   }
+  // Size everything carved out of the volume (the legacy Docker filesystem)
+  // from its confirmed capacity. Containers in a multi-container Machine see
+  // only the secrets they list, so list every secret the app will have,
+  // including ones left by earlier deploys (Fly never removes them).
+  const deployPlan: FlyDeployPlan = {
+    ...plan, volumeSizeGb, githubAppKey, secretNames: [...new Set([...existing, ...Object.keys(toSet)])].sort(),
+  };
   await target.setSecrets(plan.app, toSet);
   const secretsSet = Object.keys(toSet).sort();
   // Names only: secret values are never printed.
@@ -141,12 +157,18 @@ export async function runFlyDeploy(
   return { appCreated, volumeCreated: volume.created, secretsSet, secretsKept, volumeSizeGb, deployed };
 }
 
-/** Write fly.toml and its machine_config JSON; returns the fly.toml path. */
+/**
+ * Write fly.toml and its machine_config JSON; returns both paths. fly.toml
+ * points at the JSON by absolute path: flyctl resolves machine_config against
+ * its working directory, not against the config file, so a relative name
+ * breaks `fly deploy --config <out>/fly.toml` run from anywhere else.
+ */
 export function writeFlyFiles(plan: FlyDeployPlan, outDir: string): { flyToml: string; machineConfig: string } {
-  mkdirSync(outDir, { recursive: true });
-  const flyToml = join(outDir, "fly.toml");
-  const machineConfig = join(outDir, FLY_MACHINE_CONFIG_FILE);
-  writeFileSync(flyToml, renderFlyToml(plan));
+  const dir = resolve(outDir);
+  mkdirSync(dir, { recursive: true });
+  const flyToml = join(dir, "fly.toml");
+  const machineConfig = join(dir, FLY_MACHINE_CONFIG_FILE);
+  writeFileSync(flyToml, renderFlyToml(plan, machineConfig));
   writeFileSync(machineConfig, renderFlyMachineConfigJson(plan));
   return { flyToml, machineConfig };
 }

@@ -41,7 +41,7 @@ propr deploy fly --app my-propr --sprites-token "$SPRITES_TOKEN"
 
 | Fly access | What the command does |
 | --- | --- |
-| `flyctl` (or `fly`) on `PATH` | Uses your `fly auth login` session. Writes `fly.toml` and `propr-machine.json` to `--out` (default `./propr-fly`), creates the app and volume, stages secrets with `fly secrets import --stage` (values go over stdin, never argv), then runs `fly deploy --image <manifest image> --ha=false`. |
+| `flyctl` (or `fly`) on `PATH` | Uses your `fly auth login` session. Writes `fly.toml` and `propr-machine.json` to `--out` (default `./propr-fly`), creates the app and volume, stages secrets with `fly secrets import --stage` (values go over stdin, never argv), then runs `fly deploy --image <manifest image> --ha=false` from the `--out` directory. `fly.toml` points at `propr-machine.json` by absolute path, because flyctl resolves `machine_config` against its working directory rather than the config file. |
 | No flyctl | Uses the Machines API (`https://api.machines.dev/v1`) with `--token` or `FLY_API_TOKEN`, for example from `fly tokens create org`. It creates the app, allocates a shared IPv4 and an IPv6, creates the volume, sets secrets, then creates the Machine, or updates it in place on a later run, and waits until it starts. |
 
 Use `--backend flyctl` or `--backend api` to choose explicitly. Every step can be rerun: an existing app, volume or Machine is reused and updated. A reused volume smaller than `--volume-size` (for example the 1 GB default volume when you later add `--legacy-docker`) is extended to that size before any secret is set, and the deploy stops if Fly does not then report the new size. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
@@ -61,6 +61,8 @@ The volume (`propr_data`, 1 GB, encrypted) is mounted at `/usr/src/app/data`, th
 
 These values are plain Machine env. Everything secret is a Fly **app secret** and never appears in `fly.toml`, `propr-machine.json` or the output.
 
+In a multi-container Machine, Fly passes app secrets only to the containers that list them by name. So the `app` container lists every secret the app has after the deploy, including ones an earlier deploy left (the command reads the app's secret names first), and the `tunnel` container lists `TUNNEL_TOKEN`. `propr-machine.json` contains these names, never the values.
+
 ## Secrets
 
 | Secret | Source |
@@ -69,6 +71,7 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 | `SESSION_SECRET` | Generated only when the app does not have one yet, so a redeploy does not sign everyone out. A `SESSION_SECRET` in the `.env` is uploaded as is. |
 | `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64; a `PROPR_GH_PRIVATE_KEY_B64` already in the `.env` is uploaded as is. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. A redeploy without a key keeps the earlier one wired in the same way. |
 | `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
+| `GITHUB_EVENT_INTAKE_MODE` | Written on every run, see [GitHub event intake](#github-event-intake). |
 | `SPRITES_TOKEN` | `--sprites-token` or `SPRITES_TOKEN`. Without it agent runs on Sprites fail, and the command says so. |
 | `FLY_API_TOKEN` | `--agent-fly-token`, for the Fly Machines agent runtime. The deploy token is never reused for agents. |
 | `PROPR_UI_TUNNEL_TOKEN`, `TUNNEL_TOKEN` | `--tunnel-token`. A tunnel token in the stack `.env` is **not** copied: two connectors on one tunnel would split traffic, so moving the tunnel to Fly is explicit. |
@@ -76,6 +79,18 @@ These values are plain Machine env. Everything secret is a Fly **app secret** an
 ## GitHub relay and Connect
 
 **GitHub relay.** When the stack brings neither its own GitHub App (`GH_APP_ID` plus a key) nor a relay token, and you are logged in with `propr login`, the command enrolls a new relay token labelled `fly:<app>@<host>`, just as `propr relay enroll` does. Connect sign-in (below) also needs a relay token, even with your own GitHub App: with the tunnel flags and no relay token, the command enrolls one. If it cannot enroll (not logged in, or `--no-relay`), it stops before creating anything on Fly. Your own GitHub App keeps GitHub API calls (`GH_AUTH_MODE=app`), with or without the tunnel flags and even next to a relay token, unless the `.env` sets `GH_AUTH_MODE` itself. The App's `GH_INSTALLATION_ID` must then be in the `.env`, or the command stops before creating anything. Relay credentials without an own App set `GH_AUTH_MODE=relay`. The deploy writes the mode on every run because Fly secrets are only added or replaced, never removed: a mode, relay token or installation id from an earlier deploy stays on the app, and an earlier `GH_AUTH_MODE` would otherwise outrank this run's credentials. A run without any GitHub credentials leaves the earlier ones in place. `--relay` always enrolls and switches GitHub API calls to the relay, and `--no-relay` never enrolls. The installation id must belong to the shared ProPR App: an own App's `GH_INSTALLATION_ID` is never reused, so the id is discovered when you have exactly one; otherwise pass `--installation <id>`.
+
+### GitHub event intake
+
+Left unset, `GITHUB_EVENT_INTAKE_MODE` means `routing_websocket`, and without a relay token that mode stops the daemon and with it the whole all-in-one process. So every deploy writes a mode the Machine can run:
+
+| GitHub credentials after the deploy | Intake |
+| --- | --- |
+| Demo mode (`PROPR_DEMO_MODE=true`) | `direct_webhook`. Nothing is ingested: demo mode makes no GitHub calls and the API turns `POST /webhook` off. |
+| Relay auth and a relay token (this run's or an earlier deploy's) | `routing_websocket` |
+| Your own GitHub App (`GH_AUTH_MODE=app`, including next to a Connect relay token) | `direct_webhook` when `GH_WEBHOOK_SECRET` is set, otherwise `polling` |
+
+A `GITHUB_EVENT_INTAKE_MODE` in the stack `.env` is kept if the Machine can run it, under the same rules the daemon checks at boot. For example, `routing_websocket` with `--no-relay` and no relay token is refused. A deploy with no GitHub credentials at all, which happens with `--no-relay` and no own App outside demo mode, stops before any secret is set. The deploy log prints a `GitHub event intake:` line.
 
 **ProPR Connect.** To drive the Fly instance from the hosted UI at `https://app.propr.dev`, pass the values that ProPR Connect shows for `propr tunnel setup`:
 

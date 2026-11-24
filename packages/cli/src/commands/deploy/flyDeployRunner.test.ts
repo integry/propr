@@ -4,14 +4,14 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { test } from "node:test";
-import { FlyctlBackend, renderSecretsImport, type FlyctlRunner } from "./flyctlBackend.js";
+import { createFlyctlRunner, FlyctlBackend, renderSecretsImport, type FlyctlRunner } from "./flyctlBackend.js";
 import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./flyDeployRunner.js";
 import type { FlyMachinesApi } from "./flyMachinesApi.js";
-import type { FlyDeployPlan } from "./flyMachineConfig.js";
+import { renderFlyToml, type FlyDeployPlan } from "./flyMachineConfig.js";
 
 const plan: FlyDeployPlan = {
   app: "my-propr",
@@ -27,6 +27,10 @@ const plan: FlyDeployPlan = {
   legacyDocker: false,
   githubAppKey: false,
 };
+
+/** A relay token, so the deploy has GitHub credentials and pins routing_websocket intake. */
+const RELAY = { PROPR_GH_RELAY_TOKEN: "rt" };
+const ROUTED = { GITHUB_EVENT_INTAKE_MODE: "routing_websocket" };
 
 function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: Array<Record<string, string>>; steps: string[]; deployed: FlyDeployPlan[] } {
   const set: Array<Record<string, string>> = [];
@@ -52,41 +56,41 @@ test("the GitHub App key is wired in when this run uploads it, when the app alre
   // Uploaded by this run (a base64 key from the stack .env; the plan flag was never set).
   const uploading = fakeTarget([]);
   const lines: string[] = [];
-  await runFlyDeploy({ plan, secrets: { PROPR_GH_PRIVATE_KEY_B64: "a2V5" }, generatedSecrets: {} }, uploading.target, (l) => lines.push(l));
+  await runFlyDeploy({ plan, secrets: { PROPR_GH_PRIVATE_KEY_B64: "a2V5", GH_APP_ID: "42" }, generatedSecrets: {} }, uploading.target, (l) => lines.push(l));
   assert.equal(uploading.deployed[0]?.githubAppKey, true);
   assert.equal(lines.some((l) => l.includes("earlier deploy")), false);
 
   // Left by an earlier deploy.
-  const retained = fakeTarget(["PROPR_GH_PRIVATE_KEY_B64"]);
+  const retained = fakeTarget(["PROPR_GH_PRIVATE_KEY_B64", "GH_APP_ID"]);
   await runFlyDeploy({ plan, secrets: {}, generatedSecrets: {} }, retained.target, (l) => lines.push(l));
   assert.equal(retained.deployed[0]?.githubAppKey, true);
   assert.ok(lines.some((l) => l.includes("Keeping the GitHub App private key from an earlier deploy")));
 
   // No key anywhere.
   const none = fakeTarget([]);
-  await runFlyDeploy({ plan, secrets: {}, generatedSecrets: {} }, none.target);
+  await runFlyDeploy({ plan, secrets: { ...RELAY }, generatedSecrets: {} }, none.target);
   assert.equal(none.deployed[0]?.githubAppKey, false);
 });
 
 test("generated SESSION_SECRET is set once and kept on redeploy", async () => {
   const first = fakeTarget([]);
   const lines: string[] = [];
-  const result = await runFlyDeploy({ plan, secrets: { ANTHROPIC_API_KEY: "k" }, generatedSecrets: { SESSION_SECRET: "fresh" } }, first.target, (l) => lines.push(l));
+  const result = await runFlyDeploy({ plan, secrets: { ANTHROPIC_API_KEY: "k", ...RELAY }, generatedSecrets: { SESSION_SECRET: "fresh" } }, first.target, (l) => lines.push(l));
   assert.deepEqual(first.steps, ["app", "volume", "secret-names", "secrets", "deploy"]);
-  assert.deepEqual(first.set[0], { ANTHROPIC_API_KEY: "k", SESSION_SECRET: "fresh" });
-  assert.deepEqual(result.secretsSet, ["ANTHROPIC_API_KEY", "SESSION_SECRET"]);
+  assert.deepEqual(first.set[0], { ANTHROPIC_API_KEY: "k", ...RELAY, ...ROUTED, SESSION_SECRET: "fresh" });
+  assert.deepEqual(result.secretsSet, ["ANTHROPIC_API_KEY", "GITHUB_EVENT_INTAKE_MODE", "PROPR_GH_RELAY_TOKEN", "SESSION_SECRET"]);
   assert.equal(lines.join("\n").includes("fresh"), false, "secret values are never logged");
 
-  const again = fakeTarget(["SESSION_SECRET"]);
+  const again = fakeTarget(["SESSION_SECRET", "PROPR_GH_RELAY_TOKEN"]);
   const second = await runFlyDeploy({ plan, secrets: {}, generatedSecrets: { SESSION_SECRET: "other" } }, again.target);
-  assert.deepEqual(again.set[0], {});
+  assert.deepEqual(again.set[0], ROUTED);
   assert.deepEqual(second.secretsKept, ["SESSION_SECRET"]);
 });
 
 test("an explicit secret wins over a generated one", async () => {
   const fake = fakeTarget([]);
-  await runFlyDeploy({ plan, secrets: { SESSION_SECRET: "from-env" }, generatedSecrets: { SESSION_SECRET: "gen" } }, fake.target);
-  assert.deepEqual(fake.set[0], { SESSION_SECRET: "from-env" });
+  await runFlyDeploy({ plan, secrets: { SESSION_SECRET: "from-env", ...RELAY }, generatedSecrets: { SESSION_SECRET: "gen" } }, fake.target);
+  assert.deepEqual(fake.set[0], { SESSION_SECRET: "from-env", ...RELAY, ...ROUTED });
 });
 
 type FakeMachine = { id: string; role?: string; metadata?: Record<string, string>; mounts?: Array<{ volume: string; path: string }> };
@@ -151,9 +155,9 @@ test("Machines API target refuses two control-plane Machines on one SQLite volum
 });
 
 test("flyctl target: argv, stdin secrets and generated files", async () => {
-  const calls: Array<{ args: string[]; input?: string; inherit?: boolean }> = [];
+  const calls: Array<{ args: string[]; input?: string; inherit?: boolean; cwd?: string }> = [];
   const runner: FlyctlRunner = (args, options = {}) => {
-    calls.push({ args, input: options.input, inherit: options.inherit });
+    calls.push({ args, input: options.input, inherit: options.inherit, cwd: options.cwd });
     if (args[0] === "apps" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ Name: "someone-else" }]), stderr: "" };
     if (args[0] === "volumes" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 1 }]), stderr: "" };
     if (args[0] === "secrets" && args[1] === "list") return { status: 0, stdout: "[]", stderr: "" };
@@ -162,7 +166,7 @@ test("flyctl target: argv, stdin secrets and generated files", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
   try {
     const target = createFlyctlTarget(new FlyctlBackend(runner), outDir);
-    const result = await runFlyDeploy({ plan, secrets: { A: "1" }, generatedSecrets: { SESSION_SECRET: "s" } }, target);
+    const result = await runFlyDeploy({ plan, secrets: { A: "1", ...RELAY }, generatedSecrets: { SESSION_SECRET: "generated-session-value" } }, target);
     assert.equal(result.appCreated, true);
     assert.equal(result.volumeCreated, false);
     const argv = calls.map((c) => c.args.join(" "));
@@ -170,7 +174,7 @@ test("flyctl target: argv, stdin secrets and generated files", async () => {
     assert.ok(!argv.some((a) => a.startsWith("volumes create")));
     const importCall = calls.find((c) => c.args[1] === "import");
     assert.deepEqual(importCall?.args, ["secrets", "import", "--app", "my-propr", "--stage"]);
-    assert.equal(importCall?.input, "A=1\nSESSION_SECRET=s");
+    assert.equal(importCall?.input, "A=1\nPROPR_GH_RELAY_TOKEN=rt\nGITHUB_EVENT_INTAKE_MODE=routing_websocket\nSESSION_SECRET=generated-session-value");
     assert.equal(argv.some((a) => a.includes("SESSION_SECRET")), false, "secrets never on argv");
     const deploy = calls.find((c) => c.args[0] === "deploy");
     assert.deepEqual(deploy?.args, [
@@ -178,8 +182,15 @@ test("flyctl target: argv, stdin secrets and generated files", async () => {
       "--primary-region", "iad", "--ha=false", "--yes",
     ]);
     assert.equal(deploy?.inherit, true);
-    assert.match(readFileSync(join(outDir, "fly.toml"), "utf-8"), /machine_config = "propr-machine\.json"/);
-    assert.equal(readFileSync(join(outDir, "propr-machine.json"), "utf-8").includes("SESSION_SECRET"), false);
+    assert.equal(deploy?.cwd, outDir, "flyctl runs from the config directory");
+    // flyctl resolves machine_config against its working directory, so the path is absolute.
+    assert.ok(readFileSync(join(outDir, "fly.toml"), "utf-8").includes(`machine_config = ${JSON.stringify(join(outDir, "propr-machine.json"))}`));
+    const machineConfig = readFileSync(join(outDir, "propr-machine.json"), "utf-8");
+    assert.equal(machineConfig.includes("generated-session-value") || machineConfig.includes('"rt"'), false, "secret values never reach the files");
+    // Multi-container Machines pass app secrets only to containers that list them.
+    const app = (JSON.parse(machineConfig) as { containers: Array<{ name: string; secrets?: Array<{ env_var: string; name: string }> }> })
+      .containers.find((c) => c.name === "app");
+    assert.deepEqual(app?.secrets?.map((entry) => entry.name), ["A", "GITHUB_EVENT_INTAKE_MODE", "PROPR_GH_RELAY_TOKEN", "SESSION_SECRET"]);
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -224,7 +235,7 @@ test("flyctl: an undersized reused volume is extended and confirmed before secre
   const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
   try {
     const { calls, target } = sizedFlyctl([1, 20], outDir);
-    const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1" }, generatedSecrets: {} }, target);
+    const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1", ...RELAY }, generatedSecrets: {} }, target);
     const argv = calls.map((c) => c.join(" "));
     const extend = argv.indexOf("volumes extend vol_1 --app my-propr --size 20 --yes");
     assert.ok(extend > 0, argv.join("\n"));
@@ -266,7 +277,7 @@ test("a reused volume larger than requested is kept and sizes the Docker filesys
   const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
   try {
     const { calls, target } = sizedFlyctl([30], outDir);
-    const result = await runFlyDeploy({ plan: legacyPlan, secrets: {}, generatedSecrets: {} }, target);
+    const result = await runFlyDeploy({ plan: legacyPlan, secrets: { ...RELAY }, generatedSecrets: {} }, target);
     assert.equal(calls.some((c) => c[1] === "extend"), false);
     assert.equal(result.volumeSizeGb, 30);
     assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "28");
@@ -295,7 +306,7 @@ test("Machines API: an undersized reused volume is extended, confirmed, and size
     async createMachine(_app: string, input: { config: unknown }) { createdConfig = input.config; return { id: "m-new", state: "created", region: "iad" }; },
     async waitForState() {},
   } as unknown as FlyMachinesApi;
-  const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1" }, generatedSecrets: {} }, createMachinesApiTarget(api));
+  const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1", ...RELAY }, generatedSecrets: {} }, createMachinesApiTarget(api));
   assert.deepEqual(calls, ["list:1", "extend:vol_1:20", "list:20", "secrets"]);
   assert.equal(result.volumeSizeGb, 20);
   assert.equal(dockerDiskSizeArg(JSON.stringify(createdConfig)), "18");
@@ -311,4 +322,53 @@ test("Machines API: a volume Fly still reports undersized stops the deploy befor
   } as unknown as FlyMachinesApi;
   await assert.rejects(runFlyDeploy({ plan: legacyPlan, secrets: {}, generatedSecrets: {} }, createMachinesApiTarget(api)), /still reports 1 GB/);
   assert.deepEqual(calls, ["extend"]);
+});
+
+/**
+ * Stand-in for `flyctl deploy`: like flyctl, it resolves fly.toml's
+ * machine_config against its OWN working directory, not the config file's.
+ */
+const FAKE_FLYCTL = `#!/usr/bin/env node
+const { existsSync, readFileSync } = require("node:fs");
+const { resolve } = require("node:path");
+const args = process.argv.slice(2);
+const toml = readFileSync(args[args.indexOf("--config") + 1], "utf-8");
+const name = JSON.parse(/machine_config = (".*")/.exec(toml)[1]);
+if (!existsSync(resolve(process.cwd(), name))) {
+  console.error("Converting to machine in process group 'app' will fail because of: open " + name + ": no such file or directory");
+  process.exit(1);
+}
+JSON.parse(readFileSync(resolve(process.cwd(), name), "utf-8"));
+`;
+
+test("flyctl finds machine_config when the CLI runs from a different directory than --out", () => {
+  const root = mkdtempSync(join(tmpdir(), "propr-fly-cwd-"));
+  try {
+    const bin = join(root, "flyctl");
+    writeFileSync(bin, FAKE_FLYCTL);
+    chmodSync(bin, 0o755);
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere);
+    // A relative --out, as `--out ./propr-fly` from the operator's shell.
+    const relativeOut = relative(process.cwd(), join(root, "propr-fly"));
+    const files = writeFlyFiles(plan, relativeOut);
+    assert.ok(isAbsolute(files.flyToml));
+    const input = { app: plan.app, configPath: files.flyToml, image: plan.images.app, region: plan.region };
+    const real = createFlyctlRunner(bin);
+
+    // As the deploy runs it.
+    new FlyctlBackend(real).deploy(input);
+    // The absolute machine_config path alone is enough, whatever flyctl's cwd.
+    new FlyctlBackend((args, options) => real(args, { ...options, inherit: false, cwd: elsewhere })).deploy(input);
+    // And the cwd alone is enough for a hand-edited relative name.
+    writeFileSync(files.flyToml, renderFlyToml(plan));
+    new FlyctlBackend((args, options) => real(args, { ...options, inherit: false })).deploy(input);
+    // Before the fix: relative name, flyctl started elsewhere.
+    assert.throws(
+      () => new FlyctlBackend((args, options) => real(args, { ...options, inherit: false, cwd: elsewhere })).deploy(input),
+      /open propr-machine\.json: no such file or directory/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

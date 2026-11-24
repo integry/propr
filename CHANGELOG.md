@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     an own App does not keep an earlier deploy's relay mode, and a redeploy
     without a key keeps an earlier deploy's GitHub App key wired into the
     Machine.
+  - Writes `GITHUB_EVENT_INTAKE_MODE` on every run: `direct_webhook` in
+    demo mode, `routing_websocket` with a relay token, and `direct_webhook`
+    or `polling` for an own GitHub App. Demo and `--no-relay` deploys
+    therefore no longer crash-loop on the relay WebSocket. A deploy with no
+    GitHub credentials stops before it sets secrets.
+  - The app container lists every Fly secret name (including ones left by
+    earlier deploys), and the tunnel container lists `TUNNEL_TOKEN`, because
+    a multi-container Machine passes secrets only to containers that list
+    them. `fly.toml` points at `propr-machine.json` by absolute path, and
+    flyctl runs from the `--out` directory, so the command works from any
+    working directory.
   - `--idle-shutdown [after]` opts in to idle shutdown (#3770): restart
     `on-failure`, proxy autostop off, autostart on, and prints the `/wake` URL.
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
@@ -105,6 +116,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/model` beside Gemini 4 Neon and Argon.
 
 ### Fixed
+
+- **The all-in-one process exits on SIGTERM** (#3768). Shutdown waited
+  for the worker to finish starting, and without a Docker daemon (for example
+  with Sprites agents) the worker waits for the agent image forever. Shutdown
+  now aborts that wait. Draining is also capped by `PROPR_SHUTDOWN_TIMEOUT_MS`
+  (default 50 s, below Fly's 60 s stop timeout), after which the process exits
+  0, so an `on-failure` restart policy leaves a stopped Machine stopped.
 
 - **Release Rollout runtime images**: a Release Rollout run that publishes the
   app, UI or managed agent image itself now passes the image references on to
