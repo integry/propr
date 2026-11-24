@@ -15,9 +15,9 @@ import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { applySpritesClientSignalsDefault, resolveSpritesRuntimeConfig, type SpritesRuntimeConfig } from './sprites/spritesConfig.js';
 import { prepareSpritesCredentials, type SpritesCredentialSync } from './sprites/spritesCredentials.js';
 import { findRunSession, launcherIsRunning, readRecordedExitStatus, superviseSpriteSession, terminateRunProcesses, SPRITES_STOP_SETTLEMENT_MS } from './sprites/spritesExecution.js';
-import { clearCleanMarker, readSpritesSetupBundle, restoreCleanCheckpoint, spriteName, SpritePool, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
+import { clearCleanMarker, readSpritesSetupBundle, spriteName, SpritePool, type SpritesSetupBundle } from './sprites/spritesProvisioning.js';
 import {
-    acquireSprite, clearRecoveryObligation, finishRunCredentials, persistRecoveryObligation, provisionLeasedSprite, spriteHoldsRetainedCredentials,
+    acquireSprite, clearRecoveryObligation, finishRunCredentials, persistRecoveryObligation, provisionLeasedSprite, restoreReleasedSprite, spriteHoldsRetainedCredentials,
     startDeadlineResult, untilAborted, SpritesStartDeadlineError, type SpriteRunLease, type SpritesStartupTimings,
 } from './sprites/spritesRunLifecycle.js';
 import { defaultSpritesClientFactory, type SpriteCommandLike, type SpriteLike, type SpritesClientFactory, type SpritesClientLike } from './sprites/spritesSdk.js';
@@ -70,6 +70,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     /** The run's credential copy: materialized once the run holds its Sprite, finished after the run. */
     private credentials?: SpritesCredentialSync;
     private started = false;
+    /** Provisioning began on the leased Sprite: from then on its release restores (or replaces) it. */
+    private provisioned = false;
     private settled = false;
     private retainedCredentials = false;
     /** The launcher's credential export was not confirmed: the live copies on the Sprite are the ones to recover. */
@@ -170,6 +172,7 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
         this.lease = await this.runtime.acquire(client, config, signal, this.timings);
         signal.throwIfAborted();
         const wakeStarted = Date.now();
+        this.provisioned = true;
         const { lease, provisioning, replaced } = await provisionLeasedSprite({ client, config, bundle: this.runtime.setupBundle() }, this.lease, signal);
         this.lease = lease;
         if (replaced) this.timings.created = true;
@@ -267,25 +270,22 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     }
 
     /**
-     * Leaves nothing of the run at rest on the Sprite: restores the clean
-     * checkpoint (which also spares the next run its restore), or, without
-     * one, removes the run directory and everything the run left outside it.
+     * Restores the clean checkpoint, now that the run settled and its
+     * credentials were written back, so nothing the run left can reach the
+     * next run (and the next run's startup has no restore). A Sprite whose
+     * restore fails is never run on again: it is deleted and created again.
+     * A quarantined Sprite (credentials awaiting recovery) is not restored,
+     * which would delete them: only the run's data is removed, and acquisition
+     * skips it until the quarantine is lifted, then restores it before its next run.
      */
     private async cleanSprite(): Promise<void> {
         if (!this.lease) return;
-        const { sprite, name } = this.lease;
         // A run directory (this run's or another's) holding the only copy of a rotated token must survive.
-        const quarantined = this.retainedCredentials || await spriteHoldsRetainedCredentials(sprite, this.spec.name);
-        if (!quarantined && this.runtime.config().restoreCheckpoint) {
-            try {
-                const restoreMs = await restoreCleanCheckpoint(sprite, this.runtime.setupBundle());
-                if (restoreMs !== undefined) {
-                    logger.info({ run: this.spec.name, sprite: name, restoreMs }, 'Restored the Sprite to its clean checkpoint after the run');
-                    return;
-                }
-            } catch (error) {
-                logger.warn({ run: this.spec.name, sprite: name, error: (error as Error).message }, 'Could not restore the Sprite after the run; removing the run data instead');
-            }
+        if (!this.retainedCredentials && !await spriteHoldsRetainedCredentials(this.lease.sprite, this.spec.name)) {
+            const outcome = await restoreReleasedSprite({ client: await this.runtime.client(), config: this.runtime.config(), bundle: this.runtime.setupBundle() }, this.lease, this.spec.name);
+            this.lease = outcome.lease;
+            if (outcome.restoreMs !== undefined) this.timings.releaseRestoreMs = outcome.restoreMs;
+            if (!outcome.unreplaced) return;
         }
         await this.discardRunDirectory();
     }
@@ -366,9 +366,10 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
     }
 
     /**
-     * Stops the run, restores the Sprite to its clean checkpoint (or removes
-     * everything the run left, keeping only a run directory with unreturned
-     * credentials) and frees the Sprite for the next run.
+     * Stops the run, restores the Sprite to its clean checkpoint once the
+     * run's credentials were written back (whether the run succeeded or not;
+     * an unrestorable Sprite is replaced, and a quarantined one only has the
+     * run's data removed) and frees the Sprite for the next run.
      */
     release(): Promise<void> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
@@ -401,7 +402,8 @@ class SpritesRunHandle implements AgentRunHandle<ExecutionResult> {
                 logger.error({ run: this.spec.name, sprite: lease.name }, 'Could not verify that the Sprites run stopped; this worker keeps the Sprite out of use until it restarts');
                 return;
             }
-            await this.cleanSprite();
+            // A Sprite acquired but never provisioned for this run is still as its last release left it.
+            if (this.provisioned || this.started) await this.cleanSprite();
             if (this.holdSprite) return;
             lease.release();
         })();

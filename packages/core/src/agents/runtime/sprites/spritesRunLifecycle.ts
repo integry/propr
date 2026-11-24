@@ -7,7 +7,7 @@ import type { SpritesRuntimeConfig } from './spritesConfig.js';
 import type { SpritesCredentialSync } from './spritesCredentials.js';
 import { settleLauncher } from './spritesExecution.js';
 import {
-    createAgentSprite, prepareSprite, retainedCredentialRuns, spriteName, spriteRunInProgress, wakeSprite,
+    createAgentSprite, prepareSprite, restoreCleanCheckpoint, retainedCredentialRuns, spriteName, spriteRunInProgress, wakeSprite,
     SpriteBaselineUnknownError, SPRITES_RETAINED_CREDENTIALS_MARKER, type SpritePool, type SpriteProvisioning, type SpritesSetupBundle,
 } from './spritesProvisioning.js';
 import type { SpriteLike, SpritesClientLike } from './spritesSdk.js';
@@ -29,7 +29,10 @@ export interface SpritesStartupTimings {
     created?: boolean;
     /** First-time provisioning (pinned CLIs, entrypoints) including its checkpoint. */
     setupMs?: number;
-    /** Restoring the clean post-setup checkpoint. */
+    /**
+     * Restoring the clean post-setup checkpoint before the run: only when the previous run's release did
+     * not restore it (each release restores the Sprite, see `releaseRestoreMs`), or before a setup upgrade.
+     */
     restoreMs?: number;
     /** Uploading the run files and the per-run credential copy. */
     credentialSyncMs?: number;
@@ -39,6 +42,8 @@ export interface SpritesStartupTimings {
     totalMs?: number;
     /** Reading refreshed tokens back and writing them to the canonical stores. */
     credentialWriteBackMs?: number;
+    /** Restoring the clean checkpoint when the run was released (after the write-back), off the next run's startup. */
+    releaseRestoreMs?: number;
 }
 
 export interface SpriteAcquisitionTimings { queueMs?: number; wakeMs?: number; created?: boolean }
@@ -171,9 +176,10 @@ export async function clearRecoveryObligation(sprite: SpriteLike, paths: Sprites
 
 /**
  * Deletes the Sprite and creates it again under the same name: used when no
- * clean baseline can be established for it, so its filesystem (which may hold
- * an earlier run's data) never becomes a checkpoint. Only called while the
- * lease is held, after acquisition found no retained credentials and no live launcher.
+ * clean baseline can be established for it (its checkpoint is missing, or its
+ * restore failed), so its filesystem (which may hold an earlier run's data)
+ * never hosts a run or becomes a checkpoint. Only called while the lease is
+ * held, with no retained credentials on the Sprite and none of its runs alive.
  */
 export async function replaceSprite(client: SpritesClientLike, config: SpritesRuntimeConfig, lease: SpriteRunLease, reason: string): Promise<SpriteRunLease> {
     logger.warn({ sprite: lease.name, reason }, 'Replacing the Sprite: no clean baseline can be established for it');
@@ -191,12 +197,51 @@ export async function provisionLeasedSprite(
     signal: AbortSignal,
 ): Promise<{ lease: SpriteRunLease; provisioning: SpriteProvisioning; replaced: boolean }> {
     try {
-        return { lease, provisioning: await prepareSprite(lease.sprite, bundle, config), replaced: false };
+        return { lease, provisioning: await prepareSprite(lease.sprite, bundle), replaced: false };
     } catch (error) {
         if (!(error instanceof SpriteBaselineUnknownError)) throw error;
         signal.throwIfAborted();
         const replacement = await replaceSprite(client, config, lease, error.message);
-        return { lease: replacement, provisioning: await prepareSprite(replacement.sprite, bundle, config), replaced: true };
+        return { lease: replacement, provisioning: await prepareSprite(replacement.sprite, bundle), replaced: true };
+    }
+}
+
+/**
+ * The restore of a released run's Sprite, once its credentials were written
+ * back: back to its clean checkpoint, which the next run then starts from
+ * without a restore of its own. A Sprite whose restore fails (or that has no
+ * clean checkpoint) is unusable: it carries no clean marker, and it is deleted
+ * and created again. `unreplaced`: it could not even be deleted, so the
+ * caller removes the run's data; its next run restores or replaces it first.
+ */
+export async function restoreReleasedSprite(
+    { client, config, bundle }: { client: SpritesClientLike; config: SpritesRuntimeConfig; bundle: SpritesSetupBundle },
+    lease: SpriteRunLease,
+    run: string,
+): Promise<{ lease: SpriteRunLease; restoreMs?: number; unreplaced?: boolean }> {
+    let reason: string;
+    try {
+        const restoreMs = await restoreCleanCheckpoint(lease.sprite, bundle);
+        if (restoreMs !== undefined) {
+            logger.info({ run, sprite: lease.name, restoreMs }, 'Restored the Sprite to its clean checkpoint after the run');
+            return { lease, restoreMs };
+        }
+        reason = 'it has no clean checkpoint of this setup revision';
+    } catch (error) {
+        reason = (error as Error).message;
+    }
+    logger.warn({ run, sprite: lease.name, reason }, 'Could not restore the Sprite after the run; replacing it');
+    try {
+        await client.deleteSprite(lease.name);
+    } catch (error) {
+        logger.error({ run, sprite: lease.name, error: (error as Error).message }, 'Could not delete the unrestored Sprite; its next run restores or replaces it first');
+        return { lease, unreplaced: true };
+    }
+    try {
+        return { lease: { ...lease, sprite: await createAgentSprite(client, lease.name, config) } };
+    } catch (error) {
+        logger.warn({ sprite: lease.name, error: (error as Error).message }, 'Could not create the replacement Sprite; its next run creates it');
+        return { lease };
     }
 }
 

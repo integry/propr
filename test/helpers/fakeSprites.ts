@@ -78,6 +78,8 @@ export class FakeSprite {
     signalFails = false;
     /** The launcher cannot return the refreshed credentials (e.g. a write error): it keeps the live copies and records no export. */
     exportFails = false;
+    /** Credential stores the launcher installed root-owned and read-only for the agent user (`ro-store`). */
+    readonly readOnlyStores: string[] = [];
     /** Sessions created, in order (the launcher of each run). */
     readonly sessions: string[] = [];
     private readonly launchers = new Map<string, { running: boolean; terminate: () => void }>();
@@ -199,7 +201,7 @@ export class FakeSprite {
             const kind = manifest[index];
             if (kind === 'purge') { this.filesystem().rm(manifest[index + 1]); index += 2; }
             else if (kind === 'stamp') { this.mtimes.set(at(manifest[index + 1]), Number(manifest[index + 2]) * 1000); index += 3; }
-            else if (kind === 'store') {
+            else if (kind === 'store' || kind === 'ro-store') {
                 const source = at(manifest[index + 1]);
                 const target = manifest[index + 2];
                 // `cp -a` keeps modification times.
@@ -210,6 +212,7 @@ export class FakeSprite {
                     if (mtime !== undefined) this.mtimes.set(target + file.slice(source.length), mtime);
                 }
                 installed.push(target);
+                if (kind === 'ro-store') this.readOnlyStores.push(target);
                 index += 3;
             } else if (kind === 'dir') index += 2;
             else if (kind === 'file') { this.files.set(manifest[index + 2], this.files.get(at(manifest[index + 1]))!); installed.push(manifest[index + 2]); index += 4; }

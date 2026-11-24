@@ -6,9 +6,10 @@
 
 /**
  * `secure_path <absolute path>`, for the root scripts that create, own, install
- * or remove a path the agent user can reach: with the checkpoint restore
- * disabled, what a run left (a log directory replaced by a symlink to
- * `/opt/propr/bin`, say) is still there for the next run, and `mkdir -p`,
+ * or remove a path the agent user can reach: a run starts on a restored
+ * Sprite, but a quarantined Sprite's cleanup acts on what its run left (a log
+ * directory replaced by a symlink to `/opt/propr/bin`, say), as does the
+ * launcher's credential removal once its own command exited, and `mkdir -p`,
  * `chown`, `install` and `rm -rf` follow a symlink on the path. It removes
  * whatever the agent could have planted on the path below its top-level
  * directory (which it cannot replace in root-owned `/`): the first component

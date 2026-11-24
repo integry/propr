@@ -112,7 +112,9 @@ export function prepareSpritesCredentials(
         liveCopies.push(target, ...(liveRoot ? [liveRoot] : []));
         // The uploaded copy gets its canonical modification time back before the launcher installs it (`cp -a`).
         for (const file of store.files) records.push(['stamp', path.posix.join('store', store.id, file.path), stampSeconds(file.mtimeMs)]);
-        records.push(['store', `store/${store.id}`, target]);
+        // A read-only bind stays read-only for the agent, and so does a store the CLI only uses through its live
+        // copy: its refreshed token comes back from that copy, never through a change to the source.
+        records.push([plan.credentialStores[index].readOnly || liveRoot ? 'ro-store' : 'store', `store/${store.id}`, target]);
         // The entrypoint's own copy into it runs as root after the repository setup hook (see SPRITES_WITHHELD_VARIABLES):
         // root installs it here instead, while no process of the run exists yet.
         if (liveRoot) records.push(['store', `store/${store.id}`, liveRoot]);

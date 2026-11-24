@@ -12,8 +12,10 @@ import { spritesErrorStatus, type SpriteLike, type SpriteProgressStream, type Sp
  * (`<prefix>-<worker>-<slot>`, one run at a time each). A Sprite is created
  * on first use, provisioned once per setup revision by
  * `scripts/sprites-agent-setup.sh`, checkpointed, and restored to that clean
- * checkpoint when each run is released (or, when that did not happen, before
- * the next run). An idle Sprite goes cold and stops billing.
+ * checkpoint when each run is released. A run only ever starts on a Sprite in
+ * that clean state: one whose release did not restore it (the worker stopped,
+ * or the restore failed) is restored before its next run, and replaced (deleted
+ * and created again) when that is not possible. An idle Sprite goes cold and stops billing.
  */
 
 export const SPRITES_SETUP_SCRIPT = 'scripts/sprites-agent-setup.sh';
@@ -271,8 +273,8 @@ export async function clearCleanMarker(sprite: SpriteLike): Promise<void> {
 
 /**
  * Restores the clean post-setup checkpoint of this setup revision after a run,
- * so nothing the run left (workspace, result bundle, credential copies) stays
- * at rest on the Sprite, and marks the Sprite clean for its next run.
+ * so nothing the run left (workspace, result bundle, credential copies, caches)
+ * reaches the next run, and marks the Sprite clean for its next run.
  * Resolves with the restore time, or undefined when there is no such checkpoint.
  */
 export async function restoreCleanCheckpoint(sprite: SpriteLike, bundle: SpritesSetupBundle): Promise<number | undefined> {
@@ -290,18 +292,19 @@ export async function restoreCleanCheckpoint(sprite: SpriteLike, bundle: Sprites
 
 export interface SpriteProvisioning {
     /**
-     * `setup`: provisioned now (and checkpointed); `restore`: rolled back to the clean checkpoint;
-     * `clean`: already restored when the previous run was released; `ready`: used as is.
+     * `setup`: provisioned now (and checkpointed); `restore`: its last release did not restore it, so it was
+     * rolled back to the clean checkpoint now; `clean`: restored when the previous run was released.
      */
-    action: 'setup' | 'restore' | 'clean' | 'ready';
+    action: 'setup' | 'restore' | 'clean';
     setupMs?: number;
     restoreMs?: number;
 }
 
 /**
- * The Sprite was used (it carries a setup stamp) but has no clean checkpoint
- * to start from: its filesystem may hold an earlier run's workspace or
- * credentials, so it must be replaced rather than provisioned and checkpointed as it is.
+ * No clean baseline can be established for the Sprite: it was used (it
+ * carries a setup stamp) but its clean checkpoint is missing or could not be
+ * restored. Its filesystem may hold an earlier run's workspace or credentials,
+ * so it must be replaced rather than run on, or provisioned and checkpointed as it is.
  */
 export class SpriteBaselineUnknownError extends Error {
     constructor(sprite: string, readonly reason: string) {
@@ -314,34 +317,42 @@ async function findSetupCheckpoint(sprite: SpriteLike, comment: string) {
     return (await sprite.listCheckpoints()).find(candidate => candidate.comment === comment);
 }
 
+/** Restores `checkpoint`; a failed restore leaves the Sprite without a known baseline. */
 async function restoreTo(sprite: SpriteLike, checkpoint: { id: string }): Promise<number> {
     const started = Date.now();
-    await drain(await sprite.restoreCheckpoint(checkpoint.id), `Restoring Sprite ${sprite.name} to checkpoint ${checkpoint.id}`);
+    try {
+        await drain(await sprite.restoreCheckpoint(checkpoint.id), `Restoring Sprite ${sprite.name} to checkpoint ${checkpoint.id}`);
+    } catch (error) {
+        throw new SpriteBaselineUnknownError(sprite.name, `restoring its checkpoint ${checkpoint.id} failed: ${(error as Error).message}`);
+    }
     return Date.now() - started;
 }
 
 /**
  * Bring the Sprite to the clean, provisioned state of this setup revision.
- * Setup only ever runs on a filesystem no run has used since its baseline: a
- * Sprite that was never provisioned, or one restored to the clean checkpoint
- * of the revision it was provisioned for, so a new revision's checkpoint never
- * captures an earlier run's data. A used Sprite without such a checkpoint
- * throws {@link SpriteBaselineUnknownError} (with checkpoints disabled, nothing is checkpointed).
+ * A Sprite its last release restored (it carries that release's clean marker)
+ * is used as it is; any other used Sprite is restored to its clean checkpoint
+ * first, so no run ever starts on what an earlier run left. Setup only ever
+ * runs on a filesystem no run has used since its baseline: a Sprite that was
+ * never provisioned, or one restored to the clean checkpoint of the revision
+ * it was provisioned for, so a new revision's checkpoint never captures an
+ * earlier run's data. A used Sprite without such a checkpoint, or whose
+ * restore fails, throws {@link SpriteBaselineUnknownError}.
  */
-export async function prepareSprite(sprite: SpriteLike, bundle: SpritesSetupBundle, config: Pick<SpritesRuntimeConfig, 'restoreCheckpoint'>): Promise<SpriteProvisioning> {
+export async function prepareSprite(sprite: SpriteLike, bundle: SpritesSetupBundle): Promise<SpriteProvisioning> {
     const comment = `${SETUP_CHECKPOINT_PREFIX}${bundle.hash}`;
     // Consumed whatever happens next, so a marker never outlives the run that follows it.
     const marker = await takeCleanMarker(sprite);
     const stamp = await readStamp(sprite);
     if (stamp === bundle.hash) {
-        if (!config.restoreCheckpoint) return { action: 'ready' };
         if (marker === comment) return { action: 'clean' };
         const checkpoint = await findSetupCheckpoint(sprite, comment);
         if (!checkpoint) throw new SpriteBaselineUnknownError(sprite.name, `it is provisioned for ${bundle.hash} but its clean checkpoint is missing`);
+        logger.warn({ sprite: sprite.name, checkpoint: checkpoint.id }, 'Sprite was not restored when its last run was released; restoring its clean checkpoint before this run');
         return { action: 'restore', restoreMs: await restoreTo(sprite, checkpoint) };
     }
     let restoreMs: number | undefined;
-    if (stamp !== undefined && config.restoreCheckpoint) {
+    if (stamp !== undefined) {
         // Provisioned for an earlier revision: start from that revision's clean baseline, never from what its last run left.
         const previous = `${SETUP_CHECKPOINT_PREFIX}${stamp}`;
         if (marker !== previous) {
@@ -355,7 +366,7 @@ export async function prepareSprite(sprite: SpriteLike, bundle: SpritesSetupBund
     await runSetup(sprite, bundle);
     if (await readStamp(sprite) !== bundle.hash) throw new Error(`Sprite ${sprite.name} setup did not record revision ${bundle.hash}`);
     const setupMs = Date.now() - started;
-    if (config.restoreCheckpoint) await drain(await sprite.createCheckpoint(comment), `Checkpointing Sprite ${sprite.name}`);
+    await drain(await sprite.createCheckpoint(comment), `Checkpointing Sprite ${sprite.name}`);
     logger.info({ sprite: sprite.name, setup: bundle.hash, previous: stamp, pins: bundle.pins, setupMs }, 'Provisioned Sprite for agent runs');
     return { action: 'setup', setupMs, ...(restoreMs !== undefined ? { restoreMs } : {}) };
 }

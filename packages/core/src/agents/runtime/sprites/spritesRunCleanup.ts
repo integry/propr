@@ -6,8 +6,10 @@ import { isSafeSpritesTarget, SPRITES_AGENT_HOME, SPRITES_ANTIGRAVITY_HOME } fro
 /**
  * What a run can leave on a Sprite outside its run directory, removed by root
  * before the run's files are installed (`purge` records of
- * `SPRITES_LAUNCHER_SCRIPT`) and when the run is released without a
- * checkpoint restore (`SPRITES_SCRUB_SCRIPT`).
+ * `SPRITES_LAUNCHER_SCRIPT`) and when the run is released but its Sprite
+ * cannot be restored to its clean checkpoint (`SPRITES_SCRUB_SCRIPT`): it is
+ * quarantined with credentials awaiting recovery, or could not be replaced.
+ * Such a Sprite is still restored (or replaced) before its next run.
  */
 
 /** Where each provider's credential copy goes; removed before and after every run so no account outlives its run. */
@@ -42,7 +44,7 @@ export function spritesPurgeRecords(plan: { directories: readonly string[] }): s
  * (with `.git`), the workspace result (`result.bundle`), its log, scratch and
  * tmpfs directories, Antigravity's disposable HOME and every credential
  * target. Removed when the run is released and the Sprite cannot be restored
- * to its clean checkpoint. With `keepLiveCredentials` (their export was not
+ * to its clean checkpoint (see above). With `keepLiveCredentials` (their export was not
  * confirmed, so they may hold the only valid token) the credential targets
  * and Antigravity's HOME stay as the run left them, with any of its
  * directories inside or around them.

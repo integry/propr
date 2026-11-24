@@ -15,7 +15,6 @@ export const SPRITES_API_URL_ENV = 'PROPR_SPRITES_API_URL';
 export const SPRITES_RAM_MB_ENV = 'PROPR_SPRITES_RAM_MB';
 export const SPRITES_CPUS_ENV = 'PROPR_SPRITES_CPUS';
 export const SPRITES_MAX_SPRITES_ENV = 'PROPR_SPRITES_MAX_SPRITES';
-export const SPRITES_RESTORE_ENV = 'PROPR_SPRITES_RESTORE_CHECKPOINT';
 export const SPRITES_KEEP_AWAKE_INTERVAL_ENV = 'PROPR_SPRITES_KEEP_AWAKE_INTERVAL_MS';
 export const SPRITES_WORKER_ID_ENV = 'PROPR_SPRITES_WORKER_ID';
 /** The SDK's own switch for its usage-attribution headers; ProPR turns them off unless the operator set it. */
@@ -38,8 +37,6 @@ export interface SpritesRuntimeConfig {
     cpus?: number;
     /** Sprites this worker runs at once; one run per Sprite. */
     maxSprites: number;
-    /** Restore the Sprite's clean post-setup checkpoint before every run. */
-    restoreCheckpoint: boolean;
     keepAwakeIntervalMs: number;
     /** Stable per worker, so a restarted worker finds (and reattaches to) its own Sprites. */
     workerId: string;
@@ -61,14 +58,6 @@ function positiveInteger(environment: Environment, name: string, fallback?: numb
         throw new SpritesConfigurationError(`${name} must be a positive integer, not "${raw}"`);
     }
     return Number(raw);
-}
-
-function flag(environment: Environment, name: string, fallback: boolean): boolean {
-    const raw = environment[name]?.trim().toLowerCase();
-    if (!raw) return fallback;
-    if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
-    if (['0', 'false', 'no', 'off'].includes(raw)) return false;
-    throw new SpritesConfigurationError(`${name} must be true or false, not "${raw}"`);
 }
 
 /** A short, stable identity for this worker: explicit, else the Fly Machine, else the host name. */
@@ -100,7 +89,6 @@ export function resolveSpritesRuntimeConfig(environment: Environment = process.e
         ramMB: positiveInteger(environment, SPRITES_RAM_MB_ENV),
         cpus: positiveInteger(environment, SPRITES_CPUS_ENV),
         maxSprites: positiveInteger(environment, SPRITES_MAX_SPRITES_ENV, DEFAULT_SPRITES_MAX_SPRITES)!,
-        restoreCheckpoint: flag(environment, SPRITES_RESTORE_ENV, true),
         keepAwakeIntervalMs: positiveInteger(environment, SPRITES_KEEP_AWAKE_INTERVAL_ENV, DEFAULT_SPRITES_KEEP_AWAKE_INTERVAL_MS)!,
         workerId,
     };

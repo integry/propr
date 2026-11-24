@@ -94,9 +94,8 @@ test('config: org token required, prefix/region validated, defaults applied', ()
     const config = resolveSpritesRuntimeConfig({ SPRITES_TOKEN: 't', PROPR_SPRITES_WORKER_ID: 'abc' });
     assert.equal(config.token, 't');
     assert.equal(config.namePrefix, 'propr');
-    assert.equal(config.restoreCheckpoint, true);
+    assert.equal('restoreCheckpoint' in config, false, 'the clean-checkpoint restore cannot be switched off');
     assert.throws(() => resolveSpritesRuntimeConfig({ SPRITES_TOKEN: 't', PROPR_SPRITES_NAME_PREFIX: '9bad' }), /PROPR_SPRITES_NAME_PREFIX/);
-    assert.throws(() => resolveSpritesRuntimeConfig({ SPRITES_TOKEN: 't', PROPR_SPRITES_RESTORE_CHECKPOINT: 'maybe' }), /true or false/);
 });
 
 test('CLI pins come from Dockerfile.agent so a Sprite runs the image versions', () => {
@@ -187,6 +186,7 @@ test('a run creates, provisions and checkpoints its Sprite, syncs credentials bo
     assert.equal(sprite.modes.get(`${root}/store/claude-config/.credentials.json`), 0o600);
     assert.equal(sprite.files.has(`${root}/env`), false, 'the launcher deletes the environment file');
     assert.equal(sprite.files.has('/home/node/.claude/.credentials.json'), false, 'credentials are removed after the run');
+    assert.deepEqual(sprite.readOnlyStores, [], 'a writable store the CLI refreshes in place belongs to the agent user');
 
     assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"refreshed"}', 'refreshed token written back');
     assert.equal((await handle.readFile(`${WORKSPACE_TRANSPORT_RESULT_DIR}/status`))?.toString(), 'pushed deadbeef\n');
@@ -270,6 +270,7 @@ test('Antigravity runs on a Sprite, and release() restores the clean checkpoint 
     assert.equal((await handle.readFile(`${WORKSPACE_TRANSPORT_RESULT_DIR}/result.bundle`))?.toString(), 'bundle');
 
     const sprite = client.sprites.get('propr-w1-0')!;
+    assert.deepEqual(sprite.readOnlyStores, ['/home/node/.gemini-source'], 'the credential source stays read-only for the agent; the CLI uses its live copy');
     assert.ok(runDataOn(sprite.files.keys()).length > 0, 'the run left data on the Sprite before release');
     await handle.release();
     const checkpoint = sprite.snapshots.get('v1')!;
@@ -292,18 +293,84 @@ test('Antigravity runs on a Sprite, and release() restores the clean checkpoint 
     assert.deepEqual(runDataOn(sprite.files.keys()), []);
 });
 
-test('without checkpoint restore, release() removes the workspace, the result and the Antigravity HOME', async () => {
+/** What a run can leave anywhere on the Sprite, beyond the paths any cleanup list names. */
+const LEAKS = ['/home/node/.cache/leak', '/home/node/.npm/leak', '/var/tmp/leak', '/dev/shm/leak', '/tmp/propr-setup-cache/claude/leak', '/home/node/workspace/secret.txt'];
+const leaksOn = (files: Iterable<string>) => [...files].filter(file => LEAKS.includes(file) || file.startsWith('/home/node/workspace/'));
+
+test('every run starts from the restored clean checkpoint, and release() restores it even when the run failed or was stopped', async () => {
     const client = new FakeSpritesClient();
-    client.configureSprite = sprite => { sprite.agent = leaveRunData; };
-    const runtime = runtimeFor(client, { PROPR_SPRITES_RESTORE_CHECKPOINT: 'false' });
-    const handle = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-22'), { timeout: 10_000 });
-    assert.equal((await handle.wait()).exitCode, 0);
-    const sprite = client.sprites.get('propr-w1-0')!;
-    await handle.release();
-    assert.deepEqual(sprite.restored, []);
-    assert.deepEqual(runDataOn(sprite.files.keys()), [], 'no repository code, bundle or OAuth token stays on the Sprite');
-    const scrub = sprite.calls.find(call => call.args.includes('propr-scrub'))!;
-    for (const target of ['/home/node/workspace', WORKSPACE_TRANSPORT_RESULT_DIR, '/tmp/propr-antigravity-home']) assert.ok(scrub.args.includes(target), target);
+    /** Per run: what of earlier runs it found, and whether the Sprite was in its checkpointed state apart from this run's own files. */
+    const observed: Array<{ leaks: string[]; outsideCheckpoint: string[] }> = [];
+    let behaviour: 'fail' | 'throw' | 'hang' | 'succeed' = 'fail';
+    client.configureSprite = sprite => {
+        sprite.agent = async context => {
+            const checkpoint = sprite.snapshots.get('v1')!;
+            const ownRun = (file: string) => file.startsWith('/tmp/propr-sprite-runs/') || file.startsWith('/home/node/.claude') || file.startsWith('/tmp/claude-logs/');
+            observed.push({ leaks: leaksOn(context.files.keys()), outsideCheckpoint: [...context.files.keys()].filter(file => !checkpoint.has(file) && !ownRun(file)) });
+            for (const leak of LEAKS) context.files.set(leak, Buffer.from(`run ${observed.length}`));
+            context.files.set('/home/node/.claude/.credentials.json', Buffer.from(`{"token":"run-${observed.length}"}`));
+            if (behaviour === 'throw') throw new Error('agent crashed');
+            if (behaviour === 'hang') { await context.terminated; return 143; }
+            return behaviour === 'fail' ? 1 : 0;
+        };
+    };
+    const runtime = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const credentials = claudeStore();
+    const sprite = () => client.sprites.get('propr-w1-0')!;
+    const afterRelease = () => {
+        assert.deepEqual(leaksOn(sprite().files.keys()), [], 'nothing the run wrote survives its release');
+        assert.equal(sprite().files.has('/tmp/propr-sprite-runs/.clean'), true, 'the restored Sprite is marked clean');
+    };
+
+    // A failed run.
+    const failed = runtime.start(cloneSpec(credentials, { name: 'claude-issue-90' }), { timeout: 10_000 });
+    assert.equal((await failed.wait()).exitCode, 1);
+    assert.ok(leaksOn(sprite().files.keys()).length > 0, 'the failed run left data until its release');
+    await failed.release();
+    assert.deepEqual(sprite().restored, ['v1'], 'a failed run\'s release restores the Sprite');
+    assert.equal(typeof failed.timings.releaseRestoreMs, 'number');
+    assert.equal(fs.readFileSync(path.join(credentials, '.credentials.json'), 'utf8'), '{"token":"run-1"}', 'the write-back finished before the restore');
+    afterRelease();
+
+    // A run whose agent crashed.
+    behaviour = 'throw';
+    const crashed = runtime.start(cloneSpec(credentials, { name: 'claude-issue-91' }), { timeout: 10_000 });
+    assert.equal((await crashed.wait()).exitCode, 1);
+    await crashed.release();
+    assert.deepEqual(sprite().restored, ['v1', 'v1']);
+    afterRelease();
+
+    // A stopped run.
+    behaviour = 'hang';
+    const stopped = runtime.start(cloneSpec(credentials, { name: 'claude-issue-92' }), { timeout: 10_000 });
+    for (let i = 0; i < 200 && observed.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    const stoppedResult = stopped.wait().catch(error => error);
+    await stopped.stop();
+    assert.equal((await stoppedResult).name, 'AgentRunStoppedError');
+    await stopped.release();
+    assert.deepEqual(sprite().restored, ['v1', 'v1', 'v1']);
+    afterRelease();
+
+    // A run that is never released (its worker stopped): the next worker restores the Sprite before its run starts.
+    behaviour = 'succeed';
+    const unreleased = runtime.start(cloneSpec(credentials, { name: 'claude-issue-93' }), { timeout: 10_000 });
+    assert.equal((await unreleased.wait()).exitCode, 0);
+    unreleased.retain();
+    assert.deepEqual(sprite().restored, ['v1', 'v1', 'v1']);
+    const restarted = runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' }).start(cloneSpec(credentials, { name: 'claude-issue-94' }), { timeout: 10_000 });
+    assert.equal((await restarted.wait()).exitCode, 0);
+    assert.deepEqual(sprite().restored, ['v1', 'v1', 'v1', 'v1'], 'restored before the run, not after it');
+    assert.equal(typeof restarted.timings.restoreMs, 'number');
+    await restarted.release();
+    assert.deepEqual(sprite().restored, ['v1', 'v1', 'v1', 'v1', 'v1']);
+
+    assert.equal(observed.length, 5);
+    for (const [index, run] of observed.entries()) {
+        assert.deepEqual(run.leaks, [], `run ${index + 1} found nothing of an earlier run`);
+        assert.deepEqual(run.outsideCheckpoint, [], `run ${index + 1} started from the checkpointed filesystem`);
+    }
+    assert.equal(sprite().calls.filter(call => call.args.includes('propr-scrub')).length, 0, 'no run data is scrubbed path by path: the restore removes it');
+    assert.deepEqual(client.deleted, []);
 });
 
 /** A Claude run with the image's log bind and backups tmpfs (see cloneSpec) and a scratch bind. */
@@ -315,7 +382,7 @@ function scratchSpec(name: string) {
 const EMPTY_DIRECTORIES = ['/tmp/claude-logs', '/home/node/.claude/backups', '/tmp/propr-scratch'];
 const inEmptyDirectories = (files: Iterable<string>) => [...files].filter(file => EMPTY_DIRECTORIES.some(directory => file.startsWith(`${directory}/`)));
 
-test('without checkpoint restore, release() removes the run\'s log, scratch and tmpfs directories, and the next run gets them empty', async () => {
+test('release() restores away the run\'s log, scratch and tmpfs directories, and the launcher empties them before the next run', async () => {
     const client = new FakeSpritesClient();
     const seen: string[][] = [];
     client.configureSprite = sprite => {
@@ -325,19 +392,17 @@ test('without checkpoint restore, release() removes the run\'s log, scratch and 
             return 0;
         };
     };
-    const runtime = runtimeFor(client, { PROPR_SPRITES_RESTORE_CHECKPOINT: 'false' });
+    const runtime = runtimeFor(client);
     const first = runtime.start(scratchSpec('claude-issue-70'), { timeout: 10_000 });
     assert.equal((await first.wait()).exitCode, 0);
     const sprite = client.sprites.get('propr-w1-0')!;
     // The backups tmpfs went with the Claude store copy, which the confirmed export removed.
     assert.deepEqual(inEmptyDirectories(sprite.files.keys()).sort(), ['/tmp/claude-logs/run-1.log', '/tmp/propr-scratch/run-1.log'], 'the run\'s files outlive the run until its release');
     await first.release();
-    assert.deepEqual(sprite.restored, []);
-    assert.deepEqual(inEmptyDirectories(sprite.files.keys()), [], 'release removed what the run wrote');
-    const scrub = sprite.calls.findLast(call => call.args.includes('propr-scrub'))!;
-    for (const directory of EMPTY_DIRECTORIES) assert.ok(scrub.args.includes(directory), `${directory} is scrubbed`);
+    assert.deepEqual(sprite.restored, ['v1']);
+    assert.deepEqual(inEmptyDirectories(sprite.files.keys()), [], 'the restore removed what the run wrote');
 
-    // A release that never happened (the worker stopped) leaves an earlier run's files: the launcher removes them before installing anything.
+    // Defence in depth: files in them when the launcher starts (planted here) are removed before anything is installed.
     for (const directory of EMPTY_DIRECTORIES) sprite.files.set(`${directory}/other-repository.log`, Buffer.from('another run\'s data'));
     const next = runtime.start(scratchSpec('claude-issue-71'), { timeout: 10_000 });
     assert.equal((await next.wait()).exitCode, 0);
@@ -356,19 +421,56 @@ test('without checkpoint restore, release() removes the run\'s log, scratch and 
     assert.equal(leftovers.some(target => target.startsWith('/home/node/.claude')), false);
 });
 
-test('a failed checkpoint restore at release falls back to removing the run data', async () => {
+test('a Sprite whose restore fails at release is marked unusable, deleted and created again; no run starts on it unrestored', async () => {
     const client = new FakeSpritesClient();
-    client.configureSprite = sprite => {
-        sprite.agent = leaveRunData;
-    };
-    const runtime = runtimeFor(client);
+    client.configureSprite = sprite => { sprite.agent = leaveRunData; };
+    const oneSprite = () => runtimeFor(client, { PROPR_SPRITES_MAX_SPRITES: '1' });
+    const runtime = oneSprite();
     const handle = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-23'), { timeout: 10_000 });
     assert.equal((await handle.wait()).exitCode, 0);
-    const sprite = client.sprites.get('propr-w1-0')!;
-    sprite.restoreCheckpoint = async () => { throw new Error('restore unavailable'); };
+    const used = client.sprites.get('propr-w1-0')!;
+    used.restoreCheckpoint = async () => { throw new Error('restore unavailable'); };
     await handle.release();
-    assert.deepEqual(runDataOn(sprite.files.keys()), []);
-    assert.equal(sprite.files.has('/tmp/propr-sprite-runs/.clean'), false, 'a Sprite that was not restored is not marked clean');
+    assert.deepEqual(client.deleted, ['propr-w1-0'], 'the unrestored Sprite is destroyed');
+    assert.deepEqual(client.created, ['propr-w1-0', 'propr-w1-0'], 'and created again');
+    const replacement = client.sprites.get('propr-w1-0')!;
+    assert.notEqual(replacement, used);
+    assert.deepEqual(runDataOn(replacement.files.keys()), []);
+
+    // The next run provisions the new Sprite from scratch.
+    let found: string[] = [];
+    replacement.agent = async context => { found = runDataOn(context.files.keys()).filter(file => !file.startsWith('/tmp/propr-sprite-runs/') && !file.startsWith('/home/node/.gemini-source/') && !file.startsWith('/tmp/propr-antigravity-home/')); return leaveRunData(context); };
+    const next = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-24'), { timeout: 10_000 });
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.equal(typeof next.timings.setupMs, 'number');
+    assert.deepEqual(found, [], 'nothing of the earlier run');
+    await next.release();
+    assert.deepEqual(replacement.restored, ['v1']);
+
+    // A restore that fails before a run (its release never restored it) replaces the Sprite as well.
+    const stale = runtime.start(antigravitySpec(antigravityStore(), 'antigravity-issue-25'), { timeout: 10_000 });
+    assert.equal((await stale.wait()).exitCode, 0);
+    stale.retain();
+    replacement.restoreCheckpoint = async () => { throw new Error('restore unavailable'); };
+    // Another worker process (this one still holds the Sprite's slot for the unreleased run).
+    const restarted = oneSprite();
+    const after = restarted.start(antigravitySpec(antigravityStore(), 'antigravity-issue-26'), { timeout: 10_000 });
+    assert.equal((await after.wait()).exitCode, 0);
+    assert.deepEqual(client.deleted, ['propr-w1-0', 'propr-w1-0']);
+    assert.notEqual(client.sprites.get('propr-w1-0'), replacement);
+    assert.equal(after.timings.created, true);
+    await after.release();
+
+    // When the Sprite cannot even be deleted, the run's data is removed and the Sprite carries no clean marker.
+    const last = client.sprites.get('propr-w1-0')!;
+    const run = restarted.start(antigravitySpec(antigravityStore(), 'antigravity-issue-27'), { timeout: 10_000 });
+    assert.equal((await run.wait()).exitCode, 0);
+    last.restoreCheckpoint = async () => { throw new Error('restore unavailable'); };
+    client.deleteSprite = async () => { throw new Error('delete unavailable'); };
+    await run.release();
+    assert.equal(client.sprites.get('propr-w1-0'), last);
+    assert.deepEqual(runDataOn(last.files.keys()), []);
+    assert.equal(last.files.has('/tmp/propr-sprite-runs/.clean'), false, 'a Sprite that was not restored is not marked clean');
 });
 
 test('a run that resumes a provider session from its credential store (perRun: false) is refused before it reaches a Sprite', async () => {
@@ -443,7 +545,7 @@ test('an Antigravity run whose export cannot be confirmed keeps its disposable H
         sprite.exportFails = true;
         sprite.agent = async context => { context.files.set(ANTIGRAVITY_LIVE_TOKEN, Buffer.from('{"token":"agy-rotated"}')); await context.terminated; return 137; };
     };
-    const runtime = runtimeFor(client, { PROPR_SPRITES_RESTORE_CHECKPOINT: 'false' });
+    const runtime = runtimeFor(client);
     const handle = runtime.start(antigravitySpec(store, 'antigravity-issue-32'), { timeout: 60_000 });
     await new Promise(resolve => setTimeout(resolve, 50));
     const waited = handle.wait().catch(error => error);
@@ -1000,7 +1102,7 @@ test('run membership includes every process of the agent UID, so a descendant th
     const { execFileSync, spawn } = await import('node:child_process');
     const { SPRITES_RUN_MEMBERS_FUNCTIONS, SPRITES_AGENT_UID_LINE, SPRITES_LAUNCHER_SCRIPT } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
     const marker = `propr-escape-${process.pid}-${Date.now()}`;
-    // What an agent can do with PROPR_SPRITES_RESTORE_CHECKPOINT=false: a new session, no run tag, nothing inherited.
+    // What an agent's process can do to outlive its run: a new session, no run tag, nothing inherited.
     spawn('setsid', ['-f', 'env', '-i', 'PATH=/usr/bin:/bin', 'bash', '-c', `exec -a "sleep 86402 ${marker}" sleep 86402`], { stdio: 'ignore' });
     const find = () => execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' }).split('\n').find(line => line.includes(`sleep 86402 ${marker}`))?.trim().split(' ')[0];
     let pid: string | undefined;
@@ -1590,4 +1692,44 @@ test('setup runs its scripts as root from the run root, where the agent user can
     const setup = client.sprites.get('propr-w1-0')!.calls.find(call => call.file === 'sudo' && call.args.includes('env'))!;
     assert.deepEqual(setup.args.slice(-3), ['bash', `${SPRITES_SETUP_UPLOAD_DIR}/sprites-agent-setup.sh`, SPRITES_SETUP_UPLOAD_DIR]);
     await handle.release();
+});
+
+test('a read-only credential source is installed root-owned and only readable by the agent user; a link planted at it is removed, not followed', { skip: !linuxProcesses }, async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { SPRITES_LAUNCHER_SCRIPT, SPRITES_AGENT_UID_LINE } = await import('../packages/core/src/agents/runtime/sprites/spritesCommand.ts');
+    const dir = tempDir('propr-sprites-ro-store-');
+    const chowned = path.join(dir, 'chowned');
+    // As the test user: ownership changes are recorded instead of made.
+    const launcher = path.join(dir, 'launch.sh');
+    fs.writeFileSync(launcher, `log_chown() { local owner="$1"; shift; [ "$1" != -R ] || shift; [ "$1" != -- ] || shift; printf '%s %s\\n' "$owner" "$*" >> '${chowned}'; }\n`
+        + SPRITES_LAUNCHER_SCRIPT.replace(SPRITES_AGENT_UID_LINE, 'agent_uid=2147483000').replace('[ "$(id -u)" = "0" ]', 'true').replace('id node >/dev/null 2>&1', 'true')
+            .replaceAll('chown -R root:node --', 'log_chown root:node -R --').replaceAll('chown -R node:node --', 'log_chown node:node -R --').replaceAll('chown node:node --', 'log_chown node:node --'));
+    const nul = (values: string[]) => values.map(value => `${value}\0`).join('');
+    const home = path.join(dir, 'home');
+    const source = path.join(home, '.gemini-source');
+    const live = path.join(dir, 'tmp', 'propr-antigravity-home', '.gemini');
+    const protectedDir = path.join(dir, 'protected');
+    fs.mkdirSync(protectedDir, { recursive: true });
+    fs.writeFileSync(path.join(protectedDir, 'token'), 'root-only');
+    fs.mkdirSync(home);
+    fs.symlinkSync(protectedDir, source); // planted by an earlier run's agent
+    const run = path.join(dir, 'run');
+    fs.mkdirSync(path.join(run, 'store', 'agy'), { recursive: true });
+    fs.writeFileSync(path.join(run, 'store', 'agy', 'token'), '{"token":"agy"}', { mode: 0o600 });
+    fs.writeFileSync(path.join(run, 'argv'), nul(['bash', '-c', 'stat -c "%a %n" "$1" "$1/token" "$2/token" | sed "s#$3/##"', 'agent', source, live, dir]));
+    fs.writeFileSync(path.join(run, 'env'), nul([`PATH=${process.env.PATH}`]));
+    fs.writeFileSync(path.join(run, 'manifest'), nul(['ro-store', 'store/agy', source, 'store', 'store/agy', live]));
+    fs.writeFileSync(path.join(run, 'workdir'), path.join(dir, 'work'));
+    fs.writeFileSync(path.join(run, 'user'), 'root');
+    execFileSync('bash', [launcher, run]);
+    assert.equal(fs.readFileSync(path.join(run, 'exit-status'), 'utf8'), '0\n', fs.readFileSync(path.join(run, 'stderr.log'), 'utf8'));
+    assert.equal(fs.readFileSync(path.join(run, 'stdout.log'), 'utf8'), [
+        '750 home/.gemini-source', '640 home/.gemini-source/token', '600 tmp/propr-antigravity-home/.gemini/token',
+    ].map(line => `${line}\n`).join(''), 'the source is group-readable only; the live copy is the agent\'s');
+    const owners = fs.readFileSync(chowned, 'utf8').split('\n').filter(Boolean);
+    assert.ok(owners.includes(`root:node ${source}`), 'the source is root-owned');
+    assert.ok(owners.includes(`node:node ${live}`), 'the live copy belongs to the agent user');
+    assert.equal(fs.readFileSync(path.join(protectedDir, 'token'), 'utf8'), 'root-only', 'the planted link was removed, not followed');
+    assert.deepEqual(fs.readdirSync(protectedDir), ['token']);
+    assert.equal(fs.existsSync(source), false, 'the confirmed export removed the copy');
 });

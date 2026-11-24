@@ -114,7 +114,7 @@ export function spritesMountRefusal(mount: BindMount): string | undefined {
     if (!isSafeSpritesTarget(mount.target)) return `cannot provide a mount at ${mount.target} (Sprite targets must be under ${SPRITES_AGENT_HOME}/, /tmp/ or /run/propr-)`;
     if (mount.credentialStore && !mount.credentialStore.perRun) {
         // The provider session a resumed run continues lives in the store between launches; a Sprite gets only the
-        // manifest's files and is restored to its clean checkpoint before every run, so that session would be gone.
+        // manifest's files and is restored to its clean checkpoint after every run, so that session would be gone.
         return `cannot preserve the ${mount.credentialStore.provider} ${mount.credentialStore.store} store at ${mount.target} between runs, which this run needs for its provider session (goal sessions resumed by id); use the Docker runtime`;
     }
     if (mount.credentialStore) return undefined;
@@ -236,7 +236,8 @@ export function encodeNulList(values: readonly string[]): Buffer {
 /**
  * Launcher manifest records:
  * `purge <target>`, `stamp <run-relative file> <epoch seconds>` (the modification time of an uploaded store file),
- * `store <run-relative dir> <target>`, `dir <target>`, `file <run-relative file> <target> <octal mode>`,
+ * `store <run-relative dir> <target>` (owned by the agent user), `ro-store <run-relative dir> <target>` (root-owned, only readable by the agent user),
+ * `dir <target>`, `file <run-relative file> <target> <octal mode>`,
  * `output <boundary> <path below it> <run-relative return path>` (see `spritesOutputRecord`),
  * `live <boundary> <path below it> <run-relative return path>` (see `spritesLiveOutputRecord`).
  */
@@ -400,6 +401,12 @@ while [ "$i" -lt "$count" ]; do
             stores+=("$dst")
             secure_path "$dst" && rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && cp -a -- "$src" "$dst" \\
                 && chown -R node:node -- "$dst" && chmod 700 -- "$dst" || fail "cannot install credentials at $dst" ;;
+        ro-store)
+            # A read-only credential source (a read-only bind in the image): the agent user can read it, never change it.
+            src="$run_dir/\${manifest[$((i + 1))]}"; dst="\${manifest[$((i + 2))]}"; i=$((i + 3))
+            stores+=("$dst")
+            secure_path "$dst" && rm -rf -- "$dst" && mkdir -p -- "$(dirname -- "$dst")" && cp -a -- "$src" "$dst" \\
+                && chown -R root:node -- "$dst" && chmod -R u=rwX,g=rX,o= -- "$dst" || fail "cannot install credentials at $dst" ;;
         dir)
             dst="\${manifest[$((i + 1))]}"; i=$((i + 2))
             # An empty directory stands in for the host bind or tmpfs: its purge record removed what an earlier run left
