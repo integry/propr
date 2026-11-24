@@ -76,11 +76,12 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         });
     }
     // Idle shutdown: the API, worker and indexing worker in this process only
-    // acknowledge the daemon's stop request; the daemon then runs this one close.
+    // acknowledge the daemon's stop request; the daemon then runs this one close
+    // (exit 1 when it called the stop off, so the supervisor starts it again).
     setIdleShutdownComposedProcess(true);
-    const idleShutdownStop = (): void => {
+    const idleShutdownStop = (exitCode = 0): void => {
         logger.info('all-in-one: idle shutdown, closing every component');
-        closeAndExit();
+        closeAndExit(exitCode);
     };
 
     const stages: StartupStage[] = [

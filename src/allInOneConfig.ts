@@ -213,8 +213,10 @@ export const DEFAULT_SHUTDOWN_DEADLINE_MS = 30_000;
  * starting, a connection that never drains) no longer keeps the process up;
  * it is logged by name and the process exits 0, as a supervisor stop (Fly,
  * systemd) and an idle shutdown both expect. A close that completes with
- * failed steps exits 1. Logs are flushed (bounded) before exiting. Calling the
- * returned function again does nothing.
+ * failed steps exits 1. The caller may ask for a higher code (an idle stop
+ * called off exits 1, so an on-failure supervisor starts the process again).
+ * Logs are flushed (bounded) before exiting. Calling the returned function
+ * again does nothing.
  */
 export function createBoundedExit(options: {
     close: () => Promise<string[]>;
@@ -223,10 +225,10 @@ export function createBoundedExit(options: {
     log: { info(message: string): void; error(message: string, error?: unknown): void };
     flush?: () => Promise<void>;
     deadlineMs?: number;
-}): () => void {
+}): (exitCode?: number) => void {
     const deadlineMs = options.deadlineMs ?? DEFAULT_SHUTDOWN_DEADLINE_MS;
     let exiting = false;
-    return () => {
+    return (exitCode = 0) => {
         if (exiting) return;
         exiting = true;
         let done = false;
@@ -239,16 +241,17 @@ export function createBoundedExit(options: {
         // Not unref'd: the process exits through here, not when the event loop empties.
         const deadline = setTimeout(() => {
             options.log.error(`all-in-one: shutdown did not finish within ${Math.round(deadlineMs / 1000)}s (still closing: ${options.pendingStep() ?? 'unknown'}); exiting anyway`);
-            finish(0);
+            finish(exitCode);
         }, deadlineMs);
         options.close().then(
             failed => {
-                options.log.info(`all-in-one: shutdown complete (exit ${failed.length > 0 ? 1 : 0})`);
-                finish(failed.length > 0 ? 1 : 0);
+                const code = Math.max(failed.length > 0 ? 1 : 0, exitCode);
+                options.log.info(`all-in-one: shutdown complete (exit ${code})`);
+                finish(code);
             },
             error => {
                 options.log.error('all-in-one: shutdown failed', error);
-                finish(1);
+                finish(Math.max(1, exitCode));
             },
         );
     };

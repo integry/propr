@@ -21,14 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     prevents the stop and restarts the idle period.
   - With Connect intake the relay must acknowledge the wake hint
     (`wake_hint_ack`) or the instance stays up; the current relay does not, so
-    Connect instances need propr-routing#335. The daemon quiesces Connect and
-    the API before its last check, aborts (and resumes intake) if the wake hint
-    file cannot be written, and exits only after every registered API and
-    worker process has acknowledged the stop. On the next start it asks Connect
-    to replay deliveries cached since intake disconnected for the drain,
-    keeping that obligation in the hint file, written before intake
-    disconnects so a crash mid-drain keeps it, until the relay acknowledges
-    it (`replay_ack`); an aborted drain asks for the same replay once it
+    Connect instances need propr-routing#335. The daemon quiesces Connect, the
+    API and its own work-queuing sweeps (schedules, retries, auto-merge, merge
+    conflicts) before its last check, aborts (and resumes intake and the
+    sweeps) if the wake hint file cannot be written, and exits only after every
+    registered API and worker process has acknowledged the stop. A stop not
+    acknowledged in time for the wake arranged for the next scheduled work, or
+    one during which work was queued, is called off: the daemon exits with
+    code 1 so the supervisor starts the control plane again. On the next
+    start it asks Connect to replay deliveries cached since intake
+    disconnected for the drain, keeping that obligation in the hint file,
+    written before intake disconnects so a crash mid-drain keeps it, until
+    the relay acknowledges it (`replay_ack`); an aborted drain asks for the same replay once it
     reconnects. It also records the wake source and cold-start duration. `POST /wake` is the Connect wake ping.
   - An API or worker process whose heartbeat or activity record is missing,
     stale or malformed keeps the instance awake until it is confirmed stopped.

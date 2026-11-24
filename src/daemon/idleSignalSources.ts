@@ -63,16 +63,31 @@ export interface DaemonIdleSourceDeps {
     now?: () => number;
 }
 
-/** Every signal the daemon's idle detector reads, by name (the name shows up when one cannot be read). */
-export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<string, IdleSignalSource> {
+/**
+ * The signals that show work to run (queued or running jobs, runs, goals,
+ * handoffs, Ultrafix loops, and what is scheduled): what an idle stop must not
+ * strand. They do not depend on the API and worker processes being up.
+ */
+export function createDaemonWorkSources(deps: Pick<DaemonIdleSourceDeps, 'redis' | 'database' | 'now'>): Record<string, IdleSignalSource> {
     const now = deps.now ?? Date.now;
     return {
         'BullMQ queues': () => collectQueueSignals(deps.redis),
+        'database work': () => collectDatabaseSignals(deps.database),
+        'Ultrafix loops': () => collectUltrafixSignals(deps.redis, now()),
+    };
+}
+
+/** Every signal the daemon's idle detector reads, by name (the name shows up when one cannot be read). */
+export function createDaemonIdleSources(deps: DaemonIdleSourceDeps): Record<string, IdleSignalSource> {
+    const now = deps.now ?? Date.now;
+    const work = createDaemonWorkSources(deps);
+    return {
+        'BullMQ queues': work['BullMQ queues'],
         // Every registered API/worker process must be observed: a stale entry is unavailable, not idle.
         'process registrations': async () => ({ unavailable: (await collectParticipantSignals(deps.redis, { now: now() })).unavailable }),
         'API activity': () => collectActivitySignals(deps.redis, { now: now() }),
-        'database work': () => collectDatabaseSignals(deps.database),
-        'Ultrafix loops': () => collectUltrafixSignals(deps.redis, now()),
+        'database work': work['database work'],
+        'Ultrafix loops': work['Ultrafix loops'],
         'Connect deliveries': async () => ({ connectDeliveries: deps.connectInFlight() }),
         // Retried after a reconnect: the relay may have gained idle wake support.
         'Connect idle wake': async () => (deps.connectIdleWakeSupport?.() === 'rejected'

@@ -235,5 +235,14 @@ test('signal and idle shutdown in all-in-one both go through the bounded exit', 
     assert.match(source, /const closeAndExit = createBoundedExit\(/);
     assert.equal(source.match(/process\.exit\(failed/g), null, 'no unbounded exit after close()');
     assert.match(source, /shutting down gracefully\.\.\.`\);\n\s+closeAndExit\(\);/);
-    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(\);/);
+    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode\);/);
+});
+
+test('the all-in-one exit keeps the code its caller asked for (a called-off idle stop exits 1)', async () => {
+    for (const close of [async () => [] as string[], () => new Promise<string[]>(() => undefined)]) {
+        const exits: number[] = [];
+        createBoundedExit({ close, exit: c => { exits.push(c); }, pendingStep: () => null, log: quietLog, deadlineMs: 20 })(1);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        assert.deepEqual(exits, [1], 'whether the close completes or runs past its deadline');
+    }
 });

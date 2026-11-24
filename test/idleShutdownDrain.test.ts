@@ -21,6 +21,7 @@ const {
 } = await import('@propr/core');
 const { drainIdleControlPlane, recoverFromIdleWake } = await import('../src/daemon/idleShutdown.js');
 const { recordAcceptedReplay } = await import('../src/daemon/idleReplayObligation.js');
+const { createDaemonWorkProducers } = await import('../src/daemon/workProducers.js');
 const { IDLE_LAST_SHUTDOWN_REDIS_KEY, IDLE_LAST_WAKE_REDIS_KEY, IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig } = await import('@propr/shared');
 type IdleSignals = ReturnType<typeof emptyIdleSignals>;
 
@@ -232,10 +233,26 @@ test('the daemon does not exit while a registered process has not acknowledged t
     const api = apiProcess(hub, events);
     workerProcess(hub, events, { acknowledges: false });
     const { ctx, exits } = context(hub, null);
-    assert.equal(await drainIdleControlPlane(request, ctx), true);
+    // Nothing scheduled, no confirmation timeout: it waits (until SIGTERM, here after a while).
+    const started = Date.now();
+    const cancelled = { ...ctx, timings: { ...TIMINGS, stopConfirmTimeoutMs: null }, isCancelled: () => Date.now() - started > 300 };
+    assert.equal(await drainIdleControlPlane(request, cancelled), true);
     assert.deepEqual(exits, [], 'no exit without every confirmation');
     assert.ok(events.includes('api stopping'));
     assert.ok(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), 'the request stays stored for a process that reconnects');
+    await api.stop();
+});
+
+test('a stop still unconfirmed when its confirmation timeout ends is called off: exit 1, never 0, and the request is withdrawn', async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    workerProcess(hub, events, { acknowledges: false });
+    const { ctx, exits } = context(hub, null);
+    assert.equal(await drainIdleControlPlane(request, ctx), true);
+    assert.deepEqual(exits, [1], 'the supervisor starts the control plane again');
+    assert.ok(events.includes('api stopping'));
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'a process that has not stopped keeps running');
     await api.stop();
 });
 
@@ -458,5 +475,172 @@ test('in a composed process the participants only acknowledge and the daemon run
     } finally {
         setIdleShutdownComposedProcess(false);
         process.off('SIGTERM', onSignal);
+    }
+});
+
+/** The daemon's sweeps as the drain sees them. */
+function fakeProducers(events: string[], stillRunning: string[] = []) {
+    return {
+        pause: async () => { events.push('sweeps paused'); return stillRunning; },
+        resume: () => { events.push('sweeps resumed'); },
+    };
+}
+
+/** A worker that lost its Redis connection before the stop request: it sees (and acknowledges) it only after `reconnect()`. */
+function stragglerWorker(hub: Hub, events: string[]) {
+    let listener: ReturnType<typeof startIdleShutdownListener>;
+    listener = startIdleShutdownListener({
+        role: 'worker',
+        id: 'worker-straggler',
+        createConnection: hub.connect,
+        pollMs: 10,
+        onShutdown: () => { events.push('worker stopping'); void listener.stop(); },
+    });
+    const connections = hub.connections.slice(-2);
+    for (const connection of connections) connection.connected = false;
+    return { reconnect: () => { for (const connection of connections) connection.connected = true; }, stop: () => listener.stop() };
+}
+
+test('the daemon\'s own sweeps are paused before the last check and resumed when the drain aborts', async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const { ctx, exits } = context(hub, new FakeRouting(true), {
+        collect: async () => { events.push('re-check'); return { ...emptyIdleSignals(), httpRequests: 1 }; },
+    });
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, producers: fakeProducers(events) }), false);
+    await settle();
+    assert.deepEqual(events.slice(0, 3), ['sweeps paused', 'api quiesced', 're-check'], 'paused before anything else is quiesced');
+    assert.ok(events.includes('sweeps resumed'));
+    assert.deepEqual(exits, []);
+    await api.stop();
+});
+
+test('a daemon sweep that does not finish its run in progress aborts the drain before anything is stopped', async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const routing = new FakeRouting(true);
+    const { ctx, exits } = context(hub, routing, { collect: async () => { events.push('re-check'); return emptyIdleSignals(); } });
+    assert.equal(await drainIdleControlPlane(request, { ...ctx, producers: fakeProducers(events, ['auto-merge sweep']) }), false);
+    assert.deepEqual(events, ['sweeps paused', 'sweeps resumed']);
+    assert.deepEqual(routing.calls, ['wake_hint'], 'intake stays connected');
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+    assert.deepEqual(exits, []);
+});
+
+test('a stop acknowledgement held past an automation deadline does not end in exit 0 with the run left behind', async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const straggler = stragglerWorker(hub, events);
+    const routing = new FakeRouting(true);
+    const hints = hintStore();
+    const dueAt = Date.now() + 2_000;
+    const automation = { kind: 'automation' as const, dueAt, detail: 'scheduled automation' };
+    // The daemon's scheduler: running, it queues the automation's run once due.
+    const queued: string[] = [];
+    const producers = createDaemonWorkProducers({ error: () => undefined });
+    producers.add('agent run sweeps', () => {
+        const timer = setInterval(() => { if (Date.now() >= dueAt && queued.length === 0) queued.push('automation run'); }, 10);
+        return async () => { clearInterval(timer); };
+    });
+    // Due beyond the idle window, so the drain goes ahead and Connect accepts that deadline as its wake.
+    const idleBeforeAutomation = { ...request, evaluation: { ...request.evaluation, nextDueAt: dueAt, nextDue: [automation] }, config: { ...config, afterMs: 200 } };
+    const { ctx, exits } = context(hub, routing, { ...hints, collect: async () => ({ ...emptyIdleSignals(), scheduled: [automation] }) });
+    const timings = { ...TIMINGS, stopConfirmTimeoutMs: null, quiesceTimeoutMs: 300, deregisterWaitMs: 300, closeDeadlineMs: 300 };
+
+    assert.equal(await drainIdleControlPlane(idleBeforeAutomation, { ...ctx, producers, timings }), true);
+    assert.ok(Date.now() < dueAt, 'decided before the wake Connect accepted');
+    assert.deepEqual(exits, [1], 'the stop is called off: an on-failure supervisor starts the control plane again, and the start runs the automation');
+    assert.ok(events.includes('api stopping'));
+    assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'the stop request is withdrawn');
+    assert.ok(hints.store.current!.wokeAt, 'the start is not counted as a wake from an idle stop');
+    assert.equal(hints.store.current!.connectReplay, 'pending', 'it still asks Connect for the deliveries cached since intake disconnected');
+
+    // The deadline passes while the worker is still disconnected; then it reconnects.
+    await new Promise(resolve => setTimeout(resolve, dueAt - Date.now() + 50));
+    assert.deepEqual(queued, [], 'the scheduler, paused before the last check, queued nothing while the stop ran');
+    straggler.reconnect();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(!events.includes('worker stopping'), 'the called-off stop does not stop it');
+    assert.deepEqual(exits, [1], 'and the daemon never exits 0');
+    await straggler.stop();
+    await api.stop();
+    await producers.stop();
+});
+
+test('work queued while the processes stopped, or due with no wake arranged for it, calls the stop off instead of exit 0', async () => {
+    const lateRun = { kind: 'automation' as const, dueAt: Date.now() + 60 * 60_000, detail: 'scheduled automation' };
+    const cases: Array<[string, IdleSignals]> = [
+        ['a job queued by a process before it acknowledged', { ...emptyIdleSignals(), queues: [{ name: 'tasks', waiting: 1, active: 0, prioritized: 0, waitingChildren: 0, paused: 0 }] }],
+        ['an automation scheduled during the stop', { ...emptyIdleSignals(), scheduled: [lateRun] }],
+        ['work signals that cannot be read', { ...emptyIdleSignals(), unavailable: ['BullMQ queues'] }],
+    ];
+    for (const [label, work] of cases) {
+        const hub = new Hub();
+        const events: string[] = [];
+        apiProcess(hub, events);
+        workerProcess(hub, events);
+        const hints = hintStore();
+        const { ctx, exits } = context(hub, null, { ...hints });
+        const collectWork = async () => { events.push('work check'); return work; };
+        assert.equal(await drainIdleControlPlane(request, { ...ctx, collectWork }), true, label);
+        assert.deepEqual(exits, [1], label);
+        assert.equal(events.at(-1), 'work check', `${label}: checked once every process stopped`);
+        assert.ok(events.includes('worker stopping'), label);
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, label);
+        assert.ok(hints.store.current!.wokeAt, label);
+    }
+});
+
+test('scheduled work due at or after the wake that was arranged does not call the stop off', async () => {
+    const hub = new Hub();
+    apiProcess(hub, []);
+    workerProcess(hub, []);
+    const automation = { kind: 'automation' as const, dueAt: Date.now() + 60 * 60_000, detail: 'scheduled automation' };
+    const hinted = { ...request, evaluation: { ...request.evaluation, nextDueAt: automation.dueAt, nextDue: [automation] } };
+    const signals = async () => ({ ...emptyIdleSignals(), scheduled: [automation] });
+    const { ctx, exits } = context(hub, new FakeRouting(true), { collect: signals });
+    assert.equal(await drainIdleControlPlane(hinted, { ...ctx, collectWork: signals }), true);
+    assert.deepEqual(exits, [0]);
+});
+
+test('scheduled work due too soon for the stop to finish before it aborts the drain before anything is stopped', async () => {
+    const hub = new Hub();
+    const events: string[] = [];
+    const api = apiProcess(hub, events);
+    const worker = workerProcess(hub, events);
+    const routing = new FakeRouting(true);
+    const automation = { kind: 'automation' as const, dueAt: Date.now() + 1_500, detail: 'scheduled automation' };
+    const soon = { ...request, evaluation: { ...request.evaluation, nextDueAt: automation.dueAt, nextDue: [automation] }, config: { ...config, afterMs: 200 } };
+    const { ctx, exits } = context(hub, routing, { collect: async () => ({ ...emptyIdleSignals(), scheduled: [automation] }) });
+    // The deregistration wait and the close alone could take until the automation is due.
+    const timings = { ...TIMINGS, deregisterWaitMs: 1_000, closeDeadlineMs: 1_000 };
+    assert.equal(await drainIdleControlPlane(soon, { ...ctx, timings, producers: fakeProducers(events) }), false);
+    await settle();
+    assert.ok(!events.includes('worker stopping') && !events.includes('api stopping'));
+    assert.ok(events.includes('sweeps resumed'));
+    assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay']);
+    assert.deepEqual(exits, []);
+    await api.stop();
+    await worker.stop();
+});
+
+test('in a composed process a called-off stop runs the coordinated close with exit 1', async () => {
+    const hub = new Hub();
+    setIdleShutdownComposedProcess(true);
+    try {
+        const listeners = ['api', 'worker'].map(role => startIdleShutdownListener({
+            role: role as 'api' | 'worker', id: `${role}-composed`, createConnection: hub.connect, pollMs: 10, onQuiesce: async () => undefined,
+        }));
+        const stops: number[] = [];
+        const { ctx, exits } = context(hub, new FakeRouting(true));
+        const collectWork = async () => ({ ...emptyIdleSignals(), queues: [{ name: 'tasks', waiting: 1, active: 0, prioritized: 0, waitingChildren: 0, paused: 0 }] });
+        assert.equal(await drainIdleControlPlane(request, { ...ctx, collectWork, stopProcess: code => { stops.push(code); } }), true);
+        assert.deepEqual(stops, [1]);
+        assert.deepEqual(exits, []);
+        await Promise.all(listeners.map(listener => listener.stop()));
+    } finally {
+        setIdleShutdownComposedProcess(false);
     }
 });
