@@ -85,9 +85,9 @@ for (const { width, height, name } of [{ width: 1440, height: 1100, name: 'deskt
     const section = page.getByRole('region', { name: 'Held follow-ups', exact: true });
     const open = section.getByRole('list', { name: 'Held follow-ups' });
     await expect(open.getByRole('listitem')).toHaveCount(2);
-    // Held follow-ups come before Instance data in the category.
+    // Held follow-ups come before Instance data and Idle shutdown in the category.
     const order = await page.evaluate(() => Array.from(document.querySelectorAll('#settings-panel-maintenance [data-settings-section]')).map(element => element.getAttribute('data-settings-section')));
-    expect(order).toEqual(['maintenance', 'instance-storage']);
+    expect(order).toEqual(['maintenance', 'instance-storage', 'idle-shutdown']);
     await expect(section.getByText('Show released (3)')).toBeVisible();
     await expect(section.getByRole('list', { name: 'Released follow-ups' })).toBeHidden();
     await expect(section).not.toContainText('/tmp/git-processor');
