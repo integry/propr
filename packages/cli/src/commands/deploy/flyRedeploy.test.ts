@@ -224,7 +224,8 @@ function intakeErrors(env: Record<string, string>) {
 }
 
 test("an own App + Connect app redeployed with only an OAuth client keeps App auth and an intake that starts under it", async () => {
-  for (const extra of [{}, { GH_WEBHOOK_SECRET: "whsec" }]) {
+  const extras: Record<string, string>[] = [{}, { GH_WEBHOOK_SECRET: "whsec" }];
+  for (const extra of extras) {
     const app = flyApp();
     const first = await deploy(app, TUNNEL_FLAGS, { ...OWN_APP_ENV, ...extra }, "gh");
     assert.equal(first.GH_AUTH_MODE, "app");
