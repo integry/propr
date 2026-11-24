@@ -9,6 +9,7 @@ import {
   assertFlyIdleShutdownSupported,
   collectFlySecrets,
   createDeployCommand,
+  describeFlyRootfs,
   FLY_IDLE_SHUTDOWN_SUPPORTED,
   FLY_WORKER_AGENT_RUNTIMES,
   parseIdleShutdownAfter,
@@ -42,13 +43,19 @@ test("defaults: 1 GB shared-cpu-1x, 1 GB volume, manifest images, Sprites agents
   assert.equal(plan.legacyDocker, false);
 });
 
-test("legacy Docker forces the docker runtime and larger defaults", () => {
+test("legacy Docker forces the docker runtime, a persistent rootfs for images, and the default 1 GB volume", () => {
   const plan = resolveFlyDeployPlan({ app: "my-propr", legacyDocker: true }, IMAGES);
   assert.equal(plan.agentRuntime, "docker");
   assert.equal(plan.memoryMb, 2048);
-  assert.equal(plan.volumeSizeGb, 20);
-  assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, memory: "1024" }, IMAGES), /at least 2048 MB/);
-  assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, volumeSize: "3" }, IMAGES), /--volume-size 10/);
+  assert.equal(plan.volumeSizeGb, 1);
+  assert.equal(plan.rootfsSizeGb, 20);
+  assert.equal(resolveFlyDeployPlan({ app: "a1", legacyDocker: true, rootfsSize: "30", volumeSize: "3" }, IMAGES).rootfsSizeGb, 30);
+  assert.equal(resolveFlyDeployPlan({ app: "a1", legacyDocker: true, volumeSize: "3" }, IMAGES).volumeSizeGb, 3);
+  assert.equal(resolveFlyDeployPlan({ app: "a1" }, IMAGES).rootfsSizeGb, undefined);
+  assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, memory: "512" }, IMAGES), /at least 1024 MB/);
+  assert.equal(resolveFlyDeployPlan({ app: "a1", legacyDocker: true, memory: "1024" }, IMAGES).memoryMb, 1024);
+  assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, rootfsSize: "5" }, IMAGES), /--rootfs-size 10 or more/);
+  assert.throws(() => resolveFlyDeployPlan({ app: "a1", rootfsSize: "20" }, IMAGES), /needs --legacy-docker/);
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", agentRuntime: "docker" }, IMAGES), /--legacy-docker/);
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, agentRuntime: "sprites" }, IMAGES), /Docker runtime/);
 });
@@ -177,7 +184,7 @@ test("command registers `deploy fly` with tri-state relay and env-file flags", (
   const fly = deploy.commands.find((c) => c.name() === "fly");
   assert.ok(fly);
   const flags = fly.options.map((o) => o.long);
-  for (const flag of ["--app", "--org", "--token", "--idle-shutdown", "--legacy-docker", "--relay", "--no-relay", "--env-file", "--no-env-file", "--dry-run"]) {
+  for (const flag of ["--app", "--org", "--token", "--idle-shutdown", "--legacy-docker", "--rootfs-size", "--relay", "--no-relay", "--env-file", "--no-env-file", "--dry-run"]) {
     assert.ok(flags.includes(flag), `has ${flag}`);
   }
   fly.parseOptions(["--app", "x"]);
@@ -196,4 +203,13 @@ test("stack .env values for deployment-owned settings are not uploaded with a le
     ANTHROPIC_API_KEY: "k",
   });
   assert.deepEqual(secrets, { ANTHROPIC_API_KEY: "k" });
+});
+
+test("the plan summary (dry run included) shows a legacy plan's persistent rootfs size and its stopped cost", () => {
+  const lines = describeFlyRootfs(resolveFlyDeployPlan({ app: "my-propr", legacyDocker: true }, IMAGES));
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^Root fs: +20 GB, persistent/);
+  assert.match(lines[1], /^Root fs cost: +\$3\.00\/month while the Machine is stopped \(\$0\.15\/GB-month\)$/);
+  assert.match(describeFlyRootfs(resolveFlyDeployPlan({ app: "my-propr", legacyDocker: true, rootfsSize: "40" }, IMAGES))[1], /\$6\.00\/month/);
+  assert.deepEqual(describeFlyRootfs(resolveFlyDeployPlan({ app: "my-propr" }, IMAGES)), []);
 });

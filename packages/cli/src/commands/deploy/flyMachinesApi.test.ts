@@ -106,3 +106,16 @@ test("errors carry status and body but never the token", async () => {
     return true;
   });
 });
+
+test("appOwner reads the owning org of an existing app and reports a missing one", async () => {
+  const { fetchImpl, calls } = stubFetch([
+    { status: 200, body: { name: "my-propr", organization: { name: "Acme", slug: "acme-paid" } } },
+    { status: 404, body: { error: "not found" } },
+    { status: 200, body: { name: "my-propr" } },
+  ]);
+  const api = new FlyMachinesApi({ token: "tok", fetchImpl, baseUrl: "https://fly.test/v1" });
+  assert.deepEqual(await api.appOwner("my-propr"), { exists: true, org: "acme-paid" });
+  assert.deepEqual(await api.appOwner("my-propr"), { exists: false });
+  assert.deepEqual(await api.appOwner("my-propr"), { exists: true, org: undefined });
+  assert.deepEqual(calls.map((c) => c.method), ["GET", "GET", "GET"]);
+});

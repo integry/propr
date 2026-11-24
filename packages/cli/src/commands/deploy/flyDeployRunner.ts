@@ -1,6 +1,9 @@
 /**
  * The `propr deploy fly` sequence, independent of how Fly is reached:
  *
+ *   0. preflight  a volume over 5 GB is refused when the org that owns (or,
+ *                 for a new app, will own) the app is on the Fly Free plan,
+ *                 which would reject it (see flyOrgPlan.ts)
  *   1. app        create it in the chosen org unless it exists
  *   2. volume     reuse the named volume in the region, else create it; a
  *                 reused volume smaller than the plan is extended and its new
@@ -14,18 +17,23 @@
  *   4. deploy     the published app image directly (no build, no DinD);
  *                 the app container lists every secret name (set now or
  *                 kept), since a multi-container Machine passes app secrets
- *                 only to the containers that list them
+ *                 only to the containers that list them. With flyctl, config
+ *                 keys an earlier layout left on the Machine are cleared, or
+ *                 the Machine is replaced with the volume kept
+ *                 (flyStaleMachineConfig.ts)
  *
  * Two targets implement the steps: flyctl (when installed) and the Machines
  * API with a user-provided token. Both are idempotent, so re-running the
  * command updates the existing deployment in place.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { FlyctlBackend } from "./flyctlBackend.js";
+import { FlyctlBackend, type FlyctlMachine } from "./flyctlBackend.js";
 import { selectFlyIntakeMode } from "./flyIntake.js";
-import { FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
+import { flyAuthorizationHeader, FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
+import { staleMachineConfigKeys, type LiveMachineConfig } from "./flyStaleMachineConfig.js";
+import { assertVolumeFitsFlyPlan, exceedsFreePlanVolumeCap, fetchFlyOrgPlan, FLY_FREE_PLAN_MAX_VOLUME_GB, type FlyOrgPlan } from "./flyOrgPlan.js";
 import {
   buildMachineConfig,
   FLY_CONTROL_PLANE_ROLE,
@@ -39,13 +47,20 @@ import {
 
 export interface FlyDeployTarget {
   readonly kind: "flyctl" | "machines-api";
+  /** The org's Fly plan; "unknown" when it cannot be read. Read only, never creates anything. */
+  orgPlan(org: string): Promise<FlyOrgPlan>;
+  /**
+   * Whether the app exists and, if Fly says, the org that owns it. Read only:
+   * an existing app's resources belong to its own org, not to `--org`.
+   */
+  appOwner(app: string): Promise<{ exists: boolean; org?: string }>;
   ensureApp(app: string, org: string): Promise<boolean>;
   ensureVolume(app: string, input: { name: string; region: string; sizeGb: number }): Promise<FlyVolumeRef>;
   /** Grow a volume (Fly volumes never shrink); resolves to the size Fly reports afterwards. */
   extendVolume(app: string, volumeId: string, sizeGb: number): Promise<number>;
   secretNames(app: string): Promise<string[]>;
   setSecrets(app: string, values: Record<string, string>): Promise<void>;
-  deploy(plan: FlyDeployPlan, volume: { id?: string }): Promise<string>;
+  deploy(plan: FlyDeployPlan, volume: { id?: string }, log?: (line: string) => void): Promise<string>;
 }
 
 export interface FlyVolumeRef {
@@ -101,6 +116,28 @@ async function confirmVolumeCapacity(
   return extended;
 }
 
+/**
+ * Before anything is created: a volume Fly would reject on the Free plan
+ * stops the deploy here rather than at `volumes create`/`extend`. Only a
+ * volume over the cap needs the lookup; an unreadable plan does not block.
+ * The plan checked is that of the org owning the volume: an existing app's
+ * own org (`--org` only names where a new app is created), else `--org`.
+ */
+async function preflightFlyPlan(plan: FlyDeployPlan, target: FlyDeployTarget, log: (line: string) => void): Promise<void> {
+  if (!exceedsFreePlanVolumeCap(plan)) return;
+  const owner = await target.appOwner(plan.app);
+  const org = owner.exists ? owner.org : plan.org;
+  if (!org) {
+    log(`Could not read the org of app ${plan.app}; on the Free plan Fly rejects volumes over ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB.`);
+    return;
+  }
+  const orgPlan = await target.orgPlan(org);
+  assertVolumeFitsFlyPlan({ org, volumeSizeGb: plan.volumeSizeGb }, orgPlan);
+  if (orgPlan === "unknown") {
+    log(`Could not read the Fly plan of org ${org}; on the Free plan Fly rejects volumes over ${FLY_FREE_PLAN_MAX_VOLUME_GB} GB.`);
+  }
+}
+
 export async function runFlyDeploy(
   input: FlyDeployInput,
   target: FlyDeployTarget,
@@ -108,6 +145,7 @@ export async function runFlyDeploy(
 ): Promise<FlyDeployResult> {
   const { plan } = input;
   log(`Using ${target.kind === "flyctl" ? "flyctl" : "the Fly Machines API"}.`);
+  await preflightFlyPlan(plan, target, log);
 
   const appCreated = await target.ensureApp(plan.app, plan.org);
   log(appCreated ? `Created app ${plan.app} in org ${plan.org}.` : `App ${plan.app} already exists.`);
@@ -152,7 +190,7 @@ export async function runFlyDeploy(
   if (secretsSet.length) log(`Set ${secretsSet.length} secret(s): ${secretsSet.join(", ")}.`);
   if (secretsKept.length) log(`Kept existing secret(s): ${secretsKept.sort().join(", ")}.`);
 
-  const deployed = await target.deploy(deployPlan, volume);
+  const deployed = await target.deploy(deployPlan, volume, log);
   log(deployed);
   return { appCreated, volumeCreated: volume.created, secretsSet, secretsKept, volumeSizeGb, deployed };
 }
@@ -173,9 +211,94 @@ export function writeFlyFiles(plan: FlyDeployPlan, outDir: string): { flyToml: s
   return { flyToml, machineConfig };
 }
 
-export function createFlyctlTarget(backend: FlyctlBackend, outDir: string): FlyDeployTarget {
+export interface FlyctlTargetOptions {
+  /** How long to wait for a replaced Machine's volume to detach. */
+  detachTimeoutMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** The control-plane Machine among flyctl's list, if any (see isControlPlane). */
+function flyctlControlPlane(backend: FlyctlBackend, app: string, volumeId?: string): FlyctlMachine | undefined {
+  const machines = backend.listMachines(app).filter((m) => isControlPlane(m, volumeId));
+  if (machines.length > 1) {
+    throw new Error(`app ${app} has ${machines.length} control-plane Machines; one SQLite volume supports exactly one. Destroy the extras first.`);
+  }
+  return machines[0];
+}
+
+/**
+ * `fly deploy`, then make sure the Machine has no `volumes` or container
+ * `mounts` the plan dropped. flyctl merges machine_config into the live
+ * config; the JSON sends `[]` for those keys, which clears them, and if any
+ * survive anyway the Machine is destroyed and deployed again. The volume is
+ * kept: the new Machine is only created once the old one has released it, so
+ * flyctl attaches the existing volume instead of creating an empty one.
+ */
+async function deployFlyctlWithoutStaleKeys(
+  backend: FlyctlBackend,
+  plan: FlyDeployPlan,
+  volume: { id?: string },
+  files: { flyToml: string; machineConfig: string },
+  log: (line: string) => void,
+  options: FlyctlTargetOptions,
+): Promise<boolean> {
+  const planned = JSON.parse(readFileSync(files.machineConfig, "utf-8")) as LiveMachineConfig;
+  const run = () => backend.deploy({ app: plan.app, configPath: files.flyToml, image: plan.images.app, region: plan.region });
+  const before = flyctlControlPlane(backend, plan.app, volume.id);
+  const staleBefore = staleMachineConfigKeys(before?.config, planned);
+  if (before && staleBefore.length) log(`Machine ${before.id} has config the new layout drops: ${staleBefore.join("; ")}. Clearing it.`);
+  run();
+  const after = flyctlControlPlane(backend, plan.app, volume.id);
+  const stale = staleMachineConfigKeys(after?.config, planned);
+  if (!after || !stale.length) return false;
+
+  log(`flyctl kept ${stale.join("; ")} on Machine ${after.id}; replacing the Machine (volume ${plan.volumeName} is kept).`);
+  backend.destroyMachine(plan.app, after.id);
+  await waitForVolumeDetached(backend, plan, volume.id, after.id, options);
+  run();
+  const replaced = flyctlControlPlane(backend, plan.app, volume.id);
+  const left = staleMachineConfigKeys(replaced?.config, planned);
+  if (left.length) {
+    throw new Error(`Machine ${replaced?.id ?? "?"} still has ${left.join("; ")} after being replaced; check \`fly machine status ${replaced?.id ?? "<machine-id>"} --app ${plan.app} --display-config\`.`);
+  }
+  return true;
+}
+
+async function waitForVolumeDetached(
+  backend: FlyctlBackend,
+  plan: FlyDeployPlan,
+  volumeId: string | undefined,
+  machineId: string,
+  options: FlyctlTargetOptions,
+): Promise<void> {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const deadline = Date.now() + (options.detachTimeoutMs ?? 120_000);
+  for (;;) {
+    const found = backend.listVolumes(plan.app).find((v) => (volumeId ? v.id === volumeId : v.name === plan.volumeName && v.region === plan.region));
+    if (found && found.attachedMachineId !== machineId) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`volume ${plan.volumeName} is still ${found ? `attached to destroyed Machine ${machineId}` : "missing"}; check \`fly volumes list --app ${plan.app}\` and rerun.`);
+    }
+    await sleep(2000);
+  }
+}
+
+export function createFlyctlTarget(
+  backend: FlyctlBackend,
+  outDir: string,
+  fetchImpl: typeof fetch = fetch,
+  options: FlyctlTargetOptions = {},
+): FlyDeployTarget {
   return {
     kind: "flyctl",
+    async orgPlan(org) {
+      // `fly auth token` prints the token flyctl uses, FLY_API_TOKEN included.
+      const token = backend.authToken();
+      return token ? fetchFlyOrgPlan(flyAuthorizationHeader(token), org, fetchImpl) : "unknown";
+    },
+    async appOwner(app) {
+      return backend.appOwner(app);
+    },
     async ensureApp(app, org) {
       if (backend.appExists(app)) return false;
       backend.createApp(app, org);
@@ -198,10 +321,10 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string): FlyD
     async setSecrets(app, values) {
       backend.setSecrets(app, values);
     },
-    async deploy(plan) {
+    async deploy(plan, volume, log = () => {}) {
       const files = writeFlyFiles(plan, outDir);
-      backend.deploy({ app: plan.app, configPath: files.flyToml, image: plan.images.app, region: plan.region });
-      return `Deployed ${plan.images.app} with flyctl (config: ${files.flyToml}).`;
+      const replaced = await deployFlyctlWithoutStaleKeys(backend, plan, volume, files, log, options);
+      return `${replaced ? "Replaced the Machine and deployed" : "Deployed"} ${plan.images.app} with flyctl (config: ${files.flyToml}).`;
     },
   };
 }
@@ -211,7 +334,7 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string): FlyD
  * or, whatever created it, already has the deployment's data volume attached:
  * a second Machine could never mount that volume, so it must be updated.
  */
-function isControlPlane(machine: FlyMachine, volumeId?: string): boolean {
+function isControlPlane(machine: Pick<FlyMachine, "config">, volumeId?: string): boolean {
   if (machine.config?.metadata?.[FLY_CONTROL_PLANE_ROLE_KEY] === FLY_CONTROL_PLANE_ROLE) return true;
   return !!volumeId && (machine.config?.mounts ?? []).some((m) => m.volume === volumeId);
 }
@@ -223,6 +346,12 @@ function volumeSize(value: unknown): number {
 export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
   return {
     kind: "machines-api",
+    async orgPlan(org) {
+      return api.orgPlan(org);
+    },
+    async appOwner(app) {
+      return api.appOwner(app);
+    },
     async ensureApp(app, org) {
       if (await api.appExists(app)) return false;
       await api.createApp(app, org);

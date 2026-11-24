@@ -55,8 +55,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
     loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
     stale `/var/run/docker*` and `/run/containerd` PID files.
-    A larger `--volume-size` grows the existing image in place on the next
-    boot, keeping pulled images.
+    A larger `--rootfs-size` grows the existing image in place on the next
+    boot, keeping pulled images. Clones, worktrees and egress sockets are
+    shared with the daemon under `/usr/src/app/data/propr-shared` on the Fly
+    volume. The `temp_dir` scratch volume used before never mounted on a live
+    Machine and crash-looped the `docker` container. Boot now stops with an
+    error if the volume is missing from the `docker` container. Use
+    `--rootfs-size` 20 or more: 10 leaves less than the 12 GiB agent image
+    build reserve.
+  - Fits the Fly Free plan (#3785). `--legacy-docker` keeps Docker images on a
+    persistent root filesystem (`rootfs.size_gb`, default 20 GB, set with
+    `--rootfs-size`; `rootfs.persist: "always"`) instead of the volume, which stays
+    at the 1 GB default for SQLite and Redis. Boot removes the image an
+    earlier release left on the volume. A `--volume-size` over 5 GB is refused
+    before anything is created when Fly reports the org owning the app (an
+    existing app's own org, else `--org`) on the Free plan, which caps volumes
+    at 5 GB. The plan output, `--dry-run` included, shows the rootfs size and
+    its cost while stopped ($0.15/GB-month).
+    Legacy mode now accepts `--memory 1024` (default still 2048 MB):
+    `dockerd` ran next to the app and Redis on a 1 GB Machine.
+  - A flyctl redeploy removes Machine config an earlier layout left behind.
+    `flyctl deploy` merges `machine_config` into the live Machine and keeps
+    keys it leaves out, so a Machine from the `temp_dir` layout kept its
+    `volumes` and container `mounts` and the `docker` container crash-looped.
+    `propr-machine.json` now sends both as `[]`. After deploying, the command
+    compares the Machine with the plan; if stale keys remain, it destroys the
+    Machine, waits for the data volume to detach and deploys again on the same
+    volume.
 
 ### Changed
 

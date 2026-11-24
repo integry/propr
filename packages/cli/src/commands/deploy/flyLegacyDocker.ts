@@ -9,29 +9,58 @@
  *
  *  1. overlay2 cannot use the Machine's root filesystem (itself an overlay) as
  *     its backing store, so /var/lib/docker is an ext4 filesystem image on the
- *     Fly volume, loop-mounted before dockerd starts. The image survives
- *     restarts, so pulled agent images are not downloaded again.
+ *     Machine's PERSISTENT root filesystem (`rootfs.persist: "always"`), loop-mounted
+ *     before dockerd starts. The image survives restarts, so pulled agent
+ *     images are not downloaded again. It is not on the Fly volume: the Free
+ *     plan caps volumes at 5 GB, while the rootfs size is not under that cap,
+ *     so the volume stays small and holds only SQLite and Redis.
  *  2. After an unclean stop the root filesystem can keep dockerd/containerd
  *     PID files and sockets (/var/run/docker*, /run/containerd). dockerd then
  *     refuses to start ("pid file found, ensure docker is not running"), so
  *     they are removed before it starts.
  *
  * Agent containers bind-mount worktrees and egress sockets by path, and the
- * daemon resolves those paths in ITS filesystem. Both containers therefore
- * mount one shared scratch volume at the same path, and the worker's clone,
- * worktree and egress directories are moved there.
+ * daemon resolves those paths in ITS filesystem. The worker's clone, worktree
+ * and egress directories therefore live in {@link LEGACY_DOCKER_SHARED_DIR} on
+ * the Fly volume: the Machine-level volume mount appears at the same path in
+ * every container (Redis already relies on that for its append-only file).
+ * A Machine `volumes` entry with `temp_dir`, mounted per container, does NOT
+ * work here: on a live Fly Machine with a persistent rootfs the docker
+ * container failed on every start with
+ * `cannot stat /upper/dev/vdb/propr_shared: No such file or directory`.
  */
 
 import { Buffer } from "node:buffer";
 import type { JsonObject } from "./flyMachineConfig.js";
 
 export const LEGACY_DOCKER_IMAGE = "docker:27-dind";
-export const LEGACY_DOCKER_SHARED_VOLUME = "propr_shared";
-export const LEGACY_DOCKER_SHARED_DIR = "/propr-shared";
+/**
+ * Shared by the app and docker containers: a directory on the Fly volume,
+ * which is mounted at FLY_DATA_PATH (/usr/src/app/data) in every container of
+ * the Machine. Spelled out rather than imported, because flyMachineConfig.ts
+ * imports this module.
+ */
+export const LEGACY_DOCKER_VOLUME_PATH = "/usr/src/app/data";
+export const LEGACY_DOCKER_SHARED_DIR = `${LEGACY_DOCKER_VOLUME_PATH}/propr-shared`;
 export const LEGACY_DOCKER_BOOT_SCRIPT_PATH = "/usr/local/bin/propr-dockerd-boot";
-export const LEGACY_DOCKER_DISK_IMAGE = "/usr/src/app/data/docker.ext4";
-export const LEGACY_DOCKER_MIN_VOLUME_GB = 10;
-export const LEGACY_DOCKER_MIN_MEMORY_MB = 2048;
+/** On the persistent root filesystem, outside the Fly volume. */
+export const LEGACY_DOCKER_DISK_IMAGE = "/var/lib/propr-docker/docker.ext4";
+/** Where earlier releases kept the image: on the Fly volume, removed on boot to free it for SQLite and Redis. */
+export const LEGACY_DOCKER_VOLUME_DISK_IMAGE = `${LEGACY_DOCKER_VOLUME_PATH}/docker.ext4`;
+/**
+ * dockerd on overlay2 next to the app and Redis ran on a 1 GB shared-cpu-1x
+ * Machine (the Free plan's size); 512 MB did not. Agent containers need more,
+ * so the default is 2 GB.
+ */
+export const LEGACY_DOCKER_MIN_MEMORY_MB = 1024;
+export const LEGACY_DOCKER_DEFAULT_MEMORY_MB = 2048;
+/** Persistent root filesystem for legacy mode (`rootfs.size_gb`), holding the Docker image store. */
+export const LEGACY_DOCKER_DEFAULT_ROOTFS_GB = 20;
+export const LEGACY_DOCKER_MIN_ROOTFS_GB = 10;
+/** Room left on the rootfs for the container images of the Machine itself (app, redis, docker:dind, cloudflared). */
+export const LEGACY_DOCKER_ROOTFS_HEADROOM_GB = 4;
+/** Fly bills a stopped Machine's persistent root filesystem per GB-month. */
+export const FLY_ROOTFS_PRICE_PER_GB_MONTH = 0.15;
 
 /** App-container env pointing the worker at the in-Machine daemon and the shared directory. */
 export const LEGACY_DOCKER_SHARED_ENV = {
@@ -54,9 +83,14 @@ export const LEGACY_DOCKER_STALE_RUNTIME_PATHS = [
   "/run/containerd",
 ] as const;
 
-/** Size of the ext4 image: the volume minus 2 GB headroom for SQLite and Redis. */
-export function legacyDockerDiskSizeGb(volumeSizeGb: number): number {
-  return Math.max(4, volumeSizeGb - 2);
+/** Size of the ext4 image: the persistent rootfs minus headroom for the Machine's own container images. */
+export function legacyDockerDiskSizeGb(rootfsSizeGb: number): number {
+  return Math.max(4, rootfsSizeGb - LEGACY_DOCKER_ROOTFS_HEADROOM_GB);
+}
+
+/** What a stopped Machine's persistent rootfs costs per month, e.g. "$3.00". */
+export function flyRootfsMonthlyCost(rootfsSizeGb: number): string {
+  return `$${(rootfsSizeGb * FLY_ROOTFS_PRICE_PER_GB_MONTH).toFixed(2)}`;
 }
 
 export const LEGACY_DOCKER_DATA_ROOT = "/var/lib/docker";
@@ -80,7 +114,7 @@ function assertDiskSize(diskSizeGb: number): void {
  *
  * A first boot creates the image at the requested size. Later boots grow an
  * existing image that is smaller than requested (a redeploy with a larger
- * --volume-size): the sparse file is extended, never truncated below its
+ * --rootfs-size): the sparse file is extended, never truncated below its
  * current size, then the ext4 filesystem is resized offline into it, which
  * keeps every pulled image. Growth is decided from the filesystem's own size,
  * not from whether this boot extended the file, so a resize interrupted by a
@@ -129,8 +163,20 @@ export function renderLegacyDockerBootScript(diskSizeGb: number): string {
     "# refuses to start because it believes another daemon is running.",
     `rm -rf ${LEGACY_DOCKER_STALE_RUNTIME_PATHS.join(" ")}`,
     "",
+    "# The directory shared with the app container is on the Fly volume. Without",
+    "# the volume here, mkdir would create it on this container's own root",
+    "# filesystem and agent bind mounts would silently point at empty directories.",
+    `if ! mountpoint -q ${LEGACY_DOCKER_VOLUME_PATH}; then`,
+    `  echo "propr-dockerd-boot: the Fly volume is not mounted at ${LEGACY_DOCKER_VOLUME_PATH} in the docker container" >&2`,
+    "  exit 1",
+    "fi",
+    "",
+    "# Earlier releases kept the image on the Fly volume; free that space for SQLite and Redis.",
+    `rm -f ${LEGACY_DOCKER_VOLUME_DISK_IMAGE}`,
+    "",
     "# Fix 1: overlay2 needs a real filesystem under /var/lib/docker, not the",
-    "# Machine's overlay root. Keep an ext4 image on the Fly volume and loop-mount it.",
+    "# Machine's overlay root. Keep an ext4 image on the persistent root filesystem",
+    "# (rootfs.persist \"always\") and loop-mount it.",
     `IMG=${LEGACY_DOCKER_DISK_IMAGE}`,
     `DOCKER_ROOT=${LEGACY_DOCKER_DATA_ROOT}`,
     ...renderLegacyDockerDiskSteps(diskSizeGb),
@@ -152,7 +198,6 @@ export function buildLegacyDockerContainer(diskSizeGb: number): JsonObject {
     entrypoint: ["/bin/sh"],
     cmd: [LEGACY_DOCKER_BOOT_SCRIPT_PATH],
     files: [{ guest_path: LEGACY_DOCKER_BOOT_SCRIPT_PATH, raw_value: Buffer.from(script).toString("base64"), mode: 0o755 }],
-    mounts: [{ name: LEGACY_DOCKER_SHARED_VOLUME, path: LEGACY_DOCKER_SHARED_DIR }],
     healthchecks: [{ name: "dockerd", exec: { command: ["docker", "-H", "tcp://127.0.0.1:2375", "info"] }, interval: 10, timeout: 10, grace_period: 30 }],
     restart: { policy: "always" },
   };
