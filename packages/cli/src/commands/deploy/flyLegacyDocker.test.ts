@@ -13,6 +13,8 @@ import {
   buildLegacyDockerContainer,
   flyRootfsMonthlyCost,
   LEGACY_DOCKER_BOOT_SCRIPT_PATH,
+  LEGACY_DOCKER_SHARED_DIR,
+  LEGACY_DOCKER_VOLUME_PATH,
   LEGACY_DOCKER_STALE_RUNTIME_PATHS,
   legacyDockerDiskSizeGb,
   renderLegacyDockerBootScript,
@@ -49,6 +51,41 @@ test("boot script loop-mounts an ext4 image at /var/lib/docker for overlay2", ()
   assert.ok(cleanup > 0 && cleanup < script.indexOf("mount -o loop"));
 });
 
+test("boot script refuses to start unless the Fly volume holding the shared directory is mounted", () => {
+  const script = renderLegacyDockerBootScript(18);
+  assert.ok(LEGACY_DOCKER_SHARED_DIR.startsWith(`${LEGACY_DOCKER_VOLUME_PATH}/`));
+  const guard = script.indexOf(`if ! mountpoint -q ${LEGACY_DOCKER_VOLUME_PATH}; then`);
+  assert.ok(guard > 0, "checks the volume mount");
+  assert.match(script.slice(guard), /^ {2}exit 1$/m);
+  // Before anything touches the volume or the shared directory is created.
+  assert.ok(guard < script.indexOf(`rm -f ${LEGACY_DOCKER_VOLUME_PATH}/docker.ext4`));
+  const mkdir = script.indexOf(`mkdir -p ${LEGACY_DOCKER_SHARED_DIR}/`);
+  assert.ok(mkdir > guard, "creates the shared directories after the check");
+  assert.ok(mkdir < script.indexOf("exec dockerd"));
+});
+
+test("boot script volume check fails without the volume and passes with it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "propr-legacy-guard-"));
+  try {
+    const script = renderLegacyDockerBootScript(18);
+    const guard = script.slice(script.indexOf("if ! mountpoint -q"), script.indexOf("fi", script.indexOf("if ! mountpoint -q")) + 2);
+    const run = (mounted: boolean) => {
+      writeFileSync(join(dir, "mountpoint"), `#!/bin/sh\n${mounted ? "exit 0" : "exit 1"}\n`, { mode: 0o755 });
+      return spawnSync("sh", ["-c", `set -eu\n${guard}\necho ok`], {
+        encoding: "utf-8", env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` },
+      });
+    };
+    const missing = run(false);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /Fly volume is not mounted at \/usr\/src\/app\/data/);
+    const present = run(true);
+    assert.equal(present.status, 0, present.stderr);
+    assert.equal(present.stdout.trim(), "ok");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("boot script is valid POSIX sh", () => {
   const result = spawnSync("sh", ["-n"], { input: renderLegacyDockerBootScript(8), encoding: "utf-8" });
   assert.equal(result.status, 0, result.stderr);
@@ -71,6 +108,8 @@ test("docker container runs the boot script written from the Machine config", ()
   assert.equal(file.guest_path, LEGACY_DOCKER_BOOT_SCRIPT_PATH);
   assert.equal(file.mode, 0o755);
   assert.equal(Buffer.from(file.raw_value, "base64").toString(), renderLegacyDockerBootScript(18));
+  // No per-container mount: the shared directory is on the Machine-level Fly volume.
+  assert.equal(container.mounts, undefined);
 });
 
 // The disk steps run for real against scratch ext4 images: mountpoint and

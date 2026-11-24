@@ -22,6 +22,7 @@ import {
   type FlyDeployPlan,
   type JsonObject,
 } from "./flyMachineConfig.js";
+import { LEGACY_DOCKER_SHARED_DIR } from "./flyLegacyDocker.js";
 
 export function basePlan(overrides: Partial<FlyDeployPlan> = {}): FlyDeployPlan {
   return {
@@ -156,11 +157,33 @@ test("legacy Docker mode adds the daemon container and shares worktree paths", (
   const app = container(config, "app");
   const env = app.env as Record<string, string>;
   assert.equal(env.DOCKER_HOST, "tcp://127.0.0.1:2375");
-  assert.ok(env.GIT_WORKTREES_BASE_PATH.startsWith("/propr-shared/"));
-  assert.deepEqual(app.mounts, [{ name: "propr_shared", path: "/propr-shared" }]);
-  assert.deepEqual(container(config, "docker").mounts, app.mounts);
+  assert.ok(env.GIT_WORKTREES_BASE_PATH.startsWith("/usr/src/app/data/propr-shared/"));
   assert.deepEqual(app.depends_on, [{ name: "redis", condition: "healthy" }, { name: "docker", condition: "healthy" }]);
-  assert.deepEqual(config.volumes, [{ name: "propr_shared", temp_dir: { storage_type: "disk", size_mb: 8192 } }]);
+});
+
+test("legacy Docker mode shares worktrees and egress sockets through the Fly volume, not a temp_dir", () => {
+  // A temp_dir `volumes` entry mounted per container crash-looped dockerd on a
+  // live Machine ("cannot stat /upper/dev/vdb/propr_shared"). The shared paths
+  // sit on the Machine-level Fly volume mount, which every container sees at
+  // FLY_DATA_PATH, so no container-level mount or Machine `volumes` is emitted.
+  const plan = basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048 });
+  const config = buildMachineConfig(plan);
+  const doc = JSON.parse(renderFlyMachineConfigJson(plan)) as JsonObject;
+  for (const shape of [config, doc]) {
+    assert.equal(shape.volumes, undefined);
+    for (const c of shape.containers as JsonObject[]) assert.equal(c.mounts, undefined, `${String(c.name)} has no container mounts`);
+  }
+  assert.deepEqual(config.mounts, [{ volume: "propr_data", path: FLY_DATA_PATH }]);
+  assert.match(renderFlyToml(plan), /\[\[mounts\]\]\n {2}source = "propr_data"\n {2}destination = "\/usr\/src\/app\/data"/);
+  assert.ok(LEGACY_DOCKER_SHARED_DIR.startsWith(`${FLY_DATA_PATH}/`));
+  const env = buildAppEnv(plan);
+  for (const key of ["GIT_CLONES_BASE_PATH", "GIT_WORKTREES_BASE_PATH", "PROPR_EGRESS_SOCKET_DIR", "HOST_PROPR_EGRESS_SOCKET_DIR"]) {
+    assert.ok(env[key].startsWith(`${LEGACY_DOCKER_SHARED_DIR}/`), `${key}=${env[key]}`);
+  }
+  // The worker's egress dir is the one the daemon sees: same path in both containers.
+  assert.equal(env.PROPR_EGRESS_SOCKET_DIR, env.HOST_PROPR_EGRESS_SOCKET_DIR);
+  // SQLite and Redis stay outside the shared tree.
+  assert.ok(!env.DB_FILENAME.startsWith(LEGACY_DOCKER_SHARED_DIR));
 });
 
 test("legacy Docker mode keeps Docker images on a persistent rootfs and the volume at its default", () => {
@@ -254,10 +277,8 @@ test("conflicting stack filesystem settings cannot move legacy Docker paths off 
   const plan = basePlan({ legacyDocker: true, agentRuntime: "docker", memoryMb: 2048, volumeSizeGb: 20 });
   const env = buildAppEnv(plan);
   for (const key of ["GIT_CLONES_BASE_PATH", "GIT_WORKTREES_BASE_PATH", "PROPR_EGRESS_SOCKET_DIR", "HOST_PROPR_EGRESS_SOCKET_DIR"]) {
-    assert.ok(env[key].startsWith("/propr-shared/"), `${key}=${env[key]}`);
+    assert.ok(env[key].startsWith("/usr/src/app/data/propr-shared/"), `${key}=${env[key]}`);
   }
-  const docker = buildContainers(plan).find((c) => c.name === "docker") as JsonObject;
-  assert.deepEqual(docker.mounts, [{ name: "propr_shared", path: "/propr-shared" }]);
 });
 
 test("flyctl machine_config and Machines API config carry the same control-plane metadata", () => {

@@ -56,7 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
     stale `/var/run/docker*` and `/run/containerd` PID files.
     A larger `--rootfs-size` grows the existing image in place on the next
-    boot, keeping pulled images.
+    boot, keeping pulled images. Clones, worktrees and egress sockets are
+    shared with the daemon under `/usr/src/app/data/propr-shared` on the Fly
+    volume. The `temp_dir` scratch volume used before never mounted on a live
+    Machine and crash-looped the `docker` container. Boot now stops with an
+    error if the volume is missing from the `docker` container. Use
+    `--rootfs-size` 20 or more: 10 leaves less than the 12 GiB agent image
+    build reserve.
   - Fits the Fly Free plan (#3785). `--legacy-docker` keeps Docker images on a
     persistent root filesystem (`rootfs.size_gb`, default 20 GB, set with
     `--rootfs-size`; `rootfs.persist: "always"`) instead of the volume, which stays

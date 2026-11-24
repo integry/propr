@@ -24,9 +24,7 @@ import {
   buildLegacyDockerContainer,
   legacyDockerDiskSizeGb,
   LEGACY_DOCKER_DEFAULT_ROOTFS_GB,
-  LEGACY_DOCKER_SHARED_DIR,
   LEGACY_DOCKER_SHARED_ENV,
-  LEGACY_DOCKER_SHARED_VOLUME,
 } from "./flyLegacyDocker.js";
 
 export const FLY_DATA_PATH = "/usr/src/app/data";
@@ -257,7 +255,6 @@ function buildAppContainer(plan: FlyDeployPlan, image: string): JsonObject {
   if (plan.githubAppKey) {
     container.files = [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }];
   }
-  if (plan.legacyDocker) container.mounts = [{ name: LEGACY_DOCKER_SHARED_VOLUME, path: LEGACY_DOCKER_SHARED_DIR }];
   return container;
 }
 
@@ -362,13 +359,15 @@ export function legacyRootfsSizeGb(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): n
 export const LEGACY_DOCKER_ROOTFS_PERSIST = "always";
 
 /**
- * Machine-level legacy fields: the shared scratch volume, and a persistent
- * root filesystem for the Docker image store, so Docker images stay off the
- * Fly volume (capped at 5 GB on the Free plan) and survive restarts.
+ * Machine-level legacy fields: a persistent root filesystem for the Docker
+ * image store, so Docker images stay off the Fly volume (capped at 5 GB on the
+ * Free plan) and survive restarts. There is no `volumes`/`temp_dir` entry: the
+ * directory both containers share is on the Fly volume (LEGACY_DOCKER_SHARED_DIR
+ * in flyLegacyDocker.ts), because a `temp_dir` volume did not mount in this
+ * multi-container Machine.
  */
 function buildLegacyDockerMachineFields(plan: Pick<FlyDeployPlan, "rootfsSizeGb">): JsonObject {
   return {
-    volumes: [{ name: LEGACY_DOCKER_SHARED_VOLUME, temp_dir: { storage_type: "disk", size_mb: 8192 } }],
     rootfs: { size_gb: legacyRootfsSizeGb(plan), persist: LEGACY_DOCKER_ROOTFS_PERSIST },
   };
 }

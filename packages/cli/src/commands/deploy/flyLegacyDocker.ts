@@ -20,22 +20,33 @@
  *     they are removed before it starts.
  *
  * Agent containers bind-mount worktrees and egress sockets by path, and the
- * daemon resolves those paths in ITS filesystem. Both containers therefore
- * mount one shared scratch volume at the same path, and the worker's clone,
- * worktree and egress directories are moved there.
+ * daemon resolves those paths in ITS filesystem. The worker's clone, worktree
+ * and egress directories therefore live in {@link LEGACY_DOCKER_SHARED_DIR} on
+ * the Fly volume: the Machine-level volume mount appears at the same path in
+ * every container (Redis already relies on that for its append-only file).
+ * A Machine `volumes` entry with `temp_dir`, mounted per container, does NOT
+ * work here: on a live Fly Machine with a persistent rootfs the docker
+ * container failed on every start with
+ * `cannot stat /upper/dev/vdb/propr_shared: No such file or directory`.
  */
 
 import { Buffer } from "node:buffer";
 import type { JsonObject } from "./flyMachineConfig.js";
 
 export const LEGACY_DOCKER_IMAGE = "docker:27-dind";
-export const LEGACY_DOCKER_SHARED_VOLUME = "propr_shared";
-export const LEGACY_DOCKER_SHARED_DIR = "/propr-shared";
+/**
+ * Shared by the app and docker containers: a directory on the Fly volume,
+ * which is mounted at FLY_DATA_PATH (/usr/src/app/data) in every container of
+ * the Machine. Spelled out rather than imported, because flyMachineConfig.ts
+ * imports this module.
+ */
+export const LEGACY_DOCKER_VOLUME_PATH = "/usr/src/app/data";
+export const LEGACY_DOCKER_SHARED_DIR = `${LEGACY_DOCKER_VOLUME_PATH}/propr-shared`;
 export const LEGACY_DOCKER_BOOT_SCRIPT_PATH = "/usr/local/bin/propr-dockerd-boot";
 /** On the persistent root filesystem, outside the Fly volume. */
 export const LEGACY_DOCKER_DISK_IMAGE = "/var/lib/propr-docker/docker.ext4";
 /** Where earlier releases kept the image: on the Fly volume, removed on boot to free it for SQLite and Redis. */
-export const LEGACY_DOCKER_VOLUME_DISK_IMAGE = "/usr/src/app/data/docker.ext4";
+export const LEGACY_DOCKER_VOLUME_DISK_IMAGE = `${LEGACY_DOCKER_VOLUME_PATH}/docker.ext4`;
 /**
  * dockerd on overlay2 next to the app and Redis ran on a 1 GB shared-cpu-1x
  * Machine (the Free plan's size); 512 MB did not. Agent containers need more,
@@ -152,6 +163,14 @@ export function renderLegacyDockerBootScript(diskSizeGb: number): string {
     "# refuses to start because it believes another daemon is running.",
     `rm -rf ${LEGACY_DOCKER_STALE_RUNTIME_PATHS.join(" ")}`,
     "",
+    "# The directory shared with the app container is on the Fly volume. Without",
+    "# the volume here, mkdir would create it on this container's own root",
+    "# filesystem and agent bind mounts would silently point at empty directories.",
+    `if ! mountpoint -q ${LEGACY_DOCKER_VOLUME_PATH}; then`,
+    `  echo "propr-dockerd-boot: the Fly volume is not mounted at ${LEGACY_DOCKER_VOLUME_PATH} in the docker container" >&2`,
+    "  exit 1",
+    "fi",
+    "",
     "# Earlier releases kept the image on the Fly volume; free that space for SQLite and Redis.",
     `rm -f ${LEGACY_DOCKER_VOLUME_DISK_IMAGE}`,
     "",
@@ -179,7 +198,6 @@ export function buildLegacyDockerContainer(diskSizeGb: number): JsonObject {
     entrypoint: ["/bin/sh"],
     cmd: [LEGACY_DOCKER_BOOT_SCRIPT_PATH],
     files: [{ guest_path: LEGACY_DOCKER_BOOT_SCRIPT_PATH, raw_value: Buffer.from(script).toString("base64"), mode: 0o755 }],
-    mounts: [{ name: LEGACY_DOCKER_SHARED_VOLUME, path: LEGACY_DOCKER_SHARED_DIR }],
     healthchecks: [{ name: "dockerd", exec: { command: ["docker", "-H", "tcp://127.0.0.1:2375", "info"] }, interval: 10, timeout: 10, grace_period: 30 }],
     restart: { policy: "always" },
   };
