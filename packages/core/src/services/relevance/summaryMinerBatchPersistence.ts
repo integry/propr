@@ -57,10 +57,11 @@ export async function logFileBatchCall(options: {
   success: boolean;
   errorMessage?: string;
   routingMetadata?: Record<string, unknown>;
+  costUsd?: number;
 }): Promise<void> {
   const {
     log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
-    estimatedOutputTokens, durationMs, success, errorMessage, routingMetadata
+    estimatedOutputTokens, durationMs, success, errorMessage, routingMetadata, costUsd
   } = options;
   const physicalAgentAlias = typeof routingMetadata?.physicalAgentAlias === 'string'
     ? routingMetadata.physicalAgentAlias
@@ -87,6 +88,7 @@ export async function logFileBatchCall(options: {
     executionTimeMs: durationMs,
     success,
     tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
+    ...(costUsd !== undefined && { costUsd }),
     error: errorMessage,
     repository: fullName,
     agentAlias: physicalAgentAlias,
