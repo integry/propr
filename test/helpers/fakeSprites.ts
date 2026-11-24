@@ -18,6 +18,7 @@ export class FakeSprite {
     launched = Promise.withResolvers<void>();
     output = 'agent output';
     credential = '';
+    stderr = '';
     constructor(readonly name: string) {}
     filesystem() {
         return {
@@ -52,20 +53,24 @@ export class FakeSprite {
         this.files = new Map([...this.baseline, ...[...this.files].filter(([file]) => file.startsWith('/tmp/'))]);
         return completed();
     }
-    spawn(_cmd: string, args: string[]) {
+    async listSessions() { return [{ id: 'test-session', workdir: '/opt/propr/inbox', tty: false }]; }
+    spawn(_cmd: string, args: string[], options?: { sessionId?: string }) {
         const cmd = Object.assign(new EventEmitter(), {
             stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
             kill: () => setImmediate(() => cmd.emit('exit', 143)), close: () => {},
         });
-        this.launches.push(this.files.get(args.at(-1)!)!.toString());
-        this.events.push('launch');
+        if (options?.sessionId === 'test-session') this.events.push('attach');
+        else {
+            this.launches.push(this.files.get(args.at(-1)!)!.toString());
+            this.events.push('launch');
+        }
         this.launched.resolve();
         setImmediate(() => {
             cmd.emit('spawn');
             cmd.stdout.write(this.output.slice(0, 4));
             cmd.stdout.end(this.output.slice(4));
-            cmd.stderr.end();
-            if (!this.hold) cmd.emit('exit', this.exitCode);
+            cmd.stderr.end(this.stderr);
+            if (!this.hold) cmd.emit('exit', options?.sessionId ? 0 : this.exitCode);
         });
         return cmd;
     }

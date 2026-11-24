@@ -3,7 +3,6 @@ import { resolveExtensionEndpoint } from './endpointPolicy.js';
 import { ensureStagingRoot, stagingValidator, writeStagedSkill, createStagingDirectory } from './skillStaging.js';
 import { currentAgentNetworkPolicy, egressSocketRoots } from '../network/egressExecution.js';
 import { baseEgressAllowlist } from '../network/egressAllowlist.js';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { db } from '../db/connection.js';
@@ -17,15 +16,9 @@ import {
 import { ExtensionPackageCache, ExtensionPackageError } from './packageCache.js';
 import { PACKAGE_MOUNT_ROOT, isPackageServer, packageBridgeConfig, packageMount, preparePackageServers } from './packageLaunch.js';
 
-import { startsContainer, type AgentRunLaunch } from '../agents/runtime/agentRunLaunch.js';
+import { launchContext } from './extensionLaunchContext.js';
+export { currentExtensionLaunch, extensionLaunchForRun as extensionLaunchForDockerRun } from './extensionLaunchContext.js';
 
-interface LaunchContext { taskId: string; secrets: string[]; mounts: string[]; beforeLaunch: (window?: object, validateResources?: boolean) => Promise<void> }
-const launchContext = new AsyncLocalStorage<LaunchContext>();
-export const currentExtensionLaunch = () => launchContext.getStore();
-export function extensionLaunchForDockerRun(command: string, args: string[], options: { taskId?: string; costCapExempt?: boolean; extensionAgentLaunch?: boolean; agentRun?: AgentRunLaunch }) {
-  const context = currentExtensionLaunch();
-  return context && startsContainer(command, args, options) && options.extensionAgentLaunch === true && options.taskId === context.taskId && !options.costCapExempt ? context : undefined;
-}
 /** Reuse the existing container-reachable Core MCP URL, including a reverse
  * proxy path prefix. Operator URLs never put authentication values in args. */
 export function extensionGatewayBaseUrl(environment: NodeJS.ProcessEnv = process.env): string {

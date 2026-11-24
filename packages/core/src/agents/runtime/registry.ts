@@ -1,3 +1,4 @@
+import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { createWorkspaceTransport, runWithWorkspaceTransport } from '../../git/workspaceTransport.js';
 import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } from '../../git/workspaceTransportMode.js';
@@ -10,9 +11,8 @@ import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { SpritesRuntime } from './spritesRuntime.js';
 import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
-export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
-export const DEFAULT_AGENT_RUNTIME = 'docker';
-export const SPRITES_AGENT_RUNTIME = 'sprites';
+import { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, selectedAgentRuntimeName } from './runtimeSelection.js';
+export { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME };
 
 /** Every runtime accepts the same launch options and settles with the executor result shape. */
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
@@ -53,7 +53,7 @@ export function resolveAgentRuntimeKind(
     config?: Pick<AgentConfig, 'runtime'> | null,
     environment: NodeJS.ProcessEnv = process.env,
 ): string {
-    const kind = (config?.runtime?.trim() || environment[AGENT_RUNTIME_ENV]?.trim() || DEFAULT_AGENT_RUNTIME).toLowerCase();
+    const kind = selectedAgentRuntimeName(config, environment);
     if (!factories.has(kind)) {
         throw new Error(`Unknown agent runtime "${kind}" (set by ${config?.runtime?.trim() ? 'agent configuration' : AGENT_RUNTIME_ENV}); available: ${registeredAgentRuntimes().join(', ')}`);
     }
@@ -73,7 +73,7 @@ export function getAgentRuntime(
     return runtime;
 }
 
-export type AgentRuntimeCapability = 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'agent_config';
+export type AgentRuntimeCapability = 'extensions' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'agent_config';
 
 /**
  * A run refused before launch because its runtime cannot provide what the
@@ -86,6 +86,10 @@ export class AgentRuntimeCapabilityError extends Error {
         super(message);
         this.name = 'AgentRuntimeCapabilityError';
     }
+}
+
+export function extensionRuntimeRefusal(runtime: ProviderAgentRuntime): string {
+    return `Agent runtime "${runtime.kind}" does not support extensions. Choose a runtime that supports extensions (docker).`;
 }
 
 /** Absent `supportsMcpReachableUrl` counts as supported. */
@@ -191,6 +195,9 @@ export async function runAgent(
     // e.g. a CLI version the runtime does not provide: refused, never run on another version.
     const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
     if (configRefusal) throw new AgentRuntimeCapabilityError(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`, runtime.kind, 'agent_config');
+    if (!runtime.capabilities.supportsExtensions && extensionLaunchForRun(runtime.kind, [], { ...options, agentRun: { spec } })) {
+        throw new AgentRuntimeCapabilityError(extensionRuntimeRefusal(runtime), runtime.kind, 'extensions');
+    }
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {

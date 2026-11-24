@@ -1,104 +1,103 @@
-import { ExtensionStreamRedactor } from '../../../extensions/extensionOutput.js';
-import type { Sprite } from '@fly/sprites';
+import type { Sprite, SpriteCommand } from '@fly/sprites';
 import type { ExecutionResult } from '../../../claude/docker/dockerExecutor.js';
-import { registerCostExecution, refuseCostExecution, settleCostCapStop } from '../../../claude/docker/dockerCostCap.js';
+import { settleCostCapStop } from '../../../claude/docker/dockerCostCap.js';
 import { settleTimeoutStop, settleWatchdogStop } from '../../../claude/docker/dockerExecutionSettlement.js';
-import { startExecutionWatchdog } from '../../../claude/docker/dockerExecutionWatchdog.js';
-import { startLiveOutputStreaming } from '../../../claude/docker/dockerLiveOutputStreaming.js';
-import { inspectSessionMessageLine } from '../../../claude/docker/dockerSessionOutput.js';
-import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../../impl/utils/boundedProviderOutput.js';
+import { getExecutionOwnershipContext } from '../../../claude/docker/dockerExecutionOwnership.js';
 import type { LazyOutputStreams } from '../dockerRuntime.js';
-import { spriteLauncher, type SpriteLaunch } from './spritesRun.js';
+import { startRunPipeline, type RunPipeline } from '../runPipeline.js';
+import { startupStep } from './spritesProvisioning.js';
+import { spriteLauncher, type SpriteLaunch, type prepareSpriteRun } from './spritesRun.js';
 
-export async function execute(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch, output: LazyOutputStreams, signal: AbortSignal): Promise<ExecutionResult> {
+function waitForConnection(command: SpriteCommand, signal: AbortSignal, pipeline: RunPipeline, onSpawn: () => void) {
+    let force: ReturnType<typeof setTimeout> | undefined;
+    let abort: () => void;
+    const stdout = (data: Buffer) => pipeline.write('stdout', data);
+    const stderr = (data: Buffer) => pipeline.write('stderr', data);
+    command.stdout.on('data', stdout);
+    command.stderr.on('data', stderr);
+    return new Promise<number>(resolve => {
+        abort = () => {
+            command.kill('SIGTERM');
+            force = setTimeout(() => { command.kill('SIGKILL'); resolve(-1); }, 5000);
+            force.unref();
+        };
+        command.once('spawn', () => { onSpawn(); command.stdin.end(); });
+        command.on('error', () => resolve(-1));
+        command.once('exit', resolve);
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+    }).finally(() => {
+        clearTimeout(force);
+        signal.removeEventListener('abort', abort);
+        command.stdout.off('data', stdout);
+        command.stderr.off('data', stderr);
+        command.close();
+    });
+}
+
+interface SpriteExecution {
+    output: LazyOutputStreams;
+    signal: AbortSignal;
+    prepared: ReturnType<typeof prepareSpriteRun>;
+    onSpawn: () => void;
+}
+
+export async function execute(sprite: Sprite, launch: SpriteLaunch, { output, signal, prepared, onSpawn }: SpriteExecution): Promise<ExecutionResult> {
+    const { spec, options, token, inputPath } = launch;
     const stop = new AbortController();
     const cancellation = AbortSignal.any([stop.signal, signal]);
     let costMessage: string | undefined;
     const preserve = options.preserveOutputOnTimeout ?? false;
-    const cost = registerCostExecution('sprites', [], { ...options, agentRun: { spec } }, message => {
-        costMessage = message;
-        stop.abort();
-    });
-    if ('refusal' in cost) return refuseCostExecution(cost.refusal, preserve);
-    const { execution } = cost;
-    const stdout = new BoundedProviderRecordBuffer();
-    const stderr = new BoundedDiagnosticTail();
-    const messageTimestamps = new Map<string, string>();
-    const watchdog = startExecutionWatchdog(options, () => { stop.abort(); return true; });
-    const live = startLiveOutputStreaming({ ...options, onOverflow: () => {}, onActivity: () => watchdog.recordActivity() }, () => stdout.output, () => stderr.value);
-    const state = { sessionIdDetected: false };
-    const callbacks: Promise<void>[] = [];
+    const runOptions = { ...options, agentRun: { spec, onOutput: output.write.bind(output) } };
+    const callbacks = new Set<Promise<void>>();
     let callbackError: unknown;
-    function inspect(line: string) {
-        execution?.observeLine(line);
-        watchdog.observeLine(line);
-        inspectSessionMessageLine(line, new Date().toISOString(), { state, messageTimestamps, onSessionId: options.onSessionId,
-            invokeExecutionCallback: cb => callbacks.push(Promise.resolve().then(cb).catch(error => { callbackError = error; stop.abort(); })) });
-    }
-    let pending = '';
+    const started = startRunPipeline(runOptions, {
+        markerArgs: prepared.markerArgs, diagnosticArgs: prepared.markerArgs, environment: prepared.environment,
+        attempt: getExecutionOwnershipContext()?.attemptGeneration, secrets: [token],
+        stopForWatchdog: () => { if (cancellation.aborted) return false; stop.abort(); return true; },
+        command: 'sprites', stopForCostCap: message => { costMessage = message; stop.abort(); },
+        invokeExecutionCallback: cb => {
+            const pending = Promise.resolve().then(cb).catch(error => { callbackError = error; stop.abort(); });
+            callbacks.add(pending);
+            void pending.finally(() => callbacks.delete(pending));
+        },
+    });
+    if (started.refusal) return started.refusal;
+    const { pipeline } = started;
     let exitCode: number | null = null;
     try {
         cancellation.throwIfAborted();
-        const command = sprite.spawn('sudo', ['-n', 'unshare', '--mount', '--propagation', 'private', 'setpriv', '--no-new-privs', '/usr/bin/python3', '-I', spriteLauncher, 'launch', inputPath], { cwd: '/' });
-        const captureStdout = (chunk: string) => {
-            stdout.append(chunk);
-            output.write('stdout', chunk);
-            live?.stdout(chunk);
-            watchdog.recordActivity();
-            const lines = (pending + chunk).split('\n');
-            pending = boundedProviderOutput(lines.pop() ?? '');
-            lines.forEach(inspect);
-        };
-        const captureStderr = (chunk: string) => {
-            stderr.append(chunk);
-            output.write('stderr', chunk);
-            live?.stderr(chunk);
-            watchdog.recordActivity();
-        };
-        for (const [stream, capture] of [[command.stdout, captureStdout], [command.stderr, captureStderr]] as const) {
-            const redactor = new ExtensionStreamRedactor([token]);
-            stream.setEncoding('utf8').on('data', (chunk: string) => capture(redactor.push(chunk)));
-            stream.once('end', () => capture(redactor.finish()));
-        }
-        let force: ReturnType<typeof setTimeout> | undefined;
-        let abort: (() => void) | undefined;
-        try {
-            exitCode = await new Promise<number>((resolve, reject) => {
-                abort = () => {
-                    command.kill('SIGTERM');
-                    force = setTimeout(() => {
-                        command.kill('SIGKILL');
-                        command.close();
-                        resolve(-1);
-                    }, 5000);
-                    force.unref();
-                };
-                command.once('spawn', () => command.stdin.end());
-                command.on('error', () => reject(new Error('Sprite execution connection failed')));
-                command.once('exit', resolve);
-                if (cancellation.aborted) abort();
-                else cancellation.addEventListener('abort', abort, { once: true });
-            });
+        // Keep the non-TTY streams separate for workflow reports. Only this launch
+        // uses the inbox as its working directory on the exclusively leased Sprite.
+        const cwd = '/opt/propr/inbox';
+        const command = sprite.spawn('sudo', ['-n', 'unshare', '--mount', '--propagation', 'private', 'setpriv', '--no-new-privs', '/usr/bin/python3', '-I', spriteLauncher, 'launch', inputPath],
+            { cwd, detachable: true, maxRunAfterDisconnect: '60s' });
+        exitCode = await waitForConnection(command, cancellation, pipeline, onSpawn);
+        if (exitCode < 0 && !cancellation.aborted) {
+            const sessions = await startupStep(cancellation, () => sprite.listSessions());
+            const matching = sessions.filter(session => session.workdir === cwd && !session.tty);
+            if (matching.length === 1 && !cancellation.aborted) {
+                // The SDK switches to the session endpoint when sessionId is set.
+                const attached = sprite.spawn('', [], { sessionId: matching[0].id });
+                exitCode = await waitForConnection(attached, cancellation, pipeline, onSpawn);
+            }
             if (exitCode < 0 && !cancellation.aborted) throw new Error('Sprite execution disconnected before exit');
-        } finally {
-            clearTimeout(force);
-            if (abort) cancellation.removeEventListener('abort', abort);
-            command.close();
         }
-        if (pending) inspect(pending);
+    } catch (error) {
+        if (!cancellation.aborted) throw error;
     } finally {
-        watchdog.stop();
-        const finalCost = await execution?.finish();
+        pipeline.finishOutput();
+        const finalCost = await pipeline.finishCost();
         costMessage ??= finalCost ?? undefined;
         await Promise.all(callbacks);
-        await watchdog.settled();
-        await live?.close();
+        await pipeline.watchdog.settled();
+        await pipeline.closeLive();
     }
     if (callbackError) throw callbackError;
-    const result = { exitCode, stdout: stdout.output, stderr: stderr.value, messageTimestamps };
+    const result = pipeline.result(exitCode);
     return new Promise((resolve, reject) => {
         if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput: preserve, resolve, reject });
-        else if (watchdog.trip) settleWatchdogStop(watchdog.trip, result, preserve, { resolve, reject });
+        else if (pipeline.watchdog.trip) settleWatchdogStop(pipeline.watchdog.trip, result, preserve, { resolve, reject });
         else if (signal.reason?.name === 'TimeoutError') settleTimeoutStop(options.timeout ?? 300_000, result, preserve, { resolve, reject });
         else if (signal.aborted) reject(signal.reason);
         else resolve(result);

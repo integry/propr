@@ -321,6 +321,10 @@ describe('validateAgentDefinitionRuntime', () => {
   test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
     const extensions = { servers: ['docs'], skills: [] };
     assert.equal(await check({ extensions }), null);
+    const sprites = { ...deps, loadAgents: async () => [{ ...agent(), runtime: 'sprites' }], loadDefaultAgentAlias: async () => 'claude' };
+    for (const selection of [{}, { agentAlias: null, modelName: null }]) {
+      assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, sprites) ?? '', /sprites.*does not support extensions/);
+    }
     assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude or Codex/);
     assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude or Codex/);
     assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude or Codex/);

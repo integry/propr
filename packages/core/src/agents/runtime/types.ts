@@ -242,6 +242,8 @@ export interface AgentRuntimeRestrictedNetworkEnforcement {
 }
 
 export interface AgentRuntimeCapabilities {
+    /** The runtime applies the selected extension mounts, gateway and launch checks. */
+    supportsExtensions?: boolean;
     /** Host paths can be bind-mounted (workspace, git metadata, credentials). */
     supportsBindMounts: boolean;
     /**

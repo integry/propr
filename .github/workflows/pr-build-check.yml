@@ -609,6 +609,9 @@ jobs:
             node apps/desktop/scripts/retry-transient-download.mjs -- npm ci
           } > >(tee -a build_log.txt) 2>&1
 
+      - name: Smoke-test the pinned Sprites SDK on the worker Node version
+        run: node --input-type=module -e "import { SpritesClient } from '@fly/sprites'; new SpritesClient('smoke-test').sprite('smoke-test').filesystem()"
+
       - name: Verify release-candidate metadata
         id: release_metadata
         env:

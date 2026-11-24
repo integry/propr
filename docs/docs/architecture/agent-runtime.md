@@ -35,6 +35,8 @@ Agent runs go through the runtime seam described in [Coding Agent Integration](.
 
 ## Fly Sprites
 
+The Node 22 worker pins `@fly/sprites` to 0.2.5. Upstream declares Node 24 or newer. CI smoke-tests the pinned SDK on Node 22, and the live runtime suite checks service compatibility before merge. Sprites refuses runs that require extensions.
+
 Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport and require open networking. MCP grants need an endpoint reachable from the Sprite.
 
 The worker creates a privately named Sprite for each concurrent run and reuses restored Sprites within its process. Provisioning installs the versions pinned in `Dockerfile.agent` and takes a clean checkpoint before uploading any run data. The clone transport holds its repository token separately while the setup hook and provider entrypoint run as the unprivileged `node` user. Provider credentials arrive in one batch from the broker. Each CLI uses a writable copy of its read-only source. The worker collects only declared refreshable files through the launcher export and commits them through the broker.

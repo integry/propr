@@ -9,13 +9,19 @@ const projectRoot = () => process.env.PROPR_ROOT
 const pinNames = ['CLAUDE_CLI_VERSION', 'CODEX_CLI_VERSION', 'ANTIGRAVITY_CLI_VERSION', 'ANTIGRAVITY_CLI_RELEASE_ID', 'ANTIGRAVITY_CLI_SHA512'] as const;
 export type SpritesCliPins = Record<typeof pinNames[number], string>;
 
+const pinsByRoot = new Map<string, SpritesCliPins>();
+
 export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
+    const cached = pinsByRoot.get(root);
+    if (cached) return cached;
     const dockerfile = readFileSync(path.join(root, 'Dockerfile.agent'), 'utf8');
-    return Object.fromEntries(pinNames.map(name => {
+    const pins = Object.fromEntries(pinNames.map(name => {
         const value = new RegExp(`^ARG ${name}=([a-zA-Z0-9.+_-]+)$`, 'm').exec(dockerfile)?.[1];
         if (!value) throw new Error(`Missing ${name} pin in Dockerfile.agent`);
         return [name, value];
     })) as SpritesCliPins;
+    pinsByRoot.set(root, Object.freeze(pins));
+    return pins;
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'>;
@@ -50,13 +56,22 @@ const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'gh-wrapper
 
 export class SpritePool {
     private idle: Slot[] = [];
-    private closed = false;
+    private readonly shutdown = new AbortController();
+    private readonly pending = new Set<Promise<Slot>>();
+    private readonly replacements: Promise<Slot>[] = [];
+    private get closed() { return this.shutdown.signal.aborted; }
     constructor(private readonly client: SpriteClient) {}
 
-    private async provision(signal = new AbortController().signal): Promise<Slot> {
+    private async provision(signal: AbortSignal): Promise<Slot> {
         // Never discover or adopt a machine by name. Another worker, including an earlier
         // incarnation of this worker, can still have a live run on one it created.
-        const sprite = await this.client.createSprite(`propr-${randomUUID()}`);
+        const creating = this.client.createSprite(`propr-${randomUUID()}`);
+        let sprite: Sprite;
+        try { sprite = await startupStep(signal, () => creating); }
+        catch (error) {
+            if (signal.aborted) void creating.then(late => this.discard(late)).catch(() => {});
+            throw error;
+        }
         logger.info({ sprite: sprite.name }, 'Worker created Sprite');
         try {
             const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
@@ -91,38 +106,70 @@ export class SpritePool {
 
     async discard(sprite: Sprite): Promise<void> {
         try {
-            await this.client.deleteSprite(sprite.name);
+            await startupStep(AbortSignal.timeout(60_000), () => this.client.deleteSprite(sprite.name));
         } catch (error) {
             logger.error({ sprite: sprite.name }, 'Could not delete Sprite');
             throw error;
         }
     }
 
+    private provisionForPool() {
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(21 * 60_000)]);
+        const work = this.provision(signal);
+        this.pending.add(work);
+        void work.finally(() => this.pending.delete(work)).catch(() => {});
+        return work;
+    }
+
+    private async recycleClean(slot: Slot) {
+        if (this.closed) await this.discard(slot.sprite);
+        else this.idle.push(slot);
+    }
+
     async acquire(signal: AbortSignal): Promise<Slot> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
-        return this.idle.pop() ?? this.provision(signal);
+        const idle = this.idle.pop();
+        if (idle) return idle;
+        const work = this.replacements.shift() ?? this.provisionForPool();
+        try { return await startupStep(signal, () => work); }
+        catch (error) {
+            if (signal.aborted) void work.then(slot => this.recycleClean(slot)).catch(() => {});
+            throw error;
+        }
     }
 
     async close(): Promise<void> {
-        this.closed = true;
-        // discard logs the Sprite name for manual cleanup if deletion fails.
-        await Promise.allSettled(this.idle.splice(0).map(slot => this.discard(slot.sprite)));
+        this.shutdown.abort();
+        await Promise.allSettled([...this.pending, ...this.idle.splice(0).map(slot => this.discard(slot.sprite))]);
+    }
+
+    private replaceInBackground() {
+        const work = this.provisionForPool();
+        this.replacements.push(work);
+        const unclaimed = () => {
+            const index = this.replacements.indexOf(work);
+            if (index < 0) return false;
+            this.replacements.splice(index, 1);
+            return true;
+        };
+        void work.then(slot => unclaimed() ? this.recycleClean(slot) : undefined, () => {
+            if (unclaimed() && !this.closed) logger.warn('Failed to replace discarded Sprite');
+        }).catch(() => {});
     }
 
     async release(slot: Slot): Promise<void> {
         if (this.closed) return this.discard(slot.sprite);
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000)]);
         try {
-            // Stop descendants that outlived the launcher, including detached processes.
-            await slot.sprite.restart();
-            await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
-            await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
+            await startupStep(signal, () => slot.sprite.restart());
+            await startupStep(signal, () => slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
+            await startupStep(signal, async () => complete(await slot.sprite.restoreCheckpoint(slot.checkpoint)));
         } catch {
             await this.discard(slot.sprite);
-            if (this.closed) return;
-            slot = await this.provision();
+            if (!this.closed) this.replaceInBackground();
+            return;
         }
-        if (this.closed) await this.discard(slot.sprite);
-        else this.idle.push(slot);
+        await this.recycleClean(slot);
     }
 }

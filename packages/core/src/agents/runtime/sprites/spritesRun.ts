@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Sprite } from '@fly/sprites';
-import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
+import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_RESULT_DIR, WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
 import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside } from '../../credentials/broker.js';
 import { credentialRunRoot, envFileValues } from '../../credentials/hostCredentialStaging.js';
 import { CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
@@ -64,14 +64,23 @@ function claudeSeed(binds: Bind[], token: string): string | undefined {
 }
 
 export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string };
-export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch) {
-    const clone = spec.workspace.clone;
-    if (!clone || spec.workspace.mode !== 'clone' || spec.workspace.containerPath !== '/home/node/workspace' || spec.workspace.readOnly)
+function writableClone(spec: AgentRunSpec) {
+    const { clone, mode, readOnly, containerPath } = spec.workspace;
+    if (mode !== 'clone' || readOnly || containerPath !== '/home/node/workspace' ||
+        !clone?.remote || !clone.baseRef || !clone.baseCommit || !clone.branch ||
+        clone.resultDir !== WORKSPACE_TRANSPORT_RESULT_DIR || clone.script !== WORKSPACE_TRANSPORT_SCRIPT) {
         throw new Error('Sprites requires a prepared writable clone workspace');
+    }
+    return clone;
+}
+
+export function prepareSpriteRun({ spec, options, token, inputPath }: SpriteLaunch) {
+    const clone = writableClone(spec);
     const provider = spec.profile.agentType;
-    if (!(provider in stores)) throw new Error(`Unsupported Sprites provider: ${provider}`);
+    if (!Object.hasOwn(stores, provider)) throw new Error(`Unsupported Sprites provider: ${provider}`);
     const binds = supportedBinds(spec);
     const { env, transportToken } = runEnvironment(spec, options, token);
+    env.set('PROPR_EXECUTION_TIMEOUT_MS', String(options.timeout ?? 300_000));
     const home = provider === 'antigravity' ? antigravityHome : '/home/node';
     Object.entries({ PATH, HOME: home, USER: 'node', LOGNAME: 'node', LANG: 'C.UTF-8', DISABLE_AUTOUPDATER: '1', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
         .forEach(([key, value]) => env.set(key, value));
@@ -91,18 +100,24 @@ export async function uploadRun(sprite: Sprite, { spec, options, token, inputPat
     const argv = spec.repoSetup
         ? ['/bin/bash', '-c', spec.repoSetup.script, `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args]
         : [spec.entrypoint ?? `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args];
+    const environment = { ...Object.fromEntries(env), ...bundle.secretEnv };
     const upload = JSON.stringify({
         transport: ['/bin/bash', '-c', WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, ...python, 'agent'],
         transportEnv: { PATH, HOME: '/root', [E.path]: spec.workspace.containerPath, [E.remote]: clone.remote, [E.branch]: clone.branch,
             [E.baseRef]: clone.baseRef, [E.baseCommit]: clone.baseCommit, [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: '/opt/propr/result',
             [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
         stdin: options.stdinData ?? '', files,
-        agent: { env: { ...Object.fromEntries(env), ...bundle.secretEnv }, argv, directories, claudeSeed: claudeSeed(binds, token),
+        agent: { env: environment, argv, directories, claudeSeed: claudeSeed(binds, token),
             store: store ? liveStore : null, outputs: store?.outputs ?? [] },
     });
     if (upload.includes(token)) throw new Error('Refusing to upload the Sprites organization credential');
-    await sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 });
-    return async () => {
+    return {
+        environment,
+        markerArgs: env.get('PROPR_REPO_SETUP') === '0' ? [] : argv,
+        upload: (sprite: Sprite) => sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 }),
+        commit,
+    };
+    async function commit(sprite: Sprite) {
         if (!store?.outputs.length) return;
         // The SDK stat/read calls follow links. Run the descriptor-based reader on
         // the Sprite. Only the launcher's unprivileged child reads the live credentials.
@@ -118,5 +133,5 @@ export async function uploadRun(sprite: Sprite, { spec, options, token, inputPat
                 throw new Error('Invalid Sprite credential export');
             return { storeId: store.id, path: store.outputs[record.index], content, mtimeMs: record.mtimeMs };
         }));
-    };
+    }
 }
