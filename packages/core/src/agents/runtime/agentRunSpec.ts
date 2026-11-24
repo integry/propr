@@ -1,3 +1,4 @@
+import { PROPR_MCP_SERVER_NAME } from '../agentToolPolicy.js';
 import type { AgentToolPolicy, AgentType } from '../types.js';
 import type {
     AgentRunCredentialStore, AgentRunMcpGrant, AgentRunMount, AgentRunMountPurpose, AgentRunNetwork, AgentRunSecurity, AgentRunSpec, AgentRunWorkspace,
@@ -32,10 +33,12 @@ export function agentRunNetwork(name: string): AgentRunNetwork {
 export function agentRunMcpGrant(policy: Pick<AgentToolPolicy, 'mcpServers' | 'dockerNetwork'> | undefined): AgentRunMcpGrant | undefined {
     if (!policy?.mcpServers?.length) return undefined;
     const network = policy.dockerNetwork?.trim();
+    const url = network ? undefined : policy.mcpServers.find(server => server.name === PROPR_MCP_SERVER_NAME)?.url;
     return {
         servers: policy.mcpServers.map(server => server.name),
         ...(network ? { network } : {}),
         transport: network ? 'private-network' : 'reachable-url',
+        ...(url ? { url } : {}),
     };
 }
 

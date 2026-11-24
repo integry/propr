@@ -100,8 +100,10 @@ async function postSigned(
  * export list load this module through the scheduler without requesting grants.
  */
 async function defaultTransportPlan(runtime: string | null | undefined, environment: NodeJS.ProcessEnv): Promise<AgentRunMcpTransportPlan> {
-    const { agentRunMcpTransportFor } = await import('@propr/core');
-    return agentRunMcpTransportFor(runtime ? { runtime } : null, environment);
+    const { getAgentRuntime, planAgentRunMcpTransport, resolveAgentRunNetworkPolicy } = await import('@propr/core');
+    const selected = getAgentRuntime(runtime ? { runtime } : null, environment);
+    const policy = selected.kind === 'sprites' ? await resolveAgentRunNetworkPolicy() : undefined;
+    return planAgentRunMcpTransport(selected, environment, policy?.mode);
 }
 
 /**

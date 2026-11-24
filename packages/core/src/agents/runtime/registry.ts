@@ -96,7 +96,7 @@ export function runtimeSupportsMcpReachableUrl(capabilities: AgentRuntimeCapabil
 /** The refusal a restricted run gets on this runtime, or undefined when it can enforce restricted mode. */
 export function restrictedNetworkRefusal(runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>, source?: string): string | undefined {
     if (runtime.capabilities.supportsRestrictedNetwork) return undefined;
-    return `Agent runtime "${runtime.kind}" cannot enforce the restricted network policy${source ? ` (${source})` : ''}: it declares no way to confine outbound traffic to the allowlist, so restricted runs are refused instead of running with open networking. Use a runtime that supports restricted networking (docker), or set the network mode to open.`;
+    return `Agent runtime "${runtime.kind}" cannot enforce the restricted network policy${source ? ` (${source})` : ''}: it declares no way to confine outbound traffic to the allowlist, so restricted runs are refused instead of running with open networking. Use a runtime that supports restricted networking (docker or sprites), or set the network mode to open.`;
 }
 
 /** A runtime without bind mounts must provide every bind another way (uploads, broker copies), or the run is refused. */
