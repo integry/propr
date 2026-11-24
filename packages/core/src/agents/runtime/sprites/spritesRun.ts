@@ -33,7 +33,7 @@ function supportedBinds(spec: AgentRunSpec) {
 
 type EnvDefaults = ReadonlyArray<readonly [string, string]>;
 
-function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: string, defaults: EnvDefaults, validateOnly = false) {
+function runEnvironment({ spec, options, token }: SpriteLaunch, defaults: EnvDefaults, validateOnly = false) {
     const inherited = { ...process.env, ...options.extraEnvVars };
     // An env file may override any extra. Scan only known effective values during validation.
     const extras = validateOnly && spec.envFiles.length ? {} : options.extraEnvVars;
@@ -82,12 +82,13 @@ function writableClone(spec: AgentRunSpec) {
     return clone;
 }
 
-export function validateSpriteRun({ spec, options, token }: SpriteLaunch, defaults: EnvDefaults = []) {
+export function validateSpriteRun(launch: SpriteLaunch, defaults: EnvDefaults = []) {
+    const { spec, options, token } = launch;
     const clone = writableClone(spec);
     const provider = spec.profile.agentType;
     if (!Object.hasOwn(stores, provider)) throw new Error(`Unsupported Sprites provider: ${provider}`);
     const binds = supportedBinds(spec);
-    const { env, transportToken } = runEnvironment(spec, options, token, defaults, true);
+    const { env, transportToken } = runEnvironment(launch, defaults, true);
     const credentials = binds.filter(m => m.credentialStore).map(m => {
         if (m.credentialStore!.provider !== provider) throw new Error('Mismatched Sprite credential store');
         return { id: 'config', provider, store: 'config' as const, canonicalRoot: m.source };
@@ -108,10 +109,11 @@ function checkPayload(payload: string, token: string) {
     if (payload.includes(token)) throw new Error('Refusing to upload the Sprites organization credential');
 }
 
-export function prepareSpriteRun({ spec, options, token, inputPath }: SpriteLaunch,
+export function prepareSpriteRun(launch: SpriteLaunch,
     validated: ReturnType<typeof validateSpriteRun>, defaults: EnvDefaults = []) {
+    const { options, token, inputPath } = launch;
     const { provider, binds, credentials, argv } = validated;
-    const { env, transportToken } = runEnvironment(spec, options, token, defaults);
+    const { env, transportToken } = runEnvironment(launch, defaults);
     env.set('PROPR_EXECUTION_TIMEOUT_MS', String(options.timeout ?? 300_000));
     const home = provider === 'antigravity' ? antigravityHome : '/home/node';
     Object.entries({ PATH, HOME: home, USER: 'node', LOGNAME: 'node', LANG: 'C.UTF-8', DISABLE_AUTOUPDATER: '1', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
