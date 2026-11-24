@@ -10,7 +10,7 @@ import {
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
 } from '@propr/shared';
-import type { AgentRunAdmissionSnapshot, FileChangesData } from '@propr/core';
+import type { AgentRunAdmissionSnapshot, AgentRuntimeCapabilityReport, FileChangesData } from '@propr/core';
 import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, readyEpicExecutionQueue, cancelEpicExecutionQueue, cancelUnstartedEpicExecutionQueue } from '@propr/core';
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
@@ -111,7 +111,7 @@ export interface McpTool {
   authorize?: (context: Pick<ToolContext, 'principal' | 'args'>) => Promise<void>;
   run:  (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Readiness evaluator; core's evaluatePullRequestReadiness unless a test injects one. */ pullRequestReadiness?: ReadinessEvaluator ; /** Test hook for get_agent_run_admission; the core snapshot otherwise. */ agentRunAdmissionSnapshot?: () => Promise<AgentRunAdmissionSnapshot> }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; /** Follow-up handoff recovery entry points; the real worker module unless a test injects stubs. */ followupHandoffs?: FollowupHandoffRouteDeps; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; automationRuns?: AutomationRunToolServices; /** @deprecated Use automationRuns. */ agentRuns?: AutomationRunToolServices; /** Readiness evaluator; core's evaluatePullRequestReadiness unless a test injects one. */ pullRequestReadiness?: ReadinessEvaluator ; /** Test hook for get_agent_run_admission; the core snapshot otherwise. */ agentRunAdmissionSnapshot?: () => Promise<AgentRunAdmissionSnapshot>; /** Test hook for the admission report's runtime section; the core capability report otherwise. */ agentRuntimeCapabilityReport?: () => Promise<AgentRuntimeCapabilityReport> }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };
@@ -271,7 +271,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
       offset: args.offset, limit: args.limit, assignee });
     return ok({ tasks: taskSummaries, nextOffset: taskSummaries.length === args.limit ? args.offset + args.limit : null });
   } });
-  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts, linked pull request and automatic-replacement lineage. changesSummary is null when no file-change data is persisted; it never reports zero for unknown. lineage.attempts lists every attempt only when the task was replaced or is a replacement; follow lineage.replacedByTaskId to the newer attempt.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
+  tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts, compute usage of its agent runs (wall time, CPU-seconds, peak memory and compute cost beside the LLM token cost), linked pull request and automatic-replacement lineage. computeUsage is null when no run reported compute usage. changesSummary is null when no file-change data is persisted; it never reports zero for unknown. lineage.attempts lists every attempt only when the task was replaced or is a replacement; follow lineage.replacedByTaskId to the newer attempt.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({
     ...await db('tasks').where({ task_id: args.taskId }).first(taskColumns),
     latestEvent: await db('task_history').where({ task_id: args.taskId }).orderBy('history_id', 'desc').first('state', 'reason', 'timestamp'),
     ...await taskDetail({ db, redisClient }, { repository: args.repository, taskId: args.taskId }, principal.user.id,

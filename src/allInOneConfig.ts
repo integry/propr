@@ -93,7 +93,12 @@ export const SHUTDOWN_ORDER: readonly ComponentRole[] = ['daemon', 'indexing', '
 export interface StartupStage {
     name: string;
     role?: ComponentRole;
-    run: () => Promise<{ close(): Promise<unknown> } | void>;
+    /**
+     * `signal` aborts when shutdown begins. A stage that can wait indefinitely
+     * (the worker waits for agent image readiness) must give up on it, or
+     * shutdown, which waits for the stage still starting, never completes.
+     */
+    run: (signal: AbortSignal) => Promise<{ close(): Promise<unknown> } | void>;
 }
 
 export interface ComponentSupervisor {
@@ -110,8 +115,8 @@ export interface ComponentSupervisor {
      */
     run(stages: readonly StartupStage[]): Promise<boolean>;
     /**
-     * Idempotent: waits (at most `startupWaitMs`) for in-flight startup, then
-     * closes in SHUTDOWN_ORDER followed by `finalSteps`. A stage still starting
+     * Idempotent: aborts the startup signal, waits (at most `startupWaitMs`)
+     * for in-flight startup, then closes in SHUTDOWN_ORDER followed by `finalSteps`. A stage still starting
      * after that wait is left behind: some never finish (the worker waits for
      * an agent image that may never become ready), and the stop must not wait
      * on them.
@@ -155,6 +160,7 @@ export function createComponentSupervisor(options: {
         if (!finished) options.log.info(`all-in-one: ${name} did not finish starting within ${Math.round(startupWaitMs / 1000)}s; closing the components that started without it`);
         return finished;
     };
+    const startupAbort = new AbortController();
 
     const supervisor: ComponentSupervisor = {
         get closing() {
@@ -169,7 +175,7 @@ export function createComponentSupervisor(options: {
                     options.log.info(`all-in-one: shutdown in progress, not starting ${stage.name}`);
                     return false;
                 }
-                const started = stage.run().then(handle => {
+                const started = stage.run(startupAbort.signal).then(handle => {
                     // Registered even when shutdown began meanwhile: close() waits for
                     // this promise before it builds its sequence.
                     if (stage.role && handle) handles[stage.role] = { name: stage.name, close: () => handle.close() };
@@ -189,6 +195,7 @@ export function createComponentSupervisor(options: {
         },
         close() {
             closing ??= (async () => {
+                startupAbort.abort(new Error('all-in-one shutdown'));
                 await waitForInFlight();
                 const steps = SHUTDOWN_ORDER
                     .map(role => handles[role])
@@ -204,8 +211,53 @@ export function createComponentSupervisor(options: {
     return supervisor;
 }
 
-/** Hard limit on the whole all-in-one stop (signal or idle shutdown) before the process exits anyway. */
-export const DEFAULT_SHUTDOWN_DEADLINE_MS = 30_000;
+/** Default drain budget: Fly's stop_config timeout (60s) minus a margin. */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 50_000;
+
+/** PROPR_SHUTDOWN_TIMEOUT_MS, in ms (1s to 1h); the default otherwise. */
+export function resolveShutdownTimeoutMs(value: string | undefined): number {
+    const normalized = (value ?? '').trim();
+    if (normalized === '') return DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    const ms = Number(normalized);
+    if (!Number.isInteger(ms) || ms < 1_000 || ms > 3_600_000) {
+        throw new Error(`PROPR_SHUTDOWN_TIMEOUT_MS must be a whole number of milliseconds from 1000 to 3600000 (got "${value}")`);
+    }
+    return ms;
+}
+
+/** How long an idle exit waits for the host to accept its stop before it exits 1 instead. */
+export const DEFAULT_HOST_STOP_TIMEOUT_MS = 10_000;
+
+/**
+ * Stops the host the process runs in, not only the process. On a
+ * multi-container Fly Machine an exit 0 of the app container leaves Redis and
+ * any sidecar running, so the Machine stays started: unreachable, and billed.
+ * Resolves once the host accepted the stop; rejects when it refused or did not
+ * answer within `timeoutMs`.
+ */
+export type HostStop = (timeoutMs: number) => Promise<void>;
+
+export interface BoundedExitCall {
+    /** An idle stop's arranged wake (epoch ms): the process exits by then, and exits 1 when the close reaches it. */
+    exitBy?: number | null;
+    /**
+     * Idle exit only: stop the whole host before exiting 0. A host that does
+     * not accept the stop, or not before `exitBy`, makes the exit 1, so the
+     * supervisor starts the control plane again instead of leaving it stopped
+     * inside a running host.
+     */
+    stopHost?: HostStop | null;
+    /** A termination signal. During the host stop it means the host is stopping this process: the stop was accepted. */
+    signal?: string;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    return Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not finish within ${timeoutMs} ms`)), timeoutMs); }),
+    ]).finally(() => clearTimeout(timer));
+}
 
 /**
  * The all-in-one exit: close every component, then exit. Bounded: a close
@@ -219,9 +271,11 @@ export const DEFAULT_SHUTDOWN_DEADLINE_MS = 30_000;
  * `exitBy` (epoch ms; an idle stop's arranged wake) is an absolute limit on
  * top: the process exits by then, and reaching it before the close is over
  * exits with at least 1, since that wake reached a process still running and
- * the supervisor must start it instead. Logs are flushed (bounded, and for an
- * exit before `exitBy` only for the time left until then) before exiting.
- * Calling the returned function again does nothing.
+ * the supervisor must start it instead. An idle exit with `stopHost` asks the
+ * host to stop before it exits 0 (see {@link BoundedExitCall.stopHost}). Logs
+ * are flushed (bounded, and for an exit before `exitBy` only for the time left
+ * until then) before exiting. Calling the returned function again does
+ * nothing, except that a signal during the host stop counts as its acceptance.
  */
 export function createBoundedExit(options: {
     close: () => Promise<string[]>;
@@ -230,21 +284,53 @@ export function createBoundedExit(options: {
     log: { info(message: string): void; error(message: string, error?: unknown): void };
     flush?: (timeoutMs?: number) => Promise<void>;
     deadlineMs?: number;
-}): (exitCode?: number, call?: { exitBy?: number | null }) => void {
-    const deadlineMs = options.deadlineMs ?? DEFAULT_SHUTDOWN_DEADLINE_MS;
+    hostStopTimeoutMs?: number;
+}): (exitCode?: number, call?: BoundedExitCall) => void {
+    const deadlineMs = options.deadlineMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    const hostStopTimeoutMs = options.hostStopTimeoutMs ?? DEFAULT_HOST_STOP_TIMEOUT_MS;
     let exiting = false;
+    let signalledHostStop: ((signal: string) => void) | null = null;
     return (exitCode = 0, call = {}) => {
-        if (exiting) return;
+        if (exiting) {
+            if (call.signal) signalledHostStop?.(call.signal);
+            return;
+        }
         exiting = true;
         const exitBy = call.exitBy ?? null;
         const untilExitBy = exitBy === null ? Number.POSITIVE_INFINITY : Math.max(0, exitBy - Date.now());
+
+        /** Step before the exit of an idle stop: the whole host stops, or the exit is 1. */
+        const stopHost = async (code: number): Promise<number> => {
+            const stop = call.stopHost;
+            if (code !== 0 || !stop) return code;
+            const timeoutMs = Math.min(hostStopTimeoutMs, exitBy === null ? Number.POSITIVE_INFINITY : exitBy - Date.now());
+            if (timeoutMs <= 0) {
+                options.log.error('all-in-one: the wake arranged for the idle stop came before the host was asked to stop; exiting with code 1 so the supervisor starts it again');
+                return 1;
+            }
+            const signalled = new Promise<string>(resolve => { signalledHostStop = resolve; });
+            try {
+                const how = await withTimeout(Promise.race([stop(timeoutMs).then(() => 'accepted'), signalled]), timeoutMs, 'the host stop');
+                options.log.info(how === 'accepted'
+                    ? 'all-in-one: the host accepted the idle stop; exiting with code 0'
+                    : `all-in-one: ${how} received while the host was asked to stop; exiting with code 0`);
+                return 0;
+            } catch (error) {
+                options.log.error('all-in-one: the host did not accept the idle stop; exiting with code 1 so the supervisor starts the control plane again instead of leaving it stopped inside a running host', error);
+                return 1;
+            } finally {
+                signalledHostStop = null;
+            }
+        };
+
         let done = false;
-        const finish = (code: number): void => {
+        const finish = (closeCode: number): void => {
             if (done) return;
             done = true;
             clearTimeout(deadline);
-            const flushFor = code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined;
-            void (options.flush?.(flushFor) ?? Promise.resolve()).catch(() => undefined).finally(() => {
+            void stopHost(closeCode).then(async code => {
+                const flushFor = code === 0 && exitBy !== null ? Math.max(0, Math.min(1_000, exitBy - Date.now())) : undefined;
+                await (options.flush?.(flushFor) ?? Promise.resolve()).catch(() => undefined);
                 // The flush got the time left until the wake, and may have used all of it: an exit 0 at or after the wake
                 // would leave the process stopped for good, so the wake is checked once more right before the exit.
                 if (code === 0 && exitBy !== null && Date.now() >= exitBy) {
@@ -262,7 +348,7 @@ export function createBoundedExit(options: {
                 finish(Math.max(1, exitCode));
                 return;
             }
-            options.log.error(`all-in-one: shutdown did not finish within ${Math.round(deadlineMs / 1000)}s (still closing: ${options.pendingStep() ?? 'unknown'}); exiting anyway`);
+            options.log.error(`all-in-one: shutdown did not finish within ${formatMs(deadlineMs)} (still closing: ${options.pendingStep() ?? 'unknown'}); exiting anyway`);
             finish(exitCode);
         }, Math.min(deadlineMs, untilExitBy));
         options.close().then(
@@ -278,4 +364,39 @@ export function createBoundedExit(options: {
             },
         );
     };
+}
+
+function formatMs(ms: number): string {
+    return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms} ms`;
+}
+
+export interface ShutdownSignalOptions {
+    /** The bounded exit for a termination signal (see {@link createBoundedExit}). */
+    stop: (signal: 'SIGINT' | 'SIGTERM') => void;
+    log: { info(message: string): void; warn(message: string): void };
+    exit: (code: number) => void;
+    /** Signal registration; `process.on` in production. */
+    on: (signal: 'SIGINT' | 'SIGTERM', handler: () => void) => void;
+}
+
+/**
+ * SIGINT/SIGTERM drain the process through the bounded exit. A second signal
+ * exits 1 at once. A signal during an idle stop goes to that stop, which is
+ * already exiting (and, while it waits for the host to stop, takes the signal
+ * as the host stopping it).
+ */
+export function installShutdownSignalHandlers(options: ShutdownSignalOptions): void {
+    let signalled = false;
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        options.on(signal, () => {
+            if (signalled) {
+                options.log.warn(`all-in-one received a second ${signal}; exiting immediately`);
+                options.exit(1);
+                return;
+            }
+            signalled = true;
+            options.log.info(`all-in-one received ${signal}, shutting down gracefully...`);
+            options.stop(signal);
+        });
+    }
 }

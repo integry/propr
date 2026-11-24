@@ -32,6 +32,7 @@ await mock.module('node:child_process', { namedExports: { ...childProcess,
 } });
 
 let beforeNetwork: () => Promise<void> = async () => {};
+let beforeTaskNetwork: () => Promise<void> = async () => {};
 let authenticationVersion = 'initial';
 let diagnosticCaptures: Array<{ args: string[]; authentication: string }> = [];
 let nativeCapacityRefusal = false;
@@ -49,7 +50,10 @@ await mock.module('../packages/core/src/diagnostics/managedLogRuntime.js', { nam
     },
 } });
 await mock.module('../packages/core/src/claude/docker/dockerNetworkPolicy.js', { namedExports: {
-    startWithNetworkPolicy: (_command: string, args: string[], _options: unknown, start: (args: string[]) => Promise<unknown>) => start(args),
+    startWithNetworkPolicy: async (_command: string, args: string[], _options: unknown, start: (args: string[]) => Promise<unknown>) => {
+        await beforeTaskNetwork();
+        return start(args);
+    },
     spawnWithNetworkPolicy: async (args: string[], spawn: (args: string[]) => unknown) => {
         networkAdmissions++;
         await beforeNetwork();
@@ -82,7 +86,7 @@ const options: AgentTaskOptions = {
     githubToken: 'stale-worker-token', prompt: 'Goal', executionMode: 'goal',
     environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'direct' }, nativeGoalObjective: 'Ship it', goalControl: control, initialControlInputId: 'input-1', initialControlInputMessage: 'Pending input',
 };
-beforeEach(() => { mints = 0; failMint = false; spawned = []; beforeMint = async () => {}; beforeNetwork = async () => {}; authenticationVersion = 'initial'; diagnosticCaptures = []; nativeCapacityRefusal = false; networkAdmissions = 0; dockerAdmissions = 0; });
+beforeEach(() => { mints = 0; failMint = false; spawned = []; beforeMint = async () => {}; beforeNetwork = async () => {}; beforeTaskNetwork = async () => {}; authenticationVersion = 'initial'; diagnosticCaptures = []; nativeCapacityRefusal = false; networkAdmissions = 0; dockerAdmissions = 0; });
 after(async () => { await closeConnection(); await fs.rm(root, { recursive: true, force: true }); });
 
 test('task capacity refusal happens before Docker creation and preserves provider output', async () => {
@@ -174,3 +178,71 @@ for (const provider of ['claude', 'antigravity', 'codex'] as const) {
         assert.deepEqual(diagnosticCaptures[0].args, spawned[0]);
     });
 }
+
+const { registerAgentRuntime, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.js');
+const { DockerRuntime } = await import('../packages/core/src/agents/runtime/dockerRuntime.js');
+const { ClaudeAgent } = await import('../packages/core/src/agents/impl/ClaudeAgent.js');
+const { CodexAgent } = await import('../packages/core/src/agents/impl/CodexAgent.js');
+registerAgentRuntime('goal-remote', () => new DockerRuntime());
+
+for (const [selection, select, expected] of [
+    ['a registered non-Docker runtime', { runtime: 'goal-remote' }, /support only the "docker" agent runtime; "goal-remote" is selected/],
+    ['an unknown PROPR_AGENT_RUNTIME', { env: 'sprites' }, /Unknown agent runtime "sprites"/],
+] as const) {
+    for (const provider of ['claude', 'antigravity', 'codex'] as const) {
+        test(`${provider} native goal refuses ${selection} before preparing a Docker launch`, async () => {
+            const previous = process.env[AGENT_RUNTIME_ENV];
+            if ('env' in select) process.env[AGENT_RUNTIME_ENV] = select.env;
+            const runtime = 'runtime' in select ? select.runtime : undefined;
+            let built = 0;
+            try {
+                if (provider === 'claude') {
+                    const agent = new ClaudeAgent({ ...config('claude'), runtime }) as unknown as { executeNativeGoal(o: AgentTaskOptions, m: string): Promise<{ success: boolean; error?: string }> };
+                    const result = await agent.executeNativeGoal(options, 'test-model');
+                    assert.equal(result.success, false);
+                    assert.match(result.error!, expected);
+                } else if (provider === 'antigravity') {
+                    const result = await antigravityNative.executeAntigravityNativeGoal(options, {
+                        agentAlias: 'antigravity', runtime, buildDockerArgs: async () => { built++; return ['run', 'image']; }, model: 'test-model', timeoutMs: 1000,
+                    });
+                    assert.match(result.error!, expected);
+                } else {
+                    await assert.rejects(executeCodexAppServerGoal({ ...config('codex'), runtime }, options, 1000), expected);
+                    const agent = new CodexAgent({ ...config('codex'), runtime }) as unknown as { executeNativeGoal(o: AgentTaskOptions): Promise<unknown> };
+                    await assert.rejects(agent.executeNativeGoal(options), expected);
+                }
+            } finally {
+                if (previous === undefined) delete process.env[AGENT_RUNTIME_ENV];
+                else process.env[AGENT_RUNTIME_ENV] = previous;
+            }
+            assert.equal(built, 0);
+            assert.equal(mints, 0, 'no git access is minted for a refused runtime');
+            assert.equal(networkAdmissions, 0);
+            assert.equal(spawned.length, 0);
+        });
+    }
+}
+
+test('run handle stop during pending network preparation keeps the executor from spawning the agent', async () => {
+    const { DockerRuntime: Runtime, AgentRunStoppedError } = await import('../packages/core/src/agents/runtime/dockerRuntime.js');
+    const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.js');
+    let releaseNetwork!: () => void;
+    let preparing!: () => void;
+    const preparationStarted = new Promise<void>(resolve => { preparing = resolve; });
+    beforeTaskNetwork = () => { preparing(); return new Promise<void>(resolve => { releaseNetwork = resolve; }); };
+    const runSpec = new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'test-agent', name: 'claude-issue-1-stop', stdin: true,
+        network: agentRunNetwork('bridge'), workspace: { hostPath: root, containerPath: '/home/node/workspace', readOnly: false },
+    }).command('claude', '-p', '-').build();
+    const handle = new Runtime().start(runSpec, { timeout: 5000, costCapExempt: true });
+    const outcome = handle.wait().then(() => 'resolved', error => error);
+    await preparationStarted;
+    let stopped = false;
+    const stopping = handle.stop().then(() => { stopped = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, false, 'stop does not report success while the launch can still start');
+    releaseNetwork();
+    await stopping;
+    assert.ok(await outcome instanceof AgentRunStoppedError);
+    assert.equal(spawned.length, 0, 'neither the agent nor a docker stop was spawned');
+});

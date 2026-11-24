@@ -20,6 +20,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { AgentRunSpecBuilder } from '../../agents/runtime/agentRunSpec.js';
+import { dockerMountField } from '../../agents/runtime/dockerRunArgs.js';
 
 export const CLAUDE_JSON_CONTAINER_PATH = '/home/node/.claude.json';
 export const CLAUDE_JSON_SEED_CONTAINER_PATH = '/run/propr-claude/claude.json';
@@ -49,23 +51,25 @@ export function resolveClaudeJsonSource(
     }
 }
 
-function mountField(key: string, value: string): string {
-    return /[",]/.test(value)
-        ? `"${key}=${value.replace(/"/g, '""')}"`
-        : `${key}=${value}`;
+/**
+ * Run options giving one Claude agent container its private config.
+ *
+ * The seed is a `--mount` bind rather than `-v`: a source removed after the
+ * backend checked it must fail the run, never be created as a directory at the
+ * path of the user's config file.
+ */
+export function addClaudeConfigSeed(builder: AgentRunSpecBuilder, source: string | undefined = resolveClaudeJsonSource()): AgentRunSpecBuilder {
+    if (source) builder.strictBind(source, CLAUDE_JSON_SEED_CONTAINER_PATH, true, 'credential');
+    return builder
+        .tmpfs(CLAUDE_BACKUPS_CONTAINER_PATH, 'rw,nosuid,nodev,noexec,size=16m')
+        .env(CLAUDE_JSON_SEED_ENV, CLAUDE_JSON_SEED_CONTAINER_PATH);
 }
 
-/**
- * Docker run options giving one Claude agent container its private config.
- *
- * `--mount` rather than `-v` for the seed: a source removed after the backend
- * checked it must fail the run, never be created as a directory at the path of
- * the user's config file.
- */
+/** Docker argv form of {@link addClaudeConfigSeed}. */
 export function claudeConfigDockerArgs(source: string | undefined = resolveClaudeJsonSource()): string[] {
     return [
         ...(source
-            ? ['--mount', ['type=bind', mountField('source', source), mountField('target', CLAUDE_JSON_SEED_CONTAINER_PATH), 'readonly'].join(',')]
+            ? ['--mount', ['type=bind', dockerMountField('source', source), dockerMountField('target', CLAUDE_JSON_SEED_CONTAINER_PATH), 'readonly'].join(',')]
             : []),
         '--tmpfs', `${CLAUDE_BACKUPS_CONTAINER_PATH}:rw,nosuid,nodev,noexec,size=16m`,
         '-e', `${CLAUDE_JSON_SEED_ENV}=${CLAUDE_JSON_SEED_CONTAINER_PATH}`,

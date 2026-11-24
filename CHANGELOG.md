@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the
     control plane with exit code 0 after it has been idle for the window, so a
     supervisor with an `on-failure` restart policy leaves the host stopped.
+    On a Fly Machine (`FLY_MACHINE_ID` set) it first has the Machines API
+    (`_api.internal:4280`) stop the whole Machine, with the app-scoped token in
+    `PROPR_FLY_MACHINE_STOP_TOKEN`: an exit alone leaves Redis and the other
+    containers keeping a multi-container Machine started, unreachable and
+    billed. A stop the API refuses or does not answer within 10 seconds exits
+    1, so the app starts again. A Fly Machine without the token never stops
+    idle.
   - Only the single-process control plane (`propr all-in-one`, the `minimal`
     profile) stops, with the indexing worker inline or off. A standalone
     daemon, or an API, worker or indexing worker process outside the
@@ -53,7 +60,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a component that never finished starting, such as a worker waiting for an
     agent image, kept it running after "shutting down gracefully". It now
     waits up to 10 seconds for such a component and exits with code 0 within
-    30 seconds.
+    `PROPR_SHUTDOWN_TIMEOUT_MS` (default 50 seconds).
+- **`propr deploy fly`: the control plane on one Fly Machine** (#3768)
+  - Runs the all-in-one app container and Redis in one Machine
+    (multi-container), with SQLite and the Redis AOF on an encrypted Fly
+    volume. Deploys the launcher manifest's `propr/app` image directly, with
+    no build and no Docker-in-Docker. Default size: shared-cpu-1x, 1 GB.
+  - Uses flyctl when installed, otherwise the Machines API with `--token` or
+    `FLY_API_TOKEN`. Every step can be rerun; `--dry-run` writes `fly.toml` and
+    the machine config only.
+  - Uploads the stack `.env` as Fly secrets and generates `SESSION_SECRET`
+    once. Enrolls a GitHub relay token, and ProPR Connect with
+    `--tunnel-token`/`--tunnel-url`. Agents default to Sprites.
+  - Refuses Sprites and Fly Machines agents (the default included) before
+    creating anything on Fly: this release's worker only runs Docker agents
+    and would never take a task without a Docker daemon. Use
+    `--legacy-docker` until those runtimes land.
+  - Refuses an explicit `GH_AUTH_MODE` whose credentials are missing (App id,
+    private key and installation id for `app`, a relay token for `relay`),
+    whatever the intake mode, before any secret is uploaded.
+  - Needs a browser sign-in: ProPR Connect (the tunnel flags), a GitHub OAuth
+    client in the stack `.env`, or demo mode. Without one it stops before
+    creating anything on Fly, `--dry-run` included.
+  - Writes `GH_AUTH_MODE` on every run that brings GitHub credentials: `app`
+    for an own GitHub App unless `--relay` or the `.env` chooses, `relay` for
+    relay credentials. Fly secrets are never removed, so a redeploy that adds
+    an own App does not keep an earlier deploy's relay mode, and a redeploy
+    without a key keeps an earlier deploy's GitHub App key wired into the
+    Machine.
+  - Writes `GITHUB_EVENT_INTAKE_MODE` on every run: `direct_webhook` in
+    demo mode, `routing_websocket` with a relay token, and `direct_webhook`
+    or `polling` for an own GitHub App, and `polling` when the app holds both
+    kinds of credentials next to an earlier, unreadable `GH_AUTH_MODE` (an
+    earlier intake, such as a demo deploy's, is not kept). Demo and `--no-relay` deploys
+    therefore no longer crash-loop on the relay WebSocket. A deploy with no
+    GitHub credentials stops before it sets secrets.
+  - The app container lists every Fly secret name (including ones left by
+    earlier deploys), and the tunnel container lists `TUNNEL_TOKEN`, because
+    a multi-container Machine passes secrets only to containers that list
+    them. `fly.toml` points at `propr-machine.json` by absolute path, and
+    flyctl runs from the `--out` directory, so the command works from any
+    working directory.
+  - Runs the Machine always on unless `--idle-shutdown [after]` is given.
+    With it, the Machine stops itself when idle (#3770) with an app-scoped
+    deploy token stored as `PROPR_FLY_MACHINE_STOP_TOKEN`. flyctl creates
+    that token on the first idle-shutdown deploy; with `--backend api` pass
+    it with `--machine-stop-token`.
+  - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
+    loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
+    stale `/var/run/docker*` and `/run/containerd` PID files.
+    A larger `--volume-size` grows the existing image in place on the next
+    boot, keeping pulled images.
 
 ### Changed
 
@@ -123,6 +180,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/model` beside Gemini 4 Neon and Argon.
 
 ### Fixed
+
+- **The all-in-one process exits on SIGTERM** (#3768). Shutdown waited
+  for the worker to finish starting, and without a Docker daemon (for example
+  with Sprites agents) the worker waits for the agent image forever. Shutdown
+  now aborts that wait. Draining is also capped by `PROPR_SHUTDOWN_TIMEOUT_MS`
+  (default 50 s, below Fly's 60 s stop timeout), after which the process exits
+  0, so an `on-failure` restart policy leaves a stopped Machine stopped.
 
 - **Release Rollout runtime images**: a Release Rollout run that publishes the
   app, UI or managed agent image itself now passes the image references on to

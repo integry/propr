@@ -44,7 +44,11 @@ await mock.module('@propr/core', {
 });
 await mock.module('node:timers/promises', {
     namedExports: {
-        setTimeout: async () => new Promise<void>(resolve => { resumePoll = resolve; }),
+        // Honours `signal` like the real timer, so shutdown can end the wait.
+        setTimeout: async (_ms: number, _value: unknown, options?: { signal?: AbortSignal }) => new Promise<void>((resolve, reject) => {
+            resumePoll = resolve;
+            options?.signal?.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+        }),
     },
 });
 const { prepareAgentRegistryAtStartup, processAgentImagePreparationJob, startAgentImageWatchdog } = await import('../src/workerAgentPreparation.js');
@@ -55,6 +59,23 @@ beforeEach(() => {
     builtImage = undefined;
     failure = { status: 'unavailable', error: 'ENOSPC', retryCount: 1, circuitBreakerOpen: true, operatorActionRequired: true };
     for (const fn of [prepare, recover, refresh, ensureBundle, inspect]) fn.mock.resetCalls();
+});
+
+test('shutdown aborts the startup wait for an agent image that never becomes ready', async () => {
+    prepare.mock.mockImplementation(async () => { initialized = true; });
+    const abort = new AbortController();
+    const startup = prepareAgentRegistryAtStartup({ signal: abort.signal });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    resumePoll!();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.strictEqual(inspect.mock.callCount(), 1, 'still polling for readiness');
+    abort.abort(new Error('all-in-one shutdown'));
+    await assert.rejects(startup, /all-in-one shutdown/);
+
+    // An already-aborted signal does not start preparation at all.
+    prepare.mock.resetCalls();
+    await assert.rejects(prepareAgentRegistryAtStartup({ signal: abort.signal }), /all-in-one shutdown/);
+    assert.strictEqual(prepare.mock.callCount(), 0);
 });
 
 for (const throws of [false, true]) {

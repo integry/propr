@@ -22,6 +22,8 @@ import type { AntigravityOutputEvent } from '../src/agents/impl/utils/antigravit
 import type { ModelReasoningLevel } from '@propr/shared';
 import type { AgentExecutionResult, Agent, AgentConfig } from '../src/agents/types.js';
 import { db } from '../src/db/connection.js';
+import { renderDockerRunArgs } from '../src/agents/runtime/dockerRunArgs.js';
+import type { AgentRunSpec } from '../src/agents/runtime/types.js';
 
 // Native-host fixtures: provider `~/...` defaults expand against HOME rather
 // than requiring a launcher host mapping, even when the suite runs in a container.
@@ -980,6 +982,7 @@ interface AntigravityTestInternals {
     }): Promise<AgentExecutionResult>;
     resolveSessionOutput(stdout: string, transcriptPath: string): Promise<{ response: { protocolError?: string } }>;
     buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number }): string[];
+    buildRunSpec(params: { worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number }): AgentRunSpec;
 }
 
 test('Antigravity compatibility aliases, review values and custom labels retain their effort', async t => {
@@ -1125,8 +1128,10 @@ test('Antigravity analysis inherits reasoning only when enabled', async t => {
             const agent = new AntigravityAgent(createAntigravityConfig({ modelReasoningLevels: { [model]: 'high' } }));
             let args: string[] = [];
             const internals = agent as unknown as AntigravityTestInternals;
-            const build = internals.buildDockerArgs.bind(agent);
-            t.mock.method(internals, 'buildDockerArgs', params => { args = build(params); throw new Error('captured launch'); });
+            // analyze() describes its launch as an AgentRunSpec; capture it there
+            // and render the argv the Docker runtime would launch.
+            const build = internals.buildRunSpec.bind(agent);
+            t.mock.method(internals, 'buildRunSpec', params => { args = renderDockerRunArgs(build(params)); throw new Error('captured launch'); });
             await agent.analyze('test', { model, useConfiguredReasoningLevel: inherit, reasoningLevel: explicit, suppressLlmLog: true });
             assert.equal(args[args.indexOf('--model') + 1], `gemini-3.8-flash-${explicit ?? (inherit ? 'high' : 'medium')}`);
         }

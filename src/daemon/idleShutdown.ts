@@ -41,6 +41,7 @@ import {
     type IntentRedis,
     type RoutingWebSocketIntakeService,
 } from '@propr/core';
+import { flyMachineStopProblem } from '../flyMachineStop.js';
 import { createDaemonIdleSources, createDaemonWorkSources } from './idleSignalSources.js';
 import { stopDaemonProcess, type IdleStopProcess } from './idleStopExit.js';
 import type { DaemonWorkProducers } from './workProducers.js';
@@ -495,6 +496,7 @@ export function startDaemonIdleShutdown(deps: DaemonIdleShutdownDeps): DaemonIdl
         composed: deps.stopProcess !== undefined,
         connectInFlight: () => deps.getRoutingService()?.getInFlightCount() ?? 0,
         connectIdleWakeSupport: () => deps.getRoutingService()?.getIdleWakeSupport() ?? null,
+        hostStopProblem: () => flyMachineStopProblem(process.env),
     });
     const collect = () => collectIdleSignals(sources);
     const workSources = createDaemonWorkSources({ redis: deps.redis, database: db });

@@ -1,17 +1,18 @@
+import { startsContainer } from '../../agents/runtime/agentRunLaunch.js';
 import { getActiveRunCostCap, type RunCostExecution } from '../../budget/runCostGuardContext.js';
 import { RunCostCapExceededError } from '../../budget/runCostCap.js';
 import type { DockerCommandOptions, ExecutionResult } from './dockerExecutor.js';
 
 /** Agent containers spend toward their run's cap; other commands and exempt containers do not. */
-export function isChargeableExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt'>): boolean {
-    return command === 'docker' && args[0] === 'run' && !options.costCapExempt;
+export function isChargeableExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt' | 'agentRun'>): boolean {
+    return startsContainer(command, args, options) && !options.costCapExempt;
 }
 
 /**
  * Null when no cap applies; otherwise resolves once the run's cap admitted the
  * container, with the refusal message when its budget is already used up.
  */
-export function admitCostExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt'>): Promise<string | null> | null {
+export function admitCostExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt' | 'agentRun'>): Promise<string | null> | null {
     const costCap = isChargeableExecution(command, args, options) ? getActiveRunCostCap() : undefined;
     if (!costCap) return null;
     return costCap.admit().then(() => null, error => {
@@ -24,7 +25,7 @@ export function admitCostExecution(command: string, args: string[], options: Pic
 export function registerCostExecution(
     command: string,
     args: string[],
-    options: Pick<DockerCommandOptions, 'model' | 'costCapExempt'>,
+    options: Pick<DockerCommandOptions, 'model' | 'costCapExempt' | 'agentRun'>,
     stop: (message: string) => void,
 ): { execution: RunCostExecution | null } | { refusal: string } {
     if (!isChargeableExecution(command, args, options)) return { execution: null };

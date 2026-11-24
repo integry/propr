@@ -129,7 +129,11 @@ Delayed jobs whose time passed run as soon as a worker is up; Ultrafix retries a
 
 ## Fly
 
-The Machine runs the all-in-one control plane (the app image's `node dist/src/allInOne.js`). `propr deploy fly` generates these settings; for a hand-written `fly.toml`:
+The Machine runs the all-in-one control plane (the app image's `node dist/src/allInOne.js`). Use `propr deploy fly --idle-shutdown` (see [Deploy to Fly](./deploy-fly.md#idle-shutdown)): it generates the settings below and creates the stop token.
+
+On a Fly Machine an exit alone does not stop the Machine. The `propr deploy fly` Machine also runs Redis (and optionally cloudflared and a Docker daemon) as containers of the same Machine, and they keep it `started` after the app exits. It is then unreachable and still billed, and the Fly proxy never starts it again, because it only starts a *stopped* Machine. So, on a Fly Machine (`FLY_MACHINE_ID` set), the idle stop asks the Machines API to stop the whole Machine before it exits 0. The request is `POST /v1/apps/$FLY_APP_NAME/machines/$FLY_MACHINE_ID/stop` to the Machine's private `_api.internal:4280` endpoint. It uses an app-scoped deploy token from the `PROPR_FLY_MACHINE_STOP_TOKEN` secret. A stop that the API refuses or does not answer within 10 seconds exits with **code 1** instead, so the restart policy starts the app again and the Machine stays reachable. A Machine without the token never stops idle: the blocker reads `could not read a way to stop this Fly Machine (PROPR_FLY_MACHINE_STOP_TOKEN not set …)`.
+
+For a hand-written `fly.toml`, create the token with `fly tokens create deploy --app <app>` and set it with `fly secrets set PROPR_FLY_MACHINE_STOP_TOKEN=<token>`. In a multi-container Machine, also list the secret in the app container's `secrets`. Then add:
 
 ```toml
 [env]
@@ -146,7 +150,7 @@ The Machine runs the all-in-one control plane (the app image's `node dist/src/al
   min_machines_running = 0
 
 [[restart]]
-  # Exit code 0 is an idle stop: leave the Machine stopped.
+  # Idle stop: the app stops the whole Machine, then exits 0; leave it stopped.
   policy = "on-failure"
 ```
 
@@ -165,6 +169,7 @@ Restart=on-failure
 
 - **It never stops.** Open Settings → Maintenance → Idle shutdown or run `propr check`; the blocker list names what keeps it awake. Common causes are polling intake, an open browser tab, an uptime monitor calling the API, or a stuck follow-up handoff (see [Maintenance](./maintenance.md)).
 - **It restarts right after stopping.** The supervisor restarts on success. Use `on-failure`.
+- **A Fly Machine stays `started` after `Idle shutdown`, and `/health` does not answer.** The app exited but the Machine did not stop. ProPR stops the whole Machine through the Machines API first. Look for `all-in-one: the host did not accept the idle stop` in `fly logs`: the token in `PROPR_FLY_MACHINE_STOP_TOKEN` is missing, expired or for another app. Create a new one with `fly tokens create deploy --app <app>`, or redeploy with `propr deploy fly --idle-shutdown`.
 - **It never stops on Connect intake, with `could not read Connect idle wake support`.** The relay did not acknowledge the wake hint. Stopping would leave nothing to wake the instance or replay its deliveries, so it stays up until the relay supports idle wake.
 - **It never stops, with `the daemon runs as its own process` or `… runs outside the all-in-one process`.** Idle shutdown needs the single-process control plane with the indexing worker inline or off. Run `propr all-in-one` (the `minimal` profile) and set `PROPR_INDEXING=inline` or `off`.
 - **It never stops, with `could not read api:… (no heartbeat …)` or `API activity from … (no current record)`.** A registered process is not reporting. Find out whether it is hung, or restart it. A clean stop removes its entry.

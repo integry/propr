@@ -77,3 +77,13 @@ test('in the all-in-one process, only a process registered outside it blocks idl
     ]);
     await Promise.all(local.map(registration => registration.stop()));
 });
+
+test('a host this process cannot stop (a Fly Machine without its stop token) keeps the instance awake', async () => {
+    const problem = 'a way to stop this Fly Machine (PROPR_FLY_MACHINE_STOP_TOKEN not set)';
+    for (const [hostStopProblem, idle] of [[() => problem, false], [() => null, true]] as const) {
+        const { 'host stop': hostStop } = createDaemonIdleSources({ redis: {} as never, database: {} as never, intakeMode: 'routing_websocket', composed: true, connectInFlight: () => 0, hostStopProblem });
+        const evaluation = evaluateIdle(await collectIdleSignals({ hostStop }), { now: Date.now(), windowMs: 15 * MINUTE });
+        assert.equal(evaluation.idle, idle);
+        if (!idle) assert.deepEqual(evaluation.blockers, [{ signal: 'unavailable', detail: `could not read ${problem}` }]);
+    }
+});

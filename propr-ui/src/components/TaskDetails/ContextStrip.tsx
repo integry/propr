@@ -1,6 +1,6 @@
 import { formatModelName } from '../../utils/modelDisplay';
 import React from 'react';
-import { TaskBudget, TaskInfo, TokenUsage, UsageMetricRecord } from './types';
+import { ComputeUsage, TaskBudget, TaskInfo, TokenUsage, UsageMetricRecord } from './types';
 import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { getDisplayTitle } from './taskHeaderText';
@@ -10,6 +10,7 @@ import AttemptLineage from './AttemptLineage';
 import AssignmentControl from './AssignmentControl';
 import type { TaskAssignment } from './useTaskAssignment';
 import { METRIC_KEY_LABELS, humanizeMetricKey } from '../../utils/usageMetricLabels';
+import { ComputeUsageChip } from './ComputeUsageChip';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -277,10 +278,11 @@ const TelemetryGroups: React.FC<{
   duration?: number | null;
   synthetic?: boolean;
   tokenUsage?: TokenUsage;
+  computeUsage?: ComputeUsage;
   usageMetricRecords?: UsageMetricRecord[];
   budget?: TaskBudget | null;
   lead?: React.ReactNode;
-}> = ({ modelName, duration, synthetic, tokenUsage, usageMetricRecords, budget, lead }) => {
+}> = ({ modelName, duration, synthetic, tokenUsage, computeUsage, usageMetricRecords, budget, lead }) => {
   return (
     <>
       {lead && (
@@ -291,17 +293,18 @@ const TelemetryGroups: React.FC<{
       <ContextGroup label="Execution runtime">
         <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
       </ContextGroup>
-      <ConsumptionGroup tokenUsage={tokenUsage} usageMetricRecords={usageMetricRecords} budget={budget} />
+      <ConsumptionGroup tokenUsage={tokenUsage} computeUsage={computeUsage} usageMetricRecords={usageMetricRecords} budget={budget} />
     </>
   );
 };
 
 /** Shared by desktop telemetry and the expanded mobile summary. */
-export const ConsumptionGroup: React.FC<Pick<ContextStripProps, 'tokenUsage' | 'usageMetricRecords' | 'budget'>> = ({ tokenUsage, usageMetricRecords, budget }) => (
+export const ConsumptionGroup: React.FC<Pick<ContextStripProps, 'tokenUsage' | 'computeUsage' | 'usageMetricRecords' | 'budget'>> = ({ tokenUsage, computeUsage, usageMetricRecords, budget }) => (
   <ContextGroup label="Consumption">
     <TokenUsageChip tokenUsage={tokenUsage ?? {}} />
     <UsageMetricsChip usageMetricRecords={usageMetricRecords ?? []} />
     {budget && (budget.capUsd !== null || budget.spentUsd > 0) && <BudgetChip budget={budget} />}
+    <ComputeUsageChip computeUsage={computeUsage} />
   </ContextGroup>
 );
 
@@ -405,6 +408,8 @@ interface ContextStripProps {
   commitInfo?: { shortHash: string; url: string };
   duration?: number | null;
   tokenUsage?: TokenUsage;
+  /** What the run's sandbox consumed (wall time, CPU, memory, compute cost). */
+  computeUsage?: ComputeUsage;
   usageMetricRecords?: UsageMetricRecord[];
   /** Estimated spend against the run's spend cap. */
   budget?: TaskBudget | null;
@@ -432,6 +437,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   commitInfo,
   duration,
   tokenUsage,
+  computeUsage,
   usageMetricRecords,
   budget,
   synthetic,
@@ -457,6 +463,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
           duration={duration}
           synthetic={synthetic}
           tokenUsage={tokenUsage}
+          computeUsage={computeUsage}
           usageMetricRecords={usageMetricRecords}
           budget={budget}
           lead={lead}

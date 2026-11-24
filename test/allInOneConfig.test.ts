@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { test } from 'node:test';
-import { createBoundedExit, createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage } from '../src/allInOneConfig.js';
+import { fileURLToPath } from 'node:url';
+import {
+    createBoundedExit, createComponentSupervisor, DEFAULT_SHUTDOWN_TIMEOUT_MS, installShutdownSignalHandlers, prepareAllInOneEnvironment,
+    resolveIndexingMode, resolveShutdownTimeoutMs, runShutdownSequence, SHUTDOWN_ORDER, type StartupStage,
+} from '../src/allInOneConfig.js';
 
 test('PROPR_INDEXING defaults to inline and accepts off/inline/separate', () => {
     assert.equal(resolveIndexingMode(undefined), 'inline');
@@ -67,7 +73,8 @@ test('all-in-one closes intake before workers, the worker after indexing, and th
     assert.match(source, /supervisor\.run\(stages\)/);
     assert.match(source, /startIndexingWorkerService\(\{ installSignalHandlers: false, ownEgressProxies: false \}\)/);
     assert.match(source, /startDaemon\(\{ installSignalHandlers: false, closeSharedQueue: false, idleShutdownStop \}\)/);
-    assert.match(source, /startWorker\(\{ installSignalHandlers: false \}\)/);
+    assert.match(source, /startWorker\(\{ installSignalHandlers: false, signal \}\)/);
+    assert.match(source, /installShutdownSignalHandlers\(/);
     assert.match(source, /startApiServer\(\{ installSignalHandlers: false \}\)/);
 });
 
@@ -218,7 +225,7 @@ test('the all-in-one exit is bounded: a close that never finishes still ends in 
     await new Promise(resolve => setTimeout(resolve, 60));
     assert.deepEqual(exits, [0], 'exits once, with 0');
     assert.equal(flushed, true, 'logs are flushed before the exit');
-    assert.deepEqual(errors, ['all-in-one: shutdown did not finish within 0s (still closing: api); exiting anyway']);
+    assert.deepEqual(errors, ['all-in-one: shutdown did not finish within 20 ms (still closing: api); exiting anyway']);
 });
 
 test('the all-in-one exit reports the close result: 0 when clean, 1 when a step failed', async () => {
@@ -234,8 +241,8 @@ test('signal and idle shutdown in all-in-one both go through the bounded exit', 
     const source = readFileSync(new URL('../src/allInOne.ts', import.meta.url), 'utf8');
     assert.match(source, /const closeAndExit = createBoundedExit\(/);
     assert.equal(source.match(/process\.exit\(failed/g), null, 'no unbounded exit after close()');
-    assert.match(source, /shutting down gracefully\.\.\.`\);\n\s+closeAndExit\(\);/);
-    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode, options\);/, 'the arranged wake reaches the bounded exit');
+    assert.match(source, /installShutdownSignalHandlers\(\{\n\s+stop: signal => closeAndExit\(0, \{ signal \}\),/);
+    assert.match(source, /idle shutdown, closing every component'\);\n\s+closeAndExit\(exitCode, \{ \.\.\.options, stopHost: /, 'the arranged wake and the host stop reach the bounded exit');
 });
 
 test('the all-in-one exit keeps the code its caller asked for (a called-off idle stop exits 1)', async () => {
@@ -314,4 +321,97 @@ test('an idle exit whose log flush runs through the arranged wake exits 1, not t
     createBoundedExit({ close: async () => [], exit: code => { codes.push(code); }, pendingStep: () => null, log: quietLog, flush: () => new Promise<void>(resolve => setTimeout(resolve, 30)), deadlineMs: 5_000 })(0);
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.deepEqual(codes.sort(), [0, 1]);
+});
+
+test('shutdown aborts the signal of the stage still starting, so a stuck startup cannot hold the drain', async () => {
+    const events: string[] = [];
+    const supervisor = createComponentSupervisor({ log: quietLog });
+    const startup = supervisor.run([
+        componentStage(events, 'api', 'api'),
+        {
+            // Like the worker's wait for an agent image that never becomes ready.
+            name: 'worker',
+            role: 'worker',
+            run: signal => new Promise((_resolve, reject) => {
+                events.push('start:worker');
+                signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            }),
+        },
+    ]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(await supervisor.close(), []);
+    assert.equal(await startup, false);
+    assert.deepEqual(events, ['start:api', 'started:api', 'start:worker', 'close:api']);
+});
+
+test('PROPR_SHUTDOWN_TIMEOUT_MS defaults below the Fly stop timeout and is bounded', () => {
+    assert.equal(resolveShutdownTimeoutMs(undefined), DEFAULT_SHUTDOWN_TIMEOUT_MS);
+    assert.ok(DEFAULT_SHUTDOWN_TIMEOUT_MS < 60_000);
+    assert.equal(resolveShutdownTimeoutMs(' 5000 '), 5000);
+    for (const bad of ['0', '999', 'soon', '1.5e3x']) assert.throws(() => resolveShutdownTimeoutMs(bad), /PROPR_SHUTDOWN_TIMEOUT_MS/);
+});
+
+function fakeSignals(): { emit(signal: 'SIGINT' | 'SIGTERM'): void; on(signal: 'SIGINT' | 'SIGTERM', handler: () => void): void } {
+    const handlers = new Map<string, () => void>();
+    return { emit: signal => handlers.get(signal)?.(), on: (signal, handler) => { handlers.set(signal, handler); } };
+}
+
+const quietSignalLog = { info: () => undefined, warn: () => undefined, error: () => undefined };
+
+/** The all-in-one wiring: signals reach the bounded exit. */
+function installSignalExit(signals: ReturnType<typeof fakeSignals>, close: () => Promise<string[]>, exit: (code: number) => void, deadlineMs: number, errors: string[] = []): void {
+    const closeAndExit = createBoundedExit({ close, exit, pendingStep: () => 'api', log: { info: () => undefined, error: message => errors.push(message) }, deadlineMs });
+    installShutdownSignalHandlers({ stop: signal => closeAndExit(0, { signal }), log: quietSignalLog, exit, on: signals.on });
+}
+
+test('a finished drain exits 0, a failed close exits 1, a second signal exits 1 at once', async () => {
+    for (const [failed, code] of [[[], 0], [['worker'], 1]] as const) {
+        const signals = fakeSignals();
+        const exits: number[] = [];
+        let finish!: (value: string[]) => void;
+        installSignalExit(signals, () => new Promise(resolve => { finish = resolve; }), c => exits.push(c), 60_000);
+        signals.emit('SIGTERM');
+        signals.emit('SIGINT');
+        assert.deepEqual(exits, [1]);
+        finish([...failed]);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.deepEqual(exits, [1, code]);
+    }
+});
+
+test('a drain that never finishes exits 0 at the deadline', async () => {
+    const signals = fakeSignals();
+    const exits: number[] = [];
+    const errors: string[] = [];
+    installSignalExit(signals, () => new Promise(() => undefined), c => exits.push(c), 20, errors);
+    signals.emit('SIGTERM');
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.deepEqual(exits, [0]);
+    assert.match(errors[0], /did not finish within 20 ms/);
+});
+
+test('SIGTERM ends a real process whose drain hangs within the shutdown timeout', { timeout: 30_000 }, async () => {
+    const tsx = createRequire(import.meta.url).resolve('tsx/cli');
+    const fixture = fileURLToPath(new URL('./fixtures/allInOneShutdownHang.ts', import.meta.url));
+    const child = spawn(process.execPath, [tsx, fixture], {
+        env: { ...process.env, PROPR_SHUTDOWN_TIMEOUT_MS: '1000' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stderr.on('data', chunk => { output += String(chunk); });
+    const exited = new Promise<number | null>(resolve => child.on('exit', code => resolve(code)));
+    await new Promise<void>((resolve, reject) => {
+        child.stdout.on('data', chunk => { output += String(chunk); if (output.includes('ready')) resolve(); });
+        child.on('exit', () => reject(new Error(`fixture exited before it was ready:\n${output}`)));
+    });
+    const sentAt = Date.now();
+    child.kill('SIGTERM');
+    const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    const code = await exited;
+    clearTimeout(kill);
+    const elapsed = Date.now() - sentAt;
+    assert.equal(code, 0, output);
+    assert.ok(elapsed >= 900 && elapsed < 5_000, `exited ${elapsed} ms after SIGTERM`);
+    assert.match(output, /received SIGTERM, shutting down gracefully/);
+    assert.match(output, /did not finish within 1s \(still closing: api\); exiting anyway/);
 });
