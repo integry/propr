@@ -2,8 +2,8 @@ import type { FlyMachineGuest, FlyMachinesConfig } from './flyMachinesConfig.js'
 
 /**
  * Minimal Fly Machines API client (https://fly.io/docs/machines/api/) over
- * `fetch`: create, inspect, wait, signal, stop and destroy a Machine, exec in
- * it, and page its logs. Only what the agent runtime uses.
+ * `fetch`: create, list, inspect, wait, signal, stop and destroy a Machine,
+ * exec in it, and page its logs. Only what the agent runtime uses.
  */
 
 export interface FlyMachineFile {
@@ -47,6 +47,7 @@ export interface FlyMachine {
     instance_id?: string;
     private_ip?: string;
     events?: FlyMachineEvent[];
+    config?: { metadata?: Record<string, string> };
 }
 
 export interface FlyExecResult {
@@ -139,6 +140,19 @@ export class FlyMachinesClient {
     async getMachine(id: string, options: FlyRequestOptions = {}): Promise<FlyMachine | null> {
         const { status, body } = await this.request<FlyMachine>('GET', this.machinesUrl(`/${encodeURIComponent(id)}`), { allow: [404], signal: options.signal });
         return status === 404 ? null : body ?? null;
+    }
+
+    /**
+     * The app's Machines (destroyed ones excluded) whose metadata holds every
+     * pair in `metadata`. The API filters by it; the result is filtered here
+     * too, so a Machine without those pairs is never returned, whatever the
+     * API applied. Throws unless the API returned a list.
+     */
+    async listMachines(metadata: Record<string, string>, options: FlyRequestOptions = {}): Promise<FlyMachine[]> {
+        const query = new URLSearchParams(Object.entries(metadata).map(([key, value]): [string, string] => [`metadata.${key}`, value]));
+        const { body } = await this.request<FlyMachine[]>('GET', this.machinesUrl(`?${query}`), { signal: options.signal });
+        if (!Array.isArray(body)) throw new FlyMachinesApiError('Fly Machines API listed Machines without returning a list', 502);
+        return body.filter(machine => !!machine?.id && Object.entries(metadata).every(([key, value]) => machine.config?.metadata?.[key] === value));
     }
 
     /** Waits up to `timeoutSeconds` (max 60) for `state` (of `instanceId`, when given); false when it was not reached in time. */

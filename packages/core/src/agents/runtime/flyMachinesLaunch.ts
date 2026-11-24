@@ -3,6 +3,7 @@ import { WORKSPACE_AGENT_USER, WORKSPACE_RESULT_PHASE_FILE } from '../../git/wor
 import { AgentRuntimeCapabilityError, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
 import { renderAgentRunCommand } from './dockerRunArgs.js';
 import type { FlyCreateMachineRequest, FlyMachineFile } from './flyMachinesApi.js';
+import { FLY_CREATION_METADATA_KEY } from './flyMachinesCreation.js';
 import { FLY_MACHINES_RUNTIME_KIND, flyMachineGuest, MIN_FLY_RESULT_LINGER_SECONDS, type FlyMachinesConfig } from './flyMachinesConfig.js';
 import type { AgentRunSpec } from './types.js';
 
@@ -20,7 +21,9 @@ import type { AgentRunSpec } from './types.js';
  * - feeds the prompt from an uploaded file (Machines have no stdin);
  * - keeps the agent's exact stdout/stderr in files and mirrors them, line
  *   marked, to the console so the logs API streams them live;
- * - forwards termination signals to the agent and records its exit status;
+ * - forwards termination signals to the agent, never to a clone transport
+ *   wrapper that outlives it to publish the workspace (see `forward()`), and
+ *   records the exit status;
  * - then waits, up to the configured linger, for the worker to read the
  *   result files and destroy the Machine (`auto_destroy` removes it if the
  *   worker never does). The linger is never shorter than
@@ -53,7 +56,7 @@ export const FLY_LOG_MARKERS = { stdout: '\u001epropr:o\u001e', stderr: '\u001ep
 const AGENT_FILE_OWNER = 'node:node';
 
 const LAUNCHER_SCRIPT = `set -u
-run_dir=$1; linger=$2; workdir=$3; run_user=$4; no_new_privs=$5; shift 5
+run_dir=$1; linger=$2; workdir=$3; run_user=$4; no_new_privs=$5; phase_file=$6; shift 6
 mark_out=$'${'\\x1e'}propr:o${'\\x1e'}'; mark_err=$'${'\\x1e'}propr:e${'\\x1e'}'; mark_exit=$'${'\\x1e'}propr:x${'\\x1e'}'
 mkdir -p -m 700 "$run_dir"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
@@ -106,9 +109,35 @@ else
   setsid "$@" < "$stdin" > "$p.out" 2> "$p.err" &
   child=$!
   printf '%s\n' "$child" > "$run_dir/pid"
-  trap 'kill -s TERM "$child" 2>/dev/null' TERM
-  trap 'kill -s INT "$child" 2>/dev/null' INT
-  trap 'kill -s HUP "$child" 2>/dev/null' HUP
+  # A termination signal (the deadline's, a stop's, Fly's) must not end a clone transport wrapper, which
+  # outlives its agent to snapshot and publish the workspace and drops its own forwarding traps once it
+  # finalizes. The wrapper is held stopped while its phase file is read, unless
+  # a forced stop already holds it. No phase yet (bootstrap, nothing to keep): the wrapper gets the signal.
+  # Otherwise its running children get it in its place: the agent, or none once the agent exited. While it
+  # finalizes, nothing does.
+  forward() {
+    local sig=$1 held= line stat
+    if [ -z "$phase_file" ]; then kill -s "$sig" "$child" 2>/dev/null; return 0; fi
+    if { read -r line < "/proc/$child/stat"; } 2>/dev/null; then
+      set -- \${line##*) }
+      [ "\${1:-}" = T ] || { kill -s STOP "$child" 2>/dev/null && held=1; }
+    fi
+    if [ ! -e "$phase_file" ]; then
+      kill -s "$sig" "$child" 2>/dev/null
+    elif [ "$(cat "$phase_file" 2>/dev/null)" != finalizing ]; then
+      for stat in /proc/[0-9]*/stat; do
+        { read -r line < "$stat"; } 2>/dev/null || continue
+        set -- \${line##*) }
+        [ "\${2:-}" = "$child" ] && [ "\${1:-}" != Z ] || continue
+        stat=\${stat#/proc/}; kill -s "$sig" "\${stat%/stat}" 2>/dev/null
+      done
+    fi
+    [ -z "$held" ] || kill -s CONT "$child" 2>/dev/null
+    return 0
+  }
+  trap 'forward TERM' TERM
+  trap 'forward INT' INT
+  trap 'forward HUP' HUP
   while kill -0 "$child" 2>/dev/null; do wait "$child"; done
   wait "$child"; status=$?
   # A process the agent left behind may hold the pipes open: drain them for a few seconds only.
@@ -228,11 +257,15 @@ exit "$status"
  * (ProPR provider entrypoints drop to it).
  */
 export function flyForcedStopCommand(spec: AgentRunSpec): string[] {
-    const resultDir = spec.workspace.clone?.resultDir;
-    const phaseFile = resultDir ? `${resultDir.replace(/\/+$/, '')}/${WORKSPACE_RESULT_PHASE_FILE}` : '';
     const runUser = spec.user?.split(':')[0]?.trim();
-    const agentUser = !resultDir && runUser && runUser !== '0' && runUser !== 'root' ? runUser : WORKSPACE_AGENT_USER;
-    return ['/bin/sh', '-c', FLY_FORCED_STOP_SCRIPT, 'sh', FLY_RUN_FILES.pid, phaseFile, agentUser];
+    const agentUser = !spec.workspace.clone?.resultDir && runUser && runUser !== '0' && runUser !== 'root' ? runUser : WORKSPACE_AGENT_USER;
+    return ['/bin/sh', '-c', FLY_FORCED_STOP_SCRIPT, 'sh', FLY_RUN_FILES.pid, flyClonePhaseFile(spec), agentUser];
+}
+
+/** Where a clone run's transport wrapper records its phase; '' for a run without one. */
+function flyClonePhaseFile(spec: AgentRunSpec): string {
+    const resultDir = spec.workspace.clone?.resultDir;
+    return resultDir ? `${resultDir.replace(/\/+$/, '')}/${WORKSPACE_RESULT_PHASE_FILE}` : '';
 }
 
 export interface FlyMachineLaunchInput {
@@ -241,6 +274,8 @@ export interface FlyMachineLaunchInput {
     launchEnvironment: Record<string, string | undefined>;
     /** The prompt, delivered as a file the launcher feeds to the agent's stdin. */
     stdinData?: string;
+    /** The run's unique creation id, kept in the Machine's metadata so a create whose response was lost can be found. */
+    creationId?: string;
 }
 
 function assertGuestPath(path: string): void {
@@ -274,9 +309,11 @@ export function flyMachineName(runName: string): string {
     return normalized.slice(start, end) || 'propr-run';
 }
 
-function metadata(spec: AgentRunSpec): Record<string, string> {
+function metadata(spec: AgentRunSpec, creationId: string | undefined): Record<string, string> {
     const entries = Object.entries(spec.labels).map(([key, value]) => [key.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 63), value.slice(0, 256)]);
-    return Object.fromEntries([...entries, ['propr_run', spec.name.slice(0, 256)], ['propr_agent', spec.profile.agentType]]);
+    // Last, so no label can replace the creation id the handle finds the Machine by.
+    const creation = creationId ? [[FLY_CREATION_METADATA_KEY, creationId]] : [];
+    return Object.fromEntries([...entries, ['propr_run', spec.name.slice(0, 256)], ['propr_agent', spec.profile.agentType], ...creation]);
 }
 
 /** Inside `ancestor` (or `ancestor` itself). */
@@ -408,12 +445,15 @@ export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLau
             init: {
                 entrypoint: ['/bin/bash', '-c', LAUNCHER_SCRIPT, 'propr-fly-run'],
                 // Never below the minimum, however the config was built: the worker cannot extend the linger once it runs.
-                cmd: [FLY_RUN_DIR, String(Math.max(config.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS)), spec.workdir, spec.user ?? '', noNewPrivileges ? '1' : '0', entrypoint, ...args],
+                cmd: [
+                    FLY_RUN_DIR, String(Math.max(config.resultLingerSeconds, MIN_FLY_RESULT_LINGER_SECONDS)), spec.workdir, spec.user ?? '',
+                    noNewPrivileges ? '1' : '0', flyClonePhaseFile(spec), entrypoint, ...args,
+                ],
             },
             env: flyMachineEnvironment(spec, input.launchEnvironment),
             guest: flyMachineGuest(config, spec.resources),
             files: machineFiles(spec, input.stdinData),
-            metadata: metadata(spec),
+            metadata: metadata(spec, input.creationId),
             // One Machine per run: never restarted, removed once it exits.
             auto_destroy: true,
             restart: { policy: 'no' },

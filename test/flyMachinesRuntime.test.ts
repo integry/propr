@@ -20,7 +20,8 @@ const { FlyMachinesRuntime, flyMachinesCapabilities, FLY_MACHINES_RUNTIME_KIND }
 const { resolveFlyMachinesConfig, flyMachineGuest, flyInternalMcpUrl, dockerMemoryToMb, FlyMachinesConfigError, MIN_FLY_RESULT_LINGER_SECONDS } = await import('../packages/core/src/agents/runtime/flyMachinesConfig.ts');
 const { renderFlyMachineRequest, parseFlyLogLine, flyMachineName, FLY_LOG_MARKERS, FLY_RUN_FILES } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
 const { flyAuthorization, flyMachineExitCode } = await import('../packages/core/src/agents/runtime/flyMachinesApi.ts');
-const { uploadAgentRunFiles } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+const { uploadAgentRunFiles, AgentRunFileUploadError } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+const { FLY_CREATION_METADATA_KEY, FLY_CREATE_SETTLE_MS } = await import('../packages/core/src/agents/runtime/flyMachinesCreation.ts');
 const { envFileValues } = await import('../packages/core/src/agents/credentials/hostCredentialStaging.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { getAgentRuntime, registerAgentRuntime, assertAgentRuntimeSupports, runAgent, registeredAgentRuntimes, AgentRuntimeCapabilityError } = await import('../packages/core/src/agents/runtime/registry.ts');
@@ -81,6 +82,16 @@ class FakeFly {
     failDeletes = 0;
     /** Create requests wait for this before the API answers (a slow image pull/placement). */
     createGate?: Promise<void>;
+    /**
+     * The next create is accepted but its response is lost: the connection fails (`'network'`) or a proxy
+     * answers with this status. `deferred`: the Machine appears only on {@link completeDeferredCreate}.
+     */
+    lostCreate?: { response: 'network' | number; deferred?: boolean };
+    /** The next create is refused with this status; no Machine is created. */
+    refuseCreate?: number;
+    /** This many list requests fail with 503. */
+    failLists = 0;
+    private deferredCreate?: () => void;
     /** Content read requests (not stats) per file. */
     contentReads = new Map<string, number>();
     /**
@@ -103,6 +114,12 @@ class FakeFly {
     private skew = 0;
     private nextId = 1;
     private nextLogPage = 1;
+
+    /** The deferred create of a {@link lostCreate} completes server-side: its Machine appears. */
+    completeDeferredCreate(): void {
+        this.deferredCreate?.();
+        this.deferredCreate = undefined;
+    }
 
     /** The run's clock when a test hands it to the runtime: real time, plus what slow log pages added. */
     now = (): number => Date.now() + this.skew;
@@ -162,10 +179,29 @@ class FakeFly {
         const [, , id, action] = match;
         if (method === 'POST' && !id) {
             if (this.createGate) await this.createGate;
-            const machine: FakeMachine = { id: `m${this.nextId++}`, state: 'created', request: body, files: new Map(), mtimes: new Map(), events: [], pendingLogs: [], signals: [] };
-            for (const file of body.config.files ?? []) machine.files.set(file.guest_path, Buffer.from(file.raw_value, 'base64'));
-            this.machines.set(machine.id, machine);
+            if (this.refuseCreate) { const status = this.refuseCreate; this.refuseCreate = undefined; return json(status, { error: 'invalid config' }); }
+            const create = (): FakeMachine => {
+                const machine: FakeMachine = { id: `m${this.nextId++}`, state: 'started', request: body, files: new Map(), mtimes: new Map(), events: [], pendingLogs: [], signals: [] };
+                for (const file of body.config.files ?? []) machine.files.set(file.guest_path, Buffer.from(file.raw_value, 'base64'));
+                this.machines.set(machine.id, machine);
+                return machine;
+            };
+            const lost = this.lostCreate;
+            if (lost) {
+                this.lostCreate = undefined;
+                if (lost.deferred) this.deferredCreate = () => { create(); };
+                else create();
+                if (lost.response === 'network') throw new TypeError('fetch failed');
+                return json(lost.response, { error: 'upstream timed out' });
+            }
+            const machine = create();
+            machine.state = 'created';
             return json(200, { id: machine.id, state: 'created', region: body.region, instance_id: 'i1' });
+        }
+        if (method === 'GET' && !id) {
+            if (this.failLists > 0) { this.failLists--; return json(503, { error: 'service unavailable' }); }
+            // Ignores the metadata filter: the client must not rely on it to pick what it destroys.
+            return json(200, [...this.machines.values()].map(machine => ({ id: machine.id, state: machine.state, config: { metadata: machine.request.config.metadata } })));
         }
         const machine = this.machines.get(id!);
         if (!machine || this.expire(machine)) return json(404, { error: 'machine not found' });
@@ -320,7 +356,7 @@ test('machine request: image entrypoint chain, Docker env semantics, uploads, pr
     assert.deepEqual(request.config.guest, { cpu_kind: 'performance', cpus: 2, memory_mb: 6144 });
     assert.deepEqual(request.config.init.entrypoint!.slice(0, 2), ['/bin/bash', '-c']);
     assert.deepEqual(request.config.init.cmd, [
-        '/tmp/propr-fly-run', '9000', '/home/node/workspace', '0:0', '1',
+        '/tmp/propr-fly-run', '9000', '/home/node/workspace', '0:0', '1', '/tmp/r/phase',
         '/bin/bash', '-lc', 'clone-script', 'setup', '/home/node/claude-entrypoint.sh', 'claude', '-p',
     ]);
     // -e wins over the env file; a bare name inherits from the launch environment.
@@ -356,7 +392,7 @@ test('machine request: security restrictions the Machine cannot enforce are refu
     relaxed.security.securityOpts.push('no-new-privileges');
     assert.equal(render(relaxed).config.init.cmd![4], '1');
     const script = render(spec()).config.init.entrypoint![2];
-    assert.match(script, /no_new_privs=\$5; shift 5/);
+    assert.match(script, /no_new_privs=\$5; phase_file=\$6; shift 6/);
     assert.match(script, /\[ "\$no_new_privs" = 1 \] && set -- setpriv --no-new-privs -- "\$@"/);
 });
 
@@ -880,6 +916,46 @@ test('a writable credential store the worker cannot write back to refuses the ru
     assert.ok(uploadAgentRunFiles(readOnly).spec.files!.some(file => file.path === '/home/node/.claude/.credentials.json'));
 });
 
+test('a credential store holding provider session state (perRun: false) refuses the run before launch', async () => {
+    const { buildClaudeRunSpec } = await import('../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts');
+    const store = credentialStore();
+    // The session history a resumed goal session reads lives beside the credentials, outside the manifest.
+    fs.mkdirSync(path.join(store, 'projects', '-home-node-workspace'), { recursive: true });
+    fs.writeFileSync(path.join(store, 'projects', '-home-node-workspace', 'claude-session.jsonl'), '{"type":"user"}\n');
+    const config = {
+        id: 'claude-id', type: 'claude', alias: 'claude-test', enabled: true, dockerImage: 'propr/agent:test',
+        configPath: store, supportedModels: ['test-model'], defaultModel: 'test-model',
+    } as any;
+    const goal = buildClaudeRunSpec(config, 1000, {
+        worktreePath: '/tmp/worktree', githubToken: 'token', modelName: 'test-model', issueNumber: 0, taskId: 'goal-123',
+        executionMode: 'goal', resumeSessionId: 'claude-session',
+    } as any);
+    assert.ok(goal.args.includes('--resume'), 'a resuming goal session');
+    assert.ok(goal.mounts.some(mount => mount.type === 'bind' && mount.credentialStore?.perRun === false), 'its store keeps session state');
+    let materialized = 0;
+    const broker = { materialize: () => { materialized++; throw new Error('must not be materialized'); } } as any;
+    assert.throws(
+        () => uploadAgentRunFiles(goal, { broker }),
+        (error: unknown) => error instanceof AgentRunFileUploadError && /keeps provider session state in the claude config credential store/.test(error.message),
+    );
+    assert.equal(materialized, 0, 'refused before any per-run copy is made');
+
+    // Through runAgent, on a runtime without bind mounts: nothing is started.
+    let starts = 0;
+    registerAgentRuntime('upload-session-fake', () => ({
+        kind: 'upload-session-fake',
+        capabilities: { supportsBindMounts: false, supportsFileUpload: true, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['bind'] },
+        start() { starts++; throw new Error('must not start'); },
+    }) as any);
+    const run = credentialRun(store, 'session-store');
+    run.mounts = run.mounts.map((mount: any) => (mount.credentialStore ? { ...mount, credentialStore: { ...mount.credentialStore, perRun: false } } : mount));
+    await assert.rejects(runAgent({ runtime: 'upload-session-fake' } as any, run, { timeout: 1000 }), /keeps provider session state/);
+    assert.equal(starts, 0);
+    // A read-only session store is refused too: what the run writes there would not persist either.
+    const readOnly = { ...run, mounts: run.mounts.map((mount: any) => ({ ...mount, readOnly: true })) };
+    assert.throws(() => uploadAgentRunFiles(readOnly), /keeps provider session state/);
+});
+
 test('a failed explicit release of a retained Machine keeps retrying the destroy with backoff', async () => {
     const fly = new FakeFly();
     const handle = runtime(fly).start(spec(), { timeout: 10_000 });
@@ -949,6 +1025,107 @@ test('release() during a slow create waits for the Machine and keeps retrying it
         assert.deepEqual(fly.destroyed, ['m1']);
         await handle.release!();
         assert.equal(deletes(), 3, 'release is idempotent once the destroy succeeded');
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+/** A Machine of another run, which no reconciliation of this run's create may touch. */
+function otherRunMachine(fly: FakeFly): void {
+    fly.machines.set('other', {
+        id: 'other', state: 'started', request: { config: { metadata: { propr_run: 'another-run', [FLY_CREATION_METADATA_KEY]: 'another-creation' } } },
+        files: new Map(), mtimes: new Map(), events: [], pendingLogs: [], signals: [],
+    });
+}
+
+const creationLookups = (fly: FakeFly) => fly.requests.filter(request => request.method === 'GET' && /\/machines\?/.test(request.url));
+const createdCreationId = (fly: FakeFly): string => fly.requests.find(request => request.method === 'POST')!.body.config.metadata[FLY_CREATION_METADATA_KEY];
+
+test('a create whose response is lost: its Machine is found by the run\'s creation id and destroyed before the run settles, no other', async () => {
+    const ids = new Set<string>();
+    for (const response of ['network', 504] as const) {
+        const fly = new FakeFly();
+        otherRunMachine(fly);
+        fly.lostCreate = { response };
+        const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+        await assert.rejects(handle.wait(), response === 'network' ? /fetch failed/ : /returned 504/);
+        const creation = createdCreationId(fly);
+        assert.match(creation, /^[0-9a-f]{8}-[0-9a-f-]{27}$/, 'the create request carries the run\'s creation id');
+        ids.add(creation);
+        assert.deepEqual(fly.destroyed, ['m1'], 'the Machine the create left is destroyed before wait() settles');
+        assert.ok(fly.machines.has('other'), 'a Machine without the run\'s creation id is never destroyed, whatever the API listed');
+        const [lookup] = creationLookups(fly);
+        assert.equal(new URL(lookup!.url).searchParams.get(`metadata.${FLY_CREATION_METADATA_KEY}`), creation, 'looked up by its creation id');
+        await handle.release!();
+        assert.equal(creationLookups(fly).length, 1, 'settled: release() has nothing left to look for');
+        assert.deepEqual(fly.destroyed, ['m1']);
+    }
+    assert.equal(ids.size, 2, 'each run has its own creation id');
+
+    // The API refused the create: nothing was created, nothing is looked for.
+    const refused = new FakeFly();
+    refused.refuseCreate = 422;
+    const handle = runtime(refused).start(spec(), { timeout: 10_000 });
+    await assert.rejects(handle.wait(), /returned 422/);
+    await handle.release!();
+    assert.equal(creationLookups(refused).length, 0);
+    assert.equal(refused.requests.filter(request => request.method === 'DELETE').length, 0);
+});
+
+test('a lost create keeps its cleanup obligation until a lookup settles it', async () => {
+    // The lookups fail: the Machine stays to be destroyed, and release() does not report it released.
+    const failing = new FakeFly();
+    failing.lostCreate = { response: 'network' };
+    failing.failLists = 2;
+    const handle = runtime(failing).start(spec(), { timeout: 10_000 });
+    await assert.rejects(handle.wait(), /fetch failed/);
+    assert.ok(failing.machines.has('m1'));
+    await assert.rejects(handle.release!(), /returned 503/);
+    await handle.release!();
+    assert.deepEqual(failing.destroyed, ['m1']);
+
+    // The create completes after its response was lost: not found at first, destroyed once it appears.
+    let clock = Date.now();
+    const late = new FakeFly();
+    late.lostCreate = { response: 'network', deferred: true };
+    const lateHandle = runtime(late, FLY_ENV, () => clock).start(spec(), { timeout: 10_000 });
+    await assert.rejects(lateHandle.wait(), /fetch failed/);
+    await assert.rejects(lateHandle.release!(), /may still complete/, 'a lookup finding nothing while the create may still complete settles nothing');
+    late.completeDeferredCreate();
+    await lateHandle.release!();
+    assert.deepEqual(late.destroyed, ['m1']);
+
+    // None ever appears: only a lookup that succeeds once the create can no longer complete ends the obligation.
+    const absent = new FakeFly();
+    absent.lostCreate = { response: 504, deferred: true };
+    const absentHandle = runtime(absent, FLY_ENV, () => clock).start(spec(), { timeout: 10_000 });
+    await assert.rejects(absentHandle.wait(), /returned 504/);
+    clock += FLY_CREATE_SETTLE_MS;
+    absent.failLists = 1;
+    await assert.rejects(absentHandle.release!(), /returned 503/, 'a failed lookup is no evidence of absence');
+    await absentHandle.release!();
+    const lookups = creationLookups(absent).length;
+    await absentHandle.release!();
+    assert.equal(creationLookups(absent).length, lookups, 'settled: nothing more is looked for');
+    assert.deepEqual(absent.destroyed, []);
+});
+
+test('a lost create\'s Machine is destroyed by the cleanup its settlement schedules, without release()', async () => {
+    const fly = new FakeFly();
+    fly.lostCreate = { response: 'network' };
+    fly.failLists = 1;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+        const flush = async () => { for (let index = 0; index < 20; index++) await new Promise(resolve => setImmediate(resolve)); };
+        const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+        await assert.rejects(handle.wait(), /fetch failed/);
+        assert.ok(fly.machines.has('m1'), 'the lookup at create time failed');
+        mock.timers.tick(30_000);
+        await flush();
+        assert.deepEqual(fly.destroyed, ['m1']);
+        mock.timers.tick(10 * 60_000);
+        await flush();
+        assert.equal(creationLookups(fly).length, 2, 'nothing is looked for once it was destroyed');
     } finally {
         mock.timers.reset();
     }

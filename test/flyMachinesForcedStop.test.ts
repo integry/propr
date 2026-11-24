@@ -105,63 +105,86 @@ touch "$READY_FILE"
 while :; do sleep 0.1; done
 `;
 
+interface CloneRun {
+    launcher: ChildProcess;
+    launcherExit: Promise<number | null>;
+    /** Where a launcher file of {@link FLY_RUN_FILES} is in this run. */
+    runFile: (file: string) => string;
+    remote: string;
+    resultRef: string;
+    resultDir: string;
+    workspace: string;
+}
+
+/**
+ * A clone run's launcher, transport wrapper and agent (`agentScript`), started exactly as the Machine runs
+ * them; only the run directory, a zero linger and `-c` instead of `-lc` (so the test PATH survives a login
+ * shell) differ. `env` is added to the run's environment. With `SLOW_STEP` (`snapshot` or `push`) set, the
+ * wrapper's finalization touches `SLOW_MARKER` and pauses `SLOW_SECONDS` at that step.
+ */
+function launchCloneRun(root: string, agentScript: string, env: Record<string, string> = {}): CloneRun {
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    git(root, 'init', '-q', '--bare', '-b', 'main', remote);
+    git(root, 'init', '-q', '-b', 'main', seed);
+    write(path.join(seed, 'a.txt'), 'base\n');
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'seed');
+    const base = git(seed, 'rev-parse', 'HEAD');
+    const baseRef = 'refs/propr/runs/x/base';
+    const resultRef = 'refs/propr/runs/x/result';
+    git(seed, 'push', '-q', remote, `${base}:${baseRef}`);
+
+    // The Machine's identities, simulated (no root here): `id` reports root and a separate `node` user,
+    // `su-exec` drops to "node" by just running the command.
+    const bin = path.join(root, 'bin');
+    const slow = (step: string) => `case " $* " in *" ${step === 'snapshot' ? 'propr-snapshot' : 'push'} "*) if [ "\${SLOW_STEP:-}" = ${step} ]; then touch "$SLOW_MARKER"; sleep "$SLOW_SECONDS"; fi ;; esac\n`;
+    write(path.join(bin, 'id'), '#!/bin/bash\ncase "$*" in\n  -u) echo 0 ;;\n  node) echo "uid=1000(node)" ;;\n  "-u node") echo 1000 ;;\n  *) exec /usr/bin/id "$@" ;;\nesac\n', 0o755);
+    write(path.join(bin, 'su-exec'), `#!/bin/bash\nshift\n${slow('snapshot')}exec "$@"\n`, 0o755);
+    write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    write(path.join(bin, 'git'), `#!/bin/bash\n${slow('push')}exec ${realGit} "$@"\n`, 0o755);
+    const agent = path.join(root, 'agent.sh');
+    write(agent, agentScript, 0o755);
+
+    const runDir = path.join(root, 'fly-run');
+    const resultDir = path.join(root, 'result');
+    const workspace = path.join(root, 'workspace');
+    const spec = new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'propr/agent:test', name: 'claude-issue-7-abc', stdin: true, user: '0:0',
+        network: agentRunNetwork('bridge'),
+        workspace: { hostPath: '/tmp/w', containerPath: workspace, readOnly: false, mode: 'clone' },
+    }).command('claude', '-p').build();
+    spec.entrypoint = agent;
+    spec.workspace.clone = { remote, baseRef, baseCommit: base, branch: 'task', resultRef, resultDir, script: WORKSPACE_TRANSPORT_SCRIPT };
+    const { init } = renderFlyMachineRequest(spec, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }).config;
+    const [shell, ...launcherArgs] = init.entrypoint!;
+    const [, , workdir, user, noNewPrivileges, phaseFile, ...command] = init.cmd!;
+    assert.equal(phaseFile, path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE), 'the launcher is told where the wrapper records its phase');
+    assert.deepEqual(command.slice(0, 2), ['/bin/bash', '-lc']);
+    command[1] = '-c';
+    const launcher = spawn(shell!, [...launcherArgs, runDir, '0', workdir!, user!, noNewPrivileges!, phaseFile!, ...command], {
+        detached: true, stdio: 'ignore',
+        env: {
+            PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV, ...env,
+            [E.path]: workspace, [E.remote]: remote, [E.baseRef]: baseRef, [E.baseCommit]: base,
+            [E.branch]: 'task', [E.resultRef]: resultRef, [E.resultDir]: resultDir,
+        },
+    });
+    return { launcher, launcherExit: exited(launcher), runFile: file => path.join(runDir, path.posix.basename(file)), remote, resultRef, resultDir, workspace };
+}
+
 test('forced timeout stop kills a TERM-ignoring agent and its detached processes, but keeps the clone wrapper alive to publish its changes', { timeout: 60_000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-forced-stop-'));
     let launcher: ChildProcess | undefined;
     let detached = 0;
     try {
-        const remote = path.join(root, 'remote.git');
-        const seed = path.join(root, 'seed');
-        git(root, 'init', '-q', '--bare', '-b', 'main', remote);
-        git(root, 'init', '-q', '-b', 'main', seed);
-        write(path.join(seed, 'a.txt'), 'base\n');
-        git(seed, 'add', '-A');
-        git(seed, 'commit', '-q', '-m', 'seed');
-        const base = git(seed, 'rev-parse', 'HEAD');
-        const baseRef = 'refs/propr/runs/x/base';
-        const resultRef = 'refs/propr/runs/x/result';
-        git(seed, 'push', '-q', remote, `${base}:${baseRef}`);
-
-        // The Machine's identities, simulated (no root here): `id` reports root and a separate `node` user,
-        // `su-exec` drops to "node" by just running the command.
-        const bin = path.join(root, 'bin');
-        write(path.join(bin, 'id'), '#!/bin/bash\ncase "$*" in\n  -u) echo 0 ;;\n  node) echo "uid=1000(node)" ;;\n  "-u node") echo 1000 ;;\n  *) exec /usr/bin/id "$@" ;;\nesac\n', 0o755);
-        write(path.join(bin, 'su-exec'), '#!/bin/bash\nshift\nexec "$@"\n', 0o755);
-        write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
-        const agent = path.join(root, 'agent.sh');
-        write(agent, AGENT_SCRIPT, 0o755);
-
-        const runDir = path.join(root, 'fly-run');
-        const resultDir = path.join(root, 'result');
-        const workspace = path.join(root, 'workspace');
-        const spec = new AgentRunSpecBuilder({
-            agentType: 'claude', image: 'propr/agent:test', name: 'claude-issue-7-abc', stdin: true, user: '0:0',
-            network: agentRunNetwork('bridge'),
-            workspace: { hostPath: '/tmp/w', containerPath: workspace, readOnly: false, mode: 'clone' },
-        }).command('claude', '-p').build();
-        spec.entrypoint = agent;
-        spec.workspace.clone = { remote, baseRef, baseCommit: base, branch: 'task', resultRef, resultDir, script: WORKSPACE_TRANSPORT_SCRIPT };
-        // The launcher and command chain exactly as the Machine runs them; only the run directory, a zero linger
-        // and `-c` instead of `-lc` (so the test PATH survives a login shell) differ.
-        const { init } = renderFlyMachineRequest(spec, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }).config;
-        const [shell, ...launcherArgs] = init.entrypoint!;
-        const [, , workdir, user, noNewPrivileges, ...command] = init.cmd!;
-        assert.deepEqual(command.slice(0, 2), ['/bin/bash', '-lc']);
-        command[1] = '-c';
         const leftoverPidFile = path.join(root, 'leftover.pid');
         const readyFile = path.join(root, 'ready');
         const detachedPidFile = path.join(root, 'detached.pid');
-        launcher = spawn(shell!, [...launcherArgs, runDir, '0', workdir!, user!, noNewPrivileges!, ...command], {
-            detached: true, stdio: 'ignore',
-            env: {
-                PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV,
-                LEFTOVER_PID_FILE: leftoverPidFile, DETACHED_PID_FILE: detachedPidFile, READY_FILE: readyFile,
-                [E.path]: workspace, [E.remote]: remote, [E.baseRef]: baseRef, [E.baseCommit]: base,
-                [E.branch]: 'task', [E.resultRef]: resultRef, [E.resultDir]: resultDir,
-            },
-        });
-        const launcherExit = exited(launcher);
-        const runFile = (file: string) => path.join(runDir, path.posix.basename(file));
+        const run = launchCloneRun(root, AGENT_SCRIPT, { LEFTOVER_PID_FILE: leftoverPidFile, DETACHED_PID_FILE: detachedPidFile, READY_FILE: readyFile });
+        const { launcherExit, runFile, remote, resultRef, resultDir, workspace } = run;
+        launcher = run.launcher;
         await until(() => fs.existsSync(readyFile), 'the agent to change the checkout');
         assert.equal(fs.readFileSync(path.join(resultDir, WORKSPACE_RESULT_PHASE_FILE), 'utf8').trim(), 'agent');
         const leftover = Number(fs.readFileSync(leftoverPidFile, 'utf8'));
@@ -199,6 +222,45 @@ test('forced timeout stop kills a TERM-ignoring agent and its detached processes
         if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
         if (detached) try { process.kill(detached, 'SIGKILL'); } catch { /* already gone */ }
         fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+/** An agent that changes the checkout and exits on its own (`FINISH=exit`), or keeps running until signalled. */
+const CHANGING_AGENT_SCRIPT = `#!/bin/bash
+echo changed > a.txt
+[ "$FINISH" = exit ] && exit 0
+touch "$READY_FILE"
+while :; do sleep 0.1; done
+`;
+
+test('a termination signal reaches the agent but never ends the clone wrapper, also while it snapshots or publishes', { timeout: 90_000 }, async () => {
+    // agent: the deadline's TERM stops the running agent; the wrapper then publishes its changes.
+    // snapshot / push: the agent already exited and the wrapper is finalizing when the deadline's TERM arrives.
+    for (const moment of ['agent', 'snapshot', 'push'] as const) {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-graceful-stop-'));
+        let launcher: ChildProcess | undefined;
+        try {
+            const marker = path.join(root, moment === 'agent' ? 'ready' : 'finalizing');
+            const run = launchCloneRun(root, CHANGING_AGENT_SCRIPT, moment === 'agent'
+                ? { READY_FILE: marker, FINISH: 'run' }
+                : { FINISH: 'exit', SLOW_STEP: moment, SLOW_MARKER: marker, SLOW_SECONDS: '2' });
+            launcher = run.launcher;
+            await until(() => fs.existsSync(marker), moment === 'agent' ? 'the agent to change the checkout' : `the wrapper to start its ${moment}`);
+            const phase = () => fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_PHASE_FILE), 'utf8').trim();
+            assert.equal(phase(), moment === 'agent' ? 'agent' : 'finalizing');
+            // Fly signals the Machine's main process: the launcher.
+            process.kill(launcher.pid!, 'SIGTERM');
+            const expected = moment === 'agent' ? 143 : 0;
+            assert.equal(await run.launcherExit, expected, `the launcher exits with the agent's own status (${moment})`);
+            assert.equal(fs.readFileSync(run.runFile(FLY_RUN_FILES.exitStatus), 'utf8').trim(), String(expected));
+            const [state, snapshot] = fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8').trim().split(' ');
+            assert.equal(state, 'pushed', `the wrapper survived the signal and published the workspace (${moment})`);
+            assert.equal(git(root, '--git-dir', run.remote, 'rev-parse', run.resultRef), snapshot);
+            assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'changed');
+        } finally {
+            if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     }
 });
 

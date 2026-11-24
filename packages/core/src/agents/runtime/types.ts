@@ -159,7 +159,8 @@ export interface AgentRunCredentialStore {
     store: 'config' | 'data';
     /**
      * `false` for runs that rely on provider state persisting in the store
-     * between launches (goal sessions resumed by id): they keep the direct mount.
+     * between launches (goal sessions resumed by id): they keep the direct
+     * mount, and a runtime that cannot mount the store refuses them.
      */
     perRun: boolean;
 }

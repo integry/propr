@@ -143,7 +143,7 @@ function runLauncher(request: any, options: { root: boolean; failMount?: string;
         + 'exit 0\n', { mode: 0o755 });
     const agentMarker = path.join(sandbox, 'agent-ran');
     const [shell, ...launcherArgs] = request.config.init.entrypoint;
-    const ran = spawnSync(shell, [...launcherArgs, runDir, '0', sandbox, options.user ?? '0:0', '0', '/bin/sh', '-c', `echo ran > ${JSON.stringify(agentMarker)}; echo agent-out`], {
+    const ran = spawnSync(shell, [...launcherArgs, runDir, '0', sandbox, options.user ?? '0:0', '0', '', '/bin/sh', '-c', `echo ran > ${JSON.stringify(agentMarker)}; echo agent-out`], {
         encoding: 'utf8', timeout: 30_000, env: { PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: sandbox },
     });
     return {

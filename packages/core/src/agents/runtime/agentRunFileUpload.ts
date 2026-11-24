@@ -25,7 +25,10 @@ import type { AgentRunFile, AgentRunFileRead, AgentRunHandle, AgentRunMount, Age
  *   back to refuses the run before launch. A refresh that cannot be written back is saved to a
  *   retained recovery directory beside the host staging copies; one that
  *   cannot be read (or saved) keeps the run itself, which is then never
- *   released automatically.
+ *   released automatically. A store a run needs to keep provider session
+ *   state in between launches (`perRun: false`, e.g. a goal session resumed
+ *   by id) refuses the run before launch: the copy carries credential files
+ *   only, and nothing else the run writes there comes back.
  * - Any other bind is copied in (bounded, regular files only, symlinks
  *   skipped); writes to it stay in the sandbox. Log directories are created
  *   empty. A writable copy is never written back.
@@ -218,15 +221,21 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
     const credentialMounts = binds.filter(isCredentialStore);
     const targets: StoreTarget[] = credentialMounts.map(mount => ({
         mount, storeId: `${mount.credentialStore.provider}-${mount.credentialStore.store}`,
-        // A run that relies on state persisting in the store between launches cannot get that
-        // from a remote sandbox; it receives a per-run copy whose refreshes are written back
-        // (a writable store the worker cannot write back to is refused below).
+        // A writable store the worker cannot write back to is refused below.
         writeBack: !mount.readOnly && canWriteBack(mount),
     }));
-    for (const target of targets) {
-        if (!target.mount.credentialStore.perRun) {
-            logger.warn({ run: spec.name, store: target.storeId }, 'Runtime cannot mount the canonical credential store; the run receives a per-run copy');
-        }
+    // A run relying on provider state that persists in the store between launches (session history a
+    // resumed session reads, and later launches resume) needs the canonical store mounted: a per-run copy
+    // holds only the manifest's credential files, and only refreshed credentials are written back.
+    const sessionStores = targets.filter(target => !target.mount.credentialStore.perRun);
+    if (sessionStores.length > 0) {
+        const stores = sessionStores.map(target => `${target.mount.credentialStore.provider} ${target.mount.credentialStore.store}`).join(', ');
+        logger.error({ run: spec.name, stores: sessionStores.map(target => target.storeId) }, 'Run keeps provider session state in its credential store, which this runtime cannot mount; refusing the run');
+        throw new AgentRunFileUploadError(
+            `${spec.name} keeps provider session state in the ${stores} credential ${sessionStores.length === 1 ? 'store' : 'stores'} between launches (a resumable session), `
+            + 'but this runtime cannot mount credential stores: it uploads per-run copies of the credential files only, without session state. '
+            + 'Run resumable sessions on a runtime with bind mounts (docker)',
+        );
     }
     // Without bind mounts there is no direct mount to fall back to: a refresh the
     // worker cannot write back would be destroyed with the run, so refuse it.

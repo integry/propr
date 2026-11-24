@@ -10,6 +10,7 @@ import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
 import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
+import { FlyMachineCreation } from './flyMachinesCreation.js';
 import { confinedCredentialPath, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
 import { assertFlyNetworkUnrestricted, flyForcedStopCommand, FLY_RUN_FILES, renderFlyMachineRequest } from './flyMachinesLaunch.js';
@@ -67,7 +68,8 @@ function signalNumber(signal: NodeJS.Signals): number {
  * The run settles only once its agent is known to have stopped: it exited
  * (exit status), its Machine ended, or a destroy request succeeded. A Machine
  * the handle has to destroy (a cancelled run, or one whose termination could
- * not be confirmed) keeps being destroyed until a request succeeds.
+ * not be confirmed) keeps being destroyed until a request succeeds, and so
+ * does one a failed create may have left ({@link FlyMachineCreation}).
  */
 export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     private readonly output = new LazyOutputStreams();
@@ -90,6 +92,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     private releaseTimer?: NodeJS.Timeout;
     private retained = false;
     private readonly logs: FlyLogStream;
+    private readonly creation: FlyMachineCreation;
     private readonly messageTimestamps = new Map<string, string>();
     readonly timing: FlyRunTiming = {};
 
@@ -98,6 +101,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             output: (stream, text) => this.output.write(stream, text),
             exit: code => { this.exitCode ??= code; },
         });
+        this.creation = new FlyMachineCreation(deps.client, spec.name, deps.now);
         const ownership = getExecutionOwnershipContext()?.signal;
         const signals = [this.cancellation.signal, options.signal, ownership].filter((signal): signal is AbortSignal => !!signal);
         const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
@@ -105,7 +109,10 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         const settle = (): void => {
             this.settled = true;
             this.output.end();
-            if (this.released || !this.machineId || this.machineGone) return;
+            if (this.released) return;
+            // A create whose response was lost may have left a Machine: it is looked for and destroyed.
+            if (this.creation.unresolved) this.scheduleRelease(this.destroyRetryMs);
+            if (!this.machineId || this.machineGone) return;
             if (this.discarding) this.scheduleRelease(this.destroyRetryMs);
             else if (!this.retained) this.scheduleRelease(UNRELEASED_RUN_REMOVAL_MS);
         };
@@ -122,7 +129,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     }
 
     private async run(options: AgentRunOptions, signal: AbortSignal): Promise<ExecutionResult> {
-        const { client, config, now } = this.deps;
+        const { config, now } = this.deps;
         const timeoutMs = options.timeout ?? 300_000;
         const startedAt = now();
         const deadline = startedAt + timeoutMs;
@@ -132,11 +139,12 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         assertFlyNetworkUnrestricted(this.spec);
         assertFlyNetworkUnrestricted(this.spec, await resolveAgentRunNetworkPolicy(options.networkPolicyExempt));
         const request = renderFlyMachineRequest(this.spec, {
-            config, launchEnvironment: { ...process.env, ...options.extraEnvVars }, stdinData: options.stdinData,
+            config, launchEnvironment: { ...process.env, ...options.extraEnvVars }, stdinData: options.stdinData, creationId: this.creation.id,
         });
         this.throwIfAborted(signal);
-        // Never aborted: a create the API completes after an abort would leave a Machine no one destroys.
-        const machine = await client.createMachine(request);
+        // Never aborted: a create the API completes after an abort would leave a Machine no one destroys. One
+        // that fails without a definitive answer leaves an obligation to find and destroy its Machine.
+        const machine = await this.creation.create(request);
         this.machineId = machine.id;
         this.timing.createMs = now() - startedAt;
         let live: ReturnType<typeof startLiveOutputStreaming> | undefined;
@@ -284,11 +292,13 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     }
 
     /**
-     * Deadline: TERM the agent (the launcher forwards it) and give it the stop
-     * window; then KILL it ({@link flyForcedStopCommand}), so the launcher
-     * records the exit and the Machine keeps the partial output and result
-     * files. A clone transport wrapper is spared and given time to snapshot
-     * and publish the workspace first. Failing that, destroy the Machine.
+     * Deadline: TERM the agent (the launcher forwards it, never to a clone
+     * transport wrapper, which outlives its agent and keeps finalizing) and
+     * give it the stop window; then KILL it ({@link flyForcedStopCommand}),
+     * so the launcher records the exit and the Machine keeps the partial
+     * output and result files. A clone transport wrapper is spared and given
+     * time to snapshot and publish the workspace first, also when it already
+     * was finalizing at the deadline. Failing that, destroy the Machine.
      * Throws when none of these is confirmed: the run must not settle while
      * its agent may still be running. Returns early when the run is cancelled
      * meanwhile: the caller then destroys the Machine.
@@ -375,10 +385,11 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     }
 
     /**
-     * A started agent gets `signal` (forwarded by the launcher) and settles
-     * with its exit status. A launch still creating its Machine, or an agent
-     * that does not exit within `timeoutMs`, is cancelled: its Machine is
-     * destroyed and `wait()` rejects with {@link AgentRunStoppedError}.
+     * A started agent gets `signal` (forwarded by the launcher, which spares
+     * a clone transport wrapper) and settles with its exit status. A launch
+     * still creating its Machine, or an agent that does not exit within
+     * `timeoutMs`, is cancelled: its Machine is destroyed and `wait()`
+     * rejects with {@link AgentRunStoppedError}.
      */
     async stop(signal: NodeJS.Signals = 'SIGTERM', timeoutMs = DEFAULT_STOP_TIMEOUT_MS): Promise<void> {
         if (this.settled) return;
@@ -507,6 +518,8 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
                 // may yet return a Machine: only a settled run says whether one exists and is still to destroy.
                 await this.result.catch(() => undefined);
             }
+            // Rejects while a Machine of a create whose response was lost cannot be ruled out: retried below.
+            await this.creation.reconcile();
             if (this.machineId && !this.machineGone) {
                 await this.deps.client.destroyMachine(this.machineId);
                 this.machineGone = true;
@@ -514,7 +527,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         })().catch(error => {
             this.released = undefined;
             // An automatic removal that lost the race with retain() leaves the Machine to its holder.
-            if (this.releaseRequested || this.discarding || !this.retained) {
+            if (this.releaseRequested || this.discarding || !this.retained || this.creation.unresolved) {
                 logger.warn({ run: this.spec.name, machine: this.machineId, error: (error as Error).message }, 'Could not destroy the Fly Machine of an agent run; retrying');
                 this.destroyRetryMs = Math.min(this.destroyRetryMs * 2, MAX_DESTROY_RETRY_MS);
                 if (!this.releaseTimer) this.scheduleRelease(this.destroyRetryMs);
