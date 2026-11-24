@@ -306,13 +306,9 @@ jobs:
 
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
-        # A stalled runner mirror connection once held apt-get update silent until
-        # the 60-minute job timeout. Bound each connection and the step instead.
-        timeout-minutes: 15
         run: |
-          apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-          sudo apt-get "${apt_options[@]}" update
-          sudo apt-get "${apt_options[@]}" install --yes cpio dbus-x11 desktop-file-utils fakeroot fonts-liberation gnome-keyring libglib2.0-bin libsecret-1-0 rpm tesseract-ocr unzip xdg-utils xvfb zip
+          sudo apt-get update
+          sudo apt-get install --yes cpio dbus-x11 desktop-file-utils fakeroot fonts-liberation gnome-keyring libglib2.0-bin libsecret-1-0 rpm tesseract-ocr unzip xdg-utils xvfb zip
 
       - name: Package desktop app from clean checkout
         shell: bash

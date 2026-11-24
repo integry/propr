@@ -1,6 +1,4 @@
 import { availableParallelism } from 'node:os';
-import type { AgentRunResources } from './runtime/types.js';
-import { renderDockerResourceArgs } from './runtime/dockerRunArgs.js';
 
 const DEFAULT_MEMORY_LIMIT = '6g';
 const DEFAULT_CPU_LIMIT_CEILING = 4;
@@ -83,30 +81,29 @@ function validatePidsLimit(value: string): string {
 }
 
 /**
- * Resolve the common resource boundary for every coding-agent run.
+ * Return the common Docker resource boundary for every coding-agent run.
  *
  * Memory and memory+swap use the same ceiling so an agent cannot move its
  * allocation into host swap after reaching the memory limit. Operators can
  * tune the limits for unusually large repositories, but malformed values fail
- * before the runtime starts instead of silently leaving a container unbounded.
+ * before Docker starts instead of silently leaving a container unbounded.
  */
-export function resolveAgentContainerResources(
+export function buildAgentContainerResourceArgs(
     environment: AgentContainerResourceEnvironment = process.env,
     detectedCpuCapacity?: number,
-): AgentRunResources {
+): string[] {
     const memory = validateMemoryLimit(configuredValue(environment.AGENT_CONTAINER_MEMORY_LIMIT, DEFAULT_MEMORY_LIMIT));
     const cpus = validateCpuLimit(configuredValue(
         environment.AGENT_CONTAINER_CPU_LIMIT,
         resolveDefaultAgentCpuLimit(detectedCpuCapacity),
     ));
-    const pidsLimit = validatePidsLimit(configuredValue(environment.AGENT_CONTAINER_PIDS_LIMIT, DEFAULT_PIDS_LIMIT));
-    return { init: true, memory, memorySwap: memory, cpus, pidsLimit };
-}
+    const pids = validatePidsLimit(configuredValue(environment.AGENT_CONTAINER_PIDS_LIMIT, DEFAULT_PIDS_LIMIT));
 
-/** The Docker flags for {@link resolveAgentContainerResources}. */
-export function buildAgentContainerResourceArgs(
-    environment: AgentContainerResourceEnvironment = process.env,
-    detectedCpuCapacity?: number,
-): string[] {
-    return renderDockerResourceArgs(resolveAgentContainerResources(environment, detectedCpuCapacity));
+    return [
+        '--init',
+        '--memory', memory,
+        '--memory-swap', memory,
+        '--cpus', cpus,
+        '--pids-limit', pids,
+    ];
 }

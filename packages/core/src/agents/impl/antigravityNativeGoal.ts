@@ -26,7 +26,6 @@ import {
 import { splitAntigravityInvocations } from './utils/antigravityInvocations.js';
 import { LiveAgentOutput } from './utils/liveAgentOutput.js';
 import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
-import { assertNativeGoalRuntime } from '../runtime/registry.js';
 import {
     ANTIGRAVITY_GOAL_COMPLETE_MARKER,
     AntigravityGoalStream,
@@ -368,8 +367,6 @@ export interface AntigravityNativeGoalLaunch {
     /** Direct agent alias charged by physical admission. */
     agentAlias: string;
     diagnostics?: DiagnosticAgent;
-    /** The agent's runtime selection, resolved before every segment: segments launch Docker directly. */
-    runtime?: string;
     /** Docker args for one invocation; `launch` keeps slash commands enabled for `/goal`. */
     buildDockerArgs(options: { conversationId?: string; launch: boolean }): string[] | Promise<string[]>;
     model: string;
@@ -397,7 +394,6 @@ export async function executeAntigravityNativeGoal(
     const startSegment: StartAntigravitySegment = async (message, segmentOptions) => {
         if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
         if (expired) throw new Error('Antigravity native goal attempt exceeded its execution timeout');
-        assertNativeGoalRuntime({ runtime: launch.runtime });
         const dockerArgs = await launch.buildDockerArgs(segmentOptions);
         // Minting is asynchronous: cancellation or timeout may have won meanwhile.
         if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;

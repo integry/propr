@@ -10,7 +10,6 @@ interface AgentRunAdmissionRoutesDeps {
   taskQueue: Queue;
   redisClient: RedisClientType;
   readSnapshot?: AgentRunAdmissionReportDeps['readSnapshot'];
-  readRuntime?: AgentRunAdmissionReportDeps['readRuntime'];
 }
 
 /**

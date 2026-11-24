@@ -5,7 +5,6 @@ import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, insertExecutionRow, ALREADY_PERSISTED, type StageClaim } from './llmMetricsExecutionClaim.js';
-import { computeUsageColumns, normalizeStoredReasoningLevel } from './llmExecutionColumns.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -228,6 +227,10 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         await db('llm_execution_details').insert(detailsArray);
     }
 }
+/** The level exactly as the agent ran it (`auto` included); blank or absent is unknown. */
+function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
+    return typeof level === 'string' && level.trim() ? level.trim() : null;
+}
 interface PersistedExecution { executionId: number | string; taskId: string | null; }
 /**
  * Writes the execution row and its details; the row once inserted, even if its
@@ -259,8 +262,7 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
             cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null,
             cache_usage_reported: cacheUsageReported ?? null,
-            reasoning_level: normalizeStoredReasoningLevel(reasoningLevel),
-            ...computeUsageColumns(claudeResult.computeUsage)
+            reasoning_level: normalizeStoredReasoningLevel(reasoningLevel)
         };
         const executionId = await insertExecutionRow(db, executionData, claudeResult.executionId, { correlationId, taskId });
         if (executionId === ALREADY_PERSISTED) return executionId;

@@ -262,23 +262,6 @@ export async function resolveUnscopedNetworkPolicy(command: string, args: string
     return policy.mode === 'restricted' && policy.source === 'instance_enforced' ? policy : undefined;
 }
 
-/**
- * The restricted policy an agent run started now must honour, whichever
- * runtime launches it: the enclosing run's restricted policy, else the
- * enforced instance policy for a run started outside any policy. Undefined
- * when the run may use open networking. Like {@link resolveUnscopedNetworkPolicy},
- * an unreadable instance policy rejects rather than opening the run.
- */
-export async function resolveAgentRunNetworkPolicy(exemptReason?: string): Promise<ResolvedNetworkPolicy | undefined> {
-    if (exemptReason) return undefined;
-    const context = networkEgressExecution.getStore();
-    if (context) return context.policy.mode === 'restricted' ? context.policy : undefined;
-    const resolver = unscopedPolicyResolver;
-    if (!resolver) return undefined;
-    const policy = await resolver();
-    return policy.mode === 'restricted' && policy.source === 'instance_enforced' ? policy : undefined;
-}
-
 /** Runs one `docker run` (its arguments after `docker`) and reports how it ended. */
 export type EgressPreflightRunner = (args: string[]) => Promise<{ exitCode: number | null; stderr: string }>;
 

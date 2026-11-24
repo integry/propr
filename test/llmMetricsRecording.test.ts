@@ -195,23 +195,3 @@ test('an Antigravity goal whose cache count covers only its first segment prices
     assert.equal(costInputs[0].cacheReadTokens, 900_000);
     assert.equal(costInputs[0].totalInputWithCache, 1_100_000);
 });
-
-test('compute usage is stored on the execution row beside the token cost, and leaves no columns without one', async () => {
-    const computeUsage = {
-        runtime: 'docker', wallTimeMs: 61_500.4, cpuSeconds: 42.5, peakMemoryBytes: 1_073_741_824, avgMemoryBytes: 536_870_912,
-        costUsd: 0.0123, costSource: 'rate_table' as const,
-    };
-    await recordLLMMetrics({ model: 'test-model', success: true, sessionId: 'session-compute', executionTime: 1000, conversationLog: [], computeUsage },
-        { repoOwner: 'integry', repoName: 'propr', number: 3762 }, { taskId: 'task-3762', correlationId: 'correlation-compute' });
-    assert.deepEqual(errors, []);
-    const row = persisted[0].value as Record<string, unknown>;
-    assert.deepEqual(Object.fromEntries(Object.entries(row).filter(([key]) => key.startsWith('compute_'))), {
-        compute_runtime: 'docker', compute_wall_time_ms: 61_500, compute_cpu_seconds: 42.5, compute_peak_memory_bytes: 1_073_741_824,
-        compute_avg_memory_bytes: 536_870_912, compute_cost_usd: 0.0123, compute_cost_source: 'rate_table',
-    });
-
-    persisted.length = 0;
-    await recordLLMMetrics({ model: 'test-model', success: true, sessionId: 'session-no-compute', executionTime: 1000, conversationLog: [] },
-        { repoOwner: 'integry', repoName: 'propr', number: 3762 }, { taskId: 'task-3762', correlationId: 'correlation-no-compute' });
-    assert.equal(Object.keys(persisted[0].value as Record<string, unknown>).some(key => key.startsWith('compute_')), false);
-});

@@ -21,7 +21,7 @@ import {
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
 import { agentRunExecutionUpdate, agentTaskOptions, launchCarriesExtensions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
-import { asAgentRunAdmissionParent, mcpGrantRuntimeOptions, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant, type RevokedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
+import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant, type RevokedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import {
     actionSummaryFromResult,
     AgentRunMutationsSettlementError,
@@ -465,13 +465,13 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
 
             // 5. Execute with the action-phase MCP grant, within the spend cap. The
             //    prompt follows the grant, so what it permits is what the tools permit.
-            const { agent, alias, model, runtime } = await deps.resolveAgent(definition, log);
+            const { agent, alias, model } = await deps.resolveAgent(definition, log);
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, agentRunExecutionUpdate(alias, model));
             const current = await deps.getRun(runId);
             if (current?.state !== 'acting') return taskFollowsRun(context);
             const stopped = await followCancelledTask(context, 'before its agent started');
             if (stopped) return stopped;
-            mcpGrant = await deps.mcpGrants.request(runId, 'action', ...mcpGrantRuntimeOptions(runtime));
+            mcpGrant = await deps.mcpGrants.request(runId, 'action');
             const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
             const prompt = deps.buildPrompt({ definition, run: { id: runId, triggerEvent: run.triggerEvent }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
             const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });

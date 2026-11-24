@@ -1,7 +1,7 @@
 import type { ClaudeCodeResponse, ClaudeResult } from '@propr/core';
 import { getDetailedUsageStats, calculateCostWithCachePricing } from '@propr/core';
 import type { DetailedUsageStats } from '@propr/core';
-import { getModelName, getModelPricing, getOpenRouterId, getDefaultModel, formatSubscriptionUsage, formatComputeUsage, normalizeComputeUsage } from '@propr/core';
+import { getModelName, getModelPricing, getOpenRouterId, getDefaultModel, formatSubscriptionUsage } from '@propr/core';
 
 function formatDuration(ms: number): string {
     const seconds = Math.floor(ms / 1000);
@@ -62,8 +62,6 @@ export async function buildMetricsSection(
     if (executionTime) section += `* **Time:** ${executionTime}\n`;
     if (totalTokens > 0) section += `* **Tokens:** ${totalTokens.toLocaleString()} (${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out)\n`;
     if (cost != null && cost > 0) section += `* **Cost:** $${cost.toFixed(2)}\n`;
-    const computeUsage = normalizeComputeUsage(claudeResult.computeUsage);
-    if (computeUsage) section += `* **Compute:** ${formatComputeUsage(computeUsage)}\n`;
 
     const subscriptionUsage = formatSubscriptionUsage(claudeResult.usageMetrics);
     if (subscriptionUsage) section += `* **Subscription usage:** ${subscriptionUsage}\n`;

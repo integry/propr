@@ -364,36 +364,6 @@ export type {
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
 export * from './agents/runtime/agentRuntimePackageVerification.js';
-export type * from './agents/runtime/types.js';
-export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
-export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
-export * from './agents/runtime/computeUsage.js';
-export { ComputeUsageAccumulator, parseCgroupReport, parseDockerSize, parseDockerStatsLine, type ComputeUsageSample } from './agents/runtime/computeUsageSampler.js';
-export { COMPUTE_USAGE_SAMPLE_MS_ENV, DEFAULT_COMPUTE_USAGE_SAMPLE_MS, DockerComputeUsageSampler, resolveComputeUsageSampleMs } from './agents/runtime/dockerComputeUsage.js';
-export * from './agents/credentials/broker.js';
-export * from './agents/credentials/providerManifests.js';
-export {
-    withCredentialStoreLock, CredentialStoreLockTimeoutError, CredentialStoreLeaseRevokedError, type CredentialStoreLease, type CredentialStoreLockOptions,
-} from './agents/credentials/credentialStoreLock.js';
-export {
-    AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV, collectStagedCredentials, credentialRunRoot, resolveCredentialBrokerMode, stageAgentRunCredentials,
-    type CredentialBrokerMode, type StagedAgentRunCredentials,
-} from './agents/credentials/hostCredentialStaging.js';
-export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
-export {
-    AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,
-    registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
-    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
-} from './agents/runtime/registry.js';
-export { OPEN_AGENT_RUN_NETWORK_POLICY, agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agents/runtime/agentRunNetworkPolicy.js';
-export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransport, type AgentRunMcpTransportPlan } from './agents/runtime/agentRunMcpTransport.js';
-export { readAgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReportOptions } from './agents/runtime/agentRuntimeCapabilityReport.js';
-export { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './agents/runtime/dockerNetwork.js';
-export {
-    BindWorkspaceTransport, WORKSPACE_TRANSPORT_ENV, WorkspaceTransportError, createWorkspaceTransport, resolveWorkspaceTransportMode,
-    runWithWorkspaceTransport, runtimeWorkspaceTransports, type PreparedWorkspace, type WorkspaceCompletionOptions, type WorkspaceRunOutcome,
-    type WorkspaceTransport,
-} from './git/workspaceTransport.js';
 export {
     clearAgentRuntimePackageCatalogCache,
     searchAgentRuntimePackages,

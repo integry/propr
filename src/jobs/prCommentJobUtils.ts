@@ -48,8 +48,7 @@ export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         error: response.error,
         terminationReason: response.terminationReason,
         tokenUsage: response.tokenUsage,
-        usageMetrics: response.usageMetrics ?? undefined,
-        computeUsage: response.computeUsage
+        usageMetrics: response.usageMetrics ?? undefined
     };
 }
 

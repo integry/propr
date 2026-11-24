@@ -20,11 +20,9 @@ import { admitCostExecution, refuseCostExecution, registerCostExecution, settleC
 import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
 import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
-import type { AgentRunComputeUsage } from '../../agents/runtime/computeUsage.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
 import { startWithNetworkPolicy, type NetworkPolicyOptions } from './dockerNetworkPolicy.js';
-import { startsContainer, type AgentRunLaunch } from '../../agents/runtime/agentRunLaunch.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -50,8 +48,6 @@ export interface ExecutionResult {
     costCapExceeded?: boolean;
     /** Set when the stall/degenerate-output watchdog stopped the process. */
     watchdogTrip?: AgentWatchdogTrip;
-    /** What the agent's sandbox consumed; set by the agent runtime for agent runs only. */
-    computeUsage?: AgentRunComputeUsage;
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type TaskContainerLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
@@ -85,8 +81,6 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     agentAlias?: string;
     /** Documented agent launch without a registered alias: charged to the global admission limit only. */
     agentAdmissionExemption?: AgentAdmissionExemption;
-    /** Set by an agent runtime: the run spec this launch renders, and its output stream sink. */
-    agentRun?: AgentRunLaunch;
 }
 
 /**
@@ -241,13 +235,12 @@ async function startDockerCommand(
     command: string, args: string[], options: DockerCommandOptions,
     { ownershipContext, executionSignal, deadline, timeoutError }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined; deadline: ExecutionDeadline; timeoutError: Error },
 ): Promise<ExecutionResult> {
-    const containerLaunch = startsContainer(command, args, options);
-    if (containerLaunch) assertNativeLogAdmission(options.diagnostics);
+    if (command === 'docker' && args[0] === 'run') assertNativeLogAdmission(options.diagnostics);
     const executionArgs = resolveExecutionArgs(command, args, options.taskId, ownershipContext?.attemptGeneration);
     const extensionValidationWindow = {};
     deadline.remaining();
     await extensionLaunchForDockerRun(command, args, options)?.beforeLaunch(extensionValidationWindow, false);
-    const admission = containerLaunch && !options.costCapExempt
+    const admission = command === 'docker' && args[0] === 'run' && !options.costCapExempt
         ? await prepareAdmittedAgent(executionArgs, {
             createArgs: async () => {
                 await extensionLaunchForDockerRun(command, args, options)?.beforeLaunch(extensionValidationWindow);
@@ -284,17 +277,16 @@ function runDockerCommand(
     // eslint-disable-next-line complexity -- subprocess capture, cancellation and settlement share one execution lifecycle
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, extraEnvVars, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
-        const onOutput = options.agentRun?.onOutput ?? ((): void => undefined);
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, remainingMs), taskId, ownershipContext?.attemptGeneration);
         const { capture, stdout: diagnosticStdout, stderr: diagnosticStderr } = prepareExecutionCapture(options, executionArgs, admission, ownershipContext?.attemptGeneration);
         const executablePath = command;
-        const namedContainer = options.agentRun?.spec.name ?? (command === 'docker' ? getDockerRunContainerName(executionArgs) : null);
+        const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
         // Agent containers count toward their run's spend cap; reaching it stops
         // them like a timeout, so their partial work can still be published. Once
         // the run was stopped at its cap, a new agent container is refused before
         // it starts.
         let stopForCostCap: (message: string) => void = () => undefined;
-        const costCap = registerCostExecution(command, args, { model, costCapExempt, agentRun: options.agentRun }, message => stopForCostCap(message));
+        const costCap = registerCostExecution(command, args, { model, costCapExempt }, message => stopForCostCap(message));
         if ('refusal' in costCap) {
             refuseCostExecution(costCap.refusal, preserveOutputOnTimeout).then(resolve, reject);
             return;
@@ -306,7 +298,6 @@ function runDockerCommand(
             void costExecution?.finish().catch(() => null);
             throw error;
         }
-        options.agentRun?.onSpawn?.();
 
         let sessionLineBuffer = '';
         const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);
@@ -420,7 +411,7 @@ function runDockerCommand(
                 // could pick a sibling execution sharing the same worktree.
                 state.containerIdDetected = true;
                 if (onContainerId) invokeExecutionCallback(() => onContainerId(admission.id, namedContainer ?? admission.id));
-            } else if (startsContainer(command, args, options) && worktreePath) {
+            } else if (command === 'docker' && args[0] === 'run' && worktreePath) {
                 containerDetectionTimer = detectContainerId(worktreePath, state, onContainerId, invokeExecutionCallback);
             }
         };
@@ -434,7 +425,6 @@ function runDockerCommand(
             stdoutBuffer.append(chunk);
             diagnosticStdout?.write(chunk);
             liveOutput?.stdout(chunk);
-            onOutput('stdout', chunk);
             inspectSessionLines(chunk, ts);
         });
         child.stderr?.on('data', (data: Buffer) => {
@@ -445,7 +435,6 @@ function runDockerCommand(
             workflowMarkers?.append(chunk);
             diagnosticStderr?.write(chunk);
             liveOutput?.stderr(chunk);
-            onOutput('stderr', chunk);
         });
 
         const finishExecution = async (beforeAbortClose?: () => void) => {
@@ -472,8 +461,6 @@ function runDockerCommand(
             workflowMarkers?.finish(finalStderr);
             liveOutput?.stdout(finalStdout);
             liveOutput?.stderr(finalStderr);
-            onOutput('stdout', finalStdout);
-            onOutput('stderr', finalStderr);
             inspectSessionLines(finalStdout, new Date().toISOString(), true);
             await finishExecution();
             await watchdog.settled();

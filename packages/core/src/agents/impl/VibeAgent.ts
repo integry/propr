@@ -1,26 +1,25 @@
 import { retireProviderRuntime } from '../../diagnostics/managedLogRuntime.js';
 import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import fs from 'fs';
-import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs, prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
+import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
-import { runAgent } from '../runtime/registry.js';
-import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
-import type { AgentRunSpec } from '../runtime/types.js';
-import { assembleVibeRunSpec } from './utils/vibeRunSpec.js';
+import { buildAgentContainerResourceArgs, wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadSettings, AgentConfigPathUnavailableError } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { attachComputeUsage, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
+import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
-import { isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
+import { getAnalysisSandboxArgs, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import {
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
     REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS,
 } from './utils/repositoryScoutMcpServer.js';
 import { buildVibeDockerEnvVars } from './utils/vibeDockerEnvironment.js';
@@ -95,7 +94,7 @@ export class VibeAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken });
-            const runSpec = this.buildRunSpec({
+            const dockerArgs = this.buildDockerArgs({
                 worktreePath,
                 githubToken,
                 gitMountArgs,
@@ -109,7 +108,7 @@ export class VibeAgent implements Agent {
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
-                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, githubToken),
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, githubToken),
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
@@ -134,7 +133,7 @@ export class VibeAgent implements Agent {
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 
-            const response = attachComputeUsage<AgentExecutionResult>({
+            const response: AgentExecutionResult = {
                 success,
                 executionTimeMs,
                 logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
@@ -151,7 +150,7 @@ export class VibeAgent implements Agent {
                 terminationReason,
                 tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
-            }, result);
+            };
 
             const usage = formatUsageMetrics(usageMetrics);
             await persistLlmLog(createLlmLogFromAnalysis({
@@ -223,7 +222,7 @@ export class VibeAgent implements Agent {
                 githubToken: gitAccess.githubToken,
             });
             runtimeHomePath = prepareRuntimeHome(taskId);
-            const runSpec = this.buildRunSpec({
+            const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 ...gitAccess,
                 modelName: effectiveModel,
@@ -240,7 +239,7 @@ export class VibeAgent implements Agent {
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
-                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, gitAccess.githubToken),
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, gitAccess.githubToken),
                     timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
                     taskId,
                     model: effectiveModel
@@ -405,18 +404,14 @@ export class VibeAgent implements Agent {
         return ['-v', `${hostPromptPath}:${containerPromptPath}:ro`];
     }
 
-    /** The `docker run` argv of {@link buildRunSpec}. */
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        return renderDockerRunArgs(this.buildRunSpec(params));
-    }
-
-    private buildRunSpec(params: VibeDockerArgsParams): AgentRunSpec {
         const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath, repositoryInspection = false } = params;
         if (repositoryInspection && mode !== 'analysis') {
             throw new Error('Repository inspection requires analysis mode');
         }
         const { configPath, hasUsableConfig, configMountArgs } = this.resolveCredentialsAndConfig(mistralApiKey);
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
+        const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
         const envVars = buildVibeDockerEnvVars(this.config, { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection });
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
@@ -424,12 +419,18 @@ export class VibeAgent implements Agent {
         const cliArgs = this.getCliArgs(repositoryInspection);
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
         const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
+        const dockerArgs: string[] = [
+            'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
+            ...getAnalysisSandboxArgs(mode),
+            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMountMode}`,
+            ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, mode === 'analysis')),
+            ...configMountArgs, ...promptMountArgs, ...runtimeHomeMountArgs, ...mistralEnvFileArgs,
+            ...envVars, ...buildAgentGitCredentialArgs(), '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
+        ];
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
         logger.info({ issueNumber, agentAlias: this.config.alias, mode, dockerImage: this.config.dockerImage, configPath, configPathMounted: hasUsableConfig, workspaceMountMode, cliArgsSource, cliArgCount: cliArgs.length }, 'Docker args built for Vibe agent');
-        return assembleVibeRunSpec({
-            config: this.config, name: containerName, mode, worktreePath, repositoryInspection, gitMountArgs: params.gitMountArgs,
-            configMountArgs, promptMountArgs, runtimeHomeMountArgs, envFilePath, envVars, cliArgs,
-        });
+        if (mode === 'analysis') return [dockerArgs[0], ...buildAgentContainerResourceArgs(), ...dockerArgs.slice(1)];
+        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 
 }

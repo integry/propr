@@ -9,7 +9,7 @@
 
 import { Command } from "commander";
 import { getAgentRunAdmission, type AgentRunAdmissionReport } from "../api/index.js";
-import type { AdmissionConfiguration, AdmissionRuntime } from "../api/admission.js";
+import type { AdmissionConfiguration } from "../api/admission.js";
 import { printOutput } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 
@@ -73,26 +73,6 @@ export function formatConfigurationLines(global: { limit: number; generation: nu
   }
 }
 
-/** The runtime section: what restricted runs and MCP grants get on the default runtime. */
-export function formatRuntimeLines(runtime: AdmissionRuntime | null | undefined, unavailable?: string): string[] {
-  if (unavailable) return [`Agent runtime: unavailable: ${unavailable}`];
-  if (!runtime) return [];
-  const { network, mcp } = runtime;
-  const mode = network.instanceMode === null ? "unreadable (runs fail closed)" : `${network.instanceMode}${network.enforced ? " (enforced)" : ""}`;
-  const lines = [`Agent runtime: ${runtime.runtime} (${runtime.selectedBy === "default" ? "default" : runtime.selectedBy}) · instance network mode ${mode}`];
-  if (network.restrictedRuns === "enforced") {
-    lines.push(`  Restricted runs: enforced${network.enforcement ? ` by ${network.enforcement.method}` : ""}.`);
-  } else {
-    const when = network.refusingRuns
-      ? " (the instance mode is restricted and enforced, so runs are being refused now)"
-      : network.instanceMode === "restricted" ? " (the instance default is restricted but not enforced: runs whose effective policy remains restricted will be refused)" : "";
-    lines.push(`  Restricted runs: REFUSED${when}.`);
-    if (network.refusal) lines.push(`  ${network.refusal}`);
-  }
-  lines.push(`  ProPR MCP: ${mcp.transport}. ${mcp.reason}`);
-  return lines;
-}
-
 const known = (value: number | null): string => value === null ? "unknown" : String(value);
 
 /** The human-readable report, as lines. */
@@ -134,8 +114,6 @@ export function formatAdmissionReport(report: AgentRunAdmissionReport): string[]
   lines.push("", `Repository workflow slots: ${slotSummary}`.trimEnd());
   for (const slot of slots.repositories) lines.push(`  ${slot.repository}  ${slot.inUse}/${slot.limit} in use, ${slot.waiting} waiting`);
   lines.push(`  ${slots.label}`);
-  const runtimeLines = formatRuntimeLines(report.runtime, report.runtimeUnavailable);
-  if (runtimeLines.length) lines.push("", ...runtimeLines);
   // The server's note names MCP tools and API routes; point a CLI reader at the CLI command instead.
   lines.push("", ADMISSION_SUBSCRIPTION_USAGE_NOTE);
   return lines;

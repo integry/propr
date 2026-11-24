@@ -59,15 +59,10 @@ await mock.module('../packages/core/src/agents/agentGitAccess.js', {
   namedExports: { prepareAgentGitAccess: async (options: AgentTaskOptions) => options, prepareAnalysisGitAccess: async () => ({ githubToken: '', gitMountArgs: [] }) },
 });
 const { parseOpenCodeJsonl } = await import('../packages/core/src/agents/impl/openCodeParsing.js');
-const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.js');
 await mock.module('../packages/core/src/agents/impl/openCodeUtils.js', {
   namedExports: {
     buildOpenCodePrompt: ({ customPrompt }: { customPrompt: string }) => customPrompt,
     buildOpenCodeDockerArgs: async () => [],
-    buildOpenCodeRunSpec: async () => new AgentRunSpecBuilder({
-      agentType: 'opencode', image: 'propr/agent:test', name: 'opencode-test', stdin: true,
-      network: agentRunNetwork('bridge'), workspace: { hostPath: '/tmp/worktree', containerPath: '/home/node/workspace', readOnly: false },
-    }).build(),
     parseOpenCodeJsonl,
     evaluateOpenCodeAnalysis: () => { throw new Error('Unexpected analysis call'); },
   },

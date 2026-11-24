@@ -3,10 +3,7 @@ import fs from 'fs';
 import { currentOpenCodeModel, isManagedAgentConfigPath } from '@propr/shared';
 import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
-import { applyAgentRunLaunchWrapper } from '../../claude/docker/repoSetupWrapper.js';
-import { AgentRunSpecBuilder, agentRunNetwork } from '../runtime/agentRunSpec.js';
-import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
-import type { AgentRunSpec } from '../runtime/types.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig, AnalysisResult } from '../types.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
@@ -95,17 +92,19 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
     return prompt;
 }
 
-export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRunSpec {
+export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
     const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory } = params;
     assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     const managedCredentials = isManagedAgentConfigPath(config.configPath);
     ensureConfigPath(configPath);
+    const envVars = buildEnvVars(config);
     const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath, managedCredentials);
     const shortTaskId = createContainerExecutionId(taskId);
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
     const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
+    const configMode = 'rw';
     // Single execution path for every OpenCode run (task and analysis alike):
     // the prompt always arrives over stdin and is attached via the opencode-run
     // wrapper. Normal runs skip permissions inside the task container. Scout
@@ -115,44 +114,30 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
     const commandArgs = repositoryInspection
         ? ['opencode-run', '--format', 'json', '--title', title, '--pure', '--auto']
         : ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
-    const builder = new AgentRunSpecBuilder({
-        agentType: 'opencode', image: config.dockerImage, alias: config.alias, name: containerName, stdin: true, user: '0:0',
-        network: agentRunNetwork('bridge'), security: { capAdd: ['CHOWN'] },
-        workspace: {
-            hostPath: worktreePath,
-            containerPath: repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace',
-            readOnly: workspaceMode === 'ro',
-        },
-    }).workspaceMount();
-    if (!repositoryInspection) builder.dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro'), 'git');
-    builder.credentialBind(configPath, CONTAINER_CONFIG_PATH, false, { provider: 'opencode', store: 'config', perRun: true });
-    if (!repositoryInspection) builder.env('GH_TOKEN', githubToken).env('GITHUB_TOKEN', githubToken);
-    builder.env('OPENCODE_CONFIG_DIR', '/home/node/.config/opencode');
-    if (repositoryInspection) builder.env('OPENCODE_CONFIG_CONTENT', buildOpenCodeRepositoryScoutConfig());
-    if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
-    builder.env('XDG_CONFIG_HOME', '/home/node/.config').env('XDG_DATA_HOME', CONTAINER_RUNTIME_DATA_HOME).env('PROPR_EPHEMERAL_STATE', '1');
-    if (managedCredentials) builder.env('PROPR_MANAGED_CREDENTIALS', '1');
-    addEnvVars(builder, config);
-    builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
-    if (dataMount) {
-        builder
-            .credentialBind(dataMount.hostPath, CONTAINER_SOURCE_DATA_PATH, dataMount.mode === 'ro', { provider: 'opencode', store: 'data', perRun: true })
-            .env('PROPR_OPENCODE_SOURCE_DATA', CONTAINER_SOURCE_DATA_PATH);
-    }
-    builder.command(...commandArgs);
+    const dockerArgs = [
+        'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+        '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro')),
+        '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
+        ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
+        '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
+        ...(repositoryInspection ? ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig()}`] : []),
+        ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
+        '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
+        '-e', 'PROPR_EPHEMERAL_STATE=1',
+        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars, ...buildAgentGitCredentialArgs(),
+        '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
+    ];
+    appendOpenCodeDataMount(dockerArgs, dataMount);
 
     if (modelName) {
         // A saved selection of a retired free model runs on its current successor.
         const cleanModelName = toOpenCodeExternalModelId(currentOpenCodeModel(modelName));
-        builder.command('--model', cleanModelName);
+        dockerArgs.push('--model', cleanModelName);
         logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: config.alias }, 'Model specified for OpenCode agent');
     }
 
-    return applyAgentRunLaunchWrapper(builder.build(), 'opencode');
-}
-
-export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    return renderDockerRunArgs(buildOpenCodeRunSpec(params));
+    return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
 }
 
 function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean | undefined): void {
@@ -160,6 +145,18 @@ function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyW
 }
 
 interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
+
+function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMount | null): void {
+    if (!dataMount) return;
+    dockerArgs.splice(
+        dockerArgs.indexOf('-w'),
+        0,
+        '-v',
+        `${dataMount.hostPath}:${CONTAINER_SOURCE_DATA_PATH}:${dataMount.mode}`,
+        '-e',
+        `PROPR_OPENCODE_SOURCE_DATA=${CONTAINER_SOURCE_DATA_PATH}`
+    );
+}
 
 function resolveOpenCodeDataMount(
     configPath: string,
@@ -187,12 +184,14 @@ export function inferOpenCodeDataPath(configPath: string): string | null {
     return null;
 }
 
-function addEnvVars(builder: AgentRunSpecBuilder, config: AgentConfig): void {
-    if (!config.envVars) return;
+function buildEnvVars(config: AgentConfig): string[] {
+    const envVars: string[] = [];
+    if (!config.envVars) return envVars;
     for (const [key, value] of Object.entries(config.envVars)) {
         if (!shouldForwardEnvVar(key, value)) continue;
-        builder.env(key, value);
+        envVars.push('-e', `${key}=${value}`);
     }
+    return envVars;
 }
 
 /**

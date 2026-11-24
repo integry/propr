@@ -347,8 +347,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
                 sessionId: state.claudeResult.sessionId,
                 conversationId: state.claudeResult.conversationId,
                 model: state.claudeResult.model,
-                tokenUsage: state.claudeResult.tokenUsage,
-                computeUsage: state.claudeResult.computeUsage
+                tokenUsage: state.claudeResult.tokenUsage
             }
         });
 

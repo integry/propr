@@ -4,10 +4,7 @@ import fs from 'fs';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
-import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
-import { assertNativeGoalRuntime, runAgent } from '../runtime/registry.js';
-import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
-import type { AgentRunSpec } from '../runtime/types.js';
+import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { isAgentCapacityError } from '../agentCapacity.js';
@@ -21,10 +18,10 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { analysisReasoningLevelField, attachComputeUsage, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
+import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
-import { buildCodexRunSpec, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
 import { assertToolPolicySupported, codexToolPolicyArgs } from '../agentToolPolicy.js';
 import { executeCodexAppServerGoal } from './codexAppServer.js';
 import { codexAutoApplyConflict } from './utils/codexExtensionConflict.js';
@@ -36,7 +33,7 @@ export { UsageLimitError };
 const DEFAULT_CODEX_MAX_TURNS = 1000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
 
-type CodexExecutionOutput = ExecutionResult;
+type CodexExecutionOutput = Awaited<ReturnType<typeof executeDockerCommand>>;
 type CodexParsedOutput = ReturnType<typeof parseCodexStreamOutput>;
 type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
 
@@ -88,7 +85,7 @@ export class CodexAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const runSpec = this.buildRunSpec({
+            const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId, toolPolicy
@@ -96,7 +93,7 @@ export class CodexAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
-                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
@@ -146,7 +143,6 @@ export class CodexAgent implements Agent {
     }
 
     private async executeNativeGoal(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        assertNativeGoalRuntime(this.config);
         await setWorktreeOwnership(options.worktreePath, options.issueRef.number, {
             protectGitMetadata: options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct',
         });
@@ -173,7 +169,7 @@ export class CodexAgent implements Agent {
             watchdogTrip: result.watchdogTrip,
             error: parsedOutput.error || result.stderr
         });
-        return attachComputeUsage<AgentExecutionResult>({
+        return {
             success: parsedOutput.success && result.exitCode === 0 && !terminationReason,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
@@ -192,7 +188,7 @@ export class CodexAgent implements Agent {
             terminationReason,
             tokenUsage: parsedOutput.tokenUsage,
             usageMetrics: usageMetrics ?? undefined
-        }, result);
+        };
     }
 
     private async persistTaskLog(params: {
@@ -269,7 +265,7 @@ export class CodexAgent implements Agent {
 
         try {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
-            const runSpec = this.buildRunSpec({
+            const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
                 ...await prepareAnalysisGitAccess(options, analysisWorkspace),
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
@@ -280,7 +276,7 @@ export class CodexAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
-                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId,
                     model: effectiveModel === 'unknown' ? undefined : effectiveModel
                 }),
@@ -429,10 +425,6 @@ export class CodexAgent implements Agent {
      * Builds Docker arguments for running Codex in a container.
      */
     private buildDockerArgs(params: CodexDockerArgsParams): string[] {
-        return renderDockerRunArgs(this.buildRunSpec(params));
-    }
-
-    private buildRunSpec(params: CodexDockerArgsParams): AgentRunSpec {
-        return buildCodexRunSpec(this.config, params);
+        return buildCodexDockerArgs(this.config, params);
     }
 }

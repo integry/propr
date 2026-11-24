@@ -1,9 +1,9 @@
 import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 /**
- * Run spec builder for Claude agent execution.
+ * Docker arguments builder for Claude agent execution.
  *
- * Describes a Claude Code run as an AgentRunSpec; the Docker runtime renders
- * it to the `docker run` arguments.
+ * This module handles the construction of Docker command-line arguments
+ * for running Claude in a container with proper configuration.
  */
 
 import { currentClaudeModel } from '@propr/shared';
@@ -12,11 +12,8 @@ import type { AgentConfig, AgentToolPolicy } from '../../types.js';
 import { claudeToolPolicyArgs } from '../../agentToolPolicy.js';
 import { agentContainerNetwork } from '../../agentContainerNetwork.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
-import { applyAgentRunLaunchWrapper } from '../../../claude/docker/repoSetupWrapper.js';
-import { addClaudeConfigSeed } from '../../../claude/docker/claudeConfigSeed.js';
-import { AgentRunSpecBuilder, agentRunMcpGrant, agentRunNetwork } from '../../runtime/agentRunSpec.js';
-import { renderDockerRunArgs } from '../../runtime/dockerRunArgs.js';
-import type { AgentRunMcpGrant, AgentRunSpec } from '../../runtime/types.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
+import { claudeConfigDockerArgs } from '../../../claude/docker/claudeConfigSeed.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
 import {
     buildRepositoryScoutMcpConfig,
@@ -34,18 +31,19 @@ function isGitHubCredentialEnvironmentVariable(name: string): boolean {
         || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
 }
 
-function addEnvironmentVariables(
-    builder: AgentRunSpecBuilder,
+function buildEnvironmentVariableArgs(
     sources: Array<Record<string, string> | undefined>,
     omitGitHubCredentials: boolean
-): void {
+): string[] {
+    const args: string[] = [];
     for (const source of sources) {
         if (!source) continue;
         for (const [key, value] of Object.entries(source)) {
             if (omitGitHubCredentials && isGitHubCredentialEnvironmentVariable(key)) continue;
-            builder.env(key, value);
+            args.push('-e', `${key}=${value}`);
         }
     }
+    return args;
 }
 
 /**
@@ -118,7 +116,7 @@ function buildClaudeContainerName(
     return `${config.alias || config.type}-${taskType}-${shortTaskId}`;
 }
 
-function buildBaseRunSpec(options: {
+function buildBaseDockerArgs(options: {
     config: AgentConfig;
     maxTurns: number;
     worktreePath: string;
@@ -127,8 +125,8 @@ function buildBaseRunSpec(options: {
     containerName: string;
     githubToken: string;
     gitMountArgs?: string[];
-    environmentSources: Array<Record<string, string> | undefined>;
-    policyEnvNames: string[];
+    envVars: string[];
+    claudeConfigArgs: string[];
     inspectionArgs: string[];
     reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
     readOnlyWorkspace: boolean;
@@ -139,35 +137,33 @@ function buildBaseRunSpec(options: {
     sessionId?: string;
     /** Docker network to join; the default bridge unless the tool policy needs a Compose service. */
     network?: string;
-    mcpGrant?: AgentRunMcpGrant;
-}): AgentRunSpecBuilder {
+}): string[] {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
-        githubToken, inspectionArgs, reasoningLevel, readOnlyWorkspace, repositoryInspection,
+        githubToken, envVars, claudeConfigArgs, inspectionArgs, reasoningLevel, readOnlyWorkspace, repositoryInspection,
         workerOwnedGit, executionMode, resumeSessionId, sessionId, network = agentContainerNetwork(),
     } = options;
     const goal = executionMode === 'goal';
-    const builder = new AgentRunSpecBuilder({
-        agentType: config.type, image: config.dockerImage, alias: config.alias, name: containerName, stdin: true,
-        user: '0:0', network: agentRunNetwork(network), security: { capAdd: ['CHOWN'] },
-        workspace: { hostPath: worktreePath, containerPath: workspaceMountTarget, readOnly: readOnlyWorkspace },
-        mcpGrant: options.mcpGrant,
-    }).workspaceMount();
-    if (!repositoryInspection) {
-        builder.dockerOptions(options.gitMountArgs ?? (readOnlyWorkspace ? [] : buildAgentGitMountArgs(worktreePath, !workerOwnedGit)), 'git');
-    }
-    builder
-        .bind('/tmp/claude-logs', '/tmp/claude-logs', false, 'logs')
-        .credentialBind(configPath, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: !goal });
-    addClaudeConfigSeed(builder);
-    if (!repositoryInspection) builder.env('GH_TOKEN', githubToken);
-    if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
-    addEnvironmentVariables(builder, options.environmentSources, true);
-    for (const name of options.policyEnvNames) builder.env(name);
-    builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
-    // Goal sessions keep stdin open as a stream-json control channel, so
-    // `/goal` and later steering arrive as real user messages.
-    return builder.command(
+    return [
+        'run', '--rm', '-i',
+        '--name', containerName,
+        '--security-opt', 'no-new-privileges',
+        '--cap-add', 'CHOWN',
+        '--network', network,
+        '--user', '0:0',
+        '-v', `${worktreePath}:${workspaceMountTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+        ...(repositoryInspection ? [] : options.gitMountArgs ?? (readOnlyWorkspace ? [] : buildAgentGitMountArgs(worktreePath, !workerOwnedGit))),
+        '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
+        '-v', `${configPath}:/home/node/.claude:rw`,
+        ...claudeConfigArgs,
+        ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
+        ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
+        ...envVars,
+        ...buildAgentGitCredentialArgs(),
+        '-w', '/home/node/workspace',
+        config.dockerImage,
+        // Goal sessions keep stdin open as a stream-json control channel, so
+        // `/goal` and later steering arrive as real user messages.
         'claude', '-p', ...(goal ? ['--input-format', 'stream-json'] : ['-']),
         ...(goal ? [] : ['--no-session-persistence']),
         ...(goal && resumeSessionId ? ['--resume', resumeSessionId] : []),
@@ -178,19 +174,19 @@ function buildBaseRunSpec(options: {
         ...inspectionArgs,
         ...(reasoningLevel ? ['--effort', reasoningLevel] : []),
         '--dangerously-skip-permissions'
-    );
+    ];
 }
 
 /**
- * Turns the per-run tool policy into Claude CLI switches plus name-only
- * variables; the runtime copies the token values from the launch environment.
+ * Turns the per-run tool policy into Claude CLI switches plus name-only `-e`
+ * flags; docker copies the token values from its own environment.
  */
 function resolveClaudeToolPolicy(
     toolPolicy: AgentToolPolicy | undefined,
     issueNumber: DockerArgsParams['issueNumber'],
     agentAlias: string,
-): { cliArgs: string[]; envNames: string[] } {
-    if (!toolPolicy) return { cliArgs: [], envNames: [] };
+): { cliArgs: string[]; envArgs: string[] } {
+    if (!toolPolicy) return { cliArgs: [], envArgs: [] };
     const { cliArgs, env } = claudeToolPolicyArgs(toolPolicy);
     logger.info({
         issueNumber,
@@ -198,24 +194,28 @@ function resolveClaudeToolPolicy(
         mcpServers: toolPolicy.mcpServers?.map(server => server.name) ?? [],
         agentAlias
     }, 'Applying tool policy to Claude agent');
-    return { cliArgs, envNames: Object.keys(env) };
+    return { cliArgs, envArgs: Object.keys(env).flatMap(name => ['-e', name]) };
 }
 
 /**
- * Describes one Claude Code run as an {@link AgentRunSpec}:
+ * Builds Docker arguments for running Claude in a container.
+ *
+ * This function constructs the full `docker run` command arguments including:
  * - Security options (no-new-privileges, limited capabilities)
- * - Mounts (worktree, config, logs) and environment variables
+ * - Volume mounts (worktree, config, logs)
+ * - Environment variables
  * - Claude CLI options (model, max-turns, output format)
  *
- * @param config - Agent configuration containing the image and env vars
+ * @param config - Agent configuration containing Docker image and env vars
  * @param maxTurns - Maximum number of conversation turns
- * @param params - Parameters for the run
+ * @param params - Parameters for Docker execution
+ * @returns Array of Docker command-line arguments
  */
-export function buildClaudeRunSpec(
+export function buildDockerArgs(
     config: AgentConfig,
     maxTurns: number,
     params: DockerArgsParams
-): AgentRunSpec {
+): string[] {
     const {
         worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
         taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
@@ -233,7 +233,8 @@ export function buildClaudeRunSpec(
         : '/home/node/workspace';
     const workerOwnedGit = !agentOwnsGit(params);
     const policyArgs = resolveClaudeToolPolicy(toolPolicy, issueNumber, config.alias);
-    const builder = buildBaseRunSpec({
+    const envVars = [...buildEnvironmentVariableArgs([config.envVars, environment], true), ...policyArgs.envArgs];
+    const dockerArgs = buildBaseDockerArgs({
         config,
         maxTurns,
         worktreePath,
@@ -242,8 +243,8 @@ export function buildClaudeRunSpec(
         containerName: buildClaudeContainerName(config, issueNumber, taskId, executionMode === 'goal' ? 'goal' : executionType),
         githubToken,
         gitMountArgs: params.gitMountArgs,
-        environmentSources: [config.envVars, environment],
-        policyEnvNames: policyArgs.envNames,
+        envVars,
+        claudeConfigArgs: claudeConfigDockerArgs(),
         inspectionArgs,
         reasoningLevel,
         readOnlyWorkspace,
@@ -253,9 +254,7 @@ export function buildClaudeRunSpec(
         resumeSessionId,
         sessionId,
         network: agentContainerNetwork(toolPolicy),
-        mcpGrant: agentRunMcpGrant(toolPolicy),
     });
-    const cliArgs = builder.spec.args;
 
     // Add model parameter if specified
     if (modelName) {
@@ -263,9 +262,9 @@ export function buildClaudeRunSpec(
         const savedModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
         // A saved selection of a model Anthropic has retired runs on its successor.
         const cleanModelName = currentClaudeModel(savedModelName);
-        const maxTurnsIndex = cliArgs.indexOf('--max-turns');
-        const modelIndex = maxTurnsIndex >= 0 ? maxTurnsIndex : cliArgs.indexOf('--output-format');
-        cliArgs.splice(modelIndex, 0, '--model', cleanModelName);
+        const maxTurnsIndex = dockerArgs.indexOf('--max-turns');
+        const modelIndex = maxTurnsIndex >= 0 ? maxTurnsIndex : dockerArgs.indexOf('--output-format');
+        dockerArgs.splice(modelIndex, 0, '--model', cleanModelName);
         logger.info({
             issueNumber,
             requestedModel: cleanModelName,
@@ -281,7 +280,7 @@ export function buildClaudeRunSpec(
 
     // Add optional system prompt
     if (systemPrompt !== undefined) {
-        cliArgs.push('--system-prompt', systemPrompt);
+        dockerArgs.push('--system-prompt', systemPrompt);
         logger.info({
             issueNumber,
             systemPromptLength: systemPrompt.length,
@@ -291,7 +290,7 @@ export function buildClaudeRunSpec(
 
     // Add optional tools configuration
     if (effectiveTools !== undefined) {
-        cliArgs.push('--tools', effectiveTools);
+        dockerArgs.push('--tools', effectiveTools);
         logger.info({
             issueNumber,
             tools: effectiveTools,
@@ -299,8 +298,8 @@ export function buildClaudeRunSpec(
         }, 'Using custom tools configuration');
     }
 
-    cliArgs.push(...policyArgs.cliArgs);
-    cliArgs.push(...operatorQuestionArgs(executionMode, params.operatorQuestions));
+    dockerArgs.push(...policyArgs.cliArgs);
+    dockerArgs.push(...operatorQuestionArgs(executionMode, params.operatorQuestions));
 
     logger.info({
         issueNumber,
@@ -310,14 +309,5 @@ export function buildClaudeRunSpec(
         agentAlias: config.alias
     }, 'Docker args built for Claude agent');
 
-    return applyAgentRunLaunchWrapper(builder.build(), config.type);
-}
-
-/** The `docker run` argv for {@link buildClaudeRunSpec}. */
-export function buildDockerArgs(
-    config: AgentConfig,
-    maxTurns: number,
-    params: DockerArgsParams
-): string[] {
-    return renderDockerRunArgs(buildClaudeRunSpec(config, maxTurns, params));
+    return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, config.type);
 }

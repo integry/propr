@@ -38,20 +38,10 @@ export function agentOwnsGit(options: Pick<AgentTaskOptions, 'executionMode' | '
     return options.executionMode === 'goal' && options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'orchestrate';
 }
 
-/** Git settings every agent run receives: no stored credential helper, `gh` answers GitHub. */
-export function agentGitCredentialEnvironment(): Array<{ name: string; value: string }> {
-    return [
-        { name: 'GIT_OPTIONAL_LOCKS', value: '0' },
-        { name: 'GIT_CONFIG_COUNT', value: '2' },
-        { name: 'GIT_CONFIG_KEY_0', value: 'credential.helper' },
-        { name: 'GIT_CONFIG_VALUE_0', value: '' },
-        { name: 'GIT_CONFIG_KEY_1', value: 'credential.https://github.com.helper' },
-        { name: 'GIT_CONFIG_VALUE_1', value: '!gh auth git-credential' },
-    ];
-}
-
 export function buildAgentGitCredentialArgs(): string[] {
-    return agentGitCredentialEnvironment().flatMap(({ name, value }) => ['-e', `${name}=${value}`]);
+    return ['-e', 'GIT_OPTIONAL_LOCKS=0', '-e', 'GIT_CONFIG_COUNT=2', '-e', 'GIT_CONFIG_KEY_0=credential.helper',
+        '-e', 'GIT_CONFIG_VALUE_0=', '-e', 'GIT_CONFIG_KEY_1=credential.https://github.com.helper',
+        '-e', 'GIT_CONFIG_VALUE_1=!gh auth git-credential'];
 }
 
 export function buildAgentGitMountArgs(worktreePath: string, writable = false, readOnlyWorkspace = false): string[] {

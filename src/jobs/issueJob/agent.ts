@@ -28,8 +28,7 @@ export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
     conversationLog: response.conversationLog,
     error: response.error,
     terminationReason: response.terminationReason,
-    tokenUsage: response.tokenUsage,
-    computeUsage: response.computeUsage
+    tokenUsage: response.tokenUsage
   };
 }
 
@@ -66,8 +65,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     ...(result.commitSubject && { commitSubject: result.commitSubject }),
     conversationLog: result.conversationLog,
     tokenUsage: result.tokenUsage,
-    usageMetrics: result.usageMetrics,
-    ...(result.computeUsage && { computeUsage: result.computeUsage })
+    usageMetrics: result.usageMetrics
   };
 }
 
@@ -198,10 +196,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
     reason: `${agent.config.type} agent execution completed`,
     claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
-    historyMetadata: {
-      sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model,
-      ...(claudeResult.computeUsage && { computeUsage: claudeResult.computeUsage }),
-    }
+    historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
   });
 
   correlatedLogger.info({

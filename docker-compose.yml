@@ -157,11 +157,9 @@ services:
       # An absolute PROPR_DATA_DIR is mounted at the same path so host DB_FILENAME paths work.
       - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}
       - /tmp/git-processor:/tmp/git-processor
-      # Read-write: summarization runs get per-run credential copies, and this
-      # worker writes their refreshed tokens back to the host store.
-      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
-      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
-      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
+      - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude:ro
+      - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
+      - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - /var/run/docker.sock:/var/run/docker.sock

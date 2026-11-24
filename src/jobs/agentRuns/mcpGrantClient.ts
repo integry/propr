@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { agentRunGrantParentScope, runAsAgentAdmissionParent, signAgentRunGrantRequest, type AgentRunMcpTransportPlan } from '@propr/core';
+import { agentRunGrantParentScope, runAsAgentAdmissionParent, signAgentRunGrantRequest } from '@propr/core';
 import { mcpContainerNetwork } from './mcpNetwork.js';
 import type { AgentRunMcpGrant, AgentRunPhase } from './toolPolicy.js';
 
@@ -34,10 +34,6 @@ export interface McpGrantClientOptions {
     now?: () => number;
     /** Docker network the agent container joins to reach the MCP URL; defaults to the API-only Compose network. */
     resolveNetwork?: () => Promise<string | null>;
-    /** The agent's own runtime setting; the instance default runtime without one. */
-    runtime?: string | null;
-    /** How the run reaches MCP on its runtime; defaults to the runtime's declared capabilities. */
-    planTransport?: () => AgentRunMcpTransportPlan;
 }
 
 /**
@@ -95,47 +91,22 @@ async function postSigned(
     return payload;
 }
 
-/**
- * Loaded on first use: suites that mock `@propr/core` with an enumerated
- * export list load this module through the scheduler without requesting grants.
- */
-async function defaultTransportPlan(runtime: string | null | undefined, environment: NodeJS.ProcessEnv): Promise<AgentRunMcpTransportPlan> {
-    const { agentRunMcpTransportFor } = await import('@propr/core');
-    return agentRunMcpTransportFor(runtime ? { runtime } : null, environment);
-}
-
-/**
- * Requests a grant for one phase; the run must be `running` (report) or `acting` (action).
- *
- * MCP networking is a runtime capability: a runtime that can join the
- * private (API-only Compose) network gets the internal URL and that network;
- * one that cannot falls back to a reachable URL (`PROPR_AGENT_MCP_URL`, or
- * `API_PUBLIC_URL` + `/api/mcp`) authenticated by the per-run grant token
- * alone. When neither is possible no grant is issued at all.
- */
+/** Requests a grant for one phase; the run must be `running` (report) or `acting` (action). */
 export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhase, options: McpGrantClientOptions = {}): Promise<IssuedAgentRunMcpGrant> {
-    const environment = options.environment ?? process.env;
-    const plan = options.planTransport ? options.planTransport() : await defaultTransportPlan(options.runtime, environment);
-    if (plan.transport === 'unavailable') throw new AgentRunMcpGrantError(plan.reason, null, 'MCP_NETWORK_UNAVAILABLE');
     const payload = await postSigned('/mcp-grants', runId, { phase }, options);
     const { grantId, url, token, expiresAt } = payload;
     if (typeof grantId !== 'string' || typeof token !== 'string' || typeof expiresAt !== 'number') {
         throw new AgentRunMcpGrantError('ProPR MCP grant response is malformed', null, 'INVALID_RESPONSE');
     }
     const scopes = Array.isArray(payload.scopes) ? payload.scopes.filter((scope): scope is string => typeof scope === 'string') : [];
-    if (plan.transport === 'reachable-url') return { grantId, phase, url: plan.url, token, expiresAt, network: null, transport: 'reachable-url', scopes };
+    const environment = options.environment ?? process.env;
     // An explicit worker-side URL wins: it describes the network the worker launches containers on.
     const mcpUrl = environment.PROPR_AGENT_MCP_URL || (typeof url === 'string' && url ? url : agentContainerMcpUrl(environment));
     // A custom endpoint does not authorize joining any Compose network.
     const network = environment.PROPR_AGENT_MCP_URL?.trim() && !environment.PROPR_AGENT_DOCKER_NETWORK?.trim()
         ? null
         : await (options.resolveNetwork ?? (() => mcpContainerNetwork({ environment })))();
-    return { grantId, phase, url: mcpUrl, token, expiresAt, network, transport: network ? 'private-network' : 'reachable-url', scopes };
-}
-
-/** Grant request options for an agent with its own runtime setting; none for the instance default. */
-export function mcpGrantRuntimeOptions(runtime: string | undefined): [] | [McpGrantClientOptions] {
-    return runtime ? [{ runtime }] : [];
+    return { grantId, phase, url: mcpUrl, token, expiresAt, network, scopes };
 }
 
 /**

@@ -37,21 +37,11 @@ async function capture(target: Page | Locator, name: string) {
   await target.screenshot({ animations: 'disabled', path: path.join(directory, `${name}.png`) });
 }
 
-/**
- * The rows the visible controls wrap onto: a control starts a new row only when it sits below the bottom of the
- * current one. Centred controls of different heights share a row with tops a fraction of a pixel apart, so
- * bucketing top edges would count one row twice whenever a bucket edge falls between them.
- */
-const rowsOf = (controls: Locator) => controls.evaluateAll(nodes => nodes
+/** Distinct top edges of the visible controls: one per row they wrap onto. */
+const rowsOf = (controls: Locator) => controls.evaluateAll(nodes => new Set(nodes
   .map(node => (node.closest('label') ?? node).getBoundingClientRect())
   .filter(box => box.width > 0)
-  .sort((a, b) => a.top - b.top)
-  .reduce<number[]>((rowBottoms, box) => {
-    const bottom = rowBottoms.at(-1);
-    if (bottom === undefined || box.top >= bottom) rowBottoms.push(box.bottom);
-    else rowBottoms[rowBottoms.length - 1] = Math.max(bottom, box.bottom);
-    return rowBottoms;
-  }, []).length);
+  .map(box => Math.round(box.top / 8))).size);
 
 const noHorizontalScroll = (page: Page) => page.evaluate(() => [...document.querySelectorAll('*')]
   .filter(node => node.scrollWidth > node.clientWidth + 1 && ['auto', 'scroll'].includes(getComputedStyle(node).overflowX))

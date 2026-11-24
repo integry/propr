@@ -59,32 +59,6 @@ export const AgentRunAdmissionConfiguration = component('AgentRunAdmissionConfig
     .describe('Limit and generation of the stored admission configuration; null when none (or none readable) is stored.'),
 }), 'The stored admission configuration compared with the configured global limit and generation. The admission protocol prefix is checked; the Docker daemon identity is neither shown nor compared.');
 
-export const AgentRunAdmissionRuntime = component('AgentRunAdmissionRuntime', z.object({
-  runtime: z.string().describe('Default agent runtime (an agent\'s own `runtime` setting can select another, checked the same way at launch).'),
-  selectedBy: z.enum(['PROPR_AGENT_RUNTIME', 'default']),
-  registered: z.array(z.string()).describe('Runtimes this process can launch.'),
-  capabilities: z.object({
-    bindMounts: z.boolean(),
-    restrictedNetwork: z.boolean().describe('Outbound traffic can be confined to the run\'s host/port allowlist.'),
-    mcpPrivateNetwork: z.boolean().describe('Runs can join the private network that reaches ProPR MCP.'),
-    mcpReachableUrl: z.boolean().describe('Runs can reach ProPR MCP at a reachable URL with a per-run token (the fallback without private networking).'),
-    reattach: z.boolean(),
-  }),
-  network: z.object({
-    instanceMode: z.enum(['open', 'restricted']).nullable().describe('Instance network mode; null when the policy could not be read (runs then fail closed).'),
-    enforced: z.boolean().nullable(),
-    restrictedRuns: z.enum(['enforced', 'refused']).describe('enforced: restricted runs are confined; refused: admission refuses them before launch instead of running them open.'),
-    enforcement: z.object({ method: z.string(), description: z.string() }).nullable().describe('How the runtime confines restricted runs.'),
-    refusal: z.string().optional().describe('The error a restricted run gets on this runtime.'),
-    refusingRuns: z.boolean().describe('The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused.'),
-    unavailable: z.string().optional(),
-  }),
-  mcp: z.object({
-    transport: z.enum(['private-network', 'reachable-url', 'unavailable']).describe('How runs granted ProPR MCP reach it on this runtime.'),
-    reason: z.string(),
-  }),
-}), 'What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks.');
-
 export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.object({
   asOf: isoDateTime,
   admission: z.object({
@@ -119,7 +93,5 @@ export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.ob
       .describe('Every repository with a limit and running work that the caller may see; the list is complete, never truncated.'),
     unavailable: z.string().optional().describe('Why repository usage could not be read; `repositories` is then empty and means unknown, not idle.'),
   }),
-  runtime: AgentRunAdmissionRuntime.nullable().describe('Null when the runtime selection could not be resolved; see `runtimeUnavailable`.'),
-  runtimeUnavailable: z.string().optional(),
   subscriptionUsage: z.string().describe('Subscription usage is reported elsewhere; this says where.'),
 }), 'What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.');
