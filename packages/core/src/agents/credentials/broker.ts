@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentType } from '../types.js';
 import { withCredentialStoreLock, type CredentialStoreLockOptions } from './credentialStoreLock.js';
+import { parseDotenv } from './dotenv.js';
 import {
     providerCredentialManifest, type CredentialStoreKind, type ProviderCredentialManifest,
 } from './providerManifests.js';
@@ -138,20 +139,6 @@ export function lstatInside(root: string, relative: string): fs.Stats | 'symlink
         if (index === parts.length - 1) return stat;
     }
     return undefined;
-}
-
-function parseDotenv(content: string): Map<string, string> {
-    const values = new Map<string, string>();
-    for (const rawLine of content.split(/\r?\n/)) {
-        const line = rawLine.trim().replace(/^export\s+/, '');
-        if (!line || line.startsWith('#')) continue;
-        const separator = line.indexOf('=');
-        if (separator <= 0) continue;
-        let value = line.slice(separator + 1).trim();
-        if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.endsWith(value[0])) value = value.slice(1, -1);
-        values.set(line.slice(0, separator).trim(), value);
-    }
-    return values;
 }
 
 class StoreReader {

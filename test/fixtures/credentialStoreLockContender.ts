@@ -5,6 +5,9 @@
  * two processes held the lock at once.
  *
  * argv: lockModule lockRoot store workDir id holdMs pauseAfterStaleMs barrierIds
+ * env:  CONTENDER_STALE_MS          stale threshold (default: the module's)
+ *       CONTENDER_RELEASE_AFTER     a peer id: pause before releasing until that
+ *                                   peer has entered its critical section
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +30,17 @@ const onStaleLockObserved = (): void => {
     sleep(Number(pauseAfterStaleMs));
 };
 
-await withCredentialStoreLock(store, { lockRoot, pollMs: 5, timeoutMs: 15_000, onStaleLockObserved }, () => {
+const waitFor = (file: string): void => {
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(file) && Date.now() < deadline) sleep(5);
+};
+const releaseAfter = process.env.CONTENDER_RELEASE_AFTER;
+// Descheduled after the critical section, before the release takes effect.
+const onBeforeRelease = releaseAfter ? (): void => { waitFor(path.join(workDir, `acquired-${releaseAfter}`)); sleep(50); } : undefined;
+const staleMs = process.env.CONTENDER_STALE_MS ? Number(process.env.CONTENDER_STALE_MS) : undefined;
+
+await withCredentialStoreLock(store, { lockRoot, pollMs: 5, timeoutMs: 15_000, staleMs, onStaleLockObserved, onBeforeRelease }, () => {
+    fs.writeFileSync(path.join(workDir, `acquired-${id}`), '');
     const inside = path.join(workDir, 'inside');
     try {
         fs.writeFileSync(inside, id, { flag: 'wx' });
@@ -38,3 +51,4 @@ await withCredentialStoreLock(store, { lockRoot, pollMs: 5, timeoutMs: 15_000, o
     fs.appendFileSync(path.join(workDir, 'completed'), `${id}\n`);
     try { if (fs.readFileSync(inside, 'utf8') === id) fs.rmSync(inside); } catch { /* the overlapping holder removed it */ }
 });
+fs.writeFileSync(path.join(workDir, `released-${id}`), '');

@@ -21,7 +21,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 
 const { CredentialBroker } = await import('../packages/core/src/agents/credentials/broker.ts');
 const { providerCredentialManifests, refreshableCredentialPaths } = await import('../packages/core/src/agents/credentials/providerManifests.ts');
-const { withCredentialStoreLock, credentialStoreLockPath, CredentialStoreLockTimeoutError } = await import('../packages/core/src/agents/credentials/credentialStoreLock.ts');
+const { withCredentialStoreLock, credentialStoreLockPath, inspectCredentialStoreLock, CredentialStoreLockTimeoutError } = await import('../packages/core/src/agents/credentials/credentialStoreLock.ts');
 const {
     stageAgentRunCredentials, resolveCredentialBrokerMode, credentialRunRoot, AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV,
     sweepStaleStaging, STALE_STAGING_LEASE_MS, STAGING_LEASE_FILE, STAGING_RETAINED_FILE,
@@ -142,6 +142,24 @@ for (const scenario of roundTrips) {
     });
 }
 
+test('vibe .env keys are parsed as dotenv: quotes, trailing comments and escapes', async () => {
+    const cases: Array<[string, string]> = [
+        ['MISTRAL_API_KEY="mk-secret" # production account\n', 'mk-secret'],
+        ["MISTRAL_API_KEY='mk-secret'   # note\n", 'mk-secret'],
+        ['  export MISTRAL_API_KEY = mk-secret # trailing\r\n', 'mk-secret'],
+        ['MISTRAL_API_KEY=mk#secret\n', 'mk#secret'],
+        ['MISTRAL_API_KEY="mk # not a comment"\n', 'mk # not a comment'],
+        ['MISTRAL_API_KEY="mk-\\"quoted\\"" #c', 'mk-"quoted"'],
+        ['# MISTRAL_API_KEY=commented\nOTHER="multi\nline"\nMISTRAL_API_KEY=mk-last\n', 'mk-last'],
+    ];
+    for (const [content, expected] of cases) {
+        const root = makeStore({ '.env': content, 'config.toml': '' });
+        const staged = stageAgentRunCredentials(specWith([{ provider: 'vibe', source: root, target: '/home/node/.vibe', readOnly: true }]), { environment: brokerEnvironment })!;
+        assert.deepEqual(staged.secretEnv, { MISTRAL_API_KEY: expected }, JSON.stringify(content));
+        await staged.complete();
+    }
+});
+
 test('token refresh round trip: vibe reads config read-only and receives its .env key as a secret variable', async () => {
     const root = makeStore({ 'config.toml': 'active_model = "m"', '.env': 'export MISTRAL_API_KEY="mk-secret-123"\nOTHER=1\n', 'sessions/s.json': '{}', 'logs/v.log': 'x' });
     const spec = specWith([{ provider: 'vibe', source: root, target: '/home/node/.vibe', readOnly: true }]);
@@ -258,7 +276,7 @@ test('concurrent completions in parallel serialise on the store lock', async () 
     runs.forEach((run, index) => refreshIn(stagedSource(run.spec, '/home/node/.claude'), '.credentials.json', `v${index + 1}`, base + (index + 1) * 1_000));
     await Promise.all(runs.reverse().map(run => run.complete()));
     assert.equal(fs.readFileSync(path.join(root, '.credentials.json'), 'utf8'), 'v6');
-    assert.deepEqual(fs.readdirSync(path.join(runRoot, '.locks')), [], 'locks are released');
+    assert.deepEqual(inspectCredentialStoreLock(path.join(runRoot, '.locks'), root), { epoch: 6, held: false }, 'every write-back took and released the lock');
 });
 
 test('store lock: waits for a live holder, breaks a stale one, times out otherwise', async () => {
@@ -266,12 +284,14 @@ test('store lock: waits for a live holder, breaks a stale one, times out otherwi
     const store = makeStore({});
     fs.mkdirSync(lockRoot, { recursive: true });
     const lockPath = credentialStoreLockPath(lockRoot, store);
-    fs.writeFileSync(lockPath, 'other-worker');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, '1'), 'other-worker');
     await assert.rejects(withCredentialStoreLock(store, { lockRoot, timeoutMs: 100, pollMs: 10 }, () => 1), CredentialStoreLockTimeoutError);
     const old = (Date.now() - 120_000) / 1000;
-    fs.utimesSync(lockPath, old, old);
+    fs.utimesSync(path.join(lockPath, '1'), old, old);
     assert.equal(await withCredentialStoreLock(store, { lockRoot, timeoutMs: 1_000, pollMs: 10 }, () => 'ran'), 'ran');
-    assert.equal(fs.existsSync(lockPath), false);
+    assert.deepEqual(inspectCredentialStoreLock(lockRoot, store), { epoch: 2, held: false });
+    assert.ok(fs.existsSync(path.join(lockPath, '1')), 'the stale holder\'s file is superseded, never removed');
 });
 
 test('symlinks in the store are neither copied nor written through', async () => {

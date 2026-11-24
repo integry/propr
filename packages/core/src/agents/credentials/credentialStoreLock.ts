@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -11,6 +11,8 @@ export interface CredentialStoreLockOptions {
     pollMs?: number;
     /** Test hook: runs after a stale lock was observed, before it is broken. */
     onStaleLockObserved?: () => void;
+    /** Test hook: runs after `fn` settled, before the lock is released. */
+    onBeforeRelease?: () => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -27,119 +29,129 @@ export class CredentialStoreLockTimeoutError extends Error {
 /** Writers in the same process queue here before contending for the file lock. */
 const inProcess = new Map<string, Promise<unknown>>();
 
+/** Directory holding the lock epochs of one canonical store (see {@link withCredentialStoreLock}). */
 export function credentialStoreLockPath(lockRoot: string, canonicalRoot: string): string {
     const key = createHash('sha256').update(path.resolve(canonicalRoot)).digest('hex').slice(0, 32);
     return path.join(lockRoot, `${key}.lock`);
 }
 
-/** The holder token is the first field of the lock file; it names this acquisition, never reused. */
-function readLockToken(lockPath: string): { token: string; mtimeMs: number } | undefined {
-    let fd: number;
-    try { fd = fs.openSync(lockPath, 'r'); } catch { return undefined; }
-    try {
-        const { mtimeMs } = fs.fstatSync(fd);
-        const buffer = Buffer.alloc(256);
-        const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
-        return { token: buffer.subarray(0, length).toString('utf8').trim().split(/\s+/)[0] ?? '', mtimeMs };
-    } finally {
-        fs.closeSync(fd);
+const EPOCH_NAME = /^(\d+)(\.released)?$/;
+const releasedName = (epoch: number): string => `${epoch}.released`;
+
+function highestEpoch(names: string[]): number {
+    let highest = 0;
+    for (const name of names) {
+        const match = EPOCH_NAME.exec(name);
+        if (match && !match[2]) highest = Math.max(highest, Number(match[1]));
     }
+    return highest;
 }
 
-const takeoverPrefix = (lockPath: string, token: string): string =>
-    `${lockPath}.takeover-${createHash('sha256').update(token).digest('hex').slice(0, 32)}`;
+function mtimeOf(file: string): number | undefined {
+    try { return fs.statSync(file).mtimeMs; } catch { return undefined; }
+}
 
-function removeTakeoverMarkers(lockPath: string, token: string): void {
-    const prefix = path.basename(takeoverPrefix(lockPath, token));
+export interface CredentialStoreLockState {
+    /** Latest acquisition (0 before the first one). */
+    epoch: number;
+    /** Whether that acquisition is still held, i.e. neither released nor broken. */
+    held: boolean;
+}
+
+/** Current state of a store lock, for diagnostics and tests. */
+export function inspectCredentialStoreLock(lockRoot: string, canonicalRoot: string): CredentialStoreLockState {
+    let names: string[];
+    try { names = fs.readdirSync(credentialStoreLockPath(lockRoot, canonicalRoot)); } catch { return { epoch: 0, held: false }; }
+    const epoch = highestEpoch(names);
+    return { epoch, held: epoch > 0 && !names.includes(releasedName(epoch)) };
+}
+
+/** Marks our own epoch released; it touches no other acquisition's file. */
+function markReleased(lockDir: string, epoch: number): void {
     try {
-        for (const name of fs.readdirSync(path.dirname(lockPath))) {
-            if (name.startsWith(prefix)) fs.rmSync(path.join(path.dirname(lockPath), name), { force: true });
-        }
-    } catch { /* best effort */ }
+        fs.closeSync(fs.openSync(path.join(lockDir, releasedName(epoch)), 'wx', 0o600));
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
 }
 
 /**
- * Break the stale lock identified by `token`, and only that one.
- *
- * Reclaimers first win an exclusive takeover marker named after the stale
- * holder's token, so exactly one of them may remove that holder's file. The
- * winner re-reads the lock before removing it: a lock file only disappears
- * when its own holder releases it or the single marker winner breaks it, so
- * a replacement created by another reclaimer is never removed by a stale
- * observation. A marker left by a reclaimer that crashed mid-takeover is
- * itself stale after `staleMs`; the next reclaimer uses the next numbered
- * marker instead of deleting it, so no marker is ever removed while a
- * reclaimer may still act on it.
+ * Remove epochs at least two behind ours that are older than `staleMs`. The
+ * newest two are always kept, so the highest epoch (which decides who may
+ * acquire next) never regresses; see {@link tryAcquire} for why a resumed
+ * acquirer cannot reuse a removed epoch number.
  */
-function breakStaleLock(lockPath: string, token: string, staleMs: number): void {
-    const prefix = takeoverPrefix(lockPath, token);
-    for (let attempt = 0; attempt < 64; attempt++) {
-        const marker = `${prefix}.${attempt}`;
-        try {
-            fs.closeSync(fs.openSync(marker, 'wx', 0o600));
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-            try {
-                if (Date.now() - fs.statSync(marker).mtimeMs <= staleMs) return; // another reclaimer is breaking it
-            } catch { return; /* cleaned up: the stale lock is gone */ }
-            continue;
-        }
-        if (readLockToken(lockPath)?.token === token) fs.rmSync(lockPath, { force: true });
-        removeTakeoverMarkers(lockPath, token);
-        return;
+function pruneOldEpochs(lockDir: string, names: string[], epoch: number, staleMs: number): void {
+    for (const name of names) {
+        const match = EPOCH_NAME.exec(name);
+        if (!match || Number(match[1]) >= epoch - 1) continue;
+        const file = path.join(lockDir, name);
+        const mtimeMs = mtimeOf(file);
+        if (mtimeMs !== undefined && Date.now() - mtimeMs > staleMs) fs.rmSync(file, { force: true });
     }
 }
 
-function tryAcquire(lockPath: string, staleMs: number, onStaleLockObserved?: () => void): string | undefined {
-    const token = randomBytes(16).toString('hex');
-    // Publish the lock fully written: link() is atomic and fails when a holder exists,
-    // so a reader never sees an empty lock file it could mistake for another holder's.
-    const pending = `${lockPath}.pending-${token}`;
-    fs.writeFileSync(pending, `${token} ${process.pid} ${new Date().toISOString()}\n`, { mode: 0o600, flag: 'wx' });
-    try {
-        fs.linkSync(pending, lockPath);
-        return token;
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    } finally {
-        fs.rmSync(pending, { force: true });
-    }
-    const holder = readLockToken(lockPath);
-    if (holder && Date.now() - holder.mtimeMs > staleMs) {
+/**
+ * One acquisition attempt. Acquisitions are numbered epochs: epoch `n` is
+ * held by whoever created the file `n` (exclusively), and ends when its
+ * holder creates `n.released` or, once `n` is older than `staleMs`, when a
+ * reclaimer creates `n + 1`. Nobody ever removes another holder's file to
+ * release or break a lock, so a holder resuming after it was judged stale
+ * only marks its own, superseded epoch released and cannot free a
+ * replacement holder's lock. Exclusive creation of `n + 1` lets exactly one
+ * of several reclaimers (or waiters) win.
+ *
+ * An acquirer suspended between reading the directory and creating its
+ * epoch could find that number free again after pruning removed it; it then
+ * sees a higher epoch when it re-reads the directory, marks its own epoch
+ * released and retries, so it never runs alongside the current holder.
+ */
+function tryAcquire(lockDir: string, staleMs: number, onStaleLockObserved?: () => void): number | undefined {
+    const highest = highestEpoch(fs.readdirSync(lockDir));
+    if (highest > 0 && !fs.existsSync(path.join(lockDir, releasedName(highest)))) {
+        const mtimeMs = mtimeOf(path.join(lockDir, String(highest)));
+        if (mtimeMs === undefined || Date.now() - mtimeMs <= staleMs) return undefined;
         onStaleLockObserved?.();
-        breakStaleLock(lockPath, holder.token, staleMs);
     }
-    return undefined;
-}
-
-/** Release only our own lock: a holder judged stale may find its file already broken and replaced. */
-function release(lockPath: string, token: string): void {
-    if (readLockToken(lockPath)?.token === token) fs.rmSync(lockPath, { force: true });
+    const epoch = highest + 1;
+    try {
+        fs.writeFileSync(path.join(lockDir, String(epoch)), `${process.pid} ${new Date().toISOString()}\n`, { mode: 0o600, flag: 'wx' });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined;
+        throw error;
+    }
+    const names = fs.readdirSync(lockDir);
+    if (highestEpoch(names) > epoch) {
+        markReleased(lockDir, epoch);
+        return undefined;
+    }
+    pruneOldEpochs(lockDir, names, epoch, staleMs);
+    return epoch;
 }
 
 /**
  * Run `fn` holding the write-back lock of one canonical credential store.
- * The lock is a file published with link(), which fails while another holder
- * exists, so it also serialises writers in other worker processes that share
- * the lock directory. Stale takeover and release only ever remove the lock
- * file of the holder they observed (see {@link breakStaleLock}).
+ * The lock is a directory of exclusively created epoch files, so it also
+ * serialises writers in other worker processes that share the lock
+ * directory. Release and stale takeover never remove a holder's file
+ * (see {@link tryAcquire}).
  */
 export async function withCredentialStoreLock<T>(canonicalRoot: string, options: CredentialStoreLockOptions, fn: () => Promise<T> | T): Promise<T> {
     const lockPath = credentialStoreLockPath(options.lockRoot, canonicalRoot);
     const previous = inProcess.get(lockPath) ?? Promise.resolve();
     const run = previous.catch(() => undefined).then(async () => {
-        fs.mkdirSync(options.lockRoot, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
         const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const deadline = Date.now() + timeoutMs;
-        let token: string | undefined;
-        while (!(token = tryAcquire(lockPath, options.staleMs ?? DEFAULT_STALE_MS, options.onStaleLockObserved))) {
+        let epoch: number | undefined;
+        while (!(epoch = tryAcquire(lockPath, options.staleMs ?? DEFAULT_STALE_MS, options.onStaleLockObserved))) {
             if (Date.now() >= deadline) throw new CredentialStoreLockTimeoutError(canonicalRoot, timeoutMs);
             await new Promise(resolve => setTimeout(resolve, options.pollMs ?? DEFAULT_POLL_MS));
         }
         try {
             return await fn();
         } finally {
-            release(lockPath, token);
+            try { options.onBeforeRelease?.(); } finally { markReleased(lockPath, epoch); }
         }
     });
     inProcess.set(lockPath, run);
