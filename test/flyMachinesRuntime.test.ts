@@ -51,6 +51,9 @@ interface FakeMachine {
     mtimes: Map<string, number>;
     killed?: boolean;
     ran?: boolean;
+    /** Log polls until the clone wrapper, spared by the forced stop, finishes publishing and the launcher records the exit. */
+    finalizeIn?: number;
+    lastKill?: string[];
 }
 
 /** An in-memory Machines + logs API. `agent` decides what a run prints and how it exits. */
@@ -64,8 +67,12 @@ class FakeFly {
     ignoreSignals = false;
     /** The forced kill exec fails (e.g. the exec API is down). */
     killFails = false;
+    /** After a forced stop, the clone wrapper takes this many log polls to finalize (0: the exit is recorded at once). */
+    finalizePolls = 0;
     /** This many DELETE requests fail with 503 before they succeed. */
     failDeletes = 0;
+    /** Create requests wait for this before the API answers (a slow image pull/placement). */
+    createGate?: Promise<void>;
     /** Content read requests (not stats) per file. */
     contentReads = new Map<string, number>();
     private nextId = 1;
@@ -90,12 +97,14 @@ class FakeFly {
             if (!machine) return json(200, { data: [], meta: {} });
             if (this.delayPolls > 0) { this.delayPolls--; return json(200, { data: [], meta: { next_token: 't0' } }); }
             if (!machine.ran) { machine.ran = true; this.agent(machine); }
+            if (machine.finalizeIn !== undefined && --machine.finalizeIn === 0) this.finish(machine, 'partial\n', 'killed\n', 137);
             const lines = machine.pendingLogs.splice(0);
             return json(200, { data: lines.map(message => ({ attributes: { timestamp: '2026-11-24T10:00:00Z', message } })), meta: { next_token: 't1' } });
         }
         const match = /\/apps\/([^/]+)\/machines(?:\/([^/?]+))?(?:\/([a-z]+))?/.exec(parsed.pathname)!;
         const [, , id, action] = match;
         if (method === 'POST' && !id) {
+            if (this.createGate) await this.createGate;
             const machine: FakeMachine = { id: `m${this.nextId++}`, state: 'created', request: body, files: new Map(), mtimes: new Map(), events: [], pendingLogs: [], signals: [] };
             for (const file of body.config.files ?? []) machine.files.set(file.guest_path, Buffer.from(file.raw_value, 'base64'));
             this.machines.set(machine.id, machine);
@@ -126,7 +135,9 @@ class FakeFly {
             if (script.includes('kill -s KILL')) {
                 if (this.killFails) return json(200, { exit_code: 1, stderr: 'kill: No such process' });
                 machine.killed = true;
-                this.finish(machine, 'partial\n', 'killed\n', 137);
+                machine.lastKill = body.command;
+                if (this.finalizePolls > 0) machine.finalizeIn = this.finalizePolls;
+                else this.finish(machine, 'partial\n', 'killed\n', 137);
                 return json(200, { exit_code: 0 });
             }
             if (script === ': > "$1"') { machine.files.set(file, Buffer.alloc(0)); return json(200, { exit_code: 0 }); }
@@ -408,6 +419,22 @@ test('timeout: an agent that ignores TERM is killed before the run settles, keep
     assert.equal((await handle.readFile!(FLY_RUN_FILES.stderr))!.toString(), 'killed\n');
     await handle.release!();
     assert.deepEqual(fly.destroyed, ['m1']);
+});
+
+test('timeout: a clone run\'s forced stop spares its wrapper and waits for it to publish the workspace', async () => {
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    fly.ignoreSignals = true;
+    // Well past the 15 s a run without the clone wrapper gets (the clock advances a second per reading).
+    fly.finalizePolls = 40;
+    const handle = runtime(fly, FLY_ENV, fastClock(fly)).start(spec(), { timeout: 30, preserveOutputOnTimeout: true });
+    const result = await handle.wait();
+    const machine = fly.machines.get('m1')!;
+    assert.deepEqual(machine.lastKill!.slice(3), ['sh', FLY_RUN_FILES.pid, '/tmp/r/phase'], 'the forced stop is told where the wrapper records its phase');
+    assert.equal(result.timedOut, true);
+    assert.equal(result.exitCode, 137, 'the exit recorded once the wrapper finished');
+    assert.deepEqual(fly.destroyed, [], 'the finalizing Machine was not destroyed');
+    await handle.release!();
 });
 
 test('timeout: when the kill cannot be confirmed the Machine is destroyed before settling, or the run fails', async () => {
@@ -694,6 +721,45 @@ test('a failed explicit release of a retained Machine keeps retrying the destroy
         assert.equal(deletes(), 3, 'nothing is retried once the destroy succeeded');
         await handle.release!();
         assert.equal(deletes(), 3);
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('release() during a slow create waits for the Machine and keeps retrying its failed destroy', async () => {
+    const fly = new FakeFly();
+    fly.agent = () => undefined;
+    let answerCreate!: () => void;
+    fly.createGate = new Promise(resolve => { answerCreate = resolve; });
+    // The cancellation's destroy and release's own destroy both fail.
+    fly.failDeletes = 2;
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    const waited = handle.wait().then(() => 'resolved', error => error);
+    while (!fly.requests.some(request => request.method === 'POST')) await new Promise(resolve => setTimeout(resolve, 2));
+    const deletes = () => fly.requests.filter(request => request.method === 'DELETE').length;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+        const flush = async () => { for (let index = 0; index < 20; index++) await new Promise(resolve => setImmediate(resolve)); };
+        let releaseOutcome: unknown = 'pending';
+        const released = handle.release!().then(() => { releaseOutcome = 'resolved'; }, error => { releaseOutcome = error; });
+        await flush();
+        // stop()'s settle window (10 s + 5 s) elapses while the create request is still outstanding.
+        mock.timers.tick(15_000);
+        await flush();
+        assert.equal(releaseOutcome, 'pending', 'release stays pending while the Machine may still be created');
+        assert.equal(deletes(), 0);
+        answerCreate();
+        await released;
+        assert.ok(await waited instanceof AgentRunStoppedError, 'the run is cancelled');
+        assert.match(String((releaseOutcome as Error).message), /returned 503/, 'release reports the failed destroy instead of a cached success');
+        assert.equal(deletes(), 2, 'the cancellation destroy, then release\'s own');
+        assert.ok(fly.machines.has('m1'));
+        mock.timers.tick(60_000);
+        await flush();
+        assert.equal(deletes(), 3, 'the failed destroy is retried without another release() call');
+        assert.deepEqual(fly.destroyed, ['m1']);
+        await handle.release!();
+        assert.equal(deletes(), 3, 'release is idempotent once the destroy succeeded');
     } finally {
         mock.timers.reset();
     }

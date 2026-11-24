@@ -99,6 +99,47 @@ done
 exit "$status"
 `;
 
+/**
+ * Forced stop of a timed-out run, executed in the Machine as
+ * `sh -c <script> sh <pid file> [<wrapper phase file>]`. The recorded pid
+ * leads the run's session. Without a phase file (no clone transport) or
+ * before the wrapper started the agent, the whole process group is killed.
+ * A clone transport wrapper leads the session and must outlive its agent to
+ * snapshot and publish the workspace, so it is held stopped while its phase
+ * is read (it cannot start finalizing meanwhile) and then:
+ *
+ * - `agent`: every other process in the session (the agent, its children and
+ *   whatever it left behind) is killed; the wrapper then sees its agent exit
+ *   and finalizes. Prints `killed`.
+ * - `finalizing`: the agent already exited; nothing is killed. Prints `finalizing`.
+ */
+export const FLY_FORCED_STOP_SCRIPT = `pid=$(cat "$1") || exit 1
+phase_file=\${2:-}
+kill_session_except_leader() {
+  for pass in 1 2 3; do
+    for stat in /proc/[0-9]*/stat; do
+      proc=\${stat#/proc/}; proc=\${proc%/stat}
+      [ "$proc" = "$pid" ] && continue
+      line=$(cat "$stat" 2>/dev/null) || continue
+      set -- \${line##*) }
+      [ "\${4:-}" = "$pid" ] && kill -s KILL "$proc" 2>/dev/null
+    done
+  done
+  return 0
+}
+if [ -n "$phase_file" ] && kill -s STOP "$pid" 2>/dev/null; then
+  trap 'kill -s CONT "$pid" 2>/dev/null' EXIT
+  phase=$(cat "$phase_file" 2>/dev/null)
+  case "$phase" in
+    agent) kill_session_except_leader; echo killed; exit 0 ;;
+    finalizing) echo finalizing; exit 0 ;;
+  esac
+  kill -s CONT "$pid" 2>/dev/null
+  trap - EXIT
+fi
+kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid"
+`;
+
 export interface FlyMachineLaunchInput {
     config: Pick<FlyMachinesConfig, 'region' | 'size' | 'memoryMb' | 'image' | 'resultLingerSeconds'>;
     /** Environment `-e NAME` (no value) and bare env-file names inherit from: the launch environment. */

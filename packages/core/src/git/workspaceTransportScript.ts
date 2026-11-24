@@ -31,7 +31,9 @@
  *    remotes, credential helpers, filters) never reaches an authenticated
  *    operation.
  * 3. Runs the wrapped entrypoint as a child (stdin and termination signals are
- *    forwarded) and keeps its exit status.
+ *    forwarded) and keeps its exit status. Its phase (`agent`, then
+ *    `finalizing`) is recorded in the result directory, so a runtime that
+ *    force-stops a run can kill the agent and spare this wrapper.
  * 4. Snapshots the workspace (agent HEAD plus every non-ignored change, and
  *    `.propr/previews`) as one commit under the agent's unprivileged identity
  *    (agent-configured filters run with the agent's privileges, never the
@@ -46,6 +48,14 @@ export const WORKSPACE_TRANSPORT_TOKEN_ENV = 'PROPR_WORKSPACE_GIT_TOKEN';
 export const WORKSPACE_TRANSPORT_RESULT_DIR = '/tmp/propr-workspace-result';
 export const WORKSPACE_RESULT_STATUS_FILE = 'status';
 export const WORKSPACE_RESULT_BUNDLE_FILE = 'result.bundle';
+/**
+ * The wrapper's phase, for a runtime that has to force-stop a run without
+ * losing its result: \`agent\` while the wrapped entrypoint runs (everything
+ * else in the wrapper's session is the agent's), \`finalizing\` once it exited
+ * and the wrapper snapshots and publishes the workspace. Absent while the
+ * workspace is bootstrapped, before anything agent-controlled started.
+ */
+export const WORKSPACE_RESULT_PHASE_FILE = 'phase';
 /** Ref the bundle fallback carries the snapshot under. */
 export const WORKSPACE_RESULT_BUNDLE_REF = 'refs/propr/result';
 /** Exit status of a run whose workspace could not be prepared (the agent never started). */
@@ -196,6 +206,7 @@ else
 fi
 child=$!
 exec 3<&-
+printf 'agent\\n' > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}"
 trap 'kill -s TERM "$child" 2>/dev/null' TERM
 trap 'kill -s INT "$child" 2>/dev/null' INT
 trap 'kill -s HUP "$child" 2>/dev/null' HUP
@@ -205,6 +216,7 @@ while :; do
     kill -0 "$child" 2>/dev/null || break
 done
 trap - TERM INT HUP
+printf 'finalizing\\n' > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}"
 
 if [ -n "$result_ref" ]; then
     export GIT_AUTHOR_NAME="\${GIT_AUTHOR_NAME:-ProPR}" GIT_AUTHOR_EMAIL="\${GIT_AUTHOR_EMAIL:-bot@propr.dev}"

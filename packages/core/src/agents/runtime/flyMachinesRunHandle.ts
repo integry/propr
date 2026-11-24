@@ -11,7 +11,8 @@ import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, typ
 import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient } from './flyMachinesApi.js';
 import { confinedCredentialPath, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
-import { FLY_RUN_FILES, parseFlyLogLine, renderFlyMachineRequest } from './flyMachinesLaunch.js';
+import { FLY_FORCED_STOP_SCRIPT, FLY_RUN_FILES, parseFlyLogLine, renderFlyMachineRequest } from './flyMachinesLaunch.js';
+import { WORKSPACE_RESULT_PHASE_FILE } from '../../git/workspaceTransportScript.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
 
 /** How long a Machine create → `started` may take: image pull plus boot. */
@@ -20,6 +21,12 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 const STOPPED_RUN_SETTLE_MS = 5_000;
 /** After a forced kill the launcher drains the output pipes (up to 5 s) before it records the exit status. */
 const FORCED_STOP_SETTLE_MS = 15_000;
+/**
+ * A clone transport wrapper outlives a forced stop of its agent to snapshot
+ * the workspace and publish it (push, else a bundle) before the launcher
+ * records the exit status; it gets this long before the Machine is destroyed.
+ */
+const CLONE_FINALIZE_SETTLE_MS = 3 * 60_000;
 /** A Machine the handle must destroy (cancelled, or not confirmed stopped) is retried this often, backing off to 10 min. */
 const DESTROY_RETRY_MS = 30_000;
 const MAX_DESTROY_RETRY_MS = 10 * 60_000;
@@ -279,20 +286,24 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
 
     /**
      * Deadline: TERM the agent (the launcher forwards it) and give it the stop
-     * window; then KILL its whole process group, so the launcher records the
-     * exit and the Machine keeps the partial output and result files; failing
-     * that, destroy the Machine. Throws when none of these is confirmed: the
-     * run must not settle while its agent may still be running.
+     * window; then KILL it ({@link FLY_FORCED_STOP_SCRIPT}), so the launcher
+     * records the exit and the Machine keeps the partial output and result
+     * files. A clone transport wrapper is spared and given time to snapshot
+     * and publish the workspace first. Failing that, destroy the Machine.
+     * Throws when none of these is confirmed: the run must not settle while
+     * its agent may still be running.
      */
     private async stopAfterTimeout(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>): Promise<void> {
         await this.deps.client.signal(this.machineId!, signalNumber('SIGTERM')).catch(() => undefined);
         await this.awaitExit(context, live, DEFAULT_STOP_TIMEOUT_MS);
         if (this.exitCode !== undefined) return;
+        const resultDir = this.spec.workspace.clone?.resultDir;
+        const phaseFile = resultDir ? `${resultDir.replace(/\/+$/, '')}/${WORKSPACE_RESULT_PHASE_FILE}` : undefined;
         const killed = await this.deps.client.exec(this.machineId!, [
-            '/bin/sh', '-c', 'pid=$(cat "$1") && { kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid"; }', 'sh', FLY_RUN_FILES.pid,
+            '/bin/sh', '-c', FLY_FORCED_STOP_SCRIPT, 'sh', FLY_RUN_FILES.pid, ...(phaseFile ? [phaseFile] : []),
         ], 30).catch(error => ({ exit_code: -1, stdout: '', stderr: (error as Error).message }));
         if (killed.exit_code !== 0) logger.warn({ run: this.spec.name, machine: this.machineId, error: killed.stderr.trim() || `exit ${killed.exit_code}` }, 'Could not kill the timed-out agent in its Fly Machine; destroying the Machine');
-        else await this.awaitExit(context, live, FORCED_STOP_SETTLE_MS);
+        else await this.awaitExit(context, live, phaseFile ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS);
         if (this.exitCode !== undefined) return;
         await this.discardMachine('timed-out');
         if (!this.machineGone) throw new Error(`Agent run ${this.spec.name} timed out and its Fly Machine ${this.machineId} could not be stopped`);
@@ -470,7 +481,12 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
         this.releaseTimer = undefined;
         this.released ??= (async () => {
-            if (!this.settled) await this.stop().catch(() => undefined);
+            if (!this.settled) {
+                await this.stop().catch(() => undefined);
+                // stop() gives up after its settle window, but a create request still in flight (up to 2 min)
+                // may yet return a Machine: only a settled run says whether one exists and is still to destroy.
+                await this.result.catch(() => undefined);
+            }
             if (this.machineId && !this.machineGone) {
                 await this.deps.client.destroyMachine(this.machineId);
                 this.machineGone = true;
