@@ -1,6 +1,7 @@
 import type {
     AgentRunHandle, AgentRunResult, AgentRunSpec, AgentRuntime, WorkspaceTransportMode,
 } from '../agents/runtime/types.js';
+import { getExecutionAbortError, getExecutionOwnershipContext } from '../claude/docker/dockerExecutionOwnership.js';
 import logger from '../utils/logger.js';
 
 export { WORKSPACE_TRANSPORT_ENV, resolveWorkspaceTransportMode, runtimeWorkspaceTransports } from './workspaceTransportMode.js';
@@ -16,6 +17,15 @@ export interface WorkspaceRunOutcome {
     reason?: string;
 }
 
+export interface WorkspaceCompletionOptions {
+    /**
+     * Cancellation of the run. Once it is aborted the worker worktree is not
+     * changed: completion rejects with the abort error, and a result already
+     * retrieved stays where cleanup keeps it for recovery.
+     */
+    signal?: AbortSignal;
+}
+
 /** A spec prepared for one run, plus the steps that bring its result back. */
 export interface PreparedWorkspace {
     readonly spec: AgentRunSpec;
@@ -24,8 +34,8 @@ export interface PreparedWorkspace {
      * spec references by name only (secrets never written into the spec).
      */
     readonly launchEnvironment: Readonly<Record<string, string>>;
-    /** Bring the finished run's result into the worker worktree. */
-    complete(handle: AgentRunHandle, result: AgentRunResult): Promise<WorkspaceRunOutcome>;
+    /** Bring the finished run's result into the worker worktree, unless the run is cancelled first. */
+    complete(handle: AgentRunHandle, result: AgentRunResult, options?: WorkspaceCompletionOptions): Promise<WorkspaceRunOutcome>;
     /** Always called last, whatever happened: temporary refs, credentials and the kept run are discarded. */
     cleanup(handle?: AgentRunHandle): Promise<void>;
 }
@@ -67,14 +77,22 @@ export async function createWorkspaceTransport(mode: WorkspaceTransportMode): Pr
     return new CloneWorkspaceTransport();
 }
 
-type LaunchOptions = { extraEnvVars?: Record<string, string> };
+type LaunchOptions = { extraEnvVars?: Record<string, string>; signal?: AbortSignal };
+
+/** The run's cancellation: the caller's signal and the protected execution's ownership, as the Docker runtime honours them. */
+function runCancellation(options: LaunchOptions): AbortSignal | undefined {
+    const signals = [options.signal, getExecutionOwnershipContext()?.signal].filter((signal): signal is AbortSignal => !!signal);
+    return signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+}
 
 /**
  * Run `spec` on `runtime` through `transport`: prepare the workspace, start
  * the run, bring its result into the worker worktree, then clean up. A run
- * that rejects (aborted, stopped, ownership lost) applies nothing. A run that
- * exited non-zero still returns what it left (the worker preserves partial
- * work); if that return fails, the run's own failure is what the caller sees.
+ * that rejects (aborted, stopped, ownership lost) applies nothing; neither
+ * does one cancelled after it exited, while its result is being returned
+ * (the abort error is what the caller sees). A run that exited non-zero
+ * still returns what it left (the worker preserves partial work); if that
+ * return fails, the run's own failure is what the caller sees.
  */
 export async function runWithWorkspaceTransport<Options extends LaunchOptions, Result extends AgentRunResult>(
     runtime: AgentRuntime<Options, Result>,
@@ -82,6 +100,7 @@ export async function runWithWorkspaceTransport<Options extends LaunchOptions, R
     options: Options,
     { transport, assertSupported = () => undefined }: { transport: WorkspaceTransport; assertSupported?: (spec: AgentRunSpec) => void },
 ): Promise<Result> {
+    const signal = runCancellation(options);
     const prepared = await transport.prepare(spec);
     let handle: AgentRunHandle<Result> | undefined;
     try {
@@ -92,9 +111,16 @@ export async function runWithWorkspaceTransport<Options extends LaunchOptions, R
         handle = runtime.start(prepared.spec, { ...options, ...launchEnvironment });
         const result = await handle.wait();
         try {
-            const outcome = await prepared.complete(handle, result);
+            const outcome = await prepared.complete(handle, result, { signal });
             logger.info({ run: spec.name, transport: transport.mode, ...outcome }, 'Workspace transport returned the run result');
         } catch (error) {
+            // A cancelled run reports its cancellation, whatever its exit status.
+            const aborted = getExecutionAbortError(signal);
+            if (aborted) {
+                logger.warn({ run: spec.name, transport: transport.mode, error: (error as Error).message },
+                    'Run cancelled while its workspace result was being returned');
+                throw aborted;
+            }
             if (result.exitCode === 0 && !result.timedOut) throw error;
             logger.warn({ run: spec.name, transport: transport.mode, exitCode: result.exitCode, error: (error as Error).message },
                 'Could not return the workspace of a failed run');

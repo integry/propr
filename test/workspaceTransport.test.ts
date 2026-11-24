@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,8 @@ const { BindWorkspaceTransport, runWithWorkspaceTransport, WorkspaceTransportErr
 const { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } = await import('../packages/core/src/git/workspaceTransportMode.ts');
 const { CloneWorkspaceTransport, parseGitHubRepository } = await import('../packages/core/src/git/workspaceCloneTransport.ts');
 const { WORKSPACE_TRANSPORT_ENVIRONMENT, WORKSPACE_TRANSPORT_RESULT_DIR, WORKSPACE_TRANSPORT_TOKEN_ENV, WORKSPACE_BOOTSTRAP_FAILURE_EXIT } = await import('../packages/core/src/git/workspaceTransportScript.ts');
+const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
+const { ExecutionAbortedError, runWithExecutionAbortSignal } = await import('../packages/core/src/claude/docker/dockerExecutionOwnership.ts');
 
 import type { AgentRunHandle, AgentRunResult, AgentRunSpec, AgentRuntime } from '../packages/core/src/agents/runtime/types.ts';
 
@@ -34,8 +36,8 @@ interface Fixture {
     transport: InstanceType<typeof CloneWorkspaceTransport>;
 }
 
-function fixture(): Fixture {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-ws-transport-'));
+function fixture(base = os.tmpdir()): Fixture {
+    const root = fs.mkdtempSync(path.join(base, 'propr-ws-transport-'));
     const remote = path.join(root, 'remote.git');
     git(root, 'init', '-q', '--bare', '-b', 'main', remote);
     const seed = path.join(root, 'seed');
@@ -93,15 +95,26 @@ function runSpec(f: Fixture, overrides: { readOnly?: boolean; gitWritable?: bool
     }).workspaceMount()
         .bind('/tmp/git-processor', '/tmp/git-processor', !overrides.gitWritable, 'git')
         .bind('/creds', '/home/node/.claude', false, 'credential')
-        .env('GH_TOKEN', 'read-only');
+        .env('GH_TOKEN', 'read-only')
+        .command('agent-cli');
     for (const [name, value] of Object.entries(overrides.env ?? {})) builder.env(name, value);
     const spec = builder.build();
     spec.repoSetup = { agentType: 'claude', shell: '/bin/bash', script: 'exec "$0" "$@"', providerEntrypoint: agent, env: [] };
     return spec;
 }
 
+/** What the container's `/bin/bash` entrypoint runs for `spec`, exactly as rendered for Docker (`-c` rather than `-lc`, so the test PATH survives). */
+function sandboxLaunch(spec: AgentRunSpec): string[] {
+    const args = renderDockerRunArgs(spec);
+    const image = args.lastIndexOf(spec.profile.image);
+    assert.deepEqual(args.slice(image - 2, image), ['--entrypoint', '/bin/bash']);
+    const [login, ...launch] = args.slice(image + 1);
+    assert.equal(login, '-lc');
+    return ['-c', ...launch];
+}
+
 type Result = AgentRunResult;
-interface LocalRuntime extends AgentRuntime<{ extraEnvVars?: Record<string, string>; stdinData?: string; abortAfterMs?: number }, Result> {
+interface LocalRuntime extends AgentRuntime<{ extraEnvVars?: Record<string, string>; stdinData?: string; abortAfterMs?: number; signal?: AbortSignal }, Result> {
     started: Array<{ spec: AgentRunSpec; extraEnvVars?: Record<string, string> }>;
     released: number;
     retained: number;
@@ -143,7 +156,6 @@ function localRuntime(f: Fixture, setup: { root?: boolean; agentUid?: number } =
         capabilities: { supportsBindMounts: false, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['clone'] },
         start(spec, options = {}) {
             runtime.started.push({ spec, extraEnvVars: options.extraEnvVars });
-            const clone = spec.workspace.clone!;
             const systemPath = process.env.PATH ?? '/usr/bin:/bin';
             const env: Record<string, string> = { PATH: pathPrefix ? `${pathPrefix}:${systemPath}` : systemPath, HOME: f.root, TMPDIR: tmp };
             for (const variable of [...spec.env].sort((a, b) => a.order - b.order)) {
@@ -151,7 +163,7 @@ function localRuntime(f: Fixture, setup: { root?: boolean; agentUid?: number } =
                 if (value !== undefined) env[variable.name] = value;
             }
             env[WORKSPACE_TRANSPORT_ENVIRONMENT.resultDir] = f.resultDir;
-            const child = spawn('/bin/bash', ['-c', clone.script, spec.repoSetup!.script, spec.repoSetup!.providerEntrypoint, ...spec.args], { env, detached: true });
+            const child = spawn('/bin/bash', sandboxLaunch(spec), { env, detached: true });
             const stdout = new PassThrough();
             const stderr = new PassThrough();
             let err = '';
@@ -337,6 +349,87 @@ test('an aborted clone-mode run applies nothing and still cleans up refs, token 
     await assert.rejects(runWithWorkspaceTransport(runtime, spec, { abortAfterMs: 1500 }, { transport: f.transport }), /aborted/);
     assert.equal(git(f.worktree, 'status', '--porcelain'), '', 'nothing from the aborted run reaches the worktree');
     assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'original\n');
+    assert.equal(remoteRunRefs(f), '');
+    assert.deepEqual(f.revoked, [TOKEN]);
+    assert.equal(runtime.released, 1);
+});
+
+/** Holds the run's first result-file read (its status) until resumed: the run has exited and the worker is retrieving its result. */
+function pauseRetrieval(runtime: LocalRuntime): { reading: Promise<void>; resume: () => void } {
+    let reached!: () => void;
+    let resume!: () => void;
+    const reading = new Promise<void>(resolve => { reached = resolve; });
+    const resumed = new Promise<void>(resolve => { resume = resolve; });
+    const start = runtime.start.bind(runtime);
+    runtime.start = (spec, options) => {
+        const handle = start(spec, options);
+        return { ...handle, readFile: async file => { reached(); await resumed; return handle.readFile!(file); } };
+    };
+    return { reading, resume };
+}
+
+function assertCancelledResultKeptLocally(f: Fixture, runtime: LocalRuntime, label: string): void {
+    assert.equal(git(f.worktree, 'status', '--porcelain'), '', `${label}: nothing from the cancelled run reaches the worktree`);
+    assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'original\n');
+    assert.equal(git(f.worktree, 'rev-parse', 'HEAD'), f.base);
+    assert.equal(git(f.worktree, 'symbolic-ref', '--short', 'HEAD'), 'task-1');
+    assert.equal(git(f.worktree, 'show', 'refs/propr/runs/run-1:new.txt'), 'new', `${label}: the retrieved snapshot stays on the local ref for recovery`);
+    assert.equal(remoteRunRefs(f), '', `${label}: sandbox copies are discarded once the worker holds the result`);
+    assert.deepEqual(f.revoked, [TOKEN]);
+    assert.equal(runtime.released, 1);
+}
+
+test('a clone-mode run cancelled after it exited, while its result is retrieved, applies nothing and keeps the retrieved snapshot', async () => {
+    // A run that failed would otherwise return its partial work; cancellation wins over both outcomes.
+    for (const exit of ['0', '3']) {
+        const f = fixture();
+        const runtime = localRuntime(f);
+        const retrieval = pauseRetrieval(runtime);
+        const controller = new AbortController();
+        const reason = new ExecutionAbortedError();
+        const running = runWithWorkspaceTransport(runtime, runSpec(f, { env: { AGENT_EXIT: exit } }), { signal: controller.signal }, { transport: f.transport });
+        await retrieval.reading;
+        controller.abort(reason);
+        retrieval.resume();
+        await assert.rejects(running, (error: unknown) => error === reason, `exit ${exit}: the caller sees the cancellation, not the run's result`);
+        assertCancelledResultKeptLocally(f, runtime, `exit ${exit}`);
+    }
+});
+
+test('losing execution ownership while a clone-mode result is retrieved applies nothing', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const retrieval = pauseRetrieval(runtime);
+    const ownership = new AbortController();
+    const reason = new ExecutionAbortedError('Execution ownership lost');
+    const running = runWithExecutionAbortSignal(ownership.signal, () => runWithWorkspaceTransport(runtime, runSpec(f), {}, { transport: f.transport }));
+    await retrieval.reading;
+    ownership.abort(reason);
+    retrieval.resume();
+    await assert.rejects(running, (error: unknown) => error === reason);
+    assertCancelledResultKeptLocally(f, runtime, 'ownership lost');
+});
+
+test('a clone-mode run cancelled as it settles retrieves nothing and is discarded like a run aborted while it ran', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const controller = new AbortController();
+    const reason = new ExecutionAbortedError();
+    const reads: string[] = [];
+    const start = runtime.start.bind(runtime);
+    runtime.start = (spec, options) => {
+        const handle = start(spec, options);
+        return {
+            ...handle,
+            // The run exits, then its cancellation arrives before the worker takes its result.
+            wait: async () => { const result = await handle.wait(); controller.abort(reason); return result; },
+            readFile: async file => { reads.push(file); return handle.readFile!(file); },
+        };
+    };
+    await assert.rejects(runWithWorkspaceTransport(runtime, runSpec(f), { signal: controller.signal }, { transport: f.transport }), (error: unknown) => error === reason);
+    assert.deepEqual(reads, [], 'nothing is retrieved');
+    assert.equal(git(f.worktree, 'status', '--porcelain'), '');
+    assert.equal(git(f.worktree, 'for-each-ref', 'refs/propr'), '', 'no local copy is kept');
     assert.equal(remoteRunRefs(f), '');
     assert.deepEqual(f.revoked, [TOKEN]);
     assert.equal(runtime.released, 1);
@@ -528,6 +621,132 @@ test('a clone-mode run that does not start as root is refused before anything is
     for (const user of ['0', 'root', 'root:root', '0:1000']) {
         const prepared = await f.transport.prepare(runSpec(f, { user }));
         await prepared.cleanup();
+    }
+});
+
+/** A run without the repository setup wrapper: an explicit entrypoint the transport wrapper starts itself. */
+function directRun(f: Fixture, agentScript: string): { spec: AgentRunSpec; agent: string } {
+    const agent = path.join(f.root, 'direct-agent.sh');
+    write(agent, agentScript, 0o755);
+    fs.chmodSync(agent, 0o755);
+    const spec = runSpec(f);
+    delete spec.repoSetup;
+    spec.entrypoint = agent;
+    return { spec, agent };
+}
+
+test('a direct entrypoint without a setup wrapper is started as the agent user by the transport wrapper itself', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const seen = path.join(f.root, 'direct-agent.seen');
+    const { spec, agent } = directRun(f, `#!/bin/bash
+set -e
+echo "USER=$USER HOME=$HOME token=\${${WORKSPACE_TRANSPORT_TOKEN_ENV}:-} args=$*" > ${JSON.stringify(seen)}
+echo direct > a.txt
+`);
+    const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.ok(runtime.drops().startsWith(`node env HOME=/home/node USER=node LOGNAME=node ${agent} agent-cli\n`),
+        `the entrypoint is started only through the drop to the agent user:\n${runtime.drops()}`);
+    assert.equal(fs.readFileSync(seen, 'utf8'), 'USER=node HOME=/home/node token= args=agent-cli\n');
+    assert.equal(fs.readFileSync(path.join(f.worktree, 'a.txt'), 'utf8'), 'direct\n', 'its result still returns');
+    assert.deepEqual(f.revoked, [TOKEN]);
+});
+
+/** Real root for the UID-boundary test: this process, or passwordless sudo. Null when neither is available. */
+function realRootLauncher(): string[] | null {
+    if (process.platform !== 'linux') return null;
+    if (process.getuid?.() === 0) return [];
+    try {
+        execFileSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 10_000 });
+        return ['sudo', '-n', '--'];
+    } catch {
+        return null;
+    }
+}
+
+function commandAvailable(command: string): boolean {
+    try { execFileSync(command, ['--version'], { stdio: 'ignore', timeout: 10_000 }); return true; } catch { return false; }
+}
+
+/** A temporary directory whose ancestors an unprivileged UID can traverse (the agent must reach its entrypoint). */
+function traversableTemporaryBase(): string | undefined {
+    for (const candidate of new Set([os.tmpdir(), '/tmp'])) {
+        try {
+            const resolved = fs.realpathSync(candidate);
+            let traversable = true;
+            for (let current = resolved; ; current = path.dirname(current)) {
+                if (!(fs.statSync(current).mode & 0o001)) { traversable = false; break; }
+                if (current === path.dirname(current)) break;
+            }
+            if (traversable) return resolved;
+        } catch { /* try the next candidate */ }
+    }
+    return undefined;
+}
+
+const ROOT_LAUNCHER = realRootLauncher();
+/** The real unprivileged UID the agent drops to in the UID-boundary test (`nobody`). */
+const REAL_AGENT_UID = 65534;
+
+test('a direct entrypoint runs under a real agent UID that cannot read the root wrapper\'s initial environment', {
+    skip: !ROOT_LAUNCHER ? 'needs root or passwordless sudo to start the transport wrapper as a real root process'
+        : !commandAvailable('setpriv') ? 'needs setpriv to drop to a real unprivileged UID' : false,
+}, async () => {
+    const launcher = ROOT_LAUNCHER!;
+    const base = traversableTemporaryBase();
+    assert.ok(base, `no temporary directory traversable by UID ${REAL_AGENT_UID} (TMPDIR=${os.tmpdir()})`);
+    const f = fixture(base);
+    try {
+        fs.chmodSync(f.root, 0o755);
+        const evidence = path.join(f.root, 'evidence');
+        fs.mkdirSync(evidence);
+        fs.chmodSync(evidence, 0o777);
+        // The agent records its own and its parent's (the wrapper's) user IDs, then tries to read the
+        // wrapper's initial environment, which still holds the token after the wrapper's `unset`.
+        const { spec } = directRun(f, `#!/bin/bash
+umask 022
+evidence=${JSON.stringify(evidence)}
+sed -n 's/^Uid:[[:space:]]*//p' /proc/self/status > "$evidence/agent.uid"
+sed -n 's/^Uid:[[:space:]]*//p' "/proc/$PPID/status" > "$evidence/wrapper.uid"
+if { tr '\\0' '\\n' < "/proc/$PPID/environ"; } > "$evidence/wrapper.env" 2>/dev/null; then echo read; else echo denied; fi > "$evidence/environ"
+`);
+        // The container's identities: the wrapper is real root; `node` is the real unprivileged UID above,
+        // and `su-exec` really switches to it.
+        const bin = path.join(f.root, 'bin');
+        write(path.join(bin, 'id'), `#!/bin/bash\ncase "$*" in\n  node) echo "uid=${REAL_AGENT_UID}(node) gid=${REAL_AGENT_UID}(node) groups=${REAL_AGENT_UID}(node)" ;;\n  "-u node") echo ${REAL_AGENT_UID} ;;\n  *) PATH=/usr/bin:/bin exec id "$@" ;;\nesac\n`, 0o755);
+        write(path.join(bin, 'su-exec'), `#!/bin/bash\n[ "$1" = node ] || exit 125\nshift\nexec setpriv --reuid=${REAL_AGENT_UID} --regid=${REAL_AGENT_UID} --clear-groups -- "$@"\n`, 0o755);
+        for (const shim of ['id', 'su-exec']) fs.chmodSync(path.join(bin, shim), 0o755);
+        const gitSystemConfig = path.join(f.root, 'gitconfig-system');
+        // Root reads this test user's remote; git would otherwise refuse it as dubiously owned.
+        write(gitSystemConfig, '[safe]\n\tdirectory = *\n');
+
+        const prepared = await f.transport.prepare(spec);
+        const env: Record<string, string> = {
+            PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: f.root, TMPDIR: path.join(f.root, 'tmp'), GIT_CONFIG_SYSTEM: gitSystemConfig,
+        };
+        fs.mkdirSync(env.TMPDIR);
+        for (const variable of [...prepared.spec.env].sort((a, b) => a.order - b.order)) {
+            const value = variable.value ?? prepared.launchEnvironment[variable.name];
+            if (value !== undefined) env[variable.name] = value;
+        }
+        env[WORKSPACE_TRANSPORT_ENVIRONMENT.resultDir] = f.resultDir;
+        // No result return: it would push from root into this test's remote. This test is the UID boundary only.
+        env[WORKSPACE_TRANSPORT_ENVIRONMENT.resultRef] = '';
+        const command = [...launcher, 'env', '-i', ...Object.entries(env).map(([name, value]) => `${name}=${value}`), '/bin/bash', ...sandboxLaunch(prepared.spec)];
+        const run = spawnSync(command[0], command.slice(1), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 });
+        await prepared.cleanup();
+
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(fs.readFileSync(path.join(evidence, 'wrapper.uid'), 'utf8').trim().split(/\s+/)[0], '0', 'the credential-holding wrapper really runs as root');
+        assert.deepEqual(fs.readFileSync(path.join(evidence, 'agent.uid'), 'utf8').trim().split(/\s+/), Array(4).fill(String(REAL_AGENT_UID)),
+            'the agent runs under the agent UID (real, effective, saved and filesystem)');
+        assert.equal(fs.readFileSync(path.join(evidence, 'environ'), 'utf8').trim(), 'denied', 'the kernel refuses the agent the wrapper\'s initial environment');
+        assert.equal(grepToken(evidence), '');
+        assert.deepEqual(f.revoked, [TOKEN]);
+    } finally {
+        if (launcher.length) spawnSync(launcher[0], [...launcher.slice(1), 'rm', '-rf', f.root], { stdio: 'ignore', timeout: 60_000 });
+        else fs.rmSync(f.root, { recursive: true, force: true });
     }
 });
 

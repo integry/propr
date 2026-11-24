@@ -14,9 +14,11 @@
  *    unprivileged `node` user ({@link WORKSPACE_AGENT_USER}). It refuses to
  *    run anything otherwise, before any credentialed operation. Everything
  *    agent-controlled runs as `node`: the setup hook (the repository setup and
- *    workflow wrappers drop to it), the agent (every provider entrypoint drops
- *    to it when started as root) and the workspace snapshot (this wrapper drops
- *    to it).
+ *    workflow wrappers drop to it), the agent (every ProPR provider entrypoint
+ *    drops to it when started as root with a command; a direct entrypoint,
+ *    which has no such wrapper, is started as `node` by this wrapper itself,
+ *    see {@link WORKSPACE_DIRECT_AGENT_LAUNCH}) and the workspace snapshot
+ *    (this wrapper drops to it).
  * 2. Fetches the base ref the worker published into a private, wrapper-owned
  *    bare repository, clones that into the workspace without credentials and
  *    checks out the task branch at exactly the base commit.
@@ -50,6 +52,13 @@ export const WORKSPACE_RESULT_BUNDLE_REF = 'refs/propr/result';
 export const WORKSPACE_BOOTSTRAP_FAILURE_EXIT = 86;
 /** Unprivileged identity the setup hook, agent and snapshot run as; never the credential-holding wrapper's. */
 export const WORKSPACE_AGENT_USER = 'node';
+/**
+ * Inner launcher (`$0` of the wrapper) of a run without the repository setup
+ * wrapper. Nothing trusted between this wrapper and such an entrypoint drops
+ * privileges, so the wrapper starts the entrypoint and arguments that follow
+ * as {@link WORKSPACE_AGENT_USER} itself, instead of running a root wrapper.
+ */
+export const WORKSPACE_DIRECT_AGENT_LAUNCH = 'propr-workspace-transport:run-as-agent';
 
 /**
  * Whether a run's `user` (`uid[:gid]` or `name[:group]`) starts the transport
@@ -124,8 +133,9 @@ drops_privileges() {
     [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id ${WORKSPACE_AGENT_USER} >/dev/null 2>&1 && [ "$(id -u ${WORKSPACE_AGENT_USER})" != "0" ]
 }
 # Run a command as the agent's identity (as the repository setup wrapper does).
+agent_identity=(su-exec ${WORKSPACE_AGENT_USER} env HOME=/home/${WORKSPACE_AGENT_USER} USER=${WORKSPACE_AGENT_USER} LOGNAME=${WORKSPACE_AGENT_USER})
 as_agent() {
-    su-exec ${WORKSPACE_AGENT_USER} env HOME=/home/${WORKSPACE_AGENT_USER} USER=${WORKSPACE_AGENT_USER} LOGNAME=${WORKSPACE_AGENT_USER} "$@"
+    "\${agent_identity[@]}" "$@"
 }
 drop_secrets() {
     auth_header=""
@@ -176,7 +186,14 @@ chown -R ${WORKSPACE_AGENT_USER}:${WORKSPACE_AGENT_USER} "$workspace" 2>/dev/nul
 echo "ProPR workspace transport: cloned $base_commit into $workspace" >&2
 
 exec 3<&0
-/bin/bash -lc "$inner_script" "$@" <&3 3<&- &
+if [ "$inner_script" = "${WORKSPACE_DIRECT_AGENT_LAUNCH}" ]; then
+    # A direct entrypoint has no trusted wrapper that drops privileges: start it as the agent.
+    "\${agent_identity[@]}" "$@" <&3 3<&- &
+else
+    # The repository setup or workflow wrapper drops the setup hook, and the ProPR
+    # provider entrypoint it execs drops the agent, to the agent user.
+    /bin/bash -lc "$inner_script" "$@" <&3 3<&- &
+fi
 child=$!
 exec 3<&-
 trap 'kill -s TERM "$child" 2>/dev/null' TERM

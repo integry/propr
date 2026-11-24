@@ -462,8 +462,12 @@ test('a clone-mode spec renders the transport wrapper outside the setup wrapper 
     assert.ok(!args.some(arg => arg.includes('/tmp/w:')), 'the worktree is not mounted');
     const { repoSetup: _repoSetup, ...direct } = cloneSpec();
     assert.throws(() => renderDockerRunArgs(direct), /needs an explicit entrypoint/);
+    // No setup wrapper drops a direct entrypoint's privileges: the transport wrapper starts it as the agent user.
     assert.deepEqual(renderDockerRunArgs({ ...direct, entrypoint: '/entry' }).slice(-10),
-        ['--entrypoint', '/bin/bash', 'propr/agent:test', '-lc', 'TRANSPORT', 'exec "$0" "$@"', '/entry', 'claude', '-p', '-']);
+        ['--entrypoint', '/bin/bash', 'propr/agent:test', '-lc', 'TRANSPORT', 'propr-workspace-transport:run-as-agent', '/entry', 'claude', '-p', '-']);
+    // A provider entrypoint started as root drops to the agent only to run a command; without one it opens a root shell.
+    assert.throws(() => renderDockerRunArgs({ ...cloneSpec(), args: [] }), /gives its provider entrypoint no command to run as the agent user/);
+    assert.doesNotThrow(() => renderDockerRunArgs({ ...spec(), args: [] }), 'bind mode is unchanged');
     assert.throws(() => renderDockerRunArgs({ ...spec(), workspace: { ...spec().workspace, mode: 'clone' } }), /was not prepared by it/);
     // The credential-holding wrapper never shares the agent's user ID.
     for (const user of [undefined, '1000:1000', 'node']) {

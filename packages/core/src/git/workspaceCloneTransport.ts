@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { SimpleGit } from 'simple-git';
 import type { AgentRunHandle, AgentRunMount, AgentRunResult, AgentRunSpec, AgentRunWorkspaceClone } from '../agents/runtime/types.js';
 import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
+import { getExecutionAbortError } from '../claude/docker/dockerExecutionOwnership.js';
 import logger from '../utils/logger.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { configureGitAuthentication } from './repoBranching.js';
@@ -183,7 +184,7 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         return {
             spec: this.cloneSpec(spec, run.clone),
             launchEnvironment: { [WORKSPACE_TRANSPORT_TOKEN_ENV]: run.token! },
-            complete: (handle, result) => this.complete(run, handle, result),
+            complete: (handle, result, options) => this.complete(run, handle, result, options?.signal),
             cleanup: handle => this.cleanup(run, handle),
         };
     }
@@ -216,10 +217,13 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         }
     }
 
-    private async complete(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult): Promise<WorkspaceRunOutcome> {
+    private async complete(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult, signal?: AbortSignal): Promise<WorkspaceRunOutcome> {
+        // Cancelled before anything was returned: like a run aborted while it ran, nothing is retrieved or kept.
+        const aborted = getExecutionAbortError(signal);
+        if (aborted) throw aborted;
         run.result = 'pending';
         try {
-            const outcome = await this.retrieveAndApply(run, handle, result);
+            const outcome = await this.retrieveAndApply(run, handle, result, signal);
             run.result = 'applied';
             return outcome;
         } catch (error) {
@@ -237,7 +241,7 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         return [...(pushed ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
     }
 
-    private async retrieveAndApply(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult): Promise<WorkspaceRunOutcome> {
+    private async retrieveAndApply(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult, signal?: AbortSignal): Promise<WorkspaceRunOutcome> {
         const status = (await this.readResultFile(handle, WORKSPACE_RESULT_STATUS_FILE))?.toString('utf8').trim();
         const [state, commit] = status?.split(/\s+/) ?? [];
         run.reportedState = state;
@@ -263,7 +267,7 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         if (commit && snapshot !== commit) throw new WorkspaceTransportError(`Run result ${snapshot} does not match the reported snapshot ${commit}`);
         // The verified snapshot is now on the worker: the sandbox copies are no longer the only ones.
         run.result = 'retrieved';
-        await this.apply(run, git, snapshot);
+        await this.apply(run, git, snapshot, signal);
         return { applied: true, via, commit: snapshot };
     }
 
@@ -279,12 +283,17 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
     }
 
     /** Lay the snapshot over the worktree: working tree = snapshot, index and branch = worker HEAD (or the agent's own commits). */
-    private async apply(run: CloneRun, git: SimpleGit, snapshot: string): Promise<void> {
+    private async apply(run: CloneRun, git: SimpleGit, snapshot: string, signal?: AbortSignal): Promise<void> {
         const head = await rev(git, 'HEAD');
         if (head !== run.clone.baseCommit) {
             throw new WorkspaceTransportError(`Worktree ${run.worktree} moved from ${run.clone.baseCommit} to ${head} during the run; not applying its result`);
         }
         const agentHead = await rev(git, `${snapshot}^`);
+        // Last point before the worktree changes: a run cancelled during retrieval applies
+        // nothing, and its retrieved snapshot stays on the local ref for recovery. Once the
+        // first git command below starts, the result is applied whatever happens next.
+        const aborted = getExecutionAbortError(signal);
+        if (aborted) throw new WorkspaceTransportError(`${aborted.message}; not applying the run's result`, { cause: aborted });
         if (run.ownsCommits && agentHead !== head) await git.raw(['reset', '--quiet', '--hard', agentHead]);
         await git.raw(['read-tree', '--reset', '-u', snapshot]);
         await git.raw(['reset', '--quiet']);
