@@ -1,0 +1,122 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import type { Sprite } from '@fly/sprites';
+import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
+import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside } from '../../credentials/broker.js';
+import { credentialRunRoot, envFileValues } from '../../credentials/hostCredentialStaging.js';
+import { CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
+import type { AgentRunOptions } from '../dockerRuntime.js';
+import type { AgentRunMount, AgentRunSpec } from '../types.js';
+
+const PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+const antigravityHome = '/opt/propr/run/tmp/propr-antigravity-home';
+const stores = { claude: '/home/node/.claude', codex: '/home/node/.codex', antigravity: antigravityHome + '/.gemini' };
+export const spriteLauncher = '/opt/propr/launcher.py';
+const python = ['/usr/bin/python3', '-I', spriteLauncher];
+type Bind = Extract<AgentRunMount, { type: 'bind' }>;
+
+export function unsupportedMount(mount: Bind): string | undefined {
+    if (mount.credentialStore?.perRun && mount.credentialStore.store === 'config') return;
+    if (mount.target === SEED && mount.readOnly && mount.purpose === 'credential') return;
+    if (['logs', 'scratch'].includes(mount.purpose) && mount.target.startsWith('/tmp/') && path.normalize(mount.target) === mount.target) return;
+    return `cannot provide the ${mount.purpose} mount at ${mount.target}`;
+}
+
+function supportedBinds(spec: AgentRunSpec) {
+    const binds = spec.mounts.filter((mount): mount is Bind => mount.type === 'bind');
+    for (const bind of binds) {
+        const reason = unsupportedMount(bind);
+        if (reason) throw new Error(reason);
+    }
+    return binds;
+}
+
+function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: string) {
+    const inherited = { ...process.env, ...options.extraEnvVars };
+    const env = new Map(Object.entries(options.extraEnvVars ?? {}));
+    for (const file of [...spec.envFiles].sort((a, b) => a.order - b.order)) {
+        fs.accessSync(file.path, fs.constants.R_OK);
+        for (const [name, value] of envFileValues(file.path, inherited)) env.set(name, value);
+    }
+    for (const variable of [...(spec.repoSetup?.env ?? []), ...[...spec.env].sort((a, b) => a.order - b.order)]) {
+        const value = variable.value ?? inherited[variable.name];
+        if (value === undefined) env.delete(variable.name);
+        else env.set(variable.name, value);
+    }
+    const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) ?? '';
+    env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
+    for (const name of Object.values(E)) env.delete(name);
+    for (const [name, value] of env) {
+        if (['SPRITES_TOKEN', 'PROPR_SPRITES_TOKEN', 'PROPR_SPRITES_LIVE_TOKEN'].includes(name) || value.includes(token)) env.delete(name);
+    }
+    env.delete('PROPR_ANTIGRAVITY_SOURCE_CONFIG');
+    env.delete('PROPR_ANTIGRAVITY_TRANSCRIPT_PATH');
+    return { env, transportToken };
+}
+
+function claudeSeed(binds: Bind[], token: string): string | undefined {
+    const seed = binds.find(m => m.target === SEED);
+    if (!seed) return undefined;
+    const read = readRegularFileInside(path.dirname(seed.source), path.basename(seed.source), MAX_RETURNED_CREDENTIAL_BYTES);
+    if (!read || read === 'oversized') throw new Error('Invalid Claude configuration seed');
+    if (read.content.includes(token)) throw new Error('Sprites org credential found in Claude configuration');
+    return read.content.toString('base64');
+}
+
+export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string };
+export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch) {
+    const clone = spec.workspace.clone;
+    if (!clone || spec.workspace.mode !== 'clone' || spec.workspace.containerPath !== '/home/node/workspace' || spec.workspace.readOnly)
+        throw new Error('Sprites requires a prepared writable clone workspace');
+    const provider = spec.profile.agentType;
+    if (!(provider in stores)) throw new Error(`Unsupported Sprites provider: ${provider}`);
+    const binds = supportedBinds(spec);
+    const { env, transportToken } = runEnvironment(spec, options, token);
+    const home = provider === 'antigravity' ? antigravityHome : '/home/node';
+    Object.entries({ PATH, HOME: home, USER: 'node', LOGNAME: 'node', LANG: 'C.UTF-8', DISABLE_AUTOUPDATER: '1', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
+        .forEach(([key, value]) => env.set(key, value));
+    const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
+    const bundle = broker.materialize(binds.filter(m => m.credentialStore).map(m => {
+        if (m.credentialStore!.provider !== provider) throw new Error('Mismatched Sprite credential store');
+        return { id: 'config', provider, store: 'config' as const, canonicalRoot: m.source };
+    }), { definedEnv: [...env].filter(([, value]) => value).map(([key]) => key) });
+    const store = bundle.stores[0];
+    const files = store?.files.map(f => {
+        if (f.content.includes(token)) throw new Error('Sprites org credential found in provider store');
+        return [f.path, f.content.toString('base64'), Boolean(f.mode & 0o111)];
+    }) ?? [];
+    const liveStore = stores[provider as keyof typeof stores];
+    const directories = [home, ...binds.filter(m => ['logs', 'scratch'].includes(m.purpose)).map(m => m.target),
+        ...(store?.directories.map(dir => path.join(liveStore, dir)) ?? [])];
+    const argv = spec.repoSetup
+        ? ['/bin/bash', '-c', spec.repoSetup.script, `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args]
+        : [spec.entrypoint ?? `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args];
+    const upload = JSON.stringify({
+        transport: ['/bin/bash', '-c', WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, ...python, 'agent'],
+        transportEnv: { PATH, HOME: '/root', [E.path]: spec.workspace.containerPath, [E.remote]: clone.remote, [E.branch]: clone.branch,
+            [E.baseRef]: clone.baseRef, [E.baseCommit]: clone.baseCommit, [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: '/opt/propr/result',
+            [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
+        stdin: options.stdinData ?? '', files,
+        agent: { env: { ...Object.fromEntries(env), ...bundle.secretEnv }, argv, directories, claudeSeed: claudeSeed(binds, token),
+            store: store ? liveStore : null, outputs: store?.outputs ?? [] },
+    });
+    if (upload.includes(token)) throw new Error('Refusing to upload the Sprites organization credential');
+    await sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 });
+    return async () => {
+        if (!store?.outputs.length) return;
+        // The SDK stat/read calls follow links. Run the descriptor-based reader on
+        // the Sprite. Only the launcher's unprivileged child reads the live credentials.
+        const limits = {
+            cwd: '/', timeout: 30_000, maxBuffer: 2 * MAX_RETURNED_CREDENTIAL_BYTES * store.outputs.length,
+        };
+        await sprite.execFile('sudo', ['-n', ...python, 'export'], limits);
+        const { stdout } = await sprite.execFile(python[0], [...python.slice(1), 'read-export', String(store.outputs.length)], limits);
+        const records: Array<{ index: number; content: string; mtimeMs: number }> = JSON.parse(stdout.toString());
+        await broker.commit(bundle, records.map(record => {
+            const content = Buffer.from(record.content, 'base64');
+            if (!Number.isInteger(record.index) || !store.outputs[record.index] || !Number.isFinite(record.mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES)
+                throw new Error('Invalid Sprite credential export');
+            return { storeId: store.id, path: store.outputs[record.index], content, mtimeMs: record.mtimeMs };
+        }));
+    };
+}

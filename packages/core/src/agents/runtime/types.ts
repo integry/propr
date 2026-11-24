@@ -1,6 +1,6 @@
 import type { Readable } from 'node:stream';
 import type { ResolvedNetworkPolicy } from '../../network/networkPolicy.js';
-import type { AgentType } from '../types.js';
+import type { AgentConfig, AgentType } from '../types.js';
 import type { AgentRunComputeUsage } from './computeUsage.js';
 
 /**
@@ -374,10 +374,29 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
      * be established (the run may still be removed automatically). It never rejects.
      */
     retain?(): void | Promise<boolean>;
+    /** Location of the retained sandbox result when the runtime uses a generated machine name. */
+    readonly recoveryLocation?: string;
 }
+
+/** What a launch knows of the agent's configuration: its runtime and CLI version selection. */
+export type AgentRunConfigSelection = Pick<AgentConfig, 'runtime'>
+    & Partial<Pick<AgentConfig, 'type' | 'id' | 'alias' | 'cliVersionType' | 'cliVersion' | 'cliVersionResolved'>>;
 
 export interface AgentRuntime<Options = unknown, Result extends AgentRunResult = AgentRunResult> {
     readonly kind: string;
     readonly capabilities: AgentRuntimeCapabilities;
+    close?(): Promise<void>;
     start(spec: AgentRunSpec, options?: Options): AgentRunHandle<Result>;
+    /**
+     * For runtimes without bind mounts: why a bind cannot be provided another
+     * way (uploaded files, credential-broker copies, empty log directories), or
+     * undefined when the runtime materialises it. Absent: every bind is refused.
+     */
+    unsupportedMount?(mount: Extract<AgentRunMount, { type: 'bind' }>): string | undefined;
+    /**
+     * Why the runtime cannot run the agent as configured (e.g. a CLI version it
+     * does not provide), or undefined when it can. Checked before every launch;
+     * `config` is null for the instance's default agent.
+     */
+    unsupportedAgentConfig?(config: AgentRunConfigSelection | null, spec: AgentRunSpec): string | undefined;
 }

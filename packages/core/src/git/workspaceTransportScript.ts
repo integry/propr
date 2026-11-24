@@ -112,24 +112,24 @@ if [ -n "$token" ]; then
 fi
 token=""
 trusted=""
-stage=""
 
 # Git in the wrapper's private repository only: no global config (HOME may be
 # the agent's), no inherited variables that select programs or repositories.
 git_isolation=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY
     -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_SSH -u GIT_SSH_COMMAND
     -u GIT_SSH_VARIANT -u GIT_ASKPASS -u SSH_ASKPASS -u GIT_PROXY_COMMAND -u GIT_EXEC_PATH -u GIT_EXTERNAL_DIFF
-    -u GIT_TEMPLATE_DIR -u GIT_ALLOW_PROTOCOL GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0)
+    -u GIT_TEMPLATE_DIR -u GIT_ALLOW_PROTOCOL GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
+    GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$workspace")
 trusted_git() {
-    "\${git_isolation[@]}" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+    "\${git_isolation[@]}" GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null \\
         git --git-dir="$trusted/repo.git" "$@"
 }
 # The only credentialed shape: private repository, fixed remote URL, trusted configuration.
 transport_git() {
-    "\${git_isolation[@]}" GIT_CONFIG_COUNT=3 \\
-        GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
-        GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1= \\
-        GIT_CONFIG_KEY_2=http.https://github.com/.extraheader GIT_CONFIG_VALUE_2="$auth_header" \\
+    "\${git_isolation[@]}" GIT_CONFIG_COUNT=4 \\
+        GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null \\
+        GIT_CONFIG_KEY_2=credential.helper GIT_CONFIG_VALUE_2= \\
+        GIT_CONFIG_KEY_3=http.https://github.com/.extraheader GIT_CONFIG_VALUE_3="$auth_header" \\
         git --git-dir="$trusted/repo.git" "$@"
 }
 # The workspace as the wrapper sees it: possibly another user's directory (the
@@ -161,7 +161,6 @@ as_agent() {
 drop_secrets() {
     auth_header=""
     [ -z "$trusted" ] || rm -rf "$trusted"
-    [ -z "$stage" ] || rm -rf "$stage"
 }
 record() {
     printf '%s\\n' "$*" > "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}.tmp" && mv "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}.tmp" "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}"
@@ -173,19 +172,20 @@ bootstrap_failed() {
     exit ${WORKSPACE_BOOTSTRAP_FAILURE_EXIT}
 }
 
-# Snapshot, run as the agent: args are workspace, base commit, bundle path; prints the snapshot commit.
+# Snapshot as the agent. Only the bundle bytes cross back through stdout.
 snapshot_script='
 set -u
-cd "$1" || exit 1
-g() { GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git "$@"; }
+workspace="$1"
+cd "$workspace" || exit 1
+g() { GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null \\
+        GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1="$workspace" git "$@"; }
 g add -A . >/dev/null 2>&1 || exit 1
 if [ -d .propr/previews ]; then g add -A -f -- .propr/previews >/dev/null 2>&1 || exit 1; fi
 tree="$(g write-tree 2>/dev/null)" && [ -n "$tree" ] || exit 1
 head="$(g rev-parse --verify -q HEAD)" && [ -n "$head" ] || exit 1
 snapshot="$(g commit-tree "$tree" -p "$head" -m "ProPR workspace result" 2>/dev/null)" && [ -n "$snapshot" ] || exit 1
 g update-ref ${WORKSPACE_RESULT_BUNDLE_REF} "$snapshot" || exit 1
-g bundle create -q "$3" ${WORKSPACE_RESULT_BUNDLE_REF} "^$2" >/dev/null 2>&1 || exit 1
-printf "%s\\n" "$snapshot"
+g bundle create -q - ${WORKSPACE_RESULT_BUNDLE_REF} "^$2"
 '
 
 mkdir -p "$result_dir" && chmod 700 "$result_dir" || { echo "ProPR workspace transport: cannot create $result_dir" >&2; exit ${WORKSPACE_BOOTSTRAP_FAILURE_EXIT}; }
@@ -229,21 +229,18 @@ while :; do
 done
 trap - TERM INT HUP
 printf 'finalizing\\n' > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}"
+cd / || exit 1
 
 if [ -n "$result_ref" ]; then
     export GIT_AUTHOR_NAME="\${GIT_AUTHOR_NAME:-ProPR}" GIT_AUTHOR_EMAIL="\${GIT_AUTHOR_EMAIL:-bot@propr.dev}"
     export GIT_COMMITTER_NAME="\${GIT_COMMITTER_NAME:-ProPR}" GIT_COMMITTER_EMAIL="\${GIT_COMMITTER_EMAIL:-bot@propr.dev}"
     snapshot=""
-    stage="$(mktemp -d "\${TMPDIR:-/tmp}/propr-workspace-stage.XXXXXX")" || stage=""
-    if [ -n "$stage" ]; then
-        chown ${WORKSPACE_AGENT_USER}:${WORKSPACE_AGENT_USER} "$stage" 2>/dev/null || true
-        reported="$(cd / && as_agent /bin/bash -c "$snapshot_script" propr-snapshot "$workspace" "$base_commit" "$stage/snapshot.bundle" </dev/null 2>/dev/null)"
-        # The bundle is agent-written data; only what it carries crosses into the private repository.
-        if [ -n "$reported" ] \\
-            && trusted_git fetch -q --no-tags "$stage/snapshot.bundle" "+${WORKSPACE_RESULT_BUNDLE_REF}:${WORKSPACE_RESULT_BUNDLE_REF}" >/dev/null 2>&1 \\
-            && [ "$(trusted_git rev-parse --verify -q ${WORKSPACE_RESULT_BUNDLE_REF})" = "$reported" ]; then
-            snapshot="$reported"
-        fi
+    # The agent has only a pipe. The credentialed git process reads a file in
+    # its own private directory after the last writer has closed the pipe.
+    if (set -o pipefail; cd / && as_agent /bin/bash -c "$snapshot_script" propr-snapshot "$workspace" "$base_commit" </dev/null | cat > "$trusted/snapshot.bundle") \\
+        && trusted_git bundle verify "$trusted/snapshot.bundle" >/dev/null 2>&1 \\
+        && trusted_git fetch -q --no-tags "$trusted/snapshot.bundle" "+${WORKSPACE_RESULT_BUNDLE_REF}:${WORKSPACE_RESULT_BUNDLE_REF}" >/dev/null 2>&1; then
+        snapshot="$(trusted_git rev-parse --verify -q ${WORKSPACE_RESULT_BUNDLE_REF})"
     fi
     if [ -z "$snapshot" ]; then
         echo "ProPR workspace transport: could not snapshot the workspace" >&2

@@ -89,7 +89,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
     id: 'maintenance',
     label: 'Maintenance',
-    description: 'Operator upkeep: instance data and held follow-ups.',
+    description: 'Operator upkeep: instance data, held follow-ups and idle shutdown.',
     icon: Wrench,
     hideWhenEmpty: true
   },

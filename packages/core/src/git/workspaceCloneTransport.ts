@@ -242,11 +242,9 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
     }
 
     /** Where an unapplied result stays: the worker's local ref once retrieved, otherwise the run's result ref and the kept run. */
-    private preservedLocations(run: CloneRun, handle?: AgentRunHandle): string[] {
+    private preservedLocations(run: CloneRun, handle?: AgentRunHandle, keptRemoteResult = run.reportedState !== 'bundle' && run.reportedState !== 'failed'): string[] {
         if (run.result === 'retrieved') return [`${run.localRef} in ${run.worktree}`];
-        // A sandbox that reported a bundle or a failure pushed no result ref.
-        const pushed = run.reportedState !== 'bundle' && run.reportedState !== 'failed';
-        return [...(pushed ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
+        return [...(keptRemoteResult ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [handle.recoveryLocation ?? `the kept run ${handle.spec.name}`] : [])];
     }
 
     private async retrieveAndApply(run: CloneRun, handle: AgentRunHandle, result: AgentRunResult, signal?: AbortSignal): Promise<WorkspaceRunOutcome> {
@@ -334,8 +332,7 @@ export class CloneWorkspaceTransport implements WorkspaceTransport {
         });
         if (run.bundlePath) await attempt('bundle', () => fs.rm(path.dirname(run.bundlePath!), { recursive: true, force: true }));
         if (keepSandboxResult || keepLocalResult) {
-            const kept = keepLocalResult ? this.preservedLocations(run, handle)
-                : [...(keptRemoteResult ? [`${run.clone.resultRef} on ${run.remote}`] : []), ...(handle?.release ? [`the kept run ${handle.spec.name}`] : [])];
+            const kept = this.preservedLocations(run, handle, keptRemoteResult);
             logger.warn({ runId: run.runId, kept }, kept.length
                 ? 'Run result was not applied; kept its recoverable copies'
                 : 'Run result was not applied and no recoverable copy of it was found');

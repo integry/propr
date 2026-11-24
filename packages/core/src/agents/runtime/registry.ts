@@ -10,12 +10,14 @@ import { AgentRuntimeCapabilityError, restrictedNetworkRefusal, specNetworkRestr
 import { withComputeCost } from './computeUsage.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { FLY_MACHINES_RUNTIME_KIND, FlyMachinesRuntime } from './flyMachinesRuntime.js';
-import type { AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
+import { SpritesRuntime } from './spritesRuntime.js';
+import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export { AgentRuntimeCapabilityError, restrictedNetworkRefusal, type AgentRuntimeCapability } from './agentRuntimeCapabilityError.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
+export const SPRITES_AGENT_RUNTIME = 'sprites';
 
 /** Every runtime accepts the same launch options and settles with the executor result shape. */
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
@@ -24,6 +26,8 @@ export type AgentRuntimeFactory = () => ProviderAgentRuntime;
 const factories = new Map<string, AgentRuntimeFactory>([
     [DEFAULT_AGENT_RUNTIME, () => new DockerRuntime()],
     [FLY_MACHINES_RUNTIME_KIND, () => new FlyMachinesRuntime()],
+    // Constructing it reads no settings and loads no SDK; both happen when a run starts.
+    [SPRITES_AGENT_RUNTIME, () => new SpritesRuntime()],
 ]);
 const instances = new Map<string, ProviderAgentRuntime>();
 
@@ -34,6 +38,12 @@ export function registerAgentRuntime(kind: string, factory: AgentRuntimeFactory)
     if (!RUNTIME_NAME_PATTERN.test(kind)) throw new Error(`Invalid agent runtime name: ${kind}`);
     factories.set(kind, factory);
     instances.delete(kind);
+}
+
+export async function closeAgentRuntimes(): Promise<void> {
+    const runtimes = [...instances.values()];
+    instances.clear();
+    await Promise.all(runtimes.map(runtime => runtime.close?.()));
 }
 
 export function registeredAgentRuntimes(): string[] {
@@ -74,12 +84,19 @@ export function runtimeSupportsMcpReachableUrl(capabilities: AgentRuntimeCapabil
     return capabilities.supportsMcpReachableUrl !== false;
 }
 
+/** A runtime without bind mounts must provide every bind another way (uploads, broker copies), or the run is refused. */
+function assertMountsProvided(runtime: ProviderAgentRuntime, spec: AgentRunSpec): void {
+    for (const mount of spec.mounts) {
+        if (mount.type !== 'bind') continue;
+        const reason = runtime.unsupportedMount ? runtime.unsupportedMount(mount) : 'cannot bind-mount the workspace or credentials';
+        if (reason) throw new AgentRuntimeCapabilityError(`Agent runtime "${runtime.kind}" ${reason} for ${spec.name}`, runtime.kind, 'bind_mounts');
+    }
+}
+
 /** Refuse a spec the runtime cannot honour instead of running it with weaker isolation. */
 export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: AgentRunSpec): void {
     const { capabilities, kind } = runtime;
-    if (!capabilities.supportsBindMounts && spec.mounts.some(mount => mount.type === 'bind')) {
-        throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot bind-mount the workspace or credentials for ${spec.name}`, kind, 'bind_mounts');
-    }
+    if (!capabilities.supportsBindMounts) assertMountsProvided(runtime, spec);
     const transport = spec.workspace.mode;
     if (transport && !runtimeWorkspaceTransports(capabilities).includes(transport)) {
         throw new Error(`Agent runtime "${kind}" cannot run the "${transport}" workspace transport for ${spec.name}`);
@@ -151,11 +168,14 @@ export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options
  * applied back to the worker worktree before this resolves.
  */
 export async function runAgent(
-    config: Pick<AgentConfig, 'runtime'> | null | undefined,
+    config: AgentRunConfigSelection | null | undefined,
     spec: AgentRunSpec,
     options: AgentRunOptions,
 ): Promise<ExecutionResult> {
     const runtime = getAgentRuntime(config);
+    // e.g. a CLI version the runtime does not provide: refused, never run on another version.
+    const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
+    if (configRefusal) throw new Error(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {

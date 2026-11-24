@@ -43,7 +43,7 @@ test('the schedule sweeps at once, then on every tick without overlapping a slow
     try {
         let release: (() => void) | undefined;
         const sweep = mock.fn(() => new Promise<never[]>(resolve => { release = () => resolve([]); }));
-        const interval = scheduleUltrafixResumeSweep({} as never, { intervalMs: 1_000, sweep: sweep as never });
+        const stop = scheduleUltrafixResumeSweep({} as never, { intervalMs: 1_000, sweep: sweep as never });
 
         assert.equal(sweep.mock.callCount(), 1, 'runs at startup');
         mock.timers.tick(1_000);
@@ -55,7 +55,16 @@ test('the schedule sweeps at once, then on every tick without overlapping a slow
         assert.equal(sweep.mock.callCount(), 2);
         // Each run takes the shared sweep lease for one period.
         assert.deepEqual((sweep.mock.calls[1].arguments as unknown[])[2], { leaseMs: 1_000 });
-        clearInterval(interval);
+
+        // The stop waits for the run in progress, then no tick starts another.
+        let stopped = false;
+        const stopping = stop().then(() => { stopped = true; });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(stopped, false, 'a run in progress is waited for');
+        release?.();
+        await stopping;
+        mock.timers.tick(1_000);
+        assert.equal(sweep.mock.callCount(), 2);
     } finally {
         mock.timers.reset();
     }
@@ -63,6 +72,7 @@ test('the schedule sweeps at once, then on every tick without overlapping a slow
 
 test('the daemon schedules the sweep and stops it on shutdown', async () => {
     const daemon = await readFile(new URL('../src/daemon.ts', import.meta.url), 'utf8');
-    assert.match(daemon, /const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep\(redisClient\);/);
-    assert.match(daemon, /clearInterval\(ultrafixResumeSweepInterval\);/);
+    // A work producer: paused by an idle drain, stopped with the others on close.
+    assert.match(daemon, /producers\.add\('Ultrafix resume sweep', \(\) => scheduleUltrafixResumeSweep\(redisClient\)\);/);
+    assert.match(daemon, /await producers\.stop\(\);/);
 });

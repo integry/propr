@@ -4,7 +4,7 @@ import type { Logger } from 'pino';
 import { simpleGit } from 'simple-git';
 import { createWorker, INDEXING_QUEUE_NAME, indexingQueue, runMigrations } from '@propr/core';
 import type { IndexingJobData, JobResult } from '@propr/core';
-import { logger, startEgressProxySweeper } from '@propr/core';
+import { logger, startEgressProxySweeper, startIdleShutdownListener } from '@propr/core';
 import { runWithNetworkPolicy } from './jobs/networkEgress.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { generateCorrelationId } from '@propr/core';
@@ -412,11 +412,15 @@ async function startIndexingWorkerService(options: IndexingWorkerOptions = {}): 
     const ownEgressProxies = options.ownEgressProxies !== false;
     const egressProxySweeper = ownEgressProxies ? startEgressProxySweeper() : undefined;
     if (ownEgressProxies) enforceInstanceNetworkPolicyOutsideRuns();
+    // Opt-in idle shutdown: register with the daemon and follow its drain request (exit 0).
+    const idleShutdownListener = startIdleShutdownListener({ role: 'indexing_worker', log: logger });
     const close = async (): Promise<void> => {
         clearInterval(scanInterval);
         clearTimeout(initialScanTimer);
         // Proxies close only after running jobs (and their containers) have drained.
         await worker.close().finally(() => egressProxySweeper?.close());
+        // Deregister after draining so the daemon can confirm the worker has stopped.
+        await idleShutdownListener.stop();
     };
     if (options.installSignalHandlers !== false) {
         for (const signal of ['SIGINT', 'SIGTERM'] as const) {

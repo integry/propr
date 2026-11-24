@@ -18,8 +18,13 @@
  * image, or the launcher/CLI `minimal` profile.
  */
 import 'dotenv/config';
-import { logger } from '@propr/core';
-import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, type StartupStage } from './allInOneConfig.js';
+import { idleActivity, logger, setIdleShutdownComposedProcess } from '@propr/core';
+import {
+    createBoundedExit, createComponentSupervisor, installShutdownSignalHandlers, prepareAllInOneEnvironment, resolveIndexingMode,
+    resolveShutdownTimeoutMs, type StartupStage,
+} from './allInOneConfig.js';
+import { resolveFlyMachineStop } from './flyMachineStop.js';
+import { flushLogs } from './shared/flushLogs.js';
 
 export interface StartedAllInOne {
     close(): Promise<string[]>;
@@ -28,8 +33,9 @@ export interface StartedAllInOne {
 /**
  * Start every component in one process. Components register their close
  * handle as soon as they are up. A signal mid-startup stops any further
- * component from starting, waits for the one still starting, and closes it
- * together with whatever already started.
+ * component from starting, waits (bounded) for the one still starting, and
+ * closes it together with whatever already started. The whole stop is
+ * bounded too and ends in process.exit (see `createBoundedExit`).
  */
 export async function startAllInOne(): Promise<StartedAllInOne> {
     const indexingMode = resolveIndexingMode(process.env.PROPR_INDEXING);
@@ -49,19 +55,44 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         },
     });
     const close = (): Promise<string[]> => supervisor.close();
+    // Signal and idle shutdown both end here, in a bounded exit.
+    const closeAndExit = createBoundedExit({
+        close,
+        exit: code => process.exit(code),
+        pendingStep: () => supervisor.pendingStep,
+        log: {
+            info: message => logger.info(message),
+            error: (message, error) => logger.error({ error: (error as Error | undefined)?.message }, message),
+        },
+        flush: timeoutMs => flushLogs(timeoutMs),
+        deadlineMs: resolveShutdownTimeoutMs(process.env.PROPR_SHUTDOWN_TIMEOUT_MS),
+        // The API runs in this process: a request it turned away during an idle stop's close shows here at once.
+        lastActivityAt: () => idleActivity.snapshot().lastRequestAt,
+    });
 
-    let signalled = false;
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-        process.on(signal, () => {
-            if (signalled) {
-                logger.warn(`all-in-one received a second ${signal}; exiting immediately`);
-                process.exit(1);
-            }
-            signalled = true;
-            logger.info(`all-in-one received ${signal}, shutting down gracefully...`);
-            void close().then(failed => process.exit(failed.length > 0 ? 1 : 0));
-        });
-    }
+    // A drain that cannot finish (a component stuck closing) still ends the
+    // process before Fly's stop_config timeout (60s) kills it.
+    installShutdownSignalHandlers({
+        stop: signal => closeAndExit(0, { signal }),
+        log: {
+            info: message => logger.info(message),
+            warn: message => logger.warn(message),
+        },
+        exit: code => process.exit(code),
+        on: (signal, handler) => { process.on(signal, handler); },
+    });
+    // Idle shutdown: the API, worker and indexing worker in this process only
+    // acknowledge the daemon's stop request; the daemon then runs this one close
+    // (exit 1 when it called the stop off, or when the close is still running at
+    // `exitBy`, the wake arranged for scheduled work, so the supervisor starts it again).
+    // On a Fly Machine the idle exit first stops the whole Machine: an exit alone
+    // would leave Redis and the other containers keeping it started (see flyMachineStop.ts).
+    setIdleShutdownComposedProcess(true);
+    const machineStop = resolveFlyMachineStop(process.env);
+    const idleShutdownStop = (exitCode = 0, options: { exitBy?: number | null; activitySince?: number | null } = {}): void => {
+        logger.info('all-in-one: idle shutdown, closing every component');
+        closeAndExit(exitCode, { ...options, idle: true, stopHost: machineStop.kind === 'ready' ? machineStop.stop : null });
+    };
 
     const stages: StartupStage[] = [
         {
@@ -85,12 +116,14 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         {
             name: 'daemon',
             role: 'daemon',
-            run: async () => (await import('./daemon.js')).startDaemon({ installSignalHandlers: false, closeSharedQueue: false }),
+            run: async () => (await import('./daemon.js')).startDaemon({ installSignalHandlers: false, closeSharedQueue: false, idleShutdownStop }),
         },
         {
             name: 'worker',
             role: 'worker',
-            run: async () => (await import('./worker.js')).startWorker({ installSignalHandlers: false }),
+            // The worker waits for agent image readiness before it claims jobs;
+            // shutdown aborts that wait (without Docker it never ends).
+            run: async signal => (await import('./worker.js')).startWorker({ installSignalHandlers: false, signal }),
         },
         {
             name: 'pull request status maintenance',
@@ -129,6 +162,7 @@ Environment:
   PROPR_INDEXING      inline (default) | separate | off
   PROPR_SERVE_UI      1 (default) serves propr-ui/dist from the API; 0 disables
   PROPR_UI_DIST_DIR   explicit UI bundle directory
+  PROPR_SHUTDOWN_TIMEOUT_MS  exit this long after SIGTERM even if draining (default 50000)
   FRONTEND_URL        defaults to API_PUBLIC_URL (same origin)
 `);
         process.exit(0);

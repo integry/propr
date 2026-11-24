@@ -1,4 +1,5 @@
 import { createStorageRouteEntries } from '../instanceStorageRouteRegistry.js';
+import { createIdleShutdownRouteEntries } from '../idleShutdownRouteRegistry.js';
 import type { RequestHandler } from 'express';
 import type { InstancePermission } from '@propr/shared';
 import {
@@ -43,6 +44,7 @@ export function listRegistryRouteEntries(): RouteEntry[] {
     ...createOperationalRouteEntries(placeholderDeps()),
     ...createStorageRouteEntries(placeholderDeps()),
     ...createMemberCatalogRouteEntries(placeholderDeps()),
+    ...createIdleShutdownRouteEntries(placeholderDeps()),
     ...createManagementRouteEntries(placeholderDeps()),
   ];
 }

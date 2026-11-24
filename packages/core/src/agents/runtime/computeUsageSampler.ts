@@ -126,7 +126,7 @@ const SIZE_UNITS: Record<string, number> = {
 
 /** `512.3MiB` → bytes; null when unparseable. */
 export function parseDockerSize(value: string): number | null {
-    const match = /^\s*([\d.]+)\s*([a-z]+)?\s*$/i.exec(value);
+    const match = /^([\d.]+)(?:\s*([a-z]+))?$/i.exec(value.trim());
     if (!match) return null;
     const factor = SIZE_UNITS[(match[2] ?? 'b').toLowerCase()];
     const amount = Number(match[1]);

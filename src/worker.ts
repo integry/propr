@@ -1,5 +1,6 @@
-import { preventWithdrawnJob } from '@propr/core';
+import { closeAgentRuntimes, preventWithdrawnJob } from '@propr/core';
 import { prepareWorktreeHost } from './gitDirectoryTrust.js';
+import { waitForDockerApiAtStartup } from './workerDockerReadiness.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
@@ -9,7 +10,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManag
 import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
-import { setUltrafixDeps } from '@propr/core';
+import { setUltrafixDeps, startIdleShutdownListener } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -117,6 +118,8 @@ interface WorkerOptions {
     help?: boolean;
     /** Install the standalone SIGINT/SIGTERM handlers that close and exit (default true). */
     installSignalHandlers?: boolean;
+    /** Aborts startup (the agent image readiness wait) when a supervisor shuts down mid-startup. */
+    signal?: AbortSignal;
 }
 
 function parseArguments(): WorkerOptions {
@@ -169,6 +172,9 @@ export interface StartedWorker {
 }
 
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
+    // Opt-in (Fly legacy Docker): the API is already serving; only the worker
+    // waits for a Docker daemon that is still booting.
+    await waitForDockerApiAtStartup({ logger, signal: options.signal });
     await prepareWorktreeHost();
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = resolveWorkerConcurrency();
@@ -265,7 +271,15 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     // Do not advertise or claim task capacity while an image is still building.
-    const agentImageWatchdog = startAgentImageWatchdog(await prepareAgentRegistryAtStartup());
+    let preparedRegistry: Awaited<ReturnType<typeof prepareAgentRegistryAtStartup>>;
+    try {
+        preparedRegistry = await prepareAgentRegistryAtStartup({ signal: options.signal });
+    } catch (error) {
+        // Aborted by shutdown: nothing else has started yet, so close what has.
+        await Promise.allSettled([runtimeBuildWorker.close(), agentImagePreparationWorker.close(), agentImagePreparationQueue.close()]);
+        throw error;
+    }
+    const agentImageWatchdog = startAgentImageWatchdog(preparedRegistry);
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
@@ -320,6 +334,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         } else {
             logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
         }
+    });
+
+    // Opt-in idle shutdown: register with the daemon and follow its drain request (exit 0).
+    const idleShutdownListener = startIdleShutdownListener({
+        role: 'worker',
+        createConnection: () => subscriberRedis.duplicate() as never,
+        log: logger,
     });
 
     // Handle incoming config update messages
@@ -400,6 +421,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await taskStateRecovery.close();
         // Proxies close only after running jobs (and their containers) have drained.
         await worker.close().finally(() => egressProxySweeper.close());
+        await closeAgentRuntimes();
         await attachedTaskStateFinalizers.close();
         await closeStateManager();
         await runtimeBuildWorker.close();
@@ -408,6 +430,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await closeAgentImageBuildLock();
         await heartbeatRedis.srem('system:status:workers', workerId);
         await heartbeatRedis.hdel('system:status:worker-capacity', workerId);
+        // Deregistering tells an idle-shutdown daemon this worker has stopped.
+        await idleShutdownListener.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
     };

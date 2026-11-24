@@ -11,6 +11,7 @@ import { createAgentFromConfig } from './createAgentFromConfig.js';
 import { isAwaitingWorkerImagePreparation } from './agentCliVersionState.js';
 import { instrumentAgentRuntimeEvents } from './agentRuntimeEvent.js';
 import { resolveDefaultAgentConfig, resolveUnifiedAgentImage } from './agentImagePreparation.js';
+import { dockerAgentRuntimeInUse } from './runtime/runtimeSelection.js';
 import { closeAgentImagePreparationQueue, enqueueAgentImagePreparation } from './agentImagePreparationQueue.js';
 import { isAgentImageDiskPressureError } from './agentImageBuildCapacity.js';
 import { UnifiedBaseImageState, inspectAgentImages, captureRuntimePackageStateVersion, hasRuntimePackageStateChanged } from './agentRegistryRuntimeState.js';
@@ -385,7 +386,9 @@ export class AgentRegistry {
     }
 
     private async registeredAgentImagesAvailable(): Promise<boolean> {
+        // Only Docker agents have an image to lose; Sprites agents never touch Docker.
         const images = [...new Set([...this.agents.values()]
+            .filter(agent => dockerAgentRuntimeInUse([agent.config]))
             .map(agent => agent.config.dockerImage)
             .filter(Boolean))];
         return inspectAgentImages(images);

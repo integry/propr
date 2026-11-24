@@ -27,7 +27,7 @@ test('the PR comment run summary shows compute usage next to the token cost', as
 test('the PR description and the execution logs comment show compute usage after the API cost', async () => {
     const claudeResult = { success: true, executionTime: 252_000, sessionId: 's', finalResult: { num_turns: 3 }, computeUsage };
     const body = await generatePRBody(3762, 'Record compute usage', 'feat: compute usage', claudeResult);
-    assert.match(body, new RegExp(`- \\*\\*API cost\\*\\*: \\$0\\n- \\*\\*Compute\\*\\*: ${LINE.replace(/[.$()]/g, '\\$&')}\\n`));
+    assert.ok(body.includes(`- **API cost**: $0\n- **Compute**: ${LINE}\n`), body);
     const comment = await generateClaudeLogsComment(claudeResult, 3762);
     assert.ok(comment.includes(`- **Compute**: ${LINE}\n`), comment);
     assert.doesNotMatch(await generatePRBody(3762, 'x', 'y', { ...claudeResult, computeUsage: undefined }), /Compute/);
