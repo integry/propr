@@ -17,6 +17,8 @@ export interface StartOptions {
   tui?: boolean; // commander sets this false for --no-tui
   pull?: boolean; // commander sets this false for --no-pull
   restart?: boolean;
+  /** `full` (default) or `minimal` (redis + all-in-one); overrides PROPR_PROFILE. */
+  profile?: string;
 }
 
 async function confirmRestart(): Promise<boolean> {
@@ -31,7 +33,7 @@ async function confirmRestart(): Promise<boolean> {
 }
 
 export async function runStart(configManager: ConfigManager, options: StartOptions): Promise<void> {
-  const { orch, cfg, rootDir } = await getHostConfig({ configManager, root: options.root });
+  const { orch, cfg, rootDir } = await getHostConfig({ configManager, root: options.root, profile: options.profile });
 
   if (!orch.dockerAvailable()) {
     console.error("Error: cannot reach the Docker daemon. Run 'propr check' for diagnostics.");
@@ -57,7 +59,10 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
     process.exit(1);
   }
 
-  console.log(`Starting ProPR stack (root: ${rootDir})`);
+  console.log(`Starting ProPR stack (root: ${rootDir}${cfg.profile === "minimal" ? ", profile: minimal" : ""})`);
+  if (cfg.profile === "minimal") {
+    console.log(`  minimal profile: redis + one all-in-one container; the UI is served by the API at ${cfg.apiPublicUrl}`);
+  }
 
   const running = orch.isStackRunning(cfg);
   if (running) {
@@ -108,6 +113,7 @@ export async function runStart(configManager: ConfigManager, options: StartOptio
     console.log(renderStatusTable(status));
     console.log("");
     console.log("Stack running in the background.");
+    if (cfg.profile === "minimal") console.log(`  open ${cfg.apiPublicUrl} for the Web UI`);
     console.log("  propr status   # check status");
     console.log("  propr stop     # stop the stack");
     return;

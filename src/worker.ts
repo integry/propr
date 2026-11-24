@@ -115,6 +115,8 @@ async function resetWorkerQueues(): Promise<void> {
 interface WorkerOptions {
     reset?: boolean;
     help?: boolean;
+    /** Install the standalone SIGINT/SIGTERM handlers that close and exit (default true). */
+    installSignalHandlers?: boolean;
 }
 
 function parseArguments(): WorkerOptions {
@@ -409,17 +411,20 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
     };
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-        process.on(signal, async () => {
-            logger.info(`Worker received ${signal}, shutting down gracefully...`);
-            await close();
-            process.exit(0);
-        });
+    if (options.installSignalHandlers !== false) {
+        for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+            process.on(signal, async () => {
+                logger.info(`Worker received ${signal}, shutting down gracefully...`);
+                await close();
+                process.exit(0);
+            });
+        }
     }
 
     return { worker, runtimeBuildWorker, close };
 }
 
+export type { WorkerOptions };
 export { processGitHubIssueJob, processPullRequestCommentJob, processTaskImportJob, processSystemTaskJob, processMergeConflictJob, processGoalJob, startWorker };
 
 if (import.meta.url === `file://${process.argv[1]}`) {

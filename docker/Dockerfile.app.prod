@@ -1,9 +1,42 @@
 # Multi-stage prod build for the Propr application image.
-# Single image runs daemon, worker, indexing-worker, or api
-# depending on the command passed at runtime.
+# Single image runs daemon, worker, indexing-worker, api, or all of them in one
+# process (all-in-one) depending on the command passed at runtime.
 #
 # Build from the monorepo root:
 #   docker build -f docker/Dockerfile.app.prod -t propr/app .
+
+# --- Stage 0: Web UI bundle ---------------------------------------------------
+# The all-in-one entry (node dist/src/allInOne.js, the launcher's `minimal`
+# profile) serves this bundle from the API on the same origin, so that profile
+# needs no separate UI container. The multi-container stack ignores it and keeps
+# using the propr/ui image. Mirrors propr-ui/Dockerfile's build stage, without
+# a VITE_API_BASE_URL: the served bundle always calls its own origin and the
+# API generates /config.js at runtime.
+FROM node:22-slim AS ui-builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/client/package*.json ./packages/client/
+COPY propr-ui/package*.json ./propr-ui/
+COPY vendor ./vendor
+
+RUN npm install
+
+COPY packages/shared ./packages/shared
+COPY packages/client ./packages/client
+COPY apps/desktop/src/security.ts ./apps/desktop/src/security.ts
+COPY apps/desktop/src/shared/contract.ts ./apps/desktop/src/shared/contract.ts
+COPY propr-ui ./propr-ui
+# Workspace-flag form on purpose: the builder-stage tests read `cd <dir> &&
+# npm run build` steps as the app builder's TypeScript project order.
+RUN npm run build --workspace=packages/shared \
+    && npm run build --workspace=packages/client \
+    && npm run build --workspace=propr-ui
+
 
 # --- Stage 1: builder ---------------------------------------------------------
 FROM node:22-alpine AS builder
@@ -119,6 +152,9 @@ COPY --from=builder /build/packages/api/package.json ./packages/api/
 # symlinks so the root build output resolves the same trees.
 COPY --from=builder /runtime-deps/ ./
 
+# Same-origin Web UI for the all-in-one entry (see the ui-builder stage).
+COPY --from=ui-builder /app/propr-ui/dist ./propr-ui/dist
+
 # MCP-readable documentation. Keep this deliberately limited to Markdown and
 # its manifest so the app image does not inherit the docs site's dependencies,
 # generated website or images.
@@ -158,5 +194,6 @@ ENTRYPOINT ["/sbin/tini", "--"]
 #   docker run propr/app node dist/src/worker.js
 #   docker run propr/app node dist/src/indexing_worker.js
 #   docker run propr/app node dist/packages/api/server.js
+#   docker run propr/app node dist/src/allInOne.js   # daemon+worker+api(+UI) in one process
 #   docker run --rm propr/app node dist/src/migrate.js
 CMD ["node", "dist/src/daemon.js"]

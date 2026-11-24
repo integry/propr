@@ -67,6 +67,7 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 - `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally verifies GitHub App access (minting an installation token) and runs an image/CLI smoke test per agent. GitHub transport failures are warnings.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
+- `propr start --profile minimal` starts the slim control plane — Redis plus one all-in-one container whose API also serves the Web UI — instead of the default multi-container `full` profile. `PROPR_PROFILE` in the stack `.env` sets the same choice persistently. See [Control-plane footprint](../tutorials/setup.md#control-plane-footprint).
 - `propr tank [bundled|external|off] [--url <url>]` configures [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the mode to print the current one). `bundled` runs Agent Tank inside the agent image with nothing to install; `external` needs `--url` pointing at a daemon you run. `on` remains a deprecated alias for `external`.
 
 ### Agent Skill
