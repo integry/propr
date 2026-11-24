@@ -379,6 +379,7 @@ export {
     AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV, collectStagedCredentials, credentialRunRoot, resolveCredentialBrokerMode, stageAgentRunCredentials,
     type CredentialBrokerMode, type StagedAgentRunCredentials,
 } from './agents/credentials/hostCredentialStaging.js';
+export { SpritesRuntime } from './agents/runtime/spritesRuntime.js';
 export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, getAgentRuntime, registerAgentRuntime,
