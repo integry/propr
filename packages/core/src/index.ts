@@ -368,7 +368,9 @@ export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGr
 export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
 export * from './agents/credentials/broker.js';
 export * from './agents/credentials/providerManifests.js';
-export { withCredentialStoreLock, CredentialStoreLockTimeoutError, type CredentialStoreLockOptions } from './agents/credentials/credentialStoreLock.js';
+export {
+    withCredentialStoreLock, CredentialStoreLockTimeoutError, CredentialStoreLeaseRevokedError, type CredentialStoreLease, type CredentialStoreLockOptions,
+} from './agents/credentials/credentialStoreLock.js';
 export {
     AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV, collectStagedCredentials, credentialRunRoot, resolveCredentialBrokerMode, stageAgentRunCredentials,
     type CredentialBrokerMode, type StagedAgentRunCredentials,

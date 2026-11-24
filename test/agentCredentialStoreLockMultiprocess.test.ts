@@ -10,12 +10,15 @@ const { credentialStoreLockPath, inspectCredentialStoreLock } = await import('..
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const contender = path.join(here, 'fixtures', 'credentialStoreLockContender.ts');
+const writeBackContender = path.join(here, 'fixtures', 'credentialWriteBackContender.ts');
 const lockModule = process.env.PROPR_TEST_CREDENTIAL_LOCK_MODULE
     ?? path.join(here, '..', 'packages', 'core', 'src', 'agents', 'credentials', 'credentialStoreLock.ts');
+const brokerModule = process.env.PROPR_TEST_CREDENTIAL_BROKER_MODULE
+    ?? path.join(here, '..', 'packages', 'core', 'src', 'agents', 'credentials', 'broker.ts');
 
-function runContender(args: string[], env: Record<string, string> = {}): Promise<void> {
+function runContender(args: string[], env: Record<string, string> = {}, script = contender, module = lockModule): Promise<void> {
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, ['--import', 'tsx', contender, lockModule, ...args], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...env } });
+        const child = spawn(process.execPath, ['--import', 'tsx', script, module, ...args], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...env } });
         let stderr = '';
         child.stderr.on('data', chunk => { stderr += chunk; });
         child.on('error', reject);
@@ -89,6 +92,44 @@ test('an old holder resuming its release after a stale takeover never frees the 
         const violations = marker('violations') ? fs.readFileSync(path.join(workDir, 'violations'), 'utf8') : '';
         assert.equal(violations, '', 'the old holder\'s release freed the replacement holder\'s lock');
         assert.deepEqual(fs.readFileSync(path.join(workDir, 'completed'), 'utf8').trim().split('\n'), ['old', 'replacement', 'later']);
+        assert.deepEqual(inspectCredentialStoreLock(lockRoot, store), { epoch: 3, held: false });
+    } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test('a writer suspended before publishing cannot overwrite the newer token of the worker that took its stale lock over', { timeout: 60_000 }, async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-credential-writeback-'));
+    try {
+        const lockRoot = path.join(scratch, 'locks');
+        const store = path.join(scratch, 'store');
+        const workDir = path.join(scratch, 'work');
+        for (const dir of [lockRoot, store, workDir]) fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(store, '.credentials.json'), 'v0', { mode: 0o600 });
+        const shared = [lockRoot, store, workDir];
+        const marker = (name: string) => fs.existsSync(path.join(workDir, name));
+        const waitFor = async (name: string) => {
+            const deadline = Date.now() + 20_000;
+            while (!marker(name) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+            assert.ok(marker(name), `${name} was reached`);
+        };
+        const result = (id: string) => JSON.parse(fs.readFileSync(path.join(workDir, `result-${id}`), 'utf8'));
+        const base = Date.now();
+        // Both runs started from v0. "old" refreshed earlier; it checked the canonical
+        // baseline and prepared its replacement, then stays suspended before the rename
+        // until "newer" has taken its lock over as stale and committed.
+        const old = runContender([...shared, 'old', 'v-older', String(base + 10_000)],
+            { CONTENDER_STALE_MS: '300', CONTENDER_PUBLISH_AFTER: 'newer' }, writeBackContender, brokerModule);
+        await waitFor('publishing-old');
+        assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), 'v0', 'nothing published yet');
+        const newer = runContender([...shared, 'newer', 'v-newer', String(base + 20_000)], { CONTENDER_STALE_MS: '300' }, writeBackContender, brokerModule);
+        await Promise.all([old, newer]);
+
+        assert.deepEqual(result('newer'), ['written'], 'the newer run took the stale lock over and wrote its token');
+        assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), 'v-newer', 'the superseded writer overwrote the newer token');
+        // The superseded writer re-acquired the lock and found a newer canonical token.
+        assert.deepEqual(result('old'), ['kept-canonical']);
+        assert.deepEqual(fs.readdirSync(store), ['.credentials.json'], 'no publication directory or prepared replacement is left in the store');
         assert.deepEqual(inspectCredentialStoreLock(lockRoot, store), { epoch: 3, held: false });
     } finally {
         fs.rmSync(scratch, { recursive: true, force: true });

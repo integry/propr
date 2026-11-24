@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -26,6 +26,27 @@ export class CredentialStoreLockTimeoutError extends Error {
     }
 }
 
+/**
+ * Write authority of one acquisition. A holder publishes replacements only by
+ * renaming files out of {@link publicationDir}, a directory inside the
+ * canonical store (so the rename stays on its filesystem). Breaking a stale
+ * lock renames that directory away before the new holder runs, so a
+ * superseded holder suspended after preparing a replacement can no longer
+ * publish it: its rename fails instead of overwriting the newer credential.
+ */
+export interface CredentialStoreLease {
+    epoch: number;
+    publicationDir: string;
+}
+
+/** A superseded holder tried to publish after a stale takeover revoked its write authority. */
+export class CredentialStoreLeaseRevokedError extends Error {
+    constructor(root: string, epoch: number) {
+        super(`Credential write-back lock epoch ${epoch} of ${root} was taken over as stale; its write-back was not published`);
+        this.name = 'CredentialStoreLeaseRevokedError';
+    }
+}
+
 /** Writers in the same process queue here before contending for the file lock. */
 const inProcess = new Map<string, Promise<unknown>>();
 
@@ -36,6 +57,11 @@ export function credentialStoreLockPath(lockRoot: string, canonicalRoot: string)
 }
 
 const EPOCH_NAME = /^(\d+)(\.released)?$/;
+const PUBLICATION_PREFIX = '.propr-writeback-';
+const PUBLICATION_NAME = /^\.propr-writeback-(\d+)(\.revoked-[0-9a-f]+)?$/;
+/** Publication directory of `epoch` in the canonical store (see {@link CredentialStoreLease}). */
+export const credentialPublicationDir = (canonicalRoot: string, epoch: number): string =>
+    path.join(path.resolve(canonicalRoot), `${PUBLICATION_PREFIX}${epoch}`);
 const releasedName = (epoch: number): string => `${epoch}.released`;
 
 function highestEpoch(names: string[]): number {
@@ -92,6 +118,31 @@ function pruneOldEpochs(lockDir: string, names: string[], epoch: number, staleMs
 }
 
 /**
+ * Revoke the write authority of every epoch below ours: rename its
+ * publication directory away (atomically, so a superseded holder's pending
+ * rename out of it fails), then delete it. Leftovers of an interrupted
+ * revocation or of a crashed holder are deleted too.
+ */
+function revokeEarlierPublications(canonicalRoot: string, epoch: number): void {
+    let names: string[];
+    try { names = fs.readdirSync(canonicalRoot); } catch { return; }
+    for (const name of names) {
+        const match = PUBLICATION_NAME.exec(name);
+        if (!match || Number(match[1]) >= epoch) continue;
+        let doomed = path.join(canonicalRoot, name);
+        if (!match[2]) {
+            const revoked = `${doomed}.revoked-${randomBytes(6).toString('hex')}`;
+            try { fs.renameSync(doomed, revoked); } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+                throw error;
+            }
+            doomed = revoked;
+        }
+        fs.rmSync(doomed, { recursive: true, force: true });
+    }
+}
+
+/**
  * One acquisition attempt. Acquisitions are numbered epochs: epoch `n` is
  * held by whoever created the file `n` (exclusively), and ends when its
  * holder creates `n.released` or, once `n` is older than `staleMs`, when a
@@ -105,8 +156,14 @@ function pruneOldEpochs(lockDir: string, names: string[], epoch: number, staleMs
  * epoch could find that number free again after pruning removed it; it then
  * sees a higher epoch when it re-reads the directory, marks its own epoch
  * released and retries, so it never runs alongside the current holder.
+ *
+ * The epoch's publication directory is created before that re-read. A
+ * takeover creates its epoch before revoking lower publication directories,
+ * so either the re-read sees the takeover (and the attempt is abandoned) or
+ * the revocation finds and removes the directory: a holder that loses its
+ * lock to a stale takeover can never publish afterwards.
  */
-function tryAcquire(lockDir: string, staleMs: number, onStaleLockObserved?: () => void): number | undefined {
+function tryAcquire(lockDir: string, canonicalRoot: string, staleMs: number, onStaleLockObserved?: () => void): number | undefined {
     const highest = highestEpoch(fs.readdirSync(lockDir));
     if (highest > 0 && !fs.existsSync(path.join(lockDir, releasedName(highest)))) {
         const mtimeMs = mtimeOf(path.join(lockDir, String(highest)));
@@ -120,10 +177,27 @@ function tryAcquire(lockDir: string, staleMs: number, onStaleLockObserved?: () =
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined;
         throw error;
     }
+    const publicationDir = credentialPublicationDir(canonicalRoot, epoch);
+    try {
+        fs.mkdirSync(publicationDir, { mode: 0o700 });
+    } catch (error) {
+        markReleased(lockDir, epoch);
+        // Our number was pruned and reused while an older acquisition of it still has its directory; a newer epoch exists, so retry.
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined;
+        throw error;
+    }
     const names = fs.readdirSync(lockDir);
     if (highestEpoch(names) > epoch) {
+        fs.rmSync(publicationDir, { recursive: true, force: true });
         markReleased(lockDir, epoch);
         return undefined;
+    }
+    try {
+        revokeEarlierPublications(canonicalRoot, epoch);
+    } catch (error) {
+        fs.rmSync(publicationDir, { recursive: true, force: true });
+        markReleased(lockDir, epoch);
+        throw error;
     }
     pruneOldEpochs(lockDir, names, epoch, staleMs);
     return epoch;
@@ -134,24 +208,33 @@ function tryAcquire(lockDir: string, staleMs: number, onStaleLockObserved?: () =
  * The lock is a directory of exclusively created epoch files, so it also
  * serialises writers in other worker processes that share the lock
  * directory. Release and stale takeover never remove a holder's file
- * (see {@link tryAcquire}).
+ * (see {@link tryAcquire}). `fn` must publish every replacement through its
+ * lease's publication directory, which a stale takeover revokes.
  */
-export async function withCredentialStoreLock<T>(canonicalRoot: string, options: CredentialStoreLockOptions, fn: () => Promise<T> | T): Promise<T> {
-    const lockPath = credentialStoreLockPath(options.lockRoot, canonicalRoot);
+export async function withCredentialStoreLock<T>(
+    canonicalRoot: string, options: CredentialStoreLockOptions, fn: (lease: CredentialStoreLease) => Promise<T> | T,
+): Promise<T> {
+    const root = path.resolve(canonicalRoot);
+    const lockPath = credentialStoreLockPath(options.lockRoot, root);
     const previous = inProcess.get(lockPath) ?? Promise.resolve();
     const run = previous.catch(() => undefined).then(async () => {
         fs.mkdirSync(lockPath, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(root, { recursive: true, mode: 0o700 });
         const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const deadline = Date.now() + timeoutMs;
         let epoch: number | undefined;
-        while (!(epoch = tryAcquire(lockPath, options.staleMs ?? DEFAULT_STALE_MS, options.onStaleLockObserved))) {
+        while (!(epoch = tryAcquire(lockPath, root, options.staleMs ?? DEFAULT_STALE_MS, options.onStaleLockObserved))) {
             if (Date.now() >= deadline) throw new CredentialStoreLockTimeoutError(canonicalRoot, timeoutMs);
             await new Promise(resolve => setTimeout(resolve, options.pollMs ?? DEFAULT_POLL_MS));
         }
+        const publicationDir = credentialPublicationDir(root, epoch);
         try {
-            return await fn();
+            return await fn({ epoch, publicationDir });
         } finally {
-            try { options.onBeforeRelease?.(); } finally { markReleased(lockPath, epoch); }
+            try { options.onBeforeRelease?.(); } finally {
+                // Remove our publication directory before the release lets a successor in.
+                try { fs.rmSync(publicationDir, { recursive: true, force: true }); } finally { markReleased(lockPath, epoch); }
+            }
         }
     });
     inProcess.set(lockPath, run);

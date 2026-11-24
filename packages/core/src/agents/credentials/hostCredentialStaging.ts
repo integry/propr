@@ -5,7 +5,7 @@ import path from 'node:path';
 import logger from '../../utils/logger.js';
 import type { AgentRunMount, AgentRunSpec } from '../runtime/types.js';
 import {
-    CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, lstatInside,
+    CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside,
     type CredentialBundle, type CredentialStoreRequest, type CredentialWriteBackResult, type ReturnedCredentialFile,
 } from './broker.js';
 import { providerCredentialManifest, refreshableCredentialPaths } from './providerManifests.js';
@@ -227,9 +227,9 @@ export function collectStagedCredentials(bundle: CredentialBundle, stagingDir: s
     for (const store of bundle.stores) {
         const storeDir = path.join(stagingDir, store.id);
         for (const output of store.outputs) {
-            const stat = lstatInside(storeDir, output);
-            if (!stat || stat === 'symlink' || !stat.isFile() || stat.size > MAX_RETURNED_CREDENTIAL_BYTES) continue;
-            returned.push({ storeId: store.id, path: output, content: fs.readFileSync(path.join(storeDir, output)), mtimeMs: stat.mtimeMs });
+            const read = readRegularFileInside(storeDir, output, MAX_RETURNED_CREDENTIAL_BYTES);
+            if (!read || read === 'oversized') continue;
+            returned.push({ storeId: store.id, path: output, content: read.content, mtimeMs: read.stat.mtimeMs });
         }
     }
     return returned;

@@ -2,7 +2,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentType } from '../types.js';
-import { withCredentialStoreLock, type CredentialStoreLockOptions } from './credentialStoreLock.js';
+import {
+    CredentialStoreLeaseRevokedError, withCredentialStoreLock, type CredentialStoreLease, type CredentialStoreLockOptions,
+} from './credentialStoreLock.js';
 import { parseDotenv } from './dotenv.js';
 import {
     isLoginCredentialEntry, providerCredentialManifest, type CredentialStoreKind, type ProviderCredentialManifest,
@@ -98,6 +100,8 @@ export interface CredentialBrokerOptions {
     /** Bounds a store copy so a misconfigured directory cannot be duplicated per run. */
     maxFiles?: number;
     maxBytes?: number;
+    /** Test hook: runs after a replacement is prepared, immediately before it is published. */
+    onBeforePublish?: (relative: string) => void;
 }
 
 export interface MaterializeOptions {
@@ -108,8 +112,12 @@ export interface MaterializeOptions {
 const DEFAULT_MAX_FILES = 2_000;
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_SECRET_ENV_FILE_BYTES = 64 * 1024;
+const READ_CHUNK_BYTES = 64 * 1024;
 /** Token files are small; a returned file beyond this is not a credential and is ignored. */
 export const MAX_RETURNED_CREDENTIAL_BYTES = 1024 * 1024;
+
+/** Write-back attempts per store; a revoked attempt re-acquires the lock and re-decides from the then-current canonical file. */
+const MAX_WRITE_BACK_ATTEMPTS = 3;
 
 const sha256 = (content: Buffer): string => createHash('sha256').update(content).digest('hex');
 
@@ -139,6 +147,52 @@ export function lstatInside(root: string, relative: string): fs.Stats | 'symlink
         if (index === parts.length - 1) return stat;
     }
     return undefined;
+}
+
+export interface BoundedFileRead {
+    content: Buffer;
+    /** `fstat` of the descriptor that was read. */
+    stat: fs.Stats;
+}
+
+/**
+ * Read the regular file `root/relative` without allocating more than
+ * `maxBytes` (plus one read chunk): the size is checked before reading and
+ * the read stops past the limit, so a file that grows meanwhile is still
+ * refused. Returns `undefined` when the path is missing, a symlink (in any
+ * component) or not a regular file, and `'oversized'` past the limit.
+ */
+export function readRegularFileInside(root: string, relative: string, maxBytes: number): BoundedFileRead | 'oversized' | undefined {
+    const linkStat = lstatInside(root, relative);
+    if (!linkStat || linkStat === 'symlink' || !linkStat.isFile()) return undefined;
+    if (linkStat.size > maxBytes) return 'oversized';
+    let fd: number;
+    try {
+        // O_NONBLOCK: a FIFO swapped in after the lstat must not block the open.
+        fd = fs.openSync(path.join(root, relative), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ELOOP' || code === 'ENOTDIR') return undefined;
+        throw error;
+    }
+    try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile()) return undefined;
+        if (stat.size > maxBytes) return 'oversized';
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for (;;) {
+            const chunk = Buffer.alloc(Math.min(READ_CHUNK_BYTES, maxBytes + 1 - total));
+            const read = fs.readSync(fd, chunk, 0, chunk.length, null);
+            if (read === 0) break;
+            total += read;
+            if (total > maxBytes) return 'oversized';
+            chunks.push(read === chunk.length ? chunk : chunk.subarray(0, read));
+        }
+        return { content: Buffer.concat(chunks, total), stat };
+    } finally {
+        fs.closeSync(fd);
+    }
 }
 
 class StoreReader {
@@ -175,15 +229,21 @@ class StoreReader {
     }
 
     private addFile(relative: string, stat: fs.Stats, refresh: boolean): void {
-        if (this.files.length + 1 > this.limits.maxFiles || this.bytes + stat.size > this.limits.maxBytes) {
-            throw new CredentialBrokerError(
-                `Credential store ${this.root} exceeds the per-run copy limit (${this.limits.maxFiles} files / ${this.limits.maxBytes} bytes); ` +
-                'trim the directory or set PROPR_AGENT_CREDENTIAL_BROKER=legacy',
-            );
-        }
-        const content = fs.readFileSync(path.join(this.root, relative));
+        if (this.files.length + 1 > this.limits.maxFiles || this.bytes + stat.size > this.limits.maxBytes) this.overLimit();
+        // Bounded by the remaining budget, so a file growing after the lstat cannot be read whole.
+        const read = readRegularFileInside(this.root, relative, this.limits.maxBytes - this.bytes);
+        if (read === 'oversized') this.overLimit();
+        if (!read) return;
+        const { content, stat: readStat } = read;
         this.bytes += content.length;
-        this.files.push({ path: relative, content, mode: stat.mode & 0o777, mtimeMs: stat.mtimeMs, uid: stat.uid, gid: stat.gid, refresh });
+        this.files.push({ path: relative, content, mode: readStat.mode & 0o777, mtimeMs: readStat.mtimeMs, uid: readStat.uid, gid: readStat.gid, refresh });
+    }
+
+    private overLimit(): never {
+        throw new CredentialBrokerError(
+            `Credential store ${this.root} exceeds the per-run copy limit (${this.limits.maxFiles} files / ${this.limits.maxBytes} bytes); ` +
+            'trim the directory or set PROPR_AGENT_CREDENTIAL_BROKER=legacy',
+        );
     }
 
     skip(relative: string, reason: CredentialSkipReason): void {
@@ -195,11 +255,6 @@ class StoreReader {
     }
 }
 
-function readCanonical(root: string, relative: string): { content: Buffer; stat: fs.Stats } | undefined {
-    const stat = lstatInside(root, relative);
-    if (!stat || stat === 'symlink' || !stat.isFile()) return undefined;
-    return { content: fs.readFileSync(path.join(root, relative)), stat };
-}
 
 function ownerFor(root: string, relative: string): { uid: number; gid: number } | undefined {
     let current = path.join(root, relative);
@@ -212,8 +267,19 @@ function ownerFor(root: string, relative: string): { uid: number; gid: number } 
     return undefined;
 }
 
-/** Atomically replace `root/relative`, keeping the canonical owner and mode and the run's refresh time. */
-function writeCanonical(root: string, relative: string, file: ReturnedCredentialFile, mode: number): void {
+const isMissingPath = (error: unknown): boolean => ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
+
+/**
+ * Atomically replace `root/relative`, keeping the canonical owner and mode and
+ * the run's refresh time. The replacement is prepared in the lease's
+ * publication directory and renamed out of it, so once a stale takeover has
+ * revoked the lease the rename fails rather than overwriting a newer token.
+ */
+function writeCanonical(
+    root: string, file: ReturnedCredentialFile, mode: number, publication: { lease: CredentialStoreLease; onBeforePublish?: (relative: string) => void },
+): void {
+    const relative = file.path;
+    const { lease, onBeforePublish } = publication;
     const target = path.join(root, relative);
     const parent = path.dirname(target);
     if (lstatInside(root, relative) === 'symlink') {
@@ -221,8 +287,12 @@ function writeCanonical(root: string, relative: string, file: ReturnedCredential
     }
     const owner = ownerFor(root, relative);
     fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
-    const temporary = path.join(parent, `.${path.basename(target)}.propr-${randomBytes(6).toString('hex')}.tmp`);
-    const fd = fs.openSync(temporary, 'wx', mode);
+    const temporary = path.join(lease.publicationDir, `${randomBytes(6).toString('hex')}.tmp`);
+    let fd: number;
+    try { fd = fs.openSync(temporary, 'wx', mode); } catch (error) {
+        if (isMissingPath(error)) throw new CredentialStoreLeaseRevokedError(root, lease.epoch);
+        throw error;
+    }
     try {
         fs.writeSync(fd, file.content);
         if (process.getuid?.() === 0 && owner) fs.fchownSync(fd, owner.uid, owner.gid);
@@ -238,9 +308,12 @@ function writeCanonical(root: string, relative: string, file: ReturnedCredential
     try {
         const seconds = file.mtimeMs / 1000;
         fs.utimesSync(temporary, seconds, seconds);
+        onBeforePublish?.(relative);
         fs.renameSync(temporary, target);
     } catch (error) {
         fs.rmSync(temporary, { force: true });
+        // The prepared file moved away with the revoked publication directory.
+        if (isMissingPath(error) && !fs.existsSync(lease.publicationDir)) throw new CredentialStoreLeaseRevokedError(root, lease.epoch);
         throw error;
     }
 }
@@ -268,8 +341,8 @@ export class CredentialBroker {
         const root = path.resolve(request.canonicalRoot);
         const reader = new StoreReader(root, { maxFiles: this.options.maxFiles ?? DEFAULT_MAX_FILES, maxBytes: this.options.maxBytes ?? DEFAULT_MAX_BYTES });
         for (const source of manifest.secretEnvFiles ?? []) {
-            const canonical = readCanonical(root, source.path);
-            if (!canonical || canonical.stat.size > MAX_SECRET_ENV_FILE_BYTES) continue;
+            const canonical = readRegularFileInside(root, source.path, MAX_SECRET_ENV_FILE_BYTES);
+            if (!canonical || canonical === 'oversized') continue;
             const values = parseDotenv(canonical.content.toString('utf8'));
             for (const name of source.variables) {
                 const value = values.get(name);
@@ -301,7 +374,9 @@ export class CredentialBroker {
      * declared outputs are considered; a file the run deleted is never
      * propagated. Each store is updated under its lock: when the canonical
      * file still matches what the run received the refreshed copy is written,
-     * otherwise the more recently modified copy wins.
+     * otherwise the more recently modified copy wins. A write-back whose lock
+     * was taken over as stale before it published re-acquires the lock and
+     * decides again against the then-current canonical file.
      */
     async commit(bundle: CredentialBundle, returned: readonly ReturnedCredentialFile[]): Promise<CredentialWriteBackResult[]> {
         const results: CredentialWriteBackResult[] = [];
@@ -310,26 +385,39 @@ export class CredentialBroker {
                 && file.content.length <= MAX_RETURNED_CREDENTIAL_BYTES);
             const changed = candidates.filter(file => sha256(file.content) !== store.baseline[file.path]);
             for (const file of candidates) if (!changed.includes(file)) results.push({ storeId: store.id, path: file.path, outcome: 'unchanged' });
-            if (changed.length === 0) continue;
-            await withCredentialStoreLock(store.canonicalRoot, this.options.lock, () => {
-                for (const file of changed) results.push({ storeId: store.id, path: file.path, outcome: this.writeBack(store, file) });
-            });
+            let pending = changed;
+            for (let attempt = 1; pending.length > 0; attempt++) {
+                try {
+                    await withCredentialStoreLock(store.canonicalRoot, this.options.lock, lease => {
+                        while (pending.length > 0) {
+                            results.push({ storeId: store.id, path: pending[0].path, outcome: this.writeBack(store, pending[0], lease) });
+                            pending = pending.slice(1);
+                        }
+                    });
+                } catch (error) {
+                    if (!(error instanceof CredentialStoreLeaseRevokedError) || attempt >= MAX_WRITE_BACK_ATTEMPTS) throw error;
+                }
+            }
         }
         return results;
     }
 
-    private writeBack(store: CredentialStoreBundle, file: ReturnedCredentialFile): CredentialWriteBackOutcome {
-        const current = readCanonical(store.canonicalRoot, file.path);
+    private writeBack(store: CredentialStoreBundle, file: ReturnedCredentialFile, lease: CredentialStoreLease): CredentialWriteBackOutcome {
+        // Bounded like the store copy: the canonical file may have grown since the run started.
+        const current = readRegularFileInside(store.canonicalRoot, file.path, this.options.maxBytes ?? DEFAULT_MAX_BYTES);
+        if (current === 'oversized') {
+            throw new CredentialBrokerError(`Canonical credential ${path.join(store.canonicalRoot, file.path)} exceeds the per-run copy limit; not writing back over it`);
+        }
         const currentHash = current ? sha256(current.content) : null;
         if (currentHash === sha256(file.content)) return 'unchanged';
         const received = store.files.find(candidate => candidate.path === file.path);
         const mode = current ? current.stat.mode & 0o777 : received?.mode ?? 0o600;
         if (currentHash === store.baseline[file.path]) {
-            writeCanonical(store.canonicalRoot, file.path, file, mode);
+            writeCanonical(store.canonicalRoot, file, mode, { lease, onBeforePublish: this.options.onBeforePublish });
             return 'written';
         }
         if (current && current.stat.mtimeMs >= file.mtimeMs) return 'kept-canonical';
-        writeCanonical(store.canonicalRoot, file.path, file, mode);
+        writeCanonical(store.canonicalRoot, file, mode, { lease, onBeforePublish: this.options.onBeforePublish });
         return 'written-newer';
     }
 }
