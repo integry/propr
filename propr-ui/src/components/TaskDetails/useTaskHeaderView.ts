@@ -3,6 +3,8 @@ import { getHistoryDerivedData } from './useHistoryData';
 import { useCommitInfo, useTotalDuration } from './useDerivedTaskData';
 import { pickTokenUsage, rememberTaskHead, useTaskHeadSummary, type TaskHeadSummary } from './useTaskHeadSummary';
 import { isReviewRun, type TaskRunEntry } from '../TaskList/rowModel';
+import { pickComputeUsage } from './computeUsage';
+import type { ComputeUsage } from './types';
 
 /** The run list knows a review by its type even when the task's own record doesn't say. */
 export function getLogCommandMode(commandMode: string | undefined, runs: TaskRunEntry[] | undefined, taskId: string | undefined) {
@@ -28,6 +30,7 @@ interface TaskHeaderView {
     commitInfo?: { shortHash: string; url: string };
     duration: number | null;
     tokenUsage?: TaskHeadSummary['tokenUsage'];
+    computeUsage?: ComputeUsage;
     usageMetricRecords: TaskHeadSummary['usageMetricRecords'];
     budget?: TaskHeadSummary['budget'];
     synthetic: boolean;
@@ -36,7 +39,7 @@ interface TaskHeaderView {
    * How the run on screen went: its own model, runtime and consumption, so an
    * earlier run opened from the timeline shows what it cost, not the newest's.
    */
-  runStripProps: Pick<TaskHeaderView['contextStripProps'], 'taskInfo' | 'modelName' | 'duration' | 'tokenUsage' | 'usageMetricRecords' | 'budget' | 'synthetic'>;
+  runStripProps: Pick<TaskHeaderView['contextStripProps'], 'taskInfo' | 'modelName' | 'duration' | 'tokenUsage' | 'computeUsage' | 'usageMetricRecords' | 'budget' | 'synthetic'>;
   /** The run on screen: how it ended, and when it last did anything. */
   runState: { status: string; isActive: boolean; lastActivity?: string };
   /**
@@ -56,6 +59,7 @@ function describeRunOnScreen(own: TaskHeadSummary, derived: ReturnType<typeof ge
       modelName: derived.modelName,
       duration,
       tokenUsage: pickTokenUsage(own.tokenUsage, own.history),
+      computeUsage: pickComputeUsage(own.history),
       usageMetricRecords: own.usageMetricRecords,
       budget: own.budget,
       synthetic: own.history.some(item => item.metadata?.syntheticRouting !== undefined),
@@ -113,6 +117,7 @@ export function useTaskHeaderView(taskId: string | undefined, runs: TaskRunEntry
       commitInfo,
       duration,
       tokenUsage: pickTokenUsage(source.tokenUsage, source.history),
+      computeUsage: pickComputeUsage(source.history),
       usageMetricRecords: source.usageMetricRecords,
       budget: source.budget,
       synthetic: source.history.some(item => item.metadata?.syntheticRouting !== undefined),

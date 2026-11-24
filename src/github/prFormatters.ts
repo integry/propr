@@ -1,5 +1,5 @@
-import { redactSecrets, getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing, formatSubscriptionUsage, sanitizeAgentReport, buildPrTemplateValues, describePullRequest, getModelShortName } from '@propr/core';
-import type { DetailedUsageStats, SubscriptionUsageMetrics, ResolvedPrTemplate } from '@propr/core';
+import { redactSecrets, getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing, formatSubscriptionUsage, sanitizeAgentReport, buildPrTemplateValues, describePullRequest, getModelShortName, formatComputeUsage, normalizeComputeUsage } from '@propr/core';
+import type { DetailedUsageStats, SubscriptionUsageMetrics, ResolvedPrTemplate, AgentRunComputeUsage } from '@propr/core';
 import type { PrBodyPiece } from '@propr/shared';
 import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { loadPullRequestTemplate } from '../jobs/pullRequestTemplate.js';
@@ -49,6 +49,14 @@ export interface ClaudeResult {
     };
     // Agent Tank subscription usage metrics
     usageMetrics?: SubscriptionUsageMetrics | null;
+    /** What the agent's sandbox consumed (wall time, CPU, memory, compute cost). */
+    computeUsage?: AgentRunComputeUsage | null;
+}
+
+/** `docker · 4m 12s wall · 182.4 CPU-s · peak 1.2 GiB (avg 640 MiB)`; null when the run reported no usage. */
+function computeUsageSummary(claudeResult: ClaudeResult | null): string | null {
+    const usage = normalizeComputeUsage(claudeResult?.computeUsage);
+    return usage ? formatComputeUsage(usage) : null;
 }
 
 async function calculateApiCost(
@@ -110,6 +118,8 @@ async function buildPRBodyPieces(issueNumber: number, issueTitle: string, commit
     run += `- **Execution Time**: ${executionTime}s\n`;
     run += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
     run += `- **API cost**: $${cost}\n`;
+    const compute = computeUsageSummary(claudeResult);
+    if (compute) run += `- **Compute**: ${compute}\n`;
     const subscriptionUsage = formatSubscriptionUsage(claudeResult?.usageMetrics);
     if (subscriptionUsage) run += `- **Subscription usage**: ${subscriptionUsage}\n`;
     run += `- **Generated**: ${timestamp}\n`;
@@ -218,6 +228,8 @@ export async function generateClaudeLogsComment(claudeResult: ClaudeResult | nul
         comment += `- **Success**: ${claudeResult.success ? 'Yes' : 'No'}\n`;
         comment += `- **Tokens used**: ${totalTokens.toLocaleString()} tokens [${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output]\n`;
         comment += `- **API cost**: $${cost.toFixed(2)}\n`;
+        const compute = computeUsageSummary(claudeResult);
+        if (compute) comment += `- **Compute**: ${compute}\n`;
         const logsSubscriptionUsage = formatSubscriptionUsage(claudeResult?.usageMetrics);
         if (logsSubscriptionUsage) comment += `- **Subscription usage**: ${logsSubscriptionUsage}\n`;
         comment += `- **Execution Time**: ${Math.round((claudeResult.executionTime || 0) / 1000)}s\n`;

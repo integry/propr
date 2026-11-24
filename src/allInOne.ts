@@ -19,7 +19,9 @@
  */
 import 'dotenv/config';
 import { logger } from '@propr/core';
-import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, type StartupStage } from './allInOneConfig.js';
+import {
+    createComponentSupervisor, installShutdownSignalHandlers, prepareAllInOneEnvironment, resolveIndexingMode, resolveShutdownTimeoutMs, type StartupStage,
+} from './allInOneConfig.js';
 
 export interface StartedAllInOne {
     close(): Promise<string[]>;
@@ -50,18 +52,19 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
     });
     const close = (): Promise<string[]> => supervisor.close();
 
-    let signalled = false;
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-        process.on(signal, () => {
-            if (signalled) {
-                logger.warn(`all-in-one received a second ${signal}; exiting immediately`);
-                process.exit(1);
-            }
-            signalled = true;
-            logger.info(`all-in-one received ${signal}, shutting down gracefully...`);
-            void close().then(failed => process.exit(failed.length > 0 ? 1 : 0));
-        });
-    }
+    // A drain that cannot finish (a component stuck closing) still ends the
+    // process before Fly's stop_config timeout (60s) kills it.
+    installShutdownSignalHandlers({
+        close,
+        timeoutMs: resolveShutdownTimeoutMs(process.env.PROPR_SHUTDOWN_TIMEOUT_MS),
+        log: {
+            info: message => logger.info(message),
+            warn: message => logger.warn(message),
+            error: message => logger.error(message),
+        },
+        exit: code => process.exit(code),
+        on: (signal, handler) => { process.on(signal, handler); },
+    });
 
     const stages: StartupStage[] = [
         {
@@ -90,7 +93,9 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         {
             name: 'worker',
             role: 'worker',
-            run: async () => (await import('./worker.js')).startWorker({ installSignalHandlers: false }),
+            // The worker waits for agent image readiness before it claims jobs;
+            // shutdown aborts that wait (without Docker it never ends).
+            run: async signal => (await import('./worker.js')).startWorker({ installSignalHandlers: false, signal }),
         },
         {
             name: 'pull request status maintenance',
@@ -129,6 +134,7 @@ Environment:
   PROPR_INDEXING      inline (default) | separate | off
   PROPR_SERVE_UI      1 (default) serves propr-ui/dist from the API; 0 disables
   PROPR_UI_DIST_DIR   explicit UI bundle directory
+  PROPR_SHUTDOWN_TIMEOUT_MS  exit this long after SIGTERM even if draining (default 50000)
   FRONTEND_URL        defaults to API_PUBLIC_URL (same origin)
 `);
         process.exit(0);

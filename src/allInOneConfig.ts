@@ -91,7 +91,12 @@ export const SHUTDOWN_ORDER: readonly ComponentRole[] = ['daemon', 'indexing', '
 export interface StartupStage {
     name: string;
     role?: ComponentRole;
-    run: () => Promise<{ close(): Promise<unknown> } | void>;
+    /**
+     * `signal` aborts when shutdown begins. A stage that can wait indefinitely
+     * (the worker waits for agent image readiness) must give up on it, or
+     * shutdown, which waits for the stage still starting, never completes.
+     */
+    run: (signal: AbortSignal) => Promise<{ close(): Promise<unknown> } | void>;
 }
 
 export interface ComponentSupervisor {
@@ -105,7 +110,10 @@ export interface ComponentSupervisor {
      * drain. Resolves true when every stage ran.
      */
     run(stages: readonly StartupStage[]): Promise<boolean>;
-    /** Idempotent: waits for in-flight startup, then closes in SHUTDOWN_ORDER followed by `finalSteps`. */
+    /**
+     * Idempotent: aborts the startup signal, waits for in-flight startup, then
+     * closes in SHUTDOWN_ORDER followed by `finalSteps`.
+     */
     close(): Promise<string[]>;
 }
 
@@ -124,6 +132,7 @@ export function createComponentSupervisor(options: {
     const handles: Partial<Record<ComponentRole, ShutdownStep>> = {};
     let inFlight: Promise<unknown> | undefined;
     let closing: Promise<string[]> | undefined;
+    const startupAbort = new AbortController();
 
     const supervisor: ComponentSupervisor = {
         get closing() {
@@ -135,7 +144,7 @@ export function createComponentSupervisor(options: {
                     options.log.info(`all-in-one: shutdown in progress, not starting ${stage.name}`);
                     return false;
                 }
-                const started = stage.run().then(handle => {
+                const started = stage.run(startupAbort.signal).then(handle => {
                     // Registered even when shutdown began meanwhile: close() waits for
                     // this promise before it builds its sequence.
                     if (stage.role && handle) handles[stage.role] = { name: stage.name, close: () => handle.close() };
@@ -155,6 +164,7 @@ export function createComponentSupervisor(options: {
         },
         close() {
             closing ??= (async () => {
+                startupAbort.abort(new Error('all-in-one shutdown'));
                 await inFlight;
                 const steps = SHUTDOWN_ORDER
                     .map(role => handles[role])
@@ -166,4 +176,61 @@ export function createComponentSupervisor(options: {
         },
     };
     return supervisor;
+}
+
+/** Default drain budget: Fly's stop_config timeout (60s) minus a margin. */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 50_000;
+
+/** PROPR_SHUTDOWN_TIMEOUT_MS, in ms (1s to 1h); the default otherwise. */
+export function resolveShutdownTimeoutMs(value: string | undefined): number {
+    const normalized = (value ?? '').trim();
+    if (normalized === '') return DEFAULT_SHUTDOWN_TIMEOUT_MS;
+    const ms = Number(normalized);
+    if (!Number.isInteger(ms) || ms < 1_000 || ms > 3_600_000) {
+        throw new Error(`PROPR_SHUTDOWN_TIMEOUT_MS must be a whole number of milliseconds from 1000 to 3600000 (got "${value}")`);
+    }
+    return ms;
+}
+
+export interface ShutdownSignalOptions {
+    close: () => Promise<string[]>;
+    /** Exit after this long even if the drain has not finished. */
+    timeoutMs: number;
+    log: { info(message: string): void; warn(message: string): void; error(message: string): void };
+    exit: (code: number) => void;
+    /** Signal registration; `process.on` in production. */
+    on: (signal: 'SIGINT' | 'SIGTERM', handler: () => void) => void;
+}
+
+/**
+ * SIGINT/SIGTERM drain the process and exit: 0 when every component closed,
+ * 1 when one failed to close, and 0 when the drain outlives `timeoutMs`. A
+ * termination signal is a requested stop, so an overrun still exits 0: under
+ * an on-failure restart policy (Fly idle shutdown) a non-zero code would
+ * restart the Machine that was asked to stop. The deadline timer is unref'd so
+ * it never keeps an otherwise finished process alive. A second signal exits 1
+ * at once.
+ */
+export function installShutdownSignalHandlers(options: ShutdownSignalOptions): void {
+    let signalled = false;
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        options.on(signal, () => {
+            if (signalled) {
+                options.log.warn(`all-in-one received a second ${signal}; exiting immediately`);
+                options.exit(1);
+                return;
+            }
+            signalled = true;
+            options.log.info(`all-in-one received ${signal}, shutting down gracefully...`);
+            const deadline = setTimeout(() => {
+                options.log.error(`all-in-one: shutdown did not finish within ${options.timeoutMs} ms; exiting`);
+                options.exit(0);
+            }, options.timeoutMs);
+            deadline.unref?.();
+            void options.close().then(
+                failed => options.exit(failed.length > 0 ? 1 : 0),
+                () => options.exit(1),
+            ).finally(() => clearTimeout(deadline));
+        });
+    }
 }

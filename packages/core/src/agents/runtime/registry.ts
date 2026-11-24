@@ -5,6 +5,7 @@ import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } f
 import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.js';
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
+import { withComputeCost } from './computeUsage.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { SpritesRuntime } from './spritesRuntime.js';
 import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
@@ -199,17 +200,31 @@ export async function runAgent(
         const runOptions = staged && Object.keys(staged.secretEnv).length > 0
             ? { ...options, extraEnvVars: { ...options.extraEnvVars, ...staged.secretEnv } }
             : options;
+        const startedAt = Date.now();
         if (mode === 'bind') {
             assertAgentRuntimeSupports(runtime, runSpec);
-            return await runtime.start(runSpec, runOptions).wait();
+            return withRunComputeUsage(runtime.kind, startedAt, await runtime.start(runSpec, runOptions).wait());
         }
-        return await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
+        return withRunComputeUsage(runtime.kind, startedAt, await runWithWorkspaceTransport(runtime, runSpec, runOptions, {
             transport: await createWorkspaceTransport(mode),
             assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
-        });
+        }));
     } finally {
         await staged?.complete();
     }
+}
+
+/**
+ * The result with its compute usage priced: the runtime's own report, or for a
+ * runtime that reports none, the wall time the dispatcher observed. The cost is
+ * the runtime's, else the `PROPR_COMPUTE_RATES` rate for its kind, else unknown.
+ */
+function withRunComputeUsage(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+    const usage = result.computeUsage ?? {
+        runtime: kind, wallTimeMs: Date.now() - startedAt,
+        cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null,
+    };
+    return { ...result, computeUsage: withComputeCost({ ...usage, runtime: usage.runtime || kind }) };
 }
 
 /**

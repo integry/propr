@@ -94,6 +94,7 @@ Useful signals:
 - Agent stdout and stderr
 - Session or conversation IDs when available
 - Duration, timeout state, token usage, and usage-limit state
+- Compute usage per run (wall time, CPU-seconds, peak/average memory, compute cost), sampled from the container cgroup; see [Compute Usage](./coding-agent-integration.md#compute-usage) for `PROPR_COMPUTE_USAGE_SAMPLE_MS` and the `PROPR_COMPUTE_RATES` rate table
 
 For direct Docker inspection:
 

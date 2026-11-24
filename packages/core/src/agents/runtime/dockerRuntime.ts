@@ -4,6 +4,7 @@ import { ExecutionAbortedError } from '../../claude/docker/dockerExecutionOwners
 import { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './dockerNetwork.js';
 import { renderDockerRunArgs } from './dockerRunArgs.js';
 import { readDockerContainerFile } from './dockerContainerFiles.js';
+import { DockerComputeUsageSampler } from './dockerComputeUsage.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export { renderDockerRunArgs } from './dockerRunArgs.js';
@@ -149,6 +150,8 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
     private releaseTimer?: NodeJS.Timeout;
     /** Set by {@link retain}: the container stays until an explicit {@link release}. */
     private retained = false;
+    /** Samples the container's cgroup from spawn until the run settles. */
+    private usageSampler?: DockerComputeUsageSampler;
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions) {
         this.dockerEnvironment = options.extraEnvVars && Object.keys(options.extraEnvVars).length > 0
@@ -170,9 +173,15 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
             agentRun: {
                 spec,
                 onOutput: (stream, chunk) => this.output.write(stream, chunk),
-                onSpawn: () => { this.spawned = true; },
+                onSpawn: () => {
+                    this.spawned = true;
+                    this.usageSampler ??= new DockerComputeUsageSampler(spec.name, { dockerEnvironment: this.dockerEnvironment });
+                },
             },
-        }));
+        })).then(result => this.withComputeUsage(result), error => {
+            this.usageSampler?.finish();
+            throw error;
+        });
         // Callers that only stop or inspect still observe the settlement through wait().
         this.kept = spec.workspace.mode === 'clone';
         const settle = (): void => {
@@ -184,6 +193,12 @@ class DockerRunHandle implements AgentRunHandle<ExecutionResult> {
             }
         };
         this.result.then(settle, settle);
+    }
+
+    /** The run's compute usage (cost is priced later by the dispatcher); a run that never spawned has none. */
+    private withComputeUsage(result: ExecutionResult): ExecutionResult {
+        const usage = this.usageSampler?.finish();
+        return usage ? { ...result, computeUsage: usage } : result;
     }
 
     get stdout(): Readable { return this.output.get('stdout'); }

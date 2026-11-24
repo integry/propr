@@ -36,3 +36,4 @@ export { createTankCommand } from "./tankCommands.js";
 export { createRelayCommand } from "./relayCommands.js";
 export { createRuntimeCommand } from "./runtimeCommands.js";
 export { createHandoffsCommand } from "./handoffCommands.js";
+export { createDeployCommand } from "./deployFly.js";

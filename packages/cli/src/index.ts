@@ -49,6 +49,7 @@ import {
   createTankCommand,
   createRelayCommand,
   createRuntimeCommand,
+  createDeployCommand,
   createHandoffsCommand,
   runChecks,
   printChecks,
@@ -428,6 +429,7 @@ program.addCommand(createConnectCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
 program.addCommand(createRuntimeCommand());
+program.addCommand(createDeployCommand());
 program.addCommand(createHandoffsCommand());
 program.addCommand(createConfigCommand());
 

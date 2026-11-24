@@ -13,7 +13,7 @@ import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwners
 import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadSettings, AgentConfigPathUnavailableError } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
+import { attachComputeUsage, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
 import { isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
@@ -134,7 +134,7 @@ export class VibeAgent implements Agent {
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
 
-            const response: AgentExecutionResult = {
+            const response = attachComputeUsage<AgentExecutionResult>({
                 success,
                 executionTimeMs,
                 logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
@@ -151,7 +151,7 @@ export class VibeAgent implements Agent {
                 terminationReason,
                 tokenUsage,
                 usageMetrics: usageMetrics ?? undefined
-            };
+            }, result);
 
             const usage = formatUsageMetrics(usageMetrics);
             await persistLlmLog(createLlmLogFromAnalysis({
