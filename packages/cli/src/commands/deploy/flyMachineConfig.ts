@@ -31,6 +31,7 @@ export const FLY_DATA_PATH = "/usr/src/app/data";
 export const FLY_DB_FILENAME = `${FLY_DATA_PATH}/propr.sqlite`;
 export const FLY_REDIS_DIR = `${FLY_DATA_PATH}/redis`;
 export const FLY_API_PORT = 4000;
+export const FLY_REDIS_PORT = 6379;
 export const FLY_GH_PRIVATE_KEY_PATH = "/run/propr/github-app.pem";
 /** Secret holding the base64 GitHub App private key, written to FLY_GH_PRIVATE_KEY_PATH. */
 export const FLY_GH_PRIVATE_KEY_SECRET = "PROPR_GH_PRIVATE_KEY_B64";
@@ -121,8 +122,11 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
     PROPR_SERVED_UI_API_URL: "",
     DASHBOARD_API_PORT: String(FLY_API_PORT),
     REDIS_HOST: "127.0.0.1",
-    REDIS_PORT: "6379",
+    REDIS_PORT: String(FLY_REDIS_PORT),
     SESSION_REDIS_HOST: "127.0.0.1",
+    // The session store reads SESSION_REDIS_PORT before REDIS_PORT; pin it to
+    // the in-Machine Redis so a stack .env override cannot redirect sessions.
+    SESSION_REDIS_PORT: String(FLY_REDIS_PORT),
     DB_FILENAME: FLY_DB_FILENAME,
     DATA_DIR: FLY_DATA_PATH,
     CONFIG_REPO_PATH: "/tmp/config_repo",
@@ -157,7 +161,8 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
 export const FLY_MANAGED_ENV_KEYS: ReadonlySet<string> = new Set([
   "NODE_ENV", "PROPR_CONTAINERIZED", "PROPR_PROFILE", "PROPR_SERVE_UI", "PROPR_SERVED_UI_API_URL",
   "PROPR_UI_DIST_DIR", "DASHBOARD_API_PORT", "DASHBOARD_API_HOST", "API_PORT", "UI_PORT", "DOCS_PORT",
-  "REDIS_HOST", "REDIS_PORT", "REDIS_EXTERNAL_PORT", "SESSION_REDIS_HOST", "DB_FILENAME", "DATA_DIR",
+  "REDIS_HOST", "REDIS_PORT", "REDIS_EXTERNAL_PORT", "SESSION_REDIS_HOST",
+  "SESSION_REDIS_PORT", "DB_FILENAME", "DATA_DIR",
   "PROPR_DATA_DIR", "PROPR_DATA_MOUNT", "PROPR_LOGS_DIR", "PROPR_REPOS_DIR", "PROPR_ENV_FILE", "PROPR_ROOT",
   "PROPR_STACK", "CONFIG_REPO_PATH", "API_PUBLIC_URL", "FRONTEND_URL", "GH_OAUTH_CALLBACK_URL",
   "PROPR_TRUSTED_PROXY_PEERS", "PROPR_UI_TUNNEL_ENABLED", "PROPR_UI_PUBLIC_API_URL", "PROPR_INSTANCE_ID",
@@ -187,7 +192,7 @@ export function buildRedisContainer(redisImage: string): JsonObject {
     image: redisImage,
     cmd: [
       "sh", "-c",
-      `mkdir -p ${FLY_REDIS_DIR} && exec redis-server --bind 127.0.0.1 --port 6379 --dir ${FLY_REDIS_DIR} `
+      `mkdir -p ${FLY_REDIS_DIR} && exec redis-server --bind 127.0.0.1 --port ${FLY_REDIS_PORT} --dir ${FLY_REDIS_DIR} `
         + "--appendonly yes --save 300 1 --maxmemory-policy noeviction",
     ],
     healthchecks: [{ name: "redis", exec: { command: ["redis-cli", "-h", "127.0.0.1", "ping"] }, interval: 10, timeout: 5, grace_period: 5 }],
@@ -278,10 +283,28 @@ export function buildMachineConfig(plan: FlyDeployPlan, volume: string = plan.vo
     restart: { policy: restartPolicy(plan), ...(plan.idleShutdownAfter ? { max_retries: 10 } : {}) },
     // allInOne drains on SIGTERM; give it time to finish acks and close SQLite.
     stop_config: { signal: "SIGTERM", timeout: "60s" },
-    metadata: { "propr-role": "control-plane" },
+    metadata: buildMachineMetadata(),
   };
   if (plan.legacyDocker) config.volumes = [buildLegacyDockerSharedVolume()];
   return config;
+}
+
+/** Metadata key/value that identifies the control-plane Machine on both backends. */
+export const FLY_CONTROL_PLANE_ROLE_KEY = "propr-role";
+export const FLY_CONTROL_PLANE_ROLE = "control-plane";
+
+/**
+ * Machine metadata shared by the Machines API config and the flyctl
+ * machine_config JSON, so a Machine created by one backend is recognised and
+ * updated in place by the other. `fly_platform_version`/`fly_process_group`
+ * are what flyctl uses to treat a Machine as part of the app's `app` group.
+ */
+export function buildMachineMetadata(): Record<string, string> {
+  return {
+    [FLY_CONTROL_PLANE_ROLE_KEY]: FLY_CONTROL_PLANE_ROLE,
+    fly_platform_version: "v2",
+    fly_process_group: "app",
+  };
 }
 
 function buildLegacyDockerSharedVolume(): JsonObject {
@@ -353,7 +376,11 @@ export function renderFlyToml(plan: FlyDeployPlan): string {
 
 /** The machine_config JSON referenced from fly.toml (root-level `containers`). */
 export function renderFlyMachineConfigJson(plan: FlyDeployPlan): string {
-  const doc: JsonObject = { containers: buildContainers(plan), stop_config: { signal: "SIGTERM", timeout: "60s" } };
+  const doc: JsonObject = {
+    containers: buildContainers(plan),
+    stop_config: { signal: "SIGTERM", timeout: "60s" },
+    metadata: buildMachineMetadata(),
+  };
   if (plan.legacyDocker) doc.volumes = [buildLegacyDockerSharedVolume()];
   return `${JSON.stringify(doc, null, 2)}\n`;
 }

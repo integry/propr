@@ -43,7 +43,7 @@ export interface FlyMachine {
   state: string;
   region: string;
   instance_id?: string;
-  config?: { metadata?: Record<string, string> };
+  config?: { metadata?: Record<string, string>; mounts?: Array<{ volume?: string; path?: string }> };
 }
 
 export interface FlyIpAssignment {

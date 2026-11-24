@@ -19,6 +19,8 @@ import { FlyctlBackend } from "./flyctlBackend.js";
 import { FlyMachinesApi, type FlyMachine } from "./flyMachinesApi.js";
 import {
   buildMachineConfig,
+  FLY_CONTROL_PLANE_ROLE,
+  FLY_CONTROL_PLANE_ROLE_KEY,
   FLY_MACHINE_CONFIG_FILE,
   renderFlyMachineConfigJson,
   renderFlyToml,
@@ -122,10 +124,14 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string): FlyD
   };
 }
 
-const CONTROL_PLANE_ROLE = "control-plane";
-
-function isControlPlane(machine: FlyMachine): boolean {
-  return machine.config?.metadata?.["propr-role"] === CONTROL_PLANE_ROLE;
+/**
+ * The control-plane Machine carries the role metadata (both backends write it)
+ * or, whatever created it, already has the deployment's data volume attached:
+ * a second Machine could never mount that volume, so it must be updated.
+ */
+function isControlPlane(machine: FlyMachine, volumeId?: string): boolean {
+  if (machine.config?.metadata?.[FLY_CONTROL_PLANE_ROLE_KEY] === FLY_CONTROL_PLANE_ROLE) return true;
+  return !!volumeId && (machine.config?.mounts ?? []).some((m) => m.volume === volumeId);
 }
 
 export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
@@ -152,7 +158,7 @@ export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
     async deploy(plan, volume) {
       const ips = await api.ensurePublicIps(plan.app);
       const config = buildMachineConfig(plan, volume.id ?? plan.volumeName);
-      const machines = (await api.listMachines(plan.app)).filter(isControlPlane);
+      const machines = (await api.listMachines(plan.app)).filter((m) => isControlPlane(m, volume.id));
       if (machines.length > 1) {
         throw new Error(`app ${plan.app} has ${machines.length} control-plane Machines; one SQLite volume supports exactly one. Destroy the extras first.`);
       }

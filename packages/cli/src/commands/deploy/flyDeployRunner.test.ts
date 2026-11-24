@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FlyctlBackend, renderSecretsImport, type FlyctlRunner } from "./flyctlBackend.js";
-import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, type FlyDeployTarget } from "./flyDeployRunner.js";
+import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./flyDeployRunner.js";
 import type { FlyMachinesApi } from "./flyMachinesApi.js";
 import type { FlyDeployPlan } from "./flyMachineConfig.js";
 
@@ -66,12 +66,17 @@ test("an explicit secret wins over a generated one", async () => {
   assert.deepEqual(fake.set[0], { SESSION_SECRET: "from-env" });
 });
 
-function fakeApi(machines: Array<{ id: string; role?: string }>): { api: FlyMachinesApi; calls: string[] } {
+type FakeMachine = { id: string; role?: string; metadata?: Record<string, string>; mounts?: Array<{ volume: string; path: string }> };
+
+function fakeApi(machines: FakeMachine[]): { api: FlyMachinesApi; calls: string[] } {
   const calls: string[] = [];
   const api = {
     async ensurePublicIps() { calls.push("ips"); return []; },
     async listMachines() {
-      return machines.map((m) => ({ id: m.id, state: "started", region: "iad", config: { metadata: m.role ? { "propr-role": m.role } : {} } }));
+      return machines.map((m) => ({
+        id: m.id, state: "started", region: "iad",
+        config: { metadata: m.metadata ?? (m.role ? { "propr-role": m.role } : {}), mounts: m.mounts ?? [] },
+      }));
     },
     async createMachine(_app: string, input: { config: { mounts: unknown } }) {
       calls.push(`create:${JSON.stringify(input.config.mounts)}`);
@@ -94,6 +99,27 @@ test("Machines API target updates the existing control-plane Machine in place", 
   const { api, calls } = fakeApi([{ id: "m1", role: "control-plane" }]);
   await createMachinesApiTarget(api).deploy(plan, { id: "vol_9" });
   assert.deepEqual(calls, ["ips", "update:m1", "wait:m1"]);
+});
+
+test("a Machine created by flyctl is updated in place by a later Machines API deploy", async () => {
+  // Same files the flyctl target writes; flyctl copies machine_config metadata onto the Machine.
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  try {
+    const { machineConfig } = writeFlyFiles(plan, outDir);
+    const flyctlMetadata = (JSON.parse(readFileSync(machineConfig, "utf-8")) as { metadata: Record<string, string> }).metadata;
+    const { api, calls } = fakeApi([{ id: "m-fly", metadata: { ...flyctlMetadata, fly_release_id: "r1" } }]);
+    const summary = await createMachinesApiTarget(api).deploy(plan, { id: "vol_9" });
+    assert.deepEqual(calls, ["ips", "update:m-fly", "wait:m-fly"]);
+    assert.match(summary, /Updated Machine m-fly/);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("an untagged Machine that already holds the data volume is updated, not duplicated", async () => {
+  const { api, calls } = fakeApi([{ id: "m-old", mounts: [{ volume: "vol_9", path: "/usr/src/app/data" }] }, { id: "other" }]);
+  await createMachinesApiTarget(api).deploy(plan, { id: "vol_9" });
+  assert.deepEqual(calls, ["ips", "update:m-old", "wait:m-old"]);
 });
 
 test("Machines API target refuses two control-plane Machines on one SQLite volume", async () => {

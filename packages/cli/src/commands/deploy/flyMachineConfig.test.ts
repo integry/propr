@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildAppEnv,
+  buildContainers,
   buildMachineConfig,
   FLY_DATA_PATH,
   FLY_DB_FILENAME,
@@ -174,6 +175,24 @@ test("stack .env selection drops host paths, empty and deploy-managed keys", () 
     API_PUBLIC_URL: "http://localhost:4000",
     MCP_ENABLED: "",
   }), { SESSION_SECRET: "s", ANTHROPIC_API_KEY: "k" });
+});
+
+test("a non-default stack SESSION_REDIS_PORT is not uploaded; the session store uses the Machine's Redis port", () => {
+  const plan = basePlan();
+  const uploaded = selectEnvFileSecrets({ SESSION_REDIS_PORT: "6380", REDIS_PORT: "6380", ANTHROPIC_API_KEY: "k" });
+  assert.deepEqual(uploaded, { ANTHROPIC_API_KEY: "k" });
+  const env = buildAppEnv(plan);
+  assert.equal(env.SESSION_REDIS_PORT, "6379");
+  assert.equal(env.REDIS_PORT, "6379");
+  const redis = buildContainers(plan).find((c) => c.name === "redis") as JsonObject;
+  assert.match((redis.cmd as string[]).join(" "), /--port 6379 /);
+});
+
+test("flyctl machine_config and Machines API config carry the same control-plane metadata", () => {
+  const plan = basePlan();
+  const doc = JSON.parse(renderFlyMachineConfigJson(plan)) as JsonObject;
+  assert.deepEqual(doc.metadata, buildMachineConfig(plan).metadata);
+  assert.equal((doc.metadata as Record<string, string>)["propr-role"], "control-plane");
 });
 
 test("name validation", () => {
