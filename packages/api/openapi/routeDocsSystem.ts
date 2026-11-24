@@ -175,7 +175,7 @@ export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
   'GET /api/status': {
     operationId: 'getSystemStatus',
     summary: 'Get the system health snapshot',
-    description: 'Redis, queue, worker and agent health, the same snapshot the dashboard header shows.',
+    description: 'Redis, queue, worker and agent health, the same snapshot the dashboard header shows. `spritesPool` summarizes the Sprites runner pool once a worker used the sprites runtime.',
     tags: ['System'],
     responses: { 200: { description: 'The health snapshot.', schema: JsonObject } },
   },
@@ -184,7 +184,7 @@ export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
     operationId: 'getAgentRunAdmission',
     errors: 'envelope',
     summary: 'Report agent-run admission capacity per agent',
-    description: 'Read-only. Whether physical agent-run admission is enabled, the global limit and its source, and globally and per direct agent the ceiling and the running, reserved, recovering, waiting (by reason) and deferred executions; nested executions are counted apart from holders. Also lists queue worker concurrency and repository workflow slots, each labelled. Subscription usage is not included. No tokens, container IDs or environment values; task IDs only for tasks the caller may see (none for the read-only demo viewer). With admission off, `admission.enabled` is false and the other limits are still returned. See docs/operations/agent-run-capacity.',
+    description: 'Read-only. Whether physical agent-run admission is enabled, the global limit and its source, and globally and per direct agent the ceiling and the running, reserved, recovering, waiting (by reason) and deferred executions; nested executions are counted apart from holders. Also lists queue worker concurrency and repository workflow slots, each labelled, and, once a worker used the sprites runtime, its runner pool (`spritesPool`). Subscription usage is not included. No tokens, container IDs or environment values; task IDs only for tasks the caller may see (none for the read-only demo viewer). With admission off, `admission.enabled` is false and the other limits are still returned. See docs/operations/agent-run-capacity.',
     tags: ['System'],
     responses: { 200: { description: 'The admission report.', schema: AgentRunAdmissionReport } },
   },

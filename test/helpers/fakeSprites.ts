@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { Sprite } from '@fly/sprites';
+import type { CreateSpriteOptions, Sprite, SpriteConfig } from '@fly/sprites';
 import type { SpriteClient } from '../../packages/core/src/agents/runtime/sprites/spritesProvisioning.js';
+import { CLEAN_CHECKPOINT_COMMENT } from '../../packages/core/src/agents/runtime/sprites/spritesProvisioning.js';
 
 async function* completed() { yield { type: 'complete' }; }
 
@@ -18,6 +19,11 @@ export class FakeSprite {
     launched = Promise.withResolvers<void>();
     output = 'agent output';
     credential = '';
+    failHealth = false;
+    healthChecks = 0;
+    labels: string[] = [];
+    createdAt = new Date();
+    checkpoints: Array<{ id: string; comment: string; files: Map<string, Buffer> }> = [];
     constructor(readonly name: string) {}
     filesystem() {
         return {
@@ -29,6 +35,25 @@ export class FakeSprite {
     }
     async restart() { this.events.push('restart'); }
     async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
+        if (cmd === '/bin/true') {
+            this.healthChecks += 1;
+            if (this.failHealth) throw new Error('Sprite unreachable');
+            return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (cmd === 'sudo' && args[1] === '/bin/bash' && ['carry', 'install'].includes(args[4])) {
+            const [, , , , action, ref, carry] = args;
+            this.events.push(action);
+            if (action === 'carry') {
+                if (!this.files.has(ref + '/objects')) return { exitCode: 0, stdout: '', stderr: '' };
+                this.files.set(carry + '/repo.git/objects', this.files.get(ref + '/objects')!);
+                this.files.delete(ref + '/objects');
+                return { exitCode: 0, stdout: 'carried\n', stderr: '' };
+            }
+            for (const file of [...this.files.keys()]) if (file.startsWith('/var/lib/propr/warm/')) this.files.delete(file);
+            this.files.set(ref + '/objects', this.files.get(carry + '/repo.git/objects')!);
+            this.files.delete(carry + '/repo.git/objects');
+            return { exitCode: 0, stdout: '', stderr: '' };
+        }
         if (cmd === 'sudo' && args.join(' ') === '-n find /tmp -xdev -mindepth 1 -delete') {
             this.events.push('wipe');
             if (this.failWipe) throw new Error('wipe failed');
@@ -40,16 +65,19 @@ export class FakeSprite {
         const records = this.credential ? [{ index: 0, mtimeMs: Date.now(), content: Buffer.from(this.credential).toString('base64') }] : [];
         return { exitCode: 0, stdout: action === 'read-export' ? JSON.stringify(records) : '', stderr: '' };
     }
-    async createCheckpoint() {
-        this.events.push('checkpoint');
-        this.baseline = new Map([...this.files].filter(([file]) => !file.startsWith('/tmp/')));
+    async createCheckpoint(comment = '') {
+        const files = new Map([...this.files].filter(([file]) => !file.startsWith('/tmp/')));
+        this.events.push(comment === CLEAN_CHECKPOINT_COMMENT ? 'checkpoint' : 'warm-checkpoint');
+        this.checkpoints.push({ id: `v${this.checkpoints.length + 1}`, comment, files });
+        if (comment === CLEAN_CHECKPOINT_COMMENT) this.baseline = files;
         return completed();
     }
-    async listCheckpoints() { return [{ id: 'v1', comment: 'propr clean setup' }]; }
+    async listCheckpoints() { return this.checkpoints.map(({ id, comment }) => ({ id, comment })); }
     async restoreCheckpoint(id: string) {
-        if (id !== 'v1' || this.failRestore) throw new Error('restore failed');
-        this.events.push('restore');
-        this.files = new Map([...this.baseline, ...[...this.files].filter(([file]) => file.startsWith('/tmp/'))]);
+        const checkpoint = this.checkpoints.find(cp => cp.id === id);
+        if (!checkpoint || this.failRestore) throw new Error('restore failed');
+        this.events.push(id === 'v1' ? 'restore' : 'restore-warm');
+        this.files = new Map([...checkpoint.files, ...[...this.files].filter(([file]) => file.startsWith('/tmp/'))]);
         return completed();
     }
     spawn(_cmd: string, args: string[]) {
@@ -74,12 +102,24 @@ export class FakeSprite {
 export class FakeSprites implements SpriteClient {
     created: FakeSprite[] = [];
     deleted: string[] = [];
+    /** Sprites in the organization that this client did not create (other workers, earlier incarnations). */
+    foreign: FakeSprite[] = [];
     setup = (_sprite: FakeSprite) => {};
-    async createSprite(name: string): Promise<Sprite> {
+    async createSprite(name: string, options?: SpriteConfig | CreateSpriteOptions): Promise<Sprite> {
         const sprite = new FakeSprite(name);
+        sprite.labels = (options as CreateSpriteOptions | undefined)?.labels ?? [];
         this.setup(sprite);
         this.created.push(sprite);
         return sprite as unknown as Sprite;
     }
     async deleteSprite(name: string) { this.deleted.push(name); }
+    sprite(name: string): Sprite {
+        const sprite = [...this.created, ...this.foreign].find(candidate => candidate.name === name);
+        if (!sprite) throw new Error(`unknown Sprite ${name}`);
+        return sprite as unknown as Sprite;
+    }
+    async listAllSprites(prefix?: string): Promise<Sprite[]> {
+        return [...this.created, ...this.foreign]
+            .filter(sprite => !this.deleted.includes(sprite.name) && sprite.name.startsWith(prefix ?? '')) as unknown as Sprite[];
+    }
 }

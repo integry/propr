@@ -1,4 +1,4 @@
-import type { LiveQueueJob, SystemAgentStatus, SystemStatus } from '../api/proprTypes';
+import type { LiveQueueJob, SpritesPoolHealth, SystemAgentStatus, SystemStatus } from '../api/proprTypes';
 import type { DraftListItem } from '../api/plannerApi';
 
 export const DISMISSED_PLAN_IDS_KEY = 'dismissed_plan_ids';
@@ -54,6 +54,8 @@ export interface SystemHealth {
   githubEventIntake: string;
   githubEventIntakeStatus: string;
   agents: SystemAgentStatus[];
+  /** Present once a worker used the sprites runtime. */
+  spritesPool?: SpritesPoolHealth;
   isHealthy: boolean;
 }
 
@@ -251,6 +253,7 @@ export function buildSystemHealth(status: SystemStatus): SystemHealth {
     githubEventIntake: status.githubEventIntake || 'Unknown',
     githubEventIntakeStatus: intakeStatus,
     agents: status.agents,
+    ...(status.spritesPool ? { spritesPool: status.spritesPool } : {}),
     isHealthy:
       status.daemon === 'Running' &&
       workers === 'Running' &&

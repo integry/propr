@@ -52,6 +52,12 @@ const INDEXING_DEGRADED_STATES = new Set(["failed", "disconnected"]);
 /**
  * Displays the system status in a formatted table.
  */
+/** `2 busy, 0 idle of 2 · 1 queued`. */
+export function formatSpritesPoolSummary(pool: NonNullable<SystemStatus["spritesPool"]>): string {
+  const bound = pool.max === null ? "" : ` of ${pool.max}`;
+  return `${pool.busy} busy, ${pool.idle} idle${bound}${pool.waiting ? ` · ${pool.waiting} queued` : ""}`;
+}
+
 export function displaySystemStatus(status: SystemStatus): void {
   console.log("");
   console.log("=".repeat(50));
@@ -70,6 +76,7 @@ export function displaySystemStatus(status: SystemStatus): void {
     "GitHub Event Intake",
     "Claude Auth",
     "Indexing",
+    "Sprites Runners",
     "Routing URL",
     "Routing WebSocket",
     "Last Delivery ID",
@@ -117,6 +124,13 @@ export function displaySystemStatus(status: SystemStatus): void {
     console.log(
       `${"Indexing".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.indexing)}`
     );
+  }
+
+  if (status.spritesPool) {
+    console.log(
+      `${"Sprites Runners".padEnd(maxLabelWidth)}  ${formatSpritesPoolSummary(status.spritesPool)}`
+    );
+    for (const note of status.spritesPool.attention) console.log(`${"".padEnd(maxLabelWidth)}  ${note}`);
   }
 
   // Routing WebSocket diagnostics for default (routing_websocket) deployments.

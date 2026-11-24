@@ -80,6 +80,13 @@ export const WORKSPACE_TRANSPORT_ENVIRONMENT = {
     branch: 'PROPR_WORKSPACE_CLONE_BRANCH',
     resultRef: 'PROPR_WORKSPACE_CLONE_RESULT_REF',
     resultDir: 'PROPR_WORKSPACE_CLONE_RESULT_DIR',
+    /**
+     * Optional: a bare repository the wrapper owns (the Sprites runner pool's
+     * warm clone). Its objects serve the task fetch as alternates, so only new
+     * objects cross the network, and the wrapper refreshes it from the verified
+     * fetch before anything agent-controlled starts.
+     */
+    reference: 'PROPR_WORKSPACE_CLONE_REFERENCE',
 } as const;
 
 const E = WORKSPACE_TRANSPORT_ENVIRONMENT;
@@ -96,6 +103,8 @@ base_commit="\${${E.baseCommit}}"
 branch="\${${E.branch}}"
 result_ref="\${${E.resultRef}:-}"
 result_dir="\${${E.resultDir}}"
+reference="\${${E.reference}:-}"
+case "$reference" in /*.git) ;; *) reference="" ;; esac
 auth_header=""
 if [ -n "$token" ]; then
     auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\\n')"
@@ -173,8 +182,20 @@ mkdir -p "$result_dir" && chmod 700 "$result_dir" || { echo "ProPR workspace tra
 drops_privileges || bootstrap_failed "the wrapper must start as root with an unprivileged ${WORKSPACE_AGENT_USER} user and su-exec, so the setup hook and agent run under a different user ID from its credential; refusing to run"
 trusted="$(mktemp -d "\${TMPDIR:-/tmp}/propr-workspace-transport.XXXXXX")" && chmod 700 "$trusted" || bootstrap_failed "cannot create the transport repository"
 git init -q --bare "$trusted/repo.git" >/dev/null 2>&1 || bootstrap_failed "cannot create the transport repository"
+# Only a reference this identity owns: anything else could feed the clone objects.
+if [ -n "$reference" ] && [ -d "$reference/objects" ] && [ -O "$reference" ] && [ ! -L "$reference" ]; then
+    printf '%s\n' "$reference/objects" > "$trusted/repo.git/objects/info/alternates" || bootstrap_failed "cannot use the warm clone reference"
+fi
 transport_git fetch -q --no-tags "$remote" "+$base_ref:refs/propr/base" || bootstrap_failed "cannot fetch the task base"
 [ "$(trusted_git rev-parse --verify -q refs/propr/base)" = "$base_commit" ] || bootstrap_failed "fetched base does not match $base_commit"
+if [ -n "$reference" ] && [ ! -L "$reference" ]; then
+    # Refresh the warm clone from the verified fetch (no network, no credential).
+    { [ -d "$reference/objects" ] && [ -O "$reference" ] \
+        || { [ ! -e "$reference" ] && (umask 077 && mkdir -p "$(dirname "$reference")" && "\${git_isolation[@]}" git init -q --bare "$reference" >/dev/null 2>&1); }; } \
+        && "\${git_isolation[@]}" GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null \
+            git --git-dir="$reference" fetch -q --no-tags "$trusted/repo.git" "+refs/propr/base:refs/propr/warm/base" >/dev/null 2>&1 \
+        || echo "ProPR workspace transport: could not refresh the warm clone reference" >&2
+fi
 mkdir -p "$workspace" || bootstrap_failed "cannot create $workspace"
 cd "$workspace" || bootstrap_failed "cannot enter $workspace"
 [ -z "$(ls -A . 2>/dev/null)" ] || bootstrap_failed "$workspace is not empty"

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import logger from '../../../utils/logger.js';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 
 const projectRoot = () => process.env.PROPR_ROOT
@@ -18,8 +17,7 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
     })) as SpritesCliPins;
 }
 
-export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'>;
-export type Slot = { sprite: Sprite; checkpoint: string };
+export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite' | 'sprite' | 'listAllSprites'>;
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -36,7 +34,7 @@ export async function startupStep<T>(signal: AbortSignal, operation: () => T | P
     }
 }
 
-async function complete(stream: AsyncIterable<StreamMessage>) {
+export async function completeCheckpointStream(stream: AsyncIterable<StreamMessage>) {
     let finished = false;
     for await (const message of stream) {
         if (message.type === 'error') throw new Error('Sprite checkpoint operation failed');
@@ -45,84 +43,78 @@ async function complete(stream: AsyncIterable<StreamMessage>) {
     if (!finished) throw new Error('Sprite checkpoint operation ended before completion');
 }
 
+/** Creates a checkpoint and returns its ID (found by a unique comment). */
+export async function createNamedCheckpoint(sprite: Sprite, comment: string, step: <T>(operation: () => Promise<T>) => Promise<T> = operation => operation()): Promise<string> {
+    await step(async () => completeCheckpointStream(await sprite.createCheckpoint(comment)));
+    const checkpoint = (await step(() => sprite.listCheckpoints())).find(cp => cp.comment === comment && cp.id !== 'Current');
+    if (!checkpoint) throw new Error(`Missing Sprite checkpoint "${comment}"`);
+    return checkpoint.id;
+}
+
 const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'gh-wrapper.sh',
     'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh'];
+export const CLEAN_CHECKPOINT_COMMENT = 'propr clean setup';
 
-export class SpritePool {
-    private idle: Slot[] = [];
-    private closed = false;
-    constructor(private readonly client: SpriteClient) {}
-
-    private async provision(signal = new AbortController().signal): Promise<Slot> {
-        // Never discover or adopt a machine by name. Another worker, including an earlier
-        // incarnation of this worker, can still have a live run on one it created.
-        const sprite = await this.client.createSprite(`propr-${randomUUID()}`);
-        logger.info({ sprite: sprite.name }, 'Worker created Sprite');
-        try {
-            const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
-            const fs = sprite.filesystem();
-            const dir = '/var/tmp/propr-setup';
-            await step(() => fs.mkdir(dir, { mode: 0o700 }));
-            for (const file of setupFiles) {
-                await step(() => fs.writeFile(dir + '/' + file, readFileSync(path.join(projectRoot(), 'scripts', file))));
-            }
-            const pins = Object.entries(readSpritesCliPins()).map(([name, value]) => `${name}=${value}`);
-            await step(() => sprite.execFile('sudo', ['-n', 'env', ...pins, '/bin/bash', dir + '/sprites-agent-setup.sh', dir], { signal, timeout: 20 * 60_000 }));
-            await step(() => fs.rm(dir, { recursive: true }));
-            const comment = 'propr clean setup';
-            await step(async () => complete(await sprite.createCheckpoint(comment)));
-            const checkpoint = (await step(() => sprite.listCheckpoints())).find(cp => cp.comment === comment && cp.id !== 'Current');
-            if (!checkpoint) throw new Error('Missing clean Sprite checkpoint');
-            await step(async () => complete(await sprite.restoreCheckpoint(checkpoint.id)));
-            return { sprite, checkpoint: checkpoint.id };
-        } catch (cause) {
-            const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
-            const detail = stderr || (cause instanceof Error ? cause.message : String(cause));
-            const failure = new Error(`Failed to provision the clean Sprite checkpoint: ${detail}`, { cause });
-            try {
-                await this.discard(sprite);
-            } catch (cleanupError) {
-                throw new AggregateError([failure, cleanupError], `${failure.message} (also failed to delete Sprite ${sprite.name})`);
-            }
-            signal.throwIfAborted();
-            throw failure;
+/**
+ * Installs the pinned CLIs and launcher on a new Sprite and takes its clean
+ * checkpoint. Throws (with the setup's stderr tail) on failure; the caller owns
+ * the Sprite either way.
+ */
+export async function setupSprite(sprite: Sprite, signal: AbortSignal): Promise<string> {
+    try {
+        const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
+        const fs = sprite.filesystem();
+        const dir = '/var/tmp/propr-setup';
+        await step(() => fs.mkdir(dir, { mode: 0o700 }));
+        for (const file of setupFiles) {
+            await step(() => fs.writeFile(dir + '/' + file, readFileSync(path.join(projectRoot(), 'scripts', file))));
         }
+        const pins = Object.entries(readSpritesCliPins()).map(([name, value]) => `${name}=${value}`);
+        await step(() => sprite.execFile('sudo', ['-n', 'env', ...pins, '/bin/bash', dir + '/sprites-agent-setup.sh', dir], { signal, timeout: 20 * 60_000 }));
+        await step(() => fs.rm(dir, { recursive: true }));
+        const checkpoint = await createNamedCheckpoint(sprite, CLEAN_CHECKPOINT_COMMENT, step);
+        await step(async () => completeCheckpointStream(await sprite.restoreCheckpoint(checkpoint)));
+        return checkpoint;
+    } catch (cause) {
+        const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
+        const detail = stderr || (cause instanceof Error ? cause.message : String(cause));
+        throw new Error(`Failed to provision the clean Sprite checkpoint: ${detail}`, { cause });
     }
+}
 
-    async discard(sprite: Sprite): Promise<void> {
-        try {
-            await this.client.deleteSprite(sprite.name);
-        } catch (error) {
-            logger.error({ sprite: sprite.name }, 'Could not delete Sprite');
-            throw error;
-        }
-    }
+/** Where a runner keeps its root-owned warm clone reference (one repository at a time). */
+export const SPRITES_WARM_ROOT = '/var/lib/propr/warm';
+const CARRY_DIR = '/tmp/propr-warm-carry';
 
-    async acquire(signal: AbortSignal): Promise<Slot> {
-        signal.throwIfAborted();
-        if (this.closed) throw new Error('Sprite pool is closed');
-        return this.idle.pop() ?? this.provision(signal);
-    }
+export function warmClonePath(repo: string): string {
+    if (!/^[a-f0-9]{8,64}$/.test(repo)) throw new Error('Invalid warm clone key');
+    return `${SPRITES_WARM_ROOT}/${repo}.git`;
+}
 
-    async close(): Promise<void> {
-        this.closed = true;
-        // discard logs the Sprite name for manual cleanup if deletion fails.
-        await Promise.allSettled(this.idle.splice(0).map(slot => this.discard(slot.sprite)));
-    }
+// /tmp is not covered by checkpoints: the reference waits there while the clean checkpoint is restored.
+const CARRY_SCRIPT = `set -eu
+ref="$1"; carry="$2"
+[ -d "$ref/objects" ] && [ "$(stat -c %u "$ref")" = 0 ] || exit 0
+rm -rf "$carry"; mkdir -m 700 "$carry"
+mv "$ref" "$carry/repo.git"
+echo carried`;
+const INSTALL_SCRIPT = `set -eu
+ref="$1"; carry="$2"; root="$3"
+mkdir -p -m 700 "$root"
+find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+mv "$carry/repo.git" "$ref"
+chown -R 0:0 "$ref"; chmod 700 "$ref"
+rmdir "$carry"`;
 
-    async release(slot: Slot): Promise<void> {
-        if (this.closed) return this.discard(slot.sprite);
-        try {
-            // Stop descendants that outlived the launcher, including detached processes.
-            await slot.sprite.restart();
-            await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
-            await complete(await slot.sprite.restoreCheckpoint(slot.checkpoint));
-        } catch {
-            await this.discard(slot.sprite);
-            if (this.closed) return;
-            slot = await this.provision();
-        }
-        if (this.closed) await this.discard(slot.sprite);
-        else this.idle.push(slot);
-    }
+/** Moves the run's refreshed warm clone reference out of the checkpointed disk; false when the run left none. */
+export async function carryWarmClone(sprite: Sprite, repo: string): Promise<boolean> {
+    const { stdout } = await sprite.execFile('sudo', ['-n', '/bin/bash', '-c', CARRY_SCRIPT, 'carry', warmClonePath(repo), CARRY_DIR], { cwd: '/', timeout: 300_000 });
+    return String(stdout).trim() === 'carried';
+}
+
+/** After the clean restore: puts the carried reference back and checkpoints that as the runner's warm baseline. */
+export async function installWarmClone(sprite: Sprite, repo: string): Promise<{ repo: string; checkpoint: string }> {
+    await sprite.execFile('sudo', ['-n', '/bin/bash', '-c', INSTALL_SCRIPT, 'install', warmClonePath(repo), CARRY_DIR, SPRITES_WARM_ROOT], { cwd: '/', timeout: 300_000 });
+    const checkpoint = await createNamedCheckpoint(sprite, `propr warm ${repo} ${randomUUID().slice(0, 8)}`);
+    return { repo, checkpoint };
 }

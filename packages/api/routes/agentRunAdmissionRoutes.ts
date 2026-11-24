@@ -11,6 +11,7 @@ interface AgentRunAdmissionRoutesDeps {
   redisClient: RedisClientType;
   readSnapshot?: AgentRunAdmissionReportDeps['readSnapshot'];
   readRuntime?: AgentRunAdmissionReportDeps['readRuntime'];
+  readSpritesPool?: AgentRunAdmissionReportDeps['readSpritesPool'];
 }
 
 /**

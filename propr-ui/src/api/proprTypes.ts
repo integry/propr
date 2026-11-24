@@ -36,6 +36,7 @@ export interface SystemStatus {
   agents: SystemAgentStatus[];
   warnings?: SystemWarning[];
   connectAccount?: ConnectAccountStatus;
+  spritesPool?: SpritesPoolHealth;
 }
 
 export interface ConnectAccountStatus {
@@ -75,6 +76,16 @@ export interface StatusResponse {
   // Optional additive field from ProPR v0.8.15+. Keep unknown at the HTTP
   // boundary so malformed responses cannot be trusted through a type assertion.
   connectAccount?: unknown;
+  // Sprites runner pool summary; absent until a worker used the sprites runtime.
+  spritesPool?: unknown;
+}
+
+/** The Sprites runner pool as the system status shows it. */
+export interface SpritesPoolHealth {
+  status: 'Ready' | 'Busy' | 'Queued' | 'Degraded';
+  /** e.g. "2/2 busy · 1 queued" */
+  summary: string;
+  attention: string[];
 }
 
 export interface QueueStats {

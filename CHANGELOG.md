@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shared Sprites runner pool** (#3765)
+  - Runs on the `sprites` runtime lease runner Sprites from one pool shared by
+    every worker of a Sprites organization, with leases in Redis.
+    `PROPR_SPRITES_MAX` (default 2) bounds it, never above
+    `PROPR_SPRITES_ORG_LIMIT` (default 3, the Free plan). Runs queue first come,
+    first served while every runner is busy.
+  - Idle runners are health checked before each lease, and a broken runner is
+    re-provisioned. Runners of a crashed worker are deleted before their slot
+    is reused. On startup a worker deletes its pool's Sprites that no lease
+    owns.
+  - Optional per-repository warm clone checkpoints
+    (`PROPR_SPRITES_WARM_CLONES=on`). A root-owned reference serves the clone
+    fetch as Git alternates.
+  - Pool status in `propr admission`, `propr remote-status`, the Web UI system
+    status, `GET /api/agent-run-admission`, `GET /api/status` and the
+    `get_agent_run_admission` MCP tool. Run compute usage records the queue
+    wait, provisioning, health check and restore timings.
+
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
     (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the

@@ -94,6 +94,12 @@ export interface AgentRunAdmissionReport {
   /** Null when the runtime selection could not be resolved; see `runtimeUnavailable`. */
   runtime: AgentRunAdmissionRuntime | null;
   runtimeUnavailable?: string;
+  /** Present once a worker used the sprites runtime, or when its state could not be read. */
+  spritesPool?: {
+    label: string;
+    pools: SpritesPoolStatus[];
+    unavailable?: string;
+  };
   /** Subscription usage is reported elsewhere; this says where. */
   subscriptionUsage: string;
 }
@@ -1099,6 +1105,46 @@ export interface RepositoryEventWait {
   truncated: boolean;
   waitedMs: number;
   timeoutSeconds: number;
+}
+
+/** One Sprites runner pool: runners shared by every worker of one Sprites organization. */
+export interface SpritesPoolStatus {
+  /** Short non-secret identifier of the organization's pool. */
+  id: string;
+  /** PROPR_SPRITES_MAX as its workers last published it, at most the organization limit. */
+  max: number | null;
+  orgLimit: number | null;
+  /** PROPR_SPRITES_WARM_CLONES as its workers last published it. */
+  warmClones: boolean | null;
+  configuredAt: string | null;
+  runners: {
+    total: number;
+    /** Every runner not idle. */
+    busy: number;
+    provisioning: number;
+    idle: number;
+    leased: number;
+    /** Being restored after a run. */
+    resetting: number;
+    /** Run settled; its result may still be read before release. */
+    finished: number;
+    /** Its worker stopped mid-lease; deleted before its slot is reused. */
+    orphaned: number;
+    reaping: number;
+    /** Kept a result no worker released; never reaped automatically. */
+    retained: number;
+  };
+  /** Runs queued for a runner. */
+  waiting: number;
+  /** Idle runners at a per-repository warm clone checkpoint. */
+  warm: number;
+  /** Checkpoint restore durations of the runners' last resets. */
+  restore: {
+    lastMs: number | null;
+    averageMs: number | null;
+    samples: number;
+  };
+  attention: string[];
 }
 
 /** The assignees of a task's GitHub issue or pull request. */

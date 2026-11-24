@@ -203,6 +203,7 @@ const HealthDetails: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = (
     ['Redis', systemHealth.redis],
     ['GitHub', systemHealth.githubAuth],
     ['Indexing', systemHealth.indexing],
+    ...(systemHealth.spritesPool ? [['Sprites runners', systemHealth.spritesPool.summary]] : []),
   ];
 
   return (

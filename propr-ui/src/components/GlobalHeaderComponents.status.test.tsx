@@ -49,6 +49,22 @@ describe('SystemHealth dropdown', () => {
     expect(container.querySelectorAll('span.rounded-full')).toHaveLength(8);
   });
 
+  it('shows the Sprites runner pool only once a worker used it, with what needs attention', () => {
+    const { unmount } = render(<SystemHealth systemHealth={makeSystemHealth()} />);
+    fireEvent.mouseEnter(screen.getByLabelText('System Status'));
+    expect(screen.queryByText('Sprites')).not.toBeInTheDocument();
+    unmount();
+
+    render(<SystemHealth systemHealth={makeSystemHealth({ spritesPool: {
+      status: 'Degraded', summary: '2/2 busy · 1 queued',
+      attention: ['1 runner(s) of a stopped worker will be deleted before their slot is reused.'],
+    } })} />);
+    fireEvent.mouseEnter(screen.getByLabelText('System Status'));
+    expect(screen.getByText('Sprites')).toBeInTheDocument();
+    expect(screen.getByText('2/2 busy · 1 queued')).toBeInTheDocument();
+    expect(screen.getByText(/runner\(s\) of a stopped worker/)).toBeInTheDocument();
+  });
+
   it('includes agent aliases when multiple instances of a type are shown', () => {
     render(<SystemHealth systemHealth={makeSystemHealth({
       agents: [

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { AgentRunAdmissionReport } from "../api/index.js";
-import { ADMISSION_HEADERS, createAdmissionCommand, formatAdmissionReport, formatAdmissionRows, formatRuntimeLines } from "./admissionCommands.js";
+import { ADMISSION_HEADERS, createAdmissionCommand, formatAdmissionReport, formatAdmissionRows, formatRuntimeLines, formatSpritesPoolLines } from "./admissionCommands.js";
 
 const originalFetch = globalThis.fetch;
 const originalConsoleLog = console.log;
@@ -167,4 +167,20 @@ test("the runtime section says when restricted runs are refused and how MCP is r
   assert.deepEqual(formatRuntimeLines(docker).slice(0, 2), ["Agent runtime: docker (default) · instance network mode open", "  Restricted runs: enforced by egress-proxy-socket."]);
   assert.deepEqual(formatRuntimeLines(null, "Unknown agent runtime \"sprites\""), ["Agent runtime: unavailable: Unknown agent runtime \"sprites\""]);
   assert.deepEqual(formatRuntimeLines(undefined), [], "an older server without the section adds nothing");
+});
+
+test("the Sprites runner pool section shows busy runners against the bound, the queue, restore timings and what needs attention", () => {
+  assert.deepEqual(formatSpritesPoolLines(undefined), []);
+  assert.deepEqual(formatSpritesPoolLines({ label: "L", pools: [], unavailable: "no Redis" }), ["Sprites runner pool: unavailable: no Redis"]);
+  const runners = { total: 3, busy: 2, provisioning: 0, idle: 1, leased: 1, resetting: 0, finished: 0, orphaned: 0, reaping: 0, retained: 1 };
+  assert.deepEqual(formatSpritesPoolLines({ label: "Sprites runner pool: shared.", pools: [{
+    id: "abc", max: 3, orgLimit: 3, warmClones: true, configuredAt: null, runners, waiting: 2, warm: 1,
+    restore: { lastMs: 14_200, averageMs: 13_000, samples: 2 }, attention: ["1 runner(s) kept a result."],
+  }] }), [
+    "Sprites runner pool abc: 2 busy, 1 idle · bound 3 (organization limit 3) · 2 queued · warm clones on (1 warm)",
+    "  Busy: 1 leased, 1 retained.",
+    "  Checkpoint restore: last 14.2s, average 13.0s over 2 runner(s).",
+    "  1 runner(s) kept a result.",
+    "  Sprites runner pool: shared.",
+  ]);
 });

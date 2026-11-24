@@ -19,7 +19,9 @@ import {
   getIndexingQueue as loadIndexingQueue,
   loadAgents as loadAgentConfigs,
   loadSyntheticAgents as loadSyntheticAgentConfigs,
-  loadSummarizationRuntimeState
+  loadSummarizationRuntimeState,
+  readSpritesPoolStatus,
+  spritesPoolStatusStore
 } from '@propr/core';
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import type { SyntheticAgentConfig } from '@propr/shared';
@@ -27,6 +29,7 @@ import { getConnectMcpState } from '../mcp/tunnelMode.js';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
 import { getOrCreatePublicInstanceIdentity } from '../publicInstanceIdentity.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { nodeRedisReader } from '../services/agentRunAdmissionReport.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -97,6 +100,34 @@ interface RuntimeStatusSnapshot {
   workerCount?: number;
   routing?: RoutingState;
   idleShutdown?: Record<string, unknown>;
+  spritesPool?: SpritesPoolSummary;
+}
+
+/** The Sprites runner pools in one line for health views (the admission report has the detail). */
+interface SpritesPoolSummary {
+  status: 'ready' | 'busy' | 'queued' | 'degraded';
+  max: number | null;
+  total: number;
+  busy: number;
+  idle: number;
+  waiting: number;
+  attention: string[];
+}
+
+/** Absent until a worker used the sprites runtime. */
+async function getSpritesPoolSummary(redisClient: RedisClientType): Promise<SpritesPoolSummary | undefined> {
+  const report = await readSpritesPoolStatus({ store: spritesPoolStatusStore(nodeRedisReader(redisClient)) });
+  if (report.unavailable) throw new Error(report.unavailable);
+  if (!report.pools.length) return undefined;
+  const sum = (pick: (pool: typeof report.pools[number]) => number) => report.pools.reduce((total, pool) => total + pick(pool), 0);
+  const maxima = report.pools.map(pool => pool.max);
+  const summary = {
+    max: maxima.every(max => max !== null) ? maxima.reduce<number>((total, max) => total + (max ?? 0), 0) : null,
+    total: sum(pool => pool.runners.total), busy: sum(pool => pool.runners.busy), idle: sum(pool => pool.runners.idle),
+    waiting: sum(pool => pool.waiting), attention: report.pools.flatMap(pool => pool.attention),
+  };
+  const status = summary.attention.length ? 'degraded' : summary.waiting ? 'queued' : summary.busy ? 'busy' : 'ready';
+  return { status, ...summary };
 }
 
 interface BoundedFreshValue<T> {
@@ -481,16 +512,18 @@ async function getIdleShutdownState(redisClient: RedisClientType): Promise<Recor
 }
 
 async function getRuntimeStatusSnapshot(redisClient: RedisClientType): Promise<RuntimeStatusSnapshot> {
-  const [pingResult, daemonResult, workerResult, routingResult, idleResult] = await Promise.allSettled([
+  const [pingResult, daemonResult, workerResult, routingResult, idleResult, spritesResult] = await Promise.allSettled([
     redisClient.ping(),
     redisClient.get('system:status:daemon'),
     redisClient.sCard('system:status:workers'),
     getRoutingState(redisClient),
     getIdleShutdownState(redisClient),
+    getSpritesPoolSummary(redisClient),
   ]);
   const routing = routingResult.status === 'fulfilled' ? routingResult.value : undefined;
   const idleShutdown = idleResult.status === 'fulfilled' ? idleResult.value : undefined;
-  const routingField = { ...(routing ? { routing } : {}), ...(idleShutdown ? { idleShutdown } : {}) };
+  const spritesPool = spritesResult.status === 'fulfilled' ? spritesResult.value : undefined;
+  const routingField = { ...(routing ? { routing } : {}), ...(idleShutdown ? { idleShutdown } : {}), ...(spritesPool ? { spritesPool } : {}) };
   if (pingResult.status === 'rejected'
     || daemonResult.status === 'rejected'
     || workerResult.status === 'rejected') {

@@ -52,8 +52,9 @@ const db = ((table: string) => {
 }) as never;
 const taskQueue = { getActiveCount: async () => 3 } as never;
 const redisClient = {
-  sMembers: async () => ['worker-a', 'worker-b'],
+  sMembers: async (key: string) => key === 'system:status:workers' ? ['worker-a', 'worker-b'] : [],
   hGetAll: async () => ({ 'worker-a': '2', 'worker-b': '3' }),
+  get: async () => null,
 } as never;
 
 function recorder() {
@@ -259,4 +260,33 @@ test('an unresolvable runtime selection is reported without failing the report; 
     readRuntime: async () => { throw new Error('redis://secret@host'); } })
     .getAgentRunAdmission(member, opaque.response);
   assert.equal((opaque.record.body as Report).runtimeUnavailable, 'The agent runtime capabilities could not be read.');
+});
+
+test('the Sprites runner pool appears in REST and the MCP summary once a worker used it', async () => {
+  const pool = {
+    id: 'abc123def456', max: 2, orgLimit: 3, warmClones: true, configuredAt: '2026-11-24T00:00:00.000Z',
+    runners: { total: 2, busy: 2, provisioning: 0, idle: 0, leased: 1, resetting: 0, finished: 0, orphaned: 1, reaping: 0, retained: 0 },
+    waiting: 1, warm: 0, restore: { lastMs: 14_200, averageMs: 14_200, samples: 1 },
+    attention: ['1 runner(s) of a stopped worker will be deleted before their slot is reused.'],
+  };
+  const { record, response } = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot(), readSpritesPool: async () => ({ pools: [pool] }) })
+    .getAgentRunAdmission(member, response);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.equal(body.spritesPool?.pools[0].runners.busy, 2);
+  assert.match(body.spritesPool!.label, /^Sprites runner pool/);
+
+  const quiet = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot() }).getAgentRunAdmission(member, quiet.response);
+  assert.equal((quiet.record.body as Report).spritesPool, undefined, 'absent until a worker used the sprites runtime');
+
+  const tools: McpTool[] = [];
+  addAdmissionTools(tools, {
+    db, taskQueue, redisClient, policy: { repository: async () => undefined },
+    agentRunAdmissionSnapshot: async () => enabledSnapshot(), spritesPoolStatus: async () => ({ pools: [pool] }),
+  } as unknown as ToolDeps);
+  const tool = tools.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  const principal = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
+  const summary = presentResult(tool, {}, (await tool.run({ principal, args: {} } as never)).data as never, { instanceId: 'example', origin: 'https://propr.example' }).summary;
+  assert.match(summary, /Sprites runners: 2 busy, 0 idle of 2, 1 run queued\. 1 runner\(s\) of a stopped worker/);
 });

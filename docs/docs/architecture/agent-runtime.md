@@ -37,11 +37,39 @@ Agent runs go through the runtime seam described in [Coding Agent Integration](.
 
 Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport and require open networking. MCP grants need an endpoint reachable from the Sprite.
 
-The worker creates a privately named Sprite for each concurrent run and reuses restored Sprites within its process. Provisioning installs the versions pinned in `Dockerfile.agent` and takes a clean checkpoint before uploading any run data. The clone transport holds its repository token separately while the setup hook and provider entrypoint run as the unprivileged `node` user. Provider credentials arrive in one batch from the broker. Each CLI uses a writable copy of its read-only source. The worker collects only declared refreshable files through the launcher export and commits them through the broker.
+### Runner pool
 
-Release restores the entire checkpoint after credential write-back and workspace result retrieval, including failed and stopped runs. If result retrieval fails before the worker verifies a local Git ref, cleanup keeps the Sprite out of the pool and reports its name and result directory for recovery. A restore failure causes the worker to destroy the Sprite and provision a replacement. A restarted worker creates its own Sprites. On graceful shutdown the worker drains its jobs and deletes its idle Sprites. Standalone callers should await `runtime.close()` after releasing their runs.
+Runs lease runner Sprites from a pool that every worker using the same Sprites organization token shares. The leases live in Redis, so the bound holds across workers:
 
-After a crash or failed deletion, use `sprite list --prefix propr-` in the worker’s Sprites organization. Match each candidate’s exact name to the stopped worker’s `Worker created Sprite` log entry and check its job errors for bundles kept for recovery. If the creating worker is unknown, drain and stop all ProPR workers sharing the organization before reaping their Sprites. Once any needed result is recovered, delete the confirmed orphan with `sprite destroy -s <exact-name>`. [Sprites CLI reference](https://docs.sprites.dev/working-with-sprites/#managing-sprites)
+| Variable | Default | Meaning |
+| - | - | - |
+| `PROPR_SPRITES_MAX` | `2` | Runner Sprites the pool holds at most. Never above `PROPR_SPRITES_ORG_LIMIT`; a larger value is lowered to it with a warning. |
+| `PROPR_SPRITES_ORG_LIMIT` | `3` | Sprites the organization may hold at once. Free-plan organizations are limited to 3; raise it for a paid plan. |
+| `PROPR_SPRITES_WARM_CLONES` | `off` | `on` keeps a per-repository warm clone checkpoint on each runner (see below). |
+
+When every runner is busy, a run waits in a first-come, first-served queue for one. The wait counts toward the run's timeout. A lowered bound takes effect as runners are released: surplus runners are deleted instead of returning to the pool.
+
+Each runner is provisioned once: it installs the versions pinned in `Dockerfile.agent` and takes a clean checkpoint before any run data is uploaded. Provisioning took about 36 s in live tests. Before each lease, the worker health checks an idle runner with one exec. A runner that fails the check is destroyed and re-provisioned in the same slot. After each run, release stops every process, wipes the separate `/tmp` disk and restores the runner's baseline checkpoint, so no state reaches the next run. Failed and stopped runs are reset the same way. Release runs after credential write-back and workspace result retrieval, which keeps the restore (about 14 s) off the next run's critical path. If a reset fails, the worker destroys the runner and provisions a replacement.
+
+The clone transport holds its repository token separately while the setup hook and provider entrypoint run as the unprivileged `node` user. Provider credentials arrive in one batch from the broker. Each CLI uses a writable copy of its read-only source. The worker collects only declared refreshable files through the launcher export and commits them through the broker.
+
+Every run's compute usage records how it got its runner (`runnerPool`): queue wait, whether a runner was provisioned and how long that took, the health check, and the restore that reset the runner after its previous run. A warm clone switch also records the restore the run waited for. Run summaries show these timings, for example `sprites · 4m 12s wall · queued 3s · clean runner · restored in 14.2s`.
+
+### Warm clones
+
+With `PROPR_SPRITES_WARM_CLONES=on`, the clone transport keeps a root-owned bare reference of the repository under `/var/lib/propr/warm/` on the runner. The reference serves the task fetch as Git alternates, so only new objects cross the network. The transport refreshes it from the fetch it has already verified, before the setup hook or agent starts. The agent user cannot read or write it.
+
+At release the reference is moved to `/tmp`, which checkpoints do not cover. The runner is then restored to its clean checkpoint, the reference is moved back, and the result becomes a new warm checkpoint: the clean state plus that one reference, nothing else of the run. The next run of the same repository starts from it without a restore. A run of another repository on a warm runner first restores the clean checkpoint, which it waits for. Leases prefer a runner that is warm for the run's repository, then a clean one.
+
+### Crashes, orphans and recovery
+
+Lease holders heartbeat every 15 s. A runner whose worker stops heartbeating for 60 s mid-run is orphaned, and the worker that next needs its slot deletes the Sprite first. Every runner Sprite carries the `propr-pool` label and a label for its pool. On startup a worker deletes its pool's labelled Sprites that have no lease record. It also deletes unlabelled `propr-<uuid>` Sprites left by earlier versions once they are more than 24 hours old, and forgets records whose Sprite no longer exists. On graceful shutdown a worker drains its jobs and deletes the idle runners it last used. Leased runners are deleted when they are released. Standalone callers should await `runtime.close()` after releasing their runs.
+
+If result retrieval fails before the worker verifies a local Git ref, cleanup keeps the runner out of the pool and reports its name and result directory for recovery. If that worker then stops, the runner is reported as `retained` and is never reaped automatically. It keeps its slot until you recover the result and delete it with `sprite destroy -s <exact-name>`. The worker's `Worker created Sprite` log entries and the job error name the Sprite. [Sprites CLI reference](https://docs.sprites.dev/working-with-sprites/#managing-sprites)
+
+### Pool status
+
+`propr admission`, `GET /api/agent-run-admission` and the `get_agent_run_admission` MCP tool report each pool once a worker has used it. The report shows runners by state (provisioning, idle, leased, finished, resetting, orphaned, reaping, retained), runs queued for a runner, warm runners, the bound and organization limit, and the last and average restore durations. `propr remote-status`, `GET /api/status` (`spritesPool`) and the Web UI's system status menu show a one-line summary, such as `2/2 busy · 1 queued`, and any runner that needs attention.
 
 ## Container Configuration
 

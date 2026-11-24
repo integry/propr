@@ -1,6 +1,6 @@
 import { isAccountStatusTimestamp } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse, shareInFlightApiRead } from './apiClient';
-import type { ConnectAccountStatus, StatusResponse, SystemStatus } from './proprTypes';
+import type { ConnectAccountStatus, SpritesPoolHealth, StatusResponse, SystemStatus } from './proprTypes';
 
 const isNonNegativeInteger = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
@@ -49,6 +49,24 @@ const parseConnectAccountStatus = (value: unknown): ConnectAccountStatus | undef
       : {}),
     sentAt: account.sentAt,
   };
+};
+
+const SPRITES_POOL_STATUSES: Record<string, SpritesPoolHealth['status']> = {
+  ready: 'Ready', busy: 'Busy', queued: 'Queued', degraded: 'Degraded',
+};
+
+/** The Sprites runner pool summary; undefined when absent or malformed. */
+export const parseSpritesPoolHealth = (value: unknown): SpritesPoolHealth | undefined => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const pool = value as Record<string, unknown>;
+  const status = typeof pool.status === 'string' ? SPRITES_POOL_STATUSES[pool.status] : undefined;
+  if (!status || !isNonNegativeInteger(pool.busy) || !isNonNegativeInteger(pool.idle) || !isNonNegativeInteger(pool.waiting)
+    || !(pool.max === null || isNonNegativeInteger(pool.max))) return undefined;
+  const attention = Array.isArray(pool.attention) ? pool.attention.filter((note): note is string => typeof note === 'string') : [];
+  // Short enough for the header's status menu: "2/2 busy · 1 queued".
+  const runners = pool.max === null ? `${pool.busy} busy, ${pool.idle} idle` : `${pool.busy}/${pool.max} busy`;
+  const queued = (pool.waiting as number) > 0 ? ` · ${pool.waiting} queued` : '';
+  return { status, summary: `${runners}${queued}`, attention };
 };
 
 const mapAuthStatus = (status?: string) => status === 'connected' ? 'Authenticated' : 'Failed';
@@ -105,6 +123,7 @@ export function mapSystemStatus(data: StatusResponse): SystemStatus {
       && data.githubEventIntakeStatus === 'connected'
       ? parseConnectAccountStatus(data.connectAccount)
       : undefined;
+    const spritesPool = parseSpritesPoolHealth(data.spritesPool);
     return {
       daemon: data.daemon === 'running' ? 'Running' : 'Stopped',
       workers,
@@ -117,5 +136,6 @@ export function mapSystemStatus(data: StatusResponse): SystemStatus {
       agents,
       warnings: data.warnings || [],
       ...(connectAccount ? { connectAccount } : {}),
+      ...(spritesPool ? { spritesPool } : {}),
     };
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getSystemStatus } from './proprApi';
+import { parseSpritesPoolHealth } from './systemStatusApi';
 
 describe('getSystemStatus', () => {
   afterEach(() => {
@@ -208,5 +209,17 @@ describe('getSystemStatus', () => {
       indexing: 'Unavailable',
       agents: [],
     });
+  });
+});
+
+describe('parseSpritesPoolHealth', () => {
+  it('summarizes the Sprites runner pool and drops malformed values', () => {
+    expect(parseSpritesPoolHealth({ status: 'queued', max: 2, total: 2, busy: 2, idle: 0, waiting: 1, attention: [] }))
+      .toEqual({ status: 'Queued', summary: '2/2 busy · 1 queued', attention: [] });
+    expect(parseSpritesPoolHealth({ status: 'ready', max: null, total: 1, busy: 0, idle: 1, waiting: 0, attention: ['x', 3] }))
+      .toEqual({ status: 'Ready', summary: '0 busy, 1 idle', attention: ['x'] });
+    expect(parseSpritesPoolHealth(undefined)).toBeUndefined();
+    expect(parseSpritesPoolHealth({ status: 'exploded', busy: 1, idle: 1, waiting: 0, max: 2 })).toBeUndefined();
+    expect(parseSpritesPoolHealth({ status: 'ready', busy: -1, idle: 1, waiting: 0, max: 2 })).toBeUndefined();
   });
 });

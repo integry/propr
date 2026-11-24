@@ -37,6 +37,19 @@ export interface SystemStatus {
   workerCount?: number;
 
   /**
+   * Sprites runner pool summary; absent until a worker used the sprites runtime.
+   */
+  spritesPool?: {
+    status: "ready" | "busy" | "queued" | "degraded";
+    max: number | null;
+    total: number;
+    busy: number;
+    idle: number;
+    waiting: number;
+    attention: string[];
+  };
+
+  /**
    * GitHub authentication status ('connected' | 'disconnected').
    */
   githubAuth: string;

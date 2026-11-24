@@ -9,7 +9,7 @@
 
 import { Command } from "commander";
 import { getAgentRunAdmission, type AgentRunAdmissionReport } from "../api/index.js";
-import type { AdmissionConfiguration, AdmissionRuntime } from "../api/admission.js";
+import type { AdmissionConfiguration, AdmissionRuntime, AgentRunAdmissionReport as Report } from "../api/admission.js";
 import { printOutput } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 
@@ -94,6 +94,26 @@ export function formatRuntimeLines(runtime: AdmissionRuntime | null | undefined,
 }
 
 const known = (value: number | null): string => value === null ? "unknown" : String(value);
+const seconds = (ms: number | null): string => ms === null ? "—" : `${(ms / 1000).toFixed(1)}s`;
+
+/** The Sprites runner pool section; empty until a worker used the sprites runtime. */
+export function formatSpritesPoolLines(section: Report["spritesPool"]): string[] {
+  if (!section) return [];
+  if (section.unavailable) return [`Sprites runner pool: unavailable: ${section.unavailable}`];
+  const lines: string[] = [];
+  for (const pool of section.pools) {
+    const { runners } = pool;
+    const bound = pool.max === null ? "bound unknown" : `bound ${pool.max}${pool.orgLimit !== null ? ` (organization limit ${pool.orgLimit})` : ""}`;
+    lines.push(`Sprites runner pool ${pool.id}: ${runners.busy} busy, ${runners.idle} idle · ${bound} · ${pool.waiting} queued · warm clones ${pool.warmClones === null ? "unknown" : pool.warmClones ? `on (${pool.warm} warm)` : "off"}`);
+    const states = (["provisioning", "leased", "finished", "resetting", "orphaned", "reaping", "retained"] as const)
+      .filter(state => runners[state]).map(state => `${runners[state]} ${state}`);
+    if (states.length) lines.push(`  Busy: ${states.join(", ")}.`);
+    if (pool.restore.samples) lines.push(`  Checkpoint restore: last ${seconds(pool.restore.lastMs)}, average ${seconds(pool.restore.averageMs)} over ${pool.restore.samples} runner(s).`);
+    for (const note of pool.attention) lines.push(`  ${note}`);
+  }
+  lines.push(`  ${section.label}`);
+  return lines;
+}
 
 /** The human-readable report, as lines. */
 export function formatAdmissionReport(report: AgentRunAdmissionReport): string[] {
@@ -136,6 +156,8 @@ export function formatAdmissionReport(report: AgentRunAdmissionReport): string[]
   lines.push(`  ${slots.label}`);
   const runtimeLines = formatRuntimeLines(report.runtime, report.runtimeUnavailable);
   if (runtimeLines.length) lines.push("", ...runtimeLines);
+  const poolLines = formatSpritesPoolLines(report.spritesPool);
+  if (poolLines.length) lines.push("", ...poolLines);
   // The server's note names MCP tools and API routes; point a CLI reader at the CLI command instead.
   lines.push("", ADMISSION_SUBSCRIPTION_USAGE_NOTE);
   return lines;

@@ -93,6 +93,9 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
 | `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. In a published Desktop runtime the generated `propr/agent:latest` value resolves to the signed, digest-pinned managed agent image; any other value is kept as an intentional override. Agents on default CLI versions run that pinned image directly; an agent with a custom CLI version still uses a locally built image (set it back to the default version to use the published image). | Optional. |
+| `PROPR_SPRITES_MAX` | `2` | With the `sprites` agent runtime: runner Sprites the shared pool holds at most, across every worker using the same Sprites organization token (leases live in Redis). Runs queue while every runner is busy. Never above `PROPR_SPRITES_ORG_LIMIT`. See [Agent Runtime](../architecture/agent-runtime.md#runner-pool). | Optional. |
+| `PROPR_SPRITES_ORG_LIMIT` | `3` | Sprites the organization may hold at once (Free plan: 3). Caps `PROPR_SPRITES_MAX`. | Paid Sprites plans. |
+| `PROPR_SPRITES_WARM_CLONES` | `off` | `on` keeps a per-repository warm clone checkpoint on each Sprites runner, so a repeat run of a repository fetches only new objects and skips the restore. | Optional. |
 | `AGENT_CONTAINER_MEMORY_LIMIT` | `6g` | Hard memory and memory-plus-swap ceiling applied to every coding-agent container. Use a positive Docker memory value such as `8g`. | Optional tuning. |
 | `AGENT_CONTAINER_CPU_LIMIT` | Adaptive: `min(4, detected CPUs)` | Maximum CPUs available to each coding-agent container; fractional overrides such as `1.5` are accepted. Leave unset to stay within the worker host's detected capacity. | Optional tuning. |
 | `AGENT_CONTAINER_PIDS_LIMIT` | `512` | Maximum processes/threads available to each coding-agent container. | Optional tuning. |

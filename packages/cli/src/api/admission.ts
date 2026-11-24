@@ -57,7 +57,23 @@ export interface AgentRunAdmissionReport {
   /** Absent from servers older than the runtime capability report. */
   runtime?: AdmissionRuntime | null;
   runtimeUnavailable?: string;
+  /** Present once a worker used the sprites runtime; absent from older servers. */
+  spritesPool?: { label: string; pools: AdmissionSpritesPool[]; unavailable?: string };
   subscriptionUsage: string;
+}
+
+/** One Sprites runner pool (runners shared by every worker of one Sprites organization). */
+export interface AdmissionSpritesPool {
+  id: string;
+  max: number | null;
+  orgLimit: number | null;
+  warmClones: boolean | null;
+  configuredAt: string | null;
+  runners: Record<"total" | "busy" | "provisioning" | "idle" | "leased" | "resetting" | "finished" | "orphaned" | "reaping" | "retained", number>;
+  waiting: number;
+  warm: number;
+  restore: { lastMs: number | null; averageMs: number | null; samples: number };
+  attention: string[];
 }
 
 /** What the default agent runtime can enforce; admission refuses runs needing what it lacks. */

@@ -132,7 +132,20 @@ const ACTIVITY_SUMMARIES: Record<string, (result: Args) => string> = {
 
 /** One line per limit the report labels; admission first, then each capped agent. */
 function admissionSummary(result: Args): string {
-  return `${admissionLimitSummary(result)}${runtimeSummary(result)}`;
+  return `${admissionLimitSummary(result)}${runtimeSummary(result)}${spritesPoolSummary(result)}`;
+}
+
+/** Appended once a worker used the sprites runtime: busy runners against the bound, the queue and anything needing attention. */
+function spritesPoolSummary(result: Args): string {
+  const section = result.spritesPool;
+  if (!section) return '';
+  if (section.unavailable) return ` Sprites runner pool unavailable: ${section.unavailable}.`;
+  return (section.pools as Args[]).map(pool => {
+    const bound = pool.max === null ? '' : ` of ${pool.max}`;
+    const queued = pool.waiting ? `, ${countOf(pool.waiting, 'run')} queued` : '';
+    const attention = (pool.attention as string[]).length ? ` ${(pool.attention as string[]).join(' ')}` : '';
+    return ` Sprites runners: ${pool.runners.busy} busy, ${pool.runners.idle} idle${bound}${queued}.${attention}`;
+  }).join('');
 }
 
 /** Appended when the default runtime refuses restricted runs, or its capabilities are unknown. */

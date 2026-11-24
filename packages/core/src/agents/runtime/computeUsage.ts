@@ -26,6 +26,25 @@ export interface AgentRunComputeUsage {
     /** Compute cost in USD; null when neither the runtime nor the rate table priced it. */
     costUsd: number | null;
     costSource: ComputeCostSource | null;
+    /** How a pooled runtime (Sprites) got the run its sandbox; absent for runtimes without a runner pool. */
+    runnerPool?: AgentRunRunnerPoolUsage;
+}
+
+/** Runner pool timings of one run, in milliseconds. */
+export interface AgentRunRunnerPoolUsage {
+    /** Queued for a free runner (every runner busy). */
+    waitMs: number;
+    /** A runner was created and set up for this run. */
+    provisioned: boolean;
+    provisionMs: number | null;
+    /** The health check of the reused runner before its lease. */
+    healthCheckMs: number | null;
+    /** The checkpoint restore that reset the reused runner after its previous run (off this run's critical path). */
+    previousRestoreMs: number | null;
+    /** A restore this run waited for: the runner held another repository's warm clone. */
+    restoreBeforeLeaseMs: number | null;
+    /** The checkpoint the run started from. */
+    baseline: 'clean' | 'warm';
 }
 
 /** JSON object keyed by runtime kind, e.g. `{"fly":{"perHourUsd":0.02},"sprites":{"perCpuSecondUsd":0.00001}}`. */
@@ -121,6 +140,22 @@ export function attachComputeUsage<T extends { computeUsage?: AgentRunComputeUsa
 const finiteOrNull = (value: unknown): number | null =>
     typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
+function normalizeRunnerPoolUsage(value: unknown): AgentRunRunnerPoolUsage | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const waitMs = finiteOrNull(record.waitMs);
+    if (waitMs === null || typeof record.provisioned !== 'boolean') return null;
+    return {
+        waitMs,
+        provisioned: record.provisioned,
+        provisionMs: finiteOrNull(record.provisionMs),
+        healthCheckMs: finiteOrNull(record.healthCheckMs),
+        previousRestoreMs: finiteOrNull(record.previousRestoreMs),
+        restoreBeforeLeaseMs: finiteOrNull(record.restoreBeforeLeaseMs),
+        baseline: record.baseline === 'warm' ? 'warm' : 'clean',
+    };
+}
+
 /** Reads usage back from stored JSON (history metadata, job results); null when it is not usage. */
 export function normalizeComputeUsage(value: unknown): AgentRunComputeUsage | null {
     if (!value || typeof value !== 'object') return null;
@@ -129,6 +164,7 @@ export function normalizeComputeUsage(value: unknown): AgentRunComputeUsage | nu
     if (typeof record.runtime !== 'string' || wallTimeMs === null) return null;
     const costSource = record.costSource === 'runtime' || record.costSource === 'rate_table' ? record.costSource : null;
     const costUsd = finiteOrNull(record.costUsd);
+    const runnerPool = normalizeRunnerPoolUsage(record.runnerPool);
     return {
         runtime: record.runtime,
         wallTimeMs,
@@ -137,6 +173,7 @@ export function normalizeComputeUsage(value: unknown): AgentRunComputeUsage | nu
         avgMemoryBytes: finiteOrNull(record.avgMemoryBytes),
         costUsd: costSource ? costUsd : null,
         costSource: costUsd === null ? null : costSource,
+        ...(runnerPool ? { runnerPool } : {}),
     };
 }
 
@@ -161,6 +198,11 @@ export function formatComputeDuration(ms: number): string {
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/** `14.2s`. */
+function formatSeconds(ms: number): string {
+    return `${(ms / 1000).toFixed(1)}s`;
+}
+
 /** `$0.0123` below a cent, else `$1.23`. */
 export function formatComputeCost(costUsd: number): string {
     return costUsd > 0 && costUsd < 0.01 ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(2)}`;
@@ -181,6 +223,14 @@ export function formatComputeUsage(usage: AgentRunComputeUsage): string {
     }
     if (usage.costUsd !== null) {
         parts.push(`${formatComputeCost(usage.costUsd)}${usage.costSource === 'rate_table' ? ' (rate table)' : ''}`);
+    }
+    const pool = usage.runnerPool;
+    if (pool) {
+        if (pool.waitMs >= 1000) parts.push(`queued ${formatComputeDuration(pool.waitMs)}`);
+        if (pool.provisioned) parts.push(`new runner${pool.provisionMs !== null ? ` ${formatComputeDuration(pool.provisionMs)}` : ''}`);
+        else parts.push(`${pool.baseline} runner`);
+        if (pool.restoreBeforeLeaseMs !== null) parts.push(`restore ${formatSeconds(pool.restoreBeforeLeaseMs)} before start`);
+        else if (pool.previousRestoreMs !== null) parts.push(`restored in ${formatSeconds(pool.previousRestoreMs)}`);
     }
     return parts.join(' · ');
 }

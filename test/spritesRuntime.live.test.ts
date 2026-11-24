@@ -12,6 +12,7 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
     process.env.SPRITES_CLIENT_SIGNALS ??= '0';
     const { SpritesClient } = await import('@fly/sprites');
     const { SpritesRuntime } = await import('../packages/core/src/agents/runtime/spritesRuntime.ts');
+    const { MemorySpritePoolStore } = await import('../packages/core/src/agents/runtime/spritesPool.ts');
     const { readSpritesCliPins } = await import('../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts');
     const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
     const { buildAgentRunRepoSetup } = await import('../packages/core/src/claude/docker/repoSetupWrapper.ts');
@@ -35,7 +36,10 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
     const runtime = new SpritesRuntime({
         createSprite: async () => { assert.ok(!created, 'the warm Sprite should be reused'); created = true; return sprite; },
         deleteSprite: async () => { throw new Error('live Sprite restore failed'); },
-    }, { PROPR_SPRITES_TOKEN: token });
+        // Reuse hands back the same Sprite; an empty listing keeps startup reaping away from the organization's real Sprites.
+        sprite: () => sprite,
+        listAllSprites: async () => [],
+    }, { PROPR_SPRITES_TOKEN: token }, { store: new MemorySpritePoolStore() });
     const pins = readSpritesCliPins();
     const agyStore = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-live-credentials-'));
     t.after(() => fs.rmSync(agyStore, { recursive: true, force: true }));

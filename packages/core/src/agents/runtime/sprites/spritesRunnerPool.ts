@@ -1,0 +1,359 @@
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import type { Sprite } from '@fly/sprites';
+import logger from '../../../utils/logger.js';
+import type { AgentRunRunnerPoolUsage } from '../computeUsage.js';
+import { SPRITES_LEASE_TTL_MS, SPRITES_POOL_LABEL, spritesPoolLabel, type SpritesPoolConfig } from '../spritesPool.js';
+import {
+    abandonSpriteRunner, acquireSpriteRunner, claimSpriteRunners, effectiveRunnerState, expireSpritePool, forgetSpriteRunner,
+    heartbeatSpriteLease, leaveSpriteQueue, releaseSpriteRunner, replaceSpriteRunner, updateSpriteRunner,
+    type SpritePoolState, type SpriteRunnerRecord,
+} from './spritesPoolState.js';
+import type { SpritePoolStore } from './spritesPoolStore.js';
+import { carryWarmClone, completeCheckpointStream, installWarmClone, setupSprite, startupStep, type SpriteClient } from './spritesProvisioning.js';
+
+/** One leased runner. */
+export type Slot = {
+    sprite: Sprite;
+    name: string;
+    leaseId: string;
+    /** The clean setup checkpoint. */
+    checkpoint: string;
+    /** The warm clone baseline the runner is at, when not the clean checkpoint. */
+    warm?: { repo: string; checkpoint: string };
+    runs: number;
+    usage: AgentRunRunnerPoolUsage;
+};
+
+export interface SpritePoolOptions {
+    store: SpritePoolStore;
+    scope: string;
+    config: SpritesPoolConfig;
+    /** Identifies this worker process in lease records. */
+    owner?: string;
+    /** How often a queued request asks again. */
+    pollMs?: number;
+    ttlMs?: number;
+    now?: () => number;
+}
+
+/** A lease's runner while it is acquired. */
+type PoolLease = { name: string; leaseId: string; waitMs: number; runs: number };
+
+/** Unlabeled `propr-` Sprites predate the shared pool; reap them only when no run could still be on them. */
+const LEGACY_SPRITE_GRACE_MS = 24 * 60 * 60_000;
+const LEGACY_NAME = /^propr-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Deletes a Sprite; one that is already gone counts as deleted. */
+export async function deleteSprite(client: SpriteClient, name: string): Promise<void> {
+    try { await client.deleteSprite(name); }
+    catch (error) { if ((error as { statusCode?: number }).statusCode !== 404) throw error; }
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const done = () => { signal.removeEventListener('abort', abort); resolve(); };
+        const timer = setTimeout(done, ms);
+        const abort = () => { clearTimeout(timer); reject(signal.reason); };
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+    });
+}
+
+/**
+ * Runner Sprites shared by every worker of one Sprites organization, bounded
+ * by `config.max`. A run leases a runner through the shared lease state
+ * (Redis in a deployment) and queues while every runner is busy. Each runner
+ * is provisioned once with a clean checkpoint, health checked before each
+ * lease and restored after each run, so nothing of one run reaches the next;
+ * a runner that fails either is destroyed and re-provisioned.
+ *
+ * Lease holders heartbeat. A runner whose holder stopped heartbeating is
+ * orphaned and deleted before its slot is reused, and on startup a worker
+ * deletes this pool's Sprites that have no record at all.
+ */
+export class SpritePool {
+    private closed = false;
+    private ready?: Promise<void>;
+    private readonly heartbeats = new Map<string, ReturnType<typeof setInterval>>();
+    private readonly owner: string;
+    private readonly ttlMs: number;
+
+    constructor(private readonly client: SpriteClient, private readonly options: SpritePoolOptions) {
+        this.owner = options.owner ?? `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+        this.ttlMs = options.ttlMs ?? SPRITES_LEASE_TTL_MS;
+    }
+
+    private now() { return this.options.now?.() ?? Date.now(); }
+    private transact<T>(operation: (state: SpritePoolState) => T): Promise<T> {
+        return this.options.store.transact(this.options.scope, operation);
+    }
+
+    private startHeartbeat(leaseId: string) {
+        const timer = setInterval(() => {
+            this.transact(state => heartbeatSpriteLease(state, leaseId, this.now()))
+                .catch(error => logger.warn({ error: String(error) }, 'Sprites pool heartbeat failed'));
+        }, Math.max(50, Math.floor(this.ttlMs / 4)));
+        timer.unref();
+        this.heartbeats.set(leaseId, timer);
+    }
+
+    private stopHeartbeat(leaseId: string) {
+        clearInterval(this.heartbeats.get(leaseId));
+        this.heartbeats.delete(leaseId);
+    }
+
+    /** Once per pool: publish the bounds, forget runners whose Sprite is gone and reap Sprites no record owns. */
+    private initialize(): Promise<void> {
+        return this.ready ??= this.reconcile().catch(error => {
+            logger.warn({ error: error instanceof Error ? error.message : String(error) }, 'Sprites pool reconciliation failed');
+        });
+    }
+
+    async reconcile(): Promise<void> {
+        const { store, scope, config } = this.options;
+        await store.publishConfig(scope, { max: config.max, orgLimit: config.orgLimit, warmClones: config.warmClones, updatedAt: this.now() });
+        if (config.clamped) logger.warn({ max: config.max, orgLimit: config.orgLimit }, 'PROPR_SPRITES_MAX exceeds the Sprites organization limit; using the limit');
+        // List first, then read: a record is written before its Sprite is created, so a
+        // listed Sprite missing from the later read is one no worker is creating.
+        const listedAt = this.now();
+        const listed = await this.client.listAllSprites('propr-');
+        const state = await store.read(scope);
+        const names = new Set(listed.map(sprite => sprite.name));
+        const missing = [...state.runners].filter(([name, record]) => !names.has(name) && record.since < listedAt
+            && ['idle', 'orphaned', 'retained'].includes(effectiveRunnerState(record, listedAt, this.ttlMs))).map(([name]) => name);
+        if (missing.length) {
+            await this.transact(pool => {
+                expireSpritePool(pool, this.now(), this.ttlMs);
+                for (const name of missing) forgetSpriteRunner(pool, name);
+            });
+            logger.info({ runners: missing }, 'Forgot Sprites runners whose Sprite no longer exists');
+        }
+        const label = spritesPoolLabel(scope);
+        for (const sprite of listed) {
+            if (state.runners.has(sprite.name)) continue;
+            const labels = sprite.labels ?? [];
+            const created = sprite.createdAt ? new Date(sprite.createdAt).getTime() : NaN;
+            const legacy = !labels.includes(SPRITES_POOL_LABEL) && LEGACY_NAME.test(sprite.name) && listedAt - created > LEGACY_SPRITE_GRACE_MS;
+            if (!labels.includes(label) && !legacy) continue;
+            try {
+                await deleteSprite(this.client, sprite.name);
+                logger.info({ sprite: sprite.name }, 'Deleted orphaned Sprite no pool lease owns');
+            } catch (error) {
+                logger.error({ sprite: sprite.name, error: String(error) }, 'Could not delete orphaned Sprite');
+            }
+        }
+        await this.deleteClaimed({ states: ['orphaned'] });
+    }
+
+    /** Deletes the runners a claim returns; a failed deletion leaves the runner orphaned for a later attempt. */
+    private async deleteClaimed(claim: { states: SpriteRunnerRecord['state'][]; lastOwner?: string }): Promise<void> {
+        const leaseId = randomUUID();
+        const claimed = await this.transact(state => claimSpriteRunners(state, { ...claim, leaseId, owner: this.owner, now: this.now(), ttlMs: this.ttlMs }));
+        await Promise.allSettled(claimed.map(([name]) => this.deleteRunner(name, leaseId)));
+    }
+
+    /** Deletes a held runner's Sprite and its record; on failure the runner stays counted, orphaned. */
+    private async deleteRunner(name: string, leaseId: string): Promise<void> {
+        try {
+            await deleteSprite(this.client, name);
+        } catch (error) {
+            logger.error({ sprite: name }, 'Could not delete Sprite');
+            await this.transact(state => abandonSpriteRunner(state, name, leaseId, this.now())).catch(() => {});
+            throw error;
+        }
+        await this.transact(state => forgetSpriteRunner(state, name, leaseId));
+    }
+
+    /** Deletes a leased runner's Sprite and record (a run aborted after acquisition, or a closed pool). */
+    async discard(slot: Slot): Promise<void> {
+        try { await this.deleteRunner(slot.name, slot.leaseId); }
+        finally { this.stopHeartbeat(slot.leaseId); }
+    }
+
+    async acquire(signal: AbortSignal, request: { repo?: string } = {}): Promise<Slot> {
+        signal.throwIfAborted();
+        if (this.closed) throw new Error('Sprite pool is closed');
+        await startupStep(signal, () => this.initialize());
+        const leaseId = randomUUID();
+        const startedAt = this.now();
+        const { config } = this.options;
+        let queued = false;
+        this.startHeartbeat(leaseId);
+        try {
+            for (;;) {
+                if (this.closed) throw new Error('Sprite pool is closed');
+                const decision = await this.transact(state => acquireSpriteRunner(state, {
+                    leaseId, owner: this.owner, max: config.max, repo: request.repo, newName: `propr-${randomUUID()}`, now: this.now(), ttlMs: this.ttlMs,
+                }));
+                if (decision.action === 'wait') {
+                    if (!queued) logger.info({ position: decision.position, runners: decision.runners, max: config.max }, 'Every Sprites runner is busy; run queued for one');
+                    queued = true;
+                    await sleep(this.options.pollMs ?? 2000, signal);
+                    continue;
+                }
+                if (decision.action === 'reap') {
+                    await this.deleteRunner(decision.name, leaseId).catch(() => {});
+                    signal.throwIfAborted();
+                    continue;
+                }
+                const waitMs = this.now() - startedAt;
+                const lease = { name: decision.name, leaseId, waitMs, runs: decision.record.runs };
+                if (decision.action === 'provision') return await this.provision(lease, signal);
+                return await this.leaseIdle({ ...lease, record: decision.record, repo: request.repo }, signal);
+            }
+        } catch (error) {
+            this.stopHeartbeat(leaseId);
+            await this.transact(state => leaveSpriteQueue(state, leaseId)).catch(() => {});
+            throw error;
+        }
+    }
+
+    private async provision({ name, leaseId, waitMs, runs }: PoolLease, signal: AbortSignal): Promise<Slot> {
+        const startedAt = this.now();
+        const { scope } = this.options;
+        let sprite: Sprite;
+        try {
+            // Never discover or adopt a machine by name: the record above owns the name.
+            sprite = await this.client.createSprite(name, { labels: [SPRITES_POOL_LABEL, spritesPoolLabel(scope)] });
+        } catch (error) {
+            await this.transact(state => forgetSpriteRunner(state, name, leaseId)).catch(() => {});
+            throw error;
+        }
+        logger.info({ sprite: sprite.name }, 'Worker created Sprite');
+        let checkpoint: string;
+        try {
+            checkpoint = await setupSprite(sprite, signal);
+        } catch (failure) {
+            try {
+                await this.deleteRunner(name, leaseId);
+            } catch (cleanupError) {
+                throw new AggregateError([failure, cleanupError], `${(failure as Error).message} (also failed to delete Sprite ${sprite.name})`);
+            }
+            signal.throwIfAborted();
+            throw failure;
+        }
+        const provisionMs = this.now() - startedAt;
+        await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() }, { state: 'leased', checkpoint, provisionMs }));
+        return { sprite, name, leaseId, checkpoint, runs, usage: {
+            waitMs, provisioned: true, provisionMs, healthCheckMs: null, previousRestoreMs: null, restoreBeforeLeaseMs: null, baseline: 'clean',
+        } };
+    }
+
+    /** Health checks an idle runner before handing it out; a broken one is destroyed and re-provisioned in its slot. */
+    private async leaseIdle(lease: PoolLease & { record: SpriteRunnerRecord; repo?: string }, signal: AbortSignal): Promise<Slot> {
+        const { name, record, leaseId, waitMs, repo } = lease;
+        const sprite = this.client.sprite(name);
+        const checkStartedAt = this.now();
+        let warm = record.warm;
+        let restoreBeforeLeaseMs: number | null = null;
+        let healthCheckMs: number | null = null;
+        let restoring = false;
+        try {
+            if (!record.checkpoint) throw new Error('Runner record has no clean checkpoint');
+            await startupStep(signal, () => sprite.execFile('/bin/true', [], { cwd: '/', timeout: 30_000, signal }));
+            healthCheckMs = this.now() - checkStartedAt;
+            if (warm && warm.repo !== repo) {
+                // Another repository's warm clone: start this run from the clean checkpoint.
+                restoring = true;
+                const restoreStartedAt = this.now();
+                await startupStep(signal, async () => completeCheckpointStream(await sprite.restoreCheckpoint(record.checkpoint!)));
+                restoreBeforeLeaseMs = this.now() - restoreStartedAt;
+                warm = undefined;
+                await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() }, { warm: undefined, lastRestoreMs: restoreBeforeLeaseMs! }));
+            }
+        } catch (error) {
+            if (signal.aborted) {
+                // Cancelled before any restore started: the runner is still at its baseline, so hand it back.
+                // A restore cut short leaves it in an unknown state: delete it.
+                const lease = { name, leaseId, max: this.options.config.max, now: this.now() };
+                const returned = restoring ? 'lost' : await this.transact(state => releaseSpriteRunner(state, lease, { warm: record.warm, lastRestoreMs: record.lastRestoreMs }))
+                    .catch(() => 'lost' as const);
+                if (returned === 'discard') await deleteSprite(this.client, name).catch(() => logger.error({ sprite: name }, 'Could not delete Sprite'));
+                else if (returned !== 'idle') await this.deleteRunner(name, leaseId).catch(() => {});
+                throw error;
+            }
+            logger.warn({ sprite: name, error: error instanceof Error ? error.message : String(error) }, 'Sprites runner failed its health check; re-provisioning it');
+            return this.reprovision(lease, signal);
+        }
+        return { sprite, name, leaseId, checkpoint: record.checkpoint, warm, runs: record.runs, usage: {
+            waitMs, provisioned: false, provisionMs: null, healthCheckMs, previousRestoreMs: record.lastRestoreMs ?? null,
+            restoreBeforeLeaseMs, baseline: warm ? 'warm' : 'clean',
+        } };
+    }
+
+    /** Destroys a broken runner and provisions a replacement under the same lease. */
+    private async reprovision({ name, leaseId, waitMs, runs }: PoolLease, signal: AbortSignal): Promise<Slot> {
+        try {
+            await deleteSprite(this.client, name);
+        } catch (error) {
+            logger.error({ sprite: name }, 'Could not delete Sprite');
+            await this.transact(state => abandonSpriteRunner(state, name, leaseId, this.now())).catch(() => {});
+            throw error;
+        }
+        const replacement = `propr-${randomUUID()}`;
+        if (!await this.transact(state => replaceSpriteRunner(state, { name, leaseId, now: this.now() }, replacement))) {
+            throw new Error('Sprites runner lease lapsed');
+        }
+        return this.provision({ name: replacement, leaseId, waitMs, runs }, signal);
+    }
+
+    /** The run settled; until its release the runner's result may still be read. */
+    async finished(slot: Slot): Promise<void> {
+        await this.transact(state => updateSpriteRunner(state, { name: slot.name, leaseId: slot.leaseId, now: this.now() }, { state: 'finished' }))
+            .catch(error => logger.warn({ error: String(error) }, 'Could not record a finished Sprites run'));
+    }
+
+    async close(): Promise<void> {
+        this.closed = true;
+        // Idle runners this worker last held; deleteRunner logs the name for manual cleanup if deletion fails.
+        await this.deleteClaimed({ states: ['idle'], lastOwner: this.owner }).catch(error => {
+            logger.warn({ error: String(error) }, 'Could not delete idle Sprites at shutdown');
+        });
+    }
+
+    /**
+     * Resets the runner for the next lease: stop every process, wipe the separate
+     * /tmp disk and restore its baseline checkpoint. With warm clones on, a run
+     * that refreshed its repository's warm clone reference leaves the runner at a
+     * new warm checkpoint: clean checkpoint plus only that root-owned reference.
+     */
+    async release(slot: Slot, outcome: { repo?: string } = {}): Promise<void> {
+        try {
+            if (this.closed) return await this.discard(slot);
+            await this.transact(state => updateSpriteRunner(state, { name: slot.name, leaseId: slot.leaseId, now: this.now() }, { state: 'resetting' })).catch(() => false);
+            let next: { checkpoint: string; warm?: Slot['warm']; restoreMs?: number };
+            try {
+                next = await this.reset(slot, outcome.repo);
+            } catch {
+                if (this.closed) return await this.deleteRunner(slot.name, slot.leaseId);
+                logger.warn({ sprite: slot.name }, 'Sprites runner could not be reset; re-provisioning it');
+                slot = await this.reprovision({ name: slot.name, leaseId: slot.leaseId, waitMs: 0, runs: slot.runs }, new AbortController().signal);
+                next = { checkpoint: slot.checkpoint };
+            }
+            if (this.closed) return await this.discard(slot);
+            const lease = { name: slot.name, leaseId: slot.leaseId, max: this.options.config.max, now: this.now() };
+            const released = await this.transact(state => releaseSpriteRunner(state, lease, {
+                checkpoint: next.checkpoint, warm: next.warm, lastOwner: this.owner, runs: slot.runs + 1,
+                ...(next.restoreMs !== undefined ? { lastRestoreMs: next.restoreMs } : {}),
+            }));
+            if (released === 'discard') await deleteSprite(this.client, slot.name).catch(() => logger.error({ sprite: slot.name }, 'Could not delete Sprite'));
+            if (released === 'lost') logger.warn({ sprite: slot.name }, 'Sprites runner lease lapsed before release; it is reaped as an orphan');
+        } finally {
+            this.stopHeartbeat(slot.leaseId);
+        }
+    }
+
+    private async reset(slot: Slot, repo?: string) {
+        // Stop descendants that outlived the launcher, including detached processes.
+        await slot.sprite.restart();
+        await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
+        const carried = this.options.config.warmClones && repo ? await carryWarmClone(slot.sprite, repo) : false;
+        const target = carried ? slot.checkpoint : slot.warm?.checkpoint ?? slot.checkpoint;
+        const startedAt = this.now();
+        await completeCheckpointStream(await slot.sprite.restoreCheckpoint(target));
+        const restoreMs = this.now() - startedAt;
+        const warm = carried ? await installWarmClone(slot.sprite, repo!) : target === slot.checkpoint ? undefined : slot.warm;
+        return { checkpoint: slot.checkpoint, warm, restoreMs };
+    }
+}

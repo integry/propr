@@ -781,3 +781,32 @@ test('a bundle result whose retrieval fails keeps the run retained and unrelease
     assert.deepEqual(f.revoked, [TOKEN]);
     assert.equal(remoteRunRefs(f), '', 'the base ref is deleted; no result ref was ever pushed');
 });
+
+test('a warm clone reference the wrapper owns serves the fetch as alternates and is refreshed from the verified base', async () => {
+    const f = fixture();
+    const runtime = localRuntime(f);
+    const reference = path.join(f.root, 'warm', 'repo.git');
+    const evidence = path.join(f.root, 'alternates.seen');
+    const run = async () => {
+        const spec = runSpec(f, { env: { [WORKSPACE_TRANSPORT_ENVIRONMENT.reference]: reference } });
+        // The agent records what the wrapper's private repository borrowed objects from.
+        write(path.join(f.root, 'agent.sh'), `#!/bin/bash\ncat "$TMPDIR"/propr-workspace-transport.*/repo.git/objects/info/alternates > ${JSON.stringify(evidence)} 2>/dev/null || true\n`, 0o755);
+        const result = await runWithWorkspaceTransport(runtime, spec, {}, { transport: f.transport });
+        assert.equal(result.exitCode, 0, result.stderr);
+        fs.rmSync(f.sandbox, { recursive: true, force: true });
+    };
+    await run();
+    assert.equal(fs.existsSync(evidence) ? fs.readFileSync(evidence, 'utf8') : '', '', 'no reference existed yet');
+    assert.equal(git(f.root, '--git-dir', reference, 'rev-parse', 'refs/propr/warm/base'), f.base);
+    assert.equal(fs.statSync(path.dirname(reference)).mode & 0o077, 0, 'the reference is private to the wrapper identity');
+    await run();
+    assert.equal(fs.readFileSync(evidence, 'utf8').trim(), path.join(reference, 'objects'));
+
+    // A symlinked reference is never used or written through.
+    const elsewhere = path.join(f.root, 'elsewhere.git');
+    fs.renameSync(reference, elsewhere);
+    fs.symlinkSync(elsewhere, reference);
+    fs.rmSync(evidence);
+    await run();
+    assert.equal(fs.readFileSync(evidence, 'utf8'), '');
+});

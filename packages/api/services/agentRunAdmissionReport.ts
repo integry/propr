@@ -20,18 +20,23 @@
  */
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
-import { readAgentRunAdmissionSnapshot, readAgentRuntimeCapabilityReport, type AgentRunAdmissionSnapshot, type AgentRuntimeCapabilityReport } from '@propr/core';
+import {
+  readAgentRunAdmissionSnapshot, readAgentRuntimeCapabilityReport, readSpritesPoolStatus, spritesPoolStatusStore,
+  type AgentRunAdmissionSnapshot, type AgentRuntimeCapabilityReport, type SpritesPoolStatusReport,
+} from '@propr/core';
 
 const WORKER_SET_KEY = 'system:status:workers';
 const WORKER_CAPACITY_KEY = 'system:status:worker-capacity';
 
 export interface AgentRunAdmissionReportDeps {
   taskQueue: Pick<Queue, 'getActiveCount'> & { opts?: { prefix?: string } };
-  redisClient: Pick<RedisClientType, 'sMembers' | 'hGetAll'>;
+  redisClient: Pick<RedisClientType, 'sMembers' | 'hGetAll' | 'get'>;
   /** Test hook; defaults to the core snapshot over a short-lived Redis connection. */
   readSnapshot?: () => Promise<AgentRunAdmissionSnapshot>;
   /** Test hook; defaults to the default agent runtime's capabilities against the instance network policy. */
   readRuntime?: () => Promise<AgentRuntimeCapabilityReport>;
+  /** Test hook; defaults to the Sprites runner pools recorded in Redis. */
+  readSpritesPool?: () => Promise<SpritesPoolStatusReport>;
 }
 
 export interface AgentRunAdmissionReportAccess {
@@ -43,12 +48,22 @@ export interface AgentRunAdmissionReportAccess {
 
 export const QUEUE_WORKERS_LABEL = 'Queue worker concurrency: jobs the worker processes run at once (WORKER_CONCURRENCY per worker). A job holds its worker slot while it waits for admission; a deferred job does not.';
 export const REPOSITORY_SLOTS_LABEL = 'Repository workflow slots: runs of one repository at once (limits.max_parallel_tasks in .propr/workflow.yml). Every repository with a limit and running work is listed.';
+export const SPRITES_POOL_LABEL = 'Sprites runner pool: runner Sprites shared by every worker of one Sprites organization (PROPR_SPRITES_MAX, at most PROPR_SPRITES_ORG_LIMIT). A run on the sprites runtime leases one and queues while all are busy.';
 export const SUBSCRIPTION_USAGE_NOTE = 'Subscription usage (provider quota through Agent Tank) is not part of this report; read it with get_provider_usage or the automation capacity routes.';
 
 /** Only a runtime selection error is specific enough to show; anything else stays generic. */
 function runtimeUnavailable(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
   return /^Unknown agent runtime "[a-z0-9-]{1,64}"/.test(message) ? message : 'The agent runtime capabilities could not be read.';
+}
+
+/** The Sprites pool status reads over the API's own Redis client. */
+export function nodeRedisReader(client: Pick<RedisClientType, 'sMembers' | 'hGetAll' | 'get'>) {
+  return {
+    hgetall: async (key: string) => await client.hGetAll(key) as Record<string, string>,
+    get: async (key: string) => await client.get(key) as string | null,
+    smembers: (key: string) => client.sMembers(key),
+  };
 }
 
 async function queueWorkers(deps: AgentRunAdmissionReportDeps) {
@@ -66,11 +81,13 @@ async function queueWorkers(deps: AgentRunAdmissionReportDeps) {
 
 export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReportDeps, access: AgentRunAdmissionReportAccess) {
   const read = deps.readSnapshot ?? (() => readAgentRunAdmissionSnapshot({ queuePrefix: deps.taskQueue.opts?.prefix }));
-  const [snapshot, workers, runtime] = await Promise.all([
+  const [snapshot, workers, runtime, spritesPool] = await Promise.all([
     read(),
     queueWorkers(deps).catch(() => ({ label: QUEUE_WORKERS_LABEL, inUse: null, total: null, workers: null })),
     (deps.readRuntime ?? (() => readAgentRuntimeCapabilityReport()))()
       .then(report => ({ report }), (error: unknown) => ({ unavailable: runtimeUnavailable(error) })),
+    (deps.readSpritesPool ?? (() => readSpritesPoolStatus({ store: spritesPoolStatusStore(nodeRedisReader(deps.redisClient)) })))()
+      .catch((): SpritesPoolStatusReport => ({ pools: [], unavailable: 'The Sprites runner pool state could not be read' })),
   ]);
   const taskIds = [...new Set(snapshot.agents.flatMap(agent => agent.tasks.map(task => task.taskId)))];
   const [visibleTasks, visibleRepositories] = await Promise.all([
@@ -97,6 +114,8 @@ export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReport
     },
     runtime: 'report' in runtime ? runtime.report : null,
     ...('unavailable' in runtime ? { runtimeUnavailable: runtime.unavailable } : {}),
+    // Present once any worker used the sprites runtime (or when its state could not be read).
+    ...(spritesPool.pools.length || spritesPool.unavailable ? { spritesPool: { label: SPRITES_POOL_LABEL, ...spritesPool } } : {}),
     subscriptionUsage: SUBSCRIPTION_USAGE_NOTE,
   };
 }

@@ -380,6 +380,11 @@ export {
     type CredentialBrokerMode, type StagedAgentRunCredentials,
 } from './agents/credentials/hostCredentialStaging.js';
 export { SpritesRuntime } from './agents/runtime/spritesRuntime.js';
+export {
+    DEFAULT_SPRITES_MAX, DEFAULT_SPRITES_ORG_LIMIT, MemorySpritePoolStore, RedisSpritePoolStore, SPRITES_MAX_ENV, SPRITES_ORG_LIMIT_ENV, SPRITES_WARM_CLONES_ENV,
+    readSpritesPoolStatus, resolveSpritesPoolConfig, spritesPoolStatusStore, summarizeSpritesPool, type SpritesPoolStatusRedis,
+    type SpritePoolStore, type SpritesPoolConfig, type SpritesPoolStatus, type SpritesPoolStatusReport,
+} from './agents/runtime/spritesPool.js';
 export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, closeAgentRuntimes, getAgentRuntime, registerAgentRuntime,

@@ -334,6 +334,17 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
     </div>
   );
   const hasAgents = systemHealth.agents.length > 0;
+  // The dot follows the pool's state; the text says how many runners are busy against the bound.
+  const spritesPoolDot: Record<string, string> = { Ready: 'ready', Busy: 'active', Queued: 'queued', Degraded: 'degraded' };
+  const renderSpritesPoolRow = (pool: NonNullable<HeaderStats['systemHealth']['spritesPool']>) => (
+    <div className="flex justify-between items-center gap-4 whitespace-nowrap text-sm" title={pool.attention.join('\n') || undefined}>
+      <span className="flex items-center gap-2 text-slate-700">
+        <span className={`w-2 h-2 flex-shrink-0 rounded-full ${getStatusColor(spritesPoolDot[pool.status])}`} />
+        <span>Sprites</span>
+      </span>
+      <span className="flex-shrink-0 font-medium text-slate-500">{pool.summary}</span>
+    </div>
+  );
 
   return (
     <div
@@ -367,6 +378,10 @@ export const SystemHealth: React.FC<{ systemHealth: HeaderStats['systemHealth'] 
             {renderIntakeMethodRow('GitHub Intake', systemHealth.githubEventIntake, systemHealth.githubEventIntakeStatus)}
             {renderStatusRow('Intake Status', systemHealth.githubEventIntakeStatus)}
             {renderStatusRow('Indexing', systemHealth.indexing)}
+            {systemHealth.spritesPool && renderSpritesPoolRow(systemHealth.spritesPool)}
+            {systemHealth.spritesPool?.attention.map(note => (
+              <p key={note} className="whitespace-normal pl-4 text-xs text-amber-700">{note}</p>
+            ))}
             {hasAgents && (
               <div className="pt-2 mt-2 border-t border-slate-100 space-y-2">
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">

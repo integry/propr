@@ -8,6 +8,7 @@ import { closeConnection } from '../packages/core/src/db/connection.ts';
 after(closeConnection);
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRuntime.ts';
+import { MemorySpritePoolStore } from '../packages/core/src/agents/runtime/spritesPool.ts';
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { CloneWorkspaceTransport } from '../packages/core/src/git/workspaceCloneTransport.ts';
@@ -16,7 +17,7 @@ import { FakeSprites } from './helpers/fakeSprites.ts';
 const token = 'test-org-secret';
 function fixture() {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: token });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: token }, { store: new MemorySpritePoolStore() });
     const builder = new AgentRunSpecBuilder({
         name: 'test', stdin: true, agentType: 'antigravity', image: 'test', network: agentRunNetwork('bridge'), user: '0:0',
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',

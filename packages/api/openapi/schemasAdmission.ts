@@ -85,6 +85,29 @@ export const AgentRunAdmissionRuntime = component('AgentRunAdmissionRuntime', z.
   }),
 }), 'What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks.');
 
+const runnerCounts = z.object({
+  total: count, busy: count.describe('Every runner not idle.'),
+  provisioning: count, idle: count, leased: count, resetting: count.describe('Being restored after a run.'),
+  finished: count.describe('Run settled; its result may still be read before release.'),
+  orphaned: count.describe('Its worker stopped mid-lease; deleted before its slot is reused.'),
+  reaping: count, retained: count.describe('Kept a result no worker released; never reaped automatically.'),
+});
+
+export const SpritesPoolStatus = component('SpritesPoolStatus', z.object({
+  id: z.string().describe('Short non-secret identifier of the organization\'s pool.'),
+  max: z.number().int().positive().nullable().describe('PROPR_SPRITES_MAX as its workers last published it, at most the organization limit.'),
+  orgLimit: z.number().int().positive().nullable(),
+  warmClones: z.boolean().nullable().describe('PROPR_SPRITES_WARM_CLONES as its workers last published it.'),
+  configuredAt: isoDateTime.nullable(),
+  runners: runnerCounts,
+  waiting: count.describe('Runs queued for a runner.'),
+  warm: count.describe('Idle runners at a per-repository warm clone checkpoint.'),
+  restore: z.object({
+    lastMs: count.nullable(), averageMs: count.nullable(), samples: count,
+  }).describe('Checkpoint restore durations of the runners\' last resets.'),
+  attention: z.array(z.string()),
+}), 'One Sprites runner pool: runners shared by every worker of one Sprites organization.');
+
 export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.object({
   asOf: isoDateTime,
   admission: z.object({
@@ -121,5 +144,10 @@ export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.ob
   }),
   runtime: AgentRunAdmissionRuntime.nullable().describe('Null when the runtime selection could not be resolved; see `runtimeUnavailable`.'),
   runtimeUnavailable: z.string().optional(),
+  spritesPool: z.object({
+    label: z.string(),
+    pools: z.array(SpritesPoolStatus),
+    unavailable: z.string().optional(),
+  }).optional().describe('Present once a worker used the sprites runtime, or when its state could not be read.'),
   subscriptionUsage: z.string().describe('Subscription usage is reported elsewhere; this says where.'),
 }), 'What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.');

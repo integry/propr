@@ -7,6 +7,7 @@ import { credentialRunRoot, envFileValues } from '../../credentials/hostCredenti
 import { CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
 import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
+import { warmClonePath } from './spritesProvisioning.js';
 
 const PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const antigravityHome = '/opt/propr/run/tmp/propr-antigravity-home';
@@ -63,8 +64,9 @@ function claudeSeed(binds: Bind[], token: string): string | undefined {
     return read.content.toString('base64');
 }
 
-export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string };
-export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch) {
+/** `warmClone`: the run's repository warm clone key, when the pool keeps warm clones. */
+export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string; warmClone?: string };
+export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath, warmClone }: SpriteLaunch) {
     const clone = spec.workspace.clone;
     if (!clone || spec.workspace.mode !== 'clone' || spec.workspace.containerPath !== '/home/node/workspace' || spec.workspace.readOnly)
         throw new Error('Sprites requires a prepared writable clone workspace');
@@ -95,6 +97,7 @@ export async function uploadRun(sprite: Sprite, { spec, options, token, inputPat
         transport: ['/bin/bash', '-c', WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, ...python, 'agent'],
         transportEnv: { PATH, HOME: '/root', [E.path]: spec.workspace.containerPath, [E.remote]: clone.remote, [E.branch]: clone.branch,
             [E.baseRef]: clone.baseRef, [E.baseCommit]: clone.baseCommit, [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: '/opt/propr/result',
+            ...(warmClone ? { [E.reference]: warmClonePath(warmClone) } : {}),
             [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
         stdin: options.stdinData ?? '', files,
         agent: { env: { ...Object.fromEntries(env), ...bundle.secretEnv }, argv, directories, claudeSeed: claudeSeed(binds, token),
