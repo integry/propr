@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_CHANNEL, IDLE_SHUTDOWN_INTENT_REDIS_KEY } from '@propr/shared';
+import { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_CHANNEL, IDLE_SHUTDOWN_INTENT_REDIS_KEY } from '@propr/shared';
 import { collectParticipantSignals, registerIdleParticipant } from '../src/idle/idleParticipants.js';
 import {
     issueIdleShutdownIntent,
+    listIdleShutdownTargets,
     newIdleShutdownIntent,
     waitForIdleAcks,
     withdrawIdleShutdownIntent,
 } from '../src/idle/idleShutdownIntent.js';
-import { startIdleShutdownListener } from '../src/idle/idleShutdownListener.js';
+import { setIdleShutdownComposedProcess, startIdleShutdownListener } from '../src/idle/idleShutdownListener.js';
 import { RoutingIdleWake } from '../src/intake/routingIdleFrames.js';
 
 /** Shared Redis state with pub/sub that, like Redis, does not keep messages for a disconnected subscriber. */
@@ -91,7 +92,8 @@ test('a process disconnected when the stop was announced still stops and acknowl
     commands.drop();
     subscriber.drop();
 
-    const intent = { ...newIdleShutdownIntent('quiesce', 'idle for 900s'), phase: 'stop' as const };
+    const targets = await listIdleShutdownTargets(daemon as never, ['worker']);
+    const intent = { ...newIdleShutdownIntent('quiesce', 'idle for 900s'), phase: 'stop' as const, targets };
     await issueIdleShutdownIntent(daemon as never, intent);
     await settle();
     assert.deepEqual(stops, [], 'the one-shot message is lost while disconnected');
@@ -113,7 +115,7 @@ test('the daemon keeps waiting (and re-announcing) while a process has not ackno
     await daemon.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'api:silent', JSON.stringify({
         role: 'api', id: 'silent', host: 'elsewhere', pid: 1, pidNamespace: null, bootId: null, startedAt: 0, seenAt: Date.now(),
     }));
-    const intent = { ...newIdleShutdownIntent('quiesce', 'idle'), phase: 'stop' as const };
+    const intent = { ...newIdleShutdownIntent('quiesce', 'idle'), phase: 'stop' as const, targets: await listIdleShutdownTargets(daemon as never, ['api', 'worker']) };
     const announced: string[] = [];
     const watcher = hub.connect() as unknown as FakeConnection;
     await watcher.subscribe(IDLE_SHUTDOWN_CHANNEL);
@@ -185,4 +187,65 @@ test('a replay request survives a dropped socket and resolves only on acknowledg
 
     const unanswered = wake.requestReplay(second as never, null);
     assert.equal(await unanswered, false, 'a relay that does not answer has not replayed anything');
+});
+
+test('a stop request is for the generations registered when it was issued, not for processes started since', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    const stops: string[] = [];
+    const original = startIdleShutdownListener({ role: 'worker', id: 'w0', createConnection: hub.connect, onShutdown: () => { stops.push('original'); }, pollMs: 60_000 });
+    await settle();
+    const [commands, subscriber] = hub.connections.slice(1) as FakeConnection[];
+    commands.drop();
+    subscriber.drop();
+    // A worker that is about to be replaced by a restart under the same key (a reused pid in a container).
+    await daemon.hset(IDLE_PARTICIPANTS_REDIS_KEY, 'worker:w1', JSON.stringify({
+        role: 'worker', id: 'w1', host: 'elsewhere', pid: 1, pidNamespace: null, bootId: null, startedAt: 1, seenAt: Date.now(),
+    }));
+    const intent = { ...newIdleShutdownIntent('quiesce', 'idle'), phase: 'stop' as const, targets: await listIdleShutdownTargets(daemon as never, ['api', 'worker']) };
+    assert.deepEqual(intent.targets.map(target => target.key).sort(), ['worker:w0', 'worker:w1']);
+    // Stored, as when the daemon died before deleting it.
+    await issueIdleShutdownIntent(daemon as never, intent);
+
+    // Processes starting now read the stored request at once, and keep running.
+    const restarted = startIdleShutdownListener({ role: 'worker', id: 'w1', createConnection: hub.connect, onShutdown: () => { stops.push('restarted'); }, pollMs: 10 });
+    const fresh = startIdleShutdownListener({ role: 'api', id: 'a2', createConnection: hub.connect, onShutdown: () => { stops.push('fresh'); }, pollMs: 10 });
+    await settle();
+    await settle();
+    assert.deepEqual(stops, []);
+    assert.deepEqual(hub.hash(`${IDLE_SHUTDOWN_ACKS_REDIS_PREFIX}${intent.id}`), {}, 'nothing acknowledges a request it is not targeted by');
+    assert.deepEqual(await waitForIdleAcks(daemon as never, intent, { roles: ['api', 'worker'], timeoutMs: 0, ...FAST, isGone: () => false }),
+        { confirmed: false, pending: ['worker:w0'] }, 'only the targeted generation still running is awaited');
+
+    // The targeted generation reconnecting still gets the request.
+    commands.connected = true;
+    subscriber.reconnect();
+    const confirmed = await waitForIdleAcks(daemon as never, intent, { roles: ['api', 'worker'], timeoutMs: 2_000, ...FAST });
+    assert.equal(confirmed.confirmed, true);
+    assert.deepEqual(stops, ['original']);
+    await Promise.all([original.stop(), restarted.stop(), fresh.stop()]);
+});
+
+test('in a composed process a stop is only acknowledged: the daemon runs the one coordinated close', async () => {
+    const hub = new FakeRedisHub();
+    const daemon = hub.connect() as unknown as FakeConnection;
+    const signals: string[] = [];
+    const onSignal = () => { signals.push('SIGTERM'); };
+    process.on('SIGTERM', onSignal);
+    setIdleShutdownComposedProcess(true);
+    try {
+        const listeners = ['api', 'worker'].map(role => startIdleShutdownListener({ role: role as 'api' | 'worker', id: `${role}-1`, createConnection: hub.connect, pollMs: 10 }));
+        await settle();
+        const intent = { ...newIdleShutdownIntent('quiesce', 'idle'), phase: 'stop' as const, targets: await listIdleShutdownTargets(daemon as never, ['api', 'worker']) };
+        await issueIdleShutdownIntent(daemon as never, intent);
+        const progress = await waitForIdleAcks(daemon as never, intent, { roles: ['api', 'worker'], timeoutMs: 2_000, ...FAST });
+        assert.equal(progress.confirmed, true);
+        await settle();
+        assert.deepEqual(signals, [], 'no participant signals the shared process');
+        assert.deepEqual(Object.keys(hub.hash(IDLE_PARTICIPANTS_REDIS_KEY)).sort(), ['api:api-1', 'worker:worker-1'], 'they deregister in the coordinated close');
+        await Promise.all(listeners.map(listener => listener.stop()));
+    } finally {
+        setIdleShutdownComposedProcess(false);
+        process.off('SIGTERM', onSignal);
+    }
 });

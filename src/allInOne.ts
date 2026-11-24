@@ -18,7 +18,7 @@
  * image, or the launcher/CLI `minimal` profile.
  */
 import 'dotenv/config';
-import { logger } from '@propr/core';
+import { logger, setIdleShutdownComposedProcess } from '@propr/core';
 import { createComponentSupervisor, prepareAllInOneEnvironment, resolveIndexingMode, type StartupStage } from './allInOneConfig.js';
 
 export interface StartedAllInOne {
@@ -49,6 +49,12 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         },
     });
     const close = (): Promise<string[]> => supervisor.close();
+    let exiting = false;
+    const closeAndExit = (): void => {
+        if (exiting) return;
+        exiting = true;
+        void close().then(failed => process.exit(failed.length > 0 ? 1 : 0));
+    };
 
     let signalled = false;
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -59,9 +65,16 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
             }
             signalled = true;
             logger.info(`all-in-one received ${signal}, shutting down gracefully...`);
-            void close().then(failed => process.exit(failed.length > 0 ? 1 : 0));
+            closeAndExit();
         });
     }
+    // Idle shutdown: the API, worker and indexing worker in this process only
+    // acknowledge the daemon's stop request; the daemon then runs this one close.
+    setIdleShutdownComposedProcess(true);
+    const idleShutdownStop = (): void => {
+        logger.info('all-in-one: idle shutdown, closing every component');
+        closeAndExit();
+    };
 
     const stages: StartupStage[] = [
         {
@@ -85,7 +98,7 @@ export async function startAllInOne(): Promise<StartedAllInOne> {
         {
             name: 'daemon',
             role: 'daemon',
-            run: async () => (await import('./daemon.js')).startDaemon({ installSignalHandlers: false, closeSharedQueue: false }),
+            run: async () => (await import('./daemon.js')).startDaemon({ installSignalHandlers: false, closeSharedQueue: false, idleShutdownStop }),
         },
         {
             name: 'worker',

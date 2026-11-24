@@ -6,9 +6,13 @@
  *   - `quiesce` (API only): stop admitting requests, let the ones in flight
  *     finish, publish the activity record and acknowledge. When the request
  *     is withdrawn (the daemon found work) the API admits requests again.
- *   - `stop`: acknowledge, then run the process's own graceful shutdown (the
- *     default sends SIGTERM to the process, so the existing path runs) and
- *     exit 0. The process stays registered until that shutdown calls `stop`.
+ *   - `stop`: when the request names this process's generation, acknowledge,
+ *     then run the process's own graceful shutdown (the default sends SIGTERM
+ *     to the process, so the existing path runs; in a composed process see
+ *     {@link setIdleShutdownComposedProcess}) and exit 0. The process stays
+ *     registered until that shutdown calls `stop`. A stop request for other
+ *     generations (one left by a daemon that died mid-drain, read by a
+ *     process that started since) is ignored.
  *
  * The request arrives over pub/sub and is also read from Redis on every poll
  * and on every (re)connection, so a process that was disconnected when the
@@ -21,6 +25,7 @@ import { IDLE_SHUTDOWN_CHANNEL, IDLE_SHUTDOWN_INTENT_REDIS_KEY } from '@propr/sh
 import { registerIdleParticipant, type IdleParticipantRole } from './idleParticipants.js';
 import {
     acknowledgeIdleShutdownIntent,
+    isIdleShutdownTarget,
     parseIdleShutdownIntent,
     type IdleShutdownIntent,
     type IntentRedis,
@@ -71,6 +76,22 @@ export interface IdleShutdownListener {
     stop: () => Promise<void>;
 }
 
+let composedProcess = false;
+
+/**
+ * Mark this process as composed (all-in-one): every participant runs in it,
+ * and the daemon in the same process runs one coordinated close once each has
+ * acknowledged the stop. Participants then only acknowledge, instead of each
+ * signalling the shared process.
+ */
+export function setIdleShutdownComposedProcess(composed: boolean): void {
+    composedProcess = composed;
+}
+
+export function isIdleShutdownComposedProcess(): boolean {
+    return composedProcess;
+}
+
 function defaultConnection(): IntentRedis & SubscriberRedis {
     return new Redis({
         host: process.env.REDIS_HOST || '127.0.0.1',
@@ -85,10 +106,14 @@ export function startIdleShutdownListener(options: IdleShutdownListenerOptions):
     const commands = connect();
     const subscriber = connect();
     const registration = registerIdleParticipant(commands, { role: options.role, id: options.id ?? `${hostname()}:${process.pid}` });
-    const onShutdown = options.onShutdown ?? (() => { process.kill(process.pid, 'SIGTERM'); });
+    const onShutdown = options.onShutdown ?? (() => {
+        // Composed: the daemon in this process closes every component together.
+        if (!composedProcess) process.kill(process.pid, 'SIGTERM');
+    });
     let quiesced: { id: string; confirmedAt: number } | null = null;
     let quiesceAcked: string | null = null;
     let stopping = false;
+    let ignoredStop: string | null = null;
     let closed = false;
     let chain = Promise.resolve();
 
@@ -135,6 +160,13 @@ export function startIdleShutdownListener(options: IdleShutdownListenerOptions):
             if (!quiesced) return;
             // Unreadable is not "withdrawn"; resume only after a long unconfirmed spell.
             if (!readFailed || Date.now() - quiesced.confirmedAt > IDLE_QUIESCE_MAX_UNCONFIRMED_MS) resume(readFailed ? 'unconfirmed' : 'withdrawn');
+            return;
+        }
+        if (!isIdleShutdownTarget(intent, registration.key, registration.participant.startedAt)) {
+            if (ignoredStop !== intent.id) {
+                ignoredStop = intent.id;
+                options.log?.info({ intentId: intent.id, issuedAt: intent.issuedAt }, 'Idle shutdown: ignoring a stop request issued for processes that ran before this one started');
+            }
             return;
         }
         if (quiesced && quiesced.id !== intent.id) resume('superseded');

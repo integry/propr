@@ -11,7 +11,12 @@
  *   - `quiesce`: API processes stop admitting requests and wait for the ones
  *     in flight, so no producer can queue work while the daemon re-checks.
  *     Only API processes acknowledge it. Withdrawing the request resumes them.
- *   - `stop`: every process runs its graceful shutdown and exits 0.
+ *   - `stop`: every targeted process runs its graceful shutdown and exits 0.
+ *     The request names the participant generations registered when it was
+ *     issued (`targets`: key + registration `startedAt`). A process that
+ *     started later — a restart while a crashed daemon's request is still
+ *     stored, or a new process during the drain — is not targeted and keeps
+ *     running; a targeted process that merely reconnects still matches.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -31,11 +36,28 @@ import {
 
 export type IdleShutdownPhase = 'quiesce' | 'stop';
 
+/** One participant generation a stop request is for; `startedAt` null when its entry was unreadable. */
+export interface IdleShutdownTarget {
+    key: string;
+    startedAt: number | null;
+}
+
 export interface IdleShutdownIntent {
     id: string;
     phase: IdleShutdownPhase;
     issuedAt: string;
     reason: string;
+    /** `stop` only: the participant generations it is for. A stop without targets stops nobody. */
+    targets?: IdleShutdownTarget[];
+}
+
+function parseTargets(value: unknown): IdleShutdownTarget[] | undefined {
+    if (!Array.isArray(value)) return undefined;
+    return value.flatMap((entry: { key?: unknown; startedAt?: unknown } | null) => {
+        if (!entry || typeof entry.key !== 'string') return [];
+        const startedAt = typeof entry.startedAt === 'number' && Number.isFinite(entry.startedAt) ? entry.startedAt : null;
+        return [{ key: entry.key, startedAt }];
+    });
 }
 
 /** The intent disappears this long after the daemon stops refreshing it (e.g. it crashed). */
@@ -56,10 +78,31 @@ export function parseIdleShutdownIntent(raw: string | null): IdleShutdownIntent 
             phase: value.phase,
             issuedAt: typeof value.issuedAt === 'string' ? value.issuedAt : new Date(0).toISOString(),
             reason: typeof value.reason === 'string' ? value.reason : 'idle',
+            ...(value.targets !== undefined ? { targets: parseTargets(value.targets) } : {}),
         };
     } catch {
         return null;
     }
+}
+
+/** The participant generations registered now in `roles`: the targets of a stop request. */
+export async function listIdleShutdownTargets(
+    redis: Pick<IntentRedis, 'hgetall'>,
+    roles: readonly IdleParticipantRole[],
+): Promise<IdleShutdownTarget[]> {
+    return (await listIdleParticipants(redis))
+        .filter(({ participant }) => !participant || roles.includes(participant.role))
+        .map(({ key, participant }) => ({ key, startedAt: participant?.startedAt ?? null }));
+}
+
+/**
+ * Whether `intent` is for the participant generation `key`/`startedAt`. A
+ * quiesce is for every API process (one that starts mid-drain must quiesce
+ * too); a stop only for the generations it names.
+ */
+export function isIdleShutdownTarget(intent: IdleShutdownIntent, key: string, startedAt: number): boolean {
+    if (intent.phase !== 'stop') return true;
+    return (intent.targets ?? []).some(target => target.key === key && (target.startedAt === null || target.startedAt === startedAt));
 }
 
 export function idleAckField(phase: IdleShutdownPhase, participantKey: string): string {
@@ -119,6 +162,9 @@ export async function readIdleAckProgress(
     const pending: string[] = [];
     for (const { key, participant } of await listIdleParticipants(redis)) {
         if (participant && !options.roles.includes(participant.role)) continue;
+        // A stop is awaited only from the generations it names; a later one is not asked to stop.
+        if (intent.phase === 'stop' && participant && !isIdleShutdownTarget(intent, key, participant.startedAt)) continue;
+        if (intent.phase === 'stop' && !participant && !(intent.targets ?? []).some(target => target.key === key)) continue;
         if (acks[idleAckField(intent.phase, key)] !== undefined) continue;
         if (participant && isIdleParticipantConfirmedGone(participant, local, options.isGone)) {
             await redis.hdel(IDLE_PARTICIPANTS_REDIS_KEY, key).catch(() => undefined);

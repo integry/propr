@@ -214,6 +214,8 @@ export interface DaemonStartOptions extends DaemonOptions {
      * composed process (all-in-one) keeps it open until its worker has drained.
      */
     closeSharedQueue?: boolean;
+    /** Composed process (all-in-one): an idle shutdown ends in this coordinated close of every component. */
+    idleShutdownStop?: () => void;
 }
 
 async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDaemon> {
@@ -488,17 +490,12 @@ async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDae
         await redisClient.quit();
         if (options.closeSharedQueue !== false) await shutdownQueue();
     };
+    // Standalone, each process exits on its own; composed (all-in-one), the process closes every component together.
+    if (options.installSignalHandlers !== false || options.idleShutdownStop) {
+        idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE, pollingIntervalMs: POLLING_INTERVAL_MS,
+            getRoutingService: () => routingService, close, stopProcess: options.idleShutdownStop });
+    }
     if (options.installSignalHandlers !== false) {
-        // Idle drain assumes participants can signal and exit independently.
-        // In all-in-one mode their SIGTERMs would target the same supervisor,
-        // which treats a second signal as a request to exit immediately.
-        idleShutdown = startDaemonIdleShutdown({
-            redis: redisClient,
-            intakeMode: EVENT_INTAKE_MODE,
-            pollingIntervalMs: POLLING_INTERVAL_MS,
-            getRoutingService: () => routingService,
-            close,
-        });
         const shutdown = async (signal: string): Promise<void> => {
             logger.info(`Received ${signal}, shutting down gracefully...`);
             await close();

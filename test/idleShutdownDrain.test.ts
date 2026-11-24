@@ -7,7 +7,7 @@ import path from 'node:path';
 const directory = await mkdtemp(path.join(tmpdir(), 'idle-drain-'));
 process.env.PROPR_IDLE_WAKE_HINT_FILE = path.join(directory, 'idle-wake-hint.json');
 
-const { closeConnection, emptyIdleSignals, idleActivity, IdleActivityTracker, startIdleShutdownListener } = await import('@propr/core');
+const { buildIdleWakeHint, closeConnection, emptyIdleSignals, idleActivity, IdleActivityTracker, setIdleShutdownComposedProcess, startIdleShutdownListener } = await import('@propr/core');
 const { drainIdleControlPlane } = await import('../src/daemon/idleShutdown.js');
 const { IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig } = await import('@propr/shared');
 type IdleSignals = ReturnType<typeof emptyIdleSignals>;
@@ -107,7 +107,7 @@ function workerProcess(hub: Hub, events: string[], options: { acknowledges?: boo
     return { stop: () => listener.stop() };
 }
 
-function context(hub: Hub, routing: FakeRouting | null, overrides: { collect?: () => Promise<IdleSignals>; writeHint?: () => Promise<void> } = {}) {
+function context(hub: Hub, routing: FakeRouting | null, overrides: { collect?: () => Promise<IdleSignals>; writeHint?: () => Promise<void>; readHint?: () => Promise<unknown> } = {}) {
     const exits: number[] = [];
     const hints: unknown[] = [];
     return {
@@ -118,6 +118,7 @@ function context(hub: Hub, routing: FakeRouting | null, overrides: { collect?: (
             routing: routing as never,
             collect: overrides.collect ?? (async () => emptyIdleSignals()),
             writeHint: overrides.writeHint ?? (async (hint: unknown) => { hints.push(hint); }),
+            readHint: (overrides.readHint ?? (async () => null)) as never,
             close: async () => undefined,
             exit: (code: number) => { exits.push(code); },
             timings: TIMINGS,
@@ -204,4 +205,51 @@ test('with every process acknowledging, the control plane stops in order and the
     assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'a fresh start does not see the stop request');
     assert.deepEqual(routing.calls, ['wake_hint', 'stop']);
     assert.equal(idleActivity.quiescedIntent, null, 'the process-wide tracker is untouched');
+});
+
+test('a stop while an earlier wake still owes its Connect replay keeps that replay\'s cursor', async () => {
+    const hub = new Hub();
+    const earlierStop = Date.UTC(2026, 10, 24, 2, 0, 0);
+    // Shutdown A, woken, replay never acknowledged.
+    const owed = { ...buildIdleWakeHint({ shutdownAt: earlierStop, reason: 'idle', idleForMs: 0, nextDue: [], connect: true }), wokeAt: new Date(earlierStop + 60_000).toISOString() };
+    const { ctx, exits, hints } = context(hub, new FakeRouting(true), { readHint: async () => owed });
+    assert.equal(await drainIdleControlPlane(request, ctx), true);
+    assert.deepEqual(exits, [0]);
+    const written = hints[0] as { shutdownAt: string; connectReplay?: string; replaySince?: string };
+    assert.notEqual(written.shutdownAt, owed.shutdownAt);
+    assert.equal(written.connectReplay, 'pending');
+    assert.equal(written.replaySince, owed.shutdownAt, 'the next start asks for everything since shutdown A');
+
+    // Once accepted, nothing is carried.
+    const accepted = context(new Hub(), new FakeRouting(true), { readHint: async () => ({ ...owed, connectReplay: 'accepted' }) });
+    assert.equal(await drainIdleControlPlane(request, accepted.ctx), true);
+    assert.equal((accepted.hints[0] as { replaySince?: string }).replaySince, undefined);
+});
+
+test('in a composed process the participants only acknowledge and the daemon runs the coordinated close', async () => {
+    const hub = new Hub();
+    const signals: string[] = [];
+    const onSignal = () => { signals.push('SIGTERM'); };
+    process.on('SIGTERM', onSignal);
+    setIdleShutdownComposedProcess(true);
+    try {
+        const listeners = ['api', 'worker'].map(role => startIdleShutdownListener({
+            role: role as 'api' | 'worker', id: `${role}-composed`, createConnection: hub.connect, pollMs: 10, onQuiesce: async () => undefined,
+        }));
+        const stops: string[] = [];
+        let closed = 0;
+        const { ctx, exits } = context(hub, new FakeRouting(true));
+        const started = Date.now();
+        assert.equal(await drainIdleControlPlane(request, { ...ctx, close: async () => { closed += 1; }, stopProcess: () => { stops.push('coordinated close'); } }), true);
+        assert.ok(Date.now() - started < TIMINGS.deregisterWaitMs, 'it does not wait for participants in its own process to deregister');
+        assert.deepEqual(stops, ['coordinated close']);
+        assert.deepEqual(exits, [], 'the coordinated close exits, not the daemon');
+        assert.equal(closed, 0);
+        assert.deepEqual(signals, []);
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+        await Promise.all(listeners.map(listener => listener.stop()));
+    } finally {
+        setIdleShutdownComposedProcess(false);
+        process.off('SIGTERM', onSignal);
+    }
 });

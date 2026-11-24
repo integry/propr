@@ -223,6 +223,13 @@ export interface IdleWakeHint {
      * keeps asking (and leaves the hint pending) until the relay accepts.
      */
     connectReplay?: 'pending' | 'accepted';
+    /**
+     * Earliest stop whose cached deliveries the relay has not yet accepted to
+     * replay (ISO). Set when this stop was made while an earlier stop's replay
+     * was still pending, so the replay cursor survives the hint replacement;
+     * absent means `shutdownAt`.
+     */
+    replaySince?: string;
 }
 
 export interface IdleWakeRecord {

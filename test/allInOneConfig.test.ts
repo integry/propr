@@ -66,7 +66,7 @@ test('all-in-one closes intake before workers, the worker after indexing, and th
     const source = readFileSync(new URL('../src/allInOne.ts', import.meta.url), 'utf8');
     assert.match(source, /supervisor\.run\(stages\)/);
     assert.match(source, /startIndexingWorkerService\(\{ installSignalHandlers: false, ownEgressProxies: false \}\)/);
-    assert.match(source, /startDaemon\(\{ installSignalHandlers: false, closeSharedQueue: false \}\)/);
+    assert.match(source, /startDaemon\(\{ installSignalHandlers: false, closeSharedQueue: false, idleShutdownStop \}\)/);
     assert.match(source, /startWorker\(\{ installSignalHandlers: false \}\)/);
     assert.match(source, /startApiServer\(\{ installSignalHandlers: false \}\)/);
 });

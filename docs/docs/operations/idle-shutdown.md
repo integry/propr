@@ -63,6 +63,10 @@ Once the instance has been idle for the whole window, the daemon checks once mor
 6. Waits until every registered API and worker process has acknowledged the stop request. The request stays stored for the whole drain, so a process that was disconnected when it was announced still finds it when it reconnects. Each runs its normal graceful shutdown (close queues, Socket.IO, Redis) and exits with code 0. **The daemon does not exit until every process has acknowledged** or is confirmed stopped; while it waits it logs the processes it is waiting for.
 7. Closes its own timers, Redis and SQLite connections, flushes logs and exits with code 0.
 
+The stop request names the processes registered when it was issued. A process that starts afterwards (for example one restarted while a daemon that died mid-drain left its request stored) ignores it and keeps running.
+
+In the single-process control plane (`propr all-in-one`, the `minimal` profile) the API, worker and inline indexing worker only acknowledge the stop request; the daemon then runs the process's normal shutdown, which closes every component in order and exits with code 0. An indexing worker run separately (`PROPR_INDEXING=separate`) stops on its own as above.
+
 Because the exit code is 0, use a supervisor that restarts only on failure. A supervisor that always restarts (Docker Compose `restart: unless-stopped`, the default in `docker-compose.yml`) starts the process again right away, so idle shutdown saves nothing there.
 
 ## The wake hint
@@ -84,7 +88,7 @@ Before exiting, the daemon publishes the next due time of scheduled work:
 }
 ```
 
-`nextDueAt` is `null` when nothing is scheduled; only a request or a delivery needs to wake the instance then. The next start adds `wokeAt` to mark the hint as consumed. `connectReplay` is present only after a stop with Connect intake: `pending` until Connect has acknowledged the replay request, then `accepted`.
+`nextDueAt` is `null` when nothing is scheduled; only a request or a delivery needs to wake the instance then. The next start adds `wokeAt` to mark the hint as consumed. `connectReplay` is present only after a stop with Connect intake: `pending` until Connect has acknowledged the replay request, then `accepted`. When the instance stops again while an earlier replay is still `pending`, the new hint keeps it `pending` and records `replaySince`, the earlier stop's time, so the next start asks for everything since then.
 
 ## How it wakes
 
@@ -100,7 +104,7 @@ Expect a cold start of about 5–10 seconds (host start plus Node boot) before w
 
 On start the daemon reads the wake hint file and, when it records an idle stop:
 
-- when `connectReplay` is `pending`, asks Connect for the deliveries cached while it was stopped (`{ "type": "replay", "reason": "idle_wake", "since": "<shutdownAt>" }`) and waits for `{ "type": "replay_ack" }`. Only then does it set `connectReplay` to `accepted`. If Connect does not acknowledge (or Connect intake is not running), the obligation stays `pending` and the next start asks again. A connection that drops before the answer is retried on the next connection. Connect keeps deliveries for a disconnected instance: on the free tier the newest 25 for one hour, on paid plans 500 for 24 hours. Delivery IDs are de-duplicated, so a delivery that arrives twice is processed once;
+- when `connectReplay` is `pending`, asks Connect for the deliveries cached while it was stopped (`{ "type": "replay", "reason": "idle_wake", "since": "<replaySince or shutdownAt>" }`) and waits for `{ "type": "replay_ack" }`. Only then does it set `connectReplay` to `accepted`. If Connect does not acknowledge (or Connect intake is not running), the obligation stays `pending` and the next start asks again. A connection that drops before the answer is retried on the next connection. Connect keeps deliveries for a disconnected instance: on the free tier the newest 25 for one hour, on paid plans 500 for 24 hours. Delivery IDs are de-duplicated, so a delivery that arrives twice is processed once;
 - resumes scheduled work that became due while stopped: the schedule sweeps run at startup, and missed automation slots coalesce into **one** run for the latest slot;
 - records the wake: its source (`http`, `connect_ping`, `schedule` or `unknown`) and the cold-start duration (process start to daemon ready).
 

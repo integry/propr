@@ -189,3 +189,29 @@ test('without a hint file the start is an ordinary start', async () => {
     await recoverFromIdleWake({ redis: redis as never, routingService: null, processStartedAt: Date.now(), waitMs: 0 });
     assert.equal(redis.values.size, 0);
 });
+
+test('a replay owed since an earlier stop is requested from that stop, and a later stop keeps its own replay owed', async () => {
+    const earlier = new Date(SHUTDOWN_AT - 3_600_000).toISOString();
+    await writeIdleWakeHint({ ...buildIdleWakeHint({ shutdownAt: SHUTDOWN_AT, reason: 'idle', idleForMs: 0, nextDue: [], connect: true, pendingReplaySince: earlier }) }, hintFile);
+    assert.equal((await readIdleWakeHint(hintFile))?.replaySince, earlier);
+    const redis = new FakeRedis();
+    const service = routingService();
+    await service.start();
+    FakeSocket.last!.emit('open');
+    const recovery = recoverFromIdleWake({ redis: redis as never, routingService: service, processStartedAt: Date.now(), waitMs: 0 });
+    await sentFrames('replay', 1);
+    assert.equal(FakeSocket.last!.frames('replay')[0].since, earlier);
+
+    // Before the relay answers, another idle stop replaces the hint (carrying the same cursor).
+    const laterStop = SHUTDOWN_AT + 3_600_000;
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await writeIdleWakeHint(buildIdleWakeHint({ shutdownAt: laterStop, reason: 'idle', idleForMs: 0, nextDue: [], connect: true, pendingReplaySince: earlier }), hintFile);
+    acknowledge('replay');
+    await recovery;
+    const after = await readIdleWakeHint(hintFile);
+    assert.equal(after?.shutdownAt, new Date(laterStop).toISOString(), 'the later stop is not overwritten');
+    assert.equal(after?.wokeAt, undefined, 'the later stop is still a pending wake');
+    assert.equal(after?.connectReplay, 'pending', 'deliveries cached since the later stop are still owed');
+    assert.equal(after?.replaySince, undefined, 'the acknowledged replay covered the earlier interval');
+    await service.stop();
+});
