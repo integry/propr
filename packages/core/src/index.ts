@@ -377,6 +377,11 @@ export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransp
 export { readAgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReportOptions } from './agents/runtime/agentRuntimeCapabilityReport.js';
 export { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './agents/runtime/dockerNetwork.js';
 export {
+    BindWorkspaceTransport, WORKSPACE_TRANSPORT_ENV, WorkspaceTransportError, createWorkspaceTransport, resolveWorkspaceTransportMode,
+    runWithWorkspaceTransport, runtimeWorkspaceTransports, type PreparedWorkspace, type WorkspaceCompletionOptions, type WorkspaceRunOutcome,
+    type WorkspaceTransport,
+} from './git/workspaceTransport.js';
+export {
     clearAgentRuntimePackageCatalogCache,
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,
