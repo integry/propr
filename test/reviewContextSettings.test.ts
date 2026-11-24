@@ -8,6 +8,7 @@ await mock.module('@propr/core', {
         AGENT_RUN_USAGE_PAUSE_PERCENT_MAX: 100,
         AGENT_TYPES: [],
         db: {},
+        registeredAgentRuntimes: () => ['docker', 'sprites'],
         toProprOpenCodeModelId: (model: string) => model,
         validateAgentType: () => ({ ok: false, error: 'not used by this test' }),
         validateModelReasoningLevel: () => ({ valid: true, value: '' }),
