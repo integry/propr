@@ -88,11 +88,16 @@ function perRunCredentialMounts(spec: AgentRunSpec): CredentialBindMount[] {
  * trimmed on the left, `#` comments, `NAME=value` taken verbatim and a bare
  * `NAME` inherited from the client environment (omitted when unset there).
  * An unreadable file defines nothing here; Docker refuses to start the run.
+ * A runtime that uploads the values itself (no Docker validation downstream)
+ * passes `required` so the read error propagates instead.
  */
-export function envFileValues(filePath: string, launchEnvironment: Environment): Map<string, string> {
+export function envFileValues(filePath: string, launchEnvironment: Environment, options: { required?: boolean } = {}): Map<string, string> {
     const values = new Map<string, string>();
     let content: string;
-    try { content = fs.readFileSync(filePath, 'utf8'); } catch { return values; }
+    try { content = fs.readFileSync(filePath, 'utf8'); } catch (error) {
+        if (options.required) throw new Error(`Cannot read environment file ${filePath}: ${(error as Error).message}`, { cause: error });
+        return values;
+    }
     for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
         const line = rawLine.trimStart();
         if (!line || line.startsWith('#')) continue;

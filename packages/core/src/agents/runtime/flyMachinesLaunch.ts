@@ -42,7 +42,7 @@ export const FLY_LOG_MARKERS = { stdout: '\u001epropr:o\u001e', stderr: '\u001ep
 const AGENT_FILE_OWNER = 'node:node';
 
 const LAUNCHER_SCRIPT = `set -u
-run_dir=$1; linger=$2; workdir=$3; run_user=$4; shift 4
+run_dir=$1; linger=$2; workdir=$3; run_user=$4; no_new_privs=$5; shift 5
 mark_out=$'${'\\x1e'}propr:o${'\\x1e'}'; mark_err=$'${'\\x1e'}propr:e${'\\x1e'}'; mark_exit=$'${'\\x1e'}propr:x${'\\x1e'}'
 mkdir -p -m 700 "$run_dir"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
@@ -60,6 +60,8 @@ case "$run_user" in
   ''|0|0:*|root|root:*) if [ -n "$run_user" ] && [ "$is_root" != 1 ]; then refused="the run must start as root, but the Machine started it as uid $(id -u)"; fi ;;
   *) if [ "$is_root" = 1 ]; then gid=\${run_user#*:}; set -- setpriv --reuid="\${run_user%%:*}" --regid="$gid" --clear-groups -- "$@"; fi ;;
 esac
+# Like Docker's no-new-privileges: inherited across exec, so no setuid binary in the run regains privileges.
+[ "$no_new_privs" = 1 ] && set -- setpriv --no-new-privs -- "$@"
 p=$run_dir/pipe; rm -f "$p".*; : > "$run_dir/stdout"; : > "$run_dir/stderr"
 if [ -n "$refused" ]; then
   echo "propr: $refused" >> "$run_dir/stderr"; echo "$mark_err""propr: $refused" >&2; status=126
@@ -158,7 +160,8 @@ function assertGuestPath(path: string): void {
 export function flyMachineEnvironment(spec: AgentRunSpec, launchEnvironment: Record<string, string | undefined>): Record<string, string> {
     const environment = new Map<string, string>();
     for (const file of [...spec.envFiles].sort((left, right) => left.order - right.order)) {
-        for (const [name, value] of envFileValues(file.path, launchEnvironment)) environment.set(name, value);
+        // Docker would refuse an unreadable env file; the Machine receives the values instead, so fail here.
+        for (const [name, value] of envFileValues(file.path, launchEnvironment, { required: true })) environment.set(name, value);
     }
     for (const variable of [...(spec.repoSetup?.env ?? []), ...[...spec.env].sort((left, right) => left.order - right.order)]) {
         const value = variable.value ?? launchEnvironment[variable.name];
@@ -198,16 +201,42 @@ function machineFiles(spec: AgentRunSpec, stdinData: string | undefined): FlyMac
     return files;
 }
 
+/** Security options that only relax Docker's default confinement, which a Machine (a VM, no seccomp or AppArmor profile) does not apply. */
+const RELAXING_SECURITY_OPTS = /^(?:seccomp|apparmor)[=:]unconfined$/;
+const NO_NEW_PRIVILEGES_OPT = /^no-new-privileges(?:[=:]true)?$/;
+
+/**
+ * Refuses restrictions the Machine cannot enforce. Enforced: no-new-privileges
+ * (the launcher runs the agent under `setpriv --no-new-privs`). Added
+ * capabilities need nothing: the Machine starts the run as root with every
+ * capability. A read-only root filesystem, dropped capabilities and any other
+ * security option are not implemented and fail the launch.
+ */
+function flyMachineNoNewPrivileges(spec: AgentRunSpec): boolean {
+    const { security } = spec;
+    const refuse = (what: string): never => { throw new Error(`Agent run ${spec.name} requires ${what}, which Fly Machines cannot enforce`); };
+    if (security.readOnlyRootFilesystem) refuse('a read-only root filesystem');
+    if (security.capDrop.length > 0) refuse(`dropped capabilities (${security.capDrop.join(', ')})`);
+    let noNewPrivileges = security.noNewPrivileges;
+    for (const option of security.securityOpts) {
+        if (NO_NEW_PRIVILEGES_OPT.test(option)) noNewPrivileges = true;
+        else if (!RELAXING_SECURITY_OPTS.test(option)) refuse(`security option ${JSON.stringify(option)}`);
+    }
+    return noNewPrivileges;
+}
+
 /**
  * The create request for one run. Throws for a spec the Machine cannot run
- * as declared: no explicit entrypoint (the image's own cannot be chained) or
- * a remaining bind mount (the upload step converts every bind it can).
+ * as declared: no explicit entrypoint (the image's own cannot be chained), a
+ * remaining bind mount (the upload step converts every bind it can), a
+ * security restriction it cannot enforce, or an unreadable env file.
  */
 export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLaunchInput): FlyCreateMachineRequest {
     const bind = spec.mounts.find(mount => mount.type === 'bind');
     if (bind) throw new Error(`Agent run ${spec.name} still bind-mounts ${bind.target}; Fly Machines receive files only`);
     const { entrypoint, args } = renderAgentRunCommand(spec);
     if (!entrypoint) throw new Error(`Agent run ${spec.name} needs an explicit entrypoint or repository setup wrapper to run on Fly Machines`);
+    const noNewPrivileges = flyMachineNoNewPrivileges(spec);
     const { config } = input;
     return {
         name: flyMachineName(spec.name),
@@ -217,7 +246,7 @@ export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLau
             image: config.image ?? spec.profile.image,
             init: {
                 entrypoint: ['/bin/bash', '-c', LAUNCHER_SCRIPT, 'propr-fly-run'],
-                cmd: [FLY_RUN_DIR, String(config.resultLingerSeconds), spec.workdir, spec.user ?? '', entrypoint, ...args],
+                cmd: [FLY_RUN_DIR, String(config.resultLingerSeconds), spec.workdir, spec.user ?? '', noNewPrivileges ? '1' : '0', entrypoint, ...args],
             },
             env: flyMachineEnvironment(spec, input.launchEnvironment),
             guest: flyMachineGuest(config, spec.resources),

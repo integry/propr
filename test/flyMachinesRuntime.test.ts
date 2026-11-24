@@ -21,6 +21,7 @@ const { resolveFlyMachinesConfig, flyMachineGuest, flyInternalMcpUrl, dockerMemo
 const { renderFlyMachineRequest, parseFlyLogLine, flyMachineName, FLY_LOG_MARKERS, FLY_RUN_FILES } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
 const { flyAuthorization, flyMachineExitCode } = await import('../packages/core/src/agents/runtime/flyMachinesApi.ts');
 const { uploadAgentRunFiles } = await import('../packages/core/src/agents/runtime/agentRunFileUpload.ts');
+const { envFileValues } = await import('../packages/core/src/agents/credentials/hostCredentialStaging.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { getAgentRuntime, registerAgentRuntime, assertAgentRuntimeSupports, runAgent, registeredAgentRuntimes, AgentRuntimeCapabilityError } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { planAgentRunMcpTransport } = await import('../packages/core/src/agents/runtime/agentRunMcpTransport.ts');
@@ -238,7 +239,7 @@ test('machine request: image entrypoint chain, Docker env semantics, uploads, pr
     assert.deepEqual(request.config.guest, { cpu_kind: 'performance', cpus: 2, memory_mb: 6144 });
     assert.deepEqual(request.config.init.entrypoint!.slice(0, 2), ['/bin/bash', '-c']);
     assert.deepEqual(request.config.init.cmd, [
-        '/tmp/propr-fly-run', '600', '/home/node/workspace', '0:0',
+        '/tmp/propr-fly-run', '600', '/home/node/workspace', '0:0', '1',
         '/bin/bash', '-lc', 'clone-script', 'setup', '/home/node/claude-entrypoint.sh', 'claude', '-p',
     ]);
     // -e wins over the env file; a bare name inherits from the launch environment.
@@ -252,6 +253,43 @@ test('machine request: image entrypoint chain, Docker env semantics, uploads, pr
     const bound = spec();
     bound.mounts.push({ type: 'bind', source: '/x', target: '/y', readOnly: true, purpose: 'data', order: 9 });
     assert.throws(() => renderFlyMachineRequest(bound, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }), /bind-mounts \/y/);
+});
+
+test('machine request: security restrictions the Machine cannot enforce are refused before launch', () => {
+    const render = (run: any) => renderFlyMachineRequest(run, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} });
+    const readOnly = spec();
+    readOnly.security.readOnlyRootFilesystem = true;
+    assert.throws(() => render(readOnly), /read-only root filesystem, which Fly Machines cannot enforce/);
+    const dropped = spec();
+    dropped.security.capDrop = ['ALL'];
+    assert.throws(() => render(dropped), /dropped capabilities \(ALL\)/);
+    const profiled = spec();
+    profiled.security.securityOpts = ['seccomp=/etc/profile.json'];
+    assert.throws(() => render(profiled), /security option "seccomp=\/etc\/profile.json"/);
+    // Relaxations and added capabilities need no enforcement; no-new-privileges is passed to the launcher.
+    const relaxed = spec();
+    relaxed.security = { noNewPrivileges: false, securityOpts: ['seccomp=unconfined', 'apparmor=unconfined'], capAdd: ['CHOWN'], capDrop: [], readOnlyRootFilesystem: false };
+    assert.equal(render(relaxed).config.init.cmd![4], '0');
+    relaxed.security.securityOpts.push('no-new-privileges');
+    assert.equal(render(relaxed).config.init.cmd![4], '1');
+    const script = render(spec()).config.init.entrypoint![2];
+    assert.match(script, /no_new_privs=\$5; shift 5/);
+    assert.match(script, /\[ "\$no_new_privs" = 1 \] && set -- setpriv --no-new-privs -- "\$@"/);
+});
+
+test('machine request: an unreadable env file fails the launch instead of becoming an empty environment', async () => {
+    const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-env-')), 'gone.env');
+    const run = spec();
+    run.envFiles.push({ path: missing, order: -1 });
+    assert.throws(
+        () => renderFlyMachineRequest(run, { config: { size: 'performance-1x', resultLingerSeconds: 60 }, launchEnvironment: {} }),
+        /Cannot read environment file .*gone\.env/,
+    );
+    // The Docker staging helper keeps relying on Docker to refuse the file.
+    assert.deepEqual([...envFileValues(missing, {})], []);
+    const fly = new FakeFly();
+    await assert.rejects(runtime(fly).start(run, { timeout: 10_000 }).wait(), /Cannot read environment file/);
+    assert.equal(fly.machines.size, 0, 'no Machine was created');
 });
 
 test('log lines: only launcher-marked lines are output; the exit marker carries the status', () => {
