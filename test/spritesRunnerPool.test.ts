@@ -549,3 +549,72 @@ test('a worker losing its reservation during setup cannot hand out the checkpoin
     assert.equal((await store.read(scope)).runners.get(client.created[0].name)?.leaseId, 'replacement');
     assert.deepEqual(client.deleted, []);
 });
+
+test('a heartbeat repairs a failed completion write and the unreleased result survives expiry', async t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const runtime = worker(client, store);
+    const launched = Promise.withResolvers<void>();
+    client.setup = sprite => { void sprite.launched.promise.then(launched.resolve); };
+    const run = runtime.start(spec());
+    await launched.promise;
+    const outage = t.mock.method(store, 'transact', async () => { throw new Error('Redis unavailable'); });
+    assert.equal((await run.wait()).exitCode, 0);
+    const sprite = client.created[0];
+    const record = async () => (await store.read(scope)).runners.get(sprite.name)!;
+    assert.equal((await record()).state, 'leased');
+    sprite.files.set('/opt/propr/result/result.bundle', Buffer.from('only copy'));
+    t.mock.timers.tick(15_000);
+    assert.equal(outage.mock.callCount(), 2);
+    outage.mock.restore();
+    t.mock.timers.tick(15_000);
+    assert.equal((await record()).state, 'finished');
+
+    // Simulate the worker disappearing and a peer reconciling after its last heartbeat expires.
+    await store.transact(scope, state => { state.runners.get(sprite.name)!.heartbeatAt = 0; });
+    await pool(client, store).reconcile();
+    assert.equal((await record()).state, 'retained');
+    assert.deepEqual(client.deleted, []);
+    assert.equal((await run.readFile!('/tmp/propr-workspace-result/result.bundle'))?.toString(), 'only copy');
+    await run.release!();
+    await runtime.close();
+});
+
+test('completion retries leave a resetting runner and a successor lease alone', async t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const store = new MemorySpritePoolStore();
+    const client = new FakeSprites();
+    const runtime = pool(client, store);
+    const slot = await runtime.acquire(new AbortController().signal);
+    t.mock.method(store, 'transact', async () => { throw new Error('Redis unavailable'); }, { times: 1 });
+    await runtime.finished(slot);
+    const sprite = client.created[0];
+    const record = async () => (await store.read(scope)).runners.get(sprite.name)!;
+    const resetting = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    t.mock.method(sprite, 'restart', async () => {
+        resetting.resolve();
+        await resume.promise;
+    });
+    const release = runtime.release(slot);
+    await resetting.promise;
+    try {
+        t.mock.timers.tick(250);
+        assert.equal((await record()).state, 'resetting');
+    } finally {
+        resume.resolve();
+        await release;
+    }
+    assert.equal((await record()).state, 'idle');
+
+    const next = await runtime.acquire(new AbortController().signal);
+    t.mock.method(store, 'transact', async () => { throw new Error('Redis unavailable'); }, { times: 1 });
+    await runtime.finished(next);
+    await store.transact(scope, state => Object.assign(state.runners.get(next.name)!, { leaseId: 'successor', heartbeatAt: 1 }));
+    t.mock.timers.tick(250);
+    assert.equal((await record()).state, 'leased');
+    assert.equal((await record()).heartbeatAt, 1);
+    await runtime.release(next);
+    assert.equal((await record()).leaseId, 'successor');
+});

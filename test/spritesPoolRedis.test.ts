@@ -106,3 +106,45 @@ test('an unreadable runner record counts as orphaned and the status report reads
     assert.equal(report.unavailable, undefined);
     assert.ok((await pool.scopes()).includes(scope));
 });
+
+for (const sharedStore of [true, false]) {
+    test(`publication on the same ${sharedStore ? 'store' : 'Redis client'} preserves an acquisition's watch`, options, async t => {
+        const scope = randomUUID();
+        const pool = await store();
+        const client = clients.at(-1)!;
+        const publisher = sharedStore ? pool : new RedisSpritePoolStore(client);
+        const competitor = await store();
+        const now = Date.now();
+        const name = 'propr-idle';
+        await pool.transact(scope, state => state.runners.set(name, { state: 'idle', heartbeatAt: now, since: now, runs: 1 }));
+        const acquire = (store: RedisSpritePoolStore, leaseId: string) => store.transact(scope, state =>
+            acquireSpriteRunner(state, { leaseId, owner: leaseId, max: 1, newName: 'unused', now, ttlMs: 60_000 }));
+
+        const readIdle = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        const hgetall = client.hgetall.bind(client);
+        t.mock.method(client, 'hgetall', async (key: string) => {
+            const result = await hgetall(key);
+            if (key === spritesPoolKeys(scope).runners) {
+                readIdle.resolve();
+                await resume.promise;
+            }
+            return result;
+        });
+        const acquiring = acquire(pool, 'first');
+        await readIdle.promise;
+        const config = { max: 1, orgLimit: 3, warmClones: false, updatedAt: now };
+        const publishing = publisher.publishConfig(scope, config);
+        try {
+            // Flush any unqueued publication before the competing worker takes the runner.
+            await client.ping();
+            assert.equal((await acquire(competitor, 'other')).action, 'lease');
+        } finally {
+            resume.resolve();
+        }
+        const [decision] = await Promise.all([acquiring, publishing]);
+        assert.equal(decision.action, 'wait');
+        assert.equal((await pool.read(scope)).runners.get(name)?.leaseId, 'other');
+        assert.deepEqual(await pool.readConfig(scope), config);
+    });
+}

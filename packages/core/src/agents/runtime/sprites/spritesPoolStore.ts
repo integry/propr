@@ -87,7 +87,7 @@ function diff<T>(before: Map<string, T>, after: Map<string, T>) {
 const MAX_ATTEMPTS = 50;
 
 export class RedisSpritePoolStore implements SpritePoolStore {
-    private queue: Promise<unknown> = Promise.resolve();
+    private static readonly queues = new WeakMap<Redis, Promise<unknown>>();
     private readonly owned: boolean;
     private readonly client: Redis;
 
@@ -102,8 +102,9 @@ export class RedisSpritePoolStore implements SpritePoolStore {
 
     /** WATCH is per connection: one transaction at a time on this client. */
     private serialized<T>(operation: () => Promise<T>): Promise<T> {
-        const run = this.queue.then(operation, operation);
-        this.queue = run.catch(() => {});
+        const previous = RedisSpritePoolStore.queues.get(this.client) ?? Promise.resolve();
+        const run = previous.then(operation);
+        RedisSpritePoolStore.queues.set(this.client, run.catch(() => {}));
         return run;
     }
 
@@ -145,7 +146,7 @@ export class RedisSpritePoolStore implements SpritePoolStore {
     read(scope: string) { return this.load(scope); }
 
     async publishConfig(scope: string, config: SpritePoolPublishedConfig) {
-        await this.client.multi().set(spritesPoolKeys(scope).config, JSON.stringify(config)).sadd(SPRITES_POOL_SCOPES_KEY, scope).exec();
+        await this.serialized(() => this.client.multi().set(spritesPoolKeys(scope).config, JSON.stringify(config)).sadd(SPRITES_POOL_SCOPES_KEY, scope).exec());
     }
 
     async readConfig(scope: string) {

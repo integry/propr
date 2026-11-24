@@ -77,6 +77,8 @@ export class SpritePool {
     private checkingRetained = false;
     private ready?: Promise<void>;
     private readonly heartbeats = new Map<string, ReturnType<typeof setInterval>>();
+    /** Until release, every heartbeat can repair a completion write with an unknown outcome. */
+    private readonly finishedRunners = new Map<string, string>();
     private readonly owner: string;
     private readonly ttlMs: number;
 
@@ -90,9 +92,20 @@ export class SpritePool {
         return this.options.store.transact(this.options.scope, operation);
     }
 
+    private heartbeat(leaseId: string): Promise<void> {
+        return this.transact(state => {
+            const now = this.now();
+            heartbeatSpriteLease(state, leaseId, now);
+            const name = this.finishedRunners.get(leaseId);
+            if (name && state.runners.get(name)?.state === 'leased') {
+                updateSpriteRunner(state, { name, leaseId, now }, { state: 'finished' });
+            }
+        });
+    }
+
     private startHeartbeat(leaseId: string) {
         const timer = setInterval(() => {
-            this.transact(state => heartbeatSpriteLease(state, leaseId, this.now()))
+            this.heartbeat(leaseId)
                 .catch(error => logger.warn({ error: String(error) }, 'Sprites pool heartbeat failed'));
         }, Math.max(50, Math.floor(this.ttlMs / 4)));
         timer.unref();
@@ -102,6 +115,7 @@ export class SpritePool {
     private stopHeartbeat(leaseId: string) {
         clearInterval(this.heartbeats.get(leaseId));
         this.heartbeats.delete(leaseId);
+        this.finishedRunners.delete(leaseId);
     }
 
     /** Once per pool: publish the bounds, forget runners whose Sprite is gone and reap Sprites no record owns. */
@@ -338,7 +352,8 @@ export class SpritePool {
 
     /** The run settled; until its release the runner's result may still be read. */
     async finished(slot: Slot): Promise<void> {
-        await this.transact(state => updateSpriteRunner(state, { name: slot.name, leaseId: slot.leaseId, now: this.now() }, { state: 'finished' }))
+        this.finishedRunners.set(slot.leaseId, slot.name);
+        await this.heartbeat(slot.leaseId)
             .catch(error => logger.warn({ error: String(error) }, 'Could not record a finished Sprites run'));
     }
 
