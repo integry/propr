@@ -123,7 +123,7 @@ test('GET includes the daemon status when published', async () => {
   assert.deepEqual((res.body as { status: unknown }).status, status);
 });
 
-test('health checks and wake pings are not activity; MCP and other requests are', () => {
+test('the middleware lets health checks and wake pings pass uncounted; MCP and other requests count', () => {
   assert.equal(classifyIdleRequest('/health'), null);
   assert.equal(classifyIdleRequest('/wake'), null);
   assert.equal(classifyIdleRequest('/api/mcp'), 'mcp');
@@ -187,6 +187,29 @@ test('/wake answers at once and records a Connect wake ping', async () => {
   assert.deepEqual(res.body, { status: 'awake' });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(writes, [[IDLE_WAKE_SIGNAL_REDIS_KEY, 'connect_ping', 'EX', 300, 'NX']]);
+});
+
+test('a wake ping is activity, so an idle drain or close that has started does not stop on it; health checks are not', async () => {
+  const handler = createWakeHandler(() => null);
+  const middleware = createIdleActivityMiddleware(() => null);
+  const before = idleActivity.snapshot().lastRequestAt;
+  await new Promise(resolve => setTimeout(resolve, 2));
+  middleware({ path: '/health' } as Request, response() as unknown as Response, () => undefined);
+  assert.equal(idleActivity.snapshot().lastRequestAt, before, 'a platform health check stays passive');
+  idleActivity.quiesce('intent-wake');
+  try {
+    const res = response();
+    let passed = false;
+    middleware({ path: '/wake' } as Request, res as unknown as Response, () => { passed = true; });
+    assert.equal(passed, true, 'the quiesced API does not turn the ping away');
+    handler({} as Request, res as unknown as Response, () => undefined);
+    assert.equal(res.statusCode, 202);
+    const during = idleActivity.snapshot();
+    assert.ok(during.lastRequestAt > before, 'recorded before the answer: every later shutdown check sees it');
+    assert.equal(during.httpRequests, 0, 'not a request in flight');
+  } finally {
+    idleActivity.resume();
+  }
 });
 
 /** Shared Redis state; `duplicate()` opens another connection on it, like ioredis. */

@@ -14,7 +14,12 @@ import { idleActivity, startIdleActivityPublisher, startIdleShutdownListener } f
  *     existing SIGTERM path, which exits 0).
  */
 
-/** Probes that must neither count as activity nor as a wake. */
+/**
+ * Paths the middleware neither counts as requests in flight nor names as the
+ * wake, and never turns away while quiesced. `/health` is a platform probe and
+ * has no other effect; `/wake` names its own wake source and records itself as
+ * activity in its handler (see {@link createWakeHandler}).
+ */
 const PASSIVE_PATHS = new Set(['/health', '/wake']);
 /** A wake signal older than this no longer describes the current start. */
 const WAKE_SIGNAL_TTL_SECONDS = 5 * 60;
@@ -71,10 +76,20 @@ export function createIdleActivityMiddleware(getRedis: () => Pick<Redis, 'set'> 
 /**
  * `/wake`: the Connect wake ping (integry/propr-routing#335). Reaching the
  * process is the whole point — on Fly the request itself starts the Machine —
- * so it answers at once, records the wake source and has no other effect.
+ * so it answers at once and records the wake source.
+ *
+ * A ping means Connect holds deliveries for an instance whose intake is
+ * disconnected, which is what an idle drain does before it stops. Recorded as
+ * activity before the answer, it is seen by every later shutdown check, as a
+ * request the quiesced API turned away is: the drain's checks abort it (intake
+ * reconnects and asks for the replay), and once the stop is under way it is
+ * called off, or the coordinated close exits 1 instead of stopping the host,
+ * so the supervisor starts the instance for the replay. Acknowledged and then
+ * stopped on, the ping would leave those deliveries waiting for another start.
  */
 export function createWakeHandler(getRedis: () => Pick<Redis, 'set'> | null): RequestHandler {
   return (_req: Request, res: Response) => {
+    idleActivity.touch();
     const redis = getRedis();
     if (redis) void recordWakeSignal(redis, 'connect_ping');
     res.status(202).json({ status: 'awake' });

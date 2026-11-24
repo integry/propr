@@ -25,7 +25,7 @@ const { stopDaemonProcess } = await import('../src/daemon/idleStopExit.js');
 const { recordAcceptedReplay } = await import('../src/daemon/idleReplayObligation.js');
 const { createDaemonWorkProducers } = await import('../src/daemon/workProducers.js');
 const { createDaemonActivitySources } = await import('../src/daemon/idleSignalSources.js');
-const { createIdleActivityMiddleware, startApiIdleShutdown } = await import('../packages/api/idleShutdownIntegration.js');
+const { createIdleActivityMiddleware, createWakeHandler, startApiIdleShutdown } = await import('../packages/api/idleShutdownIntegration.js');
 const { createBoundedExit } = await import('../src/allInOneConfig.js');
 const {
     IDLE_LAST_SHUTDOWN_REDIS_KEY, IDLE_LAST_WAKE_REDIS_KEY, IDLE_PARTICIPANTS_REDIS_KEY, IDLE_SHUTDOWN_ACKS_REDIS_PREFIX, IDLE_SHUTDOWN_INTENT_REDIS_KEY, resolveIdleShutdownConfig,
@@ -1187,4 +1187,66 @@ test('without a request during the coordinated close, the host is stopped and th
     const { exited, hostStops } = await idleStopThroughBoundedExit(() => undefined);
     assert.equal(hostStops, 1);
     assert.deepEqual(exited, [0]);
+});
+
+/** Connect's wake ping (`POST /wake`) through the API's real middleware and handler. */
+function wakePingThroughApi(middleware: ReturnType<typeof createIdleActivityMiddleware>) {
+    const answer = { status: 0, body: null as unknown };
+    const res = {
+        setHeader: () => res,
+        status: (code: number) => { answer.status = code; return res; },
+        json: (body: unknown) => { answer.body = body; return res; },
+        once: () => res,
+    };
+    middleware({ path: '/wake' } as never, res as never, () => { createWakeHandler(() => null)({} as never, res as never, () => undefined); });
+    return answer;
+}
+
+test('a Connect wake ping answered after intake disconnects aborts the drain: intake reconnects and asks for the replay', async () => {
+    await composedWithApi(async ({ hub, events, middleware, collectActivity, idleSince }) => {
+        let answer: ReturnType<typeof wakePingThroughApi> | null = null;
+        // The relay caches a delivery for the now disconnected instance and pings it while the API is still up.
+        class PingedRouting extends FakeRouting {
+            override async stop() { await super.stop(); answer = wakePingThroughApi(middleware); }
+        }
+        const routing = new PingedRouting(true);
+        const stops: number[] = [];
+        const { ctx, exits } = context(hub, routing, { ...hintStore(), collect: collectActivity });
+        assert.equal(await drainIdleControlPlane({ ...request, idleSince }, { ...ctx, collectWork: async () => emptyIdleSignals(), collectActivity, stopProcess: code => { stops.push(code); } }), false);
+        await settle();
+        assert.deepEqual(answer, { status: 202, body: { status: 'awake' } }, 'the ping was acknowledged during the drain');
+        assert.deepEqual(stops, [], 'nothing is closed');
+        assert.deepEqual(exits, []);
+        assert.ok(!events.includes('worker acknowledged the stop'), 'no process was asked to stop');
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false);
+        assert.deepEqual(routing.calls, ['wake_hint', 'stop', 'start', 'replay'], 'intake reconnects and asks for the cached delivery');
+    });
+});
+
+test('a Connect wake ping answered once the stop request is stored calls the stop off (exit 1) instead of exit 0', async () => {
+    await composedWithApi(async ({ hub, events, middleware, collectActivity, idleSince }) => {
+        const hints = hintStore();
+        const stops: number[] = [];
+        let answer: ReturnType<typeof wakePingThroughApi> | null = null;
+        const { ctx } = context(hub, new FakeRouting(true), { ...hints, collect: collectActivity });
+        const collectWork = async () => {
+            answer = wakePingThroughApi(middleware);
+            return emptyIdleSignals();
+        };
+        assert.equal(await drainIdleControlPlane({ ...request, idleSince }, { ...ctx, collectWork, collectActivity, stopProcess: code => { stops.push(code); } }), true);
+        assert.deepEqual(answer, { status: 202, body: { status: 'awake' } });
+        assert.ok(events.includes('worker acknowledged the stop'));
+        assert.deepEqual(stops, [1], 'the supervisor starts the control plane again, and that start asks for the replay');
+        assert.equal(hub.strings.has(IDLE_SHUTDOWN_INTENT_REDIS_KEY), false, 'the stop request is withdrawn');
+        assert.ok(hints.store.current!.connectReplay, 'the replay stays owed in the hint file');
+    });
+});
+
+test('a Connect wake ping answered during the coordinated close keeps the host up: exit 1, no host stop', async () => {
+    let answer: ReturnType<typeof wakePingThroughApi> | null = null;
+    const { exited, hostStops, errors } = await idleStopThroughBoundedExit(middleware => { answer = wakePingThroughApi(middleware); });
+    assert.deepEqual(answer, { status: 202, body: { status: 'awake' } }, 'the API was still up and acknowledged the ping');
+    assert.equal(hostStops, 0, 'the host is not asked to stop');
+    assert.deepEqual(exited, [1], 'the supervisor starts the control plane again, and that start asks for the replay');
+    assert.match(errors.join('\n'), /a request reached the API while the idle stop was closing/);
 });
