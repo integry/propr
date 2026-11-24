@@ -344,6 +344,16 @@ export interface AgentRunHandle<Result extends AgentRunResult = AgentRunResult> 
      * `'oversized'` before any of its content is transferred.
      */
     readFileWithStat?(path: string, options: { maxBytes: number }): Promise<AgentRunFileRead | 'oversized' | null>;
+    /**
+     * Credential read-back: the regular file `relative` inside the store
+     * directory `root` of the run's filesystem, like
+     * {@link AgentRunHandle.readFileWithStat}, but null when any component of
+     * the path (the store directory and its ancestors included) is a symlink
+     * or the opened file is not that path: a run may swap its writable
+     * credential outputs for links to files it cannot read itself. The upload
+     * transport reads refreshed credentials only through this method.
+     */
+    readCredentialFile?(root: string, relative: string, options: { maxBytes: number }): Promise<AgentRunFileRead | 'oversized' | null>;
     /** Discards what the runtime kept of a finished run (e.g. the stopped container). Idempotent. */
     release?(): Promise<void>;
     /**

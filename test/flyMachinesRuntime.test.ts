@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { after, test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { after, mock, test } from 'node:test';
 
 const credentialRunDir = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-credential-runs-'));
 process.env.PROPR_AGENT_CREDENTIAL_RUN_DIR = credentialRunDir;
@@ -110,6 +111,11 @@ class FakeFly {
         }
         if (action === 'exec') {
             const [, , script, , file, offset, length] = body.command as string[];
+            if (script.includes('pwd -P')) {
+                // The confined credential reader runs for real, against this host's filesystem.
+                const ran = spawnSync('/bin/sh', (body.command as string[]).slice(1), { encoding: 'utf8' });
+                return json(200, { exit_code: ran.status, stdout: ran.stdout, stderr: ran.stderr });
+            }
             const content = machine.files.get(file);
             if (script.includes('stat -c')) {
                 if (!content) return json(200, { exit_code: 3 });
@@ -376,7 +382,7 @@ test('upload step: credential stores become per-run files and refreshed tokens a
                 spec: startedSpec, stdout: null as any, stderr: null as any,
                 wait: async () => { settled = true; return { stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() }; },
                 stop: async () => undefined, inspect: async () => ({ liveness: 'stopped', name: startedSpec.name }), isAlive: async () => false,
-                readFile: async (file: string) => (settled && file === '/home/node/.claude/.credentials.json' ? Buffer.from('{"token":"refreshed"}') : null),
+                readCredentialFile: async (root: string, file: string) => (settled && root === '/home/node/.claude' && file === '.credentials.json' ? { content: Buffer.from('{"token":"refreshed"}'), mtimeMs: 0 } : null),
             };
         },
     }) as any);
@@ -506,7 +512,7 @@ function finishedHandle(run: any, read: (file: string, options: { maxBytes: numb
         spec: run, stdout: null, stderr: null,
         wait: async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() }),
         stop: async () => undefined, inspect: async () => ({ liveness: 'stopped', name: run.name }), isAlive: async () => false,
-        readFileWithStat: read,
+        readCredentialFile: (root: string, relative: string, options: { maxBytes: number }) => read(path.posix.join(root, relative), options),
         retain: () => { retained++; },
         release: async () => { released++; },
     };
@@ -536,7 +542,7 @@ test('credential write-back orders concurrent refreshes by the run\'s modificati
     // Without a modification time from the runtime, a changed canonical credential is kept.
     const untimed = uploadAgentRunFiles(credentialRun(store, 'untimed-refresh'));
     fs.writeFileSync(path.join(store, '.credentials.json'), '{"token":"canonical"}');
-    const legacy: any = { ...finishedHandle(run, async () => null).handle, readFileWithStat: undefined, readFile: async (file: string) => (file.endsWith('.credentials.json') ? Buffer.from('{"token":"untimed"}') : null) };
+    const legacy = finishedHandle(run, async file => (file.endsWith('.credentials.json') ? { content: Buffer.from('{"token":"untimed"}'), mtimeMs: 0 } : null)).handle;
     assert.deepEqual((await untimed.collect(legacy)).results.map(result => result.outcome), ['kept-canonical']);
     assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"canonical"}');
 });
@@ -587,4 +593,108 @@ test('credential write-back failure saves the refreshed copy for recovery; an un
     assert.equal((await unreadable.collect(failing.handle)).keepRun, true);
     await kept.release!();
     assert.deepEqual(failing.counts(), { retained: 1, released: 0 }, 'retained, and release() does not discard it');
+});
+
+test('credential read-back refuses symlinks on the path and never uses the general file reader', async () => {
+    // A real store directory inside the "Machine": the confined reader script runs under /bin/sh.
+    const guest = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-guest-')));
+    const root = path.join(guest, 'claude');
+    fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(guest, 'root-only-secret'), 'TOP SECRET');
+    fs.writeFileSync(path.join(root, '.credentials.json'), '{"token":"refreshed"}');
+    fs.utimesSync(path.join(root, '.credentials.json'), new Date('2026-11-24T09:59:30Z'), new Date('2026-11-24T09:59:30Z'));
+    fs.symlinkSync(path.join(guest, 'root-only-secret'), path.join(root, 'link.json'));
+    fs.mkdirSync(path.join(guest, 'elsewhere'));
+    fs.writeFileSync(path.join(guest, 'elsewhere', 'token.json'), 'TOP SECRET');
+    fs.symlinkSync(path.join(guest, 'elsewhere'), path.join(root, 'linked-dir'));
+    fs.writeFileSync(path.join(root, 'big.json'), Buffer.alloc(4096));
+    fs.symlinkSync(root, path.join(guest, 'store-link'));
+    const fly = new FakeFly();
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    await handle.wait();
+    const read = await handle.readCredentialFile!(root, '.credentials.json', { maxBytes: 1024 });
+    assert.ok(read && read !== 'oversized');
+    assert.equal(read.content.toString(), '{"token":"refreshed"}');
+    assert.equal(read.mtimeMs, Date.parse('2026-11-24T09:59:30Z'));
+    assert.equal(await handle.readCredentialFile!(root, 'link.json', { maxBytes: 1024 }), null, 'a symlinked output is not followed');
+    assert.equal(await handle.readCredentialFile!(root, 'linked-dir/token.json', { maxBytes: 1024 }), null, 'nor a symlinked parent directory');
+    assert.equal(await handle.readCredentialFile!(path.join(guest, 'store-link'), '.credentials.json', { maxBytes: 1024 }), null, 'nor a symlinked store root');
+    assert.equal(await handle.readCredentialFile!(root, 'sub', { maxBytes: 1024 }), null, 'a directory is not a credential');
+    assert.equal(await handle.readCredentialFile!(root, 'missing.json', { maxBytes: 1024 }), null);
+    assert.equal(await handle.readCredentialFile!(root, 'big.json', { maxBytes: 1024 }), 'oversized');
+    await assert.rejects(handle.readCredentialFile!(root, '../root-only-secret', { maxBytes: 1024 }), /not a plain path/);
+    await assert.rejects(handle.readCredentialFile!(root, '/etc/shadow', { maxBytes: 1024 }), /not a plain path/);
+    await handle.release!();
+    fs.rmSync(guest, { recursive: true, force: true });
+
+    // The collector never falls back to the general reader, which follows links.
+    const store = credentialStore();
+    const uploaded = uploadAgentRunFiles(credentialRun(store, 'no-confined-reader'));
+    const { handle: general } = finishedHandle(spec(), async () => null);
+    delete general.readCredentialFile;
+    const generalReads: string[] = [];
+    general.readFile = async (file: string) => { generalReads.push(file); return Buffer.from('TOP SECRET'); };
+    general.readFileWithStat = async (file: string) => { generalReads.push(file); return { content: Buffer.from('TOP SECRET'), mtimeMs: Date.now() }; };
+    const collected = await uploaded.collect(general);
+    assert.deepEqual(generalReads, []);
+    assert.equal(collected.keepRun, true, 'an output that cannot be read safely keeps the run');
+    assert.equal(fs.readFileSync(path.join(store, '.credentials.json'), 'utf8'), '{"token":"old"}');
+});
+
+test('a writable credential store the worker cannot write back to refuses the run before launch', async (context) => {
+    const store = credentialStore();
+    fs.chmodSync(store, 0o500);
+    context.after(() => fs.chmodSync(store, 0o700));
+    let writable = true;
+    try { fs.accessSync(store, fs.constants.W_OK); } catch { writable = false; }
+    if (writable) { context.skip('running as root: the store stays writable'); return; }
+    const run = credentialRun(store, 'unwritable-store');
+    assert.throws(() => uploadAgentRunFiles(run), /cannot write refreshed tokens back to the claude config credential store/);
+    // Through runAgent: nothing is started.
+    let starts = 0;
+    registerAgentRuntime('upload-unwritable-fake', () => ({
+        kind: 'upload-unwritable-fake',
+        capabilities: { supportsBindMounts: false, supportsFileUpload: true, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, workspaceTransports: ['bind'] },
+        start() { starts++; throw new Error('must not start'); },
+    }) as any);
+    await assert.rejects(runAgent({ runtime: 'upload-unwritable-fake' } as any, run, { timeout: 1000 }), /cannot write refreshed tokens back/);
+    assert.equal(starts, 0);
+    // A read-only mount of the same store needs no write-back and still runs.
+    const readOnly = { ...run, mounts: run.mounts.map((mount: any) => ({ ...mount, readOnly: true })) };
+    assert.ok(uploadAgentRunFiles(readOnly).spec.files!.some(file => file.path === '/home/node/.claude/.credentials.json'));
+});
+
+test('a failed explicit release of a retained Machine keeps retrying the destroy with backoff', async () => {
+    const fly = new FakeFly();
+    const handle = runtime(fly).start(spec(), { timeout: 10_000 });
+    await handle.wait();
+    // A clone run: retained before its result is retrieved, which cancels the automatic removal.
+    handle.retain!();
+    assert.equal((await handle.readFile!(FLY_RUN_FILES.stdout))!.toString(), 'out\n');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+        fly.failDeletes = 2;
+        await assert.rejects(handle.release!(), /returned 503/);
+        const deletes = () => fly.requests.filter(request => request.method === 'DELETE').length;
+        const flush = async () => { for (let index = 0; index < 20; index++) await new Promise(resolve => setImmediate(resolve)); };
+        assert.equal(deletes(), 1);
+        mock.timers.tick(59_000);
+        await flush();
+        assert.equal(deletes(), 1, 'retried with backoff, not at once');
+        mock.timers.tick(1_000);
+        await flush();
+        assert.equal(deletes(), 2, 'the destroy was retried without another release() call');
+        assert.deepEqual(fly.destroyed, []);
+        mock.timers.tick(120_000);
+        await flush();
+        assert.equal(deletes(), 3, 'a failed retry backs off and retries again');
+        assert.deepEqual(fly.destroyed, ['m1']);
+        mock.timers.tick(10 * 60_000);
+        await flush();
+        assert.equal(deletes(), 3, 'nothing is retried once the destroy succeeded');
+        await handle.release!();
+        assert.equal(deletes(), 3);
+    } finally {
+        mock.timers.reset();
+    }
 });

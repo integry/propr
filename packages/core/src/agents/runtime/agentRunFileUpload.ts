@@ -18,9 +18,11 @@ import type { AgentRunFile, AgentRunFileRead, AgentRunHandle, AgentRunMount, Age
  * refreshable outputs are read back through the runtime file API afterwards.
  *
  * - A credential store bind gets the broker's per-run copy (only the
- *   provider manifest's files); refreshed tokens are written back to the
- *   canonical store when the run finished, ordered by their modification
- *   time in the run. A refresh that cannot be written back is saved to a
+ *   provider manifest's files); refreshed tokens are read back through the
+ *   runtime's confined credential reader (no symlinks on the path) and
+ *   written to the canonical store when the run finished, ordered by their
+ *   modification time in the run. A writable store the worker cannot write
+ *   back to refuses the run before launch. A refresh that cannot be written back is saved to a
  *   retained recovery directory beside the host staging copies; one that
  *   cannot be read (or saved) keeps the run itself, which is then never
  *   released automatically.
@@ -122,14 +124,15 @@ function copyBindSource(mount: BindMount): AgentRunFile[] {
 
 /**
  * A refreshable output read back from the run, bounded before its content is
- * transferred. Without the runtime's modification time the copy is dated 0, so
- * a canonical file another writer changed meanwhile is kept, never overwritten.
+ * transferred, through the runtime's credential reader only: it refuses a
+ * symlink anywhere on the path, which the run could otherwise plant to have
+ * the runtime's privileged reader return a file outside the store. A handle
+ * without that reader cannot return credentials safely, so the output counts
+ * as unread (the run is kept).
  */
-async function readReturnedCredential(handle: AgentRunHandle, guestPath: string): Promise<AgentRunFileRead | 'oversized' | null> {
-    if (handle.readFileWithStat) return handle.readFileWithStat(guestPath, { maxBytes: MAX_RETURNED_CREDENTIAL_BYTES });
-    const content = await handle.readFile?.(guestPath);
-    if (!content) return null;
-    return content.length > MAX_RETURNED_CREDENTIAL_BYTES ? 'oversized' : { content, mtimeMs: 0 };
+async function readReturnedCredential(handle: AgentRunHandle, root: string, relative: string): Promise<AgentRunFileRead | 'oversized' | null> {
+    if (!handle.readCredentialFile) throw new Error('The runtime offers no confined credential reader');
+    return handle.readCredentialFile(root, relative, { maxBytes: MAX_RETURNED_CREDENTIAL_BYTES });
 }
 
 function changedOutputs(bundle: CredentialBundle, returned: readonly ReturnedCredentialFile[]): ReturnedCredentialFile[] {
@@ -203,16 +206,26 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
     const targets: StoreTarget[] = credentialMounts.map(mount => ({
         mount, storeId: `${mount.credentialStore.provider}-${mount.credentialStore.store}`,
         // A run that relies on state persisting in the store between launches cannot get that
-        // from a remote sandbox; it receives a per-run copy whose refreshes are written back.
+        // from a remote sandbox; it receives a per-run copy whose refreshes are written back
+        // (a writable store the worker cannot write back to is refused below).
         writeBack: !mount.readOnly && canWriteBack(mount),
     }));
     for (const target of targets) {
         if (!target.mount.credentialStore.perRun) {
             logger.warn({ run: spec.name, store: target.storeId }, 'Runtime cannot mount the canonical credential store; the run receives a per-run copy');
         }
-        if (!target.mount.readOnly && !target.writeBack) {
-            logger.warn({ run: spec.name, store: target.storeId, source: target.mount.source }, 'Credential store is not writable from the worker; refreshed tokens from this run will not persist');
-        }
+    }
+    // Without bind mounts there is no direct mount to fall back to: a refresh the
+    // worker cannot write back would be destroyed with the run, so refuse it.
+    const unwritable = targets.filter(target => !target.mount.readOnly && !target.writeBack);
+    if (unwritable.length > 0) {
+        const stores = unwritable.map(target => ({ provider: target.mount.credentialStore.provider, store: target.mount.credentialStore.store, source: target.mount.source }));
+        logger.error({ run: spec.name, stores }, 'Credential store is not writable from the worker; refusing the run because the runtime cannot mount it directly');
+        throw new AgentRunFileUploadError(
+            `The worker cannot write refreshed tokens back to the ${stores.map(store => `${store.provider} ${store.store}`).join(', ')} credential `
+            + `${stores.length === 1 ? 'store' : 'stores'} for ${spec.name}, and this runtime cannot mount ${stores.length === 1 ? 'it' : 'them'} directly. `
+            + `Make ${stores.map(store => store.source).join(', ')} writable from the worker`,
+        );
     }
     const broker = options.broker ?? new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(environment), '.locks') } });
     const requests: CredentialStoreRequest[] = targets.map(target => ({
@@ -245,7 +258,7 @@ export function uploadAgentRunFiles(spec: AgentRunSpec, options: UploadOptions =
             for (const output of store.outputs) {
                 const guestPath = path.posix.join(target.mount.target, output);
                 try {
-                    const read = await readReturnedCredential(handle, guestPath);
+                    const read = await readReturnedCredential(handle, target.mount.target, output);
                     if (read === 'oversized') {
                         logger.warn({ run: spec.name, store: store.id, file: output, maxBytes: MAX_RETURNED_CREDENTIAL_BYTES }, 'Refreshed credential from the run exceeds the size limit; not writing it back');
                     } else if (read) {

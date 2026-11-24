@@ -8,10 +8,11 @@ import { startLiveOutputStreaming } from '../../claude/docker/dockerLiveOutputSt
 import { inspectSessionMessageLine, type SessionLineInspectionContext } from '../../claude/docker/dockerSessionOutput.js';
 import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
-import { flyMachineExitCode, parseFlyStat, type FlyMachine, type FlyMachinesClient } from './flyMachinesApi.js';
+import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient } from './flyMachinesApi.js';
+import { confinedCredentialPath, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
 import { FLY_RUN_FILES, parseFlyLogLine, renderFlyMachineRequest } from './flyMachinesLaunch.js';
-import type { AgentRunFileRead, AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
+import type { AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
 
 /** How long a Machine create → `started` may take: image pull plus boot. */
 const START_TIMEOUT_MS = 10 * 60_000;
@@ -26,11 +27,8 @@ const MAX_DESTROY_RETRY_MS = 10 * 60_000;
 const MAX_EXIT_STATUS_BYTES = 64;
 /** A run's output is read back from the Machine at most this far from its end (the result keeps 1 MiB of records). */
 const MAX_CAPTURE_READ_BYTES = 8 * 1024 * 1024;
-const EXEC_READ_CHUNK_BYTES = 3 * 1024 * 1024;
 /** Exit status / Machine state checks happen every this many log polls. */
 const STATUS_CHECK_EVERY_POLLS = 5;
-
-type ExecRead = AgentRunFileRead | 'oversized' | null;
 
 export interface FlyRunTiming {
     /** Create request until the API returned the Machine. */
@@ -85,6 +83,8 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     private discarding = false;
     private destroyRetryMs = DESTROY_RETRY_MS;
     private retaining?: Promise<void>;
+    /** `release()` was called: the Machine must be destroyed, retained or not, and failed destroys are retried. */
+    private releaseRequested = false;
     private settled = false;
     private released?: Promise<void>;
     private releaseTimer?: NodeJS.Timeout;
@@ -209,12 +209,8 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
         this.releaseTimer = setTimeout(() => {
             this.releaseTimer = undefined;
-            void this.release().catch(error => {
-                logger.warn({ run: this.spec.name, machine: this.machineId, error: (error as Error).message }, 'Could not destroy the Fly Machine of an agent run; retrying');
-                if (!this.discarding && this.retained) return;
-                this.destroyRetryMs = Math.min(this.destroyRetryMs * 2, MAX_DESTROY_RETRY_MS);
-                this.scheduleRelease(this.destroyRetryMs);
-            });
+            // A failed destroy schedules its own retry (see destroy()).
+            void this.destroy().catch(() => undefined);
         }, ms);
         this.releaseTimer.unref();
     }
@@ -343,34 +339,8 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         return { stdout, stderr, exitCode: this.exitCode ?? null, messageTimestamps: this.messageTimestamps };
     }
 
-    /**
-     * A file from the Machine through the exec API (base64, in chunks), with
-     * its modification time; null when it does not exist. `tail` reads only
-     * the file's last bytes; a file larger than `limit` is refused right
-     * after the stat, before any content is transferred.
-     */
-    private async execRead(filePath: string, bounds: { tail?: number; limit?: number } = {}): Promise<ExecRead> {
-        const { client } = this.deps;
-        const id = this.machineId!;
-        const sized = await client.exec(id, ['/bin/sh', '-c', '[ -f "$1" ] || exit 3; stat -c "%s %Y %y" "$1"', 'sh', filePath], 30);
-        if (sized.exit_code === 3) return null;
-        const stat = parseFlyStat(sized.stdout);
-        if (sized.exit_code !== 0 || !stat) throw new Error(`Could not stat ${filePath} in Fly Machine ${id}: ${sized.stderr.trim() || `exit ${sized.exit_code}`}`);
-        const { size, mtimeMs } = stat;
-        if (bounds.limit !== undefined && size > bounds.limit) return 'oversized';
-        const chunks: Buffer[] = [];
-        let total = 0;
-        for (let offset = bounds.tail && size > bounds.tail ? size - bounds.tail : 0; offset < size; offset += EXEC_READ_CHUNK_BYTES) {
-            const length = Math.min(EXEC_READ_CHUNK_BYTES, size - offset);
-            const read = await client.exec(id, ['/bin/sh', '-c', 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"', 'sh', filePath, String(offset), String(length)], 60);
-            if (read.exit_code !== 0) throw new Error(`Could not read ${filePath} from Fly Machine ${id}: ${read.stderr.trim() || `exit ${read.exit_code}`}`);
-            const chunk = Buffer.from(read.stdout.trim(), 'base64');
-            total += chunk.length;
-            // The file may have grown since the stat: never hold more than it reported.
-            if (bounds.limit !== undefined && total > bounds.limit) return 'oversized';
-            chunks.push(chunk);
-        }
-        return { content: Buffer.concat(chunks), mtimeMs };
+    private execRead(filePath: string, bounds: { tail?: number; limit?: number } = {}): Promise<ExecRead> {
+        return readMachineFile(this.deps.client, this.machineId!, filePath, bounds);
     }
 
     private async settlesWithin(ms: number): Promise<boolean> {
@@ -437,6 +407,19 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         return this.execRead(filePath, { limit: options.maxBytes });
     }
 
+    async readCredentialFile(root: string, relative: string, options: { maxBytes: number }): Promise<ExecRead> {
+        const target = confinedCredentialPath(root, relative, options.maxBytes);
+        if (!this.readable()) return null;
+        await this.retaining;
+        if (!this.readable()) return null;
+        const read = await readConfinedMachineFile(this.deps.client, this.machineId!, target, options.maxBytes);
+        if (read === 'refused') {
+            logger.warn({ run: this.spec.name, machine: this.machineId, store: root, file: relative }, 'Refusing a credential output that is a symlink, leads through one, or is not a regular file');
+            return null;
+        }
+        return read;
+    }
+
     private readable(): boolean {
         return this.settled && !this.released && !this.machineGone && !this.discarding && !!this.machineId;
     }
@@ -450,7 +433,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      */
     retain(): void {
         this.retained = true;
-        if (this.releaseTimer && !this.discarding) {
+        if (this.releaseTimer && !this.discarding && !this.releaseRequested) {
             clearTimeout(this.releaseTimer);
             this.releaseTimer = undefined;
         }
@@ -473,8 +456,17 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         logger.error({ run: this.spec.name, machine: this.machineId, error: failure }, 'Could not mark the Fly Machine retained; it destroys itself when its result linger ends');
     }
 
-    /** Destroys the Machine. Idempotent once it succeeded; a failed destroy leaves it eligible and is retried by the next call. */
+    /**
+     * Destroys the Machine, retained or not. Idempotent once it succeeded. A
+     * failed destroy rejects and is retried with backoff (10 min at most)
+     * until one succeeds; a later call retries it at once.
+     */
     release(): Promise<void> {
+        this.releaseRequested = true;
+        return this.destroy();
+    }
+
+    private destroy(): Promise<void> {
         if (this.releaseTimer) clearTimeout(this.releaseTimer);
         this.releaseTimer = undefined;
         this.released ??= (async () => {
@@ -485,6 +477,12 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             }
         })().catch(error => {
             this.released = undefined;
+            // An automatic removal that lost the race with retain() leaves the Machine to its holder.
+            if (this.releaseRequested || this.discarding || !this.retained) {
+                logger.warn({ run: this.spec.name, machine: this.machineId, error: (error as Error).message }, 'Could not destroy the Fly Machine of an agent run; retrying');
+                this.destroyRetryMs = Math.min(this.destroyRetryMs * 2, MAX_DESTROY_RETRY_MS);
+                if (!this.releaseTimer) this.scheduleRelease(this.destroyRetryMs);
+            }
             throw error;
         });
         return this.released;
