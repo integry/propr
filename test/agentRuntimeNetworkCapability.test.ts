@@ -177,6 +177,34 @@ test('the grant client falls back to the reachable URL and per-run token, and ne
     assert.equal(calls.length, 1);
 });
 
+test('an explicit MCP URL without a pinned network: the report and the issued grant both say reachable-url on Docker', async () => {
+    const environment = { SYSTEM_TASK_SECRET: 'secret', PROPR_AGENT_MCP_URL: 'https://mcp.example.com/api/mcp' };
+    const report = await readAgentRuntimeCapabilityReport({ environment, loadPolicy: async () => ({ mode: 'open' as const, enforced: false, allow: [], ignoreRepositoryAllow: false }) });
+    assert.equal(report.runtime, 'docker');
+    assert.equal(report.mcp.transport, 'reachable-url', 'capability support alone does not select the private network');
+    assert.match(report.mcp.reason, /PROPR_AGENT_MCP_URL is set without PROPR_AGENT_DOCKER_NETWORK/);
+    assert.ok(!JSON.stringify(report).includes('mcp.example.com'), 'the report names the transport, not the URL');
+
+    const fetchImpl = (async () => Response.json({ grantId: 'g-3', url: 'http://api:4000/api/mcp', token: 'propr_mcp_run', expiresAt: 5 })) as unknown as typeof fetch;
+    const grant = await requestAgentRunMcpGrant('run-3', 'report', {
+        environment, fetchImpl, now: () => 1,
+        resolveNetwork: async () => { throw new Error('an unpinned custom endpoint must not discover a private network'); },
+    });
+    assert.equal(grant.transport, report.mcp.transport);
+    assert.equal(grant.url, 'https://mcp.example.com/api/mcp');
+    assert.equal(grant.network, null);
+    const policy = agentRunToolPolicy({ phase: 'report', capabilities: ['propr_mcp'], mcpGrant: grant });
+    assert.equal(policy.dockerNetwork, undefined);
+
+    // Pinning a network beside the URL keeps the private-network preference.
+    const pinned = { ...environment, PROPR_AGENT_DOCKER_NETWORK: 'propr_propr-agent-mcp' };
+    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: DOCKER_RUNTIME_CAPABILITIES }, pinned).transport, 'private-network');
+    // A runtime that cannot reach a URL cannot use an unpinned custom endpoint, even with private networking.
+    const privateOnly = { kind: 'private-only', capabilities: capabilities({ supportsMcpPrivateNetwork: true, supportsMcpReachableUrl: false }) };
+    assert.equal(planAgentRunMcpTransport(privateOnly, environment).transport, 'unavailable');
+    assert.equal(planAgentRunMcpTransport(privateOnly, pinned).transport, 'private-network');
+});
+
 test('the capability report says in advance which runs admission refuses', async () => {
     const restricted = async () => ({ mode: 'restricted' as const, enforced: true, allow: [], ignoreRepositoryAllow: false });
     const docker = await readAgentRuntimeCapabilityReport({ environment: {}, loadPolicy: restricted });
