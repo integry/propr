@@ -37,7 +37,8 @@ function fakeTarget(existingSecrets: string[]): { target: FlyDeployTarget; set: 
     target: {
       kind: "machines-api",
       async ensureApp() { steps.push("app"); return true; },
-      async ensureVolume() { steps.push("volume"); return { id: "vol_1", created: true }; },
+      async ensureVolume() { steps.push("volume"); return { id: "vol_1", created: true, sizeGb: 1 }; },
+      async extendVolume() { throw new Error("not expected"); },
       async secretNames() { steps.push("secret-names"); return existingSecrets; },
       async setSecrets(_app, values) { steps.push("secrets"); set.push(values); },
       async deploy() { steps.push("deploy"); return "deployed"; },
@@ -132,7 +133,7 @@ test("flyctl target: argv, stdin secrets and generated files", async () => {
   const runner: FlyctlRunner = (args, options = {}) => {
     calls.push({ args, input: options.input, inherit: options.inherit });
     if (args[0] === "apps" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ Name: "someone-else" }]), stderr: "" };
-    if (args[0] === "volumes" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ id: "vol_1", name: "propr_data", region: "iad" }]), stderr: "" };
+    if (args[0] === "volumes" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 1 }]), stderr: "" };
     if (args[0] === "secrets" && args[1] === "list") return { status: 0, stdout: "[]", stderr: "" };
     return { status: 0, stdout: "", stderr: "" };
   };
@@ -169,4 +170,123 @@ test("flyctl failures surface stderr", () => {
 
 test("secrets import rejects multi-line values", () => {
   assert.throws(() => renderSecretsImport({ KEY: "a\nb" }), /single line/);
+});
+
+const legacyPlan: FlyDeployPlan = { ...plan, memoryMb: 2048, volumeSizeGb: 20, legacyDocker: true, agentRuntime: "docker" };
+
+function dockerDiskSizeArg(machineConfig: string): string | undefined {
+  const config = JSON.parse(machineConfig) as { containers: Array<{ name: string; files?: Array<{ raw_value: string }> }> };
+  const docker = config.containers.find((c) => c.name === "docker");
+  const script = Buffer.from(docker?.files?.[0]?.raw_value ?? "", "base64").toString();
+  return /truncate -s (\d+)G/.exec(script)?.[1];
+}
+
+/** flyctl runner whose `volumes list` reports `sizes` in turn (the last one repeats). */
+function sizedFlyctl(sizes: Array<number | undefined>, outDir: string) {
+  const calls: string[][] = [];
+  let listed = 0;
+  const runner: FlyctlRunner = (args) => {
+    calls.push(args);
+    if (args[0] === "apps" && args[1] === "list") return { status: 0, stdout: JSON.stringify([{ Name: "my-propr" }]), stderr: "" };
+    if (args[0] === "volumes" && args[1] === "list") {
+      const size = sizes[Math.min(listed++, sizes.length - 1)];
+      return { status: 0, stdout: JSON.stringify([{ id: "vol_1", name: "propr_data", region: "iad", ...(size === undefined ? {} : { size_gb: size }) }]), stderr: "" };
+    }
+    if (args[0] === "secrets" && args[1] === "list") return { status: 0, stdout: "[]", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  return { calls, target: createFlyctlTarget(new FlyctlBackend(runner), outDir) };
+}
+
+test("flyctl: an undersized reused volume is extended and confirmed before secrets, and Docker is sized from it", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  try {
+    const { calls, target } = sizedFlyctl([1, 20], outDir);
+    const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1" }, generatedSecrets: {} }, target);
+    const argv = calls.map((c) => c.join(" "));
+    const extend = argv.indexOf("volumes extend vol_1 --app my-propr --size 20 --yes");
+    assert.ok(extend > 0, argv.join("\n"));
+    assert.equal(argv[extend + 1], "volumes list --app my-propr --json", "size is re-read after extending");
+    assert.ok(extend < argv.findIndex((a) => a.startsWith("secrets import")), "extended before secrets are uploaded");
+    assert.equal(result.volumeSizeGb, 20);
+    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "18");
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("flyctl: a volume that stays undersized after extending stops the deploy before secrets", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  try {
+    const { calls, target } = sizedFlyctl([1], outDir);
+    await assert.rejects(
+      runFlyDeploy({ plan: legacyPlan, secrets: { A: "1" }, generatedSecrets: {} }, target),
+      /still reports 1 GB after extending to 20 GB; extend it with `fly volumes extend vol_1 --size 20 --app my-propr`/,
+    );
+    assert.equal(calls.some((c) => c[0] === "secrets" || c[0] === "deploy"), false);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("flyctl: an unreadable volume size stops the deploy instead of assuming capacity", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  try {
+    const { calls, target } = sizedFlyctl([undefined], outDir);
+    await assert.rejects(runFlyDeploy({ plan: legacyPlan, secrets: {}, generatedSecrets: {} }, target), /could not read the size of volume propr_data/);
+    assert.equal(calls.some((c) => c[1] === "extend" || c[0] === "secrets" || c[0] === "deploy"), false);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("a reused volume larger than requested is kept and sizes the Docker filesystem", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "propr-fly-test-"));
+  try {
+    const { calls, target } = sizedFlyctl([30], outDir);
+    const result = await runFlyDeploy({ plan: legacyPlan, secrets: {}, generatedSecrets: {} }, target);
+    assert.equal(calls.some((c) => c[1] === "extend"), false);
+    assert.equal(result.volumeSizeGb, 30);
+    assert.equal(dockerDiskSizeArg(readFileSync(join(outDir, "propr-machine.json"), "utf-8")), "28");
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("Machines API: an undersized reused volume is extended, confirmed, and sizes the Docker filesystem", async () => {
+  const calls: string[] = [];
+  const sizes = [1, 20];
+  let listed = 0;
+  let createdConfig: unknown;
+  const api = {
+    async appExists() { return true; },
+    async listVolumes() {
+      const size = sizes[Math.min(listed++, sizes.length - 1)];
+      calls.push(`list:${size}`);
+      return [{ id: "vol_1", name: "propr_data", region: "iad", size_gb: size, state: "created" }];
+    },
+    async extendVolume(_app: string, id: string, sizeGb: number) { calls.push(`extend:${id}:${sizeGb}`); },
+    async listSecretNames() { return []; },
+    async setSecrets() { calls.push("secrets"); },
+    async ensurePublicIps() { return []; },
+    async listMachines() { return []; },
+    async createMachine(_app: string, input: { config: unknown }) { createdConfig = input.config; return { id: "m-new", state: "created", region: "iad" }; },
+    async waitForState() {},
+  } as unknown as FlyMachinesApi;
+  const result = await runFlyDeploy({ plan: legacyPlan, secrets: { A: "1" }, generatedSecrets: {} }, createMachinesApiTarget(api));
+  assert.deepEqual(calls, ["list:1", "extend:vol_1:20", "list:20", "secrets"]);
+  assert.equal(result.volumeSizeGb, 20);
+  assert.equal(dockerDiskSizeArg(JSON.stringify(createdConfig)), "18");
+});
+
+test("Machines API: a volume Fly still reports undersized stops the deploy before secrets", async () => {
+  const calls: string[] = [];
+  const api = {
+    async appExists() { return true; },
+    async listVolumes() { return [{ id: "vol_1", name: "propr_data", region: "iad", size_gb: 1, state: "created" }]; },
+    async extendVolume() { calls.push("extend"); },
+    async setSecrets() { calls.push("secrets"); },
+  } as unknown as FlyMachinesApi;
+  await assert.rejects(runFlyDeploy({ plan: legacyPlan, secrets: {}, generatedSecrets: {} }, createMachinesApiTarget(api)), /still reports 1 GB/);
+  assert.deepEqual(calls, ["extend"]);
 });

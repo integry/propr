@@ -143,6 +143,11 @@ export class FlyMachinesApi {
     return data;
   }
 
+  /** Volumes can only grow; the Machine using it may need a restart, which the following deploy performs. */
+  async extendVolume(app: string, volumeId: string, sizeGb: number): Promise<void> {
+    await this.request("PUT", this.appPath(app, `/volumes/${encodeURIComponent(volumeId)}/extend`), { size_gb: sizeGb });
+  }
+
   /** Secret names already set on the app (values are never read back). */
   async listSecretNames(app: string): Promise<string[]> {
     const { data } = await this.request<{ secrets?: Array<{ name?: string }> }>("GET", this.appPath(app, "/secrets"));

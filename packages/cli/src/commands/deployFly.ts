@@ -283,9 +283,9 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
     Object.assign(secrets, relay);
     console.log(`Enrolled a GitHub relay token for installation ${relay.GH_INSTALLATION_ID}.`);
   }
-  await runFlyDeploy({ plan, secrets, generatedSecrets }, target, (line) => console.log(line));
+  const result = await runFlyDeploy({ plan, secrets, generatedSecrets }, target, (line) => console.log(line));
   for (const note of notes) console.log(`Note: ${note}`);
-  printSummary(plan);
+  printSummary({ ...plan, volumeSizeGb: result.volumeSizeGb });
 }
 
 export function createDeployCommand(): Command {

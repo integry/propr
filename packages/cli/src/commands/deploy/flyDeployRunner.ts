@@ -2,7 +2,9 @@
  * The `propr deploy fly` sequence, independent of how Fly is reached:
  *
  *   1. app        create it in the chosen org unless it exists
- *   2. volume     reuse the named volume in the region, else create it
+ *   2. volume     reuse the named volume in the region, else create it; a
+ *                 reused volume smaller than the plan is extended and its new
+ *                 size confirmed, and the deploy is sized from that capacity
  *   3. secrets    upload the given secrets; generated ones (SESSION_SECRET)
  *                 only when the app does not already have them, so a redeploy
  *                 never logs everybody out or rotates encryption keys
@@ -30,10 +32,19 @@ import {
 export interface FlyDeployTarget {
   readonly kind: "flyctl" | "machines-api";
   ensureApp(app: string, org: string): Promise<boolean>;
-  ensureVolume(app: string, input: { name: string; region: string; sizeGb: number }): Promise<{ id?: string; created: boolean }>;
+  ensureVolume(app: string, input: { name: string; region: string; sizeGb: number }): Promise<FlyVolumeRef>;
+  /** Grow a volume (Fly volumes never shrink); resolves to the size Fly reports afterwards. */
+  extendVolume(app: string, volumeId: string, sizeGb: number): Promise<number>;
   secretNames(app: string): Promise<string[]>;
   setSecrets(app: string, values: Record<string, string>): Promise<void>;
   deploy(plan: FlyDeployPlan, volume: { id?: string }): Promise<string>;
+}
+
+export interface FlyVolumeRef {
+  id?: string;
+  created: boolean;
+  /** Capacity Fly reports for the volume; NaN when it could not be read. */
+  sizeGb: number;
 }
 
 export interface FlyDeployInput {
@@ -49,7 +60,37 @@ export interface FlyDeployResult {
   volumeCreated: boolean;
   secretsSet: string[];
   secretsKept: string[];
+  /** Confirmed capacity of the data volume the deployment was sized for. */
+  volumeSizeGb: number;
   deployed: string;
+}
+
+/**
+ * Make sure the data volume really has the plan's capacity. Reuse matches by
+ * name and region only, so a volume from an earlier, smaller deploy (1 GB by
+ * default) would otherwise back a legacy Docker filesystem sized for 20 GB and
+ * run SQLite and Redis out of space. Runs before any secret is uploaded.
+ */
+async function confirmVolumeCapacity(
+  plan: FlyDeployPlan,
+  volume: FlyVolumeRef,
+  target: FlyDeployTarget,
+  log: (line: string) => void,
+): Promise<number> {
+  const required = plan.volumeSizeGb;
+  const extendHint = `extend it with \`fly volumes extend ${volume.id ?? "<volume id>"} --size ${required} --app ${plan.app}\` and rerun`;
+  if (!Number.isFinite(volume.sizeGb)) {
+    throw new Error(`could not read the size of volume ${plan.volumeName} in ${plan.region}; the deployment needs ${required} GB. Check it with \`fly volumes list --app ${plan.app}\`.`);
+  }
+  if (volume.sizeGb >= required) return volume.sizeGb;
+  if (!volume.id) throw new Error(`volume ${plan.volumeName} is ${volume.sizeGb} GB but the deployment needs ${required} GB; ${extendHint}`);
+  log(`Volume ${plan.volumeName} is ${volume.sizeGb} GB; extending it to ${required} GB.`);
+  const extended = await target.extendVolume(plan.app, volume.id, required);
+  if (!Number.isFinite(extended) || extended < required) {
+    throw new Error(`volume ${plan.volumeName} still reports ${Number.isFinite(extended) ? `${extended} GB` : "an unknown size"} after extending to ${required} GB; ${extendHint}`);
+  }
+  log(`Volume ${plan.volumeName} is now ${extended} GB.`);
+  return extended;
 }
 
 export async function runFlyDeploy(
@@ -67,6 +108,9 @@ export async function runFlyDeploy(
   log(volume.created
     ? `Created ${plan.volumeSizeGb} GB volume ${plan.volumeName} in ${plan.region}.`
     : `Reusing volume ${plan.volumeName} in ${plan.region}.`);
+  const volumeSizeGb = await confirmVolumeCapacity(plan, volume, target, log);
+  // Size everything carved out of the volume (the legacy Docker filesystem) from its confirmed capacity.
+  const deployPlan: FlyDeployPlan = { ...plan, volumeSizeGb };
 
   const existing = new Set(await target.secretNames(plan.app));
   const toSet: Record<string, string> = { ...input.secrets };
@@ -81,9 +125,9 @@ export async function runFlyDeploy(
   if (secretsSet.length) log(`Set ${secretsSet.length} secret(s): ${secretsSet.join(", ")}.`);
   if (secretsKept.length) log(`Kept existing secret(s): ${secretsKept.sort().join(", ")}.`);
 
-  const deployed = await target.deploy(plan, volume);
+  const deployed = await target.deploy(deployPlan, volume);
   log(deployed);
-  return { appCreated, volumeCreated: volume.created, secretsSet, secretsKept, deployed };
+  return { appCreated, volumeCreated: volume.created, secretsSet, secretsKept, volumeSizeGb, deployed };
 }
 
 /** Write fly.toml and its machine_config JSON; returns the fly.toml path. */
@@ -106,9 +150,14 @@ export function createFlyctlTarget(backend: FlyctlBackend, outDir: string): FlyD
     },
     async ensureVolume(app, input) {
       const found = backend.listVolumes(app).find((v) => v.name === input.name && v.region === input.region);
-      if (found) return { id: found.id, created: false };
+      if (found) return { id: found.id, created: false, sizeGb: found.sizeGb };
       backend.createVolume(app, input);
-      return { created: true };
+      return { created: true, sizeGb: input.sizeGb };
+    },
+    async extendVolume(app, volumeId, sizeGb) {
+      backend.extendVolume(app, volumeId, sizeGb);
+      // Confirm from Fly rather than trusting the request.
+      return backend.listVolumes(app).find((v) => v.id === volumeId)?.sizeGb ?? Number.NaN;
     },
     async secretNames(app) {
       return backend.listSecretNames(app);
@@ -134,6 +183,10 @@ function isControlPlane(machine: FlyMachine, volumeId?: string): boolean {
   return !!volumeId && (machine.config?.mounts ?? []).some((m) => m.volume === volumeId);
 }
 
+function volumeSize(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.NaN;
+}
+
 export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
   return {
     kind: "machines-api",
@@ -145,9 +198,14 @@ export function createMachinesApiTarget(api: FlyMachinesApi): FlyDeployTarget {
     async ensureVolume(app, input) {
       const volumes = await api.listVolumes(app);
       const found = volumes.find((v) => v.name === input.name && v.region === input.region && v.state !== "destroyed");
-      if (found) return { id: found.id, created: false };
+      if (found) return { id: found.id, created: false, sizeGb: volumeSize(found.size_gb) };
       const created = await api.createVolume(app, input);
-      return { id: created.id, created: true };
+      return { id: created.id, created: true, sizeGb: volumeSize(created.size_gb ?? input.sizeGb) };
+    },
+    async extendVolume(app, volumeId, sizeGb) {
+      await api.extendVolume(app, volumeId, sizeGb);
+      // Confirm from Fly rather than trusting the request or the extend response.
+      return volumeSize((await api.listVolumes(app)).find((v) => v.id === volumeId)?.size_gb);
     },
     async secretNames(app) {
       return api.listSecretNames(app);

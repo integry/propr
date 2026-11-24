@@ -26,7 +26,7 @@ The UI and API are then at `https://my-propr.fly.dev`. Run `propr remote https:/
 | `flyctl` (or `fly`) on `PATH` | Uses your `fly auth login` session. Writes `fly.toml` and `propr-machine.json` to `--out` (default `./propr-fly`), creates the app and volume, stages secrets with `fly secrets import --stage` (values go over stdin, never argv), then runs `fly deploy --image <manifest image> --ha=false`. |
 | No flyctl | Uses the Machines API (`https://api.machines.dev/v1`) with `--token` or `FLY_API_TOKEN`, for example from `fly tokens create org`. It creates the app, allocates a shared IPv4 and an IPv6, creates the volume, sets secrets, then creates the Machine, or updates it in place on a later run, and waits until it starts. |
 
-Use `--backend flyctl` or `--backend api` to choose explicitly. Every step can be rerun: an existing app, volume or Machine is reused and updated. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
+Use `--backend flyctl` or `--backend api` to choose explicitly. Every step can be rerun: an existing app, volume or Machine is reused and updated. A reused volume smaller than `--volume-size` (for example the 1 GB default volume when you later add `--legacy-docker`) is extended to that size before any secret is set, and the deploy stops if Fly does not then report the new size. With the Machines API the command refuses to run when two control-plane Machines exist, because one SQLite volume supports exactly one.
 
 `--dry-run` writes `fly.toml` and `propr-machine.json`, prints the secret **names** it would set and the summary, and contacts nothing.
 

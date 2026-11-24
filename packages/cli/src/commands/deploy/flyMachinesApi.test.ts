@@ -78,6 +78,15 @@ test("volume creation is encrypted and sized", async () => {
   assert.deepEqual(calls[0].body, { name: "propr_data", region: "iad", size_gb: 1, encrypted: true });
 });
 
+test("volume extension PUTs the target size to the extend endpoint", async () => {
+  const { fetchImpl, calls } = stubFetch([{ status: 200, body: { needs_restart: true, volume: { id: "vol_1", size_gb: 20 } } }]);
+  const api = new FlyMachinesApi({ token: "tok", fetchImpl, baseUrl: "https://fly.test/v1" });
+  await api.extendVolume("a1", "vol_1", 20);
+  assert.equal(calls[0].method, "PUT");
+  assert.equal(calls[0].url, "https://fly.test/v1/apps/a1/volumes/vol_1/extend");
+  assert.deepEqual(calls[0].body, { size_gb: 20 });
+});
+
 test("wait retries Fly's 60 s 408 until the Machine is started", async () => {
   const { fetchImpl, calls } = stubFetch([{ status: 408 }, { status: 408 }, { status: 200, body: { ok: true } }]);
   const api = new FlyMachinesApi({ token: "tok", fetchImpl });

@@ -87,13 +87,20 @@ export class FlyctlBackend {
     check(this.run(["apps", "create", app, "--org", org]), "apps create");
   }
 
-  listVolumes(app: string): Array<{ id: string; name: string; region: string }> {
+  /** `sizeGb` is NaN when flyctl does not report a size. */
+  listVolumes(app: string): Array<{ id: string; name: string; region: string; sizeGb: number }> {
     const result = check(this.run(["volumes", "list", "--app", app, "--json"]), "volumes list");
     return parseJsonArray(result.stdout, "volumes list").map((entry) => ({
       id: String(entry.id ?? entry.ID ?? ""),
       name: String(entry.name ?? entry.Name ?? ""),
       region: String(entry.region ?? entry.Region ?? ""),
+      sizeGb: Number(entry.size_gb ?? entry.SizeGb ?? entry.sizeGb ?? Number.NaN),
     }));
+  }
+
+  /** Grow a volume to `sizeGb`; Fly volumes can only be extended, never shrunk. */
+  extendVolume(app: string, volumeId: string, sizeGb: number): void {
+    check(this.run(["volumes", "extend", volumeId, "--app", app, "--size", String(sizeGb), "--yes"]), "volumes extend");
   }
 
   createVolume(app: string, input: { name: string; region: string; sizeGb: number }): void {
