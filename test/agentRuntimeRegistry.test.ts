@@ -436,3 +436,84 @@ test('native goals resolve the runtime selection and refuse anything but Docker'
     assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'goal-remote' }), /"goal-remote" is selected/);
     assert.throws(() => assertNativeGoalRuntime(undefined, { [AGENT_RUNTIME_ENV]: 'sprites' }), /Unknown agent runtime "sprites"/);
 });
+
+function cloneSpec() {
+    const run = spec();
+    run.repoSetup = { agentType: 'claude', shell: '/bin/bash', script: 'SETUP', providerEntrypoint: '/home/node/claude-entrypoint.sh', env: [] };
+    return {
+        ...run,
+        mounts: [],
+        workspace: {
+            ...run.workspace, mode: 'clone' as const,
+            clone: {
+                remote: 'https://github.com/acme/widgets.git', baseRef: 'refs/propr/runs/r/base', baseCommit: 'a'.repeat(40), branch: 'task-1',
+                resultRef: 'refs/propr/runs/r/result', resultDir: '/tmp/propr-workspace-result', script: 'TRANSPORT',
+            },
+        },
+    };
+}
+
+test('a clone-mode spec renders the transport wrapper outside the setup wrapper and keeps the container', () => {
+    const args = renderDockerRunArgs(cloneSpec());
+    assert.ok(!args.includes('--rm'), 'the finished container is kept so its result files can be read');
+    assert.ok(renderDockerRunArgs(spec()).includes('--rm'), 'bind mode is unchanged');
+    const image = args.indexOf('propr/agent:test');
+    assert.deepEqual(args.slice(image - 2, image + 6), ['--entrypoint', '/bin/bash', 'propr/agent:test', '-lc', 'TRANSPORT', 'SETUP', '/home/node/claude-entrypoint.sh', 'claude']);
+    assert.ok(!args.some(arg => arg.includes('/tmp/w:')), 'the worktree is not mounted');
+    const { repoSetup: _repoSetup, ...direct } = cloneSpec();
+    assert.throws(() => renderDockerRunArgs(direct), /needs an explicit entrypoint/);
+    assert.deepEqual(renderDockerRunArgs({ ...direct, entrypoint: '/entry' }).slice(-10),
+        ['--entrypoint', '/bin/bash', 'propr/agent:test', '-lc', 'TRANSPORT', 'exec "$0" "$@"', '/entry', 'claude', '-p', '-']);
+    assert.throws(() => renderDockerRunArgs({ ...spec(), workspace: { ...spec().workspace, mode: 'clone' } }), /was not prepared by it/);
+});
+
+test('docker clone-mode handles remove their kept container on release; bind handles have nothing to release', async () => {
+    calls.length = 0;
+    respond = async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() });
+    const handle = new DockerRuntime().start(cloneSpec(), { extraEnvVars: { PROPR_WORKSPACE_GIT_TOKEN: 'secret' } });
+    await handle.wait();
+    assert.equal(calls[0].options.extraEnvVars.PROPR_WORKSPACE_GIT_TOKEN, 'secret', 'the token reaches the docker client environment, not argv');
+    assert.ok(!calls[0].args.some((arg: string) => arg.includes('secret')));
+    await handle.release!();
+    await handle.release!();
+    assert.deepEqual(calls.slice(1).map(call => call.args), [['rm', '-f', 'claude-issue-1-abc']]);
+    assert.equal(await handle.readFile!('/tmp/propr-workspace-result/status'), null, 'a released run has no files');
+
+    calls.length = 0;
+    const bound = new DockerRuntime().start(spec(), {});
+    await bound.wait();
+    await bound.release!();
+    assert.equal(await bound.readFile!('/x'), null);
+    assert.equal(calls.length, 1, 'a --rm run needs no removal');
+});
+
+test('clone mode is refused on runtimes that cannot run it and for native goal sessions', async () => {
+    const bindOnly = { kind: 'bind-only', capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false }, start: () => { throw new Error('unused'); } };
+    assert.throws(() => assertAgentRuntimeSupports(bindOnly as any, cloneSpec()), /cannot run the "clone" workspace transport/);
+    assert.doesNotThrow(() => assertAgentRuntimeSupports(new DockerRuntime() as any, cloneSpec()));
+    const started = recordingRuntime('bind-only', true);
+    const previous = process.env.PROPR_WORKSPACE_TRANSPORT;
+    process.env.PROPR_WORKSPACE_TRANSPORT = 'clone';
+    try {
+        await assert.rejects(runAgent({ runtime: 'bind-only' }, spec(), {}), /"bind-only" cannot run the "clone" workspace transport/);
+        assert.equal(started.length, 0, 'refused before anything is published or minted');
+    } finally {
+        if (previous === undefined) delete process.env.PROPR_WORKSPACE_TRANSPORT; else process.env.PROPR_WORKSPACE_TRANSPORT = previous;
+    }
+    assert.throws(() => assertNativeGoalRuntime(undefined, { PROPR_WORKSPACE_TRANSPORT: 'clone' }), /only the "bind" workspace transport/);
+    assert.doesNotThrow(() => assertNativeGoalRuntime(undefined, { PROPR_WORKSPACE_TRANSPORT: 'bind' }));
+});
+
+test('the runtime file API extracts the single file docker cp streams as tar', async () => {
+    const { extractSingleFileFromTar } = await import('../packages/core/src/agents/runtime/dockerContainerFiles.ts');
+    const header = Buffer.alloc(512);
+    header.write('status', 0);
+    header.write('0000644\0', 100);
+    header.write(`${(12).toString(8).padStart(11, '0')}\0`, 124);
+    header.write('0', 156);
+    const body = Buffer.alloc(512);
+    body.write('pushed abcd\n');
+    assert.equal(extractSingleFileFromTar(Buffer.concat([header, body, Buffer.alloc(1024)]))?.toString(), 'pushed abcd\n');
+    assert.equal(extractSingleFileFromTar(Buffer.alloc(1024)), null);
+    assert.throws(() => extractSingleFileFromTar(Buffer.concat([header, Buffer.alloc(4)])), /Truncated/);
+});

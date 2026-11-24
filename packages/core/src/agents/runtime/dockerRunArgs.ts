@@ -1,5 +1,8 @@
 import type { AgentRunEnvVar, AgentRunMount, AgentRunResources, AgentRunSpec } from './types.js';
 
+/** A run without a repository setup wrapper: the transport wrapper execs the entrypoint passed as `$0`. */
+const DIRECT_ENTRYPOINT_SCRIPT = 'exec "$0" "$@"';
+
 /** A `--mount` field, CSV-quoted when it contains a comma or quote. */
 export function dockerMountField(key: string, value: string): string {
     return /[",]/.test(value)
@@ -47,6 +50,23 @@ function renderLabelArgs(labels: Record<string, string>): string[] {
 }
 
 /**
+ * Entrypoint and the arguments between the image and the provider CLI. A
+ * clone-mode workspace adds its transport wrapper outside the repository
+ * setup wrapper: `bash -lc <transport> <setup> <provider entrypoint> ...`.
+ */
+function renderEntrypoint(spec: AgentRunSpec): { entrypoint?: string; wrapperArgs: string[] } {
+    const { repoSetup } = spec;
+    const clone = spec.workspace.mode === 'clone' ? spec.workspace.clone : undefined;
+    if (spec.workspace.mode === 'clone' && !clone) throw new Error(`Agent run ${spec.name} uses the clone workspace transport but was not prepared by it`);
+    if (!clone) {
+        return { entrypoint: repoSetup ? repoSetup.shell : spec.entrypoint, wrapperArgs: repoSetup ? ['-lc', repoSetup.script, repoSetup.providerEntrypoint] : [] };
+    }
+    if (repoSetup) return { entrypoint: repoSetup.shell, wrapperArgs: ['-lc', clone.script, repoSetup.script, repoSetup.providerEntrypoint] };
+    if (!spec.entrypoint) throw new Error(`Agent run ${spec.name} needs an explicit entrypoint for the clone workspace transport`);
+    return { entrypoint: '/bin/bash', wrapperArgs: ['-lc', clone.script, DIRECT_ENTRYPOINT_SCRIPT, spec.entrypoint] };
+}
+
+/**
  * Render an {@link AgentRunSpec} to the `docker run` argv (without the
  * `docker` executable). Launch-time additions that belong to the Docker
  * transport — attempt labels, extension mounts, egress socket mounts and the
@@ -54,12 +74,13 @@ function renderLabelArgs(labels: Record<string, string>): string[] {
  */
 export function renderDockerRunArgs(spec: AgentRunSpec): string[] {
     const { security, repoSetup } = spec;
-    const entrypoint = repoSetup ? repoSetup.shell : spec.entrypoint;
+    const { entrypoint, wrapperArgs } = renderEntrypoint(spec);
     return [
         'run',
         ...(spec.resources ? renderDockerResourceArgs(spec.resources) : []),
         ...(repoSetup ? renderDockerEnvArgs(repoSetup.env) : []),
-        '--rm',
+        // A clone-mode run is kept after it exits so its result files can be read; its handle removes it.
+        ...(spec.workspace.mode === 'clone' ? [] : ['--rm']),
         ...(spec.stdin ? ['-i'] : []),
         '--name', spec.name,
         ...renderLabelArgs(spec.labels),
@@ -74,7 +95,7 @@ export function renderDockerRunArgs(spec: AgentRunSpec): string[] {
         '-w', spec.workdir,
         ...(entrypoint ? ['--entrypoint', entrypoint] : []),
         spec.profile.image,
-        ...(repoSetup ? ['-lc', repoSetup.script, repoSetup.providerEntrypoint] : []),
+        ...wrapperArgs,
         ...spec.args,
     ];
 }
