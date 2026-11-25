@@ -179,13 +179,45 @@ export class SpritePool {
         const minutes = inventory?.queueMinutes ?? 10;
         const timeout = () => new Error(`No Sprite available: cap ${inventory?.cap} reached after ${minutes}m`);
         let queuedAt: number | undefined;
+        const elapsedQueueMs = () => queuedAt === undefined ? 0 : Date.now() - queuedAt;
         let deadline = Infinity;
         let attempt = 0;
+        const reserveForRun = async (name: string) => {
+            if (!inventory) return true;
+            const reserving = inventory.reserve(name);
+            const admissionSignal = queuedAt === undefined ? signal : AbortSignal.any([
+                signal, AbortSignal.timeout(Math.max(0, Math.ceil(deadline - performance.now()))),
+            ]);
+            let reserved: boolean;
+            try { reserved = await startupStep(admissionSignal, () => reserving); }
+            catch (error) {
+                if (!admissionSignal.aborted) throw error;
+                void reserving.then(ok => ok ? inventory.finish(name, 'gone') : undefined).catch(() => {});
+                signal.throwIfAborted();
+                throw timeout();
+            }
+            if (reserved) {
+                if (performance.now() >= deadline) {
+                    await inventory.finish(name, 'gone');
+                    throw timeout();
+                }
+                return true;
+            }
+            if (queuedAt === undefined) {
+                queuedAt = Date.now();
+                deadline = performance.now() + minutes * 60_000;
+                onWaiting?.();
+            }
+            const backoff = calculateDelay(attempt++, { baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, jitter: true });
+            await delay(Math.min(backoff, deadline - performance.now()), undefined, { signal });
+            return false;
+        };
+
         for (;;) {
             signal.throwIfAborted();
             if (performance.now() >= deadline) throw timeout();
             let slot = this.idle.pop();
-            let queueMs = queuedAt === undefined ? 0 : Date.now() - queuedAt;
+            let queueMs = elapsedQueueMs();
             const replacement = !slot && this.replacements.shift();
             if (replacement) {
                 try { slot = await this.claim(replacement, signal); }
@@ -196,35 +228,8 @@ export class SpritePool {
             }
             if (!slot) {
                 const name = (this.inventory?.prefix ?? 'propr-') + randomUUID();
-                if (inventory) {
-                    const reserving = inventory.reserve(name);
-                    const admissionSignal = queuedAt === undefined ? signal : AbortSignal.any([
-                        signal, AbortSignal.timeout(Math.max(0, Math.ceil(deadline - performance.now()))),
-                    ]);
-                    let reserved: boolean;
-                    try { reserved = await startupStep(admissionSignal, () => reserving); }
-                    catch (error) {
-                        if (!admissionSignal.aborted) throw error;
-                        void reserving.then(ok => ok ? inventory.finish(name, 'gone') : undefined).catch(() => {});
-                        signal.throwIfAborted();
-                        throw timeout();
-                    }
-                    if (!reserved) {
-                        if (queuedAt === undefined) {
-                            queuedAt = Date.now();
-                            deadline = performance.now() + minutes * 60_000;
-                            onWaiting?.();
-                        }
-                        const backoff = calculateDelay(attempt++, { baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, jitter: true });
-                        await delay(Math.min(backoff, deadline - performance.now()), undefined, { signal });
-                        continue;
-                    }
-                    if (performance.now() >= deadline) {
-                        await inventory.finish(name, 'gone');
-                        throw timeout();
-                    }
-                    if (queuedAt !== undefined) queueMs = Date.now() - queuedAt;
-                }
+                if (!await reserveForRun(name)) continue;
+                queueMs = elapsedQueueMs();
                 if (signal.aborted) {
                     await this.inventory?.finish(name, 'gone'); // No create request was sent.
                     signal.throwIfAborted();
