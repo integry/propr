@@ -8,11 +8,12 @@ import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { withComputeCost } from './computeUsage.js';
 import { DOCKER_RUNTIME_CAPABILITIES, DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
+import { FlyMachinesRuntime } from './flyMachinesRuntime.js';
 import { SpritesRuntime } from './spritesRuntime.js';
 import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
-import { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, selectedAgentRuntimeName } from './runtimeSelection.js';
-export { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME };
+import { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, selectedAgentRuntimeName } from './runtimeSelection.js';
+export { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME };
 
 /** Every runtime accepts the same launch options and settles with the executor result shape. */
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
@@ -21,6 +22,7 @@ export type AgentRuntimeFactory = () => ProviderAgentRuntime;
 type ExtensionRuntime = { kind: string; capabilities: Pick<AgentRuntimeCapabilities, 'supportsExtensions'> };
 const registrations = new Map<string, { factory: AgentRuntimeFactory; capabilities?: ExtensionRuntime['capabilities'] }>([
     [DEFAULT_AGENT_RUNTIME, { factory: () => new DockerRuntime(), capabilities: DOCKER_RUNTIME_CAPABILITIES }],
+    [FLY_MACHINES_AGENT_RUNTIME, { factory: () => new FlyMachinesRuntime(), capabilities: FlyMachinesRuntime.capabilities }],
     [SPRITES_AGENT_RUNTIME, { factory: () => new SpritesRuntime(), capabilities: SpritesRuntime.capabilities }],
 ]);
 const instances = new Map<string, ProviderAgentRuntime>();

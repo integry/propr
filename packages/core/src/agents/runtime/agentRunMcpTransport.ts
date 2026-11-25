@@ -67,6 +67,11 @@ function selectAgentRunMcpTransport(
         }
         return { transport: 'reachable-url', url: unpinned, reason: `PROPR_AGENT_MCP_URL is set without PROPR_AGENT_DOCKER_NETWORK; runs on agent runtime "${runtime.kind}" reach ProPR MCP at that URL with their per-run grant token and join no private network.` };
     }
+    if (runtime.kind === 'fly-machines' && environment.FLY_APP_NAME && environment.FLY_PRIVATE_IP) {
+        const port = environment.DASHBOARD_API_PORT || '4000';
+        return { transport: 'reachable-url', url: `http://${environment.FLY_APP_NAME}.internal:${port}/api/mcp`,
+            reason: 'The Fly Machine reaches ProPR MCP over the Fly organization private network.' };
+    }
     if (runtime.capabilities.supportsMcpPrivateNetwork) {
         return { transport: 'private-network', reason: `Agent runtime "${runtime.kind}" joins the private network that reaches the ProPR MCP endpoint when one is configured or discovered.` };
     }

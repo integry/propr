@@ -1,0 +1,342 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { after, test } from 'node:test';
+import { text } from 'node:stream/consumers';
+import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
+import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
+import { configuredExtensionRefusal, getAgentRuntime } from '../packages/core/src/agents/runtime/registry.ts';
+import { agentRunMcpTransportFor } from '../packages/core/src/agents/runtime/agentRunMcpTransport.ts';
+import { dockerAgentRuntimeInUse } from '../packages/core/src/agents/runtime/runtimeSelection.ts';
+import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { RUN, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
+import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
+import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
+import { executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../packages/core/src/workflow/workflowExecution.ts';
+import { closeConnection } from '../packages/core/src/db/connection.ts';
+after(closeConnection);
+
+const token = 'FlyV1 synthetic-worker-credential';
+const env = { PROPR_FLY_APP: 'agents', PROPR_FLY_API_TOKEN: token, PROPR_FLY_IMAGE: 'registry.fly.io/agents@sha256:test' };
+
+class FakeMachines implements MachinesApi {
+    launch?: MachineLaunch;
+    files = new Map<string, Buffer>([
+        [RUN + '/stdout', Buffer.from('authoritative ' + token + '\n')],
+        [RUN + '/stderr', Buffer.alloc(0)],
+        [RUN + '/workspace/status', Buffer.from('bundle test')],
+        [RUN + '/workspace/result.bundle', Buffer.from([0, 255, 42])],
+    ]);
+    status = 'exited 0';
+    probing = Promise.withResolvers<void>();
+    destroyed = 0;
+    signals: NodeJS.Signals[] = [];
+    ignoreStop = false;
+    failedRead?: string;
+    async create(launch: MachineLaunch) { this.launch = launch; return 'machine'; }
+    async logs(_id: string, publish: (message: string) => void) {
+        publish('propr-stdout ' + JSON.stringify('display only ' + token));
+        throw new Error('lost log connection');
+    }
+    async exec(_id: string, args: string[]) {
+        assert.equal(this.destroyed, 0, 'all guest files must be collected before destroy');
+        const [op, file, offset, length] = args.slice(3);
+        if (op === 'probe') {
+            this.probing.resolve();
+            return { stdout: this.status + '\n123\n', exit_code: 0 };
+        }
+        const data = this.files.get(file);
+        if (op === 'size') return { stdout: String(data?.length), exit_code: data ? 0 : 44 };
+        assert.equal(op, 'chunk');
+        if (this.failedRead === file) throw new Error('read failed');
+        return { stdout: data!.subarray(+offset, +offset + +length).toString('base64'), exit_code: 0 };
+    }
+    async signal(_id: string, signal: NodeJS.Signals) {
+        this.signals.push(signal);
+        if (!this.ignoreStop) this.status = 'exited 143';
+    }
+    async destroy() { this.destroyed++; }
+}
+function fixture() {
+    const api = new FakeMachines();
+    const runtime = new FlyMachinesRuntime(api, env);
+    const builder = new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'propr/agent', name: 'task', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
+        workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
+            clone: { remote: 'unused', baseRef: 'base', baseCommit: '0123', branch: 'test', resultDir: RESULT, script: WORKSPACE_TRANSPORT_SCRIPT } },
+    }).command('claude', '--version');
+    return { api, runtime, builder };
+}
+
+test('only capture files feed the result, the Fly credential stays off the guest and out of both streams', async () => {
+    const { runtime, api, builder } = fixture();
+    builder.env('PROPR_FLY_API_TOKEN', token).env('ALIAS', token).env('GH_TOKEN', 'test-github-secret');
+    const run = runtime.start(builder.build());
+    const displayed = text(run.stdout);
+    const result = await run.wait();
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'authoritative [REDACTED]\n');
+    assert.equal(await displayed, 'display only [REDACTED]\n');
+    assert.equal(result.stderr, '');
+    assert.equal(api.destroyed, 1);
+    assert.equal(api.launch?.config.auto_destroy, true);
+    assert.equal(api.launch?.config.restart.policy, 'no');
+    assert.equal(api.launch?.config.processes[0].user, 'root');
+    assert.ok(api.launch?.config.processes[0].entrypoint.length);
+    assert.ok(api.launch?.config.processes[0].cmd.length);
+    assert.ok(!JSON.stringify(api.launch).includes(token));
+    for (const file of api.launch!.config.files) assert.ok(!Buffer.from(file.raw_value, 'base64').includes(token));
+    assert.deepEqual(await run.readFile!(RESULT + '/result.bundle'), Buffer.from([0, 255, 42]));
+    await Promise.all([run.release!(), run.release!()]);
+    assert.equal(await run.readFile!(RESULT + '/status'), null);
+    assert.equal(api.destroyed, 1);
+});
+
+test('a failed authoritative stream read fails even after an exited 0', async () => {
+    const { runtime, api, builder } = fixture();
+    api.failedRead = RUN + '/stdout';
+    const run = runtime.start(builder.build());
+    const result = await run.wait();
+    assert.equal(result.exitCode, -1);
+    assert.match(result.outputIncomplete!, /output unavailable: stdout/);
+    assert.equal(result.stdout, '');
+    await run.release!();
+});
+
+test('graceful stop gives 143 and copies the bundle before destroying the Machine', async () => {
+    const { runtime, api, builder } = fixture();
+    api.status = 'running';
+    const run = runtime.start(builder.build());
+    await api.probing.promise;
+    await run.stop('SIGTERM', 5000);
+    assert.equal((await run.wait()).exitCode, 143);
+    assert.deepEqual(api.signals, ['SIGTERM']);
+    assert.equal(api.destroyed, 1);
+    assert.deepEqual(await run.readFile!(RESULT + '/result.bundle'), Buffer.from([0, 255, 42]));
+    await run.release!();
+});
+
+test('release stops a running Machine and forced stop destroys one that ignores the signal', async () => {
+    for (const force of [true, false]) {
+        const { runtime, api, builder } = fixture();
+        api.status = 'running';
+        api.ignoreStop = force;
+        const run = runtime.start(builder.build());
+        await api.probing.promise;
+        if (force) {
+            await run.stop('SIGINT', 1);
+            assert.deepEqual(api.signals, ['SIGINT', 'SIGKILL']);
+            assert.match((await run.wait()).outputIncomplete!, /status/);
+        }
+        await run.release!();
+        assert.equal(api.destroyed, 1);
+    }
+});
+
+test('wrapper publishes each whole status with fsync followed by same-directory rename', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-status-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    execFileSync('python3', ['-I', '-c', wrapper + `
+from unittest.mock import patch
+run = Path(sys.argv[2])
+for value in ('running', 'exited 143'):
+    with patch('os.fsync', wraps=os.fsync) as synced, patch('os.replace', wraps=os.replace) as renamed:
+        def rename(src, dst):
+            synced.assert_called_once()
+            assert src.parent == dst.parent == run and dst.name == 'status'
+            assert src.read_text() == value + '\\n'
+            os.rename(src, dst)
+        renamed.side_effect = rename
+        status(value)
+        renamed.assert_called_once()
+        assert (run / 'status').read_text() == value + '\\n'
+`, 'test', root]);
+});
+
+test('Fly selection skips Docker preparation, refuses extensions and restricted networks, and resolves MCP', () => {
+    const { runtime, builder } = fixture();
+    assert.equal(getAgentRuntime({ runtime: 'fly-machines' }).kind, runtime.kind);
+    assert.equal(dockerAgentRuntimeInUse([], { PROPR_AGENT_RUNTIME: runtime.kind }), false);
+    assert.match(configuredExtensionRefusal(runtime.kind)!, /does not support extensions/);
+    builder.spec.network.policy = { mode: 'restricted', allow: [], privateAddressAllow: [] };
+    assert.throws(() => runtime.start(builder.build()), /open networking/);
+    const plan = (env: NodeJS.ProcessEnv) => agentRunMcpTransportFor({ runtime: runtime.kind }, env);
+    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /control\.internal:4000/);
+    assert.match(JSON.stringify(plan({ API_PUBLIC_URL: 'https://mcp.example' })), /https:\/\/mcp.example\/api\/mcp/);
+});
+
+test('a hook failure outside the retained stderr tail still fails the workflow', async () => {
+    const { runtime, api, builder } = fixture();
+    const result = await executeWithRepositoryWorkflow({ revision: 'base', fileRevision: 'blob', baseBranch: 'main',
+        config: { hooks: { before_run: 'exit 7' } }, timeoutMs: 1000, maxParallelTasks: 1 }, async () => {
+        const marker = repositoryWorkflowExecution.getStore()!.marker;
+        api.files.set(RUN + '/stderr', Buffer.from('\n' + marker + ':hook:before_run:7\n' + 'other output\n'.repeat(100000)));
+        builder.spec.repoSetup = buildAgentRunRepoSetup('claude');
+        const run = runtime.start(builder.build());
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+        return { success: true, modifiedFiles: [], logs: '', modelUsed: 'test', executionTimeMs: 0 };
+    });
+    assert.equal(result.success, false);
+    assert.match(result.error!, /before_run failed with exit code 7/);
+});
+
+test('the shared cost guard observes each captured record once and ignores live records', async () => {
+    const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
+    const { runtime, builder, api } = fixture();
+    const observed: string[] = [];
+    api.files.set(RUN + '/stdout', Buffer.from('first\nlast'));
+    await runWithActiveRunCostCap({
+        taskId: 'task', exceeded: false, admit: async () => {},
+        beginExecution: () => ({ observeLine: line => observed.push(line), finish: async () => 'run reached its cost cap' }),
+    }, async () => {
+        const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true });
+        const result = await run.wait();
+        assert.equal(result.costCapExceeded, true);
+        assert.deepEqual(observed, ['first', 'last']);
+        await run.release!();
+    });
+});
+
+test('per-run provider files round-trip through the credential broker', async t => {
+    const { runtime, builder, api } = fixture();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-credential-test-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const name = '.credentials.json';
+    const original = '{"accessToken":"synthetic-original"}';
+    const updated = '{"accessToken":"synthetic-refresh"}';
+    fs.writeFileSync(path.join(root, name), original);
+    fs.writeFileSync(path.join(root, 'unrelated'), 'private');
+    builder.credentialBind(root, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[0] !== 'su-exec') return exec(id, args);
+        assert.equal(args[1], 'node');
+        assert.equal(args.at(-1), '/home/node/.claude/' + name);
+        return { exit_code: 0, stdout: JSON.stringify([Date.now(), Buffer.from(updated).toString('base64')]) };
+    };
+    const run = runtime.start(builder.build());
+    await run.wait();
+    const files = api.launch!.config.files;
+    assert.ok(!files.some(f => f.guest_path.endsWith('unrelated')));
+    assert.equal(Buffer.from(files.find(f => f.guest_path.endsWith('/' + name))!.raw_value, 'base64').toString(), original);
+    assert.equal(fs.readFileSync(path.join(root, name), 'utf8'), updated);
+    await run.release!();
+});
+
+test('a stream over the Machine read limit returns the bounded tail and reports truncation', async () => {
+    const { runtime, builder, api } = fixture();
+    const bytes = Buffer.alloc(17 * 1024 * 1024, 65);
+    bytes.write('\nauthoritative tail\n', bytes.length - 20);
+    api.files.set(RUN + '/stdout', bytes);
+    const offsets: number[] = [];
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[3] === 'chunk' && args[4] === RUN + '/stdout') offsets.push(Number(args[5]));
+        return exec(id, args);
+    };
+    const run = runtime.start(builder.build());
+    const result = await run.wait();
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stderr, /truncated/);
+    assert.match(result.stdout, /authoritative tail/);
+    assert.equal(Math.min(...offsets), 1024 * 1024);
+    await run.release!();
+});
+
+test('the Claude Code and Codex task builders can launch their prepared clone specs', async t => {
+    const { buildCodexRunSpec } = await import('../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts');
+    const { buildClaudeRunSpec } = await import('../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts');
+    const { prepareLaunch } = await import('../packages/core/src/agents/runtime/fly/launch.ts');
+    const { flyConfig } = await import('../packages/core/src/agents/runtime/fly/config.ts');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-spec-test-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    for (const type of ['claude', 'codex'] as const) {
+        const config = { type, id: 'agent', enabled: true, alias: type, dockerImage: 'propr/agent', configPath: root, supportedModels: [] };
+        const options = { worktreePath: root, githubToken: 'repo-access', gitMountArgs: [], issueNumber: 1 };
+        const spec = type === 'claude' ? buildClaudeRunSpec(config, 5, options) : buildCodexRunSpec(config, options);
+        spec.workspace = fixture().builder.spec.workspace;
+        spec.mounts = spec.mounts.filter(m => m.purpose !== 'workspace');
+        const prepared = prepareLaunch(spec, { stdinData: 'prompt' }, flyConfig(env));
+        const agent = prepared.launch.config.files.find(file => file.guest_path.endsWith('fly-agent.json'))!;
+        const payload = JSON.parse(Buffer.from(agent.raw_value, 'base64').toString());
+        assert.deepEqual(payload.argv, [spec.repoSetup!.providerEntrypoint, ...spec.args]);
+        assert.equal(payload.env.GH_TOKEN, options.githubToken);
+    }
+});
+
+test('extension admission refuses Fly before workspace preparation', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runAgent } = await import('../packages/core/src/agents/runtime/registry.ts');
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], beforeLaunch: async () => {} }, async () => {
+        await assert.rejects(runAgent({ runtime: 'fly-machines' }, fixture().builder.build(), { taskId: 'ext', extensionAgentLaunch: true }),
+            { name: 'AgentRuntimeCapabilityError', capability: 'extensions' });
+    });
+});
+
+test('the stall watchdog signals a silent run and collects its final output', async () => {
+    const { runtime, builder, api } = fixture();
+    api.status = 'running';
+    const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true,
+        watchdog: { stallTimeoutMs: 15, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 } });
+    const result = await run.wait();
+    assert.equal(result.watchdogTrip?.rule, 'inactivity');
+    assert.deepEqual(api.signals, ['SIGTERM']);
+    assert.equal(result.exitCode, 143);
+    assert.equal(api.destroyed, 1);
+    await run.release!();
+});
+
+test('Machines API adopts a lost create response, uses argv exec and accepts a previously destroyed Machine', async t => {
+    const { MachinesClient } = await import('../packages/core/src/agents/runtime/fly/api.ts');
+    const { prepareLaunch } = await import('../packages/core/src/agents/runtime/fly/launch.ts');
+    const { flyConfig } = await import('../packages/core/src/agents/runtime/fly/config.ts');
+    const config = flyConfig(env);
+    const { launch } = prepareLaunch(fixture().builder.build(), {}, config);
+    let creates = 0;
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+        assert.equal((init.headers as Record<string, string>).Authorization, token);
+        const body = init.body && JSON.parse(String(init.body));
+        assert.ok(!String(init.body).includes(token));
+        if (url.endsWith('/machines')) {
+            creates++;
+            throw new Error('lost response');
+        }
+        if (url.includes('?metadata.propr_run_id=')) return Response.json([{ name: launch.name, id: 'm-1' }]);
+        if (url.endsWith('/exec')) {
+            assert.deepEqual(body.command, ['printf', '%s', 'hello world']);
+            return Response.json({ stdout: 'hello world', exit_code: 0 });
+        }
+        if (url.endsWith('/signal')) {
+            assert.deepEqual(body, { signal: 'SIGTERM' });
+            return Response.json({});
+        }
+        assert.equal(init.method, 'DELETE');
+        assert.match(url, /force=true/);
+        return new Response(null, { status: 404 });
+    });
+    const api = new MachinesClient(config);
+    const id = await api.create(launch);
+    assert.equal(creates, 1);
+    assert.equal(id, 'm-1');
+    assert.equal((await api.exec(id, ['printf', '%s', 'hello world'])).stdout, 'hello world');
+    await api.signal(id, 'SIGTERM');
+    await api.destroy(id);
+});
+
+test('a Machine lost during retrieval reports unavailable output even when the workspace read also fails', async () => {
+    const { runtime, api, builder } = fixture();
+    const exec = api.exec.bind(api);
+    api.exec = (id, args) => {
+        if (args[3] !== 'probe') throw new Error('Machine disappeared');
+        return exec(id, args);
+    };
+    const run = runtime.start(builder.build());
+    const result = await run.wait();
+    assert.equal(result.exitCode, -1);
+    assert.match(result.outputIncomplete!, /output unavailable: stdout, stderr/);
+    assert.match(result.stderr, /workspace result retrieval failed/);
+    await run.release!();
+});

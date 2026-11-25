@@ -1,0 +1,154 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { CLAUDE_BACKUPS_CONTAINER_PATH, CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
+import { WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_RESULT_DIR,
+    WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
+import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside, type ReturnedCredentialFile } from '../../credentials/broker.js';
+import { credentialRunRoot, envFileValues } from '../../credentials/hostCredentialStaging.js';
+import type { AgentRunOptions } from '../dockerRuntime.js';
+import type { AgentRunMount, AgentRunSpec } from '../types.js';
+import type { MachineLaunch, MachinesApi } from './api.js';
+import type { FlyConfig } from './config.js';
+import { RUN, AGENT, WRAPPER, wrapper } from './wrapper.js';
+
+export const helper = ['/usr/bin/python3', '-I', WRAPPER];
+const PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+const shim = '/opt/propr/fly-provider';
+type Bind = Extract<AgentRunMount, { type: 'bind' }>;
+export function unsupportedFlyMount(m: Bind) {
+    const store = m.credentialStore;
+    if (store?.perRun && store.store === 'config' && ['claude', 'codex'].includes(store.provider)
+        && m.target === '/home/node/.' + store.provider && m.purpose === 'credential' && !m.readOnly) return;
+    if (m.target === SEED && m.readOnly && m.purpose === 'credential') return;
+    if (['scratch', 'logs'].includes(m.purpose) && !m.readOnly && /^\/tmp\/[\w-]+(?:\/[\w-]+)*$/.test(m.target)) return;
+    return `cannot provide the ${m.purpose} mount at ${m.target}`;
+}
+
+function runEnv(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
+    const inherited = { ...process.env, ...options.extraEnvVars };
+    const env = new Map<string, string>();
+    for (const file of [...spec.envFiles].sort((a, b) => a.order - b.order)) {
+        fs.accessSync(file.path, fs.constants.R_OK);
+        for (const [k, v] of envFileValues(file.path, inherited)) env.set(k, v);
+    }
+    for (const { name, value } of [...spec.repoSetup?.env ?? [], ...[...spec.env].sort((a, b) => a.order - b.order)]) {
+        const resolved = value ?? inherited[name];
+        if (resolved === undefined) env.delete(name);
+        else env.set(name, resolved);
+    }
+    for (const [name, value] of env) {
+        if (/^(?:PROPR_)?FLY_(?:(?:API|LIVE)_)?TOKEN$/.test(name) || value.includes(config.token)) env.delete(name);
+    }
+    return env;
+}
+
+export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
+    const { clone, containerPath } = spec.workspace;
+    if (options.extraMounts?.length || spec.security.readOnlyRootFilesystem || spec.security.capDrop.length ||
+        spec.security.securityOpts.some(opt => !['no-new-privileges', 'seccomp=unconfined', 'apparmor=unconfined'].includes(opt))) {
+        throw new Error('Fly Machines cannot provide the requested mount or security restrictions');
+    }
+    if (spec.workspace.mode !== 'clone' || spec.workspace.readOnly || containerPath !== '/home/node/workspace'
+        || clone?.script !== WORKSPACE_TRANSPORT_SCRIPT || clone.resultDir !== WORKSPACE_TRANSPORT_RESULT_DIR)
+        throw new Error('Fly Machines requires a prepared writable clone workspace');
+    const provider = spec.profile.agentType;
+    if (provider !== 'claude' && provider !== 'codex') throw new Error('Fly Machines supports Claude Code and Codex');
+    const files: MachineLaunch['config']['files'] = [];
+    const owned: string[] = [];
+    const directories = new Set<string>();
+    const add = (guest_path: string, content: string | Buffer, mode = 0o600) => {
+        const bytes = Buffer.from(content);
+        if (bytes.includes(config.token)) throw new Error('Refusing to upload the Fly API credential');
+        files.push({ guest_path, mode, raw_value: bytes.toString('base64') });
+    };
+    const env = runEnv(spec, options, config);
+    const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) || '';
+    env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
+    for (const key of Object.values(E)) env.delete(key);
+    const requests = [];
+    let backupTmpfs = false;
+    for (const m of spec.mounts) {
+        if (m.type === 'tmpfs') {
+            if (m.target !== CLAUDE_BACKUPS_CONTAINER_PATH || m.options !== 'rw,nosuid,nodev,noexec,size=16m') throw new Error('Unsupported Fly tmpfs target');
+            backupTmpfs = true;
+            directories.add(m.target);
+            continue;
+        }
+        const reason = unsupportedFlyMount(m);
+        if (reason) throw new Error(reason);
+        if (m.credentialStore) {
+            if (m.credentialStore.provider !== provider || requests.length) throw new Error('Mismatched Fly credential store');
+            requests.push({ provider, id: 'config', store: 'config' as const, canonicalRoot: m.source });
+        } else if (m.target === SEED) {
+            const file = readRegularFileInside(path.dirname(m.source), path.basename(m.source), MAX_RETURNED_CREDENTIAL_BYTES);
+            if (!file || file === 'oversized') throw new Error('Invalid Claude configuration seed');
+            add(SEED, file.content);
+        } else directories.add(m.target);
+    }
+    const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
+    const bundle = broker.materialize(requests, { definedEnv: [...env].filter(([, v]) => v).map(([k]) => k) });
+    const store = bundle.stores[0];
+    const storePath = '/home/node/.' + provider;
+    const secrets = [transportToken, ...Object.values(bundle.secretEnv)];
+    if (store) {
+        directories.add(storePath);
+        for (const directory of store.directories) directories.add(path.join(storePath, directory));
+        for (const file of store.files) {
+            const target = path.join(storePath, file.path);
+            add(target, file.content, file.mode & 0o111 ? 0o700 : 0o600);
+            owned.push(target);
+            directories.add(path.dirname(target));
+            if (file.refresh) {
+                // Protect credential strings even when the CLI prints only one field.
+                try { JSON.parse(file.content.toString(), (_key, value) => {
+                    if (typeof value === 'string' && value.length >= 8) secrets.push(value);
+                    return value;
+                }); } catch { secrets.push(file.content.toString().trim()); }
+            }
+        }
+    }
+    const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
+    for (const [k, v] of env) if (/token|secret|password|api.?key|authorization/i.test(k)) secrets.push(v);
+    // Only trusted values enter the root shell. Provider settings such as
+    // BASH_ENV, PATH and LD_PRELOAD take effect after dropping privileges.
+    const transportEnv = { PATH, HOME: '/root', LANG: 'C.UTF-8', PROPR_AGENT_TYPE: provider,
+        PROPR_REPO_SETUP: env.get('PROPR_REPO_SETUP') === '0' ? '0' : '1',
+        PROPR_REPO_SETUP_STRICT: env.get('PROPR_REPO_SETUP_STRICT') === '1' ? '1' : '0',
+        PROPR_CLAUDE_JSON_SEED: provider === 'claude' ? SEED : '',
+        PROPR_EXECUTION_TIMEOUT_MS: String(options.timeout ?? 300_000),
+        [E.path]: containerPath, [E.remote]: clone.remote, [E.branch]: clone.branch, [E.baseRef]: clone.baseRef,
+        [E.baseCommit]: clone.baseCommit, [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: RUN + '/workspace',
+        [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken };
+    const setup = spec.repoSetup;
+    const argv = [setup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
+    if (!spec.args.length) throw new Error('Fly Machines needs a provider command');
+    add(AGENT, JSON.stringify({ env: environment, argv }));
+    add(WRAPPER, wrapper, 0o644);
+    add(shim, '#!/bin/sh\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' agent\n', 0o755);
+    const command = ['/bin/bash', '-c', clone.script, ...(setup ? [setup.script, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
+    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
+    add(RUN + '/stdin', options.stdinData ?? '');
+    const name = 'propr-' + randomUUID();
+    const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {
+        image: config.image, guest: config.guest, metadata: { propr_run_id: name }, auto_destroy: true, restart: { policy: 'no' },
+        processes: [{ user: 'root', ignore_app_secrets: true, entrypoint: ['/usr/bin/setpriv', '--no-new-privs', ...helper], cmd: ['launch'] }], files,
+    } };
+    if (JSON.stringify(launch).includes(config.token)) throw new Error('Fly API credential found in Machine configuration');
+    return { launch, secrets: [...new Set([config.token, ...secrets].filter(Boolean))],
+        markerArgs: transportEnv.PROPR_REPO_SETUP === '0' || !setup ? [] : [setup.script],
+        async commit(api: MachinesApi, id: string) {
+            if (!store) return;
+            const returned: ReturnedCredentialFile[] = [];
+            for (const relative of store.outputs) {
+                const res = await api.exec(id, ['su-exec', 'node', ...helper, 'export', path.join(storePath, relative)]);
+                if (res.exit_code !== 0) throw new Error('Unable to export Fly Machine credentials');
+                if (!res.stdout.trim()) continue;
+                const [mtimeMs, encoded] = JSON.parse(res.stdout);
+                const content = Buffer.from(encoded, 'base64');
+                if (!Number.isFinite(mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES) throw new Error('Invalid Fly credential export');
+                returned.push({ storeId: store.id, path: relative, mtimeMs, content });
+            }
+            await broker.commit(bundle, returned);
+        } };
+}

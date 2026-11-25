@@ -33,6 +33,22 @@ This table maps each agent type to the unified image, its type-specific entrypoi
 
 Agent runs go through the runtime seam described in [Coding Agent Integration](./coding-agent-integration.md#runtime-seam). Docker is the default runtime (`PROPR_AGENT_RUNTIME=docker`). The container shape below is how `DockerRuntime` renders each provider's `AgentRunSpec`. With `PROPR_WORKSPACE_TRANSPORT=clone`, the worktree and git mounts are left out. The container clones the task base with a short-lived repository-scoped token and returns its result through a temporary `refs/propr/runs/<runId>/result` ref, falling back to a bundle. It also runs without `--rm` so the worker can read the result files before removing it. See [Workspace Transport](./coding-agent-integration.md#workspace-transport).
 
+## Fly Machines
+
+Set `PROPR_AGENT_RUNTIME=fly-machines` on the worker or `runtime: fly-machines` on a Claude Code or Codex agent. Each task gets a new Machine in `PROPR_FLY_APP`. Set `PROPR_FLY_API_TOKEN` to a deploy token scoped to that app, or supply it in `FLY_API_TOKEN`. Use a dedicated agent app in the control plane’s Fly organization.
+
+Build the unified agent image from the repository root with `fly deploy --remote-only --build-only --push --dockerfile Dockerfile.agent -a <agent-app>`. On an app with no releases, a remote build can push only by digest. Copy the manifest digest from the build output’s `pushing manifest … @sha256:` line and set `PROPR_FLY_IMAGE=registry.fly.io/<agent-app>@sha256:<digest>` on the worker. The selected image supplies both provider CLI versions.
+
+`PROPR_FLY_REGION` selects a region. Fly chooses the placement when it is unset. `PROPR_FLY_MACHINE_SIZE` accepts `shared-cpu-<n>x` or `performance-<n>x` and defaults to `shared-cpu-2x`. `PROPR_FLY_MACHINE_MEMORY_MB` defaults to 2048. Allow time for the initial image pull before agent execution begins.
+
+Runs use a writable clone workspace and receive per-run credential copies. The root launcher keeps the workspace token separate and drops to `node` for the provider. Only declared refreshed credential files return to the worker. Extension runs, host bind mounts and restricted-network runs are refused. A Fly-hosted control plane exposes MCP at `http://<control-plane-app>.internal:<DASHBOARD_API_PORT>/api/mcp` (default port 4000). Elsewhere set `PROPR_AGENT_MCP_URL` without a pinned Docker network or set `API_PUBLIC_URL`. MCP uses the per-run grant token.
+
+The worker reads the exit status and scans stdout and stderr once after exit. The shared pipeline accounts for usage and checks workflow reports during that scan. The shared result retains up to 1 MiB per stream. Reads from the Machine are capped at 16 MiB per stream. For a larger capture the worker scans the retained tail and reports truncation. A truncated prefix that could contain required cost or workflow records fails the run. Fly logs provide a best-effort live display and may omit lines. A missing capture or exit status fails the run. A graceful stop allows the clone transport to finish its snapshot. The worker copies any fallback bundle to a private temporary directory before destroying the Machine. Releasing the run removes that local copy. If workspace application fails, the clone transport reports the recovery location.
+
+The Free plan allows three Machines, including stopped Machines and the control plane. Size worker concurrency for the slots available across the organization. Run Machines use `restart: no` and `auto_destroy: true`. The worker requests destruction as soon as it finishes retrieval.
+
+To verify a deployment, set `PROPR_FLY_LIVE_TOKEN`, `PROPR_FLY_LIVE_APP` and `PROPR_FLY_IMAGE`, then run `npx tsx --test test/flyMachinesRuntime.live.test.ts`. The suite starts one Machine at a time and exercises task completion, graceful stop, bundle retrieval and destruction.
+
 ## Fly Sprites
 
 The Node 22 worker pins `@fly/sprites` to 0.2.5. Upstream declares Node 24 or newer. CI smoke-tests the pinned SDK on Node 22, and the live runtime suite checks service compatibility before merge. Sprites refuses runs that require extensions.

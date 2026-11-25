@@ -20,6 +20,8 @@ interface PipelineLaunch {
     environment?: NodeJS.ProcessEnv;
     attempt?: string;
     secrets?: string[];
+    /** False when a remote display stream publishes live output independently. */
+    liveOutput?: boolean;
     stopForWatchdog: () => boolean;
     command: string;
     stopForCostCap: (message: string) => void;
@@ -47,7 +49,7 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
         const redact = new ExtensionStreamRedactor(secrets);
         return redact.push(transcript()) + redact.finish();
     } : transcript;
-    const live = startLiveOutputStreaming({ ...options, streamExtraOutput, onOverflow: warn, onActivity: watchdog.recordActivity,
+    const live = launch.liveOutput === false ? null : startLiveOutputStreaming({ ...options, streamExtraOutput, onOverflow: warn, onActivity: watchdog.recordActivity,
         onTranscriptRecord: watchdog.observeLine }, () => stdout.output, () => stderr.value);
     const messageTimestamps = new Map<string, string>();
     const session = { state: { sessionIdDetected: false }, messageTimestamps, onSessionId: options.onSessionId,
